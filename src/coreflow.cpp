@@ -165,7 +165,7 @@ namespace CoreFlowAI {
     }
 
     // Sweet-spot tunables: more responsive governor, not overclocking.
-    GovernorTunables buildModeProfile(const GovernorTunables& stock, EngineMode mode, bool is_big_cluster) {
+    GovernorTunables buildModeProfile(const GovernorTunables& stock, CoreFlowState::EngineMode mode, bool is_big_cluster) {
         GovernorTunables t = stock;
         if (!stock.valid) return t;
 
