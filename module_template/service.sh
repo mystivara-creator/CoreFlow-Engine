@@ -1,16 +1,29 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
 
-# Tunggu sampai sistem Android benar-benar selesai booting
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 5
 done
 
-# Jeda ekstra 10 detik agar subsistem sysfs grafis panel siap sepenuhnya
 sleep 10
 
-# Pastikan izin eksekusi biner di folder lokal modul sudah aktif
-chmod 755 $MODDIR/system/bin/coreflow_daemon
+daemon_bin="$MODDIR/system/bin/coreflow_daemon"
+if [ ! -x "$daemon_bin" ]; then
+    chmod 755 "$daemon_bin" 2>/dev/null
+fi
 
-# JALANKAN DAEMON FINAL: Output dialirkan ke sistem Logcat Android
-$MODDIR/system/bin/coreflow_daemon 2>&1 | log -p d -t CoreFlowEngine &
+if [ ! -x "$daemon_bin" ]; then
+    log -p f -t CoreFlowEngine "FATAL: coreflow_daemon tidak ditemukan atau tidak executable!"
+    exit 1
+fi
+
+# Supervisor loop: restart daemon automatically if it crashes
+while true; do
+    log -p i -t CoreFlowEngine "Starting coreflow_daemon..."
+    "$daemon_bin" 2>&1 | log -p d -t CoreFlowEngine &
+    DAEMON_PID=$!
+    wait "$DAEMON_PID"
+    EXIT_CODE=$?
+    log -p w -t CoreFlowEngine "Daemon exited with code $EXIT_CODE. Restarting in 5 seconds..."
+    sleep 5
+done
