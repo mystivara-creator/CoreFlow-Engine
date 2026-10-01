@@ -28,60 +28,19 @@ namespace KernelTuner {
         }
     }
 
-    void applyThermalThrottling(bool throttle) {
-        if (throttle) {
-            std::system("echo '1400000' > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null");
-            std::system("echo '1800000' > /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq 2>/dev/null");
-        } else {
-            std::system("echo 'max' > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null");
-            std::system("echo 'max' > /sys/devices/system/cpu/policy4/scaling_max_freq 2>/dev/null");
+    void restoreDefaultFrequencies() {
+        // Kembalikan ke frekuensi maksimum bawaan hardware saat suhu normal kembali
+        std::ofstream cpu0("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+        if (cpu0.is_open()) {
+            cpu0 << "max";
+            cpu0.close();
+        }
+        std::ofstream cpu4("/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq");
+        if (cpu4.is_open()) {
+            cpu4 << "max";
+            cpu4.close();
         }
     }
-}
-
-// ==========================================
-// EVENT LISTENER: Implementasi Sesuai Namespace hpp
-// ==========================================
-bool EventListener::isScreenOn() {
-    std::ifstream file("/sys/class/drm/card0-DSI-1/status"); 
-    if (!file.is_open()) {
-        file.open("/sys/class/graphics/fb0/blank");
-    }
-
-    if (file.is_open()) {
-        std::string status;
-        file >> status;
-        return (status == "connected" || status == "0");
-    }
-
-    // Fallback sub-shell hanya berjalan jika sysfs tidak dapat diakses
-    FILE* pipe = popen("dumpsys power | grep -q 'Display Power: state=ON'", "r");
-    if (!pipe) return true;
-    int res = pclose(pipe);
-    return (res == 0);
-}
-
-// ==========================================
-// THERMAL GUARDIAN: Implementasi Sesuai Namespace hpp
-// ==========================================
-int ThermalGuardian::getCurrentTemp() {
-    std::ifstream file("/sys/class/power_supply/battery/temp");
-    int temp = 0;
-    if (file.is_open()) {
-        file >> temp; 
-        if (temp > 1000) temp /= 1000;
-        else if (temp > 100) temp /= 10;
-    }
-    return temp;
-}
-
-void ThermalGuardian::applyCoolingMode() {
-    KernelTuner::applyThermalThrottling(true);
-}
-
-void ThermalGuardian::triggerNotification() {
-    std::system("log -t CoreFlowEngine 'WARNING: Device temperature exceeded critical limit!'");
-    std::cout << "[Thermal Guardian] Peringatan suhu kritis dikirim ke Logcat." << std::endl;
 }
 
 // ==========================================
@@ -94,6 +53,7 @@ int main() {
     std::cout << " Features: Auto-Throttling & Dynamic Swap" << std::endl;
     std::cout << "========================================" << std::endl;
 
+    // Inisialisasi awal hardware profil Kunzite
     CoreFlowAI::initializeHardwareProfile();
 
     int screen_off_counter = 0;
@@ -107,12 +67,12 @@ int main() {
         // 1. EVALUASI THERMAL GUARDIAN
         if (currentTemp >= THERMAL_LIMIT_CELSIUS && !is_throttled) {
             std::cout << "[Thermal Guardian] Suhu kritis: " << currentTemp << "°C. Mengaktifkan Throttling..." << std::endl;
-            ThermalGuardian::applyCoolingMode();
-            ThermalGuardian::triggerNotification();
+            ThermalGuardian::applyCoolingMode(); // Panggil fungsi di thermal_guardian.cpp
+            ThermalGuardian::triggerNotification(); // Panggil notifikasi sistem
             is_throttled = true;
         } else if (currentTemp < (THERMAL_LIMIT_CELSIUS - 3) && is_throttled) { 
             std::cout << "[Thermal Guardian] Suhu normal: " << currentTemp << "°C. Memulihkan performa..." << std::endl;
-            KernelTuner::applyThermalThrottling(false);
+            KernelTuner::restoreDefaultFrequencies(); // Pulihkan cpu clock via helper lokal
             is_throttled = false;
         }
 
