@@ -1,3 +1,0 @@
-/home/runner/work/CoreFlow-Engine/CoreFlow-Engine/build/CMakeFiles/coreflow_daemon.dir
-/home/runner/work/CoreFlow-Engine/CoreFlow-Engine/build/CMakeFiles/edit_cache.dir
-/home/runner/work/CoreFlow-Engine/CoreFlow-Engine/build/CMakeFiles/rebuild_cache.dir
