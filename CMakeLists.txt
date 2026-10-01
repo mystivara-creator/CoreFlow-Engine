@@ -14,5 +14,8 @@ file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
 # Perintahkan untuk membuat binary executable bernama 'coreflow_daemon'
 add_executable(coreflow_daemon ${SOURCE_FILES})
 
-# Tautkan pustaka Android Logcat (-llog) dan Threading bawaan Linux NDK
-target_link_libraries(coreflow_daemon log pthread)
+# Beritahu CMake untuk mengonfigurasi flag threading bawaan NDK tanpa mencari berkas -lpthread
+find_package(Threads REQUIRED)
+
+# Tautkan biner dengan pustaka Logcat Android dan dependensi internal Threads
+target_link_libraries(coreflow_daemon log Threads::Threads)
