@@ -164,7 +164,6 @@ namespace CoreFlowAI {
         SafeTuner::writeSysfs(base + "down_rate_limit_us", std::to_string(t.down_rate_limit_us));
     }
 
-    // Sweet-spot tunables: more responsive governor, NOT overclocking.
     GovernorTunables buildModeProfile(const GovernorTunables& stock, CoreFlowState::EngineMode mode, bool is_big_cluster) {
         GovernorTunables t = stock;
         if (!stock.valid) return t;
@@ -189,8 +188,6 @@ namespace CoreFlowAI {
                     t.down_rate_limit_us = clampu(percentOf(stock.down_rate_limit_us, 110), 2000, 150000);
                     break;
 
-                case CoreFlowState::MODE_BALANCED:
-                case CoreFlowState::MODE_IDLE:
                 default:
                     t = stock;
                     break;
@@ -213,8 +210,6 @@ namespace CoreFlowAI {
                     t.down_rate_limit_us = stock.down_rate_limit_us;
                     break;
 
-                case CoreFlowState::MODE_BALANCED:
-                case CoreFlowState::MODE_IDLE:
                 default:
                     t = stock;
                     break;
