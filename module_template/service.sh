@@ -12,5 +12,5 @@ sleep 10
 # Pastikan izin eksekusi biner di folder lokal modul sudah aktif
 chmod 755 $MODDIR/system/bin/coreflow_daemon
 
-# Jalankan daemon langsung dari folder internal modul
-$MODDIR/system/bin/coreflow_daemon > $MODDIR/coreflow_debug.log 2>&1 &
+# JALANKAN VERSI PRODUKSI: Buang log ke /dev/null untuk mencegah Storage Leak
+nohup $MODDIR/system/bin/coreflow_daemon > /dev/null 2>&1 &
