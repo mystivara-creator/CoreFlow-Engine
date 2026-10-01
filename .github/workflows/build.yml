@@ -3,7 +3,7 @@ name: Build CoreFlow Engine
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Mengizinkan trigger build secara manual
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,24 +16,39 @@ jobs:
 
     - name: Configure Android NDK
       run: |
-        echo "Menggunakan Android NDK bawaan server GitHub..."
         echo "NDK_PATH=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+        echo "NDK_BIN=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
 
     - name: Build C++ Daemon (arm64-v8a)
       run: |
+        rm -rf build
         mkdir build && cd build
         cmake .. \
           -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=arm64-v8a \
-          -DANDROID_PLATFORM=android-30
-        make
+          -DANDROID_PLATFORM=android-30 \
+          -DANDROID_STL=c++_static \
+          -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+
+    - name: Verify & Strip ARM64 Binary
+      run: |
+        file build/coreflow_daemon
+        ELF_MACHINE=$($NDK_BIN/llvm-readelf -h build/coreflow_daemon | grep 'Machine:' | awk '{print $NF}')
+        ELF_CLASS=$($NDK_BIN/llvm-readelf -h build/coreflow_daemon | grep 'Class:' | awk '{print $NF}')
+        ELF_TYPE=$($NDK_BIN/llvm-readelf -h build/coreflow_daemon | grep 'Type:' | awk '{print $NF}')
+        echo "ELF Class: $ELF_CLASS"
+        echo "ELF Machine: $ELF_MACHINE"
+        echo "ELF Type: $ELF_TYPE"
+        if [ "$ELF_MACHINE" != "AArch64" ]; then
+          echo "ERROR: Binary is not AArch64. Build is broken."
+          exit 1
+        fi
+        $NDK_BIN/llvm-strip build/coreflow_daemon
 
     - name: Package KernelSU/Magisk Module
       run: |
-        # Pindahkan binary hasil kompilasi ke folder template
         cp build/coreflow_daemon module_template/system/bin/
-        
-        # Pindah ke dalam folder template dan bungkus menjadi ZIP
         cd module_template
         zip -r9 ../CoreFlow-Engine-Release.zip .
 
@@ -42,4 +57,3 @@ jobs:
       with:
         name: CoreFlow-Engine-Module
         path: CoreFlow-Engine-Release.zip
-        
