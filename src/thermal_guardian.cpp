@@ -26,13 +26,14 @@ void ThermalGuardian::applyCoolingMode() {
     std::cout << "[Thermal Guardian] Membatasi clock speed CPU secara native..." << std::endl;
     
     // Terapkan throttling langsung via native file stream (Zero Overhead)
-    std::ofstream cpu0("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
+    // PERBAIKAN: Diselaraskan menggunakan policy0 dan policy4
+    std::ofstream cpu0("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
     if (cpu0.is_open()) {
         cpu0 << "1400000";
         cpu0.close();
     }
 
-    std::ofstream cpu4("/sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq");
+    std::ofstream cpu4("/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq");
     if (cpu4.is_open()) {
         cpu4 << "1800000";
         cpu4.close();
