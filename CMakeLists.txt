@@ -1,21 +1,31 @@
 cmake_minimum_required(VERSION 3.10)
 project(CoreFlowEngine CXX)
 
-# Gunakan standar C++17 agar kompatibel dengan std::this_thread dan file stream modern
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Tambahkan folder 'include' agar compiler bisa menemukan header file coreflow.hpp
 include_directories(include)
 
-# Kumpulkan semua file C++ secara otomatis di dalam folder 'src' (Mencegah duplikasi manual)
 file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
 
-# Perintahkan untuk membuat binary executable bernama 'coreflow_daemon'
 add_executable(coreflow_daemon ${SOURCE_FILES})
 
-# Beritahu CMake untuk mengonfigurasi flag threading bawaan NDK tanpa mencari berkas -lpthread
 find_package(Threads REQUIRED)
 
-# Tautkan biner dengan pustaka Logcat Android dan dependensi internal Threads
 target_link_libraries(coreflow_daemon log Threads::Threads)
+
+# Production compile flags when building Release
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_options(coreflow_daemon PRIVATE
+        -O3
+        -flto
+        -fomit-frame-pointer
+        -Wall
+        -Wextra
+        -Wno-unused-parameter
+    )
+    target_link_options(coreflow_daemon PRIVATE -flto)
+endif()
+
+# Ensure Android static C++ runtime is preferred when set via CI:
+#   -DANDROID_STL=c++_static
