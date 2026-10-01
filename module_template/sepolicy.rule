@@ -1,2 +1,4 @@
-allow init su domain *
-allow system_server su domain *
+# Memberikan izin penuh kepada daemon agar tidak diblokir SELinux saat boot
+allow init su:process transition
+allow type su domain *
+attr_add subcontext su
