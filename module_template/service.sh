@@ -1,12 +1,16 @@
 #!/system/bin/sh
-# Pelatuk Native Daemon CoreFlow Engine
-
 MODDIR=${0%/*}
-DAEMON_BIN="$MODDIR/coreflow_daemon"
 
-# Pastikan binary C++ memiliki izin eksekusi
-chmod 755 $DAEMON_BIN
+# Tunggu sampai sistem Android benar-benar selesai booting
+until [ "$(getprop sys.boot_completed)" = "1" ]; do
+    sleep 5
+done
 
-# Jalankan daemon C++ di latar belakang secara mandiri (detached)
-# Output log diarahkan ke dev/null untuk mencegah memori internal penuh
-nohup $DAEMON_BIN > /dev/null 2>&1 &
+# Jeda ekstra 10 detik agar subsistem sysfs grafis panel siap sepenuhnya
+sleep 10
+
+# Pastikan izin eksekusi biner di folder lokal modul sudah aktif
+chmod 755 $MODDIR/system/bin/coreflow_daemon
+
+# Jalankan daemon langsung dari folder internal modul
+$MODDIR/system/bin/coreflow_daemon > $MODDIR/coreflow_debug.log 2>&1 &
