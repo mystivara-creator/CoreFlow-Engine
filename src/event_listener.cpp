@@ -2,17 +2,19 @@
 #include <fstream>
 #include <string>
 #include <cstdlib>
+#include <cstdio>
 
 // ==========================================
 // EVENT LISTENER: Implementasi Status Layar (Zero Overhead)
 // ==========================================
 bool EventListener::isScreenOn() {
     // Membaca langsung dari node tampilan sysfs (Sangat universal untuk mayoritas kernel modern)
-    std::ifstream file("/sys/class/drm/card0-DSI-1/status"); 
-    if (!file.is_open()) {
-        // Jalur alternatif jika menggunakan panel grafis OLED/Frame Buffer lama
-        file.open("/sys/class/graphics/fb0/blank");
-    }
+    // Perbaikan pada event_listener.cpp
+std::ifstream file("/sys/class/drm/card0-DSI-1/status"); 
+if (!file.is_open()) {
+    file.clear(); // WAJIB DITAMBAHKAN untuk mereset failbit
+    file.open("/sys/class/graphics/fb0/blank");
+}
 
     if (file.is_open()) {
         std::string status;
