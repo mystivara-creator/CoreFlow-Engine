@@ -1,16 +1,41 @@
 # =================================================================
-# COREFLOW ENGINE: SEPolicy Rules untuk KernelSU-Next & Magisk
-# Target: Redmi Note 15 5G (Kunzite / Parrot) / Android 14+
+# CoreFlow Engine: SEPolicy Rules untuk KernelSU-Next & Magisk
+# Target: Android 14+ ARM64
+# Catatan: Jika masih terjadi SELinux denial, jalankan perintah berikut
+# setelah boot untuk mencari domain yang tepat:
+#   su -c dmesg | grep avc | grep denied | grep coreflow
+# Atau tunjukkan log ke maintainer modul.
 # =================================================================
 
-# 1. Buka blokir akses penuh ke property service HANYA untuk daemon (su)
-allow su vendor_default_prop:property_service set
-allow su vendor_dsp_prop:property_service set
-allow su property_socket:sock_file write
-allow su init:unix_stream_socket connect
-
-# 2. Berikan izin baca/tulis ke sysfs dan procfs HANYA untuk daemon (su)
+# Domain-domain SuperUser yang mungkin dijumpai modern Magisk/KernelSU
 allow su sysfs:file { open read write getattr }
 allow su sysfs_devices_system_cpu:file { open read write getattr }
 allow su sysfs_kgsl:file { open read write getattr }
 allow su proc:file { open read write getattr }
+allow su sysfs:dir { search read }
+allow su vendor_default_prop:property_service set
+allow su property_socket:sock_file write
+allow su init:unix_stream_socket connect
+
+allow magisk sysfs:file { open read write getattr }
+allow magisk sysfs_devices_system_cpu:file { open read write getattr }
+allow magisk sysfs_kgsl:file { open read write getattr }
+allow magisk proc:file { open read write getattr }
+allow magisk sysfs:dir { search read }
+allow magisk vendor_default_prop:property_service set
+allow magisk property_socket:sock_file write
+allow magisk init:unix_stream_socket connect
+
+allow kernelu sysfs:file { open read write getattr }
+allow kernelu sysfs_devices_system_cpu:file { open read write getattr }
+allow kernelu sysfs_kgsl:file { open read write getattr }
+allow kernelu proc:file { open read write getattr }
+allow kernelu sysfs:dir { search read }
+allow kernelu vendor_default_prop:property_service set
+allow kernelu property_socket:sock_file write
+allow kernelu init:unix_stream_socket connect
+
+# Akses vendor property DSP
+allow su vendor_dsp_prop:property_service set
+allow magisk vendor_dsp_prop:property_service set
+allow kernelsu vendor_dsp_prop:property_service set
