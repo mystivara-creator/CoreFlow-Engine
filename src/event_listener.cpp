@@ -1,33 +1,58 @@
 #include "../include/coreflow.hpp"
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
-#include <cstdlib>
-#include <cstdio>
+#include <vector>
 
-// ==========================================
-// EVENT LISTENER: Implementasi Status Layar (Zero Overhead)
-// ==========================================
-bool EventListener::isScreenOn() {
-    // Membaca langsung dari node tampilan sysfs (Sangat universal untuk mayoritas kernel modern)
-    // Perbaikan pada event_listener.cpp
-std::ifstream file("/sys/class/drm/card0-DSI-1/status"); 
-if (!file.is_open()) {
-    file.clear(); // WAJIB DITAMBAHKAN untuk mereset failbit
-    file.open("/sys/class/graphics/fb0/blank");
+namespace {
+    struct DisplayNode {
+        std::string path;
+        enum Type { DRM, FB } type;
+    };
 }
 
-    if (file.is_open()) {
+bool EventListener::isScreenOn() {
+    static const std::vector<DisplayNode> kNodes = {
+        {"/sys/class/drm/card0-DSI-1/status", DisplayNode::DRM},
+        {"/sys/class/drm/card0-DSI-2/status", DisplayNode::DRM},
+        {"/sys/class/drm/card1-DSI-1/status", DisplayNode::DRM},
+        {"/sys/class/graphics/fb0/blank", DisplayNode::FB}
+    };
+
+    for (const auto& node : kNodes) {
+        std::ifstream file(node.path);
+        if (!file.is_open()) {
+            continue;
+        }
+
         std::string status;
-        file >> status;
+        if (!(file >> status)) {
+            continue;
+        }
         file.close();
-        // Pada card0-DSI-1: "connected" artinya layar hidup. 
-        // Pada fb0/blank: "0" artinya layar hidup (tidak blank/mati).
-        return (status == "connected" || status == "0");
+
+        if (node.type == DisplayNode::DRM) {
+            if (status == "connected") {
+                return true;
+            }
+            if (status == "disconnected") {
+                return false;
+            }
+        } else {
+            if (status == "0") {
+                return true;
+            }
+            if (status == "1" || status == "4") {
+                return false;
+            }
+        }
     }
 
-    // Fallback terakhir jika sistem memblokir akses sysfs mentah (Menggunakan Android Shell)
-    FILE* pipe = popen("dumpsys power | grep -q 'Display Power: state=ON'", "r");
-    if (!pipe) return true; // Default aman jika gagal
+    FILE* pipe = popen("dumpsys power 2>/dev/null | grep -q 'Display Power: state=ON'", "r");
+    if (!pipe) {
+        return true;
+    }
     int res = pclose(pipe);
     return (res == 0);
 }
