@@ -61,6 +61,46 @@ namespace SafeTuner {
 namespace CoreFlowAI {
 
     // ============================================================
+    // HELPER: mq-deadline Advanced Tunables & Sysctl Dinamis
+    // ============================================================
+    void applyMqDeadlineTunables(bool is_high_performance) {
+        char path_buffer[128];
+        const std::string read_exp = is_high_performance ? "250" : "500";
+        const std::string write_exp = is_high_performance ? "2500" : "5000"; 
+        const std::string async_dp = is_high_performance ? "128" : "64";
+        const std::string fifo_bt = "16";
+
+        for (char blk = 'a'; blk <= 'f'; ++blk) {
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/iosched/read_expire", blk);
+            SafeTuner::writeSysfs(path_buffer, read_exp);
+
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/iosched/write_expire", blk);
+            SafeTuner::writeSysfs(path_buffer, write_exp);
+
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/iosched/async_depth", blk);
+            SafeTuner::writeSysfs(path_buffer, async_dp);
+
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/iosched/fifo_batch", blk);
+            SafeTuner::writeSysfs(path_buffer, fifo_bt);
+        }
+    }
+
+    void applySysctlTunables(bool is_high_performance) {
+        // vfs_cache_pressure: 100 saat performa tinggi, 150 saat efisiensi
+        const std::string cache_pressure = is_high_performance ? "100" : "150";
+        SafeTuner::writeSysfs("/proc/sys/vm/vfs_cache_pressure", cache_pressure);
+
+        // Dirty ratios: longgarkan ke 20% & 30% saat performa tinggi untuk cegah I/O stutter
+        if (is_high_performance) {
+            SafeTuner::writeSysfs("/proc/sys/vm/dirty_background_ratio", "20");
+            SafeTuner::writeSysfs("/proc/sys/vm/dirty_ratio", "30");
+        } else {
+            SafeTuner::writeSysfs("/proc/sys/vm/dirty_background_ratio", "10");
+            SafeTuner::writeSysfs("/proc/sys/vm/dirty_ratio", "20");
+        }
+    }
+
+    // ============================================================
     // INITIALIZE HARDWARE PROFILE
     // ============================================================
     void initializeHardwareProfile() {
@@ -124,9 +164,33 @@ namespace CoreFlowAI {
         }
 
         // --------------------------------------------------------
-        // Apply stock baseline to block devices
+        // Khusus SDA: Paksa I/O Scheduler ke mq-deadline
+        // --------------------------------------------------------
+        SafeTuner::writeSysfs("/sys/block/sda/queue/scheduler", "mq-deadline");
+
+        // --------------------------------------------------------
+        // PENGATURAN MUTLAK (Static Tunables) untuk SDA - SDF
+        // - rq_affinity = 2 (Optimal CPU cache locality)
+        // - iostats = 0 (Memangkas overhead kernel)
         // --------------------------------------------------------
         char path_buffer[64];
+        for (char blk = 'a'; blk <= 'f'; ++blk) {
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/rq_affinity", blk);
+            SafeTuner::writeSysfs(path_buffer, "2");
+
+            snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/iostats", blk);
+            SafeTuner::writeSysfs(path_buffer, "0");
+        }
+
+        // --------------------------------------------------------
+        // PENGATURAN MUTLAK SYSCTL (Static Memory Tunables)
+        // --------------------------------------------------------
+        SafeTuner::writeSysfs("/proc/sys/vm/max_map_count", "65530");
+        SafeTuner::writeSysfs("/proc/sys/vm/page-cluster", "3");
+
+        // --------------------------------------------------------
+        // Apply stock baseline to block devices (SDA - SDF)
+        // --------------------------------------------------------
         const std::string stock_ra = std::to_string(StockProfile::read_ahead_kb);
         const std::string stock_nr = std::to_string(StockProfile::nr_requests);
 
@@ -229,6 +293,10 @@ namespace CoreFlowAI {
                 SafeTuner::writeSysfs(path_buffer, "256");
             }
 
+            // Terapkan Advanced Tunables & Sysctl High-Performance
+            applyMqDeadlineTunables(true);
+            applySysctlTunables(true);
+
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "60");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "55");
             SafeTuner::writeSysfs("/sys/class/kgsl/kgsl-3d0/devfreq/governor", "msm-adreno-tz");
@@ -246,6 +314,10 @@ namespace CoreFlowAI {
                 snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/nr_requests", blk);
                 SafeTuner::writeSysfs(path_buffer, "128");
             }
+
+            // Terapkan Advanced Tunables & Sysctl High-Performance
+            applyMqDeadlineTunables(true);
+            applySysctlTunables(true);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "70");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "70");
@@ -266,6 +338,10 @@ namespace CoreFlowAI {
                 SafeTuner::writeSysfs(path_buffer, stock_nr);
             }
 
+            // Kembalikan Advanced Tunables & Sysctl ke profil Balanced
+            applyMqDeadlineTunables(false);
+            applySysctlTunables(false);
+
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "80");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "80");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/scaling_governor", StockProfile::cpu_policy0_gov);
@@ -284,6 +360,10 @@ namespace CoreFlowAI {
                 snprintf(path_buffer, sizeof(path_buffer), "/sys/block/sd%c/queue/read_ahead_kb", blk);
                 SafeTuner::writeSysfs(path_buffer, stock_ra);
             }
+
+            // Kembalikan Advanced Tunables & Sysctl ke profil Efficiency
+            applyMqDeadlineTunables(false);
+            applySysctlTunables(false);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "85");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "85");
@@ -304,6 +384,10 @@ namespace CoreFlowAI {
             SafeTuner::writeSysfs(path_buffer, "256");
         }
 
+        // Set efisiensi maksimal saat deep sleep
+        applyMqDeadlineTunables(false);
+        applySysctlTunables(false);
+
         __system_property_set("vendor.dsp.default_qos", "0");
         CoreFlowState::current_mode = CoreFlowState::MODE_IDLE;
     }
@@ -312,7 +396,6 @@ namespace CoreFlowAI {
     // FOREGROUND APP DETECTION (Dengan Lazy Evaluation)
     // ============================================================
     AppClass detectForegroundApp() {
-        // OPTIMASI: Lazy Evaluation (Lewati scanning jika beban sistem sangat rendah)
         int gpu_busy = 0;
         std::string raw_gpu_busy;
         SafeTuner::readSysfs("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", raw_gpu_busy);
@@ -320,8 +403,6 @@ namespace CoreFlowAI {
             gpu_busy = std::stoi(raw_gpu_busy);
         }
 
-        // Jika GPU di bawah 15% dan engine tidak sedang dikunci di mode Gaming/Burst,
-        // asumsikan tidak ada game berat di foreground dan kembalikan APP_DEFAULT instan.
         if (gpu_busy < 15 && CoreFlowState::current_mode != CoreFlowState::MODE_GAMING && 
             CoreFlowState::current_mode != CoreFlowState::MODE_BURST) {
             return APP_DEFAULT;
@@ -335,9 +416,6 @@ namespace CoreFlowAI {
         struct dirent* entry;
         AppClass detected_class = APP_DEFAULT;
 
-        // --------------------------------------------------------
-        // Scan /proc/<pid>/cmdline
-        // --------------------------------------------------------
         while ((entry = readdir(dir)) != nullptr) {
             if (entry->d_type != DT_DIR) {
                 continue;
@@ -371,9 +449,6 @@ namespace CoreFlowAI {
                 continue;
             }
 
-            // ----------------------------------------------------
-            // Detect game process
-            // ----------------------------------------------------
             if (cmdline.find("com.tencent") != std::string::npos || 
                 cmdline.find("com.dts.freefiremax") != std::string::npos || 
                 cmdline.find("mobilelegends") != std::string::npos || 
@@ -383,9 +458,6 @@ namespace CoreFlowAI {
                 break;
             }
 
-            // ----------------------------------------------------
-            // Detect launcher process
-            // ----------------------------------------------------
             if (cmdline.find("miui.home") != std::string::npos || 
                 cmdline.find("launcher") != std::string::npos || 
                 cmdline.find("hyperos") != std::string::npos) {
