@@ -1,0 +1,6 @@
+id=coreflow_engine
+name=CoreFlow Engine
+version=v1.0.0-Native
+versionCode=100
+author=mystivara
+description=Native C++
