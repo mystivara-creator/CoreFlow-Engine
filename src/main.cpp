@@ -28,27 +28,36 @@ namespace KernelTuner {
         }
     }
 
-    void restoreDefaultFrequencies() {
-        // Kembalikan ke frekuensi maksimum bawaan hardware saat suhu normal kembali
-        std::ofstream cpu0("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
-        if (cpu0.is_open()) {
-            cpu0 << "max";
-            cpu0.close();
+        void restoreDefaultFrequencies() {
+        // Driver Qualcomm cpufreq-hw membaca nilai "max" atau frekuensi absolut dari table kernel
+        // Membaca batas maksimum asli langsung dari cpuinfo_max_freq untuk menghindari penolakan kernel
+        std::ifstream max_freq_0("/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq");
+        std::string freq_val_0;
+        if (max_freq_0 >> freq_val_0) {
+            std::ofstream cpu0("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+            if (cpu0.is_open()) cpu0 << freq_val_0;
         }
-        std::ofstream cpu4("/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq");
-        if (cpu4.is_open()) {
-            cpu4 << "max";
-            cpu4.close();
+        max_freq_0.close();
+
+        std::ifstream max_freq_4("/sys/devices/system/cpu/cpufreq/policy4/cpuinfo_max_freq");
+        std::string freq_val_4;
+        if (max_freq_4 >> freq_val_4) {
+            std::ofstream cpu4("/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq");
+            if (cpu4.is_open()) cpu4 << freq_val_4;
         }
+        max_freq_4.close();
+        
+        std::cout << "[CoreFlow KernelTuner] Performa frekuensi CPU dipulihkan ke batas maksimum hardware." << std::endl;
     }
 }
+
 
 // ==========================================
 // MAIN ENTRY POINT: Native Daemon Orchestrator
 // ==========================================
 int main() {
     std::cout << "========================================" << std::endl;
-    std::cout << " CoreFlow Engine - Native Daemon v1.0.0-rebuild" << std::endl;
+    std::cout << " CoreFlow Engine - Native Daemon v1.0.0" << std::endl;
     std::cout << " Architecture: Hybrid Universal & Kunzite" << std::endl;
     std::cout << " Features: Auto-Throttling & Dynamic Swap" << std::endl;
     std::cout << "========================================" << std::endl;
@@ -67,12 +76,12 @@ int main() {
         // 1. EVALUASI THERMAL GUARDIAN
         if (currentTemp >= THERMAL_LIMIT_CELSIUS && !is_throttled) {
             std::cout << "[Thermal Guardian] Suhu kritis: " << currentTemp << "°C. Mengaktifkan Throttling..." << std::endl;
-            ThermalGuardian::applyCoolingMode(); // Panggil fungsi di thermal_guardian.cpp
-            ThermalGuardian::triggerNotification(); // Panggil notifikasi sistem
+            ThermalGuardian::applyCoolingMode();
+            ThermalGuardian::triggerNotification();
             is_throttled = true;
         } else if (currentTemp < (THERMAL_LIMIT_CELSIUS - 3) && is_throttled) { 
             std::cout << "[Thermal Guardian] Suhu normal: " << currentTemp << "°C. Memulihkan performa..." << std::endl;
-            KernelTuner::restoreDefaultFrequencies(); // Pulihkan cpu clock via helper lokal
+            KernelTuner::restoreDefaultFrequencies();
             is_throttled = false;
         }
 
