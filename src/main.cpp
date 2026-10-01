@@ -70,6 +70,8 @@ int main() {
     bool was_screen_on = true;
 
     while (true) {
+        ThermalGuardian::applyChargingThermalProtection();
+
         bool screenOn = EventListener::isScreenOn();
         int currentTemp = ThermalGuardian::getCurrentTemp();
 
@@ -94,9 +96,15 @@ int main() {
                 was_screen_on = true;
             }
 
-            CoreFlowAI::evaluateDynamicLoad();
+            // Jalankan deteksi aplikasi baris depan secara native
+            CoreFlowAI::AppClass currentApp = CoreFlowAI::detectForegroundApp();
+            
+            // Evaluasi beban sistem terpadu dengan membawa data aplikasi baris depan
+            CoreFlowAI::evaluateDynamicLoad(currentApp); 
+            
             std::this_thread::sleep_for(std::chrono::seconds(5));
-        } 
+        }
+
         else {
             if (was_screen_on) {
                 was_screen_on = false;
