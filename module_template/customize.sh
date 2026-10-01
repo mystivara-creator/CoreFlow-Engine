@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # =================================================================
 # COREFLOW ENGINE INSTALLER
-# Versi: v2.3
+# Versi: v1.0.0-rebuild
 # Arsitektur: Native C++ Daemon / ARM64
 # =================================================================
 
@@ -12,7 +12,7 @@ SKIPUNZIP=1
 print_banner() {
     ui_print "==========================================="
     ui_print "      COREFLOW ENGINE - NATIVE DAEMON      "
-    ui_print "               Version: v2.3               "
+    ui_print "               Version: v1.0.0               "
     ui_print "==========================================="
 }
 
