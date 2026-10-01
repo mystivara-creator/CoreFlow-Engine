@@ -12,5 +12,5 @@ sleep 10
 # Pastikan izin eksekusi biner di folder lokal modul sudah aktif
 chmod 755 $MODDIR/system/bin/coreflow_daemon
 
-# JALANKAN VERSI PRODUKSI: Buang log ke /dev/null untuk mencegah Storage Leak
-nohup $MODDIR/system/bin/coreflow_daemon > /dev/null 2>&1 &
+# JALANKAN DAEMON FINAL: Output dialirkan ke sistem Logcat Android
+$MODDIR/system/bin/coreflow_daemon 2>&1 | log -p d -t CoreFlowEngine &
