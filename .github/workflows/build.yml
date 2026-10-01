@@ -31,7 +31,7 @@ jobs:
     - name: Package KernelSU/Magisk Module
       run: |
         # Pindahkan binary hasil kompilasi ke folder template
-        cp build/coreflow_daemon module_template/
+        cp build/coreflow_daemon module_template/system/bin/
         
         # Pindah ke dalam folder template dan bungkus menjadi ZIP
         cd module_template
