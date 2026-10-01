@@ -25,7 +25,7 @@ namespace {
         char* end = nullptr;
         errno = 0;
         long val = std::strtol(input.c_str(), &end, 10);
-        if (errno == ERANGE || val > static_cast<long>(INT_MAX) || end == input.c_str() || *end != '\0') {
+        if (errno == ERANGE || val > static_cast<long>(INT_MAX) || end == input.c_str()) {
             out = fallback;
             return false;
         }
@@ -39,13 +39,12 @@ namespace {
             return INT_MIN;
         }
         std::string raw;
-        file >> raw;
-        if (file.fail()) {
+        if (!(file >> raw)) {
             return INT_MIN;
         }
-        int parsed;
-        parseIntSafe(raw, parsed, INT_MIN);
-        return parsed;
+        int temp = 0;
+        parseIntSafe(raw, temp, INT_MIN);
+        return temp;
     }
 }
 
@@ -61,11 +60,10 @@ int ThermalGuardian::getCurrentTemp() {
     }
 
     if (raw > 1000) {
-        int normalized = raw;
-        while (normalized > 1000) {
-            normalized /= 10;
-        }
-        return normalized;
+        return raw / 1000;
+    }
+    if (raw > 100) {
+        return raw / 10;
     }
     return raw;
 }
