@@ -10,22 +10,6 @@ file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
 
 add_executable(coreflow_daemon ${SOURCE_FILES})
 
-find_package(Threads REQUIRED)
-
-target_link_libraries(coreflow_daemon log Threads::Threads)
-
-# Production compile flags when building Release
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    target_compile_options(coreflow_daemon PRIVATE
-        -O3
-        -flto
-        -fomit-frame-pointer
-        -Wall
-        -Wextra
-        -Wno-unused-parameter
-    )
-    target_link_options(coreflow_daemon PRIVATE -flto)
-endif()
-
-# Ensure Android static C++ runtime is preferred when set via CI:
-#   -DANDROID_STL=c++_static
+# Android NDK sudah menyediakan threading support via libc.
+# Hindari find_package(Threads) dan Threads::Threads yang bisa gagal.
+target_link_libraries(coreflow_daemon log)
