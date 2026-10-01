@@ -164,7 +164,7 @@ namespace CoreFlowAI {
         SafeTuner::writeSysfs(base + "down_rate_limit_us", std::to_string(t.down_rate_limit_us));
     }
 
-    // Sweet-spot tunables: more responsive governor, not overclocking.
+    // Sweet-spot tunables: more responsive governor, NOT overclocking.
     GovernorTunables buildModeProfile(const GovernorTunables& stock, CoreFlowState::EngineMode mode, bool is_big_cluster) {
         GovernorTunables t = stock;
         if (!stock.valid) return t;
@@ -189,6 +189,8 @@ namespace CoreFlowAI {
                     t.down_rate_limit_us = clampu(percentOf(stock.down_rate_limit_us, 110), 2000, 150000);
                     break;
 
+                case CoreFlowState::MODE_BALANCED:
+                case CoreFlowState::MODE_IDLE:
                 default:
                     t = stock;
                     break;
@@ -211,6 +213,8 @@ namespace CoreFlowAI {
                     t.down_rate_limit_us = stock.down_rate_limit_us;
                     break;
 
+                case CoreFlowState::MODE_BALANCED:
+                case CoreFlowState::MODE_IDLE:
                 default:
                     t = stock;
                     break;
@@ -223,7 +227,7 @@ namespace CoreFlowAI {
         return t;
     }
 
-    void applyCpuGovernorProfile(EngineMode mode) {
+    void applyCpuGovernorProfile(CoreFlowState::EngineMode mode) {
         if (StockProfile::policy0_governor.valid) {
             GovernorTunables profile = buildModeProfile(StockProfile::policy0_governor, mode, false);
             applyGovernorTunables(0, profile);
@@ -419,14 +423,14 @@ namespace CoreFlowAI {
         SafeTuner::readSysfs("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", raw_gpu_busy);
         parseInt(raw_gpu_busy, gpu_busy, 0);
 
-        EngineMode target_mode = MODE_BALANCED;
+        CoreFlowState::EngineMode target_mode = CoreFlowState::MODE_BALANCED;
 
         if (foreground_app == APP_GAME || gpu_busy > 45 || cpu_usage > 75.0) {
-            target_mode = MODE_GAMING;
+            target_mode = CoreFlowState::MODE_GAMING;
         } else if (foreground_app == APP_LAUNCHER || (cpu_usage < 15.0 && gpu_busy < 8)) {
-            target_mode = MODE_IDLE;
+            target_mode = CoreFlowState::MODE_IDLE;
         } else if (cpu_usage >= 25.0 && cpu_usage <= 75.0) {
-            target_mode = MODE_BURST;
+            target_mode = CoreFlowState::MODE_BURST;
         }
 
         if (target_mode == CoreFlowState::current_mode) {
@@ -436,7 +440,7 @@ namespace CoreFlowAI {
 
         char path_buffer[64];
 
-        if (CoreFlowState::current_mode == MODE_GAMING) {
+        if (CoreFlowState::current_mode == CoreFlowState::MODE_GAMING) {
             std::cout << "[" << kTag << "] Pilar 3 Aktif: Gaming Responsiveness." << std::endl;
 
             for (char blk = 'a'; blk <= 'f'; ++blk) {
@@ -451,13 +455,13 @@ namespace CoreFlowAI {
 
             applyMqDeadlineTunables(true);
             applySysctlTunables(true);
-            applyCpuGovernorProfile(MODE_GAMING);
+            applyCpuGovernorProfile(CoreFlowState::MODE_GAMING);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "70");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "65");
             __system_property_set("vendor.dsp.default_qos", "1");
         }
-        else if (CoreFlowState::current_mode == MODE_BURST) {
+        else if (CoreFlowState::current_mode == CoreFlowState::MODE_BURST) {
             std::cout << "[" << kTag << "] Pilar 2 Aktif: App Launch Responsiveness." << std::endl;
 
             for (char blk = 'a'; blk <= 'f'; ++blk) {
@@ -472,12 +476,12 @@ namespace CoreFlowAI {
 
             applyMqDeadlineTunables(true);
             applySysctlTunables(true);
-            applyCpuGovernorProfile(MODE_BURST);
+            applyCpuGovernorProfile(CoreFlowState::MODE_BURST);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "78");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "75");
         }
-        else if (CoreFlowState::current_mode == MODE_BALANCED) {
+        else if (CoreFlowState::current_mode == CoreFlowState::MODE_BALANCED) {
             std::cout << "[" << kTag << "] Pilar 1 Aktif: Daily Balanced State." << std::endl;
 
             const std::string stock_ra = std::to_string(StockProfile::read_ahead_kb);
@@ -495,7 +499,7 @@ namespace CoreFlowAI {
 
             applyMqDeadlineTunables(false);
             applySysctlTunables(false);
-            applyCpuGovernorProfile(MODE_BALANCED);
+            applyCpuGovernorProfile(CoreFlowState::MODE_BALANCED);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "80");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "80");
@@ -503,7 +507,7 @@ namespace CoreFlowAI {
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/scaling_governor", StockProfile::cpu_policy4_gov);
             __system_property_set("vendor.dsp.default_qos", "1");
         }
-        else if (CoreFlowState::current_mode == MODE_IDLE) {
+        else if (CoreFlowState::current_mode == CoreFlowState::MODE_IDLE) {
             std::cout << "[" << kTag << "] Pilar 1 Aktif: Daily Efficiency (Layar On Idle)." << std::endl;
 
             const std::string stock_ra = std::to_string(StockProfile::read_ahead_kb);
@@ -518,7 +522,7 @@ namespace CoreFlowAI {
 
             applyMqDeadlineTunables(false);
             applySysctlTunables(false);
-            applyCpuGovernorProfile(MODE_IDLE);
+            applyCpuGovernorProfile(CoreFlowState::MODE_IDLE);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "85");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "85");
@@ -541,10 +545,10 @@ namespace CoreFlowAI {
 
         applyMqDeadlineTunables(false);
         applySysctlTunables(false);
-        applyCpuGovernorProfile(MODE_IDLE);
+        applyCpuGovernorProfile(CoreFlowState::MODE_IDLE);
 
         __system_property_set("vendor.dsp.default_qos", "0");
-        CoreFlowState::current_mode = MODE_IDLE;
+        CoreFlowState::current_mode = CoreFlowState::MODE_IDLE;
     }
 
     AppClass detectForegroundApp() {
@@ -553,8 +557,8 @@ namespace CoreFlowAI {
         SafeTuner::readSysfs("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", raw_gpu_busy);
         parseInt(raw_gpu_busy, gpu_busy, 0);
 
-        if (gpu_busy < 15 && CoreFlowState::current_mode != MODE_GAMING &&
-            CoreFlowState::current_mode != MODE_BURST) {
+        if (gpu_busy < 15 && CoreFlowState::current_mode != CoreFlowState::MODE_GAMING &&
+            CoreFlowState::current_mode != CoreFlowState::MODE_BURST) {
             return APP_DEFAULT;
         }
 
