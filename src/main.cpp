@@ -14,7 +14,7 @@ namespace {
     constexpr int kThermalLimitCelsius = 43;
     constexpr int kSwappinessSleep = 120;
     constexpr int kSwappinessActive = 60;
-    constexpr int kScreenOffTriggerCount = 30; // 30 * 10s = 300s deep-sleep delay
+    constexpr int kScreenOffTriggerCount = 30;
     constexpr int kHeartbeatSeconds = 60;
 
     void logToLogcat(const std::string& text) {
