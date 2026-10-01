@@ -1,4 +1,4 @@
-# 🚀 CoreFlow Engine v2.3
+# 🚀 CoreFlow Engine v1.0.0-Rebuild
 
 Advanced Native C++ Daemon for Android 14+
 
@@ -185,7 +185,7 @@ Dengan syarat:
 
 - **Author**: Mystivara (mystivara-creator)
 - **Codename**: Kunzite Privilege
-- **Version**: 2.3
+- **Version**: 1.0.0
 
 ---
 
