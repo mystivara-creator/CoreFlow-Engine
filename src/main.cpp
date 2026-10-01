@@ -46,17 +46,29 @@ public:
 // ==========================================
 // EVENT LISTENER: Deteksi Status Layar Efisien
 // ==========================================
+// Ganti fungsi EventListener lama di main.cpp dengan metode native ini:
 bool EventListener::isScreenOn() {
-    FILE* pipe = popen("dumpsys power | grep -E 'Display Power: state=(ON|Interactive)'", "r");
-    if (!pipe) return true; 
-    
-    char buffer[128];
-    bool on = false;
-    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        on = true; 
+    // Membaca state langsung dari sysfs display (Universal pada mayoritas kernel modern Android)
+    std::ifstream file("/sys/class/drm/card0-DSI-1/status"); 
+    if (!file.is_open()) {
+        // Fallback untuk beberapa chipset modern/OLED panel
+        file.open("/sys/class/graphics/fb0/blank");
     }
-    pclose(pipe);
-    return on;
+
+    if (file.is_open()) {
+        std::string status;
+        file >> status;
+        // Pada card0-DSI-1: "connected" berarti layar hidup. 
+        // Pada fb0/blank: "0" berarti layar hidup (tidak blank).
+        return (status == "connected" || status == "0");
+    }
+
+    // Fallback terakhir jika device tidak mengizinkan akses sysfs display langsung
+    // Tetap gunakan dumpsys namun hanya dieksekusi jika akses file mentah gagal
+    FILE* pipe = popen("dumpsys power | grep -q 'Display Power: state=ON'", "r");
+    if (!pipe) return true;
+    int res = pclose(pipe);
+    return (res == 0);
 }
 
 // ==========================================
