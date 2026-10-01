@@ -1,4 +1,16 @@
-# Memberikan izin penuh kepada daemon agar tidak diblokir SELinux saat boot
-allow init su:process transition
-allow type su domain *
-attr_add subcontext su
+# =================================================================
+# COREFLOW ENGINE: SEPolicy Rules untuk KernelSU-Next & Magisk
+# Target: Redmi Note 15 5G (Kunzite / Parrot) / Android 14+
+# =================================================================
+
+# 1. Buka blokir akses penuh ke property service HANYA untuk daemon (su)
+allow su vendor_default_prop:property_service set
+allow su vendor_dsp_prop:property_service set
+allow su property_socket:sock_file write
+allow su init:unix_stream_socket connect
+
+# 2. Berikan izin baca/tulis ke sysfs dan procfs HANYA untuk daemon (su)
+allow su sysfs:file { open read write getattr }
+allow su sysfs_devices_system_cpu:file { open read write getattr }
+allow su sysfs_kgsl:file { open read write getattr }
+allow su proc:file { open read write getattr }
