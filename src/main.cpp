@@ -48,7 +48,7 @@ namespace KernelTuner {
 // ==========================================
 int main() {
     std::cout << "========================================" << std::endl;
-    std::cout << " CoreFlow Engine - Native Daemon v2.3" << std::endl;
+    std::cout << " CoreFlow Engine - Native Daemon v1.0.0-rebuild" << std::endl;
     std::cout << " Architecture: Hybrid Universal & Kunzite" << std::endl;
     std::cout << " Features: Auto-Throttling & Dynamic Swap" << std::endl;
     std::cout << "========================================" << std::endl;
