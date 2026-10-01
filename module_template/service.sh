@@ -17,7 +17,6 @@ if [ ! -x "$daemon_bin" ]; then
     exit 1
 fi
 
-# Supervisor loop: restart daemon automatically if it crashes
 while true; do
     log -p i -t CoreFlowEngine "Starting coreflow_daemon..."
     "$daemon_bin" 2>&1 | log -p d -t CoreFlowEngine &
