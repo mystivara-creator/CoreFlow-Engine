@@ -1,198 +1,335 @@
-# 🚀 CoreFlow Engine v1.0.0-Rebuild
+CoreFlow Engine
 
-Advanced Native C++ Daemon for Android 14+
+Native C++ Runtime Tuning Engine for Android
 
-[![Android](https://img.shields.io/badge/Android-14+-green.svg)](https://www.android.com/)
-[![Language](https://img.shields.io/badge/Language-C%2B%2B17-blue.svg)](https://en.wikipedia.org/wiki/C%2B%2B17)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+""Android" (https://img.shields.io/badge/Android-14%2B-green.svg)" (https://www.android.com/)
+""Language" (https://img.shields.io/badge/Language-C%2B%2B17-blue.svg)" (https://en.cppreference.com/w/cpp/17)
+""License" (https://img.shields.io/badge/License-MIT-yellow.svg)" (./LICENSE)
 
-## 📋 Table of Contents
+CoreFlow Engine adalah engine tuning sistem Android berbasis C++17 yang dirancang untuk melakukan penyesuaian parameter kernel secara dinamis berdasarkan kondisi perangkat.
 
-- [Deskripsi](#deskripsi)
-- [Fitur Utama](#fitur-utama)
-- [Kompatibilitas](#kompatibilitas)
-- [Persyaratan Instalasi](#persyaratan-instalasi)
-- [Cara Instalasi](#cara-instalasi)
-- [Verifikasi Instalasi](#verifikasi-instalasi)
-- [Kontribusi & Kompilasi](#kontribusi--kompilasi)
-- [Disclaimer](#disclaimer)
-- [Lisensi](#lisensi)
+CoreFlow menggunakan pendekatan runtime state management daripada menerapkan satu konfigurasi performa secara permanen. Engine memantau kondisi sistem, menentukan state yang sesuai, kemudian menerapkan parameter tuning yang tersedia pada perangkat.
+
+«Project status: Active development
+Target: Android 14+ / ARM64»
 
 ---
 
-## 📖 Deskripsi
+Features
 
-CoreFlow Engine adalah **systemless module** (Magisk/KernelSU/APatch) yang beroperasi sebagai native background daemon. Ditulis murni dalam **C++17 modern**, modul ini mengambil alih manajemen:
+Dynamic Runtime State Machine
 
-- 🧠 CPU WALT Scheduler
-- 💾 I/O Storage
-- 🔄 ZRAM Swappiness
-- 🎮 QoS DSP/NPU
+CoreFlow mengklasifikasikan kondisi perangkat berdasarkan metrik runtime seperti CPU activity, screen state, GPU utilization pada perangkat yang menyediakan interface KGSL, dan temperatur.
 
-Semuanya berjalan secara **real-time tanpa membebani sistem** (Zero Overhead).
+State utama yang digunakan:
 
-### Profil Khusus
+State| Tujuan
+Daily Efficiency| Profil penggunaan normal dengan fokus pada efisiensi sistem.
+App Launch / Burst| Menangani lonjakan workload singkat seperti pembukaan aplikasi.
+Gaming Unleashed| Profil performa untuk workload GPU/CPU yang lebih berat.
+Ultra Deep Sleep| Profil konservatif ketika perangkat berada dalam kondisi idle/screen-off.
+Thermal Guardian| Profil proteksi ketika temperatur perangkat mencapai kondisi yang ditentukan.
 
-Modul ini memiliki **Kunzite Privilege Profile** yang dirancang eksklusif untuk memaksimalkan potensi **Redmi Note 15 5G** (Snapdragon 6 Gen 3 + Adreno 710), namun tetap memiliki kapabilitas **Hybrid Universal** untuk beradaptasi dengan perangkat Android 14+ lainnya.
-
----
-
-## ✨ Fitur Utama
-
-### 🧠 5-Pillar Dynamic State Machine
-
-Mesin pendeteksi beban berbasis Jiffies (`/proc/stat`) dan GPU Busy (`/sys/class/kgsl`) yang secara cerdas merespons kondisi perangkat ke dalam 5 status:
-
-| Status | Deskripsi |
-|--------|-----------|
-| **Daily Efficiency** (Idle) | Menurunkan beban latar belakang dan mempertahankan profil I/O stock pabrik demi baterai. |
-| **App Launch / Burst** | I/O sweet spot (1024KB) dan sinkronisasi WALT Scheduler untuk akselerasi instan tanpa cache bloat. |
-| **Gaming Unleashed** | Membuka limitasi I/O hingga 2048KB, mengubah target beban CPU, memaksimalkan governor Adreno TZ, dan mengaktifkan DSP QoS untuk render assistance. |
-| **Ultra Deep Sleep** | Saat layar mati, CPU diubah ke mode powersave, I/O buffer ditekan ke 256KB, dan Swappiness didorong ke 120% untuk membersihkan RAM. |
-| **Thermal Guardian** | Memantau suhu baterai langsung. Jika menyentuh 43°C, sistem melakukan throttling perlindungan secara native dengan notifikasi peringatan. Pemulihan performa otomatis saat suhu turun. |
-
-### ⚡ Zero-Overhead Architecture (Anti-Lag)
-
-Tidak menggunakan eksekusi shell/bash script kuno yang memakan siklus CPU. Seluruh manipulasi parameter sysfs dan properti Android dilakukan via:
-
-- C++ File Stream (`std::ofstream`)
-- Bionic Native API (`__system_property_set`)
-
-### 🛡️ Anti-Bootloop & Graceful Fallback
-
-- Berjalan pada fase **late-start service**
-- Jika perangkat tidak memiliki direktori sysfs yang dituju, engine akan mengabaikannya secara otomatis
-- **Graceful Fallback** tanpa Kernel Panic atau Bootloop
+State machine dirancang agar parameter tidak terus-menerus ditulis ulang ketika state belum berubah.
 
 ---
 
-## ⚠️ Persyaratan Instalasi
+Runtime Tuning
 
-**⚠️ WAJIB DIBACA!** Agar perangkat Anda tetap stabil, patuhi aturan berikut:
+CoreFlow dapat berinteraksi dengan interface kernel yang tersedia melalui filesystem Android, terutama:
 
-### 🚫 Larangan
+- CPU frequency/governor interfaces
+- CPU scheduler-related parameters
+- Storage I/O parameters
+- ZRAM / VM parameters
+- GPU interfaces pada perangkat yang mengekspos KGSL
+- Thermal information
+- Android system properties yang relevan
 
-- **Jangan menggabungkan modul performa lain** seperti Magnetar, Uperf, KTweak, NFS, atau modul Thermal Unlocker. Hapus semua modul tweaks CPU/GPU pihak ketiga.
-- **Matikan Auto-Profile** di Kernel Manager (FKM, EXKM, SmartPack). Biarkan CoreFlow yang mengatur segalanya secara dinamis.
-
-### ✅ Persyaratan
-
-- **ZRAM harus aktif** di sistem Anda. CoreFlow bergantung pada manipulasi swappiness (60% hingga 120%).
-
-### ℹ️ Catatan untuk Non-Snapdragon
-
-- Modul ini **100% aman** (Anti-Bootloop) untuk HP MediaTek/Exynos/Unisoc
-- Deteksi GPU presisi saat bermain game hanya aktif di perangkat Adreno GPU (Snapdragon)
-- Untuk SoC lain, engine mengandalkan kalkulasi persentase CPU Jiffies murni
+Tidak semua perangkat menyediakan node kernel yang sama. Karena itu, CoreFlow menggunakan pendekatan capability-based tuning: parameter hanya diterapkan apabila interface yang dibutuhkan tersedia dan dapat digunakan.
 
 ---
 
-## ⚙️ Kompatibilitas
+Native Architecture
 
-| Aspek | Persyaratan |
-|-------|-----------|
-| **Arsitektur** | ARM64 (aarch64) |
-| **OS Target** | Android 14+ (HyperOS, PixelOS, LineageOS, dll) |
-| **Root Manager** | Magisk v24+, KernelSU-Next, APatch |
+CoreFlow dibuat sebagai native C++ daemon dan tidak bergantung pada shell command untuk setiap operasi tuning.
 
----
+Pendekatan ini memungkinkan engine berinteraksi langsung dengan interface sistem melalui API native seperti:
 
-## 📦 Cara Instalasi
+- "std::ifstream"
+- "std::ofstream"
+- Android/Bionic system property API
+- filesystem dan system interfaces lainnya
 
-1. Unduh file `.zip` rilis terbaru dari halaman [Releases](../../releases)
-2. Buka aplikasi **Magisk** / **KernelSU** / **APatch**
-3. Pilih menu **Modules** → **Install from storage**
-4. Pilih file `CoreFlow_Engine_v2.3.zip`
-5. Tunggu proses flashing selesai, lalu **Reboot**
+Tujuannya adalah menjaga implementasi tetap sederhana, terkontrol, dan menghindari ketergantungan pada rangkaian shell script untuk setiap perubahan parameter.
+
+«CoreFlow tetap memiliki runtime overhead karena melakukan monitoring dan evaluasi kondisi sistem. Fokus desainnya adalah menjaga overhead tersebut tetap rendah, bukan mengklaim zero overhead.»
 
 ---
 
-## 🔍 Verifikasi Instalasi
+Device Adaptation
 
-Untuk memastikan CoreFlow Engine berjalan di latar belakang Anda, gunakan aplikasi terminal (Termux) atau PC via ADB:
+CoreFlow tidak mengasumsikan bahwa semua perangkat memiliki struktur kernel yang identik.
 
-```bash
+Ketika sebuah node tidak tersedia:
+
+Node available
+    ↓
+Validate
+    ↓
+Capture current value
+    ↓
+Apply tuning
+    ↓
+Verify
+
+Jika node tidak tersedia atau tidak dapat digunakan:
+
+Node unavailable
+    ↓
+Skip parameter
+    ↓
+Continue with available capabilities
+
+Pendekatan ini memungkinkan engine beradaptasi dengan variasi kernel dan konfigurasi perangkat.
+
+GPU Detection
+
+Pada perangkat dengan interface KGSL, CoreFlow dapat menggunakan informasi GPU busy untuk membantu menentukan workload GPU.
+
+Pada perangkat yang tidak menyediakan interface tersebut, engine dapat menggunakan metrik lain yang tersedia, seperti CPU activity.
+
+---
+
+Configuration Philosophy
+
+CoreFlow berusaha mempertahankan prinsip:
+
+Detect → Validate → Snapshot → Tune → Monitor → Restore
+
+1. Detect
+
+Mengidentifikasi hardware dan interface kernel yang tersedia.
+
+2. Validate
+
+Memastikan parameter dan node target dapat digunakan sebelum melakukan perubahan.
+
+3. Snapshot
+
+Menyimpan nilai awal parameter yang akan dimodifikasi.
+
+4. Tune
+
+Menerapkan konfigurasi berdasarkan runtime state.
+
+5. Monitor
+
+Mengamati perubahan workload dan kondisi perangkat.
+
+6. Restore
+
+Mengembalikan parameter ke nilai sebelumnya ketika diperlukan.
+
+Pipeline ini penting karena konfigurasi kernel dapat berbeda antar-device dan antar-kernel.
+
+---
+
+Thermal Handling
+
+CoreFlow memiliki Thermal Guardian untuk memantau temperatur yang tersedia dari interface thermal Android.
+
+Ketika temperatur melewati threshold yang telah ditentukan oleh konfigurasi engine, CoreFlow dapat berpindah ke thermal state dan mengurangi agresivitas tuning.
+
+Setelah kondisi kembali normal, engine dapat kembali ke state runtime yang sesuai.
+
+Threshold dan perilaku thermal harus dianggap sebagai engine configuration, bukan sebagai jaminan bahwa perangkat akan selalu berada pada temperatur tertentu.
+
+---
+
+Compatibility
+
+Component| Target
+Architecture| ARM64 / AArch64
+Android| Android 14+
+Language| C++17
+Root Framework| Magisk / KernelSU / APatch
+GPU telemetry| KGSL jika tersedia
+
+Kompatibilitas aktual bergantung pada kernel, vendor implementation, exposed sysfs/procfs nodes, permission model, dan konfigurasi perangkat.
+
+Tidak semua fitur tersedia pada semua device.
+
+---
+
+Installation
+
+CoreFlow didistribusikan sebagai module untuk environment Android yang mendukung systemless modules.
+
+1. Download release yang sesuai dari halaman Releases.
+2. Install module menggunakan root manager yang kompatibel.
+3. Reboot perangkat jika diperlukan oleh release tersebut.
+4. Periksa log CoreFlow untuk memastikan daemon berhasil berjalan.
+
+«Nama file release dapat berubah pada setiap versi. Gunakan file yang tersedia pada release terkait, bukan nama file yang di-hardcode di dokumentasi.»
+
+---
+
+Runtime Verification
+
+Log runtime dapat digunakan untuk memeriksa state transition dan aktivitas engine.
+
+Contoh:
+
 su
 logcat -s CoreFlowEngine
-```
 
-Anda akan melihat transisi log saat:
-- Layar dihidupkan/dimatikan
-- Membuka aplikasi berat/game
-- Perubahan status termal
+Hal yang dapat diamati antara lain:
+
+- perubahan runtime state
+- perubahan workload
+- thermal state
+- device capability detection
+- parameter yang berhasil diterapkan
+- parameter yang dilewati karena tidak tersedia
+
+Format dan tag log dapat berubah selama pengembangan.
 
 ---
 
-## 👨‍💻 Kontribusi & Kompilasi
+Building
 
-### Prasyarat
+Requirements
 
-- Android NDK (rilis terbaru)
+- Android NDK
 - CMake
-- C++17 compiler
+- C++17-compatible compiler
 
-### Langkah-langkah
+Clone
 
-1. Clone repositori ini:
-   ```bash
-   git clone <repository-url>
-   cd CoreFlow-Engine
-   ```
+git clone https://github.com/mystivara-creator/CoreFlow-Engine.git
+cd CoreFlow-Engine
 
-2. Pastikan Anda memiliki Android NDK terbaru terinstall
+Build
 
-3. Jalankan CMake pada folder root:
-   ```bash
-   cmake .
-   make
-   ```
+Build configuration dapat berbeda berdasarkan target release dan environment development.
 
-4. Binary akan tersimpan di folder output
+Untuk build menggunakan CMake:
+
+cmake -S . -B build
+cmake --build build
+
+Output binary akan berada di directory build sesuai konfigurasi CMake.
 
 ---
 
-## 📝 Disclaimer
+Project Structure
 
-Modul ini memodifikasi parameter tingkat kernel. Meskipun dirancang dengan pengaman **SafeTuner (Anti-Bootloop)**, pengembang **tidak bertanggung jawab** atas:
+CoreFlow-Engine/
+├── include/
+│   └── ...
+├── src/
+│   └── ...
+├── module_template/
+│   └── ...
+├── CMakeLists.txt
+├── LICENSE
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+└── README.md
 
-- Kerusakan perangkat keras
-- Kehilangan data
-- Perangkat yang meleleh akibat kondisi termal eksternal
-
-**DWYOR** (Do With Your Own Risk)
-
----
-
-## 📄 Lisensi
-
-Proyek ini dilisensikan di bawah **MIT License**. Lihat file [LICENSE](./LICENSE) untuk detail lengkap.
-
-### MIT License Summary
-
-Anda diizinkan untuk:
-- ✅ Menggunakan perangkat lunak ini untuk tujuan komersial
-- ✅ Memodifikasi perangkat lunak
-- ✅ Mendistribusikan perangkat lunak
-- ✅ Menggunakan secara pribadi
-
-Dengan syarat:
-- ⚠️ Sertakan pemberitahuan lisensi dan hak cipta
-- ⚠️ Tanggung jawab pengguna atas penggunaan
+Struktur dapat berubah selama pengembangan.
 
 ---
 
-## 👤 Kredit
+Design Goals
 
-- **Author**: Mystivara (mystivara-creator)
-- **Codename**: Kunzite Privilege
-- **Version**: 1.0.0
+CoreFlow dikembangkan dengan beberapa tujuan utama:
+
+- Runtime-aware tuning
+- Device capability detection
+- Graceful handling of missing kernel interfaces
+- Minimal dependency terhadap shell scripting
+- State-based configuration
+- Snapshot dan restore parameter
+- Modular C++ architecture
+- Observable runtime behavior
+
+CoreFlow tidak bertujuan menyediakan satu konfigurasi universal yang dianggap optimal untuk setiap perangkat.
+
+Sebaliknya, engine mencoba menggunakan parameter yang benar-benar tersedia pada perangkat yang sedang dijalankan.
 
 ---
 
-## 📞 Support & Feedback
+Limitations
 
-Jika Anda menemukan bug atau memiliki saran, silakan buka **Issue** di repositori ini.
+CoreFlow berinteraksi dengan interface kernel yang dapat berbeda antar:
+
+- SoC
+- vendor
+- kernel version
+- custom kernel
+- Android version
+- device configuration
+
+Karena itu, hasil tuning dapat berbeda antar perangkat.
+
+Tidak adanya suatu node kernel bukan berarti engine gagal secara keseluruhan; fitur yang bergantung pada node tersebut dapat dilewati sementara fitur lain tetap berjalan.
 
 ---
 
-**Last Updated**: 2024
+Disclaimer
+
+CoreFlow memodifikasi parameter sistem pada perangkat yang memiliki akses root.
+
+Penggunaan konfigurasi kernel yang tidak sesuai dapat menyebabkan:
+
+- perubahan performa
+- peningkatan konsumsi daya
+- peningkatan temperatur
+- ketidakstabilan sistem
+- parameter tidak bekerja sebagaimana yang diharapkan
+
+Gunakan pada perangkat yang kamu pahami dan selalu simpan konfigurasi/original state sebelum melakukan eksperimen.
+
+Use at your own risk.
+
+---
+
+Contributing
+
+Bug report, improvement, dan pull request dipersilakan.
+
+Jika melaporkan masalah, sertakan informasi seperti:
+
+- device model
+- SoC
+- Android version
+- kernel version
+- root framework
+- relevant runtime logs
+- parameter/node yang bermasalah
+
+Informasi tersebut membantu reproduksi masalah pada environment yang berbeda.
+
+---
+
+License
+
+CoreFlow Engine is released under the MIT License.
+
+See "LICENSE" (./LICENSE) for the complete license text.
+
+---
+
+Author
+
+Mystivara
+
+GitHub: "@mystivara" (https://github.com/mystivara-creator)
+
+Project: CoreFlow Engine
+
+---
+
+«CoreFlow Engine is an experimental system-tuning project focused on adaptive runtime management for Android.»
