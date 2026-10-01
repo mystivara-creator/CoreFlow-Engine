@@ -1,30 +1,78 @@
 #include "../include/coreflow.hpp"
-#include <fstream>
+#include <android/log.h>
+#include <cctype>
+#include <climits>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 
-// =================================================================
-// THERMAL GUARDIAN: Manajemen Suhu & Proteksi Perangkat
-// =================================================================
+namespace {
+    constexpr const char* kLogTag = "CoreFlowEngine";
+
+    bool parseIntSafe(const std::string& input, int& out, int fallback) {
+        if (input.empty()) {
+            out = fallback;
+            return false;
+        }
+        for (char c : input) {
+            if (!std::isdigit(static_cast<unsigned char>(c)) && !std::isspace(static_cast<unsigned char>(c))) {
+                out = fallback;
+                return false;
+            }
+        }
+        char* end = nullptr;
+        errno = 0;
+        long val = std::strtol(input.c_str(), &end, 10);
+        if (errno == ERANGE || val > static_cast<long>(INT_MAX) || end == input.c_str() || *end != '\0') {
+            out = fallback;
+            return false;
+        }
+        out = static_cast<int>(val);
+        return true;
+    }
+
+    int readTempFromPath(const std::string& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) {
+            return INT_MIN;
+        }
+        std::string raw;
+        file >> raw;
+        if (file.fail()) {
+            return INT_MIN;
+        }
+        int parsed;
+        parseIntSafe(raw, parsed, INT_MIN);
+        return parsed;
+    }
+}
 
 int ThermalGuardian::getCurrentTemp() {
-    std::ifstream file("/sys/class/power_supply/battery/temp");
-    int temp = 0;
-    if (file.is_open()) {
-        file >> temp;
-        file.close();
-        
-        // Normalisasi format sensor kernel Android (Membulatkan ke °C)
-        if (temp > 1000) temp /= 1000;
-        else if (temp > 100) temp /= 10;
+    int raw = readTempFromPath("/sys/class/power_supply/battery/temp");
+    if (raw == INT_MIN) {
+        raw = readTempFromPath("/sys/class/thermal/thermal_zone0/temp");
     }
-    return temp;
+
+    if (raw == INT_MIN) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "Unable to read temperature sensor");
+        return 0;
+    }
+
+    if (raw > 1000) {
+        int normalized = raw;
+        while (normalized > 1000) {
+            normalized /= 10;
+        }
+        return normalized;
+    }
+    return raw;
 }
 
 void ThermalGuardian::applyCoolingMode() {
     std::cout << "[Thermal Guardian] Membatasi clock speed CPU secara native..." << std::endl;
-    
+
     std::ofstream cpu0("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
     if (cpu0.is_open()) {
         cpu0 << "1400000";
@@ -40,52 +88,60 @@ void ThermalGuardian::applyCoolingMode() {
 
 void ThermalGuardian::triggerNotification() {
     int current_temp = getCurrentTemp();
-    
-    std::string text_msg = "Suhu mencapai " + std::to_string(current_temp) + "°C. Performa otomatis dibatasi. Mohon istirahatkan perangkat sejenak demi menjaga kesehatan hardware.";
-    std::string cmd = "cmd notification post -S bigtext -t 'CoreFlow Guardian' 'thermal_alert' '" + text_msg + "'";
-    
+    std::string text_msg = "Suhu mencapai " + std::to_string(current_temp) +
+                           "C. Performa dibatasi. Istirahatkan perangkat.";
+
+    std::string safe_text;
+    for (char c : text_msg) {
+        if (c == '\'' || c == '\"' || c == '\\' || c == '`' || c == '$') {
+            safe_text.push_back(' ');
+        } else {
+            safe_text.push_back(c);
+        }
+    }
+
+    std::string cmd = "cmd notification post -S bigtext -t CoreFlowGuardian thermal_alert '" +
+                      safe_text + "'";
     std::system(cmd.c_str());
-    std::system("log -t CoreFlowEngine 'WARNING: Device temperature exceeded critical limit!'");
+    __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                        "WARNING: Device temperature exceeded critical limit!");
 }
 
-// =================================================================
-// TAMBAHAN BARU: FUNGSI SMART CHARGING THERMAL PROTECTION
-// =================================================================
-
-// Fungsi pembantu lokal untuk memeriksa status charging secara native
-static bool localIsCharging() {
-    std::ifstream file("/sys/class/power_supply/battery/status");
-    if (!file.is_open()) return false;
-    std::string status;
-    std::getline(file, status);
-    file.close();
-    return (status.find("Charging") != std::string::npos);
+namespace {
+    bool localIsCharging() {
+        std::ifstream file("/sys/class/power_supply/battery/status");
+        if (!file.is_open()) {
+            return false;
+        }
+        std::string status;
+        std::getline(file, status);
+        file.close();
+        return (status.find("Charging") != std::string::npos ||
+                status.find("Full") != std::string::npos);
+    }
 }
 
 void ThermalGuardian::applyChargingThermalProtection() {
-    static bool lastProtectionState = false; // Caching status penulisan sysfs
-    bool chargingNow = localIsCharging();
-    int tempNow = ThermalGuardian::getCurrentTemp(); // Resolusi scope fungsi yang benar
+    static bool lastProtectionState = false;
 
-    // Menerapkan batas aman proteksi saat charging di atas suhu 40°C
+    bool chargingNow = localIsCharging();
+    int tempNow = getCurrentTemp();
     bool needProtection = (chargingNow && tempNow > 40);
 
-    // KONDISI A: Mengaktifkan Batasan Frekuensi (Hanya tulis sekali saat transisi)
     if (needProtection && !lastProtectionState) {
-        std::cout << "[Smart Charging Guardian] Suhu baterai kritis: " << tempNow 
-                  << "°C saat charging. Membatasi Core Performa (policy4).\n";
-        
+        std::cout << "[Smart Charging Guardian] Suhu baterai kritis: " << tempNow
+                  << "C saat charging. Membatasi Core Performa (policy4)." << std::endl;
+
         std::ofstream maxFreq("/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq");
         if (maxFreq.is_open()) {
             maxFreq << "1800000";
             maxFreq.close();
         }
         lastProtectionState = true;
-    } 
-    // KONDISI B: Mengembalikan Frekuensi Asli (Hanya tulis sekali saat suhu normal)
-    else if (!needProtection && lastProtectionState) {
-        std::cout << "[Smart Charging Guardian] Kondisi termal kembali normal. Memulihkan performa kluster.\n";
-        
+    } else if (!needProtection && lastProtectionState) {
+        std::cout << "[Smart Charging Guardian] Kondisi termal kembali normal. Memulihkan performa kluster."
+                  << std::endl;
+
         std::ifstream max_freq_4("/sys/devices/system/cpu/cpufreq/policy4/cpuinfo_max_freq");
         std::string freq_val_4;
         if (max_freq_4 >> freq_val_4) {
