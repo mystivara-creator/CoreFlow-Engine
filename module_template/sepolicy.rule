@@ -1,0 +1,2 @@
+allow init su domain *
+allow system_server su domain *
