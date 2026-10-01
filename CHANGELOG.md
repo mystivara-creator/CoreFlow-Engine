@@ -7,7 +7,7 @@ dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-## [2.3] - 2024
+## [1.0.0-rebuild] - 2026
 
 ### ✨ Added
 - **5-Pillar Dynamic State Machine** dengan deteksi beban real-time
@@ -48,7 +48,7 @@ dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-## [2.2] - 2024
+## [2.2] - 2026
 
 ### ✨ Added
 - Initial Kunzite Privilege Profile
@@ -66,7 +66,7 @@ dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-## [2.1] - 2024
+## [2.1] - 2026
 
 ### ✨ Added
 - Foundation code architecture
@@ -76,7 +76,7 @@ dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-## [2.0] - 2024
+## [2.0] - 2026
 
 ### ✨ Added
 - Initial release
@@ -87,7 +87,7 @@ dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## Versi Depan (Roadmap)
 
-### 🔜 Planned Features (v3.0)
+### 🔜 Planned Features (v2.0.0)
 - [ ] Machine Learning-based workload prediction
 - [ ] Per-app customizable profiles
 - [ ] Web-based control panel
@@ -139,4 +139,4 @@ Proyek ini dilisensikan di bawah MIT License. Lihat [LICENSE](./LICENSE) untuk d
 
 ---
 
-**Last Updated**: 2024
+**Last Updated**: Oct 1, 2026
