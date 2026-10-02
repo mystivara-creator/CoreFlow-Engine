@@ -264,7 +264,8 @@ namespace CoreFlowAI {
         }
     }
 
-    void applySysctlTunables(bool is_high_performance) {
+    void applySysctlTunables(int swappiness_val, bool is_high_performance) {
+        SafeTuner::writeSysfs("/proc/sys/vm/swappiness", std::to_string(swappiness_val));
         const std::string cache_pressure = is_high_performance ? "100" : "150";
         SafeTuner::writeSysfs("/proc/sys/vm/vfs_cache_pressure", cache_pressure);
 
@@ -449,7 +450,7 @@ namespace CoreFlowAI {
             }
 
             applyMqDeadlineTunables(true);
-            applySysctlTunables(true);
+            applySysctlTunables(50, true);
             applyCpuGovernorProfile(CoreFlowState::MODE_GAMING);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "70");
@@ -470,7 +471,7 @@ namespace CoreFlowAI {
             }
 
             applyMqDeadlineTunables(true);
-            applySysctlTunables(true);
+            applySysctlTunables(50, true);
             applyCpuGovernorProfile(CoreFlowState::MODE_BURST);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "78");
@@ -493,7 +494,7 @@ namespace CoreFlowAI {
             }
 
             applyMqDeadlineTunables(false);
-            applySysctlTunables(false);
+            applySysctlTunables(60, false);
             applyCpuGovernorProfile(CoreFlowState::MODE_BALANCED);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "80");
@@ -516,7 +517,7 @@ namespace CoreFlowAI {
             }
 
             applyMqDeadlineTunables(false);
-            applySysctlTunables(false);
+            applySysctlTunables(60, false);
             applyCpuGovernorProfile(CoreFlowState::MODE_IDLE);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "85");
@@ -539,7 +540,7 @@ namespace CoreFlowAI {
         }
 
         applyMqDeadlineTunables(false);
-        applySysctlTunables(false);
+        applySysctlTunables(120, false);
         applyCpuGovernorProfile(CoreFlowState::MODE_IDLE);
 
         __system_property_set("vendor.dsp.default_qos", "0");
