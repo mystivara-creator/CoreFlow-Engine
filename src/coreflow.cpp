@@ -264,6 +264,18 @@ namespace CoreFlowAI {
         }
     }
 
+    void applyUclampTunables(bool is_high_performance) {
+        // Targetkan top-app dan foreground window untuk responsivitas instan
+        const std::string top_min = is_high_performance ? "30" : "0.00";
+        const std::string latency_val = is_high_performance ? "1" : "0";
+
+        SafeTuner::writeSysfs("/dev/cpuctl/top-app/cpu.uclamp.min", top_min);
+        SafeTuner::writeSysfs("/dev/cpuctl/top-app/cpu.uclamp.latency_sensitive", latency_val);
+
+        SafeTuner::writeSysfs("/dev/cpuctl/foreground_window/cpu.uclamp.min", top_min);
+        SafeTuner::writeSysfs("/dev/cpuctl/foreground_window/cpu.uclamp.latency_sensitive", latency_val);
+    }
+
     void applySysctlTunables(int swappiness_val, bool is_high_performance) {
         SafeTuner::writeSysfs("/proc/sys/vm/swappiness", std::to_string(swappiness_val));
         const std::string cache_pressure = is_high_performance ? "100" : "150";
@@ -452,7 +464,8 @@ namespace CoreFlowAI {
             applyMqDeadlineTunables(true);
             applySysctlTunables(50, true);
             applyCpuGovernorProfile(CoreFlowState::MODE_GAMING);
-
+            applyUclampTunables(true);
+            
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "70");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "65");
             __system_property_set("vendor.dsp.default_qos", "1");
@@ -473,6 +486,7 @@ namespace CoreFlowAI {
             applyMqDeadlineTunables(true);
             applySysctlTunables(50, true);
             applyCpuGovernorProfile(CoreFlowState::MODE_BURST);
+            applyUclampTunables(true);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "78");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "75");
@@ -496,6 +510,7 @@ namespace CoreFlowAI {
             applyMqDeadlineTunables(false);
             applySysctlTunables(60, false);
             applyCpuGovernorProfile(CoreFlowState::MODE_BALANCED);
+            applyUclampTunables(false);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "80");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "80");
@@ -519,6 +534,7 @@ namespace CoreFlowAI {
             applyMqDeadlineTunables(false);
             applySysctlTunables(60, false);
             applyCpuGovernorProfile(CoreFlowState::MODE_IDLE);
+            applyUclampTunables(false);
 
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy0/walt_target_load", "85");
             SafeTuner::writeSysfs("/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "85");
