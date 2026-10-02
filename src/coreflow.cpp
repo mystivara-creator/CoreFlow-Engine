@@ -266,7 +266,7 @@ namespace CoreFlowAI {
 
     void applyUclampTunables(bool is_high_performance) {
         // Targetkan top-app dan foreground window untuk responsivitas instan
-        const std::string top_min = is_high_performance ? "30" : "0.00";
+        const std::string top_min = is_high_performance ? "30" : "0";
         const std::string latency_val = is_high_performance ? "1" : "0";
 
         SafeTuner::writeSysfs("/dev/cpuctl/top-app/cpu.uclamp.min", top_min);
