@@ -1,0 +1,277 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g., v1.0-A)'
+        required: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25b
+        add-to-path: true
+
+    - name: Create build directories
+      run: |
+        mkdir -p build dist bin
+
+    - name: Compile CoreFlow daemon
+      run: |
+        export NDK_PATH=$ANDROID_NDK_HOME
+        export CXX="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+        export STRIP="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip"
+        
+        $CXX -O3 -march=armv8-a -mtune=cortex-a75 -fPIE -fPIC -Wall -Wextra -std=c++17 \
+          -o bin/coreflow_daemon coreflow_engine.cpp -fPIE -pie -lm
+        
+        $STRIP bin/coreflow_daemon
+        ls -lh bin/coreflow_daemon
+
+    - name: Create module structure
+      run: |
+        MODULE_DIR="build/CoreFlow_Module"
+        mkdir -p "$MODULE_DIR/system/xbin"
+        mkdir -p "$MODULE_DIR/common"
+        
+        cp module.prop "$MODULE_DIR/"
+        cp install.sh "$MODULE_DIR/" && chmod 0755 "$MODULE_DIR/install.sh"
+        cp service.sh "$MODULE_DIR/" && chmod 0755 "$MODULE_DIR/service.sh"
+        cp post-fs-data.sh "$MODULE_DIR/" && chmod 0755 "$MODULE_DIR/post-fs-data.sh"
+        cp uninstall.sh "$MODULE_DIR/" && chmod 0755 "$MODULE_DIR/uninstall.sh"
+        cp bin/coreflow_daemon "$MODULE_DIR/system/xbin/" && chmod 0755 "$MODULE_DIR/system/xbin/coreflow_daemon"
+        cp coreflow-ctl.sh "$MODULE_DIR/system/xbin/" && chmod 0755 "$MODULE_DIR/system/xbin/coreflow-ctl.sh"
+        touch "$MODULE_DIR/system/system.prop"
+        cp README.md "$MODULE_DIR/" 2>/dev/null || true
+        cp QUICKSTART.md "$MODULE_DIR/" 2>/dev/null || true
+        
+        cat > "$MODULE_DIR/LICENSE" << 'EOF'
+MIT License
+
+Copyright (c) 2024 CoreFlow Development Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+EOF
+
+    - name: Create flashable ZIP
+      run: |
+        cd build
+        zip -r -q ../dist/CoreFlow_v1.0-A.zip CoreFlow_Module/ \
+          -x "CoreFlow_Module/.*" "CoreFlow_Module/__MACOSX/*"
+        cd ..
+        ls -lh dist/CoreFlow_v1.0-A.zip
+
+    - name: Generate checksums
+      run: |
+        cd dist
+        sha256sum CoreFlow_v1.0-A.zip > CoreFlow_v1.0-A.zip.sha256
+        md5sum CoreFlow_v1.0-A.zip > CoreFlow_v1.0-A.zip.md5
+
+    - name: Create release notes
+      run: |
+        cat > dist/RELEASE_NOTES.md << 'EOF'
+# CoreFlow Autonomous Engine v1.0-A
+
+## 🎉 Release
+
+**Status**: ✅ Production Ready
+
+### What's Included
+
+- ✅ Compiled ARM64 binary (coreflow_daemon)
+- ✅ Magisk module structure
+- ✅ Complete documentation
+- ✅ Control utilities
+
+### Features
+
+- **Auto-Discovery** - Automatic hardware detection
+- **Adaptive Tuning** - Device-specific optimizations
+- **Real-time Monitoring** - Drift detection and correction
+- **Graceful Shutdown** - Clean signal handling
+- **Comprehensive Logging** - Detailed system logs
+- **Configuration** - Fully customizable parameters
+
+### Installation
+
+#### Method 1: Magisk Manager (Easiest)
+1. Download `CoreFlow_v3.0.zip`
+2. Open Magisk Manager → Modules → + (Install from file)
+3. Select `CoreFlow_v3.0.zip`
+4. Wait for installation
+5. Reboot device
+
+#### Method 2: ADB
+```bash
+adb push CoreFlow_v3.0.zip /sdcard/
+adb shell su -c "cd /data/adb/modules && unzip /sdcard/CoreFlow_v3.0.zip"
+adb reboot
+```
+
+### Verification
+
+```bash
+# Check if daemon is running
+adb shell pidof coreflow_daemon
+
+# View logs
+adb shell tail -f /data/adb/modules/CoreFlow/coreflow.log
+
+# Check status
+adb shell /system/xbin/coreflow-ctl.sh status
+```
+
+### Configuration
+
+Edit `/data/adb/modules/CoreFlow/config.ini`:
+
+```bash
+# Pull config
+adb pull /data/adb/modules/CoreFlow/config.ini
+
+# Edit locally
+nano config.ini
+
+# Push back
+adb push config.ini /data/adb/modules/CoreFlow/
+
+# Reload
+adb shell /system/xbin/coreflow-ctl.sh reload
+```
+
+### Default Optimizations
+
+- **Virtual Memory**: Swappiness 60, VFS cache 100, Page cluster 3
+- **I/O Storage**: mq-deadline scheduler (if supported)
+- **GPU**: Adreno power level optimization
+- **SurfaceFlinger**: Hardware acceleration enabled
+- **Memory**: Adaptive pressure tuning
+
+### Troubleshooting
+
+**Daemon won't start?**
+```bash
+adb shell /data/adb/modules/CoreFlow/system/xbin/coreflow_daemon -f
+```
+
+**Check logs for errors?**
+```bash
+adb shell tail -50 /data/adb/modules/CoreFlow/coreflow.log | grep ERROR
+```
+
+**Values not applying?**
+```bash
+# Check if sysfs paths exist
+adb shell ls /proc/sys/vm/
+
+# Test manual write
+adb shell su -c "echo 60 > /proc/sys/vm/swappiness"
+```
+
+### Support
+
+- See documentation files in the module
+- Check GitHub issues for troubleshooting
+- Review logs for detailed information
+
+### License
+
+MIT License - See LICENSE file in module
+
+### Build Information
+
+- **Build Date**: Generated automatically by GitHub Actions
+- **Binary Architecture**: ARM64 (aarch64)
+- **Target Platform**: Android 5.1+ (API 21+)
+- **Magisk Requirement**: 20.0+
+
+### Checksums
+
+Verify file integrity:
+```bash
+sha256sum -c CoreFlow_v3.0.zip.sha256
+md5sum -c CoreFlow_v3.0.zip.md5
+```
+
+### Next Steps
+
+1. Extract/Flash the ZIP on your device
+2. Reboot
+3. Verify daemon is running
+4. Optional: Customize configuration
+
+---
+
+**Happy Optimizing!** 🚀
+
+For more information, see the documentation files included in the module.
+EOF
+
+    - name: Get tag name
+      id: tag
+      run: |
+        if [ "${{ github.event_name }}" == "push" ]; then
+          TAG=${GITHUB_REF#refs/tags/}
+        else
+          TAG=${{ github.event.inputs.tag_name }}
+        fi
+        echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: ${{ steps.tag.outputs.tag }}
+        name: CoreFlow v3.0
+        bodyFile: dist/RELEASE_NOTES.md
+        artifacts: |
+          dist/CoreFlow_v3.0.zip
+          dist/CoreFlow_v3.0.zip.sha256
+          dist/CoreFlow_v3.0.zip.md5
+          dist/RELEASE_NOTES.md
+          dist/BUILD_INFO.txt
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: dist/CoreFlow_v3.0.zip
+        asset_name: CoreFlow_v3.0.zip
+        asset_content_type: application/zip
+
+    - name: Notify completion
+      run: |
+        echo "✅ Release Created Successfully!"
+        echo ""
+        echo "Release: ${{ steps.tag.outputs.tag }}"
+        echo "Module: CoreFlow v3.0"
+        echo "Status: Ready for download"
+        echo ""
+        echo "Download from: https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}"
