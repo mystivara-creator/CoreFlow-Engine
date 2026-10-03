@@ -1,337 +1,134 @@
-# CoreFlow Engine
+# CoreFlow Autonomous
 
-Native C++ Runtime Tuning Engine for Android
+**Native Adaptive Stability Engine for Android**
 
-![Android](https://img.shields.io/badge/Android-14%2B-green.svg)
-![Language](https://img.shields.io/badge/Language-C%2B%2B17-blue.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+> **Efficiency · Stability · Intelligence · Balance**
 
-CoreFlow Engine is a C++17-based Android system tuning engine designed to dynamically adjust kernel parameters based on device conditions.
+CoreFlow Autonomous is the production-oriented autonomous branch of the CoreFlow project.
 
-CoreFlow uses a runtime state management approach rather than applying a single permanent performance configuration. The engine monitors system conditions, determines the appropriate state, then applies tuning parameters available on the device.
+It is designed around one rule:
 
-**Project Status:** Active development  
-**Target:** Android 14+ / ARM64
+> **Observe the environment. Understand the system. Intervene only when intervention is justified.**
 
----
+This is not a universal tweak pack.
 
-## Features
+## Architecture
 
-### Dynamic Runtime State Machine
-
-CoreFlow classifies device conditions based on runtime metrics such as CPU activity, screen state, GPU utilization on devices providing KGSL interface, and temperature.
-
-Primary states used:
-
-| State | Purpose |
-|-------|---------|
-| Daily Efficiency | Normal usage profile with focus on system efficiency |
-| App Launch / Burst | Handles short workload spikes such as app launching |
-| Gaming Unleashed | Performance profile for heavier GPU/CPU workloads |
-| Ultra Deep Sleep | Conservative profile when device is idle/screen-off |
-| Thermal Guardian | Protection profile when device temperature reaches defined conditions |
-
-The state machine is designed to prevent continuous parameter rewrites when the state has not changed.
-
-### Runtime Tuning
-
-CoreFlow can interact with available kernel interfaces through the Android filesystem, particularly:
-
-- CPU frequency/governor interfaces
-- CPU scheduler-related parameters
-- Storage I/O parameters
-- ZRAM / VM parameters
-- GPU interfaces on devices exposing KGSL
-- Thermal information
-- Relevant Android system properties
-
-Not all devices provide the same kernel nodes. Therefore, CoreFlow uses a capability-based tuning approach: parameters are only applied if the required interface is available and usable.
-
-### Native Architecture
-
-CoreFlow is built as a native C++ daemon and does not depend on shell commands for each tuning operation.
-
-This approach allows the engine to interact directly with system interfaces through native APIs such as:
-
-- `std::ifstream`
-- `std::ofstream`
-- Android/Bionic system property API
-- filesystem and other system interfaces
-
-The goal is to keep the implementation simple, controlled, and avoid dependency on shell script chains for each parameter change.
-
-**Note:** CoreFlow still has runtime overhead from monitoring and evaluating system conditions. The design focus is to keep this overhead low, not to claim zero overhead.
-
-### Device Adaptation
-
-CoreFlow does not assume all devices have identical kernel structures.
-
-When a node is available:
-
-```
-Node available
-    ↓
-Validate
-    ↓
-Capture current value
-    ↓
-Apply tuning
-    ↓
-Verify
+```text
+DISCOVER
+   ↓
+BASELINE
+   ↓
+OBSERVE
+   ↓
+EVALUATE
+   ↓
+MINIMAL INTERVENTION
+   ↓
+VERIFY
+   ↓
+IDLE / ADAPT
 ```
 
-If a node is unavailable or cannot be used:
+### Zero-Sub-Shell Native Runtime
 
+Runtime observation and future control paths are implemented in native C++.
+
+The daemon does not use a shell subprocess for every:
+
+```text
+cat
+echo
+grep
+sysctl
+setprop
 ```
-Node unavailable
-    ↓
-Skip parameter
-    ↓
-Continue with available capabilities
+
+The phrase **Zero-Sub-Shell** means the architecture avoids that repeated subprocess overhead. It does not claim mathematically zero resource usage.
+
+## Production principles
+
+### 1. Discovery-first
+
+No fixed list of CPU policies, governors, I/O schedulers or vendor nodes is required.
+
+### 2. Read before write
+
+A future mutation must first establish:
+
+- capability exists
+- interface is readable
+- interface is writable
+- baseline is known
+- mutation is justified
+- result can be verified
+
+### 3. No-action is a valid result
+
+If the device is already stable, CoreFlow should not modify it.
+
+### 4. Thermal guard
+
+Thermal pressure is treated as a reason to reduce intervention, not as a reason to force higher performance.
+
+### 5. Fail closed
+
+Unknown or unsupported interfaces are skipped.
+
+### 6. No broad SELinux bypass
+
+`module/sepolicy.rule` is included explicitly. It does not make the device permissive and does not contain a universal blanket allow policy.
+
+SELinux rules are device/domain specific. A production module should add only verified, minimal rules when a particular execution domain actually requires them.
+
+## Runtime module
+
+The module payload contains:
+
+```text
+module.prop
+service.sh
+sepolicy.rule
+system/bin/coreflowd
 ```
 
-This approach allows the engine to adapt to kernel variations and device configurations.
+GitHub Actions replaces the binary placeholder with the compiled ARM64 ELF.
 
-### GPU Detection
+## Target
 
-On devices with KGSL interface, CoreFlow can use GPU busy information to help determine GPU workload.
+- Android 14+
+- API 34
+- `arm64-v8a`
+- C++17
+- NDK 27.2.12479018
+- Release build
 
-On devices that do not provide this interface, the engine can use other available metrics, such as CPU activity.
+## Current 1.0.0-A scope
 
----
+The production foundation provides:
 
-## Configuration Philosophy
+- native daemon lifecycle
+- environment discovery
+- CPU policy discovery
+- thermal discovery
+- lightweight memory/load telemetry
+- conservative state evaluation
+- minimal boot service
+- duplicate-start guard
+- explicit SELinux policy file
+- GitHub Actions reproducible build
+- module packaging
 
-CoreFlow maintains the following principle:
+The controller remains observation-first in this release. It does not ship a giant device-specific tuning table.
 
-**Detect → Validate → Snapshot → Tune → Monitor → Restore**
-
-1. **Detect**
-   Identify available hardware and kernel interfaces.
-
-2. **Validate**
-   Ensure target parameters and nodes can be used before making changes.
-
-3. **Snapshot**
-   Save initial values of parameters to be modified.
-
-4. **Tune**
-   Apply configuration based on runtime state.
-
-5. **Monitor**
-   Observe workload and device condition changes.
-
-6. **Restore**
-   Return parameters to previous values when needed.
-
-This pipeline is important because kernel configurations can differ across devices and kernel versions.
-
----
-
-## Thermal Handling
-
-CoreFlow includes Thermal Guardian to monitor temperature available from Android's thermal interface.
-
-When temperature exceeds thresholds defined by engine configuration, CoreFlow can switch to thermal state and reduce tuning aggressiveness.
-
-After conditions return to normal, the engine can return to the appropriate runtime state.
-
-Thermal thresholds and behavior should be considered as engine configuration, not as a guarantee that the device will always maintain a certain temperature.
-
----
-
-## Compatibility
-
-| Component | Target |
-|-----------|--------|
-| Architecture | ARM64 / AArch64 |
-| Android | Android 14+ |
-| Language | C++17 |
-| Root Framework | Magisk / KernelSU / APatch |
-| GPU Telemetry | KGSL if available |
-
-Actual compatibility depends on kernel, vendor implementation, exposed sysfs/procfs nodes, permission model, and device configuration.
-
-Not all features are available on all devices.
-
----
+That is deliberate: a production adaptive engine must earn every write through capability discovery, baseline validation, bounded policy and post-write verification.
 
 ## Installation
 
-CoreFlow is distributed as a module for Android environments that support systemless modules.
+Build artifacts are generated by GitHub Actions.
 
-1. Download the appropriate release from the Releases page.
-2. Install the module using a compatible root manager.
-3. Reboot the device if required by the release.
-4. Check CoreFlow logs to ensure the daemon started successfully.
-
-**Note:** Release file names may change with each version. Use the file available on the relevant release, not hardcoded filenames in documentation.
-
----
-
-## Runtime Verification
-
-Runtime logs can be used to check state transitions and engine activity.
-
-Example:
-
-```bash
-su
-logcat -s CoreFlowEngine
-```
-
-Observable items include:
-
-- Runtime state changes
-- Workload changes
-- Thermal state
-- Device capability detection
-- Successfully applied parameters
-- Parameters skipped due to unavailability
-
-Log format and tags may change during development.
-
----
-
-## Building
-
-### Requirements
-
-- Android NDK
-- CMake
-- C++17-compatible compiler
-
-### Clone
-
-```bash
-git clone https://github.com/mystivara-creator/CoreFlow-Engine.git
-cd CoreFlow-Engine
-```
-
-### Build
-
-Build configuration may differ based on target release and development environment.
-
-To build using CMake:
-
-```bash
-cmake -S . -B build
-cmake --build build
-```
-
-The output binary will be in the build directory according to CMake configuration.
-
----
-
-## Project Structure
-
-```
-CoreFlow-Engine/
-├── include/
-│   └── ...
-├── src/
-│   └── ...
-├── module_template/
-│   └── ...
-├── CMakeLists.txt
-├── LICENSE
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-└── README.md
-```
-
-Structure may change during development.
-
----
-
-## Design Goals
-
-CoreFlow is developed with several primary objectives:
-
-- Runtime-aware tuning
-- Device capability detection
-- Graceful handling of missing kernel interfaces
-- Minimal dependency on shell scripting
-- State-based configuration
-- Parameter snapshot and restore
-- Modular C++ architecture
-- Observable runtime behavior
-
-CoreFlow does not aim to provide a single universal configuration considered optimal for every device.
-
-Instead, the engine attempts to use parameters that are actually available on the running device.
-
----
-
-## Limitations
-
-CoreFlow interacts with kernel interfaces that may differ across:
-
-- SoC
-- Vendor
-- Kernel version
-- Custom kernel
-- Android version
-- Device configuration
-
-Because of this, tuning results may differ across devices.
-
-The absence of a kernel node does not mean the engine fails overall; features dependent on that node can be skipped while other features continue running.
-
----
-
-## Disclaimer
-
-CoreFlow modifies system parameters on devices with root access.
-
-Using inappropriate kernel configurations can cause:
-
-- Performance changes
-- Increased power consumption
-- Increased temperature
-- System instability
-- Parameters not working as expected
-
-Use on devices you understand and always backup configurations/original state before experimenting.
-
-**Use at your own risk.**
-
----
-
-## Contributing
-
-Bug reports, improvements, and pull requests are welcome.
-
-When reporting issues, please include:
-
-- Device model
-- SoC
-- Android version
-- Kernel version
-- Root framework
-- Relevant runtime logs
-- Problematic parameters/nodes
-
-This information helps reproduce issues in different environments.
-
----
+Actual installation behavior depends on the root/module framework, Android vendor implementation, kernel interfaces, permissions and SELinux policy.
 
 ## License
 
-CoreFlow Engine is released under the MIT License.
-
-See [LICENSE](./LICENSE) for the complete license text.
-
----
-
-## Author
-
-**Mystivara**
-
-GitHub: [@mystivara](https://github.com/mystivara-creator)
-
-Project: CoreFlow Engine
-
----
-
-**Note:** CoreFlow Engine is an experimental system-tuning project focused on adaptive runtime management for Android.
+MIT.
