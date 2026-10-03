@@ -5,9 +5,9 @@ on:
   
   workflow_call:
   
-  push:
-    branches:
-      - "**"
+    push:
+    branches-ignore:
+      - "main"
     paths:
       - "CMakeLists.txt"
       - "include/**"
