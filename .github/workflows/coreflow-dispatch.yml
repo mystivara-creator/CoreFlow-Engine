@@ -1,0 +1,12 @@
+name: CoreFlow Autonomous Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build CoreFlow Autonomous
+    uses: mystivara-creator/CoreFlow-Engine/.github/workflows/android-ndk.yml@CoreFlow-Autonomous-Engine
