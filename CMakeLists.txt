@@ -1,21 +1,44 @@
-cmake_minimum_required(VERSION 3.10)
-project(CoreFlowEngine CXX)
+cmake_minimum_required(VERSION 3.22)
 
-# Gunakan standar C++17 agar kompatibel dengan std::this_thread dan file stream modern
+project(CoreFlowAutonomous VERSION 1.0.0 LANGUAGES CXX)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Tambahkan folder 'include' agar compiler bisa menemukan header file coreflow.hpp
-include_directories(include)
+if(NOT ANDROID)
+    message(FATAL_ERROR "CoreFlow Autonomous requires the Android NDK.")
+endif()
 
-# Kumpulkan semua file C++ secara otomatis di dalam folder 'src' (Mencegah duplikasi manual)
-file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
+add_executable(coreflowd
+    src/main.cpp
+    src/autonomous.cpp
+    src/discovery.cpp
+    src/observer.cpp
+    src/policy.cpp
+)
 
-# Perintahkan untuk membuat binary executable bernama 'coreflow_daemon'
-add_executable(coreflow_daemon ${SOURCE_FILES})
+target_include_directories(coreflowd PRIVATE include)
 
-# Beritahu CMake untuk mengonfigurasi flag threading bawaan NDK tanpa mencari berkas -lpthread
-find_package(Threads REQUIRED)
+target_compile_definitions(coreflowd PRIVATE
+    CORE_FLOW_VERSION="1.0.0-A"
+    CORE_FLOW_ANDROID=1
+)
 
-# Tautkan biner dengan pustaka Logcat Android dan dependensi internal Threads
-target_link_libraries(coreflow_daemon log Threads::Threads)
+target_compile_options(coreflowd PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wconversion
+    -Wsign-conversion
+    -Wno-unused-parameter
+)
+
+find_library(log-lib log)
+if(log-lib)
+    target_link_libraries(coreflowd PRIVATE ${log-lib})
+endif()
+
+set_target_properties(coreflowd PROPERTIES
+    OUTPUT_NAME coreflowd
+)
