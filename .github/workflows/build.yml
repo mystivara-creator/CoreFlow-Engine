@@ -2,7 +2,7 @@ name: Build CoreFlow Engine
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main, CoreFlow-Autonomous-Engine" ]
   workflow_dispatch: # Mengizinkan trigger build secara manual
 
 jobs:
