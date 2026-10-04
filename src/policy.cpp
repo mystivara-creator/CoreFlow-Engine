@@ -16,6 +16,9 @@ RuntimeState AdaptivePolicy::evaluate(
     constexpr double kIdleLoad = 0.20;
 
     if (sample.thermal_available) {
+        // Hysteresis: once the guard is entered at 43C, keep it active
+        // while temperature remains strictly above the 40C exit point.
+        // At 40C or below the guard is released.
         if (previous == RuntimeState::ThermalGuard &&
             sample.thermal_millidegrees > kThermalGuardExit) {
             return RuntimeState::ThermalGuard;

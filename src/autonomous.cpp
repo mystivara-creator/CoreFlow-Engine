@@ -83,7 +83,8 @@ void AutonomousEngine::logStartup() const {
     if (charging.has_charge_control_limit) {
         logInfo(
             "ChargingControlValidation path=%s readable=%s writable=%s "
-            "numeric=%s value=%lld min=%s:%lld max=%s:%lld semantics_validated=%s",
+            "numeric=%s value=%lld min=%s:%lld max=%s:%lld "
+            "range_valid=%s semantics_validated=%s mutation_ready=%s",
             charging.charge_control_limit_path.c_str(),
             charging.charge_control_limit_readable ? "YES" : "NO",
             charging.charge_control_limit_writable ? "YES" : "NO",
@@ -93,7 +94,9 @@ void AutonomousEngine::logStartup() const {
             charging.charge_control_limit_min,
             charging.charge_control_limit_max_available ? "YES" : "NO",
             charging.charge_control_limit_max,
-            charging.charge_control_limit_semantics_validated ? "YES" : "NO"
+            charging.charge_control_limit_range_valid ? "YES" : "NO",
+            charging.charge_control_limit_semantics_validated ? "YES" : "NO",
+            charging.charge_control_limit_mutation_ready ? "YES" : "NO"
         );
     } else {
         logInfo(

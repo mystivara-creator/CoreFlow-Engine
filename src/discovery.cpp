@@ -205,10 +205,28 @@ void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
                 readSigned(maxPath,
                            profile.charging.charge_control_limit_max);
 
-            // Presence/readability/numeric checks do not prove the semantic
-            // meaning of the control. Keep this false until a platform
+            // Structural validation: both bounds must exist, the range must
+            // be ordered, and the current value must fall inside that range.
+            // This is still NOT semantic validation. We deliberately do not
+            // assume that this node represents microamps, milliamps, or any
+            // other charging-current unit.
+            profile.charging.charge_control_limit_range_valid =
+                profile.charging.charge_control_limit_numeric &&
+                profile.charging.charge_control_limit_min_available &&
+                profile.charging.charge_control_limit_max_available &&
+                profile.charging.charge_control_limit_min <=
+                    profile.charging.charge_control_limit_max &&
+                profile.charging.charge_control_limit_value >=
+                    profile.charging.charge_control_limit_min &&
+                profile.charging.charge_control_limit_value <=
+                    profile.charging.charge_control_limit_max;
+
+            // Presence/readability/numeric/range checks do not prove the
+            // semantic meaning of the control. Keep both semantic validation
+            // and mutation readiness disabled until a platform-specific
             // contract explicitly validates its units and behavior.
             profile.charging.charge_control_limit_semantics_validated = false;
+            profile.charging.charge_control_limit_mutation_ready = false;
         }
 
         profile.charging.has_charging_enabled =
