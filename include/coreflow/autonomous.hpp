@@ -23,6 +23,8 @@ private:
     void logStartup() const;
     void logStateTransition(RuntimeState, RuntimeState) const;
 
+    EngineConfig config_;
+    MutationController controller_;
     EnvironmentDiscovery discovery_;
     RuntimeObserver observer_;
     AdaptivePolicy policy_;
