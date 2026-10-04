@@ -17,6 +17,10 @@ public:
         return false;
     }
 
+    bool supportsDryRun() const noexcept {
+        return true;
+    }
+
     void execute(
         Decision,
         const RuntimeSample&
