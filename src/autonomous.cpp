@@ -79,6 +79,22 @@ void AutonomousEngine::logStartup() const {
         charging.has_charging_enabled ? "YES" : "NO",
         charging.has_charge_disable ? "YES" : "NO"
     );
+
+    if (charging.has_charge_control_limit) {
+        logInfo(
+            "ChargingControlValidation path=%s readable=%s writable=%s numeric=%s "
+            "value=%lld min=%s:%lld max=%s:%lld semantics_validated=%s",
+            charging.charge_control_limit_path.c_str(),
+            charging.charge_control_limit_readable ? "YES" : "NO",
+            charging.charge_control_limit_writable ? "YES" : "NO",
+            charging.charge_control_limit_numeric ? "YES" : "NO",
+            static_cast<long long>(charging.charge_control_limit_value),
+            charging.charge_control_limit_has_min ? "YES" : "NO",
+            static_cast<long long>(charging.charge_control_limit_min),
+            charging.charge_control_limit_has_max ? "YES" : "NO",
+            static_cast<long long>(charging.charge_control_limit_max),
+            charging.charge_control_limit_semantics_validated ? "YES" : "NO");
+    }
 }
 
 void AutonomousEngine::refreshDiscovery() {
