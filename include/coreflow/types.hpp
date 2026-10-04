@@ -72,19 +72,6 @@ struct ChargingCapability {
     bool has_charge_control_limit{false};
     bool has_charging_enabled{false};
     bool has_charge_disable{false};
-
-    // Read-only validation of charge_control_limit. These fields describe
-    // filesystem-level observability only; they do NOT prove safe semantics.
-    std::string charge_control_limit_path;
-    bool charge_control_limit_readable{false};
-    bool charge_control_limit_writable{false};
-    bool charge_control_limit_numeric{false};
-    std::int64_t charge_control_limit_value{0};
-    bool charge_control_limit_has_min{false};
-    bool charge_control_limit_has_max{false};
-    std::int64_t charge_control_limit_min{0};
-    std::int64_t charge_control_limit_max{0};
-    bool charge_control_limit_semantics_validated{false};
 };
 
 struct DeviceProfile {
