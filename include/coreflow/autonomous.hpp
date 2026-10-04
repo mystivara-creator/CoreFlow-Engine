@@ -42,10 +42,8 @@ private:
     EngineSnapshot snapshot_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool>
-    std::uint64_t sample_count_{0};
 
     std::deque<RuntimeSample> history_;
-    std::uint64_t last_notification_sample_{0};
     NotificationEvent last_notification_{NotificationEvent::None};
 };
 
