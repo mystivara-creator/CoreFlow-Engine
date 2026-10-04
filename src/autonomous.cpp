@@ -81,6 +81,16 @@ void AutonomousEngine::logStartup() const {
     );
 }
 
+void AutonomousEngine::refreshDiscovery() {
+    logInfo("Runtime discovery refresh requested.");
+
+    const DeviceProfile refreshed = discovery_.discover();
+    snapshot_.profile = refreshed;
+
+    logStartup();
+    logInfo("Runtime discovery refresh complete.");
+}
+
 void AutonomousEngine::logStateTransition(
     RuntimeState oldState,
     RuntimeState newState
@@ -281,6 +291,12 @@ int AutonomousEngine::run() {
     logStartup();
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
+        if (discovery_refresh_requested_.exchange(
+                false,
+                std::memory_order_acq_rel)) {
+            refreshDiscovery();
+        }
+
         tick();
 
         int sleep_seconds =
@@ -294,6 +310,10 @@ int AutonomousEngine::run() {
 
         for (int i = 0; i < sleep_seconds * 10; ++i) {
             if (stop_requested_.load(std::memory_order_relaxed))
+                break;
+
+            if (discovery_refresh_requested_.load(
+                    std::memory_order_relaxed))
                 break;
 
             std::this_thread::sleep_for(
@@ -313,6 +333,13 @@ void AutonomousEngine::requestStop() noexcept {
     stop_requested_.store(
         true,
         std::memory_order_relaxed
+    );
+}
+
+void AutonomousEngine::requestDiscoveryRefresh() noexcept {
+    discovery_refresh_requested_.store(
+        true,
+        std::memory_order_release
     );
 }
 
