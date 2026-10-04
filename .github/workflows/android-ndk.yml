@@ -107,60 +107,62 @@ jobs:
           file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
 
       - name: Assemble module
-  shell: bash
-  run: |
-    set -euo pipefail
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    BINARY="$(
-      find build/android-arm64 \
-        -type f \
-        -name coreflowd \
-        -perm -111 \
-        | head -n 1
-    )"
+          BINARY="$(
+            find build/android-arm64 \
+              -type f \
+              -name coreflowd \
+              -perm -111 \
+              | head -n 1
+          )"
 
-    test -n "$BINARY"
+          test -n "$BINARY"
 
-    MODULE_DIR="artifacts/CoreFlow-Autonomous"
+          MODULE_DIR="artifacts/CoreFlow-Autonomous"
 
-    mkdir -p \
-      "${MODULE_DIR}/system/bin" \
-      "${MODULE_DIR}/system/etc/coreflow"
+          mkdir -p \
+            "${MODULE_DIR}/system/bin" \
+            "${MODULE_DIR}/system/etc/coreflow"
 
-    cp "$BINARY" \
-      "${MODULE_DIR}/system/bin/coreflowd"
+          cp "$BINARY" \
+            "${MODULE_DIR}/system/bin/coreflowd"
 
-    cp module/module.prop \
-      "${MODULE_DIR}/module.prop"
+          cp module/module.prop \
+            "${MODULE_DIR}/module.prop"
 
-    cp module/customize.sh \
-      "${MODULE_DIR}/customize.sh"
+          cp module/customize.sh \
+            "${MODULE_DIR}/customize.sh"
 
-    cp module/post-fs-data.sh \
-      "${MODULE_DIR}/post-fs-data.sh"
+          cp module/post-fs-data.sh \
+            "${MODULE_DIR}/post-fs-data.sh"
 
-    cp module/service.sh \
-      "${MODULE_DIR}/service.sh"
+          cp module/service.sh \
+            "${MODULE_DIR}/service.sh"
 
-    cp module/uninstall.sh \
-      "${MODULE_DIR}/uninstall.sh"
+          cp module/uninstall.sh \
+            "${MODULE_DIR}/uninstall.sh"
 
-    cp module/sepolicy.rule \
-      "${MODULE_DIR}/sepolicy.rule"
+          cp module/sepolicy.rule \
+            "${MODULE_DIR}/sepolicy.rule"
 
-    touch "${MODULE_DIR}/system/etc/coreflow/.keep"
+          touch "${MODULE_DIR}/system/etc/coreflow/.keep"
 
-    chmod 0755 \
-      "${MODULE_DIR}/system/bin/coreflowd" \
-      "${MODULE_DIR}/customize.sh" \
-      "${MODULE_DIR}/post-fs-data.sh" \
-      "${MODULE_DIR}/service.sh" \
-      "${MODULE_DIR}/uninstall.sh"
+          chmod 0755 \
+            "${MODULE_DIR}/system/bin/coreflowd" \
+            "${MODULE_DIR}/customize.sh" \
+            "${MODULE_DIR}/post-fs-data.sh" \
+            "${MODULE_DIR}/service.sh" \
+            "${MODULE_DIR}/uninstall.sh"
 
-    chmod 0644 \
-      "${MODULE_DIR}/module.prop" \
-      "${MODULE_DIR}/sepolicy.rule"
+          chmod 0644 \
+            "${MODULE_DIR}/module.prop" \
+            "${MODULE_DIR}/sepolicy.rule"
           
+          # Membuat file build.txt di dalam modul
+          cat <<EOF > "${MODULE_DIR}/build.txt"
           Target: Android 14+
           API: ${ANDROID_API}
           ABI: ${ANDROID_ABI}
