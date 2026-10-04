@@ -6,6 +6,8 @@
 #include "coreflow/discovery.hpp"
 #include "coreflow/observer.hpp"
 #include "coreflow/policy.hpp"
+#include "coreflow/config.hpp"
+#include "coreflow/controller.hpp"
 
 namespace coreflow {
 
