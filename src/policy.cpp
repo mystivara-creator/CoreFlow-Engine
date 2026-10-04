@@ -24,7 +24,7 @@ RuntimeState AdaptivePolicy::evaluate(
         if (sample.thermal_millidegrees >= kThermalGuardEnter)
             return RuntimeState::ThermalGuard;
 
-        if (sample.thermal_millidegrees >= 42000)
+        if (sample.thermal_millidegrees > kThermalGuardExit)
             return RuntimeState::Warming;
     }
 
@@ -83,8 +83,16 @@ NotificationEvent AdaptivePolicy::notification(
         return NotificationEvent::ThermalGuard;
     }
 
-    if (state == RuntimeState::Warming &&
+    // Notification thresholds are intentionally independent from the
+    // runtime state so the 40C warming event is not lost while the
+    // classifier remains in NORMAL at exactly 40C.
+    if (sample.thermal_available &&
         sample.thermal_trend == Trend::Rising) {
+        if (sample.thermal_millidegrees >= 43000 &&
+            state == RuntimeState::ThermalGuard) {
+            return NotificationEvent::ThermalGuard;
+        }
+
         if (sample.thermal_millidegrees >= 42000)
             return NotificationEvent::ThermalWarning;
 
