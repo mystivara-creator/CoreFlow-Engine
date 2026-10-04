@@ -16,11 +16,14 @@ class AutonomousEngine {
 public:
     AutonomousEngine();
     int run();
+
     void requestStop() noexcept;
+    void requestDiscoveryRefresh() noexcept;
 
 private:
     bool initialize();
     void tick();
+    void refreshDiscovery();
     void logStartup() const;
     void logStateTransition(RuntimeState, RuntimeState) const;
 
@@ -40,6 +43,7 @@ private:
     AdaptivePolicy policy_;
     EngineSnapshot snapshot_;
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> discovery_refresh_requested_{false};
     std::uint64_t sample_count_{0};
 
     std::deque<RuntimeSample> history_;
