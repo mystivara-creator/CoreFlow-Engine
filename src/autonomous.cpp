@@ -44,6 +44,8 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
 AutonomousEngine::AutonomousEngine() = default;
 
 bool AutonomousEngine::initialize() {
+    logInfo("CoreFlowInitializeEnter version=1.4.2");
+
     snapshot_.profile = discovery_.discover();
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
@@ -55,7 +57,7 @@ bool AutonomousEngine::initialize() {
     // so capability validation is executed immediately after discovery and
     // before the observation loop starts. No runtime rediscovery/refresh is
     // involved.
-    logInfo("ChargingValidationStartup stage=INITIALIZE version=1.4.1");
+    logInfo("ChargingValidationStartup stage=INITIALIZE version=1.4.2");
 
     const ChargingCapability& charging = snapshot_.profile.charging;
     logInfo(
