@@ -36,6 +36,16 @@ long readLong(const std::string& path, bool& ok) {
     return value;
 }
 
+long normalizeBatteryTemperature(long raw) {
+    // Android power_supply temperature is commonly reported in tenths
+    // of a degree Celsius (e.g. 380 == 38.0C), while some vendor nodes
+    // expose millidegrees directly. Keep this read-only and conservative.
+    if (raw > -1000 && raw < 1000)
+        return raw * 100;
+
+    return raw;
+}
+
 } // namespace
 
 void RuntimeObserver::readMemory(RuntimeSample& sample) const {
@@ -82,7 +92,8 @@ void RuntimeObserver::readThermal(
         if (!ok) continue;
 
         any = true;
-        hottest = !any || value > hottest ? value : hottest;
+        if (value > hottest)
+            hottest = value;
 
         if (isPrimaryThermalType(zone.type)) {
             primary = true;
@@ -137,9 +148,10 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
 
         if (status_file && std::getline(status_file, status)) {
             status_found = true;
-            sample.charging =
-                status == "Charging" ||
-                status == "Full";
+            // Full means the battery is full, not that active charging
+            // current is necessarily flowing. Keep charging telemetry
+            // conservative and report only the active Charging state.
+            sample.charging = (status == "Charging");
         }
 
         bool ok = false;
@@ -148,7 +160,8 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
             readLong(path + "/temp", ok);
 
         if (ok)
-            sample.battery_temperature_millidegrees = temp;
+            sample.battery_temperature_millidegrees =
+                normalizeBatteryTemperature(temp);
 
         const long current =
             readLong(path + "/current_now", ok);
