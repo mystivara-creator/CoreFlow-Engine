@@ -1,0 +1,202 @@
+name: CoreFlow Autonomous Android NDK
+
+on:
+  workflow_dispatch:
+  
+  workflow_call:
+  
+    push:
+    branches-ignore:
+      - "main"
+    paths:
+      - "CMakeLists.txt"
+      - "include/**"
+      - "src/**"
+      - "module/**"
+      - ".github/workflows/android-ndk.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coreflow-autonomous-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "27.2.12479018"
+  ANDROID_API: "34"
+  ANDROID_ABI: "arm64-v8a"
+
+jobs:
+  build:
+    name: Android 14+ ARM64 Production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+
+          sdkmanager --install \
+            "platforms;android-${ANDROID_API}" \
+            "ndk;${NDK_VERSION}"
+
+      - name: Verify Android SDK
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+
+          sdkmanager --list_installed | grep -E \
+            "platform-tools|platforms;android-${ANDROID_API}|ndk;${NDK_VERSION}" \
+            || true
+
+      - name: Configure NDK
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+          test -f \
+            "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Configure Release
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S . \
+            -B build/android-arm64 \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${ANDROID_ABI}" \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF
+
+      - name: Build
+        run: |
+          set -euo pipefail
+
+          cmake --build \
+            build/android-arm64 \
+            --parallel 2 \
+            --verbose
+
+      - name: Verify ELF
+        run: |
+          set -euo pipefail
+
+          BINARY="$(
+            find build/android-arm64 \
+              -type f \
+              -name coreflowd \
+              -perm -111 \
+              | head -n 1
+          )"
+
+          test -n "$BINARY"
+
+          echo "Binary: $BINARY"
+          file "$BINARY"
+
+          file "$BINARY" | grep -E \
+            "ELF 64-bit.*ARM aarch64"
+
+      - name: Assemble module
+        run: |
+          set -euo pipefail
+
+          BINARY="$(
+            find build/android-arm64 \
+              -type f \
+              -name coreflowd \
+              -perm -111 \
+              | head -n 1
+          )"
+
+          test -n "$BINARY"
+
+          mkdir -p \
+            artifacts/CoreFlow-Autonomous/system/bin \
+            artifacts/CoreFlow-Autonomous/system/etc/coreflow
+
+          cp "$BINARY" \
+            artifacts/CoreFlow-Autonomous/system/bin/coreflowd
+
+          cp module/module.prop \
+            artifacts/CoreFlow-Autonomous/module.prop
+
+          cp module/service.sh \
+            artifacts/CoreFlow-Autonomous/service.sh
+
+          cp module/sepolicy.rule \
+            artifacts/CoreFlow-Autonomous/sepolicy.rule
+
+          chmod 0755 \
+            artifacts/CoreFlow-Autonomous/system/bin/coreflowd \
+            artifacts/CoreFlow-Autonomous/service.sh
+
+          chmod 0644 \
+            artifacts/CoreFlow-Autonomous/module.prop \
+            artifacts/CoreFlow-Autonomous/sepolicy.rule
+
+          cat > artifacts/CoreFlow-Autonomous/build-info.txt <<EOF
+CoreFlow Autonomous 1.0.0-A
+
+Target: Android 14+
+API: ${ANDROID_API}
+ABI: ${ANDROID_ABI}
+NDK: ${NDK_VERSION}
+Build: Release
+
+Commit: ${GITHUB_SHA}
+Ref: ${GITHUB_REF}
+Run: ${GITHUB_RUN_NUMBER}
+EOF
+
+      - name: Package module
+        run: |
+          set -euo pipefail
+
+          cd artifacts/CoreFlow-Autonomous
+
+          zip -r \
+            ../CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip \
+            .
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+
+          test -f \
+            artifacts/CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip
+
+          unzip -l \
+            artifacts/CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip
+
+      - name: Upload production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoreFlow-Autonomous-1.0.0-A-android14-arm64
+          path: artifacts/CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
