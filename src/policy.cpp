@@ -72,27 +72,30 @@ NotificationEvent AdaptivePolicy::notification(
     RuntimeState state,
     RuntimeState previous
 ) const {
-    if (sample.charging &&
-        state == RuntimeState::ThermalGuard &&
-        sample.thermal_trend == Trend::Rising) {
-        return NotificationEvent::ChargingProtection;
-    }
-
-    if (state == RuntimeState::ThermalGuard &&
-        previous != RuntimeState::ThermalGuard) {
-        return NotificationEvent::ThermalGuard;
-    }
-
-    // Notification thresholds are intentionally independent from the
-    // runtime state so the 40C warming event is not lost while the
-    // classifier remains in NORMAL at exactly 40C.
-    if (sample.thermal_available &&
-        sample.thermal_trend == Trend::Rising) {
-        if (sample.thermal_millidegrees >= 43000 &&
-            state == RuntimeState::ThermalGuard) {
+    // ThermalGuard owns the notification path while the hysteresis lock is
+    // active. Do not downgrade a guard condition into WARMING/WARNING
+    // notifications merely because the instantaneous temperature is below
+    // the entry threshold. The guard is released only by evaluate().
+    if (state == RuntimeState::ThermalGuard) {
+        if (previous != RuntimeState::ThermalGuard)
             return NotificationEvent::ThermalGuard;
+
+        if (sample.charging &&
+            sample.thermal_trend == Trend::Rising) {
+            // This is an observation-only protection request. The controller
+            // must not write charging controls without a validated,
+            // device-specific capability adapter.
+            return NotificationEvent::ChargingProtection;
         }
 
+        return NotificationEvent::None;
+    }
+
+    // Notification thresholds are independent from the runtime state only
+    // outside ThermalGuard. This preserves the 40C/42C early warnings while
+    // avoiding contradictory messages during the hysteresis lock.
+    if (sample.thermal_available &&
+        sample.thermal_trend == Trend::Rising) {
         if (sample.thermal_millidegrees >= 42000)
             return NotificationEvent::ThermalWarning;
 
