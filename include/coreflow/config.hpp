@@ -1,27 +1,43 @@
 #pragma once
 
+#include <cstddef>
+#include <string>
+
 namespace coreflow {
+
+inline constexpr const char* kCoreFlowVersion = "1.8.0";
+
+enum class MutationMode {
+    Disabled,
+    Adaptive
+};
 
 class EngineConfig {
 public:
     EngineConfig() = default;
 
-    // Fungsi membaca interval dari sistem konfigurasi.
-    // Sementara kita set hardcode 5 detik untuk standard safety,
-    // fungsi ini siap diekspansi membaca file properti Android.
-    int getMonitorInterval() const noexcept {
-        return monitor_interval_;
-    }
+    bool load(const std::string& path) noexcept;
 
-    // Fungsi untuk memperbarui interval saat runtime jika dibutuhkan
-    void setMonitorInterval(int seconds) noexcept {
-        if (seconds > 0) {
-            monitor_interval_ = seconds;
-        }
-    }
+    int monitorIntervalSeconds() const noexcept { return monitor_interval_seconds_; }
+    double minConfidence() const noexcept { return min_confidence_; }
+    MutationMode mutationMode() const noexcept { return mutation_mode_; }
+    bool allowCpuGovernor() const noexcept { return allow_cpu_governor_; }
+    bool runtimeRefreshEnabled() const noexcept { return runtime_refresh_enabled_; }
+
+    void setMonitorIntervalSeconds(int seconds) noexcept;
+    void setMinConfidence(double confidence) noexcept;
+    void setMutationMode(MutationMode mode) noexcept { mutation_mode_ = mode; }
+    void setAllowCpuGovernor(bool enabled) noexcept { allow_cpu_governor_ = enabled; }
+    void setRuntimeRefreshEnabled(bool enabled) noexcept { runtime_refresh_enabled_ = enabled; }
 
 private:
-    int monitor_interval_{5};
+    int monitor_interval_seconds_{5};
+    double min_confidence_{0.70};
+    MutationMode mutation_mode_{MutationMode::Disabled};
+    bool allow_cpu_governor_{true};
+    bool runtime_refresh_enabled_{true};
 };
+
+const char* mutationModeName(MutationMode mode) noexcept;
 
 } // namespace coreflow

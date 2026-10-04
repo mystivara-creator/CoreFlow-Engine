@@ -43,13 +43,27 @@ enum class NotificationEvent {
     ChargingProtection
 };
 
+enum class MutationResult {
+    Skipped,
+    Applied,
+    Verified,
+    Failed,
+    RolledBack
+};
+
 struct CpuPolicy {
     int id{-1};
     std::string path;
+    std::string related_cpus;
     std::string governor;
-    std::uint64_t min_frequency{0};
-    std::uint64_t max_frequency{0};
+    std::vector<std::string> available_governors;
+    std::uint64_t hardware_min_frequency{0};
+    std::uint64_t hardware_max_frequency{0};
+    std::uint64_t scaling_min_frequency{0};
+    std::uint64_t scaling_max_frequency{0};
     bool readable{false};
+    bool governor_writable{false};
+    bool scaling_max_writable{false};
 };
 
 struct ThermalZone {
@@ -59,19 +73,39 @@ struct ThermalZone {
     bool readable{false};
 };
 
+struct IoDevice {
+    std::string path;
+    std::string name;
+    std::uint64_t read_ahead_kb{0};
+    bool read_ahead_readable{false};
+    bool read_ahead_writable{false};
+};
+
+struct TunableCapability {
+    std::string path;
+    bool readable{false};
+    bool writable{false};
+    bool numeric{false};
+    long long value{0};
+};
+
+struct TextCapability {
+    std::string path;
+    bool readable{false};
+    bool writable{false};
+    std::string value;
+};
+
 struct ChargingCapability {
     std::string battery_path;
     bool battery_available{false};
     bool status_readable{false};
     bool telemetry_readable{false};
 
-    // Discovery only: these indicate that a known control interface exists.
-    // No interface is written by Observation v1.3.
     bool has_input_current_limit{false};
     bool has_charge_current_limit{false};
     bool has_charge_control_limit{false};
 
-    // Read-only validation metadata for charge_control_limit.
     std::string charge_control_limit_path;
     bool charge_control_limit_readable{false};
     bool charge_control_limit_writable{false};
@@ -81,16 +115,8 @@ struct ChargingCapability {
     bool charge_control_limit_max_available{false};
     long long charge_control_limit_min{0};
     long long charge_control_limit_max{0};
-
-    // Structural validation is intentionally separate from semantic validation.
-    // A valid numeric range proves that the node is well-formed, but does not
-    // prove what the platform interprets the value as or whether changing it
-    // safely controls charging current.
     bool charge_control_limit_range_valid{false};
     bool charge_control_limit_semantics_validated{false};
-
-    // Final read-only safety gate. This remains false until a platform-specific
-    // contract validates the node semantics and a mutation adapter exists.
     bool charge_control_limit_mutation_ready{false};
 
     bool has_charging_enabled{false};
@@ -103,6 +129,13 @@ struct DeviceProfile {
     std::string abi;
     std::vector<CpuPolicy> cpu_policies;
     std::vector<ThermalZone> thermal_zones;
+    std::vector<IoDevice> io_devices;
+
+    TunableCapability vm_swappiness;
+    TunableCapability uclamp_min;
+    TunableCapability uclamp_max;
+    TextCapability cpuset_effective_cpus;
+
     bool proc_available{false};
     bool sys_available{false};
     ChargingCapability charging;
@@ -115,6 +148,8 @@ struct RuntimeSample {
 
     std::uint64_t uptime_seconds{0};
     double load1{0.0};
+    double cpu_utilization{0.0};
+    bool cpu_utilization_available{false};
 
     long thermal_millidegrees{0};
     long hottest_thermal_millidegrees{0};
@@ -139,7 +174,10 @@ struct EngineSnapshot {
     RuntimeState state{RuntimeState::Idle};
 };
 
+const char* stateName(RuntimeState);
+const char* decisionName(Decision);
 const char* trendName(Trend);
 const char* notificationEventName(NotificationEvent);
+const char* mutationResultName(MutationResult);
 
 } // namespace coreflow

@@ -1,4 +1,5 @@
 #pragma once
+
 #include "coreflow/types.hpp"
 
 namespace coreflow {
@@ -11,6 +12,8 @@ private:
     void discoverCpuPolicies(DeviceProfile&) const;
     void discoverThermalZones(DeviceProfile&) const;
     void discoverCharging(DeviceProfile&) const;
+    void discoverIo(DeviceProfile&) const;
+    void discoverSystemControls(DeviceProfile&) const;
 };
 
 } // namespace coreflow
