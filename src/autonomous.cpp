@@ -64,6 +64,21 @@ void AutonomousEngine::logStartup() const {
         snapshot_.profile.cpu_policies.size(),
         snapshot_.profile.thermal_zones.size()
     );
+
+    const ChargingCapability& charging = snapshot_.profile.charging;
+    logInfo(
+        "ChargingCapability battery=%s status=%s telemetry=%s "
+        "input_limit=%s charge_current=%s control_limit=%s "
+        "charging_enabled=%s charge_disable=%s",
+        charging.battery_available ? "YES" : "NO",
+        charging.status_readable ? "YES" : "NO",
+        charging.telemetry_readable ? "YES" : "NO",
+        charging.has_input_current_limit ? "YES" : "NO",
+        charging.has_charge_current_limit ? "YES" : "NO",
+        charging.has_charge_control_limit ? "YES" : "NO",
+        charging.has_charging_enabled ? "YES" : "NO",
+        charging.has_charge_disable ? "YES" : "NO"
+    );
 }
 
 void AutonomousEngine::logStateTransition(
