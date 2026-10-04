@@ -1,0 +1,21 @@
+--- src/main.cpp	2026-10-04 19:49:35.000000000 +0000
++++ /tmp/cfpatch143/src/main.cpp	2026-10-04 20:24:10.132218497 +0000
+@@ -14,10 +14,6 @@
+         g_engine->requestStop();
+         return;
+     }
+-
+-    if (signal == SIGUSR1) {
+-        g_engine->requestDiscoveryRefresh();
+-    }
+ }
+ 
+ } // namespace
+@@ -29,7 +25,6 @@
+ 
+     std::signal(SIGTERM, handleSignal);
+     std::signal(SIGINT, handleSignal);
+-    std::signal(SIGUSR1, handleSignal);
+ 
+     const int result = engine.run();
+ 
