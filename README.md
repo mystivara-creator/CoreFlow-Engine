@@ -1,134 +1,149 @@
-# CoreFlow Autonomous
+# CoreFlow Autonomous v1.8.0
 
-**Native Adaptive Stability Engine for Android**
+**Native Adaptive System-Intelligence Daemon for Android**
 
-> **Efficiency · Stability · Intelligence · Balance**
+CoreFlow is a privileged, native C++ daemon designed to observe Android runtime conditions and make bounded, reversible system adjustments when the device state justifies them.
 
-CoreFlow Autonomous is the production-oriented autonomous branch of the CoreFlow project.
+> **Discover → Baseline → Observe → Evaluate → Mutate → Verify → Restore**
 
-It is designed around one rule:
+This repository is the **production source tree**. The compiled ARM64 daemon is intentionally not checked into source control. GitHub Actions builds the real ELF and assembles the flashable module.
 
-> **Observe the environment. Understand the system. Intervene only when intervention is justified.**
+## What v1.8.0 provides
 
-This is not a universal tweak pack.
+### Runtime intelligence
 
-## Architecture
+CoreFlow continuously samples:
 
-```text
-DISCOVER
-   ↓
-BASELINE
-   ↓
-OBSERVE
-   ↓
-EVALUATE
-   ↓
-MINIMAL INTERVENTION
-   ↓
-VERIFY
-   ↓
-IDLE / ADAPT
+- thermal zones and thermal trends
+- battery/charging telemetry
+- memory availability and memory trend
+- system load and CPU utilization
+- CPU policy topology and governor capability
+- block-device read-ahead capability
+- VM swappiness capability
+- root cgroup uClamp capability
+- cpuset capability
+
+The decision engine combines these observations with hysteresis and a confidence score. No single sensor is allowed to trigger an uncontrolled write.
+
+### Controlled mutation
+
+The release includes a bounded mutation layer with:
+
+1. baseline capture
+2. capability validation
+3. confidence gating
+4. bounded write
+5. read-back verification
+6. rollback on failure
+7. baseline restoration during shutdown and rediscovery
+
+The currently enabled production mutation is **CPU governor selection** during `THERMAL_GUARD`/`PRESSURE`, and only when `schedutil` is explicitly advertised and the governor node is writable. The baseline governor is restored when the protected state ends.
+
+I/O, VM, uClamp, cpusets, charging, graphics and ART are currently inventory/telemetry surfaces. Their mutation adapters must be proven against real device/kernel semantics before being enabled.
+
+## Runtime rediscovery
+
+`SIGUSR1` requests a safe environment refresh. The signal handler only records a flag; discovery runs on the normal daemon thread.
+
+```sh
+su -c 'kill -USR1 $(pidof coreflowd)'
 ```
 
-### Zero-Sub-Shell Native Runtime
-
-Runtime observation and future control paths are implemented in native C++.
-
-The daemon does not use a shell subprocess for every:
+The refresh flow is:
 
 ```text
-cat
-echo
-grep
-sysctl
-setprop
+SIGUSR1
+  ↓
+restore active baseline
+  ↓
+rediscover environment
+  ↓
+capture new baseline
+  ↓
+resume observation
 ```
 
-The phrase **Zero-Sub-Shell** means the architecture avoids that repeated subprocess overhead. It does not claim mathematically zero resource usage.
+## Configuration
 
-## Production principles
+Runtime configuration is stored at:
 
-### 1. Discovery-first
+```text
+/data/adb/coreflow/config.ini
+```
 
-No fixed list of CPU policies, governors, I/O schedulers or vendor nodes is required.
+Default:
 
-### 2. Read before write
+```ini
+monitor_interval=5
+min_confidence=0.70
+mutation_mode=adaptive
+allow_cpu_governor=true
+runtime_refresh=true
+```
 
-A future mutation must first establish:
+`mutation_mode=disabled` forces observation-only operation without uninstalling the module.
 
-- capability exists
-- interface is readable
-- interface is writable
-- baseline is known
-- mutation is justified
-- result can be verified
+## Fail-closed rules
 
-### 3. No-action is a valid result
+CoreFlow does not treat writability as proof of safety. A control must be understood before mutation. Unknown or ambiguous interfaces are skipped.
 
-If the device is already stable, CoreFlow should not modify it.
+The charging layer deliberately keeps `semantics_validated=false` until a platform-specific contract proves what the exposed control means.
 
-### 4. Thermal guard
+## Production build
 
-Thermal pressure is treated as a reason to reduce intervention, not as a reason to force higher performance.
+Requirements are encoded in `.github/workflows/android-ndk.yml`:
 
-### 5. Fail closed
+- Android API 34
+- arm64-v8a
+- NDK 27.2.12479018
+- C++17
+- Release build
+- PIE
+- RELRO/now linker hardening
+- stack protector
+- section garbage collection
+- `-Werror`
 
-Unknown or unsupported interfaces are skipped.
+GitHub Actions also runs deterministic host-side unit tests for policy, configuration and mutation before the Android build.
 
-### 6. No broad SELinux bypass
+## Local verification
 
-`module/sepolicy.rule` is included explicitly. It does not make the device permissive and does not contain a universal blanket allow policy.
+The host environment can validate the non-Android components:
 
-SELinux rules are device/domain specific. A production module should add only verified, minimal rules when a particular execution domain actually requires them.
+```sh
+cmake -S . -B build/host -G Ninja -DBUILD_TESTING=ON
+cmake --build build/host
+ctest --test-dir build/host --output-on-failure
+```
 
-## Runtime module
+The Android ELF requires the NDK toolchain specified by the CI workflow.
 
-The module payload contains:
+## Module layout
+
+The source tree contains module scripts and configuration, but intentionally does **not** contain a fake/placeholder `coreflowd` ELF. The CI pipeline supplies the compiled binary and then packages:
 
 ```text
 module.prop
+customize.sh
+post-fs-data.sh
 service.sh
+uninstall.sh
 sepolicy.rule
 system/bin/coreflowd
+system/etc/coreflow/default.conf
 ```
 
-GitHub Actions replaces the binary placeholder with the compiled ARM64 ELF.
+## Safety boundary
 
-## Target
+The daemon is designed for rooted Android devices and may run with privileged access. This project therefore avoids blanket SELinux permissions, unrestricted writable-node traversal, voltage manipulation, blind frequency writes, and unverified charging controls.
 
-- Android 14+
-- API 34
-- `arm64-v8a`
-- C++17
-- NDK 27.2.12479018
-- Release build
+## Project status
 
-## Current 1.0.0-A scope
+v1.8.0 is a **production foundation** for adaptive observation plus bounded CPU-governor mutation. It is not a claim that every Android vendor exposes identical kernel controls.
 
-The production foundation provides:
-
-- native daemon lifecycle
-- environment discovery
-- CPU policy discovery
-- thermal discovery
-- lightweight memory/load telemetry
-- conservative state evaluation
-- minimal boot service
-- duplicate-start guard
-- explicit SELinux policy file
-- GitHub Actions reproducible build
-- module packaging
-
-The controller remains observation-first in this release. It does not ship a giant device-specific tuning table.
-
-That is deliberate: a production adaptive engine must earn every write through capability discovery, baseline validation, bounded policy and post-write verification.
-
-## Installation
-
-Build artifacts are generated by GitHub Actions.
-
-Actual installation behavior depends on the root/module framework, Android vendor implementation, kernel interfaces, permissions and SELinux policy.
+The architecture is intentionally adapter-based so additional subsystems can be introduced without weakening the safety model.
 
 ## License
 
-MIT.
+MIT
