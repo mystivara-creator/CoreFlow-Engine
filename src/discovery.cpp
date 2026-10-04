@@ -1,6 +1,7 @@
 #include "coreflow/discovery.hpp"
 
 #include <cstdlib>
+#include <cerrno>
 #include <dirent.h>
 #include <fstream>
 #include <string>
@@ -24,45 +25,32 @@ std::uint64_t readUnsigned(const std::string& path) {
     return value;
 }
 
-bool readInt64(const std::string& path, std::int64_t& out) {
-    std::ifstream file(path);
-    if (!file) return false;
-    file >> out;
-    return file.good() || file.eof();
-}
-
-bool exists(const std::string& path) {
-    return access(path.c_str(), F_OK) == 0;
-}
-
-void inspectControlLimit(ChargingCapability& charging) {
-    const std::string path = charging.battery_path + "/charge_control_limit";
-    charging.charge_control_limit_path = path;
-    charging.has_charge_control_limit = exists(path);
-    if (!charging.has_charge_control_limit) return;
-
-    charging.charge_control_limit_readable = access(path.c_str(), R_OK) == 0;
-    charging.charge_control_limit_writable = access(path.c_str(), W_OK) == 0;
-    if (charging.charge_control_limit_readable)
-        charging.charge_control_limit_numeric = readInt64(path, charging.charge_control_limit_value);
-
-    const std::string minPath = charging.battery_path + "/charge_control_limit_min";
-    const std::string maxPath = charging.battery_path + "/charge_control_limit_max";
-    if (readInt64(minPath, charging.charge_control_limit_min))
-        charging.charge_control_limit_has_min = true;
-    if (readInt64(maxPath, charging.charge_control_limit_max))
-        charging.charge_control_limit_has_max = true;
-
-    // Deliberately false: filesystem presence/readability/writability and
-    // numeric bounds do not establish unit, semantic meaning, safe range,
-    // or rollback behavior.
-    charging.charge_control_limit_semantics_validated = false;
-}
-
 bool directoryExists(const char* path) {
     DIR* dir = opendir(path);
     if (!dir) return false;
     closedir(dir);
+    return true;
+}
+
+bool readSigned(const std::string& path, long long& value) {
+    std::ifstream file(path);
+    if (!file) return false;
+
+    std::string text;
+    std::getline(file, text);
+    if (text.empty()) return false;
+
+    char* end = nullptr;
+    errno = 0;
+    const long long parsed = std::strtoll(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str()) return false;
+
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
+        ++end;
+
+    if (*end != '\0') return false;
+
+    value = parsed;
     return true;
 }
 
@@ -189,14 +177,45 @@ void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
             access((path + "/input_current_limit").c_str(), F_OK) == 0;
         profile.charging.has_charge_current_limit =
             access((path + "/constant_charge_current").c_str(), F_OK) == 0;
+        const std::string controlLimitPath =
+            path + "/charge_control_limit";
+
         profile.charging.has_charge_control_limit =
-            access((path + "/charge_control_limit").c_str(), F_OK) == 0;
+            access(controlLimitPath.c_str(), F_OK) == 0;
+
+        if (profile.charging.has_charge_control_limit) {
+            profile.charging.charge_control_limit_path = controlLimitPath;
+            profile.charging.charge_control_limit_readable =
+                access(controlLimitPath.c_str(), R_OK) == 0;
+            profile.charging.charge_control_limit_writable =
+                access(controlLimitPath.c_str(), W_OK) == 0;
+            profile.charging.charge_control_limit_numeric =
+                readSigned(controlLimitPath,
+                           profile.charging.charge_control_limit_value);
+
+            const std::string minPath =
+                path + "/charge_control_limit_min";
+            const std::string maxPath =
+                path + "/charge_control_limit_max";
+
+            profile.charging.charge_control_limit_min_available =
+                readSigned(minPath,
+                           profile.charging.charge_control_limit_min);
+            profile.charging.charge_control_limit_max_available =
+                readSigned(maxPath,
+                           profile.charging.charge_control_limit_max);
+
+            // Presence/readability/numeric checks do not prove the semantic
+            // meaning of the control. Keep this false until a platform
+            // contract explicitly validates its units and behavior.
+            profile.charging.charge_control_limit_semantics_validated = false;
+        }
+
         profile.charging.has_charging_enabled =
             access((path + "/charging_enabled").c_str(), F_OK) == 0;
         profile.charging.has_charge_disable =
             access((path + "/charge_disable").c_str(), F_OK) == 0;
 
-        inspectControlLimit(profile.charging);
         break;
     }
 
