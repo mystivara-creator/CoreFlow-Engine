@@ -9,9 +9,10 @@ class MutationController {
 public:
     MutationController() = default;
 
-    // Observation Intelligence v1 is read-only.
-    // Mutation remains disabled until a concrete capability
-    // has been discovered and validated for the device.
+    // Safety gate: charging mutation remains disabled.
+    // The engine may observe and request protection, but it must not write
+    // charging/current/voltage controls without a validated capability
+    // adapter and platform-specific safety contract.
     bool isReady() const noexcept {
         return false;
     }
@@ -20,7 +21,8 @@ public:
         Decision,
         const RuntimeSample&
     ) noexcept {
-        // Intentionally disabled in Observation Intelligence v1.
+        // Intentionally no-op. Charging protection is observation-only
+        // until a validated platform adapter exists.
     }
 };
 
