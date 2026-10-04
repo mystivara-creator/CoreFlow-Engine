@@ -51,19 +51,11 @@ bool AutonomousEngine::initialize() {
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
 
-    return snapshot_.profile.proc_available ||
-           snapshot_.profile.sys_available;
-}
-
-void AutonomousEngine::logStartup() const {
-    logInfo(
-        "CoreFlow Autonomous %s | abi=%s kernel=%s cpu_policies=%zu thermal_zones=%zu",
-        CORE_FLOW_VERSION,
-        snapshot_.profile.abi.c_str(),
-        snapshot_.profile.kernel_release.c_str(),
-        snapshot_.profile.cpu_policies.size(),
-        snapshot_.profile.thermal_zones.size()
-    );
+    // Startup-only charging validation. Keep this directly in initialize()
+    // so capability validation is executed immediately after discovery and
+    // before the observation loop starts. No runtime rediscovery/refresh is
+    // involved.
+    logInfo("ChargingValidationStartup stage=INITIALIZE version=1.4.1");
 
     const ChargingCapability& charging = snapshot_.profile.charging;
     logInfo(
@@ -99,10 +91,25 @@ void AutonomousEngine::logStartup() const {
             charging.charge_control_limit_mutation_ready ? "YES" : "NO"
         );
     } else {
-        logInfo(
-            "ChargingControlValidation available=NO"
-        );
+        logInfo("ChargingControlValidation available=NO");
     }
+
+    return snapshot_.profile.proc_available ||
+           snapshot_.profile.sys_available;
+}
+
+void AutonomousEngine::logStartup() const {
+    logInfo(
+        "CoreFlow Autonomous %s | abi=%s kernel=%s cpu_policies=%zu thermal_zones=%zu",
+        CORE_FLOW_VERSION,
+        snapshot_.profile.abi.c_str(),
+        snapshot_.profile.kernel_release.c_str(),
+        snapshot_.profile.cpu_policies.size(),
+        snapshot_.profile.thermal_zones.size()
+    );
+
+    // Charging capability validation is performed once in initialize(),
+    // immediately after startup discovery.
 }
 
 void AutonomousEngine::logStateTransition(
