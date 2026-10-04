@@ -1,6 +1,6 @@
-id=coreflow_autonomous_engine
-name=CoreFlow Autonomous Engine
+id=coreflow_autonomous
+name=CoreFlow Autonomous
 version=v1.0.0-A
 versionCode=100
 author=Mystivara
-description=Native C++17 System Daemon. Optimizes CPU WALT, UFS I/O multi-block, and ZRAM Swappiness dynamically. Includes Anti-Bootloop Thermal Guardian.
+description=Native adaptive stability engine for Android. Observe, understand, balance and adapt.
