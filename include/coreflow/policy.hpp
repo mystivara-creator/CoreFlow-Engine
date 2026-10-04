@@ -1,4 +1,5 @@
 #pragma once
+
 #include "coreflow/types.hpp"
 
 namespace coreflow {
@@ -7,6 +8,12 @@ class AdaptivePolicy {
 public:
     RuntimeState evaluate(const RuntimeSample&, RuntimeState previous) const;
     Decision decide(const RuntimeSample&, RuntimeState state) const;
+
+    NotificationEvent notification(
+        const RuntimeSample&,
+        RuntimeState state,
+        RuntimeState previous
+    ) const;
 };
 
 const char* stateName(RuntimeState);
