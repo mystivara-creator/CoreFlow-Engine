@@ -10,6 +10,7 @@ public:
 private:
     void discoverCpuPolicies(DeviceProfile&) const;
     void discoverThermalZones(DeviceProfile&) const;
+    void discoverCharging(DeviceProfile&) const;
 };
 
 } // namespace coreflow
