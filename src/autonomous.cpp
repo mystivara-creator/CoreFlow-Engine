@@ -80,36 +80,26 @@ void AutonomousEngine::logStartup() const {
         charging.has_charge_disable ? "YES" : "NO"
     );
 
-    // v1.4.1: always emit the validation record.  The previous implementation
-    // gated the record on has_charge_control_limit, which made it difficult to
-    // distinguish "not discovered" from "discovered but not validated" in a
-    // field/runtime log.  This function is strictly read-only.
-    logInfo(
-        "ChargingControlValidation available=%s battery_path=%s path=%s "
-        "readable=%s writable=%s numeric=%s value=%lld "
-        "min=%s:%lld max=%s:%lld semantics_validated=%s",
-        charging.has_charge_control_limit ? "YES" : "NO",
-        charging.battery_path.c_str(),
-        charging.charge_control_limit_path.c_str(),
-        charging.charge_control_limit_readable ? "YES" : "NO",
-        charging.charge_control_limit_writable ? "YES" : "NO",
-        charging.charge_control_limit_numeric ? "YES" : "NO",
-        static_cast<long long>(charging.charge_control_limit_value),
-        charging.charge_control_limit_has_min ? "YES" : "NO",
-        static_cast<long long>(charging.charge_control_limit_min),
-        charging.charge_control_limit_has_max ? "YES" : "NO",
-        static_cast<long long>(charging.charge_control_limit_max),
-        charging.charge_control_limit_semantics_validated ? "YES" : "NO");
-}
-
-void AutonomousEngine::refreshDiscovery() {
-    logInfo("Runtime discovery refresh requested.");
-
-    const DeviceProfile refreshed = discovery_.discover();
-    snapshot_.profile = refreshed;
-
-    logStartup();
-    logInfo("Runtime discovery refresh complete.");
+    if (charging.has_charge_control_limit) {
+        logInfo(
+            "ChargingControlValidation path=%s readable=%s writable=%s "
+            "numeric=%s value=%lld min=%s:%lld max=%s:%lld semantics_validated=%s",
+            charging.charge_control_limit_path.c_str(),
+            charging.charge_control_limit_readable ? "YES" : "NO",
+            charging.charge_control_limit_writable ? "YES" : "NO",
+            charging.charge_control_limit_numeric ? "YES" : "NO",
+            charging.charge_control_limit_value,
+            charging.charge_control_limit_min_available ? "YES" : "NO",
+            charging.charge_control_limit_min,
+            charging.charge_control_limit_max_available ? "YES" : "NO",
+            charging.charge_control_limit_max,
+            charging.charge_control_limit_semantics_validated ? "YES" : "NO"
+        );
+    } else {
+        logInfo(
+            "ChargingControlValidation available=NO"
+        );
+    }
 }
 
 void AutonomousEngine::logStateTransition(
@@ -312,12 +302,6 @@ int AutonomousEngine::run() {
     logStartup();
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
-        if (discovery_refresh_requested_.exchange(
-                false,
-                std::memory_order_acq_rel)) {
-            refreshDiscovery();
-        }
-
         tick();
 
         int sleep_seconds =
@@ -331,10 +315,6 @@ int AutonomousEngine::run() {
 
         for (int i = 0; i < sleep_seconds * 10; ++i) {
             if (stop_requested_.load(std::memory_order_relaxed))
-                break;
-
-            if (discovery_refresh_requested_.load(
-                    std::memory_order_relaxed))
                 break;
 
             std::this_thread::sleep_for(
@@ -354,13 +334,6 @@ void AutonomousEngine::requestStop() noexcept {
     stop_requested_.store(
         true,
         std::memory_order_relaxed
-    );
-}
-
-void AutonomousEngine::requestDiscoveryRefresh() noexcept {
-    discovery_refresh_requested_.store(
-        true,
-        std::memory_order_release
     );
 }
 
