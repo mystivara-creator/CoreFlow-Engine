@@ -9,19 +9,18 @@ class MutationController {
 public:
     MutationController() = default;
 
-    // Memverifikasi apakah environment siap menerima mutasi
+    // Observation Intelligence v1 is read-only.
+    // Mutation remains disabled until a concrete capability
+    // has been discovered and validated for the device.
     bool isReady() const noexcept {
-        return true; 
+        return false;
     }
 
-    // Eksekutor mutasi berdasarkan keputusan policy
-    void execute(Decision decision, const RuntimeSample& sample) {
-        // Karena opsi lengkap Decision ada di types.hpp,
-        // kita gunakan pengecekan generik NoAction agar lolos kompilasi.
-        if (decision != Decision::NoAction) {
-            // TODO: Tambahkan switch-case mutasi di sini nanti
-            // setelah kamu mengecek isi dari file types.hpp
-        }
+    void execute(
+        Decision,
+        const RuntimeSample&
+    ) noexcept {
+        // Intentionally disabled in Observation Intelligence v1.
     }
 };
 
