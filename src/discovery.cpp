@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 #include <sys/utsname.h>
+#include <unistd.h>
 
 namespace coreflow {
 namespace {
@@ -50,6 +51,7 @@ DeviceProfile EnvironmentDiscovery::discover() const {
 
     discoverCpuPolicies(profile);
     discoverThermalZones(profile);
+    discoverCharging(profile);
 
     return profile;
 }
@@ -114,6 +116,52 @@ void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
         }
 
         profile.thermal_zones.push_back(zone);
+    }
+
+    closedir(dir);
+}
+
+
+void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
+    constexpr const char* base = "/sys/class/power_supply";
+
+    DIR* dir = opendir(base);
+    if (!dir) return;
+
+    while (dirent* entry = readdir(dir)) {
+        const std::string name(entry->d_name);
+        if (name == "." || name == "..")
+            continue;
+
+        const std::string path = std::string(base) + "/" + name;
+
+        std::string type;
+        if (!readText(path + "/type", type) || type != "Battery")
+            continue;
+
+        profile.charging.battery_path = path;
+        profile.charging.battery_available = true;
+        profile.charging.status_readable =
+            access((path + "/status").c_str(), R_OK) == 0;
+        profile.charging.telemetry_readable =
+            access((path + "/current_now").c_str(), R_OK) == 0 ||
+            access((path + "/voltage_now").c_str(), R_OK) == 0 ||
+            access((path + "/temp").c_str(), R_OK) == 0;
+
+        // Read-only capability discovery. The presence of a node is recorded;
+        // no value is read as a control setting and nothing is written.
+        profile.charging.has_input_current_limit =
+            access((path + "/input_current_limit").c_str(), F_OK) == 0;
+        profile.charging.has_charge_current_limit =
+            access((path + "/constant_charge_current").c_str(), F_OK) == 0;
+        profile.charging.has_charge_control_limit =
+            access((path + "/charge_control_limit").c_str(), F_OK) == 0;
+        profile.charging.has_charging_enabled =
+            access((path + "/charging_enabled").c_str(), F_OK) == 0;
+        profile.charging.has_charge_disable =
+            access((path + "/charge_disable").c_str(), F_OK) == 0;
+
+        break;
     }
 
     closedir(dir);
