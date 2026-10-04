@@ -24,41 +24,6 @@ std::uint64_t readUnsigned(const std::string& path) {
     return value;
 }
 
-bool readInt64(const std::string& path, std::int64_t& out) {
-    std::ifstream file(path);
-    if (!file) return false;
-    file >> out;
-    return file.good() || file.eof();
-}
-
-bool exists(const std::string& path) {
-    return access(path.c_str(), F_OK) == 0;
-}
-
-void inspectControlLimit(ChargingCapability& charging) {
-    const std::string path = charging.battery_path + "/charge_control_limit";
-    charging.charge_control_limit_path = path;
-    charging.has_charge_control_limit = exists(path);
-    if (!charging.has_charge_control_limit) return;
-
-    charging.charge_control_limit_readable = access(path.c_str(), R_OK) == 0;
-    charging.charge_control_limit_writable = access(path.c_str(), W_OK) == 0;
-    if (charging.charge_control_limit_readable)
-        charging.charge_control_limit_numeric = readInt64(path, charging.charge_control_limit_value);
-
-    const std::string minPath = charging.battery_path + "/charge_control_limit_min";
-    const std::string maxPath = charging.battery_path + "/charge_control_limit_max";
-    if (readInt64(minPath, charging.charge_control_limit_min))
-        charging.charge_control_limit_has_min = true;
-    if (readInt64(maxPath, charging.charge_control_limit_max))
-        charging.charge_control_limit_has_max = true;
-
-    // Deliberately false: filesystem presence/readability/writability and
-    // numeric bounds do not establish unit, semantic meaning, safe range,
-    // or rollback behavior.
-    charging.charge_control_limit_semantics_validated = false;
-}
-
 bool directoryExists(const char* path) {
     DIR* dir = opendir(path);
     if (!dir) return false;
@@ -196,7 +161,6 @@ void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
         profile.charging.has_charge_disable =
             access((path + "/charge_disable").c_str(), F_OK) == 0;
 
-        inspectControlLimit(profile.charging);
         break;
     }
 
