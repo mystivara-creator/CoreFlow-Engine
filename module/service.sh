@@ -1,74 +1,38 @@
 #!/system/bin/sh
 
 MODDIR="${0%/*}"
-
 STATE_DIR="/data/adb/coreflow"
 LOG_DIR="$STATE_DIR/logs"
-
 BINARY="$MODDIR/system/bin/coreflowd"
 PID_FILE="$STATE_DIR/coreflowd.pid"
 LOG_FILE="$LOG_DIR/coreflowd.log"
 
+umask 077
 mkdir -p "$STATE_DIR" "$LOG_DIR"
-
-chmod 0700 "$STATE_DIR"
-chmod 0700 "$LOG_DIR"
-
-# ------------------------------------------
-# Wait for Android boot completion
-# ------------------------------------------
+chmod 0700 "$STATE_DIR" "$LOG_DIR"
 
 BOOT_TIMEOUT=180
 WAITED=0
-
-while [ "$(getprop sys.boot_completed)" != "1" ]; do
+while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
     sleep 2
-
     WAITED=$((WAITED + 2))
-
-    if [ "$WAITED" -ge "$BOOT_TIMEOUT" ]; then
-        exit 0
-    fi
+    [ "$WAITED" -ge "$BOOT_TIMEOUT" ] && exit 0
 done
-
-# Give framework/vendor services a little time
-# to settle before the observer starts.
 
 sleep 5
 
-# ------------------------------------------
-# Validate daemon
-# ------------------------------------------
-
-if [ ! -x "$BINARY" ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') coreflowd missing or not executable" \
-        >> "$LOG_FILE"
-    exit 1
-fi
-
-# ------------------------------------------
-# Duplicate process protection
-# ------------------------------------------
+[ -x "$BINARY" ] || { echo "$(date '+%F %T') coreflowd missing" >> "$LOG_FILE"; exit 1; }
 
 if [ -f "$PID_FILE" ]; then
     OLD_PID="$(cat "$PID_FILE" 2>/dev/null)"
-
     if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
         exit 0
     fi
-
     rm -f "$PID_FILE"
 fi
 
-# ------------------------------------------
-# Start native runtime
-# ------------------------------------------
-
-echo "$(date '+%Y-%m-%d %H:%M:%S') starting CoreFlow Autonomous" \
-    >> "$LOG_FILE"
-
+echo "$(date '+%F %T') starting CoreFlow Autonomous v1.8.0" >> "$LOG_FILE"
 "$BINARY" >> "$LOG_FILE" 2>&1 &
-
 PID=$!
 
 if [ -n "$PID" ]; then
@@ -76,20 +40,10 @@ if [ -n "$PID" ]; then
     chmod 0600 "$PID_FILE"
 fi
 
-# ------------------------------------------
-# Verify startup
-# ------------------------------------------
-
 sleep 1
-
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') coreflowd started pid=$PID" \
-        >> "$LOG_FILE"
+    echo "$(date '+%F %T') coreflowd started pid=$PID" >> "$LOG_FILE"
 else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') coreflowd failed to start" \
-        >> "$LOG_FILE"
-
+    echo "$(date '+%F %T') coreflowd failed to start" >> "$LOG_FILE"
     rm -f "$PID_FILE"
 fi
-
-exit 0

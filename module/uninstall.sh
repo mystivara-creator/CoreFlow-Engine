@@ -5,16 +5,8 @@ PID_FILE="$STATE_DIR/coreflowd.pid"
 
 if [ -f "$PID_FILE" ]; then
     PID="$(cat "$PID_FILE" 2>/dev/null)"
-
-    if [ -n "$PID" ]; then
-        kill "$PID" 2>/dev/null
-    fi
-
+    [ -n "$PID" ] && kill "$PID" 2>/dev/null
     rm -f "$PID_FILE"
 fi
 
-# Runtime data is intentionally preserved.
-# This allows diagnostics to survive module removal.
-#
-# Remove manually if desired:
-# /data/adb/coreflow
+# Runtime state is retained intentionally for diagnostics.

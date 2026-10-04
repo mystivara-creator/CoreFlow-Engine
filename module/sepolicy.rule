@@ -1,12 +1,3 @@
-# CoreFlow Autonomous SELinux policy
-#
-# Version 1.0.0-A
-#
-# The current runtime is observation-first and does not require
-# additional broad SELinux permissions.
-#
-# No permissive rules.
-# No wildcard allow rules.
-#
-# Device-specific permissions must only be added after an actual
-# AVC denial has been identified and the required access is known.
+# CoreFlow Autonomous v1.8.0
+# No permissive rules and no wildcard grants.
+# Add only minimal, verified rules after an actual AVC denial.
