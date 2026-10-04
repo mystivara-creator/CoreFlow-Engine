@@ -81,7 +81,17 @@ struct ChargingCapability {
     bool charge_control_limit_max_available{false};
     long long charge_control_limit_min{0};
     long long charge_control_limit_max{0};
+
+    // Structural validation is intentionally separate from semantic validation.
+    // A valid numeric range proves that the node is well-formed, but does not
+    // prove what the platform interprets the value as or whether changing it
+    // safely controls charging current.
+    bool charge_control_limit_range_valid{false};
     bool charge_control_limit_semantics_validated{false};
+
+    // Final read-only safety gate. This remains false until a platform-specific
+    // contract validates the node semantics and a mutation adapter exists.
+    bool charge_control_limit_mutation_ready{false};
 
     bool has_charging_enabled{false};
     bool has_charge_disable{false};
