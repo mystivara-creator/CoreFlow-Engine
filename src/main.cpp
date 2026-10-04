@@ -29,8 +29,7 @@ int main() {
 
     std::signal(SIGTERM, handleSignal);
     std::signal(SIGINT, handleSignal);
-    std::signal(SIGUSR1, handleSignal);
-
+    
     const int result = engine.run();
 
     g_engine = nullptr;
