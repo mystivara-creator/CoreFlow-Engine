@@ -59,6 +59,21 @@ struct ThermalZone {
     bool readable{false};
 };
 
+struct ChargingCapability {
+    std::string battery_path;
+    bool battery_available{false};
+    bool status_readable{false};
+    bool telemetry_readable{false};
+
+    // Discovery only: these indicate that a known control interface exists.
+    // No interface is written by Observation v1.3.
+    bool has_input_current_limit{false};
+    bool has_charge_current_limit{false};
+    bool has_charge_control_limit{false};
+    bool has_charging_enabled{false};
+    bool has_charge_disable{false};
+};
+
 struct DeviceProfile {
     std::string android_release;
     std::string kernel_release;
@@ -67,6 +82,7 @@ struct DeviceProfile {
     std::vector<ThermalZone> thermal_zones;
     bool proc_available{false};
     bool sys_available{false};
+    ChargingCapability charging;
 };
 
 struct RuntimeSample {
