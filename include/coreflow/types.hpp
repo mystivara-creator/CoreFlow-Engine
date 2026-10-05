@@ -48,7 +48,12 @@ enum class MutationResult {
     Applied,
     Verified,
     Failed,
-    RolledBack
+    RolledBack,
+    TrialObserving,
+    TrialApplied,
+    TrialCompleted,
+    TrialRejected,
+    TrialAborted
 };
 
 struct CpuPolicy {
