@@ -131,6 +131,75 @@ int main() {
                 "blocked mutation must not change the governor"))
         return 1;
 
+
+    // Controlled Governor Trial Engine: baseline observation -> candidate
+    // write -> candidate observation -> verified rollback/evidence.
+    cfg.setAllowCpuGovernor(true);
+    cfg.setMutationMode(MutationMode::Trial);
+
+    controller.captureBaseline(profile);
+    RuntimeSample trialSample;
+    trialSample.confidence = 1.0;
+    trialSample.thermal_available = true;
+    trialSample.thermal_millidegrees = 35000;
+    trialSample.load1 = 0.5;
+    trialSample.cpu_utilization = 0.20;
+
+    if (!expect(controller.validatedCandidateCount() == 0,
+                "trial reset should clear validated candidate evidence"))
+        return 1;
+
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialObserving,
+                "trial should begin with baseline observation"))
+        return 1;
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialObserving,
+                "trial baseline should require multiple samples"))
+        return 1;
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialApplied,
+                "trial should apply candidate after baseline window"))
+        return 1;
+    if (!expect(readValue(governor) != "walt",
+                "trial candidate should be written only after baseline window"))
+        return 1;
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialObserving,
+                "trial candidate window should collect evidence"))
+        return 1;
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialObserving,
+                "trial candidate window should collect multiple samples"))
+        return 1;
+    if (!expect(controller.apply(RuntimeState::Normal, trialSample, profile, cfg) ==
+                    MutationResult::TrialCompleted,
+                "safe trial should complete with evidence"))
+        return 1;
+    if (!expect(readValue(governor) == "walt",
+                "completed trial must restore the baseline governor"))
+        return 1;
+    if (!expect(controller.validatedCandidateCount() == 1,
+                "safe trial should validate exactly one candidate"))
+        return 1;
+
+    // A protected state must abort an active trial and restore the baseline.
+    cfg.setMutationMode(MutationMode::Trial);
+    controller.captureBaseline(profile);
+    (void)controller.apply(RuntimeState::Normal, trialSample, profile, cfg);
+    (void)controller.apply(RuntimeState::Normal, trialSample, profile, cfg);
+    (void)controller.apply(RuntimeState::Normal, trialSample, profile, cfg);
+    if (!expect(controller.trialActive(), "trial should be active after candidate write"))
+        return 1;
+    const auto aborted =
+        controller.apply(RuntimeState::ThermalGuard, trialSample, profile, cfg);
+    if (!expect(aborted == MutationResult::TrialAborted,
+                "thermal guard must abort an active trial"))
+        return 1;
+    if (!expect(readValue(governor) == "walt",
+                "aborted trial must restore the baseline governor"))
+        return 1;
+
     fs::remove_all(root);
     return 0;
 }
