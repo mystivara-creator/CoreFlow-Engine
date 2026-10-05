@@ -9,7 +9,64 @@
 namespace coreflow {
 namespace {
 
-constexpr const char* kAdaptiveGovernor = "schedutil";
+constexpr double kThermalStartC = 35.0;
+constexpr double kThermalGuardC = 43.0;
+
+struct GovernorTraits {
+    double workload_affinity;
+    double efficiency_affinity;
+    double thermal_affinity;
+};
+
+bool governorTraits(const std::string& governor, GovernorTraits& traits) noexcept {
+    if (governor == "performance") {
+        traits = {1.00, 0.10, 0.10};
+        return true;
+    }
+    if (governor == "walt") {
+        traits = {0.90, 0.50, 0.55};
+        return true;
+    }
+    if (governor == "schedutil") {
+        traits = {0.78, 0.68, 0.78};
+        return true;
+    }
+    if (governor == "conservative") {
+        traits = {0.48, 0.86, 0.95};
+        return true;
+    }
+    if (governor == "powersave") {
+        traits = {0.18, 1.00, 1.00};
+        return true;
+    }
+    return false;
+}
+
+double workloadSignal(const RuntimeSample& sample) noexcept {
+    if (sample.cpu_utilization_available)
+        return std::clamp(sample.cpu_utilization, 0.0, 1.0);
+
+    // Load average is a fallback only. Scale it conservatively rather than
+    // treating an absolute load value as a CPU percentage.
+    return std::clamp(sample.load1 / 4.0, 0.0, 1.0);
+}
+
+double thermalPressure(const RuntimeSample& sample) noexcept {
+    if (!sample.thermal_available) return 0.0;
+    const double temperature =
+        static_cast<double>(sample.thermal_millidegrees) / 1000.0;
+    return std::clamp(
+        (temperature - kThermalStartC) / (kThermalGuardC - kThermalStartC),
+        0.0, 1.0);
+}
+
+bool mutationState(RuntimeState state) noexcept {
+    return state == RuntimeState::Normal ||
+           state == RuntimeState::Warming ||
+           state == RuntimeState::Elevated ||
+           state == RuntimeState::ThermalGuard;
+}
+
 
 bool readTextValue(
     const std::string& path,
@@ -138,20 +195,84 @@ MutationController::findCandidate(
     return nullptr;
 }
 
-const MutationController::GovernorCandidate*
-MutationController::findValidatedCandidate(
-    const std::string& policyPath
+double MutationController::scoreGovernor(
+    const GovernorCandidate& candidate,
+    const RuntimeSample& sample,
+    RuntimeState state
+) const noexcept {
+    GovernorTraits traits {};
+    if (!governorTraits(candidate.governor, traits))
+        return -1.0;
+
+    const double workload = workloadSignal(sample);
+    const double thermal = thermalPressure(sample);
+
+    // Low workload rewards efficiency; high workload rewards responsiveness.
+    double score =
+        (workload * traits.workload_affinity) +
+        ((1.0 - workload) * traits.efficiency_affinity);
+
+    // Thermal pressure increasingly dominates the decision as temperature
+    // rises. This is a bounded heuristic, not empirical proof of superiority.
+    score = (score * (1.0 - thermal)) +
+            (traits.thermal_affinity * thermal);
+
+    // State-specific safety/latency bias.
+    switch (state) {
+        case RuntimeState::ThermalGuard:
+            if (candidate.governor == "performance") score -= 0.30;
+            if (candidate.governor == "powersave" ||
+                candidate.governor == "conservative") score += 0.10;
+            break;
+        case RuntimeState::Warming:
+            if (candidate.governor == "performance") score -= 0.12;
+            if (candidate.governor == "powersave" ||
+                candidate.governor == "conservative") score += 0.05;
+            break;
+        case RuntimeState::Elevated:
+            if (candidate.governor == "performance" ||
+                candidate.governor == "walt") score += 0.06;
+            break;
+        case RuntimeState::Normal:
+        case RuntimeState::Idle:
+        case RuntimeState::Pressure:
+            break;
+    }
+
+    // Explicitly validated candidates may contribute prior device-specific
+    // evidence, but Adaptive mode never requires that evidence to act.
+    if (candidate.validated)
+        score += std::clamp(candidate.evidence_score, 0.0, 1.0) * 0.10;
+
+    return std::clamp(score, 0.0, 1.0);
+}
+
+const MutationController::GovernorCandidate* MutationController::selectGovernor(
+    const CpuPolicy& policy,
+    const RuntimeSample& sample,
+    RuntimeState state
 ) const noexcept {
     const GovernorCandidate* best = nullptr;
+    double bestScore = -1.0;
+
     for (const GovernorCandidate& candidate : candidates_) {
-        if (candidate.policy_path != policyPath ||
-            !candidate.available || !candidate.writable ||
-            !candidate.validated) {
+        if (candidate.policy_path != policy.path ||
+            !candidate.available ||
+            !candidate.writable) {
             continue;
         }
-        if (best == nullptr || candidate.evidence_score > best->evidence_score)
+
+        const double score = scoreGovernor(candidate, sample, state);
+        if (score < 0.0) continue;
+
+        if (best == nullptr ||
+            score > bestScore ||
+            (score == bestScore && candidate.governor < best->governor)) {
             best = &candidate;
+            bestScore = score;
+        }
     }
+
     return best;
 }
 
@@ -167,19 +288,13 @@ std::size_t MutationController::validatedCandidateCount() const noexcept {
 
 bool MutationController::buildPlan(
     RuntimeState state,
+    const RuntimeSample& sample,
     const DeviceProfile& profile,
     std::vector<MutationPlanEntry>& plan
 ) const noexcept {
     plan.clear();
 
-    // Production adaptive action is intentionally narrow:
-    // THERMAL_GUARD -> schedutil, but only when the kernel explicitly
-    // advertises schedutil for the active policy.
-    //
-    // All non-protected states are handled by apply() through baseline
-    // restoration. Pressure is intentionally not mapped to a CPU governor
-    // change because a governor switch is not a direct memory-pressure fix.
-    if (state != RuntimeState::ThermalGuard)
+    if (!mutationState(state))
         return false;
 
     for (const CpuPolicy& policy : profile.cpu_policies) {
@@ -193,15 +308,40 @@ bool MutationController::buildPlan(
         if (baseline == baseline_.end() || !baseline->second.valid)
             continue;
 
-        if (!governorAvailable(policy, kAdaptiveGovernor))
+        const GovernorCandidate* best =
+            selectGovernor(policy, sample, state);
+        if (best == nullptr) continue;
+
+        std::string current;
+        if (!readTextValue(governorPath, current))
+            current = policy.governor;
+
+        if (current == best->governor)
             continue;
 
-        if (baseline->second.value == kAdaptiveGovernor)
-            continue;
+        // Hysteresis: do not switch governors for a marginal score gain.
+        const GovernorCandidate* currentCandidate = nullptr;
+        for (const GovernorCandidate& candidate : candidates_) {
+            if (candidate.policy_path == policy.path &&
+                candidate.governor == current &&
+                candidate.available &&
+                candidate.writable) {
+                currentCandidate = &candidate;
+                break;
+            }
+        }
+
+        if (currentCandidate != nullptr) {
+            const double bestScore = scoreGovernor(*best, sample, state);
+            const double currentScore =
+                scoreGovernor(*currentCandidate, sample, state);
+            if (bestScore <= currentScore + kAdaptiveHysteresisMargin)
+                continue;
+        }
 
         plan.push_back({
             governorPath,
-            kAdaptiveGovernor,
+            best->governor,
             baseline->second.value
         });
     }
@@ -489,21 +629,21 @@ MutationResult MutationController::apply(
     if (!baseline_captured_)
         captureBaseline(profile);
 
-    // Baseline restoration is the default safe behavior. It runs before
-    // confidence gating so a previously applied governor is not left active
-    // merely because telemetry confidence temporarily dropped.
-    if (state != RuntimeState::ThermalGuard)
+    // Idle and memory-pressure states do not justify CPU-governor mutation.
+    // Restore the captured baseline instead of using a governor switch as a
+    // proxy for memory management.
+    if (state == RuntimeState::Idle || state == RuntimeState::Pressure)
         return restoreGovernors();
 
-    // Fail closed in the protected state when mutation is disabled or the
-    // telemetry confidence is below the configured floor.
+    // Fail closed whenever mutation is not permitted or telemetry confidence
+    // is below the configured floor.
     if (!config.allowCpuGovernor() ||
         sample.confidence < config.minConfidence()) {
         return restoreGovernors();
     }
 
     std::vector<MutationPlanEntry> plan;
-    if (!buildPlan(state, profile, plan))
+    if (!buildPlan(state, sample, profile, plan))
         return MutationResult::Skipped;
 
     return applyPlan(plan);
