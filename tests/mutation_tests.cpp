@@ -58,12 +58,52 @@ int main() {
     MutationController controller;
     controller.captureBaseline(profile);
 
-    // Simulate another component having changed the governor.
-    {
-        std::ofstream file(governor);
-        file << "schedutil\n";
-    }
+    if (!expect(controller.baselineSize() == 1,
+                "baseline should contain one governor node"))
+        return 1;
 
+    if (!expect(controller.candidateCount() == 3,
+                "all available governors should be discovered"))
+        return 1;
+
+    if (!expect(controller.validatedCandidateCount() == 0,
+                "discovered governors must not be trusted automatically"))
+        return 1;
+
+    // Adaptive mode without validated evidence must remain observation-only.
+    const auto noEvidence =
+        controller.apply(RuntimeState::Normal, sample, profile, cfg);
+    if (!expect(noEvidence == MutationResult::Skipped,
+                "unvalidated candidate must not be applied"))
+        return 1;
+
+    if (!expect(readValue(governor) == "walt",
+                "baseline governor must remain unchanged without evidence"))
+        return 1;
+
+    if (!expect(controller.registerValidatedGovernor(root.string(), "schedutil"),
+                "available governor should be registrable after validation"))
+        return 1;
+
+    if (!expect(controller.validatedCandidateCount() == 1,
+                "validated candidate count should increase"))
+        return 1;
+
+    // The controller can now perform a real, verified write in a controlled
+    // test environment. This is the same write/read-back contract used by
+    // the Android sysfs path.
+    const auto applied =
+        controller.apply(RuntimeState::Normal, sample, profile, cfg);
+    if (!expect(applied == MutationResult::Verified,
+                "validated governor mutation should verify"))
+        return 1;
+
+    if (!expect(readValue(governor) == "schedutil",
+                "verified mutation should change the governor"))
+        return 1;
+
+    // Protected state must immediately restore the captured baseline rather
+    // than trying another governor experiment.
     const auto restored =
         controller.apply(RuntimeState::ThermalGuard, sample, profile, cfg);
 
@@ -72,11 +112,23 @@ int main() {
         return 1;
 
     if (!expect(readValue(governor) == "walt",
-                "thermal guard must not force schedutil"))
+                "thermal guard must restore the original governor"))
         return 1;
 
     if (!expect(controller.restoreAll(),
                 "baseline restore should succeed"))
+        return 1;
+
+    // Permission gate must prevent mutation even when a candidate is known.
+    cfg.setAllowCpuGovernor(false);
+    const auto blocked =
+        controller.apply(RuntimeState::Normal, sample, profile, cfg);
+    if (!expect(blocked == MutationResult::Skipped,
+                "CPU governor permission must block mutation"))
+        return 1;
+
+    if (!expect(readValue(governor) == "walt",
+                "blocked mutation must not change the governor"))
         return 1;
 
     fs::remove_all(root);
