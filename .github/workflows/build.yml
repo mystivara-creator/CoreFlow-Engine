@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build tools
         run: |
@@ -80,7 +80,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v6
         with:
           packages: "platform-tools"
 
@@ -175,7 +175,11 @@ jobs:
             "${MODULE_DIR}/sepolicy.rule" \
             "${MODULE_DIR}/system/etc/coreflow/default.conf"
 
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
+          VERSION="${VERSION:-unknown}"
+
           cat > "${MODULE_DIR}/build.txt" <<EOF
+          Version: ${VERSION}
           Target: Android 14+
           API: ${ANDROID_API}
           ABI: ${ANDROID_ABI}
@@ -189,21 +193,25 @@ jobs:
       - name: Package module
         run: |
           set -euo pipefail
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
+          VERSION="${VERSION:-unknown}"
+          ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
           cd artifacts/CoreFlow-Autonomous
-          zip -r ../CoreFlow-Autonomous-1.8.0-android14-arm64.zip .
+          zip -r "../$(basename "$ZIP")" .
 
       - name: Verify package
         run: |
           set -euo pipefail
-          ZIP="artifacts/CoreFlow-Autonomous-1.8.0-android14-arm64.zip"
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
+          ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
           test -f "$ZIP"
           unzip -l "$ZIP"
           unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
 
       - name: Upload production artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: CoreFlow-Autonomous-1.8.0-android14-arm64
-          path: artifacts/CoreFlow-Autonomous-1.8.0-android14-arm64.zip
+          name: CoreFlow-Autonomous-1.0.0-A-android14-arm64
+          path: artifacts/CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip
           if-no-files-found: error
           retention-days: 30
