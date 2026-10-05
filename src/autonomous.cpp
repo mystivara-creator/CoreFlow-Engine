@@ -27,12 +27,12 @@ constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
 // History buffer size for trend analysis (circular buffer)
 constexpr std::size_t kHistorySize = 6;
 
-// Notification throttling: prevents notification spam during continuous issues
-// With 1 sample/second monitoring, this is ~12 seconds
+// Notification throttling: prevents repeated events during continuous issues.
+// The duration is expressed in samples so it follows the configured monitor
+// interval instead of assuming a fixed sampling rate.
 constexpr std::uint64_t kNotificationCooldownSamples = 12;
 
-// Periodic logging: logs full system state every N samples for diagnostics
-// With 1 sample/second monitoring, this is ~6 seconds
+// Periodic diagnostics: one compact telemetry block every N samples.
 constexpr std::uint64_t kPeriodicLogSamples = 6;
 
 // ============================================================================
@@ -85,8 +85,8 @@ constexpr double kMemoryTrendWeight = 0.05;
 // vendor-independent thermal state machine inside AutonomousEngine.
 constexpr double kThermalGuardThresholdC = 43.0;
 
-// Predictive guard buffer: only 0.5°C early when a sustained rising trend
-// is visible. The mutation layer remains confidence-gated and fail-closed.
+// Predictive guard buffer: act 0.5°C early when a rising trend is visible.
+// The mutation layer remains confidence-gated and fail-closed.
 constexpr double kRisingThermalBufferC = 0.5;
 
 // ============================================================================
@@ -372,35 +372,43 @@ bool AutonomousEngine::refreshEnvironment() {
  */
 void AutonomousEngine::logStartup() const {
     logInfo(
-        "CoreFlow Autonomous %s | abi=%s kernel=%s cpu_policies=%zu thermal_zones=%zu io_devices=%zu "
-        "mutation=%s confidence_floor=%.2f",
+        "CORE    v%s | mode=%s | interval=%ds | conf>=%.2f | target=schedutil",
         kCoreFlowVersion,
-        snapshot_.profile.abi.c_str(),
-        snapshot_.profile.kernel_release.c_str(),
+        mutationModeName(config_.mutationMode()),
+        config_.monitorIntervalSeconds(),
+        config_.minConfidence()
+    );
+    logInfo(
+        "DEVICE  cpu=%zu | thermal=%zu | io=%zu | kernel=%s",
         snapshot_.profile.cpu_policies.size(),
         snapshot_.profile.thermal_zones.size(),
         snapshot_.profile.io_devices.size(),
-        mutationModeName(config_.mutationMode()),
-        config_.minConfidence()
+        snapshot_.profile.kernel_release.c_str()
     );
 }
 
 /**
  * Log state transitions for system tracking.
  */
-void AutonomousEngine::logStateTransition(RuntimeState oldState, RuntimeState newState) const {
-    logInfo("STATE_TRANSITION: %s -> %s", stateName(oldState), stateName(newState));
+void AutonomousEngine::logStateTransition(
+    RuntimeState oldState,
+    RuntimeState newState
+) const {
+    logInfo("STATE   %s -> %s", stateName(oldState), stateName(newState));
 }
 
 /**
  * Log mutation application results.
  */
-void AutonomousEngine::logMutation(MutationResult result, RuntimeState state) const {
+void AutonomousEngine::logMutation(
+    MutationResult result,
+    RuntimeState state
+) const {
     if (result == MutationResult::Skipped) return;
 
-    logInfo("MUTATION result=%s state=%s baseline_actions=%zu trial_active=%s",
-            mutationResultName(result), stateName(state), controller_.baselineSize(),
-            controller_.trialActive() ? "YES" : "NO");
+    logInfo("ACTION  %-12s | state=%s",
+            mutationResultName(result),
+            stateName(state));
 }
 
 /**
@@ -574,12 +582,14 @@ void AutonomousEngine::emitNotification(NotificationEvent event, const RuntimeSa
         return;
     }
     
-    logInfo("NOTIFICATION_EVENT=%s thermal=%.2fC trend=%s charging=%s batt_temp=%.2fC",
-            notificationEventName(event),
-            static_cast<double>(sample.thermal_millidegrees) / 1000.0,
-            trendName(sample.thermal_trend),
-            sample.charging ? "YES" : "NO",
-            static_cast<double>(sample.battery_temperature_millidegrees) / 1000.0);
+    logInfo(
+        "ALERT   %-18s | temp=%.2fC | trend=%s | chg=%s | batt=%.2fC",
+        notificationEventName(event),
+        static_cast<double>(sample.thermal_millidegrees) / 1000.0,
+        trendName(sample.thermal_trend),
+        sample.charging ? "YES" : "NO",
+        static_cast<double>(sample.battery_temperature_millidegrees) / 1000.0
+    );
 }
 
 /**
@@ -622,9 +632,8 @@ void AutonomousEngine::tick() {
         const RuntimeState previous = snapshot_.state;
         RuntimeState next = policy_.evaluate(sample, previous);
 
-        // Predictive thermal guard is intentionally aligned with the existing
-        // policy threshold. It can only move the state toward protection;
-        // it never creates a new mutation target or bypasses confidence gating.
+        // Predictive thermal guard is aligned with the policy threshold.
+        // It may only move the state toward protection.
         if (sample.thermal_available &&
             sample.thermal_trend != Trend::Unknown) {
             const double thermal_c =
@@ -654,7 +663,9 @@ void AutonomousEngine::tick() {
         // STEP 8: Evaluate notifications
         const NotificationEvent event = selectNotification(sample, next, previous);
         const bool cooldownExpired =
-            sample_count_ >= last_notification_sample_ + kNotificationCooldownSamples;
+            sample_count_ >= last_notification_sample_ &&
+            (sample_count_ - last_notification_sample_) >=
+                kNotificationCooldownSamples;
         
         if (event != NotificationEvent::None &&
             (event != last_notification_ || cooldownExpired)) {
@@ -668,27 +679,36 @@ void AutonomousEngine::tick() {
             controller_.apply(next, sample, snapshot_.profile, config_);
         logMutation(mutation, next);
 
-        // STEP 10: Periodic detailed logging
+        // STEP 10: Compact diagnostics.
+        // Keep each log message short enough for a phone-sized Termux window.
+        // State/decision is always shown for active states; otherwise emit one
+        // compact telemetry block every kPeriodicLogSamples samples.
         const bool periodic = (sample_count_ % kPeriodicLogSamples) == 0;
         if (decision != Decision::NoAction || periodic) {
             logInfo(
-                "SAMPLE=%llu state=%s decision=%s load=%.2f load_trend=%s cpu_util=%.1f%% "
-                "mem=%llu/%lluKB mem_avail=%.1f%% mem_trend=%s thermal=%.2fC thermal_max=%.2fC "
-                "thermal_trend=%s thermal_source=%s charging=%s battery_temp=%.2fC confidence=%.2f",
+                "[%04llu] %-13s | %-18s | conf %.2f",
                 static_cast<unsigned long long>(sample_count_),
-                stateName(snapshot_.state), decisionName(decision),
-                sample.load1, trendName(sample.load_trend), sample.cpu_utilization * 100.0,
-                static_cast<unsigned long long>(sample.mem_available_kb),
-                static_cast<unsigned long long>(sample.mem_total_kb),
-                sample.mem_available_ratio * 100.0, trendName(sample.memory_trend),
+                stateName(snapshot_.state),
+                decisionName(decision),
+                sample.confidence
+            );
+            logInfo(
+                "       cpu %5.1f%% | load %5.2f %-7s | mem %5.1f%% %-7s",
+                sample.cpu_utilization * 100.0,
+                sample.load1,
+                trendName(sample.load_trend),
+                sample.mem_available_ratio * 100.0,
+                trendName(sample.memory_trend)
+            );
+            logInfo(
+                "       temp %5.2fC max %5.2fC %-7s | batt %5.2fC | chg %s | src %s",
                 static_cast<double>(sample.thermal_millidegrees) / 1000.0,
                 static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0,
                 trendName(sample.thermal_trend),
-                sample.thermal_source == ThermalSource::Primary ? "PRIMARY" :
-                    sample.thermal_source == ThermalSource::Fallback ? "FALLBACK" : "UNKNOWN",
-                sample.charging ? "YES" : "NO",
                 static_cast<double>(sample.battery_temperature_millidegrees) / 1000.0,
-                sample.confidence
+                sample.charging ? "YES" : "NO",
+                sample.thermal_source == ThermalSource::Primary ? "PRIMARY" :
+                    sample.thermal_source == ThermalSource::Fallback ? "FALLBACK" : "UNKNOWN"
             );
         }
 
@@ -714,7 +734,7 @@ void AutonomousEngine::tick() {
  * 
  * Features:
  * - Adaptive sleep duration based on system state
- * - Faster monitoring when system is under thermal load
+ * - Default monitoring cadence during active states
  * - Slower monitoring during idle (up to 4x longer polling interval)
  * - Responsive to refresh and stop signals (100ms granularity)
  * - Clean shutdown with baseline restoration
