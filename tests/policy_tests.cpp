@@ -39,6 +39,25 @@ int main() {
 
     sample.mem_available_ratio = 0.50;
     sample.load1 = 2.0;
+    sample.cpu_utilization_available = false;
+    if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Elevated)) {
+        return 1;
+    }
+
+    // Multicore Android: a high absolute load average must not force
+    // ELEVATED when reliable CPU utilization says the CPU is not busy.
+    // This is important for making the safety-gated TRIAL window reachable.
+    sample.cpu_utilization_available = true;
+    sample.cpu_utilization = 0.20;
+    sample.load1 = 6.0;
+    if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Normal)) {
+        return 1;
+    }
+
+    // A genuinely high CPU utilization must still enter ELEVATED even when
+    // load average is low.
+    sample.cpu_utilization = 0.90;
+    sample.load1 = 0.5;
     if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Elevated)) {
         return 1;
     }
