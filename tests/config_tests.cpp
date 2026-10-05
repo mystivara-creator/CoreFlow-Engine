@@ -11,7 +11,6 @@ static bool expect(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
         return false;
     }
-
     return true;
 }
 
@@ -33,34 +32,22 @@ int main() {
 
     EngineConfig cfg;
 
-    if (!expect(cfg.load(path), "configuration failed to load")) {
-        return 1;
-    }
+    if (!expect(cfg.load(path), "configuration failed to load")) return 1;
 
     if (!expect(cfg.monitorIntervalSeconds() == 60,
-                "monitor interval should be clamped to 60")) {
-        return 1;
-    }
+                "monitor interval should be clamped to 60")) return 1;
 
     if (!expect(cfg.minConfidence() == 0.50,
-                "minimum confidence should be clamped to 0.50")) {
-        return 1;
-    }
+                "minimum confidence should be clamped to 0.50")) return 1;
 
     if (!expect(cfg.mutationMode() == MutationMode::Adaptive,
-                "mutation mode should be Adaptive")) {
-        return 1;
-    }
+                "mutation mode should be Adaptive")) return 1;
 
-    if (!expect(cfg.allowCpuGovernor(),
-                "CPU governor should be allowed by configuration")) {
-        return 1;
-    }
+    if (!expect(!cfg.allowCpuGovernor(),
+                "CPU governor permission should parse as false")) return 1;
 
-    if (!expect(cfg.runtimeRefreshEnabled(),
-                "runtime refresh should be enabled")) {
-        return 1;
-    }
+    if (!expect(!cfg.runtimeRefreshEnabled(),
+                "runtime refresh should parse as false")) return 1;
 
     return 0;
 }

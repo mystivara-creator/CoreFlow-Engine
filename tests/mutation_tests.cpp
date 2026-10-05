@@ -15,6 +15,13 @@ static bool expect(bool condition, const char* message) {
     return true;
 }
 
+static std::string readValue(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    std::string value;
+    std::getline(file, value);
+    return value;
+}
+
 int main() {
     namespace fs = std::filesystem;
 
@@ -25,18 +32,17 @@ int main() {
     const fs::path governor = root / "scaling_governor";
     {
         std::ofstream file(governor);
-        if (!expect(file.is_open(), "unable to create governor test node")) {
+        if (!expect(file.is_open(), "unable to create governor test node"))
             return 1;
-        }
-        file << "performance\n";
+        file << "walt\n";
     }
 
     CpuPolicy policy;
     policy.path = root.string();
     policy.readable = true;
-    policy.governor = "performance";
+    policy.governor = "walt";
     policy.governor_writable = true;
-    policy.available_governors = {"performance", "schedutil"};
+    policy.available_governors = {"walt", "performance", "schedutil"};
 
     DeviceProfile profile;
     profile.cpu_policies.push_back(policy);
@@ -52,41 +58,26 @@ int main() {
     MutationController controller;
     controller.captureBaseline(profile);
 
-    const auto applied =
+    // Simulate another component having changed the governor.
+    {
+        std::ofstream file(governor);
+        file << "schedutil\n";
+    }
+
+    const auto restored =
         controller.apply(RuntimeState::ThermalGuard, sample, profile, cfg);
 
-    if (!expect(applied == MutationResult::Verified,
-                "mutation should be verified")) {
-        fs::remove_all(root);
+    if (!expect(restored == MutationResult::Verified,
+                "thermal guard should restore the captured baseline"))
         return 1;
-    }
 
-    {
-        std::ifstream file(governor);
-        std::string value;
-        std::getline(file, value);
-        if (!expect(value == "schedutil",
-                    "governor should be changed to schedutil")) {
-            fs::remove_all(root);
-            return 1;
-        }
-    }
-
-    if (!expect(controller.restoreAll(), "baseline restore should succeed")) {
-        fs::remove_all(root);
+    if (!expect(readValue(governor) == "walt",
+                "thermal guard must not force schedutil"))
         return 1;
-    }
 
-    {
-        std::ifstream file(governor);
-        std::string value;
-        std::getline(file, value);
-        if (!expect(value == "performance",
-                    "governor should be restored to performance")) {
-            fs::remove_all(root);
-            return 1;
-        }
-    }
+    if (!expect(controller.restoreAll(),
+                "baseline restore should succeed"))
+        return 1;
 
     fs::remove_all(root);
     return 0;
