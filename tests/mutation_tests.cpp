@@ -1,12 +1,21 @@
 #include "coreflow/mutation.hpp"
 
-#include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 
+using namespace coreflow;
+
+static bool expect(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << "FAIL: " << message << '\n';
+        return false;
+    }
+    return true;
+}
+
 int main() {
-    using namespace coreflow;
     namespace fs = std::filesystem;
 
     const fs::path root = fs::path("/tmp/coreflow_mutation_test");
@@ -16,6 +25,9 @@ int main() {
     const fs::path governor = root / "scaling_governor";
     {
         std::ofstream file(governor);
+        if (!expect(file.is_open(), "unable to create governor test node")) {
+            return 1;
+        }
         file << "performance\n";
     }
 
@@ -40,22 +52,40 @@ int main() {
     MutationController controller;
     controller.captureBaseline(profile);
 
-    const auto applied = controller.apply(RuntimeState::ThermalGuard, sample, profile, cfg);
-    assert(applied == MutationResult::Verified);
+    const auto applied =
+        controller.apply(RuntimeState::ThermalGuard, sample, profile, cfg);
 
-    {
-        std::ifstream file(governor);
-        std::string value;
-        std::getline(file, value);
-        assert(value == "schedutil");
+    if (!expect(applied == MutationResult::Verified,
+                "mutation should be verified")) {
+        fs::remove_all(root);
+        return 1;
     }
 
-    assert(controller.restoreAll());
     {
         std::ifstream file(governor);
         std::string value;
         std::getline(file, value);
-        assert(value == "performance");
+        if (!expect(value == "schedutil",
+                    "governor should be changed to schedutil")) {
+            fs::remove_all(root);
+            return 1;
+        }
+    }
+
+    if (!expect(controller.restoreAll(), "baseline restore should succeed")) {
+        fs::remove_all(root);
+        return 1;
+    }
+
+    {
+        std::ifstream file(governor);
+        std::string value;
+        std::getline(file, value);
+        if (!expect(value == "performance",
+                    "governor should be restored to performance")) {
+            fs::remove_all(root);
+            return 1;
+        }
     }
 
     fs::remove_all(root);
