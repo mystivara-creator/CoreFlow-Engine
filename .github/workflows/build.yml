@@ -80,7 +80,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v6
+        uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
 
