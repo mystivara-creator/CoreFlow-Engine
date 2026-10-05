@@ -140,6 +140,11 @@ const char* mutationResultName(MutationResult result) {
         case MutationResult::Verified: return "VERIFIED";
         case MutationResult::Failed: return "FAILED";
         case MutationResult::RolledBack: return "ROLLED_BACK";
+        case MutationResult::TrialObserving: return "TRIAL_OBSERVING";
+        case MutationResult::TrialApplied: return "TRIAL_APPLIED";
+        case MutationResult::TrialCompleted: return "TRIAL_COMPLETED";
+        case MutationResult::TrialRejected: return "TRIAL_REJECTED";
+        case MutationResult::TrialAborted: return "TRIAL_ABORTED";
     }
     return "UNKNOWN";
 }

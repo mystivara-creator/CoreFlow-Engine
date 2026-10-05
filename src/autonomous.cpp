@@ -397,9 +397,10 @@ void AutonomousEngine::logStateTransition(RuntimeState oldState, RuntimeState ne
  */
 void AutonomousEngine::logMutation(MutationResult result, RuntimeState state) const {
     if (result == MutationResult::Skipped) return;
-    
-    logInfo("MUTATION result=%s state=%s baseline_actions=%zu",
-            mutationResultName(result), stateName(state), controller_.baselineSize());
+
+    logInfo("MUTATION result=%s state=%s baseline_actions=%zu trial_active=%s",
+            mutationResultName(result), stateName(state), controller_.baselineSize(),
+            controller_.trialActive() ? "YES" : "NO");
 }
 
 /**
