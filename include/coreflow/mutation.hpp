@@ -106,21 +106,32 @@ private:
     static constexpr double kTrialThermalCeilingC = 40.0;
     static constexpr double kTrialMaxThermalRegressionC = 0.75;
     static constexpr double kTrialMinEvidenceScore = 0.70;
+    static constexpr double kAdaptiveHysteresisMargin = 0.10;
 
     bool writeTextVerified(const std::string& path,
                            const std::string& value) noexcept;
     void discoverGovernorCandidates(const DeviceProfile& profile) noexcept;
     bool governorAvailable(const CpuPolicy& policy,
                            const std::string& governor) const noexcept;
-    const GovernorCandidate* findValidatedCandidate(
-        const std::string& policyPath
-    ) const noexcept;
     GovernorCandidate* findCandidate(const std::string& policyPath,
                                      const std::string& governor) noexcept;
     bool buildPlan(
         RuntimeState state,
+        const RuntimeSample& sample,
         const DeviceProfile& profile,
         std::vector<MutationPlanEntry>& plan
+    ) const noexcept;
+
+    double scoreGovernor(
+        const GovernorCandidate& candidate,
+        const RuntimeSample& sample,
+        RuntimeState state
+    ) const noexcept;
+
+    const GovernorCandidate* selectGovernor(
+        const CpuPolicy& policy,
+        const RuntimeSample& sample,
+        RuntimeState state
     ) const noexcept;
     MutationResult applyPlan(
         const std::vector<MutationPlanEntry>& plan
