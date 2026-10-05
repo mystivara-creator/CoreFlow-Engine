@@ -1,8 +1,10 @@
 #include "coreflow/policy.hpp"
 
-#include <cassert>
-
 using namespace coreflow;
+
+static bool expect(bool condition) {
+    return condition;
+}
 
 int main() {
     AdaptivePolicy policy;
@@ -14,22 +16,32 @@ int main() {
     sample.mem_available_kb = 500;
     sample.mem_available_ratio = 0.50;
     sample.load1 = 0.5;
-    assert(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::ThermalGuard);
+    if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::ThermalGuard)) {
+        return 1;
+    }
 
     sample.thermal_millidegrees = 41000;
-    assert(policy.evaluate(sample, RuntimeState::ThermalGuard) == RuntimeState::ThermalGuard);
+    if (!expect(policy.evaluate(sample, RuntimeState::ThermalGuard) == RuntimeState::ThermalGuard)) {
+        return 1;
+    }
 
     sample.thermal_millidegrees = 40000;
-    assert(policy.evaluate(sample, RuntimeState::ThermalGuard) != RuntimeState::ThermalGuard);
+    if (!expect(policy.evaluate(sample, RuntimeState::ThermalGuard) != RuntimeState::ThermalGuard)) {
+        return 1;
+    }
 
     sample.thermal_available = false;
     sample.mem_total_kb = 1000;
     sample.mem_available_ratio = 0.05;
-    assert(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Pressure);
+    if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Pressure)) {
+        return 1;
+    }
 
     sample.mem_available_ratio = 0.50;
     sample.load1 = 2.0;
-    assert(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Elevated);
+    if (!expect(policy.evaluate(sample, RuntimeState::Normal) == RuntimeState::Elevated)) {
+        return 1;
+    }
 
     return 0;
 }
