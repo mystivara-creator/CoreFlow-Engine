@@ -5,7 +5,7 @@
 
 namespace coreflow {
 
-inline constexpr const char* kCoreFlowVersion = "1.9.0";
+inline constexpr const char* kCoreFlowVersion = "1.0.0-A";
 
 enum class MutationMode {
     Disabled,
