@@ -28,6 +28,7 @@ private:
     void logStateTransition(RuntimeState, RuntimeState) const;
     void logMutation(MutationResult, RuntimeState) const;
 
+    bool validateSample(const RuntimeSample&) const;
     void updateTrends(RuntimeSample&) const;
     double calculateConfidence(const RuntimeSample&) const;
     NotificationEvent selectNotification(
