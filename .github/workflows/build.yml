@@ -212,6 +212,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: CoreFlow-Autonomous-1.0.0-A-android14-arm64
-          path: artifacts/CoreFlow-Autonomous-1.0.0-A-android14-arm64.zip
+          path: artifacts/CoreFlow-Autonomous-*-android14-arm64.zip
           if-no-files-found: error
           retention-days: 30
