@@ -1,13 +1,30 @@
 #include "coreflow/mutation.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <fstream>
 #include <string>
 #include <utility>
 #include <unistd.h>
 
 namespace coreflow {
+namespace {
+
+constexpr const char* kAdaptiveGovernor = "schedutil";
+
+bool readTextValue(
+    const std::string& path,
+    std::string& value
+) noexcept {
+    try {
+        std::ifstream file(path);
+        if (!file) return false;
+        return static_cast<bool>(std::getline(file, value));
+    } catch (...) {
+        return false;
+    }
+}
+
+} // namespace
 
 bool MutationController::writeTextVerified(
     const std::string& path,
@@ -16,12 +33,9 @@ bool MutationController::writeTextVerified(
     try {
         if (access(path.c_str(), W_OK) != 0) return false;
 
-        std::ifstream before(path);
-        if (before) {
-            std::string current;
-            std::getline(before, current);
-            if (current == value) return true;
-        }
+        std::string current;
+        if (readTextValue(path, current) && current == value)
+            return true;
 
         std::ofstream file(path);
         if (!file) return false;
@@ -31,12 +45,8 @@ bool MutationController::writeTextVerified(
         if (!file.good()) return false;
         file.close();
 
-        std::ifstream verify(path);
-        if (!verify) return false;
-
         std::string actual;
-        std::getline(verify, actual);
-        return actual == value;
+        return readTextValue(path, actual) && actual == value;
     } catch (...) {
         return false;
     }
@@ -162,7 +172,14 @@ bool MutationController::buildPlan(
 ) const noexcept {
     plan.clear();
 
-    if (state != RuntimeState::Idle && state != RuntimeState::Normal)
+    // Production adaptive action is intentionally narrow:
+    // THERMAL_GUARD -> schedutil, but only when the kernel explicitly
+    // advertises schedutil for the active policy.
+    //
+    // All non-protected states are handled by apply() through baseline
+    // restoration. Pressure is intentionally not mapped to a CPU governor
+    // change because a governor switch is not a direct memory-pressure fix.
+    if (state != RuntimeState::ThermalGuard)
         return false;
 
     for (const CpuPolicy& policy : profile.cpu_policies) {
@@ -176,18 +193,15 @@ bool MutationController::buildPlan(
         if (baseline == baseline_.end() || !baseline->second.valid)
             continue;
 
-        const GovernorCandidate* candidate =
-            findValidatedCandidate(policy.path);
-        if (candidate == nullptr ||
-            candidate->governor == baseline->second.value) {
+        if (!governorAvailable(policy, kAdaptiveGovernor))
             continue;
-        }
 
-        if (!governorAvailable(policy, candidate->governor)) continue;
+        if (baseline->second.value == kAdaptiveGovernor)
+            continue;
 
         plan.push_back({
             governorPath,
-            candidate->governor,
+            kAdaptiveGovernor,
             baseline->second.value
         });
     }
@@ -224,23 +238,36 @@ MutationResult MutationController::applyPlan(
 }
 
 MutationResult MutationController::restoreGovernors() noexcept {
-    bool touched = false;
+    bool restoredAny = false;
     bool failed = false;
 
     for (const auto& entry : baseline_) {
         if (!entry.second.valid) continue;
+
+        std::string current;
+        if (readTextValue(entry.first, current) &&
+            current == entry.second.value) {
+            // Already at baseline; avoid an unnecessary sysfs write.
+            continue;
+        }
 
         if (!writeTextVerified(entry.first, entry.second.value)) {
             failed = true;
             continue;
         }
 
-        touched = true;
+        restoredAny = true;
     }
 
-    if (failed) return touched ? MutationResult::RolledBack
-                               : MutationResult::Failed;
-    return touched ? MutationResult::Verified : MutationResult::Skipped;
+    if (failed) {
+        return restoredAny
+            ? MutationResult::RolledBack
+            : MutationResult::Failed;
+    }
+
+    return restoredAny
+        ? MutationResult::Verified
+        : MutationResult::Skipped;
 }
 
 void MutationController::accumulate(
@@ -403,6 +430,8 @@ void MutationController::abortTrial() noexcept {
     trial_.reset();
 }
 
+// Experimental path retained for controlled validation. Production Adaptive
+// mode does not depend on this state machine.
 MutationResult MutationController::runTrial(
     RuntimeState state,
     const RuntimeSample& sample,
@@ -457,23 +486,20 @@ MutationResult MutationController::apply(
     if (config.mutationMode() != MutationMode::Adaptive)
         return MutationResult::Skipped;
 
-    if (!config.allowCpuGovernor())
-        return MutationResult::Skipped;
-
-    if (sample.confidence < config.minConfidence())
-        return MutationResult::Skipped;
-
     if (!baseline_captured_)
         captureBaseline(profile);
 
-    if (state == RuntimeState::ThermalGuard ||
-        state == RuntimeState::Pressure) {
+    // Baseline restoration is the default safe behavior. It runs before
+    // confidence gating so a previously applied governor is not left active
+    // merely because telemetry confidence temporarily dropped.
+    if (state != RuntimeState::ThermalGuard)
         return restoreGovernors();
-    }
 
-    if (state == RuntimeState::Warming ||
-        state == RuntimeState::Elevated) {
-        return MutationResult::Skipped;
+    // Fail closed in the protected state when mutation is disabled or the
+    // telemetry confidence is below the configured floor.
+    if (!config.allowCpuGovernor() ||
+        sample.confidence < config.minConfidence()) {
+        return restoreGovernors();
     }
 
     std::vector<MutationPlanEntry> plan;
