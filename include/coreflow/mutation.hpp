@@ -31,10 +31,6 @@ private:
 
     bool writeTextVerified(const std::string& path,
                            const std::string& value) noexcept;
-    bool isGovernorSupported(const CpuPolicy& policy,
-                             const std::string& governor) const noexcept;
-    MutationResult applyThermalGuardGovernor(const DeviceProfile& profile,
-                                             const EngineConfig& config) noexcept;
     MutationResult restoreGovernors() noexcept;
 
     std::unordered_map<std::string, Baseline> baseline_;
