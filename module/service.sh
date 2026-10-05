@@ -31,7 +31,9 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
-echo "$(date '+%F %T') starting CoreFlow Autonomous v1.8.0" >> "$LOG_FILE"
+VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$MODDIR/module.prop" 2>/dev/null)"
+VERSION="${VERSION:-unknown}"
+echo "$(date '+%F %T') starting CoreFlow Autonomous ${VERSION}" >> "$LOG_FILE"
 "$BINARY" >> "$LOG_FILE" 2>&1 &
 PID=$!
 
