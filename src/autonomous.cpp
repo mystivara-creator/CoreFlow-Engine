@@ -19,26 +19,54 @@ constexpr std::size_t kHistorySize = 6;
 constexpr std::uint64_t kNotificationCooldownSamples = 12;
 constexpr std::uint64_t kPeriodicLogSamples = 6;
 
+#if defined(__clang__) || defined(__GNUC__)
+#define COREFLOW_PRINTF_FORMAT(format_index, argument_index) \
+    __attribute__((format(printf, format_index, argument_index)))
+#else
+#define COREFLOW_PRINTF_FORMAT(format_index, argument_index)
+#endif
+
+// Keep printf-format checking at every logger call site. Android's variadic
+// logging API receives the format string through a parameter, so Clang cannot
+// prove it is literal inside this helper. Scope the suppression to that single
+// API call rather than weakening format diagnostics for the translation unit.
+void logMessage(int priority, const char* fmt, va_list args) {
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+    __android_log_vprint(priority, kLogTag, fmt, args);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+}
+
+void logInfo(const char* fmt, ...) COREFLOW_PRINTF_FORMAT(1, 2);
+void logWarn(const char* fmt, ...) COREFLOW_PRINTF_FORMAT(1, 2);
+void logError(const char* fmt, ...) COREFLOW_PRINTF_FORMAT(1, 2);
+
 void logInfo(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    __android_log_vprint(ANDROID_LOG_INFO, kLogTag, fmt, args);
+    logMessage(ANDROID_LOG_INFO, fmt, args);
     va_end(args);
 }
 
 void logWarn(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    __android_log_vprint(ANDROID_LOG_WARN, kLogTag, fmt, args);
+    logMessage(ANDROID_LOG_WARN, fmt, args);
     va_end(args);
 }
 
 void logError(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    __android_log_vprint(ANDROID_LOG_ERROR, kLogTag, fmt, args);
+    logMessage(ANDROID_LOG_ERROR, fmt, args);
     va_end(args);
 }
+
+#undef COREFLOW_PRINTF_FORMAT
 
 Trend calculateTrend(double oldest, double newest, double deadband) {
     const double delta = newest - oldest;
