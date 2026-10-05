@@ -41,7 +41,19 @@ RuntimeState AdaptivePolicy::evaluate(
 
     const bool cpu_busy = sample.cpu_utilization_available &&
                           sample.cpu_utilization >= kElevatedUtil;
-    if (cpu_busy || sample.load1 >= kElevatedLoad)
+
+    // /proc/loadavg is an absolute runnable-task load value, not a
+    // percentage. On multicore Android devices, a value such as 5-8 can be
+    // perfectly normal while instantaneous CPU utilization is low.
+    //
+    // Use load as a fallback only when CPU utilization is unavailable.
+    // This prevents the policy from pinning the engine in ELEVATED state
+    // during normal multicore workloads, which would otherwise make the
+    // safety-gated TRIAL mutation path effectively unreachable.
+    const bool load_busy = !sample.cpu_utilization_available &&
+                           sample.load1 >= kElevatedLoad;
+
+    if (cpu_busy || load_busy)
         return RuntimeState::Elevated;
 
     if (sample.load1 < 0.20)
@@ -131,6 +143,7 @@ const char* notificationEventName(NotificationEvent event) {
         case NotificationEvent::ChargingProtection: return "CHARGING_PROTECTION";
         case NotificationEvent::None: default: return "NONE";
     }
+    return "NONE";
 }
 
 const char* mutationResultName(MutationResult result) {
