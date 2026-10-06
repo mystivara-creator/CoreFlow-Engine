@@ -325,6 +325,14 @@ MutationResult MutationController::applyPlan(
     return MutationResult::Verified;
 }
 
+void MutationController::rejectLastMutation() noexcept {
+    for (const auto& entry : last_applied_governors_) {
+        rejected_governors_[entry.first].insert(entry.second);
+    }
+
+    last_applied_governors_.clear();
+}
+
 MutationResult MutationController::restoreGovernors() noexcept {
     bool restoredAny = false;
     bool failed = false;
