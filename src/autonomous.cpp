@@ -175,7 +175,7 @@ bool AutonomousEngine::initialize() {
     sample_count_ = 0;
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
-    
+    has_restored_ = false;
     controller_.captureBaseline(snapshot_.profile);
 
     const ChargingCapability& charging = snapshot_.profile.charging;
@@ -210,7 +210,7 @@ bool AutonomousEngine::refreshEnvironment() {
     sample_count_ = 0;
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
-
+    has_restored_ = false;
     controller_.captureBaseline(snapshot_.profile);
 
     logInfo(
