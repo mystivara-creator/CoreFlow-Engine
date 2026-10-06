@@ -1,4 +1,5 @@
 #include "coreflow/autonomous.hpp"
+#include "coreflow/thermal_predictor.hpp"
 
 #include <android/log.h>
 #include <algorithm>
@@ -20,6 +21,7 @@ namespace {
 
 constexpr const char* kLogTag = "CoreFlowAutonomous";
 constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
+constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
 constexpr std::size_t kHistorySize = 6;
 
 // Notification throttling: prevents repeated events
@@ -54,6 +56,15 @@ constexpr double kThermalGuardHysteresisC = 1.5;
 constexpr double kRisingThermalBufferC = 0.5;
 
 // Adaptive thermal buffer scaling (efficiency feature)
+
+// After a measured regression, give the runtime a short settling window before
+// considering another mutation. Candidate-specific rejection is handled by
+// MutationController; this cooldown prevents immediate re-entry churn.
+constexpr std::uint64_t kRegressionCooldownSamples = 5;
+
+// After a beneficial or neutral outcome, hold the current decision for a
+// short settling window instead of immediately starting another mutation.
+constexpr std::uint64_t kOutcomeHoldSamples = 5;
 
 // ============================================================================
 // DEADBAND CONSTANTS (Trend Detection)
@@ -193,6 +204,12 @@ bool AutonomousEngine::initialize() {
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
+    mutation_cooldown_until_sample_ = 0;
+
+    const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
+    logInfo("THERMAL_ML status=%s backend=%s",
+            ml_ready ? "READY" : "FALLBACK",
+            thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
     controller_.captureBaseline(snapshot_.profile);
     has_restored_ = false;
@@ -232,6 +249,12 @@ bool AutonomousEngine::refreshEnvironment() {
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
+    mutation_cooldown_until_sample_ = 0;
+
+    const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
+    logInfo("THERMAL_ML status=%s backend=%s",
+            ml_ready ? "READY" : "FALLBACK",
+            thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
     controller_.captureBaseline(snapshot_.profile);
 
@@ -395,21 +418,31 @@ void AutonomousEngine::tick() {
         const RuntimeState previous = snapshot_.state;
         RuntimeState next = policy_.evaluate(sample, previous);
 
-        // Autonomous safety hysteresis is applied after policy evaluation.
+        // Autonomous safety hysteresis and predictive thermal guard are
+        // applied after policy evaluation.
         if (sample.thermal_available) {
             const double thermal_c =
                 static_cast<double>(sample.thermal_millidegrees) / 1000.0;
+            const double predicted_thermal_c =
+                thermal_predictor_.predict(history_, sample, 3);
 
             if (previous == RuntimeState::ThermalGuard &&
                 next != RuntimeState::ThermalGuard &&
                 thermal_c >
                     (kThermalGuardThresholdC - kThermalGuardHysteresisC)) {
                 next = RuntimeState::ThermalGuard;
-            } else if (next != RuntimeState::ThermalGuard &&
-                       sample.thermal_trend == Trend::Rising &&
-                       thermal_c >=
-                           (kThermalGuardThresholdC - kRisingThermalBufferC)) {
+            } else if (
+                next != RuntimeState::ThermalGuard &&
+                (predicted_thermal_c >= kThermalGuardThresholdC ||
+                 (sample.thermal_trend == Trend::Rising &&
+                  thermal_c >=
+                      (kThermalGuardThresholdC -
+                       kRisingThermalBufferC)))) {
                 next = RuntimeState::ThermalGuard;
+                logWarn(
+                    "PREDICTIVE_THERMAL_TRIGGER: current=%.2fC, "
+                    "predicted_3ticks=%.2fC",
+                    thermal_c, predicted_thermal_c);
             }
         }
 
@@ -466,18 +499,61 @@ void AutonomousEngine::tick() {
                     evaluation.baseline_samples,
                     evaluation.observation_samples);
 
-                if (evaluation.outcome ==
-                    BaselineIntelligence::Outcome::Regression) {
-                    const bool restored = controller_.restoreAll();
-                    mutation = restored ? MutationResult::RolledBack
-                                        : MutationResult::Failed;
-                    logInfo("EFFICIENCY_REGRESSION restore=%s",
-                            restored ? "OK" : "FAILED");
+                switch (evaluation.outcome) {
+                    case BaselineIntelligence::Outcome::Beneficial:
+                        mutation_cooldown_until_sample_ =
+                            sample_count_ + kOutcomeHoldSamples + 1U;
+                        logInfo(
+                            "EFFICIENCY_BENEFICIAL action=KEEP "
+                            "hold_until_sample=%llu",
+                            static_cast<unsigned long long>(
+                                mutation_cooldown_until_sample_));
+                        break;
+
+                    case BaselineIntelligence::Outcome::Neutral:
+                        mutation_cooldown_until_sample_ =
+                            sample_count_ + kOutcomeHoldSamples + 1U;
+                        logInfo(
+                            "EFFICIENCY_NEUTRAL action=HOLD "
+                            "hold_until_sample=%llu",
+                            static_cast<unsigned long long>(
+                                mutation_cooldown_until_sample_));
+                        break;
+
+                    case BaselineIntelligence::Outcome::Regression: {
+                        controller_.rejectLastMutation();
+                        mutation_cooldown_until_sample_ =
+                            sample_count_ + kRegressionCooldownSamples + 1U;
+
+                        const bool restored = controller_.restoreAll();
+                        mutation = restored ? MutationResult::RolledBack
+                                            : MutationResult::Failed;
+                        logInfo(
+                            "EFFICIENCY_REGRESSION restore=%s "
+                            "suppression=ACTIVE until_sample=%llu",
+                            restored ? "OK" : "FAILED",
+                            static_cast<unsigned long long>(
+                                mutation_cooldown_until_sample_));
+                        break;
+                    }
+
+                    default:
+                        break;
                 }
             }
         } else if (baseline_intelligence_.baselineReady()) {
-            mutation = controller_.apply(
-                next, sample, snapshot_.profile, config_);
+            const bool mutationCooldownActive =
+                sample_count_ < mutation_cooldown_until_sample_;
+
+            if (!mutationCooldownActive) {
+                mutation = controller_.apply(
+                    next, sample, snapshot_.profile, config_);
+            } else {
+                logInfo(
+                    "EFFICIENCY_MUTATION_HELD until_sample=%llu",
+                    static_cast<unsigned long long>(
+                        mutation_cooldown_until_sample_));
+            }
 
             if (mutation == MutationResult::Verified) {
                 if (baseline_intelligence_.beginObservation()) {
