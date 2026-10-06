@@ -279,6 +279,30 @@ It should not become a second decision-making layer.
 
 ---
 
+## v1.1 Baseline Intelligence
+
+The v1.1 feature line adds an efficiency-evaluation layer without replacing the factory/OEM configuration or the existing mutation restore baseline.
+
+```text
+Factory / OEM Runtime
+        ↓
+Efficiency Baseline
+        ↓
+Verified Mutation
+        ↓
+Observation Window
+        ↓
+Outcome Evaluation
+        ├── BENEFICIAL → keep
+        ├── NEUTRAL     → keep / continue observing
+        ├── REGRESSION  → restore baseline
+        └── INCONCLUSIVE → no efficiency claim
+```
+
+The first implementation uses only telemetry already exposed by `RuntimeSample`: thermal, load, CPU utilization and memory availability. It intentionally does not claim to measure FPS, application latency, battery power consumption, or I/O throughput because those signals are not part of the current runtime telemetry contract.
+
+`MutationController::captureBaseline()` remains the restore/safety baseline. `BaselineIntelligence` is a separate observational baseline and must not replace it.
+
 ## Versioning
 
 CoreFlow follows this planned versioning direction:
@@ -294,7 +318,7 @@ v2.x
     Architectural changes
 ```
 
-`v1.0.0-A` represents the first frozen Autonomous baseline.
+`v1.0.0-A` represents the first frozen Autonomous baseline. The current branch develops `v1.1.0-A` as a feature release focused on efficiency evaluation.
 
 Future development should branch from this release rather than modifying the frozen release history directly.
 

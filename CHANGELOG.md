@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.0-A — Baseline Intelligence (Development)
+
+- added `BaselineIntelligence` as a separate efficiency-evaluation layer
+- preserved `MutationController` restore baseline as the safety baseline
+- added five-sample factory/runtime baseline capture before mutation is allowed
+- added five-sample post-mutation observation windows
+- added Beneficial / Neutral / Regression / Inconclusive outcomes
+- regression outcomes restore the MutationController baseline
+- added deterministic Baseline Intelligence host tests
+- integrated the feature into `AutonomousEngine::tick()`
+- reset efficiency state on startup and runtime rediscovery
+
+
 ## v1.8.0 — Production Foundation
 
 - normalized project/module/runtime versioning to 1.8.0
