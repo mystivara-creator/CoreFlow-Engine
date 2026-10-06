@@ -28,6 +28,7 @@ private:
     void logStateTransition(RuntimeState, RuntimeState) const;
     void logMutation(MutationResult, RuntimeState) const;
 
+    bool has_restored_{false};
     bool validateSample(const RuntimeSample&) const;
     void updateTrends(RuntimeSample&) const;
     double calculateConfidence(const RuntimeSample&) const;
