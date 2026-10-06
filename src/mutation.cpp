@@ -319,7 +319,19 @@ MutationResult MutationController::applyPlan(
                 ? MutationResult::RolledBack
                 : MutationResult::Failed;
         }
-        touched.push_back(entry.path);
+            touched.push_back(entry.path);
+    }
+
+    last_applied_governors_.clear();
+    for (const MutationPlanEntry& entry : plan) {
+        const std::string suffix = "/scaling_governor";
+        if (entry.path.size() >= suffix.size() &&
+            entry.path.compare(entry.path.size() - suffix.size(),
+                               suffix.size(), suffix) == 0) {
+            const std::string policyPath =
+                entry.path.substr(0, entry.path.size() - suffix.size());
+            last_applied_governors_.emplace_back(policyPath, entry.target);
+        }
     }
 
     return MutationResult::Verified;
