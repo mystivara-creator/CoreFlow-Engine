@@ -192,8 +192,7 @@ bool AutonomousEngine::initialize() {
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
-    
-    // Initialize efficiency cache members
+    baseline_intelligence_.reset();
 
     controller_.captureBaseline(snapshot_.profile);
     has_restored_ = false;
@@ -232,6 +231,7 @@ bool AutonomousEngine::refreshEnvironment() {
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
+    baseline_intelligence_.reset();
 
     controller_.captureBaseline(snapshot_.profile);
 
@@ -434,11 +434,61 @@ void AutonomousEngine::tick() {
             last_notification_sample_ = sample_count_;
         }
 
-        // STEP 9: Apply mutations
-        const MutationResult mutation = controller_.apply(next, sample, snapshot_.profile, config_);
+        // STEP 9: Build the efficiency baseline before allowing mutations.
+        // The first baseline window represents the observed factory/OEM runtime
+        // state; it is deliberately separate from MutationController's restore
+        // baseline.
+        if (!baseline_intelligence_.baselineReady()) {
+            const bool ready = baseline_intelligence_.captureBaseline(sample);
+            if (ready) {
+                logInfo("EFFICIENCY_BASELINE_READY samples=%zu",
+                        BaselineIntelligence::kBaselineSamples);
+            } else {
+                logInfo("EFFICIENCY_BASELINE_CAPTURE %zu/%zu",
+                        sample_count_ + 1U,
+                        BaselineIntelligence::kBaselineSamples);
+            }
+        }
+
+        // STEP 10: Observe a verified mutation without allowing another
+        // mutation to alter the candidate during the observation window.
+        MutationResult mutation = MutationResult::Skipped;
+        if (baseline_intelligence_.observing()) {
+            const bool complete = baseline_intelligence_.observe(sample);
+            if (complete) {
+                const auto& evaluation = baseline_intelligence_.result();
+                logInfo(
+                    "EFFICIENCY_OUTCOME outcome=%d score=%.3f confidence=%.3f "
+                    "baseline=%zu observation=%zu",
+                    static_cast<int>(evaluation.outcome),
+                    evaluation.overall_score,
+                    evaluation.confidence,
+                    evaluation.baseline_samples,
+                    evaluation.observation_samples);
+
+                if (evaluation.outcome ==
+                    BaselineIntelligence::Outcome::Regression) {
+                    const bool restored = controller_.restoreAll();
+                    mutation = restored ? MutationResult::RolledBack
+                                        : MutationResult::Failed;
+                    logInfo("EFFICIENCY_REGRESSION restore=%s",
+                            restored ? "OK" : "FAILED");
+                }
+            }
+        } else if (baseline_intelligence_.baselineReady()) {
+            mutation = controller_.apply(
+                next, sample, snapshot_.profile, config_);
+
+            if (mutation == MutationResult::Verified) {
+                if (baseline_intelligence_.beginObservation()) {
+                    logInfo("EFFICIENCY_OBSERVATION_BEGIN samples=%zu",
+                            BaselineIntelligence::kObservationSamples);
+                }
+            }
+        }
         logMutation(mutation, next);
 
-        // STEP 10: Periodic detailed logging (reduced frequency for storage efficiency)
+        // STEP 11: Periodic detailed logging (reduced frequency for storage efficiency)
         const bool periodic = (sample_count_ % kPeriodicLogSamples) == 0;
         if (decision != Decision::NoAction || periodic) {
             // Better format from HARDENED, efficiency from OPTIMIZED
@@ -460,7 +510,7 @@ void AutonomousEngine::tick() {
             );
         }
 
-        // STEP 12: Update history
+        // STEP 13: Update history
         history_.push_back(sample);
         while (history_.size() > kHistorySize) {
             history_.pop_front();
