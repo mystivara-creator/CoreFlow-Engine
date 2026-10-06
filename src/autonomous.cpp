@@ -34,7 +34,6 @@ constexpr std::uint64_t kPeriodicLogSamples = 10;
 // ============================================================================
 
 // Sensor staleness threshold: if thermal data older than this, distrust it
-constexpr int kSensorStalenessMs = 2000;
 
 
 // Policy cache: skip re-evaluation in steady state (efficiency optimization)
@@ -166,23 +165,6 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
  * @param timeDeltaMs Time since previous sample in milliseconds
  * @return Adaptive buffer in Celsius (0.5-2.0°C)
  */
-double computeAdaptiveThermalBuffer(long newTemp, long oldTemp, int timeDeltaMs) {
-    if (timeDeltaMs <= 0) return kRisingThermalBufferC;
-    
-    // Calculate rise rate in °C per second
-    const double riseRateCPerS =
-        (static_cast<double>(newTemp - oldTemp) / 1000.0) /
-        (static_cast<double>(timeDeltaMs) / 1000.0);
-    
-    // Scale buffer: 0.5°C/s rise → 0.5°C buffer, 2°C/s → 2.0°C buffer
-    double adaptiveBuffer = std::clamp(riseRateCPerS * 1.0,
-                                      kRisingThermalBufferC,
-                                      kRisingThermalBufferMaxC);
-    
-    return adaptiveBuffer;
-}
-
-} // namespace
 
 // ============================================================================
 // AUTONOMOUS ENGINE IMPLEMENTATION
