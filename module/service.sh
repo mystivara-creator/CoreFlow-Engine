@@ -4,6 +4,7 @@ MODDIR="${0%/*}"
 STATE_DIR="/data/adb/coreflow"
 LOG_DIR="$STATE_DIR/logs"
 BINARY="$MODDIR/system/bin/coreflowd"
+LIB_DIR="$MODDIR/system/lib64"
 PID_FILE="$STATE_DIR/coreflowd.pid"
 LOG_FILE="$LOG_DIR/coreflowd.log"
 
@@ -21,7 +22,20 @@ done
 
 sleep 5
 
-[ -x "$BINARY" ] || { echo "$(date '+%F %T') coreflowd missing" >> "$LOG_FILE"; exit 1; }
+[ -x "$BINARY" ] || {
+    echo "$(date '+%F %T') coreflowd missing" >> "$LOG_FILE"
+    exit 1
+}
+
+[ -f "$LIB_DIR/libonnxruntime.so" ] || {
+    echo "$(date '+%F %T') libonnxruntime.so missing" >> "$LOG_FILE"
+    exit 1
+}
+
+# CoreFlow ONNX runtime is shipped with the module.
+# Put the module-local library directory first so Android resolves
+# libonnxruntime.so against the exact runtime used to build coreflowd.
+export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 if [ -f "$PID_FILE" ]; then
     OLD_PID="$(cat "$PID_FILE" 2>/dev/null)"
