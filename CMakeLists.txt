@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(CoreFlowAutonomous VERSION 1.0.0 LANGUAGES CXX)
+project(CoreFlowAutonomous VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ if(ANDROID)
         src/config.cpp
         src/signal_state.cpp
         src/autonomous.cpp
+        src/baseline_intelligence.cpp
         src/discovery.cpp
         src/observer.cpp
         src/policy.cpp
@@ -65,6 +66,10 @@ if(BUILD_TESTING AND CORE_FLOW_BUILD_TESTS)
         tests/config_tests.cpp
         src/config.cpp
     )
+    add_executable(coreflow_baseline_tests
+        tests/baseline_intelligence_tests.cpp
+        src/baseline_intelligence.cpp
+    )
     add_executable(coreflow_mutation_tests
         tests/mutation_tests.cpp
         src/mutation.cpp
@@ -72,9 +77,11 @@ if(BUILD_TESTING AND CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(coreflow_policy_tests PRIVATE include)
     target_include_directories(coreflow_config_tests PRIVATE include)
+    target_include_directories(coreflow_baseline_tests PRIVATE include)
     target_include_directories(coreflow_mutation_tests PRIVATE include)
     target_compile_features(coreflow_policy_tests PRIVATE cxx_std_17)
     target_compile_features(coreflow_config_tests PRIVATE cxx_std_17)
+    target_compile_features(coreflow_baseline_tests PRIVATE cxx_std_17)
     target_compile_features(coreflow_mutation_tests PRIVATE cxx_std_17)
     target_compile_options(coreflow_policy_tests PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror
@@ -82,10 +89,14 @@ if(BUILD_TESTING AND CORE_FLOW_BUILD_TESTS)
     target_compile_options(coreflow_config_tests PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror
     )
+    target_compile_options(coreflow_baseline_tests PRIVATE
+        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror
+    )
     target_compile_options(coreflow_mutation_tests PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror
     )
     add_test(NAME coreflow_policy_tests COMMAND coreflow_policy_tests)
     add_test(NAME coreflow_config_tests COMMAND coreflow_config_tests)
+    add_test(NAME coreflow_baseline_tests COMMAND coreflow_baseline_tests)
     add_test(NAME coreflow_mutation_tests COMMAND coreflow_mutation_tests)
 endif()
