@@ -11,6 +11,7 @@
 #include "coreflow/observer.hpp"
 #include "coreflow/policy.hpp"
 #include "coreflow/types.hpp"
+#include "coreflow/thermal_predictor.hpp"
 
 namespace coreflow {
 
@@ -49,6 +50,8 @@ private:
     std::uint64_t last_notification_sample_{0};
     NotificationEvent last_notification_{NotificationEvent::None};
     BaselineIntelligence baseline_intelligence_;
+    ThermalPredictor thermal_predictor_;
+    std::uint64_t mutation_cooldown_until_sample_{0};
 };
 
 } // namespace coreflow
