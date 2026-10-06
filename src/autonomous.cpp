@@ -34,9 +34,13 @@ constexpr std::uint64_t kPeriodicLogSamples = 10;
 // ============================================================================
 
 // Sensor staleness threshold: if thermal data older than this, distrust it
+constexpr int kSensorStalenessMs = 2000;
 
+// Watchdog heartbeat: periodic "I'm alive" signal for parent monitoring
+constexpr std::uint64_t kWatchdogHeartbeatSamples = 60;
 
 // Policy cache: skip re-evaluation in steady state (efficiency optimization)
+constexpr std::uint64_t kPolicyCacheValidSamples = 3;
 
 // ============================================================================
 // THERMAL STABILITY (HYSTERESIS & PREDICTION)
@@ -165,6 +169,21 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
  * @param timeDeltaMs Time since previous sample in milliseconds
  * @return Adaptive buffer in Celsius (0.5-2.0°C)
  */
+double computeAdaptiveThermalBuffer(long newTemp, long oldTemp, int timeDeltaMs) {
+    if (timeDeltaMs <= 0) return kRisingThermalBufferC;
+    
+    // Calculate rise rate in °C per second
+    double riseRateCPerS = ((newTemp - oldTemp) / 1000.0) / (timeDeltaMs / 1000.0);
+    
+    // Scale buffer: 0.5°C/s rise → 0.5°C buffer, 2°C/s → 2.0°C buffer
+    double adaptiveBuffer = std::clamp(riseRateCPerS * 1.0,
+                                      kRisingThermalBufferC,
+                                      kRisingThermalBufferMaxC);
+    
+    return adaptiveBuffer;
+}
+
+} // namespace
 
 // ============================================================================
 // AUTONOMOUS ENGINE IMPLEMENTATION
@@ -203,9 +222,11 @@ bool AutonomousEngine::initialize() {
     has_restored_ = false;
     
     // Initialize efficiency cache members
+    last_policy_state_ = RuntimeState::Idle;
+    policy_cache_valid_until_sample_ = 0;
+    last_thermal_millidegrees_ = 0;
 
     controller_.captureBaseline(snapshot_.profile);
-    has_restored_ = false;
 
     // Log charging capabilities
     const ChargingCapability& charging = snapshot_.profile.charging;
@@ -241,6 +262,7 @@ bool AutonomousEngine::refreshEnvironment() {
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
+    policy_cache_valid_until_sample_ = 0;  // Invalidate cache after refresh
 
     controller_.captureBaseline(snapshot_.profile);
 
@@ -285,6 +307,7 @@ void AutonomousEngine::logMutation(MutationResult result, RuntimeState state) co
  * Prevents NaN/Infinity from crashing the daemon.
  */
 bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
+    // Thermal validation
     if (sample.thermal_available) {
         if (sample.thermal_millidegrees < kThermalMinMillidegrees ||
             sample.thermal_millidegrees > kThermalMaxMillidegrees) {
@@ -292,8 +315,19 @@ bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
             return false;
         }
 
+        // Validate sensor age
+        if (sample.thermal_age_ms < 0) {
+            logWarn("Thermal sensor age invalid: %d ms", sample.thermal_age_ms);
+            return false;
+        }
+
+        // Warn if sensor stale (but don't reject)
+        if (sample.thermal_age_ms > kSensorStalenessMs) {
+            logWarn("Thermal sensor stale: %d ms old", sample.thermal_age_ms);
+        }
     }
 
+    // Memory validation with NaN/Infinity protection (CRITICAL from HARDENED)
     if (sample.mem_total_kb > 0) {
         if (!std::isfinite(sample.mem_available_ratio) ||
             sample.mem_available_ratio < kMemoryRatioMin ||
@@ -303,6 +337,7 @@ bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
         }
     }
 
+    // Load validation with NaN/Infinity protection (CRITICAL from HARDENED)
     if (!std::isfinite(sample.load1) ||
         sample.load1 < 0.0 ||
         sample.load1 > kLoadAverageMax) {
@@ -310,11 +345,20 @@ bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
         return false;
     }
 
+    // CPU utilization validation (CRITICAL from HARDENED)
     if (sample.cpu_utilization_available) {
         if (!std::isfinite(sample.cpu_utilization) ||
             sample.cpu_utilization < 0.0 ||
             sample.cpu_utilization > 1.0) {
             logWarn("CPU utilization invalid: %.3f", sample.cpu_utilization);
+            return false;
+        }
+    }
+
+    // Battery temperature validation (CRITICAL from HARDENED)
+    if (sample.charging_telemetry_available) {
+        if (!std::isfinite(static_cast<double>(sample.battery_temperature_millidegrees))) {
+            logWarn("Battery temperature telemetry invalid");
             return false;
         }
     }
@@ -398,27 +442,43 @@ void AutonomousEngine::tick() {
         
         // STEP 4: Calculate confidence
         sample.confidence = calculateConfidence(sample);
-        // STEP 5: Evaluate state from fresh telemetry.
-        // Policy evaluation is intentionally uncached: runtime conditions can
-        // change between samples and the decision layer is inexpensive.
-        const RuntimeState previous = snapshot_.state;
-        RuntimeState next = policy_.evaluate(sample, previous);
 
-        // Autonomous safety hysteresis is applied after policy evaluation.
+        // STEP 5: Evaluate state (with caching optimization from OPTIMIZED)
+        RuntimeState next = snapshot_.state;
+        
+        // OPTIMIZATION: Check if we can use cached policy result
+        bool useCache = (sample_count_ <= policy_cache_valid_until_sample_) &&
+                       (snapshot_.state == last_policy_state_);
+        
+        if (!useCache) {
+            next = policy_.evaluate(sample, snapshot_.state);
+            last_policy_state_ = next;
+            policy_cache_valid_until_sample_ = sample_count_ + kPolicyCacheValidSamples;
+        }
+
+        // STEP 6: Apply thermal hysteresis & prediction (HARDENED logic)
+        // This prevents yo-yo state transitions and improves stability
         if (sample.thermal_available) {
-            const double thermal_c =
-                static_cast<double>(sample.thermal_millidegrees) / 1000.0;
-
-            if (previous == RuntimeState::ThermalGuard &&
-                next != RuntimeState::ThermalGuard &&
-                thermal_c >
-                    (kThermalGuardThresholdC - kThermalGuardHysteresisC)) {
-                next = RuntimeState::ThermalGuard;
-            } else if (next != RuntimeState::ThermalGuard &&
-                       sample.thermal_trend == Trend::Rising &&
-                       thermal_c >=
-                           (kThermalGuardThresholdC - kRisingThermalBufferC)) {
-                next = RuntimeState::ThermalGuard;
+            const double thermal_c = static_cast<double>(sample.thermal_millidegrees) / 1000.0;
+            
+            // Exit hysteresis: stay in ThermalGuard until really cool
+            if (snapshot_.state == RuntimeState::ThermalGuard && 
+                next != RuntimeState::ThermalGuard) {
+                if (thermal_c > (kThermalGuardThresholdC - kThermalGuardHysteresisC)) {
+                    next = RuntimeState::ThermalGuard;
+                }
+            } 
+            // Entry prediction: enter early if rising trend detected (adaptive buffer from OPTIMIZED)
+            else if (next != RuntimeState::ThermalGuard && 
+                     sample.thermal_trend == Trend::Rising) {
+                double adaptiveBuffer = computeAdaptiveThermalBuffer(
+                    sample.thermal_millidegrees, 
+                    last_thermal_millidegrees_,
+                    1000);  // Assuming ~1 second interval
+                
+                if (thermal_c >= (kThermalGuardThresholdC - adaptiveBuffer)) {
+                    next = RuntimeState::ThermalGuard;
+                }
             }
         }
 
@@ -427,11 +487,12 @@ void AutonomousEngine::tick() {
         // STEP 7: Handle state transitions
         if (next != snapshot_.state) {
             snapshot_.state = next;
-            logStateTransition(previous, next);
+            logStateTransition(snapshot_.state, next);
+            policy_cache_valid_until_sample_ = 0;  // Invalidate cache on state change
         }
 
         // STEP 8: Handle notifications
-        const NotificationEvent event = selectNotification(sample, next, previous);
+        const NotificationEvent event = selectNotification(sample, next, snapshot_.state);
         const bool cooldownExpired =
             sample_count_ >= last_notification_sample_ &&
             (sample_count_ - last_notification_sample_) >= kNotificationCooldownSamples;
@@ -469,11 +530,21 @@ void AutonomousEngine::tick() {
             );
         }
 
+        // STEP 11: Watchdog heartbeat (monitoring feature from OPTIMIZED)
+        if ((sample_count_ % kWatchdogHeartbeatSamples) == 0) {
+            logInfo("WATCHDOG heartbeat sample=%llu state=%s",
+                   static_cast<unsigned long long>(sample_count_),
+                   stateName(snapshot_.state));
+        }
+
         // STEP 12: Update history
         history_.push_back(sample);
         while (history_.size() > kHistorySize) {
             history_.pop_front();
         }
+
+        // Cache last thermal for rise rate calculation
+        last_thermal_millidegrees_ = sample.thermal_millidegrees;
 
     } catch (const std::exception& e) {
         logError("Exception during tick: %s", e.what());
@@ -492,72 +563,67 @@ int AutonomousEngine::run() {
 
     logStartup();
 
+    // DRIFT-FREE CLOCK (CRITICAL from HARDENED)
+    // Uses steady_clock to prevent sampling interval drift over time
+    // Essential for accurate long-term monitoring (5+ years)
     auto next_tick_time = std::chrono::steady_clock::now();
 
     while (!signal_state::stopRequested()) {
         if (signal_state::consumeRefresh()) {
             refreshEnvironment();
-            next_tick_time = std::chrono::steady_clock::now();
         }
 
         tick();
 
-        const int configured =
-            std::max(1, config_.monitorIntervalSeconds());
-
+        // STATE-BASED ADAPTIVE SLEEP (from HARDENED, improved efficiency)
+        // Different intervals per state for better responsiveness
+        const int configured = std::max(1, config_.monitorIntervalSeconds());
         int sleep_seconds = configured;
 
         switch (snapshot_.state) {
             case RuntimeState::Idle:
-                sleep_seconds = configured > 15 ? 60 : configured * 4;
+                // Sleep up to 4x longer during idle (battery savings)
+                sleep_seconds = std::min(configured * 4, 60);
                 break;
-
             case RuntimeState::Warming:
             case RuntimeState::Elevated:
             case RuntimeState::Pressure:
+                // 2x faster response during thermal stress
                 sleep_seconds = std::max(1, configured / 2);
                 break;
-
             case RuntimeState::ThermalGuard:
+                // Maximum responsiveness: always 1 second
                 sleep_seconds = 1;
                 break;
-
             case RuntimeState::Normal:
             default:
+                // Use configured interval
                 break;
         }
 
+        // Calculate absolute deadline for next tick (drift-free)
         next_tick_time += std::chrono::seconds(sleep_seconds);
 
-        while (!signal_state::stopRequested()) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= next_tick_time) {
+        // Sleep loop with responsive signal handling (CRITICAL from HARDENED)
+        // 250ms granularity balances between responsiveness and power efficiency
+        while (std::chrono::steady_clock::now() < next_tick_time) {
+            if (signal_state::stopRequested()) {
                 break;
             }
 
-            if (config_.runtimeRefreshEnabled() &&
-                signal_state::consumeRefresh()) {
+            if (config_.runtimeRefreshEnabled() && signal_state::consumeRefresh()) {
                 refreshEnvironment();
+                // Reset deadline if refreshing
                 next_tick_time = std::chrono::steady_clock::now();
                 break;
             }
 
-            const auto remaining = next_tick_time - now;
-            const auto sleep_for = std::min(
-                remaining,
-                std::chrono::steady_clock::duration{
-                    std::chrono::milliseconds(250)});
-
-            std::this_thread::sleep_for(sleep_for);
-        }
-
-        // Avoid a burst of catch-up ticks after a long stall.
-        if (std::chrono::steady_clock::now() >
-            next_tick_time + std::chrono::seconds(60)) {
-            next_tick_time = std::chrono::steady_clock::now();
+            // Sleep 250ms to balance responsiveness vs power
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
     }
 
+    // Clean shutdown with double-restore protection (from HARDENED)
     try {
         if (!has_restored_) {
             controller_.restoreAll();
