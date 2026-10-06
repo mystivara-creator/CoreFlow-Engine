@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "coreflow/config.hpp"
@@ -152,6 +153,9 @@ private:
 
     std::unordered_map<std::string, Baseline> baseline_;
     std::vector<GovernorCandidate> candidates_;
+    std::vector<std::pair<std::string, std::string>> last_applied_governors_;
+    std::unordered_map<std::string, std::unordered_set<std::string>>
+        rejected_governors_;
     TrialState trial_{};
     bool baseline_captured_{false};
 };
