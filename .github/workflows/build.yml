@@ -26,12 +26,14 @@ env:
   NDK_VERSION: "27.2.12479018"
   ANDROID_API: "34"
   ANDROID_ABI: "arm64-v8a"
+  ONNX_RUNTIME_VERSION: "1.24.3"
 
 jobs:
   host-tests:
     name: Host deterministic tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -87,6 +89,7 @@ jobs:
       - name: Install Android SDK packages
         run: |
           set -euo pipefail
+
           sdkmanager --install \
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
@@ -94,12 +97,60 @@ jobs:
       - name: Configure NDK
         run: |
           set -euo pipefail
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-          test -f "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
 
-      - name: Configure Release
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+          test -f \
+            "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Fetch ONNX Runtime Android
+        shell: bash
         run: |
           set -euo pipefail
+
+          ORT_VERSION="${ONNX_RUNTIME_VERSION}"
+          ORT_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
+          ORT_AAR="/tmp/onnxruntime-android-${ORT_VERSION}.aar"
+
+          mkdir -p "$ORT_ROOT"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --silent \
+            --show-error \
+            -o "$ORT_AAR" \
+            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
+
+          test -s "$ORT_AAR"
+
+          unzip -q "$ORT_AAR" -d "$ORT_ROOT"
+
+          test -f \
+            "${ORT_ROOT}/headers/onnxruntime_cxx_api.h"
+
+          test -f \
+            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+
+          echo "ONNX Runtime:"
+          echo "  version = ${ORT_VERSION}"
+          echo "  root    = ${ORT_ROOT}"
+          echo "  headers = ${ORT_ROOT}/headers"
+          echo "  library = ${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+
+          file \
+            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+
+          test "$(stat -c '%s' \
+            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")" -gt 100000
+
+      - name: Configure Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
           cmake \
             -S . \
             -B build/android-arm64 \
@@ -112,16 +163,24 @@ jobs:
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DBUILD_TESTING=OFF \
-            -DCORE_FLOW_BUILD_TESTS=OFF
+            -DCORE_FLOW_BUILD_TESTS=OFF \
+            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
 
       - name: Build
+        shell: bash
         run: |
           set -euo pipefail
-          cmake --build build/android-arm64 --parallel 2 --verbose
+
+          cmake \
+            --build build/android-arm64 \
+            --parallel 2 \
+            --verbose
 
       - name: Verify ELF
+        shell: bash
         run: |
           set -euo pipefail
+
           BINARY="$(
             find build/android-arm64 \
               -type f \
@@ -129,9 +188,16 @@ jobs:
               -perm -111 \
               | head -n 1
           )"
+
           test -n "$BINARY"
+
           file "$BINARY"
-          file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
+
+          file "$BINARY" | \
+            grep -E "ELF 64-bit.*ARM aarch64"
+
+          echo "Verified ARM64 binary:"
+          echo "$BINARY"
 
       - name: Assemble module
         shell: bash
@@ -145,23 +211,46 @@ jobs:
               -perm -111 \
               | head -n 1
           )"
+
           test -n "$BINARY"
+
+          ONNX_LIB="${GITHUB_WORKSPACE}/third_party/onnxruntime-android/jni/${ANDROID_ABI}/libonnxruntime.so"
+
+          test -f "$ONNX_LIB"
 
           MODULE_DIR="artifacts/CoreFlow-Autonomous"
 
           mkdir -p \
             "${MODULE_DIR}/system/bin" \
+            "${MODULE_DIR}/system/lib64" \
             "${MODULE_DIR}/system/etc/coreflow"
 
-          cp "$BINARY" "${MODULE_DIR}/system/bin/coreflowd"
-          cp module/module.prop "${MODULE_DIR}/module.prop"
-          cp module/customize.sh "${MODULE_DIR}/customize.sh"
-          cp module/post-fs-data.sh "${MODULE_DIR}/post-fs-data.sh"
-          cp module/service.sh "${MODULE_DIR}/service.sh"
-          cp module/uninstall.sh "${MODULE_DIR}/uninstall.sh"
-          cp module/sepolicy.rule "${MODULE_DIR}/sepolicy.rule"
+          cp "$BINARY" \
+            "${MODULE_DIR}/system/bin/coreflowd"
+
+          cp "$ONNX_LIB" \
+            "${MODULE_DIR}/system/lib64/libonnxruntime.so"
+
+          cp module/module.prop \
+            "${MODULE_DIR}/module.prop"
+
+          cp module/customize.sh \
+            "${MODULE_DIR}/customize.sh"
+
+          cp module/post-fs-data.sh \
+            "${MODULE_DIR}/post-fs-data.sh"
+
+          cp module/service.sh \
+            "${MODULE_DIR}/service.sh"
+
+          cp module/uninstall.sh \
+            "${MODULE_DIR}/uninstall.sh"
+
+          cp module/sepolicy.rule \
+            "${MODULE_DIR}/sepolicy.rule"
+
           cp module/system/etc/coreflow/default.conf \
-             "${MODULE_DIR}/system/etc/coreflow/default.conf"
+            "${MODULE_DIR}/system/etc/coreflow/default.conf"
 
           chmod 0755 \
             "${MODULE_DIR}/system/bin/coreflowd" \
@@ -173,7 +262,8 @@ jobs:
           chmod 0644 \
             "${MODULE_DIR}/module.prop" \
             "${MODULE_DIR}/sepolicy.rule" \
-            "${MODULE_DIR}/system/etc/coreflow/default.conf"
+            "${MODULE_DIR}/system/etc/coreflow/default.conf" \
+            "${MODULE_DIR}/system/lib64/libonnxruntime.so"
 
           VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
           VERSION="${VERSION:-unknown}"
@@ -184,29 +274,63 @@ jobs:
           API: ${ANDROID_API}
           ABI: ${ANDROID_ABI}
           NDK: ${NDK_VERSION}
+          ONNX Runtime: ${ONNX_RUNTIME_VERSION}
           Build: Release
           Commit: ${GITHUB_SHA}
           Ref: ${GITHUB_REF}
           Run: ${GITHUB_RUN_NUMBER}
           EOF
 
-      - name: Package module
+      - name: Verify ONNX Runtime ELF
+        shell: bash
         run: |
           set -euo pipefail
+
+          ONNX_LIB="artifacts/CoreFlow-Autonomous/system/lib64/libonnxruntime.so"
+
+          test -f "$ONNX_LIB"
+
+          file "$ONNX_LIB"
+
+          file "$ONNX_LIB" | \
+            grep -E "ELF 64-bit.*ARM aarch64"
+
+          test "$(stat -c '%s' "$ONNX_LIB")" -gt 100000
+
+      - name: Package module
+        shell: bash
+        run: |
+          set -euo pipefail
+
           VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
           VERSION="${VERSION:-unknown}"
+
           ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
+
           cd artifacts/CoreFlow-Autonomous
+
           zip -r "../$(basename "$ZIP")" .
 
       - name: Verify package
+        shell: bash
         run: |
           set -euo pipefail
+
           VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
           ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
+
           test -f "$ZIP"
+
           unzip -l "$ZIP"
-          unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
+
+          unzip -l "$ZIP" | \
+            grep -F "system/bin/coreflowd"
+
+          unzip -l "$ZIP" | \
+            grep -F "system/lib64/libonnxruntime.so"
+
+          unzip -l "$ZIP" | \
+            grep -F "system/etc/coreflow/default.conf"
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v6
