@@ -24,7 +24,7 @@ concurrency:
 
 env:
   NDK_VERSION: "27.2.12479018"
-  ANDROID_API: "34"
+  ANDROID_API: "36"
   ANDROID_ABI: "arm64-v8a"
   ONNX_RUNTIME_VERSION: "1.24.3"
 
@@ -89,7 +89,6 @@ jobs:
       - name: Install Android SDK packages
         run: |
           set -euo pipefail
-
           sdkmanager --install \
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
@@ -97,9 +96,7 @@ jobs:
       - name: Configure NDK
         run: |
           set -euo pipefail
-
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-
           test -f \
             "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
 
@@ -108,9 +105,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          ORT_VERSION="${ONNX_RUNTIME_VERSION}"
           ORT_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
-          ORT_AAR="/tmp/onnxruntime-android-${ORT_VERSION}.aar"
+          ORT_AAR="/tmp/onnxruntime-android-${ONNX_RUNTIME_VERSION}.aar"
 
           mkdir -p "$ORT_ROOT"
 
@@ -122,29 +118,35 @@ jobs:
             --silent \
             --show-error \
             -o "$ORT_AAR" \
-            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar"
+            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ONNX_RUNTIME_VERSION}/onnxruntime-android-${ONNX_RUNTIME_VERSION}.aar"
 
           test -s "$ORT_AAR"
-
           unzip -q "$ORT_AAR" -d "$ORT_ROOT"
 
-          test -f \
-            "${ORT_ROOT}/headers/onnxruntime_cxx_api.h"
+          test -f "${ORT_ROOT}/headers/onnxruntime_cxx_api.h"
+          test -f "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
 
-          test -f \
-            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+          test "$(stat -c '%s' "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")" -gt 100000
 
-          echo "ONNX Runtime:"
-          echo "  version = ${ORT_VERSION}"
-          echo "  root    = ${ORT_ROOT}"
-          echo "  headers = ${ORT_ROOT}/headers"
-          echo "  library = ${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+      - name: Verify thermal model source
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          file \
-            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+          MODEL="${GITHUB_WORKSPACE}/module/system/etc/coreflow/thermal_predictor.onnx"
 
-          test "$(stat -c '%s' \
-            "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")" -gt 100000
+          if [ ! -s "$MODEL" ]; then
+            echo "::error::thermal_predictor.onnx is missing from module/system/etc/coreflow/"
+            exit 1
+          fi
+
+          MODEL_SIZE="$(stat -c '%s' "$MODEL")"
+          echo "Thermal model size: ${MODEL_SIZE} bytes"
+
+          if [ "$MODEL_SIZE" -lt 1000 ]; then
+            echo "::error::thermal_predictor.onnx is unexpectedly small (${MODEL_SIZE} bytes)"
+            exit 1
+          fi
 
       - name: Configure Release
         shell: bash
@@ -170,11 +172,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          cmake \
-            --build build/android-arm64 \
-            --parallel 2 \
-            --verbose
+          cmake --build build/android-arm64 --parallel 2 --verbose
 
       - name: Verify ELF
         shell: bash
@@ -190,14 +188,8 @@ jobs:
           )"
 
           test -n "$BINARY"
-
           file "$BINARY"
-
-          file "$BINARY" | \
-            grep -E "ELF 64-bit.*ARM aarch64"
-
-          echo "Verified ARM64 binary:"
-          echo "$BINARY"
+          file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
 
       - name: Assemble module
         shell: bash
@@ -215,8 +207,10 @@ jobs:
           test -n "$BINARY"
 
           ONNX_LIB="${GITHUB_WORKSPACE}/third_party/onnxruntime-android/jni/${ANDROID_ABI}/libonnxruntime.so"
+          MODEL="${GITHUB_WORKSPACE}/module/system/etc/coreflow/thermal_predictor.onnx"
 
-          test -f "$ONNX_LIB"
+          test -s "$ONNX_LIB"
+          test -s "$MODEL"
 
           MODULE_DIR="artifacts/CoreFlow-Autonomous"
 
@@ -230,6 +224,10 @@ jobs:
 
           cp "$ONNX_LIB" \
             "${MODULE_DIR}/system/lib64/libonnxruntime.so"
+
+          # Critical: deploy the actual thermal ML model into the module.
+          cp "$MODEL" \
+            "${MODULE_DIR}/system/etc/coreflow/thermal_predictor.onnx"
 
           cp module/module.prop \
             "${MODULE_DIR}/module.prop"
@@ -263,39 +261,30 @@ jobs:
             "${MODULE_DIR}/module.prop" \
             "${MODULE_DIR}/sepolicy.rule" \
             "${MODULE_DIR}/system/etc/coreflow/default.conf" \
+            "${MODULE_DIR}/system/etc/coreflow/thermal_predictor.onnx" \
             "${MODULE_DIR}/system/lib64/libonnxruntime.so"
 
-          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
-          VERSION="${VERSION:-unknown}"
-
-          cat > "${MODULE_DIR}/build.txt" <<EOF
-          Version: ${VERSION}
-          Target: Android 14+
-          API: ${ANDROID_API}
-          ABI: ${ANDROID_ABI}
-          NDK: ${NDK_VERSION}
-          ONNX Runtime: ${ONNX_RUNTIME_VERSION}
-          Build: Release
-          Commit: ${GITHUB_SHA}
-          Ref: ${GITHUB_REF}
-          Run: ${GITHUB_RUN_NUMBER}
-          EOF
-
-      - name: Verify ONNX Runtime ELF
+      - name: Verify packaged deployment
         shell: bash
         run: |
           set -euo pipefail
 
+          MODEL="artifacts/CoreFlow-Autonomous/system/etc/coreflow/thermal_predictor.onnx"
           ONNX_LIB="artifacts/CoreFlow-Autonomous/system/lib64/libonnxruntime.so"
+          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
 
-          test -f "$ONNX_LIB"
+          test -s "$MODEL"
+          test -s "$ONNX_LIB"
+          test -s "$BINARY"
 
-          file "$ONNX_LIB"
+          echo "Thermal model:"
+          stat -c '%n %s bytes' "$MODEL"
 
-          file "$ONNX_LIB" | \
-            grep -E "ELF 64-bit.*ARM aarch64"
+          echo "ONNX Runtime:"
+          stat -c '%n %s bytes' "$ONNX_LIB"
 
-          test "$(stat -c '%s' "$ONNX_LIB")" -gt 100000
+          echo "coreflowd:"
+          stat -c '%n %s bytes' "$BINARY"
 
       - name: Package module
         shell: bash
@@ -308,7 +297,6 @@ jobs:
           ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
 
           cd artifacts/CoreFlow-Autonomous
-
           zip -r "../$(basename "$ZIP")" .
 
       - name: Verify package
@@ -321,21 +309,15 @@ jobs:
 
           test -f "$ZIP"
 
-          unzip -l "$ZIP"
-
-          unzip -l "$ZIP" | \
-            grep -F "system/bin/coreflowd"
-
-          unzip -l "$ZIP" | \
-            grep -F "system/lib64/libonnxruntime.so"
-
-          unzip -l "$ZIP" | \
-            grep -F "system/etc/coreflow/default.conf"
+          unzip -l "$ZIP" | grep -F "system/bin/coreflowd"
+          unzip -l "$ZIP" | grep -F "system/lib64/libonnxruntime.so"
+          unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
+          unzip -l "$ZIP" | grep -F "system/etc/coreflow/thermal_predictor.onnx"
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v6
         with:
-          name: CoreFlow-Autonomous-1.0.0-A-android14-arm64
+          name: CoreFlow-Autonomous-1.1.0-onnx-android14-arm64
           path: artifacts/CoreFlow-Autonomous-*-android14-arm64.zip
           if-no-files-found: error
           retention-days: 30
