@@ -151,7 +151,10 @@ AutonomousEngine::AutonomousEngine() = default;
 
 AutonomousEngine::~AutonomousEngine() {
     try {
+    if (!has_restored_) {
         controller_.restoreAll();
+        has_restored_ = true;
+        }
     } catch (const std::exception& e) {
         logError("Exception during destructor: %s", e.what());
     } catch (...) {
@@ -335,7 +338,7 @@ double AutonomousEngine::calculateConfidence(const RuntimeSample& sample) const 
     if (sample.thermal_trend != Trend::Unknown) score += kThermalTrendWeight;
     if (sample.memory_trend != Trend::Unknown) score += kMemoryTrendWeight;
     
-    return std::min(1.0, score);
+    return std::min<double>(1.0, score);
 }
 
 NotificationEvent AutonomousEngine::selectNotification(
@@ -505,7 +508,10 @@ int AutonomousEngine::run() {
     }
 
     try {
+    if (!has_restored_) {
         controller_.restoreAll();
+        has_restored_ = true;
+        }
     } catch (const std::exception& e) {
         logError("Exception during shutdown restore: %s", e.what());
     } catch (...) {
