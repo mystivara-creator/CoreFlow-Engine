@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <deque>
 
+#include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/controller.hpp"
 #include "coreflow/discovery.hpp"
@@ -47,6 +48,7 @@ private:
     std::deque<RuntimeSample> history_;
     std::uint64_t last_notification_sample_{0};
     NotificationEvent last_notification_{NotificationEvent::None};
+    BaselineIntelligence baseline_intelligence_;
 };
 
 } // namespace coreflow
