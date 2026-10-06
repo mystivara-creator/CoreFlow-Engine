@@ -170,7 +170,9 @@ double computeAdaptiveThermalBuffer(long newTemp, long oldTemp, int timeDeltaMs)
     if (timeDeltaMs <= 0) return kRisingThermalBufferC;
     
     // Calculate rise rate in °C per second
-    double riseRateCPerS = ((newTemp - oldTemp) / 1000.0) / (timeDeltaMs / 1000.0);
+    const double riseRateCPerS =
+        (static_cast<double>(newTemp - oldTemp) / 1000.0) /
+        (static_cast<double>(timeDeltaMs) / 1000.0);
     
     // Scale buffer: 0.5°C/s rise → 0.5°C buffer, 2°C/s → 2.0°C buffer
     double adaptiveBuffer = std::clamp(riseRateCPerS * 1.0,
@@ -308,14 +310,6 @@ bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
             return false;
         }
 
-        if (sample.thermal_age_ms < 0) {
-            logWarn("Thermal sensor age invalid: %d ms", sample.thermal_age_ms);
-            return false;
-        }
-
-        if (sample.thermal_age_ms > kSensorStalenessMs) {
-            logWarn("Thermal sensor stale: %d ms old", sample.thermal_age_ms);
-        }
     }
 
     if (sample.mem_total_kb > 0) {
@@ -567,8 +561,10 @@ int AutonomousEngine::run() {
             }
 
             const auto remaining = next_tick_time - now;
-            const auto sleep_for =
-                std::min(remaining, std::chrono::milliseconds(250));
+            const auto sleep_for = std::min(
+                remaining,
+                std::chrono::steady_clock::duration{
+                    std::chrono::milliseconds(250)});
 
             std::this_thread::sleep_for(sleep_for);
         }
