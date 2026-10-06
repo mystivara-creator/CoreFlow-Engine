@@ -23,6 +23,9 @@ public:
     ) noexcept;
     bool restoreAll() noexcept;
 
+    // Reject the targets from the most recent verified mutation after an efficiency regression.
+    void rejectLastMutation() noexcept;
+
     // Explicit evidence registration for future external/device-specific
     // validation. Availability alone never creates a validated candidate.
     bool registerValidatedGovernor(
