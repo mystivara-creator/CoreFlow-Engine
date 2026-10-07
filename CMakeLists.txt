@@ -57,6 +57,7 @@ set(COREFLOW_SOURCES
     src/autonomous.cpp
     src/thermal_predictor.cpp
     src/baseline_intelligence.cpp
+    src/experience.cpp
     src/discovery.cpp
     src/observer.cpp
     src/policy.cpp
