@@ -5,6 +5,7 @@ STATE_DIR="/data/adb/coreflow"
 LOG_DIR="$STATE_DIR/logs"
 BINARY="$MODDIR/system/bin/coreflowd"
 LIB_DIR="$MODDIR/system/lib64"
+MODEL="$MODDIR/system/etc/coreflow/thermal_predictor.onnx"
 PID_FILE="$STATE_DIR/coreflowd.pid"
 LOG_FILE="$LOG_DIR/coreflowd.log"
 
@@ -29,6 +30,11 @@ sleep 5
 
 [ -f "$LIB_DIR/libonnxruntime.so" ] || {
     echo "$(date '+%F %T') libonnxruntime.so missing" >> "$LOG_FILE"
+    exit 1
+}
+
+[ -f "$MODEL" ] || {
+    echo "$(date '+%F %T') thermal_predictor.onnx missing" >> "$LOG_FILE"
     exit 1
 }
 
