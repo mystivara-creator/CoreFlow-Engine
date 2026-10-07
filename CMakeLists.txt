@@ -304,7 +304,9 @@ if(BUILD_TESTING AND CORE_FLOW_BUILD_TESTS)
     add_executable(coreflow_mutation_tests
         tests/mutation_tests.cpp
         src/mutation.cpp
+        src/experience.cpp
         src/config.cpp
+        src/baseline_intelligence.cpp
     )
 
     target_include_directories(coreflow_mutation_tests
