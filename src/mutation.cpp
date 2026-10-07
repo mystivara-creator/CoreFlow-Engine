@@ -2,10 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 #include <string>
 #include <utility>
-#include <unistd.h>
 
 namespace coreflow {
 namespace {
@@ -24,46 +22,7 @@ const char* knownGovernor(const std::string& governor) noexcept {
     return nullptr;
 }
 
-bool readTextValue(
-    const std::string& path,
-    std::string& value
-) noexcept {
-    try {
-        std::ifstream file(path);
-        if (!file) return false;
-        return static_cast<bool>(std::getline(file, value));
-    } catch (...) {
-        return false;
-    }
-}
-
 } // namespace
-
-bool MutationController::writeTextVerified(
-    const std::string& path,
-    const std::string& value
-) noexcept {
-    try {
-        if (access(path.c_str(), W_OK) != 0) return false;
-
-        std::string current;
-        if (readTextValue(path, current) && current == value)
-            return true;
-
-        std::ofstream file(path);
-        if (!file) return false;
-
-        file << value << '\n';
-        file.flush();
-        if (!file.good()) return false;
-        file.close();
-
-        std::string actual;
-        return readTextValue(path, actual) && actual == value;
-    } catch (...) {
-        return false;
-    }
-}
 
 bool MutationController::governorAvailable(
     const CpuPolicy& policy,
@@ -119,7 +78,12 @@ void MutationController::captureBaseline(
     }
 
     discoverGovernorCandidates(profile);
-    baseline_captured_ = true;
+
+    cpufreq_actuator_.setProfile(&profile);
+    const ActuatorStatus actuatorStatus = cpufreq_actuator_.discover();
+    actuator_ready_ = actuatorStatus == ActuatorStatus::Ok;
+
+    baseline_captured_ = actuator_ready_ && !baseline_.empty();
 }
 
 bool MutationController::registerValidatedGovernor(
@@ -325,38 +289,38 @@ bool MutationController::buildPlan(
 MutationResult MutationController::applyPlan(
     const std::vector<MutationPlanEntry>& plan
 ) noexcept {
-    if (plan.empty()) return MutationResult::Skipped;
+    if (plan.empty() || !actuator_ready_)
+        return MutationResult::Skipped;
 
-    std::vector<std::string> touched;
-    touched.reserve(plan.size());
+    // v1.3 resource bound: one verified CPUFreq write per decision cycle.
+    const MutationPlanEntry& entry = plan.front();
 
-    for (const MutationPlanEntry& entry : plan) {
-        if (!writeTextVerified(entry.path, entry.target)) {
-            bool rollbackOk = true;
-            for (const std::string& path : touched) {
-                const auto baseline = baseline_.find(path);
-                if (baseline == baseline_.end() || !baseline->second.valid ||
-                    !writeTextVerified(path, baseline->second.value)) {
-                    rollbackOk = false;
-                }
-            }
-            return rollbackOk && !touched.empty()
-                ? MutationResult::RolledBack
-                : MutationResult::Failed;
-        }
-            touched.push_back(entry.path);
-    }
+    ActuatorMutation mutation;
+    mutation.id = cpufreq_actuator_.id();
+    mutation.target = entry.path;
+    mutation.requested = entry.target;
+
+    const ActuatorResult result = cpufreq_actuator_.apply(mutation);
+
+    if (!result.succeeded())
+        return result.status == ActuatorStatus::RolledBack
+            ? MutationResult::RolledBack
+            : MutationResult::Failed;
+
+    if (!result.changed())
+        return MutationResult::Skipped;
 
     last_applied_governors_.clear();
-    for (const MutationPlanEntry& entry : plan) {
-        const std::string suffix = "/scaling_governor";
-        if (entry.path.size() >= suffix.size() &&
-            entry.path.compare(entry.path.size() - suffix.size(),
-                               suffix.size(), suffix) == 0) {
-            const std::string policyPath =
-                entry.path.substr(0, entry.path.size() - suffix.size());
-            last_applied_governors_.emplace_back(policyPath, entry.target);
-        }
+    const std::string suffix = "/scaling_governor";
+    if (entry.path.size() >= suffix.size() &&
+        entry.path.compare(
+            entry.path.size() - suffix.size(),
+            suffix.size(),
+            suffix
+        ) == 0) {
+        const std::string policyPath =
+            entry.path.substr(0, entry.path.size() - suffix.size());
+        last_applied_governors_.emplace_back(policyPath, entry.target);
     }
 
     return MutationResult::Verified;
@@ -377,32 +341,35 @@ void MutationController::rejectLastMutation() noexcept {
 }
 
 MutationResult MutationController::restoreGovernors() noexcept {
+    if (!actuator_ready_)
+        return MutationResult::Skipped;
+
     bool restoredAny = false;
     bool failed = false;
 
     for (const auto& entry : baseline_) {
-        if (!entry.second.valid) continue;
-
-        std::string current;
-        if (readTextValue(entry.first, current) &&
-            current == entry.second.value) {
-            // Already at baseline; avoid an unnecessary sysfs write.
+        if (!entry.second.valid)
             continue;
-        }
 
-        if (!writeTextVerified(entry.first, entry.second.value)) {
+        const ActuatorResult result =
+            cpufreq_actuator_.restore(entry.first);
+
+        if (result.status == ActuatorStatus::NoChange)
+            continue;
+
+        if (!result.succeeded()) {
             failed = true;
             continue;
         }
 
-        restoredAny = true;
+        if (result.changed())
+            restoredAny = true;
     }
 
-    if (failed) {
+    if (failed)
         return restoredAny
             ? MutationResult::RolledBack
             : MutationResult::Failed;
-    }
 
     return restoredAny
         ? MutationResult::Verified
@@ -490,7 +457,17 @@ bool MutationController::beginCandidateTrial(
         if (policy.path == trial_.policy_path &&
             governorAvailable(policy, candidate.governor) &&
             policy.governor_writable) {
-            if (!writeTextVerified(trial_.governor_path, candidate.governor))
+            if (!actuator_ready_)
+                return false;
+
+            ActuatorMutation mutation;
+            mutation.id = cpufreq_actuator_.id();
+            mutation.target = trial_.governor_path;
+            mutation.requested = candidate.governor;
+
+            const ActuatorResult result =
+                cpufreq_actuator_.apply(mutation);
+            if (!result.succeeded())
                 return false;
 
             trial_.phase = TrialPhase::Candidate;
@@ -548,8 +525,11 @@ MutationResult MutationController::completeTrial() noexcept {
     const bool safe = thermalDelta <= kTrialMaxThermalRegressionC &&
                       score >= kTrialMinEvidenceScore;
 
-    const bool restored =
-        writeTextVerified(trial_.governor_path, trial_.baseline_governor);
+    const ActuatorResult restoreResult =
+        actuator_ready_
+            ? cpufreq_actuator_.restore(trial_.governor_path)
+            : ActuatorResult{};
+    const bool restored = restoreResult.succeeded();
 
     GovernorCandidate& candidate = candidates_[trial_.candidate_index];
     candidate.evidence_score = score;
@@ -565,7 +545,8 @@ MutationResult MutationController::completeTrial() noexcept {
 
 void MutationController::abortTrial() noexcept {
     if (!trial_.active) return;
-    writeTextVerified(trial_.governor_path, trial_.baseline_governor);
+    if (actuator_ready_)
+        (void)cpufreq_actuator_.restore(trial_.governor_path);
     trial_.reset();
 }
 
