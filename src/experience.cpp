@@ -89,6 +89,28 @@ bool ExperienceMemory::record(const Record& input) noexcept {
     return true;
 }
 
+bool ExperienceMemory::recordEvaluation(
+    const CandidateIdentity& candidate,
+    const Context& context,
+    const BaselineIntelligence::Evaluation& evaluation) noexcept {
+    if (!candidate.valid() ||
+        !evaluation.valid ||
+        !std::isfinite(evaluation.overall_score) ||
+        !std::isfinite(evaluation.confidence)) {
+        return false;
+    }
+
+    Record record;
+    record.candidate = candidate;
+    record.context = context;
+    record.outcome = evaluation.outcome;
+    record.score = evaluation.overall_score;
+    record.confidence = evaluation.confidence;
+    record.observations = evaluation.observation_samples;
+
+    return this->record(record);
+}
+
 const ExperienceMemory::Record* ExperienceMemory::find(
     const CandidateIdentity& candidate,
     const Context& context) const noexcept {
