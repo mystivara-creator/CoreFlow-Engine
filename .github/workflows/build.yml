@@ -42,7 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++
+          sudo apt-get install -y cmake ninja-build g++ ccache
+
+      - name: Setup ccache
+        uses: hendrikmi/ccache-action@v1.2
+        with:
+          key: host-tests-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
       - name: Configure host tests
         run: |
@@ -53,12 +58,14 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON \
-            -DCORE_FLOW_BUILD_TESTS=ON
+            -DCORE_FLOW_BUILD_TESTS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build host tests
         run: |
           set -euo pipefail
-          cmake --build build/host --parallel 2
+          cmake --build build/host --parallel $(nproc)
 
       - name: Run host tests
         run: |
@@ -86,9 +93,10 @@ jobs:
         with:
           packages: "platform-tools"
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK packages & ccache
         run: |
           set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y ccache
           sdkmanager --install \
             "platforms;android-${ANDROID_API}" \
             "ndk;${NDK_VERSION}"
@@ -97,8 +105,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_BIN=${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_ENV"
           test -f \
             "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Setup ccache for Android
+        uses: hendrikmi/ccache-action@v1.2
+        with:
+          key: android-${{ env.ANDROID_ABI }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
       - name: Fetch ONNX Runtime Android
         shell: bash
@@ -166,18 +180,15 @@ jobs:
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DBUILD_TESTING=OFF \
             -DCORE_FLOW_BUILD_TESTS=OFF \
-            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
+            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      - name: Build
+      - name: Build and Strip Binary
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build/android-arm64 --parallel 2 --verbose
-
-      - name: Verify ELF
-        shell: bash
-        run: |
-          set -euo pipefail
+          cmake --build build/android-arm64 --parallel $(nproc) --verbose
 
           BINARY="$(
             find build/android-arm64 \
@@ -190,6 +201,9 @@ jobs:
           test -n "$BINARY"
           file "$BINARY"
           file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
+          
+          # Strip debug symbols to guarantee zero overhead / minimal footprint
+          "${TOOLCHAIN_BIN}/llvm-strip" --strip-all "$BINARY"
 
       - name: Assemble module
         shell: bash
@@ -291,7 +305,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
           VERSION="${VERSION:-unknown}"
 
           ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
@@ -304,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop)"
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
           ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-android14-arm64.zip"
 
           test -f "$ZIP"
