@@ -1,4 +1,5 @@
 #include "coreflow/autonomous.hpp"
+#include "coreflow/experience.hpp"
 #include "coreflow/thermal_predictor.hpp"
 
 #include <android/log.h>
@@ -204,6 +205,7 @@ bool AutonomousEngine::initialize() {
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
+    experience_memory_.clear();
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
@@ -249,6 +251,7 @@ bool AutonomousEngine::refreshEnvironment() {
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
+    experience_memory_.clear();
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
@@ -498,6 +501,33 @@ void AutonomousEngine::tick() {
                     evaluation.confidence,
                     evaluation.baseline_samples,
                     evaluation.observation_samples);
+
+                // STEP 10b: Persist the verified outcome as advisory experience.
+                ExperienceMemory::Context experience_context;
+                experience_context.state = next;
+                experience_context.charging = sample.charging;
+                experience_context.thermal_trend = sample.thermal_trend;
+                experience_context.memory_trend = sample.memory_trend;
+                experience_context.load_trend = sample.load_trend;
+
+                for (const auto& applied : controller_.lastAppliedGovernors()) {
+                    ExperienceMemory::CandidateIdentity candidate;
+                    candidate.key = applied.first + ":" + applied.second;
+
+                    if (experience_memory_.recordEvaluation(
+                            candidate,
+                            experience_context,
+                            evaluation)) {
+                        logInfo(
+                            "EXPERIENCE_RECORDED candidate=%s score=%.3f "
+                            "confidence=%.3f observations=%llu",
+                            candidate.key.c_str(),
+                            evaluation.overall_score,
+                            evaluation.confidence,
+                            static_cast<unsigned long long>(
+                                evaluation.observation_samples));
+                    }
+                }
 
                 switch (evaluation.outcome) {
                     case BaselineIntelligence::Outcome::Beneficial:
