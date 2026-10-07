@@ -191,6 +191,7 @@ AutonomousEngine::~AutonomousEngine() {
 }
 
 bool AutonomousEngine::initialize() {
+    controller_.setExperienceMemory(&experience_memory_);
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
     if (!config_.load(kConfigPath)) {
@@ -236,6 +237,7 @@ bool AutonomousEngine::initialize() {
 }
 
 bool AutonomousEngine::refreshEnvironment() {
+    controller_.setExperienceMemory(&experience_memory_);
     if (!config_.runtimeRefreshEnabled()) return false;
 
     logInfo("Runtime discovery refresh requested");
