@@ -45,7 +45,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build g++ ccache
 
       - name: Setup ccache
-        uses: hendrikmi/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: host-tests-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
@@ -110,7 +110,7 @@ jobs:
             "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
 
       - name: Setup ccache for Android
-        uses: hendrikmi/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: android-${{ env.ANDROID_ABI }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
