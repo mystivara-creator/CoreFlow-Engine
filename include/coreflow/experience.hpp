@@ -47,6 +47,12 @@ public:
 
     bool record(const Record& record) noexcept;
 
+    bool recordEvaluation(
+        const CandidateIdentity& candidate,
+        const Context& context,
+        const BaselineIntelligence::Evaluation& evaluation) noexcept;
+
+
     const Record* find(const CandidateIdentity& candidate,
                        const Context& context) const noexcept;
 
