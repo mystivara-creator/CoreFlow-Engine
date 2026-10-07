@@ -95,6 +95,5 @@ function(coreflow_target_set_flags TARGET_NAME)
             -Wold-style-cast
             -Woverloaded-virtual
             -Wsuggest-override
-        >
     )
 endfunction()
