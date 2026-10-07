@@ -32,7 +32,7 @@ function(coreflow_set_compiler_flags)
     
     # Release/Optimized flags
     set(COREFLOW_RELEASE_FLAGS
-        -O3
+        -03
         -DNDEBUG
         -ffast-math
         -march=x86-64-v4
