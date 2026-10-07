@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <utility>
 
 #include "coreflow/config.hpp"
 #include "coreflow/types.hpp"
@@ -38,6 +39,7 @@ public:
     std::size_t candidateCount() const noexcept { return candidates_.size(); }
     std::size_t validatedCandidateCount() const noexcept;
     bool trialActive() const noexcept { return trial_.active; }
+    const std::vector<std::pair<std::string, std::string>>& lastAppliedGovernors() const noexcept { return last_applied_governors_; }
 
 private:
     struct Baseline {
