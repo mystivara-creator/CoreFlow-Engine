@@ -7,6 +7,8 @@
 #include <vector>
 #include <utility>
 
+#include "coreflow/actuator.hpp"
+#include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/types.hpp"
@@ -117,8 +119,6 @@ private:
     static constexpr double kTrialMaxThermalRegressionC = 0.75;
     static constexpr double kTrialMinEvidenceScore = 0.70;
 
-    bool writeTextVerified(const std::string& path,
-                           const std::string& value) noexcept;
     void discoverGovernorCandidates(const DeviceProfile& profile) noexcept;
     bool governorAvailable(const CpuPolicy& policy,
                            const std::string& governor) const noexcept;
@@ -164,6 +164,8 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string>>
         rejected_governors_;
     TrialState trial_{};
+    CpuFreqActuator cpufreq_actuator_{};
+    bool actuator_ready_{false};
     bool baseline_captured_{false};
 };
 
