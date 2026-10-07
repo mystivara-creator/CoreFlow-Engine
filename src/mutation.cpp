@@ -268,7 +268,32 @@ bool MutationController::buildPlan(
         double bestScore = -1.0;
 
         for (const std::string& governor : policy.available_governors) {
-            const double score = governorScore(governor, state, sample);
+            double score = governorScore(governor, state, sample);
+
+            // Experience is advisory only. Fresh runtime heuristics remain
+            // dominant; historical evidence is blended only when a
+            // compatible record exists for this exact candidate/context.
+            if (score >= 0.0 && experience_memory_ != nullptr) {
+                ExperienceMemory::CandidateIdentity identity;
+                identity.key = policy.path + ":" + governor;
+
+                ExperienceMemory::Context context;
+                context.state = state;
+                context.charging = sample.charging;
+                context.thermal_trend = sample.thermal_trend;
+                context.memory_trend = sample.memory_trend;
+                context.load_trend = sample.load_trend;
+
+                if (const ExperienceMemory::Record* record =
+                        experience_memory_->find(identity, context);
+                    record != nullptr && record->confidence > 0.0) {
+                    const double memoryWeight =
+                        std::clamp(record->confidence * 0.30, 0.0, 0.30);
+                    score = (score * (1.0 - memoryWeight)) +
+                            (record->score * memoryWeight);
+                }
+            }
+
             if (score > bestScore) {
                 bestScore = score;
                 bestGovernor = governor;
@@ -335,6 +360,12 @@ MutationResult MutationController::applyPlan(
     }
 
     return MutationResult::Verified;
+}
+
+void MutationController::setExperienceMemory(
+    const ExperienceMemory* memory
+) noexcept {
+    experience_memory_ = memory;
 }
 
 void MutationController::rejectLastMutation() noexcept {
