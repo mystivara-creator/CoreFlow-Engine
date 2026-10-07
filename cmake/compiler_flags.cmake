@@ -35,7 +35,7 @@ function(coreflow_set_compiler_flags)
         -O3
         -DNDEBUG
         -ffast-math
-        -march=native
+        -march=x86-64-v4
     )
     
     # Security hardening flags (all builds)
