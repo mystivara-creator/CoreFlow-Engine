@@ -284,12 +284,26 @@ MutationResult ResourceMutationController::apply(
     if (!baseline_captured_ && !captureBaseline(profile)) return MutationResult::Skipped;
     if (restore_failed_) return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
 
-    if (!permit.validFor(MutationPermit::Scope::Resource) ||
-        config.mutationMode() != MutationMode::Adaptive ||
-        !config.mutationArmed() || !policy.mutation_eligible ||
-        sample.confidence < config.minConfidence()) {
-        return restoreAll() ? MutationResult::RolledBack : MutationResult::Skipped;
+    const bool mutation_gate_open =
+    permit.validFor(MutationPermit::Scope::Resource) &&
+    config.mutationMode() == MutationMode::Adaptive &&
+    config.mutationArmed() &&
+    policy.mutation_eligible &&
+    sample.confidence >= config.minConfidence();
+
+if (!mutation_gate_open) {
+    // No mutation has occurred: this is a policy/gate skip,
+    // not a rollback.
+    if (!mutated_) {
+        return MutationResult::Skipped;
     }
+
+    // A previous mutation exists and the safety/policy gate closed:
+    // restore the resource to its captured baseline.
+    return restoreAll()
+        ? MutationResult::RolledBack
+        : MutationResult::Failed;
+}
 
     std::vector<Candidate> candidates;
     if (!buildCandidates(state, sample, profile, candidates)) return MutationResult::Skipped;
