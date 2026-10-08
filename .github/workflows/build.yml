@@ -37,7 +37,8 @@ concurrency:
 env:
   NDK_VERSION: "30.0.16248370"
   ANDROID_MIN_API: ${{ inputs.android_min_api || '34' }}
-  ANDROID_SDK_API: "37"
+  # Stable build SDK; native compatibility baseline remains API 34.
+  ANDROID_SDK_API: "36"
   ANDROID_ABI: "arm64-v8a"
   ONNX_RUNTIME_VERSION: "1.24.3"
   # Pinned digest of the validated thermal model. Any change to the model
@@ -54,16 +55,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install build tools
+      - name: Verify host build toolchain
+        shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ ccache
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: host-tests-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          for tool in cmake ninja g++; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required host tool is missing: $tool"
+              exit 1
+            }
+          done
+          cmake --version | head -n1
+          ninja --version
+          g++ --version | head -n1
 
       - name: Configure host tests
         run: |
@@ -73,9 +77,7 @@ jobs:
             -B build/host \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCORE_FLOW_BUILD_TESTS=ON \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCORE_FLOW_BUILD_TESTS=ON
 
       - name: Build host tests
         run: |
@@ -122,10 +124,9 @@ jobs:
         with:
           packages: "platform-tools"
 
-      - name: Install Android SDK packages & ccache
+      - name: Install Android SDK packages
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y ccache
           sdkmanager --install \
             "platforms;android-${ANDROID_SDK_API}" \
             "ndk;${NDK_VERSION}"
@@ -137,6 +138,19 @@ jobs:
           echo "TOOLCHAIN_BIN=${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_ENV"
           test -f \
             "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Verify Android build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in cmake ninja; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required Android build tool is missing: $tool"
+              exit 1
+            }
+          done
+          cmake --version | head -n1
+          ninja --version
 
       - name: Validate Android build contract
         shell: bash
@@ -155,15 +169,15 @@ jobs:
             exit 2
           fi
 
+          if [ "${ANDROID_MIN_API}" -gt "${ANDROID_SDK_API}" ]; then
+            echo "::error::ANDROID_MIN_API (${ANDROID_MIN_API}) cannot exceed the installed Android SDK API (${ANDROID_SDK_API})."
+            exit 2
+          fi
+
           echo "Android native minimum API: ${ANDROID_MIN_API}"
           echo "Android SDK platform installed: ${ANDROID_SDK_API}"
           echo "NDK: ${NDK_VERSION}"
           echo "ABI: ${ANDROID_ABI}"
-
-      - name: Setup ccache for Android
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: android-${{ env.ANDROID_ABI }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
       - name: Verify source package contract
         run: |
@@ -244,8 +258,6 @@ jobs:
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DCORE_FLOW_BUILD_TESTS=OFF \
             -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build and Strip Binary
         shell: bash
