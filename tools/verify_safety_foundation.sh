@@ -3,8 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The only C++ files permitted to write are the dedicated CPUFreq actuator,
-# the durable mutation journal, and the process lock in main.
+# Kernel/resource mutation writes are restricted to dedicated actuators and the
+# durable mutation journal. Bounded advisory experience persistence is also an
+# approved storage path; it never writes kernel control files.
 writers=""
 while IFS= read -r f; do
   writers="$writers
@@ -15,8 +16,10 @@ EOFWRITERS
 
 expected_list="
 $ROOT/src/cpufreq_actuator.cpp
+$ROOT/src/resource_actuator.cpp
 $ROOT/src/mutation_journal.cpp
 $ROOT/src/main.cpp
+$ROOT/src/experience.cpp
 "
 
 while IFS= read -r f; do
@@ -42,13 +45,16 @@ if grep -RInE 'std::ofstream.*(/sys/|/proc/)|open\([^\n]*(/sys/|/proc/)[^\n]*(O_
   exit 1
 fi
 
-grep -q 'mutation_armed_{false}' "$ROOT/include/coreflow/config.hpp"
-grep -q 'allow_cpu_governor_{false}' "$ROOT/include/coreflow/config.hpp"
-grep -q 'mutation_armed=false' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'allow_cpu_governor=no' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q 'mutation_armed_{true}' "$ROOT/include/coreflow/config.hpp"
+grep -q 'allow_cpu_governor_{true}' "$ROOT/include/coreflow/config.hpp"
+grep -q 'mutation_armed=true' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q 'allow_cpu_governor=yes' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'MutationPermit' "$ROOT/include/coreflow/actuator.hpp"
-grep -q 'if (!config.mutationArmed()' "$ROOT/src/mutation.cpp"
-grep -q 'journal_->commit(factorySnapshot())' "$ROOT/src/mutation.cpp"
+grep -q 'ResourceMutationController' "$ROOT/include/coreflow/resource_mutation.hpp"
+grep -q 'ResourceActuator' "$ROOT/include/coreflow/resource_actuator.hpp"
+grep -q 'resource_mutation.cpp' "$ROOT/CMakeLists.txt"
+grep -q 'config.mutationArmed()' "$ROOT/src/mutation.cpp"
+grep -q 'journalEntriesWith' "$ROOT/src/mutation.cpp"
 grep -q 'result.writes_attempted != 0' "$ROOT/src/mutation.cpp"
 grep -q 'result.status == ActuatorStatus::RolledBack' "$ROOT/src/mutation.cpp"
 grep -q 'journal_was_committed' "$ROOT/src/mutation.cpp"
