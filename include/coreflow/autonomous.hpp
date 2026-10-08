@@ -9,6 +9,7 @@
 #include "coreflow/discovery.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation.hpp"
+#include "coreflow/mutation_journal.hpp"
 #include "coreflow/observer.hpp"
 #include "coreflow/policy.hpp"
 #include "coreflow/types.hpp"
@@ -21,6 +22,9 @@ public:
     AutonomousEngine();
     ~AutonomousEngine();
 
+    AutonomousEngine(const AutonomousEngine&) = delete;
+    AutonomousEngine& operator=(const AutonomousEngine&) = delete;
+
     int run();
 
 private:
@@ -32,6 +36,7 @@ private:
     void logMutation(MutationResult, RuntimeState) const;
 
     bool has_restored_{false};
+    bool refresh_pending_{false};
     bool validateSample(const RuntimeSample&) const;
     void updateTrends(RuntimeSample&) const;
     double calculateConfidence(const RuntimeSample&) const;
@@ -41,6 +46,7 @@ private:
     void emitNotification(NotificationEvent, const RuntimeSample&) const;
 
     EngineConfig config_;
+    FileMutationJournal journal_;
     MutationController controller_;
     EnvironmentDiscovery discovery_;
     RuntimeObserver observer_;

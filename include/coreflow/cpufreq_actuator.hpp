@@ -44,6 +44,11 @@ public:
 
     ActuatorResult restore(std::string_view target) noexcept override;
 
+    // Restore an explicit value (used for crash recovery from the durable
+    // mutation journal, when no in-memory baseline exists yet). The value
+    // must be advertised by the target policy and is verified by read-back.
+    ActuatorResult restoreTo(std::string_view target, std::string_view value) noexcept;
+
 private:
     struct Baseline {
         std::string value;

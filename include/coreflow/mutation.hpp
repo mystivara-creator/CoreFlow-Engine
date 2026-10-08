@@ -1,66 +1,69 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
-#include <vector>
 #include <utility>
+#include <vector>
 
-#include "coreflow/actuator.hpp"
-#include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/config.hpp"
+#include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/experience.hpp"
+#include "coreflow/mutation_journal.hpp"
 #include "coreflow/types.hpp"
 
 namespace coreflow {
 
+/**
+ * Bounded, verified, restorable CPUFreq governor controller.
+ *
+ * Safety invariants:
+ *   1. The factory baseline is captured only while live governors are known
+ *      to be unmutated. A baseline is never taken from a mutated state.
+ *   2. Before the first sysfs write, the factory values are committed to a
+ *      durable journal. If the daemon dies mid-mutation, the next start
+ *      restores them before doing anything else.
+ *   3. Every write is read back and verified. A failed restore blocks new
+ *      mutations until the restore succeeds.
+ *   4. Regressed candidates are suppressed for a bounded cooldown.
+ */
 class MutationController {
 public:
     MutationController() = default;
 
-    void captureBaseline(const DeviceProfile& profile) noexcept;
+    void setJournal(MutationJournal* journal) noexcept;
+    void setExperienceMemory(const ExperienceMemory* memory) noexcept;
+
+    // Returns false when no trustworthy baseline exists (pending journal not
+    // recovered, or governors still mutated). Callers must not mutate then.
+    bool captureBaseline(const DeviceProfile& profile) noexcept;
+
     MutationResult apply(
         RuntimeState state,
         const RuntimeSample& sample,
         const DeviceProfile& profile,
         const EngineConfig& config
     ) noexcept;
+
+    // True only when every touched governor has been verified at its factory value.
     bool restoreAll() noexcept;
 
-    // Reject the targets from the most recent verified mutation after an efficiency regression.
+    // Suppress the targets of the most recent verified mutation for a bounded cooldown.
     void rejectLastMutation() noexcept;
 
-    // Explicit evidence registration for future external/device-specific
-    // validation. Availability alone never creates a validated candidate.
-    bool registerValidatedGovernor(
-        const std::string& policyPath,
-        const std::string& governor
-    ) noexcept;
-
+    bool mutated() const noexcept { return mutated_; }
     std::size_t baselineSize() const noexcept { return baseline_.size(); }
-    std::size_t candidateCount() const noexcept { return candidates_.size(); }
-    std::size_t validatedCandidateCount() const noexcept;
-    bool trialActive() const noexcept { return trial_.active; }
-    void setExperienceMemory(const ExperienceMemory* memory) noexcept;
     const std::vector<std::pair<std::string, std::string>>& lastAppliedGovernors() const noexcept {
         return last_applied_governors_;
     }
+
+    static constexpr std::uint64_t kRejectionCooldownCycles = 120;
 
 private:
     struct Baseline {
         std::string value;
         bool valid{false};
-    };
-
-    struct GovernorCandidate {
-        std::string policy_path;
-        std::string governor;
-        bool available{false};
-        bool writable{false};
-        bool validated{false};
-        double evidence_score{0.0};
-        std::size_t completed_trials{0};
     };
 
     struct MutationPlanEntry {
@@ -69,104 +72,42 @@ private:
         std::string baseline;
     };
 
-    struct TrialAccumulator {
-        double thermal_sum_c{0.0};
-        double load_sum{0.0};
-        double cpu_util_sum{0.0};
-        std::size_t samples{0};
-
-        void reset() noexcept {
-            thermal_sum_c = 0.0;
-            load_sum = 0.0;
-            cpu_util_sum = 0.0;
-            samples = 0;
-        }
-    };
-
-    enum class TrialPhase {
-        Idle,
-        Baseline,
-        Candidate
-    };
-
-    struct TrialState {
-        bool active{false};
-        TrialPhase phase{TrialPhase::Idle};
-        std::size_t candidate_index{0};
-        std::size_t samples_remaining{0};
-        std::string policy_path;
-        std::string governor_path;
-        std::string baseline_governor;
-        TrialAccumulator baseline;
-        TrialAccumulator candidate;
-
-        void reset() noexcept {
-            active = false;
-            phase = TrialPhase::Idle;
-            candidate_index = 0;
-            samples_remaining = 0;
-            policy_path.clear();
-            governor_path.clear();
-            baseline_governor.clear();
-            baseline.reset();
-            candidate.reset();
-        }
-    };
-
-    static constexpr std::size_t kTrialBaselineSamples = 3;
-    static constexpr std::size_t kTrialCandidateSamples = 3;
-    static constexpr double kTrialThermalCeilingC = 40.0;
-    static constexpr double kTrialMaxThermalRegressionC = 0.75;
-    static constexpr double kTrialMinEvidenceScore = 0.70;
-
-    void discoverGovernorCandidates(const DeviceProfile& profile) noexcept;
-    bool governorAvailable(const CpuPolicy& policy,
-                           const std::string& governor) const noexcept;
-    const GovernorCandidate* findValidatedCandidate(
-        const std::string& policyPath
-    ) const noexcept;
-    GovernorCandidate* findCandidate(const std::string& policyPath,
-                                     const std::string& governor) noexcept;
+    bool ensureRecovered(const DeviceProfile& profile) noexcept;
     bool buildPlan(
         RuntimeState state,
         const RuntimeSample& sample,
         const DeviceProfile& profile,
         std::vector<MutationPlanEntry>& plan
     ) const noexcept;
-    double governorScore(const std::string& governor,
-                         RuntimeState state,
-                         const RuntimeSample& sample) const noexcept;
-    MutationResult applyPlan(
-        const std::vector<MutationPlanEntry>& plan
-    ) noexcept;
-    MutationResult restoreGovernors() noexcept;
-
-    MutationResult runTrial(
+    bool isRejected(const std::string& policy_path, const std::string& governor) const noexcept;
+    double governorScore(
+        const std::string& governor,
         RuntimeState state,
-        const RuntimeSample& sample,
-        const DeviceProfile& profile,
-        const EngineConfig& config
-    ) noexcept;
-    bool startNextTrial(const DeviceProfile& profile) noexcept;
-    bool beginCandidateTrial(const DeviceProfile& profile) noexcept;
-    void accumulate(TrialAccumulator& accumulator,
-                    const RuntimeSample& sample) noexcept;
-    bool safetyWindowValid(RuntimeState state,
-                           const RuntimeSample& sample) const noexcept;
-    MutationResult completeTrial() noexcept;
-    void abortTrial() noexcept;
-    double calculateEvidenceScore() const noexcept;
+        const RuntimeSample& sample
+    ) const noexcept;
+    MutationResult applyPlan(const std::vector<MutationPlanEntry>& plan) noexcept;
+    MutationResult restoreGovernors() noexcept;
+    MutationJournal::Entries factorySnapshot() const;
 
     std::unordered_map<std::string, Baseline> baseline_;
-    std::vector<GovernorCandidate> candidates_;
     std::vector<std::pair<std::string, std::string>> last_applied_governors_;
+    // policy_path -> governor -> decision cycle at which it was rejected
+    std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> rejected_;
     const ExperienceMemory* experience_memory_{nullptr};
-    std::unordered_map<std::string, std::unordered_set<std::string>>
-        rejected_governors_;
-    TrialState trial_{};
+    MutationJournal* journal_{nullptr};
+    const DeviceProfile* profile_{nullptr};
     CpuFreqActuator cpufreq_actuator_{};
+    std::uint64_t decision_cycle_{0};
+
     bool actuator_ready_{false};
     bool baseline_captured_{false};
+    bool mutated_{false};            // a write may have changed live governors
+    bool journal_committed_{false};  // journal holds factory values for this epoch
+    bool restore_failed_{false};     // last restore incomplete: block new mutations
+    bool recovery_pending_{true};    // a previous run's journal must be recovered
+    // Factory values recovered from a previous run's journal. Discovery after a
+    // crash reads the mutated governor, so these must override the profile.
+    MutationJournal::Entries recovered_factory_;
 };
 
 } // namespace coreflow
