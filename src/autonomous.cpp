@@ -765,8 +765,14 @@ void AutonomousEngine::tick() {
             }
         }
         if (resource_mutation != MutationResult::Skipped) {
-            logInfo("RESOURCE_AUTONOMOUS result=%s", mutationResultName(resource_mutation));
-        }
+    logInfo(
+        "RESOURCE_AUTONOMOUS result=%s",
+        mutationResultName(resource_mutation));
+} else if (!ecosystem_plan.mutation_eligible) {
+    logInfo(
+        "RESOURCE_AUTONOMOUS result=SKIPPED reason=POLICY_BLOCKED state=%s",
+        stateName(next));
+}
 
         logMutation(mutation, next);
 
