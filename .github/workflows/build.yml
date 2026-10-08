@@ -89,6 +89,34 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/host --output-on-failure --no-tests=error
 
+  sanitizer:
+    name: ASan + UBSan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    needs: host-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure sanitized host build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/sanitize -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCORE_FLOW_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build sanitized tests
+        run: cmake --build build/sanitize --parallel "$(nproc)"
+
+      - name: Run sanitized tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build/sanitize --output-on-failure --no-tests=error
+
   android:
     name: Android 14+ ARM64 Production
     runs-on: ubuntu-26.04
@@ -108,7 +136,7 @@ jobs:
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_CODE" = "1902"
+          test "$MODULE_CODE" = "2000"
           test "$CONFIG_VERSION" = "$CMAKE_VERSION"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
           echo "Android native minimum API: ${ANDROID_MIN_API}"
@@ -257,7 +285,7 @@ jobs:
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DCORE_FLOW_BUILD_TESTS=OFF \
-            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android" \
+            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
 
       - name: Build and Strip Binary
         shell: bash
@@ -405,6 +433,29 @@ jobs:
           unzip -l "$ZIP" | grep -F "system/lib64/libonnxruntime.so"
           unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
           unzip -l "$ZIP" | grep -F "system/etc/coreflow/thermal_predictor.onnx"
+
+      - name: Generate binary provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
+          SHA="artifacts/CoreFlow-Autonomous/coreflowd-${ANDROID_ABI}.sha256"
+          sha256sum "$BINARY" | tee "$SHA"
+          printf 'version=%s\nabi=%s\nmin_api=%s\n' \
+            "$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')" \
+            "$ANDROID_ABI" "$ANDROID_MIN_API" \
+            > artifacts/CoreFlow-Autonomous/build-provenance.txt
+
+      - name: Upload raw production binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreFlow-coreflowd-${{ env.ANDROID_ABI }}-minapi${{ env.ANDROID_MIN_API }}
+          path: |
+            artifacts/CoreFlow-Autonomous/system/bin/coreflowd
+            artifacts/CoreFlow-Autonomous/coreflowd-${{ env.ANDROID_ABI }}.sha256
+            artifacts/CoreFlow-Autonomous/build-provenance.txt
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload production artifact
         uses: actions/upload-artifact@v6
