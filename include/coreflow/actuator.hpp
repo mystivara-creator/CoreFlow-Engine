@@ -6,6 +6,19 @@
 
 namespace coreflow {
 
+class MutationController;
+
+class MutationPermit final {
+public:
+    MutationPermit(const MutationPermit&) = default;
+    MutationPermit& operator=(const MutationPermit&) = default;
+    bool valid() const noexcept { return valid_; }
+private:
+    explicit MutationPermit(bool valid) noexcept : valid_(valid) {}
+    bool valid_{false};
+    friend class MutationController;
+};
+
 enum class ActuatorDomain : std::uint8_t {
     CpuFreq = 0,
     Uclamp,
@@ -106,7 +119,8 @@ public:
     // The caller owns policy selection. This method only performs a bounded,
     // already-approved mutation and read-back verification.
     virtual ActuatorResult apply(
-        const ActuatorMutation& mutation
+        const ActuatorMutation& mutation,
+        const MutationPermit& permit
     ) noexcept = 0;
 
     virtual ActuatorResult restore(

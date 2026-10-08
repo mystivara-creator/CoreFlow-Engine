@@ -39,7 +39,8 @@ public:
     ActuatorObservation observe(std::string_view target) noexcept override;
 
     ActuatorResult apply(
-        const ActuatorMutation& mutation
+        const ActuatorMutation& mutation,
+        const MutationPermit& permit
     ) noexcept override;
 
     ActuatorResult restore(std::string_view target) noexcept override;

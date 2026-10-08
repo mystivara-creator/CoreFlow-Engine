@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -59,6 +60,10 @@ public:
     }
 
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
+    // Bounded exposure: one hour at the 5 s monitor interval.
+    static constexpr std::uint64_t kMaxMutationHoldCycles = 720;
+    // After a forced hold expiry, no new mutation for this many cycles (10 min).
+    static constexpr std::uint64_t kHoldCooldownCycles = 120;
 
 private:
     struct Baseline {
@@ -87,6 +92,9 @@ private:
     ) const noexcept;
     MutationResult applyPlan(const std::vector<MutationPlanEntry>& plan) noexcept;
     MutationResult restoreGovernors() noexcept;
+    // Restore only if this controller actually changed a governor. A controller
+    // that never mutated must not write to the kernel at all.
+    MutationResult relaxToBaseline() noexcept;
     MutationJournal::Entries factorySnapshot() const;
 
     std::unordered_map<std::string, Baseline> baseline_;
@@ -98,10 +106,15 @@ private:
     const DeviceProfile* profile_{nullptr};
     CpuFreqActuator cpufreq_actuator_{};
     std::uint64_t decision_cycle_{0};
+    std::uint64_t mutation_started_cycle_{0};
+    std::uint64_t hold_cooldown_until_cycle_{0};
 
     bool actuator_ready_{false};
     bool baseline_captured_{false};
     bool mutated_{false};            // a write may have changed live governors
+    // Per-policy record of governors this controller may have changed. A single
+    // rolled-back write must not erase the record of another policy's mutation.
+    std::unordered_set<std::string> dirty_governors_;
     bool journal_committed_{false};  // journal holds factory values for this epoch
     bool restore_failed_{false};     // last restore incomplete: block new mutations
     bool recovery_pending_{true};    // a previous run's journal must be recovered

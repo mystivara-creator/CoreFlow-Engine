@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "coreflow/environment.hpp"
+
 namespace coreflow {
 
 enum class RuntimeState {
@@ -64,6 +66,9 @@ struct CpuPolicy {
     bool readable{false};
     bool governor_writable{false};
     bool scaling_max_writable{false};
+    bool energy_performance_available{false};
+    std::string energy_performance_preference;
+    bool boost_available{false};
 };
 
 struct ThermalZone {
@@ -79,6 +84,12 @@ struct IoDevice {
     std::uint64_t read_ahead_kb{0};
     bool read_ahead_readable{false};
     bool read_ahead_writable{false};
+    std::uint64_t nr_requests{0};
+    bool nr_requests_readable{false};
+    bool nr_requests_writable{false};
+    std::string scheduler;
+    bool scheduler_readable{false};
+    bool scheduler_writable{false};
 };
 
 struct TunableCapability {
@@ -139,6 +150,8 @@ struct DeviceProfile {
     bool proc_available{false};
     bool sys_available{false};
     ChargingCapability charging;
+    AndroidEnvironment environment;
+    EnvironmentCapabilityMatrix capabilities;
 };
 
 struct RuntimeSample {
