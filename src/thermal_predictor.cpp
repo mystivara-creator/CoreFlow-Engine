@@ -22,6 +22,12 @@ constexpr const char* kLogTag = "CoreFlowThermalML";
 constexpr std::size_t kFeatureCount = 14U;
 constexpr int kDefaultHorizonTicks = 3;
 constexpr std::size_t kMinimumHistorySamples = 3U;
+// A one-step-ahead model prediction should never be far from the live sensor.
+// A larger gap indicates model drift or bad input; reject it in favour of the
+// bounded heuristic.
+constexpr double kMaxModelDeviationC = 12.0;
+// Throttle per-inference INFO logs (one inference per tick otherwise).
+constexpr std::uint64_t kInferenceLogEvery = 60U;
 
 constexpr double kTrendUnknown = 0.0;
 constexpr double kTrendFalling = -1.0;
@@ -179,6 +185,7 @@ struct ThermalPredictor::Impl {
     std::string output_name;
     bool ready{false};
     bool model_ready{false};
+    std::uint64_t inference_count{0};
 };
 
 ThermalPredictor::ThermalPredictor()
@@ -440,17 +447,26 @@ double ThermalPredictor::predict(
                 "ONNX prediction outside valid range");
         }
 
-        logInfo(
-            "ONNX_THERMAL_PREDICTION current=%.2fC "
-            "predicted=%.2fC delta=%.3f cpu=%.3f "
-            "load=%.2f charging=%s confidence=%.2f",
-            thermal_current,
-            prediction,
-            thermal_delta,
-            cpu_utilization,
-            load1,
-            charging > 0.5 ? "YES" : "NO",
-            current_sample.confidence);
+        if (std::fabs(prediction - thermal_current) > kMaxModelDeviationC) {
+            logWarn(
+                "ONNX_PREDICTION_REJECTED current=%.2fC predicted=%.2fC "
+                "fallback=HEURISTIC",
+                thermal_current,
+                prediction);
+            return fallback;
+        }
+
+        if ((impl_->inference_count++ % kInferenceLogEvery) == 0U) {
+            logInfo(
+                "ONNX_THERMAL_PREDICTION current=%.2fC "
+                "predicted=%.2fC delta=%.3f confidence=%.2f "
+                "sampled_every=%llu",
+                thermal_current,
+                prediction,
+                thermal_delta,
+                current_sample.confidence,
+                static_cast<unsigned long long>(kInferenceLogEvery));
+        }
 
         return prediction;
     } catch (const Ort::Exception& e) {

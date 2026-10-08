@@ -276,27 +276,54 @@ ActuatorResult CpuFreqActuator::restore(
         return result;
     }
 
+    return restoreTo(target, baseline->second.value);
+}
+
+ActuatorResult CpuFreqActuator::restoreTo(
+    std::string_view target,
+    std::string_view value
+) noexcept {
+    ActuatorResult result;
+
+    if (profile_ == nullptr || target.empty() || value.empty()) {
+        result.status = ActuatorStatus::Unavailable;
+        return result;
+    }
+
+    const CpuPolicy* policy = findPolicy(target);
+    if (policy == nullptr) {
+        result.status = ActuatorStatus::Unavailable;
+        return result;
+    }
+
+    // Never write a governor the policy does not advertise. This keeps a
+    // stale journal entry from forcing an unsupported value.
+    if (!policy->available_governors.empty() &&
+        !targetAllowed(*policy, target, value)) {
+        result.status = ActuatorStatus::ValidationFailed;
+        return result;
+    }
+
     std::string current;
     if (!readText(target, current)) {
         result.status = ActuatorStatus::ReadFailed;
         return result;
     }
 
-    if (current == baseline->second.value) {
+    if (current == value) {
         result.status = ActuatorStatus::NoChange;
         return result;
     }
 
     result.writes_attempted = 1;
 
-    if (!writeVerified(target, baseline->second.value)) {
+    if (!writeVerified(target, value)) {
         result.status = ActuatorStatus::WriteFailed;
         return result;
     }
 
     std::string verified;
-    if (!readText(target, verified) ||
-        verified != baseline->second.value) {
+    if (!readText(target, verified) || verified != value) {
         result.status = ActuatorStatus::VerifyFailed;
         return result;
     }

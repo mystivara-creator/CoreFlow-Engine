@@ -9,8 +9,9 @@ RuntimeState AdaptivePolicy::evaluate(
     const RuntimeSample& sample,
     RuntimeState previous
 ) const {
-    constexpr long kThermalGuardEnter = 43000;
-    constexpr long kThermalGuardExit = 40000;
+    // Single source of truth for thermal thresholds (see policy.hpp).
+    constexpr long kThermalGuardEnter = static_cast<long>(kThermalGuardEnterC * 1000.0);
+    constexpr long kThermalGuardExit = static_cast<long>(kThermalGuardExitC * 1000.0);
     constexpr long kThermalWarm = 40000;
 
     constexpr double kMemoryPressureEnter = 0.10;
@@ -48,8 +49,7 @@ RuntimeState AdaptivePolicy::evaluate(
     //
     // Use load as a fallback only when CPU utilization is unavailable.
     // This prevents the policy from pinning the engine in ELEVATED state
-    // during normal multicore workloads, which would otherwise make the
-    // safety-gated TRIAL mutation path effectively unreachable.
+    // during normal multicore workloads.
     const bool load_busy = !sample.cpu_utilization_available &&
                            sample.load1 >= kElevatedLoad;
 
@@ -153,11 +153,6 @@ const char* mutationResultName(MutationResult result) {
         case MutationResult::Verified: return "VERIFIED";
         case MutationResult::Failed: return "FAILED";
         case MutationResult::RolledBack: return "ROLLED_BACK";
-        case MutationResult::TrialObserving: return "TRIAL_OBSERVING";
-        case MutationResult::TrialApplied: return "TRIAL_APPLIED";
-        case MutationResult::TrialCompleted: return "TRIAL_COMPLETED";
-        case MutationResult::TrialRejected: return "TRIAL_REJECTED";
-        case MutationResult::TrialAborted: return "TRIAL_ABORTED";
     }
     return "UNKNOWN";
 }

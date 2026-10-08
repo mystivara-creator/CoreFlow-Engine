@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <string>
 #include <utility>
 
 namespace coreflow {
 namespace {
 
+constexpr const char* kGovernorSuffix = "/scaling_governor";
 constexpr double kAdaptiveHysteresis = 0.10;
 constexpr double kThermalComfortC = 35.0;
 constexpr double kThermalPressureC = 43.0;
@@ -22,124 +24,139 @@ const char* knownGovernor(const std::string& governor) noexcept {
     return nullptr;
 }
 
+std::string governorPathOf(const std::string& policy_path) {
+    return policy_path + kGovernorSuffix;
+}
+
+// Authoritative live read. Returns false if the value cannot be read, so the
+// caller fails closed instead of planning against stale data.
+bool readLiveGovernor(const std::string& path, std::string& out) noexcept {
+    try {
+        std::ifstream file(path);
+        if (!file) return false;
+        std::string value;
+        if (!std::getline(file, value) || value.empty()) return false;
+        out = std::move(value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 } // namespace
 
-bool MutationController::governorAvailable(
-    const CpuPolicy& policy,
-    const std::string& governor
-) const noexcept {
-    return std::find(
-        policy.available_governors.begin(),
-        policy.available_governors.end(),
-        governor
-    ) != policy.available_governors.end();
+void MutationController::setJournal(MutationJournal* journal) noexcept {
+    journal_ = journal;
+    recovery_pending_ = true;
 }
 
-void MutationController::discoverGovernorCandidates(
-    const DeviceProfile& profile
-) noexcept {
-    candidates_.clear();
-
-    for (const CpuPolicy& policy : profile.cpu_policies) {
-        if (policy.path.empty() || !policy.readable ||
-            !policy.governor_writable || policy.available_governors.empty()) {
-            continue;
-        }
-
-        for (const std::string& governor : policy.available_governors) {
-            if (governor.empty()) continue;
-
-            GovernorCandidate candidate;
-            candidate.policy_path = policy.path;
-            candidate.governor = governor;
-            candidate.available = true;
-            candidate.writable = true;
-            candidate.validated = false;
-            candidates_.push_back(std::move(candidate));
-        }
-    }
+void MutationController::setExperienceMemory(const ExperienceMemory* memory) noexcept {
+    experience_memory_ = memory;
 }
 
-void MutationController::captureBaseline(
-    const DeviceProfile& profile
-) noexcept {
-    baseline_.clear();
-    trial_.reset();
+bool MutationController::captureBaseline(const DeviceProfile& profile) noexcept {
+    profile_ = &profile;
+
+    // A journal from a previous run means live governors may be mutated.
+    // Recover first; if that fails, refuse to adopt any baseline.
+    if (!ensureRecovered(profile)) return false;
+
+    // Never accept a mutated state as the factory baseline. A refused capture
+    // must leave the existing baseline intact so restore can still run.
+    if (mutated_) return false;
+
     baseline_captured_ = false;
+    actuator_ready_ = false;
 
+    baseline_.clear();
+    rejected_.clear();
     for (const CpuPolicy& policy : profile.cpu_policies) {
-        if (!policy.path.empty() &&
-            policy.readable &&
-            policy.governor_writable &&
-            !policy.governor.empty()) {
-            baseline_[policy.path + "/scaling_governor"] =
-                {policy.governor, true};
+        if (!policy.path.empty() && policy.readable &&
+            policy.governor_writable && !policy.governor.empty()) {
+            baseline_[governorPathOf(policy.path)] = {policy.governor, true};
         }
     }
 
-    discoverGovernorCandidates(profile);
+    // After crash recovery the profile reflects the mutated state. The true
+    // factory values are the ones the journal recorded and just restored.
+    for (const auto& factory : recovered_factory_) {
+        const auto entry = baseline_.find(factory.first);
+        if (entry != baseline_.end()) entry->second = {factory.second, true};
+    }
+    recovered_factory_.clear();
 
     cpufreq_actuator_.setProfile(&profile);
-    const ActuatorStatus actuatorStatus = cpufreq_actuator_.discover();
-    actuator_ready_ = actuatorStatus == ActuatorStatus::Ok;
-
+    actuator_ready_ = cpufreq_actuator_.discover() == ActuatorStatus::Ok;
     baseline_captured_ = actuator_ready_ && !baseline_.empty();
+    return baseline_captured_;
 }
 
-bool MutationController::registerValidatedGovernor(
-    const std::string& policyPath,
-    const std::string& governor
-) noexcept {
-    if (policyPath.empty() || governor.empty()) return false;
+bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept {
+    if (!recovery_pending_) return true;
 
-    GovernorCandidate* candidate = findCandidate(policyPath, governor);
-    if (candidate == nullptr || !candidate->available || !candidate->writable)
+    if (journal_ == nullptr) {
+        recovery_pending_ = false;
+        return true;
+    }
+
+    MutationJournal::Entries entries;
+    switch (journal_->load(entries)) {
+        case MutationJournal::LoadState::Absent:
+            // No commit happened, so no write could have landed.
+            recovery_pending_ = false;
+            return true;
+        case MutationJournal::LoadState::Corrupt:
+            // Untrusted journal: block mutation until an operator intervenes.
+            return false;
+        case MutationJournal::LoadState::Pending:
+            break;
+    }
+
+    cpufreq_actuator_.setProfile(&profile);
+    recovered_factory_.clear();
+
+    bool all_restored = true;
+    for (const auto& entry : entries) {
+        bool present = false;
+        for (const CpuPolicy& policy : profile.cpu_policies) {
+            if (entry.first == governorPathOf(policy.path)) {
+                present = true;
+                break;
+            }
+        }
+        // Policy no longer exists on this boot: nothing to restore.
+        if (!present) continue;
+
+        const ActuatorResult result =
+            cpufreq_actuator_.restoreTo(entry.first, entry.second);
+        if (!result.succeeded()) all_restored = false;
+    }
+
+    if (!all_restored) {
+        mutated_ = true;
+        restore_failed_ = true;
         return false;
+    }
 
-    candidate->validated = true;
-    candidate->evidence_score = std::max(candidate->evidence_score, 1.0);
+    if (!journal_->clear()) return false;
+
+    recovered_factory_ = std::move(entries);
+    recovery_pending_ = false;
+    mutated_ = false;
+    journal_committed_ = false;
+    restore_failed_ = false;
     return true;
 }
 
-MutationController::GovernorCandidate*
-MutationController::findCandidate(
-    const std::string& policyPath,
+bool MutationController::isRejected(
+    const std::string& policy_path,
     const std::string& governor
-) noexcept {
-    for (GovernorCandidate& candidate : candidates_) {
-        if (candidate.policy_path == policyPath &&
-            candidate.governor == governor) {
-            return &candidate;
-        }
-    }
-    return nullptr;
-}
-
-const MutationController::GovernorCandidate*
-MutationController::findValidatedCandidate(
-    const std::string& policyPath
 ) const noexcept {
-    const GovernorCandidate* best = nullptr;
-    for (const GovernorCandidate& candidate : candidates_) {
-        if (candidate.policy_path != policyPath ||
-            !candidate.available || !candidate.writable ||
-            !candidate.validated) {
-            continue;
-        }
-        if (best == nullptr || candidate.evidence_score > best->evidence_score)
-            best = &candidate;
-    }
-    return best;
-}
-
-std::size_t MutationController::validatedCandidateCount() const noexcept {
-    return static_cast<std::size_t>(std::count_if(
-        candidates_.begin(),
-        candidates_.end(),
-        [](const GovernorCandidate& candidate) {
-            return candidate.validated;
-        }
-    ));
+    const auto policy = rejected_.find(policy_path);
+    if (policy == rejected_.end()) return false;
+    const auto entry = policy->second.find(governor);
+    if (entry == policy->second.end()) return false;
+    return decision_cycle_ - entry->second < kRejectionCooldownCycles;
 }
 
 double MutationController::governorScore(
@@ -209,35 +226,32 @@ bool MutationController::buildPlan(
 ) const noexcept {
     plan.clear();
 
-    // Idle and memory Pressure intentionally restore the captured baseline.
-    // Governor selection is an adaptive workload/thermal decision, not a
-    // direct memory-pressure remedy.
-    if (state == RuntimeState::Idle || state == RuntimeState::Pressure)
-        return false;
-
     for (const CpuPolicy& policy : profile.cpu_policies) {
-        if (policy.path.empty() || !policy.readable ||
-            !policy.governor_writable || policy.governor.empty()) {
+        if (policy.path.empty() || !policy.readable || !policy.governor_writable) {
             continue;
         }
 
-        const std::string governorPath = policy.path + "/scaling_governor";
+        const std::string governorPath = governorPathOf(policy.path);
         const auto baseline = baseline_.find(governorPath);
-        if (baseline == baseline_.end() || !baseline->second.valid)
-            continue;
+        if (baseline == baseline_.end() || !baseline->second.valid) continue;
 
-        const double currentScore =
-            governorScore(policy.governor, state, sample);
+        // Read the live governor. The discovery snapshot goes stale after the
+        // first mutation and must never drive hysteresis or "already set" checks.
+        std::string current;
+        if (!readLiveGovernor(governorPath, current)) continue;
+
+        const double currentScore = governorScore(current, state, sample);
         std::string bestGovernor;
         double bestScore = -1.0;
 
         for (const std::string& governor : policy.available_governors) {
-            double score = governorScore(governor, state, sample);
+            if (governor.empty() || isRejected(policy.path, governor)) continue;
 
-            // Experience is advisory only. Fresh runtime heuristics remain
-            // dominant; historical evidence is blended only when a
-            // compatible record exists for this exact candidate/context.
-            if (score >= 0.0 && experience_memory_ != nullptr) {
+            double score = governorScore(governor, state, sample);
+            if (score < 0.0) continue;
+
+            // Experience is advisory: blend only for an exact compatible record.
+            if (experience_memory_ != nullptr) {
                 ExperienceMemory::CandidateIdentity identity;
                 identity.key = policy.path + ":" + governor;
 
@@ -265,35 +279,45 @@ bool MutationController::buildPlan(
         }
 
         if (bestGovernor.empty() || bestScore < 0.0) continue;
+        if (bestGovernor == current) continue;
 
-        // Hysteresis: keep the current governor unless the new candidate is
-        // materially better. This prevents governor flapping around a score
-        // boundary while still allowing clear workload/thermal changes.
-        if (currentScore >= 0.0 &&
-            bestScore < currentScore + kAdaptiveHysteresis) {
+        // Hysteresis against the live governor, so a marginal score difference
+        // cannot cause flapping.
+        if (currentScore >= 0.0 && bestScore < currentScore + kAdaptiveHysteresis) {
             continue;
         }
 
-        if (bestGovernor == policy.governor) continue;
-
-        plan.push_back({
-            governorPath,
-            bestGovernor,
-            baseline->second.value
-        });
+        plan.push_back({governorPath, bestGovernor, baseline->second.value});
     }
 
     return !plan.empty();
 }
 
+MutationJournal::Entries MutationController::factorySnapshot() const {
+    MutationJournal::Entries entries;
+    entries.reserve(baseline_.size());
+    for (const auto& item : baseline_) {
+        if (item.second.valid) entries.emplace_back(item.first, item.second.value);
+    }
+    return entries;
+}
+
 MutationResult MutationController::applyPlan(
     const std::vector<MutationPlanEntry>& plan
 ) noexcept {
-    if (plan.empty() || !actuator_ready_)
-        return MutationResult::Skipped;
+    if (plan.empty() || !actuator_ready_) return MutationResult::Skipped;
 
-    // v1.3 resource bound: one verified CPUFreq write per decision cycle.
+    // Resource bound: one verified CPUFreq write per decision cycle.
     const MutationPlanEntry& entry = plan.front();
+
+    // Durability before mutation. If this fails, nothing is written.
+    if (!journal_committed_ && journal_ != nullptr) {
+        if (!journal_->commit(factorySnapshot())) return MutationResult::Failed;
+    }
+    journal_committed_ = true;
+
+    // A write may land even if verification later fails, so mark dirty first.
+    mutated_ = true;
 
     ActuatorMutation mutation;
     mutation.id = cpufreq_actuator_.id();
@@ -302,296 +326,74 @@ MutationResult MutationController::applyPlan(
 
     const ActuatorResult result = cpufreq_actuator_.apply(mutation);
 
-    if (!result.succeeded())
+    if (!result.succeeded()) {
         return result.status == ActuatorStatus::RolledBack
             ? MutationResult::RolledBack
             : MutationResult::Failed;
+    }
 
-    if (!result.changed())
-        return MutationResult::Skipped;
+    if (!result.changed()) return MutationResult::Skipped;
 
     last_applied_governors_.clear();
-    const std::string suffix = "/scaling_governor";
+    const std::string suffix = kGovernorSuffix;
     if (entry.path.size() >= suffix.size() &&
-        entry.path.compare(
-            entry.path.size() - suffix.size(),
-            suffix.size(),
-            suffix
-        ) == 0) {
-        const std::string policyPath =
-            entry.path.substr(0, entry.path.size() - suffix.size());
-        last_applied_governors_.emplace_back(policyPath, entry.target);
+        entry.path.compare(entry.path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        last_applied_governors_.emplace_back(
+            entry.path.substr(0, entry.path.size() - suffix.size()),
+            entry.target);
     }
 
     return MutationResult::Verified;
 }
 
-void MutationController::setExperienceMemory(
-    const ExperienceMemory* memory
-) noexcept {
-    experience_memory_ = memory;
-}
-
-void MutationController::rejectLastMutation() noexcept {
-    for (const auto& entry : last_applied_governors_) {
-        rejected_governors_[entry.first].insert(entry.second);
-    }
-
-    last_applied_governors_.clear();
-}
-
 MutationResult MutationController::restoreGovernors() noexcept {
-    if (!actuator_ready_)
-        return MutationResult::Skipped;
+    if (!actuator_ready_) {
+        return mutated_ ? MutationResult::Failed : MutationResult::Skipped;
+    }
 
     bool restoredAny = false;
     bool failed = false;
 
     for (const auto& entry : baseline_) {
-        if (!entry.second.valid)
-            continue;
+        if (!entry.second.valid) continue;
 
-        const ActuatorResult result =
-            cpufreq_actuator_.restore(entry.first);
-
-        if (result.status == ActuatorStatus::NoChange)
-            continue;
-
+        const ActuatorResult result = cpufreq_actuator_.restore(entry.first);
+        if (result.status == ActuatorStatus::NoChange) continue;
         if (!result.succeeded()) {
             failed = true;
             continue;
         }
-
-        if (result.changed())
-            restoredAny = true;
+        if (result.changed()) restoredAny = true;
     }
 
-    if (failed)
-        return restoredAny
-            ? MutationResult::RolledBack
-            : MutationResult::Failed;
-
-    return restoredAny
-        ? MutationResult::Verified
-        : MutationResult::Skipped;
-}
-
-void MutationController::accumulate(
-    TrialAccumulator& accumulator,
-    const RuntimeSample& sample
-) noexcept {
-    if (sample.thermal_available) {
-        accumulator.thermal_sum_c +=
-            static_cast<double>(sample.thermal_millidegrees) / 1000.0;
-    }
-    accumulator.load_sum += sample.load1;
-    accumulator.cpu_util_sum += sample.cpu_utilization;
-    ++accumulator.samples;
-}
-
-bool MutationController::safetyWindowValid(
-    RuntimeState state,
-    const RuntimeSample& sample
-) const noexcept {
-    if (state != RuntimeState::Idle && state != RuntimeState::Normal)
-        return false;
-    if (sample.confidence < 0.70) return false;
-    if (sample.thermal_available &&
-        static_cast<double>(sample.thermal_millidegrees) / 1000.0 >=
-            kTrialThermalCeilingC) {
-        return false;
-    }
-    return true;
-}
-
-bool MutationController::startNextTrial(
-    const DeviceProfile& profile
-) noexcept {
-    if (candidates_.empty()) return false;
-
-    for (std::size_t i = 0; i < candidates_.size(); ++i) {
-        GovernorCandidate& candidate = candidates_[i];
-        if (!candidate.available || !candidate.writable) continue;
-
-        const auto baseline = baseline_.find(
-            candidate.policy_path + "/scaling_governor");
-        if (baseline == baseline_.end() || !baseline->second.valid) continue;
-
-        if (candidate.governor == baseline->second.value) continue;
-        if (candidate.validated) continue;
-
-        bool policyStillPresent = false;
-        for (const CpuPolicy& policy : profile.cpu_policies) {
-            if (policy.path == candidate.policy_path &&
-                policy.governor_writable &&
-                governorAvailable(policy, candidate.governor)) {
-                policyStillPresent = true;
-                break;
-            }
-        }
-        if (!policyStillPresent) continue;
-
-        trial_.active = true;
-        trial_.phase = TrialPhase::Baseline;
-        trial_.candidate_index = i;
-        trial_.samples_remaining = kTrialBaselineSamples;
-        trial_.policy_path = candidate.policy_path;
-        trial_.governor_path = candidate.policy_path + "/scaling_governor";
-        trial_.baseline_governor = baseline->second.value;
-        trial_.baseline.reset();
-        trial_.candidate.reset();
-        return true;
+    if (failed) {
+        mutated_ = true;
+        restore_failed_ = true;
+        return MutationResult::Failed;
     }
 
-    return false;
-}
-
-bool MutationController::beginCandidateTrial(
-    const DeviceProfile& profile
-) noexcept {
-    if (!trial_.active || trial_.candidate_index >= candidates_.size())
-        return false;
-
-    const GovernorCandidate& candidate = candidates_[trial_.candidate_index];
-    for (const CpuPolicy& policy : profile.cpu_policies) {
-        if (policy.path == trial_.policy_path &&
-            governorAvailable(policy, candidate.governor) &&
-            policy.governor_writable) {
-            if (!actuator_ready_)
-                return false;
-
-            ActuatorMutation mutation;
-            mutation.id = cpufreq_actuator_.id();
-            mutation.target = trial_.governor_path;
-            mutation.requested = candidate.governor;
-
-            const ActuatorResult result =
-                cpufreq_actuator_.apply(mutation);
-            if (!result.succeeded())
-                return false;
-
-            trial_.phase = TrialPhase::Candidate;
-            trial_.samples_remaining = kTrialCandidateSamples;
-            trial_.candidate.reset();
-            return true;
-        }
-    }
-    return false;
-}
-
-double MutationController::calculateEvidenceScore() const noexcept {
-    if (trial_.baseline.samples == 0 || trial_.candidate.samples == 0)
-        return 0.0;
-
-    const double baseThermal =
-        trial_.baseline.thermal_sum_c /
-        static_cast<double>(trial_.baseline.samples);
-    const double trialThermal =
-        trial_.candidate.thermal_sum_c /
-        static_cast<double>(trial_.candidate.samples);
-    const double baseLoad =
-        trial_.baseline.load_sum /
-        static_cast<double>(trial_.baseline.samples);
-    const double trialLoad =
-        trial_.candidate.load_sum /
-        static_cast<double>(trial_.candidate.samples);
-
-    const double thermalDelta = trialThermal - baseThermal;
-    const double loadDelta = trialLoad - baseLoad;
-
-    const double thermalScore =
-        std::clamp(1.0 - std::max(0.0, thermalDelta) / 2.0, 0.0, 1.0);
-    const double loadScore =
-        std::clamp(1.0 - std::max(0.0, loadDelta) / 2.0, 0.0, 1.0);
-
-    return (thermalScore * 0.60) + (loadScore * 0.40);
-}
-
-MutationResult MutationController::completeTrial() noexcept {
-    if (!trial_.active || trial_.candidate_index >= candidates_.size())
-        return MutationResult::TrialAborted;
-
-    const double score = calculateEvidenceScore();
-    const double baseThermal = trial_.baseline.samples == 0
-        ? 0.0
-        : trial_.baseline.thermal_sum_c /
-            static_cast<double>(trial_.baseline.samples);
-    const double trialThermal = trial_.candidate.samples == 0
-        ? 0.0
-        : trial_.candidate.thermal_sum_c /
-            static_cast<double>(trial_.candidate.samples);
-    const double thermalDelta = trialThermal - baseThermal;
-
-    const bool safe = thermalDelta <= kTrialMaxThermalRegressionC &&
-                      score >= kTrialMinEvidenceScore;
-
-    const ActuatorResult restoreResult =
-        actuator_ready_
-            ? cpufreq_actuator_.restore(trial_.governor_path)
-            : ActuatorResult{};
-    const bool restored = restoreResult.succeeded();
-
-    GovernorCandidate& candidate = candidates_[trial_.candidate_index];
-    candidate.evidence_score = score;
-    ++candidate.completed_trials;
-    candidate.validated = safe && restored;
-
-    const MutationResult result =
-        safe && restored ? MutationResult::TrialCompleted
-                         : MutationResult::TrialRejected;
-    trial_.reset();
-    return result;
-}
-
-void MutationController::abortTrial() noexcept {
-    if (!trial_.active) return;
-    if (actuator_ready_)
-        (void)cpufreq_actuator_.restore(trial_.governor_path);
-    trial_.reset();
-}
-
-// Experimental path retained for controlled validation. Production Adaptive
-// mode does not depend on this state machine.
-MutationResult MutationController::runTrial(
-    RuntimeState state,
-    const RuntimeSample& sample,
-    const DeviceProfile& profile,
-    const EngineConfig& config
-) noexcept {
-    if (!config.allowCpuGovernor() || sample.confidence < config.minConfidence())
-        return MutationResult::Skipped;
-
-    if (!baseline_captured_) captureBaseline(profile);
-
-    if (!safetyWindowValid(state, sample)) {
-        abortTrial();
-        return MutationResult::TrialAborted;
-    }
-
-    if (!trial_.active && !startNextTrial(profile))
-        return MutationResult::Skipped;
-
-    if (trial_.phase == TrialPhase::Baseline) {
-        accumulate(trial_.baseline, sample);
-        if (--trial_.samples_remaining > 0)
-            return MutationResult::TrialObserving;
-
-        if (!beginCandidateTrial(profile)) {
-            abortTrial();
+    // Fully restored. Only now is it safe to drop the journal.
+    if (journal_committed_ && journal_ != nullptr) {
+        if (!journal_->clear()) {
+            mutated_ = true;
+            restore_failed_ = true;
             return MutationResult::Failed;
         }
-        return MutationResult::TrialApplied;
     }
 
-    if (trial_.phase == TrialPhase::Candidate) {
-        accumulate(trial_.candidate, sample);
-        if (--trial_.samples_remaining > 0)
-            return MutationResult::TrialObserving;
-        return completeTrial();
-    }
+    journal_committed_ = false;
+    mutated_ = false;
+    restore_failed_ = false;
+    last_applied_governors_.clear();
 
-    (void)config;
-    return MutationResult::TrialAborted;
+    return restoredAny ? MutationResult::RolledBack : MutationResult::Skipped;
+}
+
+void MutationController::rejectLastMutation() noexcept {
+    for (const auto& entry : last_applied_governors_) {
+        rejected_[entry.first][entry.second] = decision_cycle_;
+    }
+    last_applied_governors_.clear();
 }
 
 MutationResult MutationController::apply(
@@ -600,40 +402,39 @@ MutationResult MutationController::apply(
     const DeviceProfile& profile,
     const EngineConfig& config
 ) noexcept {
-    if (config.mutationMode() == MutationMode::Trial)
-        return runTrial(state, sample, profile, config);
+    ++decision_cycle_;
 
-    if (config.mutationMode() != MutationMode::Adaptive)
-        return MutationResult::Skipped;
+    if (!ensureRecovered(profile)) return MutationResult::Failed;
 
-    if (!baseline_captured_)
-        captureBaseline(profile);
+    if (!baseline_captured_) {
+        if (!captureBaseline(profile)) {
+            return mutated_ ? MutationResult::Failed : MutationResult::Skipped;
+        }
+    }
 
-    // Idle and memory Pressure restore the baseline. Active states use the
-    // bounded adaptive selector. Confidence and permissions always gate
-    // mutation before any sysfs write.
-    if (state == RuntimeState::Idle || state == RuntimeState::Pressure)
+    // While a previous restore is incomplete, plan nothing new. Retry the restore.
+    if (restore_failed_) return restoreGovernors();
+
+    // Idle and memory pressure restore the factory baseline.
+    if (state == RuntimeState::Idle || state == RuntimeState::Pressure) {
         return restoreGovernors();
+    }
 
-    if (!config.allowCpuGovernor() ||
-        sample.confidence < config.minConfidence()) {
+    // Confidence and permission gate mutation before any sysfs write.
+    if (!config.allowCpuGovernor() || sample.confidence < config.minConfidence()) {
         return restoreGovernors();
     }
 
     std::vector<MutationPlanEntry> plan;
-    if (!buildPlan(state, sample, profile, plan))
-        return MutationResult::Skipped;
+    if (!buildPlan(state, sample, profile, plan)) return MutationResult::Skipped;
 
     return applyPlan(plan);
 }
 
 bool MutationController::restoreAll() noexcept {
-    if (trial_.active) abortTrial();
-    if (!baseline_captured_) return true;
-
-    const MutationResult result = restoreGovernors();
-    return result != MutationResult::Failed &&
-           result != MutationResult::RolledBack;
+    if (profile_ != nullptr && !ensureRecovered(*profile_)) return false;
+    if (!baseline_captured_) return !mutated_;
+    return restoreGovernors() != MutationResult::Failed;
 }
 
 } // namespace coreflow

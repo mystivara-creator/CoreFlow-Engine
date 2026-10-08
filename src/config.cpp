@@ -44,8 +44,9 @@ bool EngineConfig::load(const std::string& path) noexcept {
             } else if (key == "min_confidence") {
                 try { setMinConfidence(std::stod(value)); } catch (...) {}
             } else if (key == "mutation_mode") {
+                // Unknown values, including the removed experimental "trial"
+                // mode, keep the fail-closed default (Disabled).
                 if (value == "adaptive") mutation_mode_ = MutationMode::Adaptive;
-                else if (value == "trial") mutation_mode_ = MutationMode::Trial;
                 else if (value == "disabled" || value == "observe") mutation_mode_ = MutationMode::Disabled;
             } else if (key == "allow_cpu_governor") {
                 allow_cpu_governor_ = parseBool(value, allow_cpu_governor_);
@@ -71,7 +72,6 @@ const char* mutationModeName(MutationMode mode) noexcept {
     switch (mode) {
         case MutationMode::Disabled: return "DISABLED";
         case MutationMode::Adaptive: return "ADAPTIVE";
-        case MutationMode::Trial: return "TRIAL";
     }
     return "UNKNOWN";
 }

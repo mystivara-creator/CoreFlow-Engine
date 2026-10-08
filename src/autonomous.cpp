@@ -22,6 +22,7 @@ namespace {
 
 constexpr const char* kLogTag = "CoreFlowAutonomous";
 constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
+constexpr const char* kMutationJournalPath = "/data/adb/coreflow/mutation_journal.txt";
 constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
 constexpr std::size_t kHistorySize = 6;
 
@@ -45,12 +46,9 @@ constexpr std::uint64_t kPeriodicLogSamples = 10;
 // THERMAL STABILITY (HYSTERESIS & PREDICTION)
 // ============================================================================
 
-// Threshold aligned with repository policy: enter ThermalGuard at 43°C
-constexpr double kThermalGuardThresholdC = 43.0;
-
-// Hysteresis: Prevent state bouncing (yo-yo effect)
-// Once in ThermalGuard, stay there until suhu < 41.5°C (43.0 - 1.5)
-constexpr double kThermalGuardHysteresisC = 1.5;
+// Thresholds are shared with the policy layer (see policy.hpp), so the
+// engine and the policy can never disagree about when the guard exits.
+constexpr double kThermalGuardThresholdC = kThermalGuardEnterC;
 
 // Predictive buffer: enter protection 0.5°C earlier if rising trend detected
 // Prevents overshoot during rapid heating
@@ -173,15 +171,15 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
 // AUTONOMOUS ENGINE IMPLEMENTATION
 // ============================================================================
 
-AutonomousEngine::AutonomousEngine() = default;
+AutonomousEngine::AutonomousEngine()
+    : journal_(kMutationJournalPath) {}
 
 AutonomousEngine::~AutonomousEngine() {
     try {
         // Double-restore protection (from HARDENED)
         // Prevents calling restore twice if already restored
         if (!has_restored_) {
-            controller_.restoreAll();
-            has_restored_ = true;
+            has_restored_ = controller_.restoreAll();
         }
     } catch (const std::exception& e) {
         logError("Exception during destructor: %s", e.what());
@@ -191,6 +189,7 @@ AutonomousEngine::~AutonomousEngine() {
 }
 
 bool AutonomousEngine::initialize() {
+    controller_.setJournal(&journal_);
     controller_.setExperienceMemory(&experience_memory_);
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
@@ -214,7 +213,9 @@ bool AutonomousEngine::initialize() {
             ml_ready ? "READY" : "FALLBACK",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
-    controller_.captureBaseline(snapshot_.profile);
+    if (!controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Factory baseline not established; mutation stays blocked until recovery succeeds");
+    }
     has_restored_ = false;
 
     // Log charging capabilities
@@ -237,12 +238,19 @@ bool AutonomousEngine::initialize() {
 }
 
 bool AutonomousEngine::refreshEnvironment() {
+    refresh_pending_ = false;
     controller_.setExperienceMemory(&experience_memory_);
     if (!config_.runtimeRefreshEnabled()) return false;
 
     logInfo("Runtime discovery refresh requested");
-    const bool restored = controller_.restoreAll();
-    if (!restored) logWarn("Baseline restore during refresh incomplete");
+
+    // Refresh must never re-baseline a mutated system. If the factory restore
+    // is incomplete, keep the current profile and retry on the next cycle.
+    if (!controller_.restoreAll()) {
+        refresh_pending_ = true;
+        logWarn("Refresh deferred: factory restore incomplete, will retry");
+        return false;
+    }
 
     DeviceProfile refreshed = discovery_.discover();
     snapshot_.profile = std::move(refreshed);
@@ -261,7 +269,9 @@ bool AutonomousEngine::refreshEnvironment() {
             ml_ready ? "READY" : "FALLBACK",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
-    controller_.captureBaseline(snapshot_.profile);
+    if (!controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Factory baseline not re-established after refresh; mutation blocked");
+    }
 
     logInfo(
         "Runtime discovery refresh complete cpu_policies=%zu thermal_zones=%zu",
@@ -393,11 +403,18 @@ void AutonomousEngine::emitNotification(NotificationEvent event, const RuntimeSa
     if (event == NotificationEvent::None) return;
     
     // Better format from HARDENED
-    logInfo("ALERT   %-18s | temp=%.2fC | trend=%s | chg=%s",
-            notificationEventName(event),
-            static_cast<double>(sample.thermal_millidegrees) / 1000.0,
-            trendName(sample.thermal_trend),
-            sample.charging ? "YES" : "NO");
+    if (sample.thermal_available) {
+        logInfo("ALERT   %-18s | temp=%.2fC | trend=%s | chg=%s",
+                notificationEventName(event),
+                static_cast<double>(sample.thermal_millidegrees) / 1000.0,
+                trendName(sample.thermal_trend),
+                sample.charging ? "YES" : "NO");
+    } else {
+        logInfo("ALERT   %-18s | temp=n/a | trend=%s | chg=%s",
+                notificationEventName(event),
+                trendName(sample.thermal_trend),
+                sample.charging ? "YES" : "NO");
+    }
 }
 
 void AutonomousEngine::tick() {
@@ -433,8 +450,7 @@ void AutonomousEngine::tick() {
 
             if (previous == RuntimeState::ThermalGuard &&
                 next != RuntimeState::ThermalGuard &&
-                thermal_c >
-                    (kThermalGuardThresholdC - kThermalGuardHysteresisC)) {
+                thermal_c > kThermalGuardExitC) {
                 next = RuntimeState::ThermalGuard;
             } else if (
                 next != RuntimeState::ThermalGuard &&
@@ -644,16 +660,16 @@ int AutonomousEngine::run() {
     auto next_tick_time = std::chrono::steady_clock::now();
 
     while (!signal_state::stopRequested()) {
-        if (signal_state::consumeRefresh()) {
+        // Refresh requests are latched in refresh_pending_ so a deferred
+        // refresh (incomplete restore) is retried rather than silently lost.
+        if (refresh_pending_ || signal_state::consumeRefresh()) {
             refreshEnvironment();
             next_tick_time = std::chrono::steady_clock::now();
         }
 
         tick();
 
-        const int configured =
-            std::max(1, config_.monitorIntervalSeconds());
-
+        const int configured = std::max(1, config_.monitorIntervalSeconds());
         int sleep_seconds = configured;
 
         switch (snapshot_.state) {
@@ -680,22 +696,17 @@ int AutonomousEngine::run() {
 
         while (!signal_state::stopRequested()) {
             const auto now = std::chrono::steady_clock::now();
-            if (now >= next_tick_time) {
-                break;
-            }
+            if (now >= next_tick_time) break;
 
-            if (config_.runtimeRefreshEnabled() &&
-                signal_state::consumeRefresh()) {
-                refreshEnvironment();
-                next_tick_time = std::chrono::steady_clock::now();
+            if (config_.runtimeRefreshEnabled() && signal_state::consumeRefresh()) {
+                refresh_pending_ = true;
                 break;
             }
 
             const auto remaining = next_tick_time - now;
             const auto sleep_for = std::min(
                 remaining,
-                std::chrono::steady_clock::duration{
-                    std::chrono::milliseconds(250)});
+                std::chrono::steady_clock::duration{std::chrono::milliseconds(250)});
 
             std::this_thread::sleep_for(sleep_for);
         }
@@ -709,8 +720,8 @@ int AutonomousEngine::run() {
 
     try {
         if (!has_restored_) {
-            controller_.restoreAll();
-            has_restored_ = true;
+            // Keep the journal if restore is incomplete: the next start recovers it.
+            has_restored_ = controller_.restoreAll();
         }
     } catch (const std::exception& e) {
         logError("Exception during shutdown restore: %s", e.what());
