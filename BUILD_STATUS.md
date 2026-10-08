@@ -1,14 +1,14 @@
-# Build Status — v1.9.2
+# Build Status — v2.0.0
 
-This is the **v1.9.2 audited final source package** of CoreFlow Autonomous Engine.
+This is the **v2.0.0 audited final source package** of CoreFlow Autonomous Engine.
 
 ## Release identity
 
 | Component | Value |
 |---|---|
-| CoreFlow | `v1.9.2` |
-| Module version | `v1.9.2` |
-| Module versionCode | `1902` |
+| CoreFlow | `v2.0.0` |
+| Module version | `v2.0.0` |
+| Module versionCode | `2000` |
 | Android ABI | `arm64-v8a` |
 | Android minimum API | `34` |
 | Android SDK API | `36` |
@@ -41,9 +41,9 @@ It intentionally does **not** contain:
 
 Production Android binaries and the packaged ONNX Runtime library are produced by the CI workflow or the Android build helper from the externally supplied/pinned ONNX Runtime package.
 
-## v1.9.2 release scope
+## v2.0.0 release scope
 
-v1.9.2 is the audited final form of the ecosystem-intelligence/control foundation.
+v2.0.0 is the audited production source release of the autonomous adaptive control engine.
 
 The source package includes:
 
@@ -53,28 +53,40 @@ The source package includes:
 - `ActuatorManager` for common actuator registration and discovery
 - `DecisionOutcome` and outcome classification
 - `BaselineIntelligence`
-- `ExperienceMemory` foundation for future learning integration
+- `ExperienceMemory` feedback for verified CPU/resource candidate outcomes
+- Persistent scoped ExperienceMemory (device/kernel scoped, atomic, capped at 128 records)
+- Runtime I/O throughput and throttled top-process workload profiling
+- Battery level/status/current/voltage/temperature awareness
+- Power-aware and I/O-aware mutation eligibility
 - Existing mutation journal, safety hold, rollback and actuator safety boundaries
 
-Newly discovered ecosystem resources remain observation/plan-only by default. The policy/resource layers do not create the final mutation authority.
+Generic resources are adaptive-capable only through the centralized `MutationAuthority`, scoped permit, policy allow-list, durable dirty-set journal, verification and causal outcome loop.
 
-## v1.9.2 audited changes
+## v2.0.0 audited changes
 
 - Fixed multi-policy rollback bookkeeping so rolling back one policy does not clear dirty state belonging to another policy.
 - Journal cleanup now occurs only when no policy remains changed.
 - Reduced `CONTEXT` diagnostic logging to eligibility changes and every 60 samples instead of every monitor tick.
-- Aligned the default configuration documentation with the v1.9.2 release.
+- Aligned the default configuration documentation with the v2.0.0 release.
 - Added regression coverage for multi-policy mutation and full restore behavior.
-- Preserved the existing v1.4.1 Tier-2 safety boundary.
+- Unified CPUFreq and generic-resource mutation under one authority and one causal adaptive loop.
+- Restricted journals/restores to CoreFlow-owned dirty resources only.
+- Runtime refresh restores both mutation domains before discovery and re-baselining.
+- Added ASan/UBSan CI coverage and raw ARM64 binary provenance artifacts.
+- Added persistent, scoped ExperienceMemory with atomic replacement and bounded retention.
+- Expanded ContextEngine with I/O-bound, memory-bound and power-constrained workload states.
+- Added low-overhead I/O telemetry and throttled process profiling; these paths are observational only.
+- Added battery level/status awareness to power safety decisions.
+- Integrated historical experience into candidate ranking without granting mutation authority.
 
 ## Safety status
 
-The default module configuration is observation-only:
+The default module configuration is autonomous adaptive operation; the C++ safety authority remains the final gate:
 
 ```text
-mutation_mode=disabled
-allow_cpu_governor=no
-mutation_armed=false
+mutation_mode=adaptive
+allow_cpu_governor=yes
+mutation_armed=true
 ```
 
 The safety contract requires, before autonomous mutation:
@@ -136,6 +148,6 @@ Any model change requires an intentional digest update and release review.
 
 ## Release interpretation
 
-`v1.9.2` is an audited source-package release. It establishes the ecosystem intelligence/control foundation while retaining the existing safety authority for mutation.
+`v2.0.0` is an audited source-package release. It is the stable public autonomous-adaptive release: the v1.x safety/control foundations are consolidated here, and the v2 workload, power, I/O and persistent-learning capabilities are active where the device exposes the required telemetry/capabilities. Device-specific resources remain capability-driven and fail closed.
 
 It does **not** claim that a generated Android binary has been validated on every Android device, kernel, vendor implementation or hardware configuration.
