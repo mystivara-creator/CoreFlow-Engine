@@ -48,7 +48,7 @@ env:
 jobs:
   host-tests:
     name: Host deterministic tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -90,7 +90,7 @@ jobs:
 
   android:
     name: Android 14+ ARM64 Production
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     needs: host-tests
 
