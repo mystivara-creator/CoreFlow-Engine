@@ -266,12 +266,138 @@ void test_policy_block_without_mutation_is_skipped() {
     fs::remove_all(root);
 }
 
+
+void test_intervention_level_boundaries() {
+    auto run_case = [](InterventionLevel level,
+                       bool read_ahead,
+                       bool nr_requests,
+                       bool scheduler,
+                       const std::string& expected_path,
+                       const std::string& expected_value) {
+        const fs::path root =
+            fs::temp_directory_path() /
+            ("coreflow_intervention_" +
+             std::to_string(static_cast<int>(level)));
+
+        fs::remove_all(root);
+        fs::create_directories(root / "queue");
+
+        const fs::path readAhead =
+            root / "queue" / "read_ahead_kb";
+        const fs::path requests =
+            root / "queue" / "nr_requests";
+        const fs::path schedulerPath =
+            root / "queue" / "scheduler";
+        const fs::path rotational =
+            root / "rotational";
+
+        writeFile(readAhead, "128");
+        writeFile(requests, "128");
+        writeFile(schedulerPath, "[mq-deadline] none");
+        writeFile(rotational, "0");
+
+        DeviceProfile profile;
+
+        IoDevice device;
+        device.path = root.string();
+        device.name = "testblk";
+
+        device.read_ahead_readable = read_ahead;
+        device.read_ahead_writable = read_ahead;
+
+        device.nr_requests_readable = nr_requests;
+        device.nr_requests_writable = nr_requests;
+
+        device.scheduler_readable = scheduler;
+        device.scheduler_writable = scheduler;
+
+        profile.io_devices.push_back(device);
+
+        RuntimeSample sample;
+        sample.mem_total_kb = 1000;
+        sample.mem_available_kb = 500;
+        sample.mem_available_ratio = 0.50;
+        sample.confidence = 1.0;
+        sample.cpu_utilization = 0.80;
+        sample.cpu_utilization_available = true;
+        sample.load1 = 2.0;
+
+        EngineConfig config;
+        config.setMutationMode(MutationMode::Adaptive);
+        config.setMutationArmed(true);
+
+        Journal journal;
+        ResourceMutationController controller;
+        controller.setJournal(&journal);
+
+        CHECK(controller.captureBaseline(profile));
+
+        CHECK(applyResourcePolicy(
+            controller,
+            RuntimeState::Elevated,
+            sample,
+            profile,
+            config,
+            level) == MutationResult::Verified);
+
+        CHECK(readFile(expected_path) == expected_value);
+        CHECK(controller.mutated());
+
+        CHECK(controller.restoreAll());
+
+        fs::remove_all(root);
+    };
+
+    {
+        const fs::path root =
+            fs::temp_directory_path() /
+            "coreflow_intervention_1";
+
+        run_case(
+            InterventionLevel::Low,
+            true,
+            false,
+            false,
+            root / "queue" / "read_ahead_kb",
+            "160");
+    }
+
+    {
+        const fs::path root =
+            fs::temp_directory_path() /
+            "coreflow_intervention_2";
+
+        run_case(
+            InterventionLevel::Moderate,
+            false,
+            true,
+            false,
+            root / "queue" / "nr_requests",
+            "154");
+    }
+
+    {
+        const fs::path root =
+            fs::temp_directory_path() /
+            "coreflow_intervention_3";
+
+        run_case(
+            InterventionLevel::High,
+            false,
+            false,
+            true,
+            root / "queue" / "scheduler",
+            "none");
+    }
+}
+
 } // namespace
 
 int main() {
     test_swappiness_adaptive_path();
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
+    test_intervention_level_boundaries();
     std::printf("CoreFlow resource autonomy: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
