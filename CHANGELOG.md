@@ -1,44 +1,59 @@
+## v1.9.2 — Audited final
+
+- Fix: a rolled-back write on one policy no longer clears the dirty state of other policies. Each policy is tracked individually, and the journal is cleared only when no policy remains changed. Previously a rollback on one policy could leave another policy's mutation unrestored until reboot, with no journal record.
+- Fix: the CONTEXT diagnostic is logged on eligibility change and every 60 samples, instead of every monitor tick.
+- Docs: default configuration comment version aligned.
+- Test: multi-policy mutation and full restore regression added.
+
 # Changelog
 
-## v1.3.0 — Source Package
+## v1.9.1 — Ecosystem Intelligence & Control Foundation (Production Source)
 
-- Canonically aligned CoreFlow versioning to `1.3.0` / `versionCode=1300`.
-- Aligned the source package, CMake project, runtime version constant, module metadata, CI artifact naming, release checks and documentation.
-- Removed generated build output from the source package contract.
-- Removed misleading one-byte binary/library placeholders from the source package; production binaries remain CI/local-build outputs.
-- Unified the local Android build contract with CI: Android API 35, NDK 27.3.13750724 and externally supplied ONNX Runtime 1.24.3.
-- Strengthened source-release validation around generated artifacts and version consistency.
-- Kept the fail-closed default (`mutation_mode=disabled`) and existing journal/verification/restore safety model unchanged.
+### Added
+- Hardened CI Android API input validation so the requested minimum API cannot exceed the installed SDK platform.
 
-## v1.2.0-ONNX — Previous Source Release
+- Consolidated the pre-v2 architecture on top of the v1.5 environment/capability layer.
+- Added `ResourceStateModel` for observed/baseline/desired/verified resource state.
+- Added explicit resource constraints and fail-closed mutation eligibility.
+- Added `ContextEngine` for workload and system-context classification.
+- Added `PolicyEngine` for plan-only ecosystem decisions.
+- Added `ActuatorManager` for a common actuator registration/discovery boundary.
+- Added `DecisionOutcome` and outcome classification for future experience learning.
+- Integrated context and policy planning into the runtime observation loop without granting new mutation authority.
+- Added deterministic architecture-foundation tests.
 
-- Integrated ONNX thermal predictor with pinned model and CI-fetched ONNX Runtime.
-- Default configuration was fail-closed: `mutation_mode=disabled`.
-- Added durable mutation journal, write-verify-restore path, and single-instance locking.
+### Safety / production hardening
 
-## v1.1.0-A — Baseline Intelligence (Development)
+- New ecosystem resources remain mutation-disabled by default.
+- Policy and resource layers cannot manufacture the final `MutationPermit`.
+- Existing v1.4.1 journal, verification, rollback, safety-hold and boot-loop safeguards remain authoritative.
+- Default config is fully fail-closed:
+  - `mutation_mode=disabled`
+  - `allow_cpu_governor=no`
+  - `mutation_armed=false`
+- In-code defaults match the config file (`allow_cpu_governor_` and `mutation_armed_` both default false).
+- Source package ships no production binary or ONNX library (CI produces them).
 
-- Added `BaselineIntelligence` as a separate efficiency-evaluation layer.
-- Preserved `MutationController` restore baseline as the safety baseline.
-- Added five-sample factory/runtime baseline capture before mutation is allowed.
-- Added five-sample post-mutation observation windows.
-- Added Beneficial / Neutral / Regression / Inconclusive outcomes.
-- Regression outcomes restore the MutationController baseline.
-- Added deterministic Baseline Intelligence host tests.
-- Integrated the feature into `AutonomousEngine::tick()`.
-- Reset efficiency state on startup and runtime rediscovery.
+### Validation
 
-## v1.0.0-A — Autonomous Foundation
+- 297/297 host mutation safety checks passed
+- Architecture foundation tests passed
+- Safety foundation contract and source-release integrity scripts passed
 
-- Runtime observation, state evaluation and confidence-based decisions.
-- CPUFreq policy discovery and adaptive governor selection.
-- Bounded, verified CPU-governor mutation with baseline restoration.
-- Hysteresis, capability filtering and safe shutdown handling.
-- Magisk module scaffolding and SELinux rules.
+## v1.5.0 — Environment & Capability Intelligence
 
-## Earlier foundation notes
+- Added Android environment identity and capability discovery.
+- Added resource capability matrix covering CPUFreq, UClamp, CPUSet, scheduler, memory, I/O, GPU, thermal, charging, power, cgroup and Android runtime.
 
-- Native instance locking to prevent duplicate daemons.
-- Safe SIGUSR1 runtime rediscovery.
-- Persistent runtime configuration under `/data/adb/coreflow/`.
-- Hardened Android build flags and CI checks.
+## v1.4.1 — Tier-2 Safety Consistency Fix
+
+- Corrected `NoChange` mutation bookkeeping so a journaled plan with no kernel write does not force a restore write.
+- Aligned rollback and journal clear with actuator evidence (`writes_attempted`, `RolledBack`).
+- Safety hold and boot-loop guards remain authoritative.
+
+## v1.4.0 / earlier
+
+- Durable mutation journal, explicit arm gate, MutationPermit, read-back verification
+- Bounded CPUFreq governor mutation, rejection cooldown, max mutation hold
+- Magisk supervisor, SAFE_MODE, boot-loop disable marker
+- ONNX thermal predictor foundation

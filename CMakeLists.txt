@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(CoreFlowAutonomous VERSION 1.3.0 LANGUAGES CXX)
+project(CoreFlowAutonomous VERSION 1.9.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +29,11 @@ target_compile_options(coreflow_compile_options
 # Platform-independent logic. Compiled for both the Android daemon and the
 # host test binary. Anything that needs Android/ONNX headers stays Android-only.
 set(COREFLOW_CORE_SOURCES
+    src/environment.cpp
+    src/resource_model.cpp
+    src/context.cpp
+    src/control.cpp
+    src/outcome.cpp
     src/config.cpp
     src/signal_state.cpp
     src/experience.cpp
@@ -36,6 +41,7 @@ set(COREFLOW_CORE_SOURCES
     src/baseline_intelligence.cpp
     src/mutation.cpp
     src/mutation_journal.cpp
+    src/safety_hold.cpp
     src/cpufreq_actuator.cpp
 )
 
@@ -131,7 +137,14 @@ else()
         target_link_libraries(coreflow_tests PRIVATE coreflow_core)
         target_compile_options(coreflow_tests PRIVATE -Werror)
 
+        add_executable(coreflow_architecture_tests tests/architecture_tests.cpp)
+        target_link_libraries(coreflow_architecture_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_architecture_tests PRIVATE -Werror)
+
         add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
+        add_test(NAME coreflow_architecture_foundation COMMAND coreflow_architecture_tests)
+        add_test(NAME coreflow_safety_foundation_contract
+            COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
     endif()
 
 endif()
