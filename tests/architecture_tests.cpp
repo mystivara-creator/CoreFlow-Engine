@@ -132,6 +132,43 @@ int main() {
         CHECK(!blocked_plan.mutation_eligible);
     }
 
+
+    // Commit 7: verify the complete Context -> Policy -> Authority path.
+    {
+        const MutationAuthority authority;
+
+        const MutationPermit allowed = authority.authorize(
+            safe_plan,
+            EngineConfig{},
+            RuntimeState::Normal,
+            safe_context.confidence,
+            MutationPermit::Scope::Resource);
+
+        CHECK(allowed.validFor(MutationPermit::Scope::Resource));
+
+        const MutationPermit blocked = authority.authorize(
+            held,
+            EngineConfig{},
+            RuntimeState::ThermalGuard,
+            hot.confidence,
+            MutationPermit::Scope::Resource);
+
+        CHECK(!blocked.validFor(MutationPermit::Scope::Resource));
+
+        EngineConfig disarmed;
+        disarmed.setMutationMode(MutationMode::Adaptive);
+        disarmed.setMutationArmed(false);
+
+        const MutationPermit disarmed_permit = authority.authorize(
+            safe_plan,
+            disarmed,
+            RuntimeState::Normal,
+            safe_context.confidence,
+            MutationPermit::Scope::Resource);
+
+        CHECK(!disarmed_permit.validFor(MutationPermit::Scope::Resource));
+    }
+
     ActuatorResult no_change;
     no_change.status = ActuatorStatus::NoChange;
     CHECK(classifyOutcome(no_change) == OutcomeClass::Neutral);
