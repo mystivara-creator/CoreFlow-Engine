@@ -129,6 +129,11 @@ jobs:
         with:
           key: android-${{ env.ANDROID_ABI }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
 
+      - name: Verify source package contract
+        run: |
+          set -euo pipefail
+          bash tools/verify_source_release.sh
+
       - name: Fetch ONNX Runtime Android
         shell: bash
         run: |
@@ -184,10 +189,6 @@ jobs:
           fi
           echo "Thermal model digest verified: ${ACTUAL_SHA}"
 
-      - name: Verify source package contract
-        run: |
-          set -euo pipefail
-          bash tools/verify_source_release.sh
 
       - name: Configure Release
         shell: bash
