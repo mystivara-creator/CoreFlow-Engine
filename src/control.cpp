@@ -84,6 +84,20 @@ const IActuator* ActuatorManager::find(ActuatorId id) const noexcept {
     return nullptr;
 }
 
+const char* interventionLevelName(InterventionLevel level) noexcept {
+    switch (level) {
+        case InterventionLevel::ObserveOnly:
+            return "OBSERVE_ONLY";
+        case InterventionLevel::Low:
+            return "LOW";
+        case InterventionLevel::Moderate:
+            return "MODERATE";
+        case InterventionLevel::High:
+            return "HIGH";
+    }
+    return "UNKNOWN";
+}
+
 const char* policyActionName(PolicyAction action) noexcept {
     switch (action) {
         case PolicyAction::Observe: return "OBSERVE";

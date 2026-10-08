@@ -24,6 +24,13 @@ enum class Decision {
     ReduceIntervention
 };
 
+enum class InterventionLevel : std::uint8_t {
+    ObserveOnly = 0,
+    Low,
+    Moderate,
+    High
+};
+
 enum class Trend {
     Unknown,
     Rising,
@@ -204,5 +211,6 @@ const char* decisionName(Decision);
 const char* trendName(Trend);
 const char* notificationEventName(NotificationEvent);
 const char* mutationResultName(MutationResult);
+const char* interventionLevelName(InterventionLevel) noexcept;
 
 } // namespace coreflow
