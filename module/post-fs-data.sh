@@ -15,8 +15,8 @@ if [ ! -f "$CONFIG" ] && [ -f "$DEFAULT_CONFIG" ]; then
     chmod 0600 "$CONFIG" 2>/dev/null
 fi
 
-# Production migration: Trial is an explicit experimental mode and must not
-# survive into the Autonomous release line as a stale persisted setting.
+# The experimental "trial" mode was removed. A stale persisted "trial" must
+# downgrade to observe-only, never silently enable adaptive mutation.
 if [ -f "$CONFIG" ] && grep -q '^mutation_mode=trial[[:space:]]*$' "$CONFIG" 2>/dev/null; then
-    sed -i 's/^mutation_mode=trial[[:space:]]*$/mutation_mode=adaptive/' "$CONFIG" 2>/dev/null
+    sed -i 's/^mutation_mode=trial[[:space:]]*$/mutation_mode=observe/' "$CONFIG" 2>/dev/null
 fi

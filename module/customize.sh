@@ -1,54 +1,94 @@
+#!/system/bin/sh
 # ==========================================================
-# COREFLOW AUTONOMOUS - FUTURISTIC UI INSTALLER
-# File: customize.sh
+# CoreFlow Autonomous - installer
+# Runs inside the Magisk/KernelSU installer. Every status line printed below
+# reflects a real check; the installer aborts rather than installing a package
+# that fails validation.
 # ==========================================================
 
-DEVICE_MODEL=$(getprop ro.product.vendor.model || getprop ro.product.model)
-DEVICE_CODE=$(getprop ro.product.vendor.device || getprop ro.product.device)
-CHIPSET=$(getprop ro.board.platform)
-ANDROID_VER=$(getprop ro.build.version.release)
-API_LEVEL=$(getprop ro.build.version.sdk)
-KERNEL_VER=$(uname -r)
+MODULE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$MODPATH/module.prop" 2>/dev/null | tr -d '[:space:]')"
+MODULE_VERSION="${MODULE_VERSION:-unknown}"
+
+# getprop always succeeds, so fall back on empty values instead of `||`.
+first_prop() {
+    for key in "$@"; do
+        value="$(getprop "$key" 2>/dev/null)"
+        if [ -n "$value" ]; then
+            echo "$value"
+            return 0
+        fi
+    done
+    echo "unknown"
+}
+
+# ELF check: magic 7f 45 4c 46 and e_machine == EM_AARCH64 (0xb7), little-endian.
+is_arm64_elf() {
+    file="$1"
+    [ -s "$file" ] || return 1
+    magic="$(head -c 4 "$file" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    [ "$magic" = "7f454c46" ] || return 1
+    machine="$(dd if="$file" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    [ "$machine" = "b700" ]
+}
+
+DEVICE_MODEL="$(first_prop ro.product.vendor.model ro.product.model)"
+DEVICE_CODE="$(first_prop ro.product.vendor.device ro.product.device)"
+CHIPSET="$(first_prop ro.board.platform)"
+ANDROID_VER="$(first_prop ro.build.version.release)"
+API_LEVEL="$(first_prop ro.build.version.sdk)"
+KERNEL_VER="$(uname -r 2>/dev/null || echo unknown)"
 
 ui_print " "
-
-# With ASCII Art Chipset Logo
-ui_print " ╔════════════════════════════════════════╗ "
-ui_print " ║   ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪    ║ "
-ui_print " ║   +--------------------------------+   ║ "
-ui_print " ║   |  [ C O R E F L O W  A . I . ]  |   ║ "
-ui_print " ║   |     AUTONOMOUS ENGINE v2.0     |   ║ "
-ui_print " ║   +--------------------------------+   ║ "
-ui_print " ║   ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪ ▫ ▪    ║ "
-ui_print " ╚════════════════════════════════════════╝ "
-ui_print "           Developed by Mystivara           "
+ui_print " CoreFlow Autonomous ${MODULE_VERSION}"
+ui_print " Developed by Mystivara"
 ui_print " "
-sleep 0.5
-
-ui_print " [>_] INITIATING NEURAL HANDSHAKE... "
-sleep 0.5
+ui_print " [>] Target environment"
+ui_print "     Model   : $DEVICE_MODEL"
+ui_print "     Code    : $DEVICE_CODE"
+ui_print "     Chipset : $CHIPSET"
+ui_print "     OS      : Android $ANDROID_VER (API $API_LEVEL)"
+ui_print "     Kernel  : $KERNEL_VER"
 ui_print " "
 
-ui_print " [>_] TARGET ENVIRONMENT DETECTED: "
-ui_print "      > Model   : $DEVICE_MODEL "
-ui_print "      > Code    : $DEVICE_CODE "
-ui_print "      > Chipset : $CHIPSET "
-ui_print "      > OS      : Android $ANDROID_VER (API $API_LEVEL) "
-ui_print "      > Kernel  : $KERNEL_VER "
+ui_print " [>] Compatibility gate"
+case "${ARCH:-}" in
+    arm64) ui_print "     > Architecture : arm64 OK" ;;
+    *) abort "CoreFlow requires arm64. Detected architecture: ${ARCH:-unknown}." ;;
+esac
+case "$API_LEVEL" in
+    ''|*[!0-9]*) abort "Could not determine the Android API level." ;;
+esac
+if [ "$API_LEVEL" -lt 34 ]; then
+    abort "CoreFlow requires Android 14 (API 34) or newer. Detected API $API_LEVEL."
+fi
+ui_print "     > Android API  : $API_LEVEL OK"
 ui_print " "
-sleep 0.5
 
-ui_print " [>_] VERIFYING ML ARTIFACTS... "
-ui_print "      > Architecture : $ARCH "
-ui_print "      > Thermal ML   : ONNX 14-Feature Verified "
-ui_print "      > Daemon       : coreflowd Ready "
+ui_print " [>] Verifying package payload"
+DAEMON="$MODPATH/system/bin/coreflowd"
+ONNX_LIB="$MODPATH/system/lib64/libonnxruntime.so"
+MODEL="$MODPATH/system/etc/coreflow/thermal_predictor.onnx"
+CONF="$MODPATH/system/etc/coreflow/default.conf"
+
+is_arm64_elf "$DAEMON" || abort "coreflowd is missing or is not an ARM64 ELF executable."
+ui_print "     > coreflowd          : ARM64 ELF OK"
+is_arm64_elf "$ONNX_LIB" || abort "libonnxruntime.so is missing or is not an ARM64 ELF library."
+ui_print "     > ONNX Runtime       : ARM64 ELF OK"
+[ -s "$MODEL" ] || abort "thermal_predictor.onnx is missing or empty."
+ui_print "     > Thermal model      : present"
+[ -s "$CONF" ] || abort "default.conf is missing or empty."
+ui_print "     > Default config     : present"
 ui_print " "
-sleep 0.5
 
-ui_print " [>_] DEPLOYING KERNEL PAYLOAD... "
-ui_print "      > Extracting module files... "
-
-sleep 1
+ui_print " [>] Setting permissions"
+set_perm_recursive "$MODPATH/system" 0 0 0755 0644
+set_perm "$DAEMON" 0 0 0755
+for script in customize.sh post-fs-data.sh service.sh uninstall.sh; do
+    [ -f "$MODPATH/$script" ] && set_perm "$MODPATH/$script" 0 0 0755
+done
+set_perm "$MODPATH/sepolicy.rule" 0 0 0644
+set_perm "$MODPATH/module.prop" 0 0 0644
+ui_print "     > Permissions applied"
 ui_print " "
-ui_print " [=== SYSTEM OVERRIDE SUCCESSFUL ===] "
+ui_print " [=== INSTALLATION COMPLETE: reboot to start CoreFlow ===]"
 ui_print " "
