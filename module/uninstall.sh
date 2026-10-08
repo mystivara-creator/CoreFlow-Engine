@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-STATE_DIR="/data/adb/coreflow"
+STATE_DIR="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
 PID_FILE="$STATE_DIR/coreflowd.pid"
 
 # Stop gracefully and wait for the daemon to finish its factory restore.

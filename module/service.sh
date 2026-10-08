@@ -1,12 +1,14 @@
 #!/system/bin/sh
 
-MODDIR="${0%/*}"
-STATE_DIR="/data/adb/coreflow"
+MODDIR="${COREFLOW_MODDIR:-${0%/*}}"
+STATE_DIR="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
 LOG_DIR="$STATE_DIR/logs"
 BINARY="$MODDIR/system/bin/coreflowd"
 LIB_DIR="$MODDIR/system/lib64"
 MODEL="$MODDIR/system/etc/coreflow/thermal_predictor.onnx"
 PID_FILE="$STATE_DIR/coreflowd.pid"
+BOOT_COUNTER="$STATE_DIR/boot_attempts"
+SAFE_MODE_MARKER="$STATE_DIR/SAFE_MODE"
 LOG_FILE="$LOG_DIR/coreflowd.log"
 
 # Exit codes from coreflowd that must NOT trigger a restart:
@@ -28,6 +30,10 @@ while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
     WAITED=$((WAITED + 2))
     [ "$WAITED" -ge "$BOOT_TIMEOUT" ] && exit 0
 done
+
+# Boot confirmed: clear the boot-loop counter.
+echo 0 > "$BOOT_COUNTER" 2>/dev/null
+log "boot confirmed; boot-loop counter reset"
 sleep 5
 
 [ -x "$BINARY" ] || { log "coreflowd missing or not executable"; exit 1; }
@@ -83,7 +89,8 @@ supervise() {
 
         restarts=$((restarts + 1))
         if [ "$restarts" -gt "$MAX_RESTARTS" ]; then
-            log "coreflowd restart limit reached; giving up"
+            log "coreflowd restart limit reached; giving up, SAFE_MODE set"
+            touch "$SAFE_MODE_MARKER" 2>/dev/null
             break
         fi
 

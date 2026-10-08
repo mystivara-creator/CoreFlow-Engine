@@ -1,6 +1,6 @@
 id=coreflow_autonomous
 name=CoreFlow Autonomous
-version=v1.3.0
-versionCode=1300
+version=v1.9.2
+versionCode=1902
 author=Mystivara
-description=Native adaptive system-intelligence daemon for Android: discovery, observation, bounded mutation, verification and rollback.
+description=Native adaptive system-intelligence daemon for Android: environment/capability discovery, observation, bounded mutation, verification and rollback.
