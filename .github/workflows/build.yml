@@ -47,7 +47,7 @@ env:
 jobs:
   host-tests:
     name: Host deterministic tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -89,7 +89,7 @@ jobs:
 
   android:
     name: Android 14+ ARM64 Production
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     needs: host-tests
 
@@ -106,7 +106,7 @@ jobs:
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_CODE" = "1300"
+          test "$MODULE_CODE" = "1902"
           test "$CONFIG_VERSION" = "$CMAKE_VERSION"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
           echo "Android native minimum API: ${ANDROID_MIN_API}"
