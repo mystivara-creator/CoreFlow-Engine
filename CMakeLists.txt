@@ -8,12 +8,6 @@ project(CoreFlowAutonomous
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-option(CORE_FLOW_BUILD_TESTS
-    "Build host-side deterministic tests"
-    ON
-)
-
 set(COREFLOW_ONNX_ROOT ""
     CACHE PATH
     "Root of the extracted ONNX Runtime Android package"
