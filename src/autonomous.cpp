@@ -23,6 +23,8 @@ namespace {
 constexpr const char* kLogTag = "CoreFlowAutonomous";
 constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
 constexpr const char* kMutationJournalPath = "/data/adb/coreflow/mutation_journal.txt";
+constexpr const char* kKillSwitchPath = "/data/adb/coreflow/DISABLE";
+constexpr const char* kSafeModePath = "/data/adb/coreflow/SAFE_MODE";
 constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
 constexpr std::size_t kHistorySize = 6;
 
@@ -196,8 +198,11 @@ bool AutonomousEngine::initialize() {
     if (!config_.load(kConfigPath)) {
         logWarn("Config unavailable; using built-in defaults path=%s", kConfigPath);
     }
+    configured_mode_ = config_.mutationMode();
+    configured_armed_ = config_.mutationArmed();
 
     snapshot_.profile = discovery_.discover();
+    resource_model_.reset(snapshot_.profile.capabilities);
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
     sample_count_ = 0;
@@ -254,6 +259,7 @@ bool AutonomousEngine::refreshEnvironment() {
 
     DeviceProfile refreshed = discovery_.discover();
     snapshot_.profile = std::move(refreshed);
+    resource_model_.reset(snapshot_.profile.capabilities);
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
     sample_count_ = 0;
@@ -296,6 +302,25 @@ void AutonomousEngine::logStartup() const {
         snapshot_.profile.thermal_zones.size(),
         snapshot_.profile.io_devices.size(),
         snapshot_.profile.kernel_release.c_str()
+    );
+    logInfo(
+        "ENV     android=%s | sdk=%s | device=%s | soc=%s | cgroup_v2=%s | uclamp=%s | cpuset=%s | devfreq=%s",
+        snapshot_.profile.environment.release.c_str(),
+        snapshot_.profile.environment.sdk_level.c_str(),
+        snapshot_.profile.environment.device.c_str(),
+        snapshot_.profile.environment.soc_model.empty()
+            ? snapshot_.profile.environment.hardware.c_str()
+            : snapshot_.profile.environment.soc_model.c_str(),
+        snapshot_.profile.environment.cgroup_v2 ? "yes" : "no",
+        snapshot_.profile.environment.uclamp_available ? "yes" : "no",
+        snapshot_.profile.environment.cpuset_available ? "yes" : "no",
+        snapshot_.profile.environment.devfreq_available ? "yes" : "no"
+    );
+    logInfo(
+        "CAPS    resources=%zu | mutation_ready=%zu | scheduler=%s",
+        snapshot_.profile.capabilities.resources.size(),
+        snapshot_.profile.capabilities.mutationReadyCount(),
+        snapshot_.profile.environment.scheduler_controls_available ? "available" : "unavailable"
     );
 }
 
@@ -419,6 +444,18 @@ void AutonomousEngine::emitNotification(NotificationEvent event, const RuntimeSa
 
 void AutonomousEngine::tick() {
     try {
+        // SAFETY HOLD: an operator kill switch or a guard-raised SAFE_MODE forces
+        // observe-only behaviour. Restores happen through the normal relax path,
+        // so only a governor this daemon itself changed is ever written back.
+        const HoldReason hold = evaluateSafetyHold({kKillSwitchPath, kSafeModePath});
+        if (hold != hold_reason_) {
+            logWarn("SAFETY_HOLD %s -> %s", holdReasonName(hold_reason_), holdReasonName(hold));
+            hold_reason_ = hold;
+        }
+        const bool held = hold != HoldReason::None;
+        config_.setMutationMode(held ? MutationMode::Disabled : configured_mode_);
+        config_.setMutationArmed(held ? false : configured_armed_);
+
         // STEP 1: Sample runtime environment
         RuntimeSample sample = observer_.sample(snapshot_.profile);
 
@@ -468,6 +505,27 @@ void AutonomousEngine::tick() {
         }
 
         const Decision decision = policy_.decide(sample, next);
+
+        // v1.9 foundation: classify context and build a plan without granting
+        // an actuator permit. MutationController remains the only owner of the
+        // final mutation gate.
+        const SystemContext context = context_engine_.evaluate(sample, next);
+        const PolicyPlan ecosystem_plan = policy_engine_.evaluate(context, resource_model_);
+        // Log on eligibility change, and at a low fixed rate otherwise, so the
+        // log is not flooded once per monitor tick.
+        if (ecosystem_plan.mutation_eligible != last_context_eligible_ ||
+            sample_count_ % 60 == 0) {
+            logInfo(
+                "CONTEXT workload=%s confidence=%.2f thermal_headroom=%s "
+                "memory_headroom=%s power_headroom=%s mutation_eligible=%s candidates=%zu",
+                workloadClassName(context.workload), context.confidence,
+                context.thermal_headroom ? "yes" : "no",
+                context.memory_headroom ? "yes" : "no",
+                context.power_headroom ? "yes" : "no",
+                ecosystem_plan.mutation_eligible ? "yes" : "no",
+                ecosystem_plan.candidates.size());
+            last_context_eligible_ = ecosystem_plan.mutation_eligible;
+        }
 
         // STEP 7: Handle state transitions
         if (next != snapshot_.state) {

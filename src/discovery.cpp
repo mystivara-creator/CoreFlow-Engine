@@ -16,6 +16,29 @@
 namespace coreflow {
 namespace {
 
+std::string property(const char* key) {
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get(key, value) <= 0) return {};
+    return value;
+}
+
+void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
+                   const std::string& name, const std::string& path,
+                   bool exists, bool readable, bool writable,
+                   bool permission_granted = false) {
+    ResourceCapability cap;
+    cap.domain = domain;
+    cap.name = name;
+    cap.path = path;
+    cap.exists = exists;
+    cap.readable = readable;
+    cap.writable = writable;
+    cap.permission_granted = permission_granted;
+    // v1.5 is discovery-only: no resource is mutation-ready yet.
+    cap.mutation_ready = false;
+    matrix.resources.push_back(std::move(cap));
+}
+
 bool readText(const std::string& path, std::string& out) {
     std::ifstream file(path);
     if (!file) return false;
@@ -92,23 +115,51 @@ DeviceProfile EnvironmentDiscovery::discover() const {
     profile.proc_available = directoryExists("/proc");
     profile.sys_available = directoryExists("/sys");
 
-    char release[PROP_VALUE_MAX] = {};
-    if (__system_property_get("ro.build.version.release", release) > 0) {
-        profile.android_release = release;
-    }
-
-    struct utsname uts {};
-    if (uname(&uts) == 0) {
-        profile.kernel_release = uts.release;
-        profile.abi = uts.machine;
-    }
+    discoverEnvironment(profile);
 
     discoverCpuPolicies(profile);
     discoverThermalZones(profile);
     discoverCharging(profile);
     discoverIo(profile);
     discoverSystemControls(profile);
+    discoverGpu(profile);
+    finalizeCapabilities(profile);
     return profile;
+}
+
+void EnvironmentDiscovery::discoverEnvironment(DeviceProfile& profile) const {
+    profile.environment.release = property("ro.build.version.release");
+    profile.environment.sdk_level = property("ro.build.version.sdk");
+    profile.environment.manufacturer = property("ro.product.manufacturer");
+    profile.environment.model = property("ro.product.model");
+    profile.environment.device = property("ro.product.device");
+    profile.environment.product = property("ro.product.name");
+    profile.environment.board = property("ro.product.board");
+    profile.environment.hardware = property("ro.hardware");
+    profile.environment.soc_manufacturer = property("ro.soc.manufacturer");
+    profile.environment.soc_model = property("ro.soc.model");
+
+    struct utsname uts {};
+    if (uname(&uts) == 0) {
+        profile.environment.kernel_release = uts.release;
+        profile.environment.abi = uts.machine;
+        profile.kernel_release = uts.release;
+        profile.abi = uts.machine;
+    }
+    profile.android_release = profile.environment.release;
+
+    const bool cgroup2 = access("/sys/fs/cgroup/cgroup.controllers", R_OK) == 0;
+    profile.environment.cgroup_v2 = cgroup2;
+    profile.environment.cpuset_available =
+        access("/sys/fs/cgroup/cpuset.cpus.effective", R_OK) == 0 ||
+        access("/sys/fs/cgroup/cpuset.cpus", R_OK) == 0;
+    profile.environment.uclamp_available =
+        access("/sys/fs/cgroup/cpu.uclamp.min", R_OK) == 0 ||
+        access("/sys/fs/cgroup/cpu.uclamp.max", R_OK) == 0;
+    profile.environment.scheduler_controls_available =
+        access("/proc/sys/kernel/sched_latency_ns", R_OK) == 0 ||
+        access("/sys/kernel/debug/sched_features", R_OK) == 0;
+    profile.environment.devfreq_available = directoryExists("/sys/class/devfreq");
 }
 
 void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
@@ -137,6 +188,11 @@ void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
         std::string governors;
         if (readText(policy.path + "/scaling_available_governors", governors))
             policy.available_governors = splitWords(governors);
+
+        policy.energy_performance_available =
+            readText(policy.path + "/energy_performance_preference",
+                     policy.energy_performance_preference);
+        policy.boost_available = access((policy.path + "/boost").c_str(), F_OK) == 0;
 
         profile.cpu_policies.push_back(std::move(policy));
     }
@@ -240,7 +296,20 @@ void EnvironmentDiscovery::discoverIo(DeviceProfile& profile) const {
         device.read_ahead_readable = access(queue.c_str(), R_OK) == 0;
         device.read_ahead_writable = access(queue.c_str(), W_OK) == 0;
         readUnsigned(queue, device.read_ahead_kb);
-        if (device.read_ahead_readable || device.read_ahead_writable)
+
+        const std::string requests = std::string(base) + "/" + name + "/queue/nr_requests";
+        device.nr_requests_readable = access(requests.c_str(), R_OK) == 0;
+        device.nr_requests_writable = access(requests.c_str(), W_OK) == 0;
+        readUnsigned(requests, device.nr_requests);
+
+        const std::string scheduler = std::string(base) + "/" + name + "/queue/scheduler";
+        device.scheduler_readable = access(scheduler.c_str(), R_OK) == 0;
+        device.scheduler_writable = access(scheduler.c_str(), W_OK) == 0;
+        if (device.scheduler_readable) readText(scheduler, device.scheduler);
+
+        if (device.read_ahead_readable || device.read_ahead_writable ||
+            device.nr_requests_readable || device.nr_requests_writable ||
+            device.scheduler_readable || device.scheduler_writable)
             profile.io_devices.push_back(std::move(device));
     }
     closedir(dir);
@@ -254,6 +323,80 @@ void EnvironmentDiscovery::discoverSystemControls(DeviceProfile& profile) const 
     profile.uclamp_min = discoverNumeric("/sys/fs/cgroup/cpu.uclamp.min");
     profile.uclamp_max = discoverNumeric("/sys/fs/cgroup/cpu.uclamp.max");
     profile.cpuset_effective_cpus = discoverText("/sys/fs/cgroup/cpuset.cpus.effective");
+}
+
+void EnvironmentDiscovery::discoverGpu(DeviceProfile& profile) const {
+    constexpr const char* base = "/sys/class/devfreq";
+    DIR* dir = opendir(base);
+    if (!dir) return;
+
+    while (dirent* entry = readdir(dir)) {
+        const std::string name(entry->d_name);
+        if (name == "." || name == "..") continue;
+        const std::string path = std::string(base) + "/" + name;
+        const std::string governor = path + "/governor";
+        const std::string cur = path + "/cur_freq";
+        const bool exists = access(path.c_str(), F_OK) == 0;
+        const bool readable = access(governor.c_str(), R_OK) == 0 || access(cur.c_str(), R_OK) == 0;
+        const bool writable = access(governor.c_str(), W_OK) == 0;
+        addCapability(profile.capabilities, ResourceDomain::Gpu, name, path, exists, readable, writable);
+    }
+    closedir(dir);
+}
+
+void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
+    auto& matrix = profile.capabilities;
+    matrix.environment = profile.environment;
+
+    addCapability(matrix, ResourceDomain::CpuFreq, "policies",
+                  "/sys/devices/system/cpu/cpufreq",
+                  !profile.cpu_policies.empty(), !profile.cpu_policies.empty(), false);
+
+    addCapability(matrix, ResourceDomain::UClamp, "cpu.uclamp.min",
+                  profile.uclamp_min.path, profile.uclamp_min.readable || profile.uclamp_min.writable,
+                  profile.uclamp_min.readable, profile.uclamp_min.writable);
+    addCapability(matrix, ResourceDomain::UClamp, "cpu.uclamp.max",
+                  profile.uclamp_max.path, profile.uclamp_max.readable || profile.uclamp_max.writable,
+                  profile.uclamp_max.readable, profile.uclamp_max.writable);
+    addCapability(matrix, ResourceDomain::CpuSet, "cpus.effective",
+                  profile.cpuset_effective_cpus.path,
+                  profile.cpuset_effective_cpus.readable || profile.cpuset_effective_cpus.writable,
+                  profile.cpuset_effective_cpus.readable, profile.cpuset_effective_cpus.writable);
+
+    struct NumericTunable { const char* name; const char* path; };
+    constexpr NumericTunable tunables[] = {
+        {"vm.swappiness", "/proc/sys/vm/swappiness"},
+        {"vm.dirty_ratio", "/proc/sys/vm/dirty_ratio"},
+        {"vm.dirty_background_ratio", "/proc/sys/vm/dirty_background_ratio"},
+        {"vm.vfs_cache_pressure", "/proc/sys/vm/vfs_cache_pressure"},
+        {"kernel.sched_latency_ns", "/proc/sys/kernel/sched_latency_ns"},
+        {"kernel.sched_min_granularity_ns", "/proc/sys/kernel/sched_min_granularity_ns"},
+        {"kernel.sched_wakeup_granularity_ns", "/proc/sys/kernel/sched_wakeup_granularity_ns"}
+    };
+    for (const auto& item : tunables) {
+        const bool readable = access(item.path, R_OK) == 0;
+        const bool writable = access(item.path, W_OK) == 0;
+        addCapability(matrix,
+                       std::string(item.name).rfind("kernel.sched_", 0) == 0
+                           ? ResourceDomain::Scheduler : ResourceDomain::Memory,
+                       item.name, item.path, readable || writable, readable, writable);
+    }
+
+    addCapability(matrix, ResourceDomain::CGroup, "cgroup.controllers",
+                  "/sys/fs/cgroup/cgroup.controllers", profile.environment.cgroup_v2,
+                  profile.environment.cgroup_v2, false);
+    addCapability(matrix, ResourceDomain::Thermal, "thermal-zones",
+                  "/sys/class/thermal", !profile.thermal_zones.empty(), !profile.thermal_zones.empty(), false);
+    addCapability(matrix, ResourceDomain::Charging, "battery",
+                  profile.charging.battery_path, profile.charging.battery_available,
+                  profile.charging.status_readable || profile.charging.telemetry_readable, false);
+    addCapability(matrix, ResourceDomain::Io, "block-queues", "/sys/block",
+                  !profile.io_devices.empty(), !profile.io_devices.empty(), false);
+    addCapability(matrix, ResourceDomain::Power, "power-supply", "/sys/class/power_supply",
+                  profile.charging.battery_available, profile.charging.status_readable, false);
+
+    addCapability(matrix, ResourceDomain::AndroidRuntime, "android-properties", "system-properties",
+                  !profile.environment.release.empty() || !profile.environment.sdk_level.empty(), true, false);
 }
 
 } // namespace coreflow

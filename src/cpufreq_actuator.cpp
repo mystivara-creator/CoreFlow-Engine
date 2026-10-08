@@ -84,7 +84,8 @@ ActuatorStatus CpuFreqActuator::discover() noexcept {
             if (policy.path.empty() ||
                 !policy.readable ||
                 !policy.governor_writable ||
-                policy.governor.empty()) {
+                policy.governor.empty() ||
+                policy.available_governors.empty()) {
                 continue;
             }
 
@@ -177,6 +178,7 @@ bool CpuFreqActuator::targetAllowed(
     if (!targetMatchesPolicy(policy, target) ||
         !policy.readable ||
         !policy.governor_writable ||
+        policy.available_governors.empty() ||
         requested.empty()) {
         return false;
     }
@@ -189,9 +191,15 @@ bool CpuFreqActuator::targetAllowed(
 }
 
 ActuatorResult CpuFreqActuator::apply(
-    const ActuatorMutation& mutation
+    const ActuatorMutation& mutation,
+    const MutationPermit& permit
 ) noexcept {
     ActuatorResult result;
+
+    if (!permit.valid()) {
+        result.status = ActuatorStatus::SafetyRejected;
+        return result;
+    }
 
     if (!(mutation.id == id())) {
         result.status = ActuatorStatus::Invalid;
@@ -298,8 +306,9 @@ ActuatorResult CpuFreqActuator::restoreTo(
 
     // Never write a governor the policy does not advertise. This keeps a
     // stale journal entry from forcing an unsupported value.
-    if (!policy->available_governors.empty() &&
-        !targetAllowed(*policy, target, value)) {
+    // Recovery is fail-closed: without an explicit advertised governor list,
+    // never write a value from a stale journal.
+    if (!targetAllowed(*policy, target, value)) {
         result.status = ActuatorStatus::ValidationFailed;
         return result;
     }

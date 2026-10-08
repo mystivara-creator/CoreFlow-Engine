@@ -142,6 +142,7 @@ bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept 
 
     recovered_factory_ = std::move(entries);
     recovery_pending_ = false;
+    dirty_governors_.clear();
     mutated_ = false;
     journal_committed_ = false;
     restore_failed_ = false;
@@ -307,32 +308,72 @@ MutationResult MutationController::applyPlan(
 ) noexcept {
     if (plan.empty() || !actuator_ready_) return MutationResult::Skipped;
 
+    // A durable journal is mandatory for autonomous mutation. Without it, a
+    // daemon crash could leave a changed governor with no recovery record.
+    if (journal_ == nullptr) return MutationResult::Failed;
+
+    if (!cpufreq_actuator_.capability().mutationSafe()) {
+        return MutationResult::Failed;
+    }
+
     // Resource bound: one verified CPUFreq write per decision cycle.
     const MutationPlanEntry& entry = plan.front();
 
     // Durability before mutation. If this fails, nothing is written.
+    const bool journal_was_committed = journal_committed_;
     if (!journal_committed_ && journal_ != nullptr) {
         if (!journal_->commit(factorySnapshot())) return MutationResult::Failed;
+        journal_committed_ = true;
     }
-    journal_committed_ = true;
-
-    // A write may land even if verification later fails, so mark dirty first.
-    mutated_ = true;
 
     ActuatorMutation mutation;
     mutation.id = cpufreq_actuator_.id();
     mutation.target = entry.path;
     mutation.requested = entry.target;
 
-    const ActuatorResult result = cpufreq_actuator_.apply(mutation);
+    const MutationPermit permit(true);
+    const ActuatorResult result = cpufreq_actuator_.apply(mutation, permit);
 
-    if (!result.succeeded()) {
-        return result.status == ActuatorStatus::RolledBack
-            ? MutationResult::RolledBack
-            : MutationResult::Failed;
+    // A write may have landed even when verification failed. Track the
+    // touched policy individually; only an explicit RolledBack clears it.
+    if (result.writes_attempted != 0 && result.status != ActuatorStatus::RolledBack) {
+        if (!mutated_) mutation_started_cycle_ = decision_cycle_;
+        dirty_governors_.insert(entry.path);
+        mutated_ = true;
     }
 
-    if (!result.changed()) return MutationResult::Skipped;
+    if (result.status == ActuatorStatus::RolledBack) {
+        // The actuator verified that this attempt was returned to its factory
+        // value. Only this policy is clean; other policies may still be dirty.
+        dirty_governors_.erase(entry.path);
+        mutated_ = !dirty_governors_.empty();
+        last_applied_governors_.clear();
+        if (!mutated_ && journal_committed_ && journal_ != nullptr) {
+            // Clear the journal only when no policy remains changed.
+            if (!journal_->clear()) return MutationResult::Failed;
+            journal_committed_ = false;
+        }
+        return MutationResult::RolledBack;
+    }
+
+    if (!result.succeeded()) {
+        return MutationResult::Failed;
+    }
+
+    if (!result.changed()) {
+        // No kernel mutation occurred. If this decision opened a fresh journal
+        // epoch, clear it; do not turn a NoChange result into a false mutation.
+        if (!journal_was_committed && journal_committed_ && journal_ != nullptr) {
+            if (journal_->clear()) {
+                journal_committed_ = false;
+            } else {
+                // Keep the durable journal as a conservative recovery record.
+                // No restore is attempted because CoreFlow did not mutate.
+                return MutationResult::Failed;
+            }
+        }
+        return MutationResult::Skipped;
+    }
 
     last_applied_governors_.clear();
     const std::string suffix = kGovernorSuffix;
@@ -382,6 +423,7 @@ MutationResult MutationController::restoreGovernors() noexcept {
     }
 
     journal_committed_ = false;
+    dirty_governors_.clear();
     mutated_ = false;
     restore_failed_ = false;
     last_applied_governors_.clear();
@@ -415,14 +457,32 @@ MutationResult MutationController::apply(
     // While a previous restore is incomplete, plan nothing new. Retry the restore.
     if (restore_failed_) return restoreGovernors();
 
-    // Idle and memory pressure restore the factory baseline.
-    if (state == RuntimeState::Idle || state == RuntimeState::Pressure) {
+    // Bounded exposure: a governor change never outlives the hold limit.
+    if (mutated_ && decision_cycle_ - mutation_started_cycle_ >= kMaxMutationHoldCycles) {
+        hold_cooldown_until_cycle_ = decision_cycle_ + kHoldCooldownCycles;
         return restoreGovernors();
     }
 
+    // Idle and memory pressure restore the factory baseline.
+    if (state == RuntimeState::Idle || state == RuntimeState::Pressure) {
+        return relaxToBaseline();
+    }
+
+    // Hard safety gate: only explicitly adaptive mode may authorize mutation.
+    // Disabled/observe mode must be incapable of reaching applyPlan().
+    if (config.mutationMode() != MutationMode::Adaptive) {
+        return relaxToBaseline();
+    }
+
     // Confidence and permission gate mutation before any sysfs write.
-    if (!config.allowCpuGovernor() || sample.confidence < config.minConfidence()) {
-        return restoreGovernors();
+    if (!config.mutationArmed() ||
+        !config.allowCpuGovernor() || sample.confidence < config.minConfidence()) {
+        return relaxToBaseline();
+    }
+
+    // Cooldown after a forced hold expiry: keep factory state, plan nothing.
+    if (decision_cycle_ < hold_cooldown_until_cycle_) {
+        return relaxToBaseline();
     }
 
     std::vector<MutationPlanEntry> plan;
@@ -431,9 +491,16 @@ MutationResult MutationController::apply(
     return applyPlan(plan);
 }
 
+MutationResult MutationController::relaxToBaseline() noexcept {
+    if (!mutated_ && !restore_failed_) return MutationResult::Skipped;
+    return restoreGovernors();
+}
+
 bool MutationController::restoreAll() noexcept {
     if (profile_ != nullptr && !ensureRecovered(*profile_)) return false;
     if (!baseline_captured_) return !mutated_;
+    // Never write to the kernel to "correct" a governor this controller did not change.
+    if (!mutated_ && !restore_failed_) return true;
     return restoreGovernors() != MutationResult::Failed;
 }
 

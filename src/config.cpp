@@ -52,6 +52,8 @@ bool EngineConfig::load(const std::string& path) noexcept {
                 allow_cpu_governor_ = parseBool(value, allow_cpu_governor_);
             } else if (key == "runtime_refresh") {
                 runtime_refresh_enabled_ = parseBool(value, runtime_refresh_enabled_);
+            } else if (key == "mutation_armed") {
+                mutation_armed_ = parseBool(value, mutation_armed_);
             }
         }
         return true;
