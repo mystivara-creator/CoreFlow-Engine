@@ -73,6 +73,70 @@ int main() {
     CHECK(held.action == PolicyAction::ReduceIntervention);
     CHECK(!held.mutation_eligible);
 
+
+    // Commit 5: adaptive intervention policy coverage.
+    {
+        RuntimeSample safe_sample;
+        safe_sample.load1 = 0.30;
+        safe_sample.cpu_utilization = 0.82;
+        safe_sample.cpu_utilization_available = true;
+        safe_sample.mem_total_kb = 100000;
+        safe_sample.mem_available_kb = 60000;
+        safe_sample.mem_available_ratio = 0.60;
+        safe_sample.thermal_available = true;
+        safe_sample.thermal_millidegrees = 39000;
+        safe_sample.confidence = 0.95;
+
+        ContextEngine context_engine;
+        PolicyEngine policy;
+
+        ResourceStateModel resources;
+
+        const SystemContext safe_context =
+            context_engine.evaluate(safe_sample, RuntimeState::Normal);
+
+        CHECK(safe_context.mutation_allowed_by_context);
+
+        const PolicyPlan safe_plan =
+            policy.evaluate(safe_context, resources);
+
+        CHECK(safe_plan.mutation_eligible);
+        CHECK(safe_plan.intervention == InterventionLevel::Moderate ||
+              safe_plan.intervention == InterventionLevel::Low);
+
+        RuntimeSample thermal_sample = safe_sample;
+        thermal_sample.thermal_millidegrees = 45000;
+
+        const SystemContext thermal_context =
+            context_engine.evaluate(
+                thermal_sample,
+                RuntimeState::ThermalGuard);
+
+        CHECK(!thermal_context.mutation_allowed_by_context);
+
+        const PolicyPlan thermal_plan =
+            policy.evaluate(thermal_context, resources);
+
+        CHECK(thermal_plan.action == PolicyAction::ReduceIntervention);
+        CHECK(thermal_plan.intervention == InterventionLevel::ObserveOnly);
+        CHECK(!thermal_plan.mutation_eligible);
+
+        RuntimeSample unknown_sample = safe_sample;
+        unknown_sample.confidence = 0.0;
+
+        SystemContext blocked_context;
+        blocked_context.state = RuntimeState::Normal;
+        blocked_context.workload = WorkloadClass::Unknown;
+        blocked_context.mutation_allowed_by_context = false;
+        blocked_context.confidence = 0.0;
+
+        const PolicyPlan blocked_plan =
+            policy.evaluate(blocked_context, resources);
+
+        CHECK(blocked_plan.intervention == InterventionLevel::ObserveOnly);
+        CHECK(!blocked_plan.mutation_eligible);
+    }
+
     ActuatorResult no_change;
     no_change.status = ActuatorStatus::NoChange;
     CHECK(classifyOutcome(no_change) == OutcomeClass::Neutral);
