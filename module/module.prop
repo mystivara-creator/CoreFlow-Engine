@@ -1,6 +1,6 @@
 id=coreflow_autonomous
 name=CoreFlow Autonomous
-version=v2.0.0-ONNX
+version=v2.0.0
 versionCode=2000
 author=Mystivara
 description=Native autonomous adaptive intelligence engine for Android — workload-aware optimization, experience-driven adaptation, bounded mutation, causal measurement, verification, and safe rollback.
