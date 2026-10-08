@@ -1,11 +1,35 @@
+# CoreFlow v2.0.0
+
+## Production adaptive engine
+
+- Unified CPUFreq and generic-resource mutation behind `MutationAuthority` and scoped `MutationPermit`.
+- Journal records contain only resources actually owned by CoreFlow, preventing recovery from overwriting untouched external changes.
+- Runtime refresh restores both CPU and generic-resource mutations before discovery and re-baselining.
+- Generic resource mutation is explicitly allow-listed by `PolicyPlan`; `Pressure` and `ThermalGuard` are intervention-blocking states.
+- CPU and generic-resource mutation are causally isolated to one actuator class per decision cycle.
+- Verified CPU/resource candidates feed the same BaselineIntelligence + ExperienceMemory evaluation loop.
+- Added ownership, authority, and external-change regression tests.
+- Public defaults enable safe autonomous operation; mutation remains bounded by the centralized C++ safety authority.
+- v2.0.0 Stable closes the planned capability gaps from v1.9.x: persistent scoped experience, I/O/workload profiling, battery/power-aware policy, and adaptive feedback integration.
+- Historical experience is advisory only and cannot authorize a mutation or bypass fresh telemetry/safety gates.
+
+# CoreFlow v1.9.5
+
+## Ecosystem Autonomous Control
+
+- Added dynamic ecosystem resource mutation for discovered VM and block-device resources.
+- Added adaptive `vm.swappiness` intervention driven by memory pressure.
+- Added per-device I/O resource discovery for `read_ahead_kb`, `nr_requests`, and scheduler controls.
+- Added bounded generic resource actuator with read-back verification.
+- Added separate durable resource mutation journal and recovery path.
+- Preserved `MutationPermit`, baseline capture, rollback, and fail-closed defaults.
+
 ## v1.9.2 — Audited final
 
 - Fix: a rolled-back write on one policy no longer clears the dirty state of other policies. Each policy is tracked individually, and the journal is cleared only when no policy remains changed. Previously a rollback on one policy could leave another policy's mutation unrestored until reboot, with no journal record.
 - Fix: the CONTEXT diagnostic is logged on eligibility change and every 60 samples, instead of every monitor tick.
 - Docs: default configuration comment version aligned.
 - Test: multi-policy mutation and full restore regression added.
-
-# Changelog
 
 ## v1.9.1 — Ecosystem Intelligence & Control Foundation (Production Source)
 
@@ -36,7 +60,7 @@
 
 ### Validation
 
-- 297/297 host mutation safety checks passed
+- 330/330 host mutation safety checks passed
 - Architecture foundation tests passed
 - Safety foundation contract and source-release integrity scripts passed
 

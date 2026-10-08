@@ -12,7 +12,7 @@ CoreFlow runs as a privileged Android module and can interact with kernel-facing
 6. Restore the baseline when leaving the protected state or shutting down.
 7. Skip unknown or unsupported controls.
 
-The current release only mutates CPU governors and only when `mutation_mode=adaptive` and the selected governor is explicitly advertised by the kernel. Charging, uClamp, cpusets, graphics, ART and other system controls remain capability/telemetry surfaces until their semantics can be proven for the target device.
+The current release can mutate CPU governors and the explicitly allow-listed VM/I/O resources discovered with writable, verifiable interfaces. Charging, uClamp, cpusets, graphics, ART and other system controls remain capability/telemetry surfaces until their semantics can be proven for the target device. Public adaptive mode does not bypass capability, policy, journal, bounded-write, verification, rollback, or safety-hold gates.
 
 ## SELinux
 

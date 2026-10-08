@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(CoreFlowAutonomous VERSION 1.9.2 LANGUAGES CXX)
+project(CoreFlowAutonomous VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,8 @@ set(COREFLOW_CORE_SOURCES
     src/mutation_journal.cpp
     src/safety_hold.cpp
     src/cpufreq_actuator.cpp
+    src/resource_actuator.cpp
+    src/resource_mutation.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
@@ -141,8 +143,13 @@ else()
         target_link_libraries(coreflow_architecture_tests PRIVATE coreflow_core)
         target_compile_options(coreflow_architecture_tests PRIVATE -Werror)
 
+        add_executable(coreflow_resource_tests tests/resource_tests.cpp)
+        target_link_libraries(coreflow_resource_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_resource_tests PRIVATE -Werror)
+
         add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
         add_test(NAME coreflow_architecture_foundation COMMAND coreflow_architecture_tests)
+        add_test(NAME coreflow_resource_autonomy COMMAND coreflow_resource_tests)
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
     endif()

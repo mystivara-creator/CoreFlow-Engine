@@ -1,14 +1,29 @@
-# CoreFlow Autonomous Engine
+# CoreFlow Autonomous
 
-### v1.9.2 — Audited Final · Ecosystem Intelligence & Control Foundation
+## v2.0.0 — Ecosystem Autonomous Control
+
+Production autonomous adaptive engine with capability-driven discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/VM/I/O mutation and durable recovery.
+
+### Autonomous resource coverage
+- Dynamic block-device discovery (`/sys/block/*`) including scheduler, read-ahead and request-queue controls.
+- VM swappiness discovery and adaptive intervention under real memory pressure.
+- Adaptive I/O queue/read-ahead tuning for sustained workloads.
+- CPUFreq governor adaptation with bounded, verified experiments.
+- Runtime I/O-rate and throttled process profiling for workload classification.
+- Battery level/status/current/voltage/temperature awareness and power-constrained policy.
+- Persistent, atomically-written ExperienceMemory scoped to device/kernel identity and capped at 128 records.
+- Resource baseline, durable recovery journal, read-back verification and rollback.
+- Writable resources are policy-eligible only after runtime discovery; the final mutation authority remains `MutationPermit`.
+
+### v2.0.0 — Production Adaptive Engine
 
 CoreFlow Autonomous Engine is a native C++17 adaptive system-intelligence daemon for Android.
 
-The v1.9.2 source package consolidates environment/capability discovery, unified resource state, context classification, policy planning, actuator boundaries, outcome representation and the existing mutation-safety foundation.
+The v2.0.0 source package consolidates environment/capability discovery, unified resource state, context classification, policy planning, centralized mutation authority, CPUFreq and generic-resource actuators, causal outcome evaluation and durable recovery.
 
 > **Package type:** Source release  
-> **Version:** `v1.9.2`  
-> **versionCode:** `1902`  
+> **Version:** `v2.0.0`  
+> **versionCode:** `2000`  
 > **ABI:** `arm64-v8a`  
 > **Android minimum API:** `34`  
 > **Build SDK:** `36`  
@@ -17,7 +32,7 @@ The v1.9.2 source package consolidates environment/capability discovery, unified
 
 ## Release position
 
-v1.9.2 is an **audited final source package**. It is not a pre-built production module.
+v2.0.0 is an **audited production source package**. The public artifact is produced deterministically by GitHub Actions for ARM64 Android; the source archive intentionally contains no generated binary.
 
 The package contains the source, tests, module scaffolding, thermal model, CI workflow and validation tooling required to produce the Android ARM64 artifact.
 
@@ -54,7 +69,8 @@ Android / Kernel Environment
 ┌──────────────────────────────┐
 │ Context Engine               │
 │ workload / thermal / memory  │
-│ power / confidence           │
+│ I/O / battery / power        │
+│ process-profile / confidence │
 └──────────────┬───────────────┘
                ▼
 ┌──────────────────────────────┐
@@ -152,21 +168,19 @@ This representation is intended to support future experience/learning layers wit
 
 ### BaselineIntelligence and ExperienceMemory
 
-v1.9.2 includes the baseline-intelligence and experience-memory foundation needed for the next development stage.
-
-These components do not replace the established mutation authority or safety gates.
+v2.0.0 makes these components part of the stable autonomous loop. Verified mutation outcomes are evaluated against the factory/runtime baseline and stored as advisory experience. Experience is persisted atomically, capped at 128 records, and scoped to the device/kernel identity so one device cannot inherit another device's tuning history. Historical experience can influence candidate ranking only; it can never grant mutation permission or bypass fresh safety checks.
 
 ## Safety model
 
-The default configuration is explicitly fail-closed:
+The public default configuration enables safe autonomous operation:
 
 ```text
-mutation_mode=disabled
-allow_cpu_governor=no
-mutation_armed=false
+mutation_mode=adaptive
+allow_cpu_governor=yes
+mutation_armed=true
 ```
 
-New ecosystem resources remain observation/plan-only by default.
+Autonomous mutation is enabled by default, but activation is not an unconditional kernel-write permission: only policy-allow-listed, preflight-verified resources can receive a scoped mutation permit, and safety holds, journaling, bounded writes, verification, rollback, and ownership checks remain mandatory.
 
 Autonomous mutation requires the established safety path, including:
 
@@ -181,11 +195,11 @@ Autonomous mutation requires the established safety path, including:
 9. Restore/rollback handling
 10. Safety-hold and recovery gates
 
-The mutation controller remains the final authority for mutation.
+`MutationAuthority` is the single final authorization gate; CPUFreq and generic-resource controllers cannot manufacture permits themselves.
 
 A journal entry by itself does not imply that a live mutation exists; mutation state is derived from actuator evidence.
 
-## v1.9.2 audited changes
+## v2.0.0 production changes
 
 The audited final release includes:
 
@@ -195,6 +209,11 @@ The audited final release includes:
 - Default configuration documentation alignment.
 - Regression coverage for multi-policy mutation and full restore.
 - Preservation of the v1.4.1 Tier-2 safety boundary.
+- Persistent scoped ExperienceMemory across reboot with atomic replacement and bounded storage.
+- Workload classification expanded with I/O-bound, memory-bound and power-constrained states.
+- Runtime I/O throughput telemetry and throttled top-process profiling for workload context; profiling is observational only.
+- Battery level/status telemetry incorporated into power headroom and autonomous eligibility.
+- Experience is now fed back into CPU candidate scoring while remaining advisory and safety-neutral.
 
 ## Default configuration
 
@@ -203,13 +222,13 @@ The audited final release includes:
 ```text
 monitor_interval=5
 min_confidence=0.70
-mutation_mode=disabled
-allow_cpu_governor=no
+mutation_mode=adaptive
+allow_cpu_governor=yes
 runtime_refresh=true
-mutation_armed=false
+mutation_armed=true
 ```
 
-The production-safe default is observation-only.
+The production default is autonomous adaptive operation with the same internal safety authority and recovery gates; observation-only mode remains available by setting mutation_mode=disabled.
 
 ## Thermal predictor
 
@@ -305,7 +324,7 @@ Run:
 tools/verify_source_release.sh
 ```
 
-The validator checks release metadata, required source files, absence of generated production artifacts, safety defaults, architecture components, documentation versioning and the pinned thermal-model digest.
+The validator checks release metadata, required source files, absence of generated production artifacts, safe-autonomous defaults, architecture components, documentation versioning and the pinned thermal-model digest.
 
 Run the safety contract validation with:
 
@@ -329,7 +348,7 @@ A production Android artifact must be generated by the Android build workflow be
 
 ## Scope and limitations
 
-v1.9.2 is a source-package release establishing the ecosystem intelligence/control foundation while retaining the existing mutation safety authority.
+v2.0.0 is a source-package release establishing the ecosystem intelligence/control foundation while retaining the existing mutation safety authority.
 
 The package does not claim validation across every Android device, vendor kernel, hardware implementation or kernel-control layout.
 
