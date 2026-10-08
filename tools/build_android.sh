@@ -4,12 +4,25 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 ONNX_ROOT="${COREFLOW_ONNX_ROOT:-}"
-EXPECTED_NDK="27.3.13750724"
-ANDROID_API="35"
-ANDROID_ABI="arm64-v8a"
+# Reproducible default toolchain, while allowing deliberate overrides.
+EXPECTED_NDK="${EXPECTED_NDK:-30.0.16248370}"
+ANDROID_MIN_API="${ANDROID_MIN_API:-34}"
+ANDROID_ABI="${ANDROID_ABI:-arm64-v8a}"
 
 if [ -z "$NDK" ] || [ ! -f "$NDK/build/cmake/android.toolchain.cmake" ]; then
     echo "error: ANDROID_NDK_HOME/ANDROID_NDK_ROOT must point to Android NDK ${EXPECTED_NDK}." >&2
+    exit 2
+fi
+
+case "$ANDROID_MIN_API" in
+    ''|*[!0-9]*)
+        echo "error: ANDROID_MIN_API must be a numeric API level." >&2
+        exit 2
+        ;;
+esac
+
+if [ "$ANDROID_MIN_API" -lt 34 ]; then
+    echo "error: CoreFlow requires Android API 34 or newer." >&2
     exit 2
 fi
 
@@ -36,10 +49,12 @@ fi
 
 BUILD_DIR="$ROOT/build/android-arm64"
 
+echo "CoreFlow Android build: NDK=${EXPECTED_NDK}, min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
+
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI="$ANDROID_ABI" \
-  -DANDROID_PLATFORM="android-${ANDROID_API}" \
+  -DANDROID_PLATFORM="android-${ANDROID_MIN_API}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCORE_FLOW_BUILD_TESTS=OFF \
   -DCOREFLOW_ONNX_ROOT="$ONNX_ROOT"
