@@ -55,9 +55,11 @@ int main() {
 
     PolicyEngine policy;
     const PolicyPlan plan = policy.evaluate(context, resources);
-    CHECK(plan.action == PolicyAction::Observe);
+    CHECK(plan.action == PolicyAction::Candidate);
     CHECK(plan.mutation_eligible);
     CHECK(plan.candidates.size() == 1);
+    CHECK(plan.allows(ResourceDomain::UClamp, "cpu.uclamp.min"));
+    CHECK(!plan.allows(ResourceDomain::Thermal, "thermal-zones"));
 
     const auto* thermal = resources.find(ResourceDomain::Thermal, "thermal-zones");
     CHECK(thermal != nullptr);

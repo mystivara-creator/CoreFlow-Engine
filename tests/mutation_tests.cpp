@@ -3,6 +3,7 @@
 // tests never touch the real kernel interface.
 
 #include "coreflow/config.hpp"
+#include "coreflow/experience.hpp"
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
 #include "coreflow/policy.hpp"
@@ -173,7 +174,7 @@ void test_live_governor_drives_decisions_not_stale_snapshot() {
     CHECK(readLine(box.governor_file) == "schedutil");
 
     const MutationResult hot = mc.apply(RuntimeState::ThermalGuard, sample(0.0, 45.0), profile, adaptiveConfig());
-    CHECK(hot == MutationResult::Verified);
+    CHECK(hot == MutationResult::RolledBack);
     CHECK(readLine(box.governor_file) == "powersave");
 }
 
@@ -429,6 +430,16 @@ void test_thermal_thresholds_are_consistent() {
     CHECK(policy.evaluate(hot, RuntimeState::Normal) == RuntimeState::ThermalGuard);
 }
 
+void test_production_defaults_are_autonomous_but_bounded_by_explicit_gates() {
+    EngineConfig cfg;
+    CHECK(cfg.mutationMode() == MutationMode::Adaptive);
+    CHECK(cfg.mutationArmed());
+    CHECK(cfg.allowCpuGovernor());
+
+    cfg.setMutationMode(MutationMode::Disabled);
+    CHECK(cfg.mutationMode() == MutationMode::Disabled);
+}
+
 void test_experimental_trial_mode_is_not_enabled_by_config() {
     const std::string path = "/tmp/coreflow_test_config_trial.ini";
     writeLine(path, "mutation_mode=trial");
@@ -457,7 +468,10 @@ void test_observe_mode_never_writes_to_kernel_when_not_mutated() {
     CHECK(mc.captureBaseline(profile));
 
     writeLine(box.governor_file, "performance");  // platform change
-    EngineConfig observe;                          // default: Disabled, not armed
+    EngineConfig observe;
+    observe.setMutationMode(MutationMode::Disabled);
+    observe.setMutationArmed(false);
+    observe.setAllowCpuGovernor(false);
     const MutationResult r = mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, observe);
     CHECK(r == MutationResult::Skipped);
     CHECK(readLine(box.governor_file) == "performance");
@@ -477,6 +491,7 @@ void test_unarmed_adaptive_mode_never_writes() {
 
     EngineConfig cfg;
     cfg.setMutationMode(MutationMode::Adaptive);  // adaptive but NOT armed
+    cfg.setMutationArmed(false);
     CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, cfg) == MutationResult::Skipped);
     CHECK(readLine(box.governor_file) == "powersave");
     CHECK(journal.commits == 0);
@@ -494,6 +509,9 @@ void test_disabling_mode_restores_only_own_mutation() {
     CHECK(readLine(box.governor_file) == "schedutil");
 
     EngineConfig held;  // operator / guard disables mutation
+    held.setMutationMode(MutationMode::Disabled);
+    held.setMutationArmed(false);
+    held.setAllowCpuGovernor(false);
     const MutationResult r = mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, held);
     CHECK(r == MutationResult::RolledBack);
     CHECK(readLine(box.governor_file) == "powersave");
@@ -580,6 +598,58 @@ void test_resource_domain_names_are_stable() {
 }
 
 
+void test_restore_only_owned_policies() {
+    // An external actor may legitimately change an untouched policy while
+    // CoreFlow owns another one. Restore must never overwrite that change.
+    Sandbox box;
+    const std::string external = (box.root / "external_policy").string();
+    fs::create_directories(external);
+    writeLine(external + "/scaling_governor", "powersave");
+
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    DeviceProfile profile = box.profile();
+    CpuPolicy second;
+    second.id = 1;
+    second.path = external;
+    second.governor = "powersave";
+    second.available_governors = {"powersave", "schedutil", "performance"};
+    second.readable = true;
+    second.governor_writable = true;
+    profile.cpu_policies.push_back(second);
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    writeLine(external + "/scaling_governor", "performance");
+
+    CHECK(mc.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(readLine(external + "/scaling_governor") == "performance");
+    CHECK(!journal.has_pending);
+}
+
+void test_mutation_authority_is_single_gate() {
+    EngineConfig config = adaptiveConfig();
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    MutationAuthority authority;
+    const MutationPermit normal = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, MutationPermit::Scope::CpuFreq);
+    CHECK(normal.validFor(MutationPermit::Scope::CpuFreq));
+    CHECK(!normal.validFor(MutationPermit::Scope::Resource));
+
+    const MutationPermit hot = authority.authorize(
+        plan, config, RuntimeState::ThermalGuard, 1.0, MutationPermit::Scope::CpuFreq);
+    CHECK(!hot.valid());
+
+    config.setMutationArmed(false);
+    const MutationPermit unarmed = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, MutationPermit::Scope::CpuFreq);
+    CHECK(!unarmed.valid());
+}
+
 void test_multi_policy_mutations_all_restored() {
     // Two policies changed in separate cycles must both return to factory, and
     // the journal must clear only after both are restored.
@@ -615,6 +685,44 @@ void test_multi_policy_mutations_all_restored() {
     CHECK(!journal.has_pending);
 }
 
+
+void test_experience_persists_and_is_bounded() {
+    const fs::path path = fs::temp_directory_path() / "coreflow_experience_test.db";
+    fs::remove(path);
+
+    ExperienceMemory memory;
+    memory.setScope("test-device:kernel");
+    ExperienceMemory::Record record;
+    record.candidate.key = "cpufreq:/policy0:scaling_governor:schedutil";
+    record.context.state = RuntimeState::Normal;
+    record.context.workload = WorkloadClass::CpuBound;
+    record.context.charging = false;
+    record.context.thermal_trend = Trend::Stable;
+    record.context.memory_trend = Trend::Stable;
+    record.context.load_trend = Trend::Rising;
+    record.outcome = BaselineIntelligence::Outcome::Beneficial;
+    record.score = 0.82;
+    record.confidence = 0.91;
+    record.observations = 5;
+    CHECK(memory.record(record));
+    CHECK(memory.flush(path.string()));
+
+    ExperienceMemory restored;
+    restored.setScope("test-device:kernel");
+    CHECK(restored.load(path.string()));
+    const auto* found = restored.find(record.candidate, record.context);
+    CHECK(found != nullptr);
+    CHECK(found != nullptr && found->outcome == BaselineIntelligence::Outcome::Beneficial);
+    CHECK(found != nullptr && found->score > 0.80);
+
+    // A different device/kernel scope must not inherit another environment's experience.
+    ExperienceMemory isolated;
+    isolated.setScope("different-device:kernel");
+    CHECK(isolated.load(path.string()));
+    CHECK(isolated.find(record.candidate, record.context) == nullptr);
+    fs::remove(path);
+}
+
 } // namespace
 
 int main() {
@@ -633,6 +741,7 @@ int main() {
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
         {"journal_roundtrip_and_truncation", test_file_journal_roundtrip_and_truncation_detection},
         {"disabled_mode_hard_gate", test_disabled_mode_is_a_hard_no_mutation_gate},
+        {"production_defaults_autonomous", test_production_defaults_are_autonomous_but_bounded_by_explicit_gates},
         {"mutation_requires_durable_journal", test_mutation_requires_durable_journal},
         {"empty_governor_advertisement_fails_closed", test_empty_governor_advertisement_fails_closed},
         {"low_confidence_restores", test_low_confidence_restores_instead_of_mutating},
@@ -645,8 +754,11 @@ int main() {
         {"max_hold_restore_and_cooldown", test_max_hold_forces_restore_then_cooldown},
         {"safety_hold_markers", test_safety_hold_markers},
         {"multi_policy_all_restored", test_multi_policy_mutations_all_restored},
+        {"restore_only_owned_policies", test_restore_only_owned_policies},
+        {"mutation_authority_single_gate", test_mutation_authority_is_single_gate},
         {"environment_capability_matrix_fail_closed", test_environment_capability_matrix_is_fail_closed},
         {"resource_domain_names_stable", test_resource_domain_names_are_stable},
+        {"experience_persistence_and_scope", test_experience_persists_and_is_bounded},
     };
 
     for (const Case& c : cases) {
