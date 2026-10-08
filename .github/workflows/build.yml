@@ -27,6 +27,9 @@ env:
   ANDROID_API: "35"
   ANDROID_ABI: "arm64-v8a"
   ONNX_RUNTIME_VERSION: "1.24.3"
+  # Pinned digest of the validated thermal model. Any change to the model
+  # must be reviewed and the pin updated deliberately.
+  THERMAL_MODEL_SHA256: "422c64313947688d1cda942f3a6f6612a103b3449991361d66a8bb1839fcab97"
 
 jobs:
   host-tests:
@@ -57,7 +60,6 @@ jobs:
             -B build/host \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DBUILD_TESTING=ON \
             -DCORE_FLOW_BUILD_TESTS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -70,7 +72,7 @@ jobs:
       - name: Run host tests
         run: |
           set -euo pipefail
-          ctest --test-dir build/host --output-on-failure
+          ctest --test-dir build/host --output-on-failure --no-tests=error
 
   android:
     name: Android 14+ ARM64 Production
@@ -81,6 +83,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODULE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
+          CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
+          test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
+          test "$MODULE_CODE" = "1300"
+          test "$CONFIG_VERSION" = "$CMAKE_VERSION"
+          echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
 
       - name: Setup Java 17
         uses: actions/setup-java@v6
@@ -162,6 +177,18 @@ jobs:
             exit 1
           fi
 
+          ACTUAL_SHA="$(sha256sum "$MODEL" | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA" != "$THERMAL_MODEL_SHA256" ]; then
+            echo "::error::thermal_predictor.onnx digest mismatch: expected ${THERMAL_MODEL_SHA256}, got ${ACTUAL_SHA}"
+            exit 1
+          fi
+          echo "Thermal model digest verified: ${ACTUAL_SHA}"
+
+      - name: Verify source package contract
+        run: |
+          set -euo pipefail
+          tools/verify_source_release.sh
+
       - name: Configure Release
         shell: bash
         run: |
@@ -178,7 +205,6 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
-            -DBUILD_TESTING=OFF \
             -DCORE_FLOW_BUILD_TESTS=OFF \
             -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -202,7 +228,7 @@ jobs:
           file "$BINARY"
           file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
           
-          # Strip debug symbols to guarantee zero overhead / minimal footprint
+          # Strip debug symbols to keep the deployed footprint minimal.
           "${TOOLCHAIN_BIN}/llvm-strip" --strip-all "$BINARY"
 
       - name: Assemble module
@@ -225,6 +251,9 @@ jobs:
 
           test -s "$ONNX_LIB"
           test -s "$MODEL"
+
+          file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
+          file "$ONNX_LIB" | grep -E "ELF 64-bit.*ARM aarch64"
 
           MODULE_DIR="artifacts/CoreFlow-Autonomous"
 
@@ -331,7 +360,7 @@ jobs:
       - name: Upload production artifact
         uses: actions/upload-artifact@v6
         with:
-          name: CoreFlow-Autonomous-1.1.0-onnx-android14-arm64
+          name: CoreFlow-Autonomous-onnx-android14-arm64
           path: artifacts/CoreFlow-Autonomous-*-android14-arm64.zip
           if-no-files-found: error
           retention-days: 30
