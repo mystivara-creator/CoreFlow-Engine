@@ -391,6 +391,81 @@ void test_intervention_level_boundaries() {
     }
 }
 
+
+void test_disarmed_policy_performs_no_write() {
+    const fs::path root =
+        fs::temp_directory_path() /
+        "coreflow_resource_disarmed_test";
+
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 500;
+    sample.mem_available_ratio = 0.50;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.80;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(false);
+
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.intervention = InterventionLevel::Low;
+    plan.mutation_eligible = true;
+    plan.candidates.push_back({
+        ResourceDomain::Memory,
+        "vm.swappiness",
+        {},
+        sample.confidence,
+        1.0,
+        PolicyAction::Candidate
+    });
+
+    const MutationAuthority authority;
+    const MutationPermit permit = authority.authorize(
+        plan,
+        config,
+        RuntimeState::Elevated,
+        sample.confidence,
+        MutationPermit::Scope::Resource);
+
+    CHECK(!permit.validFor(MutationPermit::Scope::Resource));
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(controller.captureBaseline(profile));
+
+    const MutationResult result = controller.apply(
+        RuntimeState::Elevated,
+        sample,
+        profile,
+        config,
+        plan,
+        permit);
+
+    CHECK(result == MutationResult::Skipped);
+    CHECK(!controller.mutated());
+    CHECK(readFile(swappiness) == "60");
+    CHECK(!journal.pending);
+
+    fs::remove_all(root);
+}
+
+
 } // namespace
 
 int main() {
@@ -398,6 +473,7 @@ int main() {
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
     test_intervention_level_boundaries();
+    test_disarmed_policy_performs_no_write();
     std::printf("CoreFlow resource autonomy: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
