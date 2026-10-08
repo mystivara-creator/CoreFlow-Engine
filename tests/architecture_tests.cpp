@@ -87,11 +87,6 @@ int main() {
         safe_sample.thermal_millidegrees = 39000;
         safe_sample.confidence = 0.95;
 
-        ContextEngine context_engine;
-        PolicyEngine policy;
-
-        ResourceStateModel resources;
-
         const SystemContext safe_context =
             context_engine.evaluate(safe_sample, RuntimeState::Normal);
 
