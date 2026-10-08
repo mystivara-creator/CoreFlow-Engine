@@ -120,12 +120,77 @@ void test_resource_restore_only_owned_paths() {
     fs::remove_all(root);
 }
 
+void test_policy_block_without_mutation_is_skipped() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_resource_policy_skip_test";
+
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 500;
+    sample.mem_available_ratio = 0.50;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.20;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+
+    PolicyPlan blocked;
+    blocked.action = PolicyAction::ReduceIntervention;
+    blocked.mutation_eligible = false;
+    blocked.reason = "thermal safety guard";
+
+    const MutationAuthority authority;
+    const MutationPermit permit = authority.authorize(
+        blocked,
+        config,
+        RuntimeState::ThermalGuard,
+        sample.confidence,
+        MutationPermit::Scope::Resource);
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(controller.captureBaseline(profile));
+
+    const MutationResult result = controller.apply(
+        RuntimeState::ThermalGuard,
+        sample,
+        profile,
+        config,
+        blocked,
+        permit);
+
+    CHECK(result == MutationResult::Skipped);
+    CHECK(!controller.mutated());
+    CHECK(readFile(swappiness) == "60");
+
+    fs::remove_all(root);
+}
 
 } // namespace
 
 int main() {
     test_swappiness_adaptive_path();
     test_resource_restore_only_owned_paths();
-    std::printf("CoreFlow resource autonomy: %s\n", failures == 0 ? "PASS" : "FAIL");
+    test_policy_block_without_mutation_is_skipped();
+
+    std::printf(
+        "CoreFlow resource autonomy: %s\n",
+        failures == 0 ? "PASS" : "FAIL");
+
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
