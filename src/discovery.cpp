@@ -33,9 +33,11 @@ void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
     cap.exists = exists;
     cap.readable = readable;
     cap.writable = writable;
-    cap.permission_granted = permission_granted;
-    // v1.5 is discovery-only: no resource is mutation-ready yet.
-    cap.mutation_ready = false;
+    cap.permission_granted = permission_granted || writable;
+    cap.runtime_verified = readable;
+    // v2.0.0: structurally valid writable resources are preflight candidates; final authorization remains centralized.
+    // The final MutationPermit is still created only by the mutation authority.
+    cap.mutation_ready = readable && writable && cap.permission_granted;
     matrix.resources.push_back(std::move(cap));
 }
 
@@ -291,7 +293,7 @@ void EnvironmentDiscovery::discoverIo(DeviceProfile& profile) const {
 
         const std::string queue = std::string(base) + "/" + name + "/queue/read_ahead_kb";
         IoDevice device;
-        device.path = std::string(base) + "/" + name + "/queue";
+        device.path = std::string(base) + "/" + name;
         device.name = name;
         device.read_ahead_readable = access(queue.c_str(), R_OK) == 0;
         device.read_ahead_writable = access(queue.c_str(), W_OK) == 0;
@@ -390,6 +392,21 @@ void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
     addCapability(matrix, ResourceDomain::Charging, "battery",
                   profile.charging.battery_path, profile.charging.battery_available,
                   profile.charging.status_readable || profile.charging.telemetry_readable, false);
+    for (const auto& device : profile.io_devices) {
+        const std::string base = device.path;
+        addCapability(matrix, ResourceDomain::Io, device.name + ":read_ahead_kb",
+                      base + "/queue/read_ahead_kb",
+                      device.read_ahead_readable || device.read_ahead_writable,
+                      device.read_ahead_readable, device.read_ahead_writable);
+        addCapability(matrix, ResourceDomain::Io, device.name + ":nr_requests",
+                      base + "/queue/nr_requests",
+                      device.nr_requests_readable || device.nr_requests_writable,
+                      device.nr_requests_readable, device.nr_requests_writable);
+        addCapability(matrix, ResourceDomain::Io, device.name + ":scheduler",
+                      base + "/queue/scheduler",
+                      device.scheduler_readable || device.scheduler_writable,
+                      device.scheduler_readable, device.scheduler_writable);
+    }
     addCapability(matrix, ResourceDomain::Io, "block-queues", "/sys/block",
                   !profile.io_devices.empty(), !profile.io_devices.empty(), false);
     addCapability(matrix, ResourceDomain::Power, "power-supply", "/sys/class/power_supply",

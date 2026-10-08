@@ -14,11 +14,13 @@ PolicyPlan PolicyEngine::evaluate(const SystemContext& context,
         return plan;
     }
 
-    plan.action = PolicyAction::Observe;
-    plan.reason = "v1.9 foundation is plan-only; no resource mutation is selected automatically";
+    plan.action = PolicyAction::Candidate;
+    plan.reason = "context and resource preflight allow bounded autonomous mutation";
 
-    // Build candidates only from resources that are already verified and explicitly
-    // permitted by the resource model. The model never grants the final actuator permit.
+    // The plan is the single policy authority. It may authorize the CPU governor
+    // path even when no generic resource candidate exists, while generic resources
+    // must additionally match one of these explicitly enumerated candidates.
+    plan.mutation_eligible = true;
     for (const auto& resource : resources.all()) {
         if (!resource.safeForMutation()) continue;
         PolicyCandidate candidate;
@@ -30,11 +32,26 @@ PolicyPlan PolicyEngine::evaluate(const SystemContext& context,
         candidate.action = PolicyAction::Candidate;
         plan.candidates.push_back(std::move(candidate));
     }
-
-    if (!plan.candidates.empty()) {
-        plan.mutation_eligible = true;
-    }
     return plan;
+}
+
+MutationPermit MutationAuthority::authorize(const PolicyPlan& plan,
+                                            const EngineConfig& config,
+                                            RuntimeState state,
+                                            double confidence,
+                                            MutationPermit::Scope scope) const noexcept {
+    if (!plan.mutation_eligible || plan.action != PolicyAction::Candidate) {
+        return MutationPermit(false, scope);
+    }
+    if (config.mutationMode() != MutationMode::Adaptive || !config.mutationArmed()) {
+        return MutationPermit(false, scope);
+    }
+    if (confidence < config.minConfidence()) return MutationPermit(false, scope);
+    if (state == RuntimeState::Idle || state == RuntimeState::Pressure ||
+        state == RuntimeState::ThermalGuard) {
+        return MutationPermit(false, scope);
+    }
+    return MutationPermit(true, scope);
 }
 
 bool ActuatorManager::registerActuator(IActuator& actuator) noexcept {

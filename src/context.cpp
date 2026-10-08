@@ -10,14 +10,28 @@ SystemContext ContextEngine::evaluate(const RuntimeSample& sample,
     context.state = state;
     context.thermal_headroom = !sample.thermal_available || sample.thermal_millidegrees < 41000;
     context.memory_headroom = sample.mem_total_kb == 0 || sample.mem_available_ratio >= 0.15;
-    context.power_headroom = !sample.charging || sample.battery_temperature_millidegrees < 43000;
+    context.battery_headroom = sample.battery_level_percent < 0 ||
+                               sample.charging || sample.battery_level_percent >= 20;
+    context.power_headroom = context.battery_headroom &&
+                             (!sample.charging || sample.battery_temperature_millidegrees < 42000);
+    context.io_headroom = !sample.io_activity_available ||
+                          (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0;
     context.confidence = std::clamp(sample.confidence, 0.0, 1.0);
 
     if (state == RuntimeState::ThermalGuard) {
         context.workload = WorkloadClass::ThermalLimited;
+    } else if (!context.power_headroom || !context.battery_headroom) {
+        context.workload = WorkloadClass::PowerConstrained;
     } else if (state == RuntimeState::Pressure) {
         context.workload = WorkloadClass::MemoryBound;
-    } else if (sample.load1 < 0.20 && sample.cpu_utilization < 0.15) {
+    } else if (sample.io_activity_available &&
+               (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) >= 4096.0 &&
+               (!sample.cpu_utilization_available || sample.cpu_utilization < 0.65)) {
+        context.workload = WorkloadClass::IoBound;
+    } else if (sample.mem_available_ratio > 0.0 && sample.mem_available_ratio < 0.20) {
+        context.workload = WorkloadClass::MemoryBound;
+    } else if (sample.load1 < 0.20 &&
+               (!sample.cpu_utilization_available || sample.cpu_utilization < 0.15)) {
         context.workload = WorkloadClass::Idle;
     } else if (sample.cpu_utilization_available && sample.cpu_utilization >= 0.80) {
         context.workload = WorkloadClass::CpuBound;
@@ -33,6 +47,7 @@ SystemContext ContextEngine::evaluate(const RuntimeSample& sample,
         context.thermal_headroom &&
         context.memory_headroom &&
         context.power_headroom &&
+        context.io_headroom &&
         context.confidence >= 0.70;
 
     return context;

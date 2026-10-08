@@ -196,7 +196,7 @@ ActuatorResult CpuFreqActuator::apply(
 ) noexcept {
     ActuatorResult result;
 
-    if (!permit.valid()) {
+    if (!permit.validFor(MutationPermit::Scope::CpuFreq)) {
         result.status = ActuatorStatus::SafetyRejected;
         return result;
     }

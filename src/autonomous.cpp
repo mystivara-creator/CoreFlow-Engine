@@ -10,6 +10,7 @@
 #include <exception>
 #include <thread>
 #include <utility>
+#include <filesystem>
 
 #include "coreflow/signal_state.hpp"
 
@@ -23,6 +24,7 @@ namespace {
 constexpr const char* kLogTag = "CoreFlowAutonomous";
 constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
 constexpr const char* kMutationJournalPath = "/data/adb/coreflow/mutation_journal.txt";
+constexpr const char* kExperiencePath = "/data/adb/coreflow/experience.db";
 constexpr const char* kKillSwitchPath = "/data/adb/coreflow/DISABLE";
 constexpr const char* kSafeModePath = "/data/adb/coreflow/SAFE_MODE";
 constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
@@ -34,6 +36,7 @@ constexpr std::uint64_t kNotificationCooldownSamples = 12;
 // Periodic diagnostics: balance between detail and storage efficiency
 // Optimized: every 10 samples (less frequently than 6, reduces storage wear)
 constexpr std::uint64_t kPeriodicLogSamples = 10;
+constexpr std::uint64_t kExperienceFlushSamples = 60;
 
 // ============================================================================
 // EFFICIENCY & SAFETY CONSTANTS
@@ -174,15 +177,19 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
 // ============================================================================
 
 AutonomousEngine::AutonomousEngine()
-    : journal_(kMutationJournalPath) {}
+    : journal_(kMutationJournalPath),
+      resource_journal_("/data/adb/coreflow_resource_mutation_journal.txt") {}
 
 AutonomousEngine::~AutonomousEngine() {
     try {
         // Double-restore protection (from HARDENED)
         // Prevents calling restore twice if already restored
         if (!has_restored_) {
-            has_restored_ = controller_.restoreAll();
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            has_restored_ = cpu_restored && resource_restored;
         }
+        (void)experience_memory_.flush(kExperiencePath);
     } catch (const std::exception& e) {
         logError("Exception during destructor: %s", e.what());
     } catch (...) {
@@ -192,6 +199,7 @@ AutonomousEngine::~AutonomousEngine() {
 
 bool AutonomousEngine::initialize() {
     controller_.setJournal(&journal_);
+    resource_controller_.setJournal(&resource_journal_);
     controller_.setExperienceMemory(&experience_memory_);
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
@@ -210,7 +218,15 @@ bool AutonomousEngine::initialize() {
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
+    std::error_code mkdir_error;
+    std::filesystem::create_directories("/data/adb/coreflow", mkdir_error);
     experience_memory_.clear();
+    const std::string scope = snapshot_.profile.environment.manufacturer + ":" +
+                              snapshot_.profile.environment.device + ":" +
+                              snapshot_.profile.environment.soc_model + ":" +
+                              snapshot_.profile.kernel_release;
+    experience_memory_.setScope(scope);
+    (void)experience_memory_.load(kExperiencePath);
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
@@ -220,6 +236,11 @@ bool AutonomousEngine::initialize() {
 
     if (!controller_.captureBaseline(snapshot_.profile)) {
         logWarn("Factory baseline not established; mutation stays blocked until recovery succeeds");
+    }
+    if (!resource_controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Resource baseline not established; ecosystem mutation stays blocked");
+    } else {
+        (void)resource_controller_.syncPolicyModel(resource_model_);
     }
     has_restored_ = false;
 
@@ -251,9 +272,11 @@ bool AutonomousEngine::refreshEnvironment() {
 
     // Refresh must never re-baseline a mutated system. If the factory restore
     // is incomplete, keep the current profile and retry on the next cycle.
-    if (!controller_.restoreAll()) {
+    const bool cpu_restored = controller_.restoreAll();
+    const bool resource_restored = resource_controller_.restoreAll();
+    if (!cpu_restored || !resource_restored) {
         refresh_pending_ = true;
-        logWarn("Refresh deferred: factory restore incomplete, will retry");
+        logWarn("Refresh deferred: owned mutation restore incomplete, will retry");
         return false;
     }
 
@@ -268,6 +291,12 @@ bool AutonomousEngine::refreshEnvironment() {
     has_restored_ = false;
     baseline_intelligence_.reset();
     experience_memory_.clear();
+    const std::string scope = snapshot_.profile.environment.manufacturer + ":" +
+                              snapshot_.profile.environment.device + ":" +
+                              snapshot_.profile.environment.soc_model + ":" +
+                              snapshot_.profile.kernel_release;
+    experience_memory_.setScope(scope);
+    (void)experience_memory_.load(kExperiencePath);
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kThermalModelPath);
@@ -277,6 +306,11 @@ bool AutonomousEngine::refreshEnvironment() {
 
     if (!controller_.captureBaseline(snapshot_.profile)) {
         logWarn("Factory baseline not re-established after refresh; mutation blocked");
+    }
+    if (!resource_controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Resource baseline not re-established after refresh; ecosystem mutation blocked");
+    } else {
+        (void)resource_controller_.syncPolicyModel(resource_model_);
     }
 
     logInfo(
@@ -581,6 +615,7 @@ void AutonomousEngine::tick() {
                 // STEP 10b: Persist the verified outcome as advisory experience.
                 ExperienceMemory::Context experience_context;
                 experience_context.state = next;
+                experience_context.workload = context.workload;
                 experience_context.charging = sample.charging;
                 experience_context.thermal_trend = sample.thermal_trend;
                 experience_context.memory_trend = sample.memory_trend;
@@ -588,7 +623,7 @@ void AutonomousEngine::tick() {
 
                 for (const auto& applied : controller_.lastAppliedGovernors()) {
                     ExperienceMemory::CandidateIdentity candidate;
-                    candidate.key = applied.first + ":" + applied.second;
+                    candidate.key = "cpufreq:" + applied.first + ":" + applied.second;
 
                     if (experience_memory_.recordEvaluation(
                             candidate,
@@ -603,6 +638,16 @@ void AutonomousEngine::tick() {
                             static_cast<unsigned long long>(
                                 evaluation.observation_samples));
                     }
+                }
+                for (const auto& applied : resource_controller_.lastAppliedResources()) {
+                    ExperienceMemory::CandidateIdentity candidate;
+                    candidate.key = "resource:" + applied.first + ":" + applied.second;
+                    (void)experience_memory_.recordEvaluation(
+                        candidate, experience_context, evaluation);
+                }
+
+                if ((sample_count_ % kExperienceFlushSamples) == 0U) {
+                    (void)experience_memory_.flush(kExperiencePath);
                 }
 
                 switch (evaluation.outcome) {
@@ -628,10 +673,13 @@ void AutonomousEngine::tick() {
 
                     case BaselineIntelligence::Outcome::Regression: {
                         controller_.rejectLastMutation();
+                        resource_controller_.rejectLastMutation();
                         mutation_cooldown_until_sample_ =
                             sample_count_ + kRegressionCooldownSamples + 1U;
 
-                        const bool restored = controller_.restoreAll();
+                        const bool cpu_restored = controller_.restoreAll();
+                        const bool resource_restored = resource_controller_.restoreAll();
+                        const bool restored = cpu_restored && resource_restored;
                         mutation = restored ? MutationResult::RolledBack
                                             : MutationResult::Failed;
                         logInfo(
@@ -651,14 +699,17 @@ void AutonomousEngine::tick() {
             const bool mutationCooldownActive =
                 sample_count_ < mutation_cooldown_until_sample_;
 
-            if (!mutationCooldownActive) {
+            if (!mutationCooldownActive && !controller_.mutated() &&
+                !resource_controller_.mutated()) {
+                const MutationPermit cpu_permit = mutation_authority_.authorize(
+                    ecosystem_plan, config_, next, sample.confidence,
+                    MutationPermit::Scope::CpuFreq);
                 mutation = controller_.apply(
-                    next, sample, snapshot_.profile, config_);
+                    next, sample, snapshot_.profile, config_, ecosystem_plan, cpu_permit);
             } else {
                 logInfo(
                     "EFFICIENCY_MUTATION_HELD until_sample=%llu",
-                    static_cast<unsigned long long>(
-                        mutation_cooldown_until_sample_));
+                    static_cast<unsigned long long>(mutation_cooldown_until_sample_));
             }
 
             if (mutation == MutationResult::Verified) {
@@ -668,6 +719,55 @@ void AutonomousEngine::tick() {
                 }
             }
         }
+
+        // End an explored mutation epoch before selecting another candidate.
+        // Safety states restore immediately; beneficial/neutral epochs restore
+        // after their short hold so the next experiment starts from OEM state.
+        const bool mutation_epoch_active =
+            controller_.mutated() || resource_controller_.mutated();
+        const bool hold_expired = sample_count_ >= mutation_cooldown_until_sample_;
+        const bool safety_restore =
+            next == RuntimeState::Idle || next == RuntimeState::Pressure ||
+            next == RuntimeState::ThermalGuard ||
+            config_.mutationMode() != MutationMode::Adaptive ||
+            !config_.mutationArmed();
+        if (mutation_epoch_active && !baseline_intelligence_.observing() &&
+            (hold_expired || safety_restore)) {
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            if (!cpu_restored || !resource_restored) {
+                logError("MUTATION_EPOCH_RESTORE_FAILED cpu=%s resource=%s",
+                         cpu_restored ? "ok" : "failed",
+                         resource_restored ? "ok" : "failed");
+                refresh_pending_ = true;
+            } else {
+                logInfo("MUTATION_EPOCH_RESTORED reason=%s",
+                        safety_restore ? "safety" : "hold_expired");
+            }
+        }
+
+        // Exactly one actuator class may mutate in a decision cycle. This keeps
+        // the efficiency measurement causal and attributable to one candidate.
+        MutationResult resource_mutation = MutationResult::Skipped;
+        const bool resource_mutation_cooldown = sample_count_ < mutation_cooldown_until_sample_;
+        if (!resource_mutation_cooldown && mutation != MutationResult::Verified &&
+            !baseline_intelligence_.observing() && !controller_.mutated() &&
+            !resource_controller_.mutated()) {
+            const MutationPermit resource_permit = mutation_authority_.authorize(
+                ecosystem_plan, config_, next, sample.confidence,
+                MutationPermit::Scope::Resource);
+            resource_mutation = resource_controller_.apply(
+                next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit);
+            if (resource_mutation == MutationResult::Verified &&
+                baseline_intelligence_.beginObservation()) {
+                logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
+                        BaselineIntelligence::kObservationSamples);
+            }
+        }
+        if (resource_mutation != MutationResult::Skipped) {
+            logInfo("RESOURCE_AUTONOMOUS result=%s", mutationResultName(resource_mutation));
+        }
+
         logMutation(mutation, next);
 
         // STEP 11: Periodic detailed logging (reduced frequency for storage efficiency)
@@ -682,14 +782,24 @@ void AutonomousEngine::tick() {
                 sample.confidence
             );
             logInfo(
-                "       cpu %5.1f%% | load %5.2f %-7s | mem %5.1f%% %-7s | temp %5.2fC",
+                "       cpu %5.1f%% | load %5.2f %-7s | mem %5.1f%% %-7s | temp %5.2fC | io %.0f/%.0fKB/s | batt=%d%%",
                 sample.cpu_utilization * 100.0,
                 sample.load1,
                 trendName(sample.load_trend),
                 sample.mem_available_ratio * 100.0,
                 trendName(sample.memory_trend),
-                static_cast<double>(sample.thermal_millidegrees) / 1000.0
+                static_cast<double>(sample.thermal_millidegrees) / 1000.0,
+                sample.io_read_kb_per_sec,
+                sample.io_write_kb_per_sec,
+                sample.battery_level_percent
             );
+            if (sample.process_profile_available) {
+                logInfo("       top-process=%s cpu=%.1f%% rss=%llukB count=%u",
+                        sample.top_process_name.c_str(),
+                        sample.top_process_cpu_ratio * 100.0,
+                        static_cast<unsigned long long>(sample.top_process_memory_kb),
+                        sample.process_count);
+            }
         }
 
         // STEP 13: Update history
@@ -778,8 +888,10 @@ int AutonomousEngine::run() {
 
     try {
         if (!has_restored_) {
-            // Keep the journal if restore is incomplete: the next start recovers it.
-            has_restored_ = controller_.restoreAll();
+            // Keep either journal if restore is incomplete: the next start recovers it.
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            has_restored_ = cpu_restored && resource_restored;
         }
     } catch (const std::exception& e) {
         logError("Exception during shutdown restore: %s", e.what());

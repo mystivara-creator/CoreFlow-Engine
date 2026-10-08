@@ -44,16 +44,22 @@ bool EngineConfig::load(const std::string& path) noexcept {
             } else if (key == "min_confidence") {
                 try { setMinConfidence(std::stod(value)); } catch (...) {}
             } else if (key == "mutation_mode") {
-                // Unknown values, including the removed experimental "trial"
-                // mode, keep the fail-closed default (Disabled).
+                // Unknown values, including the removed experimental "trial" mode,
+                // always disable mutation for this load. Production defaults are
+                // autonomous, but malformed explicit configuration must fail safe.
                 if (value == "adaptive") mutation_mode_ = MutationMode::Adaptive;
                 else if (value == "disabled" || value == "observe") mutation_mode_ = MutationMode::Disabled;
+                else {
+                    mutation_mode_ = MutationMode::Disabled;
+                    mutation_armed_ = false;
+                    allow_cpu_governor_ = false;
+                }
             } else if (key == "allow_cpu_governor") {
-                allow_cpu_governor_ = parseBool(value, allow_cpu_governor_);
+                allow_cpu_governor_ = parseBool(value, false);
             } else if (key == "runtime_refresh") {
                 runtime_refresh_enabled_ = parseBool(value, runtime_refresh_enabled_);
             } else if (key == "mutation_armed") {
-                mutation_armed_ = parseBool(value, mutation_armed_);
+                mutation_armed_ = parseBool(value, false);
             }
         }
         return true;
