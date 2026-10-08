@@ -63,10 +63,12 @@ private:
     };
 
     bool recoverIfNeeded() noexcept;
-    bool buildCandidates(RuntimeState state,
-                          const RuntimeSample& sample,
-                          const DeviceProfile& profile,
-                          std::vector<Candidate>& out) const noexcept;
+    bool selectCandidate(
+        RuntimeState state,
+        const RuntimeSample& sample,
+        const DeviceProfile& profile,
+        const PolicyPlan& policy,
+        Candidate& out) const noexcept;
     bool applyCandidate(const Candidate& candidate, const MutationPermit& permit) noexcept;
     MutationJournal::Entries factorySnapshot() const;
     MutationJournal::Entries journalEntriesWith(const std::string& path) const;

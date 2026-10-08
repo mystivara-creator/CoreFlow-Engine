@@ -155,76 +155,262 @@ bool ResourceMutationController::captureBaseline(const DeviceProfile& profile) n
     return baseline_captured_;
 }
 
-bool ResourceMutationController::buildCandidates(
-    RuntimeState state, const RuntimeSample& sample,
-    const DeviceProfile& profile, std::vector<Candidate>& out) const noexcept {
-    out.clear();
-    out.reserve(1U + (profile.io_devices.size() * 3U));
-    if (state == RuntimeState::Idle || state == RuntimeState::Pressure ||
+
+bool endsWith(
+    const std::string& value,
+    const char* suffix) noexcept {
+
+    const std::size_t suffixLength =
+        std::char_traits<char>::length(suffix);
+
+    return value.size() >= suffixLength &&
+           value.compare(
+               value.size() - suffixLength,
+               suffixLength,
+               suffix) == 0;
+}
+
+InterventionLevel requiredIntervention(
+    ResourceDomain domain,
+    const std::string& name) noexcept {
+
+    if (domain == ResourceDomain::Memory &&
+        name == "vm.swappiness") {
+        return InterventionLevel::Low;
+    }
+
+    if (domain == ResourceDomain::Io) {
+        if (endsWith(name, ":read_ahead_kb")) {
+            return InterventionLevel::Low;
+        }
+
+        if (endsWith(name, ":nr_requests")) {
+            return InterventionLevel::Moderate;
+        }
+
+        if (endsWith(name, ":scheduler")) {
+            return InterventionLevel::High;
+        }
+    }
+
+    // Unknown resource => fail closed.
+    return InterventionLevel::High;
+}
+
+bool interventionAllows(
+    InterventionLevel granted,
+    InterventionLevel required) noexcept {
+
+    if (granted == InterventionLevel::ObserveOnly) {
+        return false;
+    }
+
+    return static_cast<std::uint8_t>(granted) >=
+           static_cast<std::uint8_t>(required);
+}
+
+bool ResourceMutationController::selectCandidate(
+    RuntimeState state,
+    const RuntimeSample& sample,
+    const DeviceProfile& profile,
+    const PolicyPlan& policy,
+    Candidate& out) const noexcept {
+
+    if (policy.intervention == InterventionLevel::ObserveOnly) {
+        return false;
+    }
+
+    if (state == RuntimeState::Idle ||
+        state == RuntimeState::Pressure ||
         state == RuntimeState::ThermalGuard) {
         return false;
     }
 
-    // VM swappiness: only move away from baseline when memory pressure is
-    // actually rising. The adjustment is deliberately bounded and reversible.
-    if (profile.vm_swappiness.readable && profile.vm_swappiness.writable &&
-        sample.mem_total_kb > 0 && sample.mem_available_ratio < 0.25) {
-        const auto it = baseline_.find(profile.vm_swappiness.path);
+    auto accept = [&](ResourceDomain domain,
+                      const std::string& name) noexcept {
+        return interventionAllows(
+                   policy.intervention,
+                   requiredIntervention(domain, name)) &&
+               policy.allows(domain, name);
+    };
+
+    // --------------------------------------------------------
+    // VM swappiness
+    // --------------------------------------------------------
+    if (profile.vm_swappiness.readable &&
+        profile.vm_swappiness.writable &&
+        sample.mem_total_kb > 0 &&
+        sample.mem_available_ratio < 0.25) {
+
+        const auto it =
+            baseline_.find(profile.vm_swappiness.path);
+
         if (it != baseline_.end() && it->second.valid) {
             long long base = 0;
+
             if (parseInteger(it->second.value, base)) {
                 const long long requested = std::clamp(
-                    base + (sample.mem_available_ratio < 0.12 ? 10LL : 5LL), 0LL, 100LL);
-                if (requested != base) {
-                    out.push_back({ResourceDomain::Memory, "vm.swappiness",
-                                   it->second.path, std::to_string(requested), it->second.value});
+                    base +
+                        (sample.mem_available_ratio < 0.12
+                             ? 10LL
+                             : 5LL),
+                    0LL,
+                    100LL);
+
+                if (requested != base &&
+                    accept(
+                        ResourceDomain::Memory,
+                        "vm.swappiness")) {
+
+                    out = {
+                        ResourceDomain::Memory,
+                        "vm.swappiness",
+                        it->second.path,
+                        std::to_string(requested),
+                        it->second.value
+                    };
+
+                    return true;
                 }
             }
         }
     }
 
-    // I/O: adjust queue depth/read-ahead only for a sustained, non-thermal
-    // workload. Scheduler changes are limited to an explicitly exposed kernel
-    // choice and are never invented by CoreFlow.
-    const bool sustained = state == RuntimeState::Elevated ||
-                           sample.cpu_utilization >= 0.70 ||
-                           sample.load1 >= 1.50;
-    if (!sustained) return !out.empty();
+    // --------------------------------------------------------
+    // I/O
+    // --------------------------------------------------------
+    const bool sustained =
+        state == RuntimeState::Elevated ||
+        sample.cpu_utilization >= 0.70 ||
+        sample.load1 >= 1.50;
+
+    if (!sustained) {
+        return false;
+    }
 
     for (const auto& device : profile.io_devices) {
-        const std::string readAheadPath = device.path + "/queue/read_ahead_kb";
-        const auto ra = baseline_.find(readAheadPath);
-        if (ra != baseline_.end() && ra->second.valid &&
-            device.read_ahead_readable && device.read_ahead_writable) {
-            const std::string requested = scaledInteger(ra->second.value, 1.25, 128, 4096);
-            if (!requested.empty() && requested != ra->second.value)
-                out.push_back({ResourceDomain::Io, device.name + ":read_ahead_kb",
-                               readAheadPath, requested, ra->second.value});
+
+        // ----------------------------------------------------
+        // read_ahead_kb
+        // ----------------------------------------------------
+        const std::string readAheadPath =
+            device.path + "/queue/read_ahead_kb";
+
+        const auto ra =
+            baseline_.find(readAheadPath);
+
+        if (ra != baseline_.end() &&
+            ra->second.valid &&
+            device.read_ahead_readable &&
+            device.read_ahead_writable) {
+
+            const std::string name =
+                device.name + ":read_ahead_kb";
+
+            const std::string requested =
+                scaledInteger(
+                    ra->second.value,
+                    1.25,
+                    128,
+                    4096);
+
+            if (!requested.empty() &&
+                requested != ra->second.value &&
+                accept(ResourceDomain::Io, name)) {
+
+                out = {
+                    ResourceDomain::Io,
+                    name,
+                    readAheadPath,
+                    requested,
+                    ra->second.value
+                };
+
+                return true;
+            }
         }
 
-        const std::string requestsPath = device.path + "/queue/nr_requests";
-        const auto nr = baseline_.find(requestsPath);
-        if (nr != baseline_.end() && nr->second.valid &&
-            device.nr_requests_readable && device.nr_requests_writable) {
-            const std::string requested = scaledInteger(nr->second.value, 1.20, 32, 1024);
-            if (!requested.empty() && requested != nr->second.value)
-                out.push_back({ResourceDomain::Io, device.name + ":nr_requests",
-                               requestsPath, requested, nr->second.value});
+        // ----------------------------------------------------
+        // nr_requests
+        // ----------------------------------------------------
+        const std::string requestsPath =
+            device.path + "/queue/nr_requests";
+
+        const auto nr =
+            baseline_.find(requestsPath);
+
+        if (nr != baseline_.end() &&
+            nr->second.valid &&
+            device.nr_requests_readable &&
+            device.nr_requests_writable) {
+
+            const std::string name =
+                device.name + ":nr_requests";
+
+            const std::string requested =
+                scaledInteger(
+                    nr->second.value,
+                    1.20,
+                    32,
+                    1024);
+
+            if (!requested.empty() &&
+                requested != nr->second.value &&
+                accept(ResourceDomain::Io, name)) {
+
+                out = {
+                    ResourceDomain::Io,
+                    name,
+                    requestsPath,
+                    requested,
+                    nr->second.value
+                };
+
+                return true;
+            }
         }
 
-        const std::string schedulerPath = device.path + "/queue/scheduler";
-        const auto sched = baseline_.find(schedulerPath);
-        if (sched != baseline_.end() && sched->second.valid &&
-            device.scheduler_readable && device.scheduler_writable) {
+        // ----------------------------------------------------
+        // scheduler
+        // ----------------------------------------------------
+        const std::string schedulerPath =
+            device.path + "/queue/scheduler";
+
+        const auto sched =
+            baseline_.find(schedulerPath);
+
+        if (sched != baseline_.end() &&
+            sched->second.valid &&
+            device.scheduler_readable &&
+            device.scheduler_writable) {
+
+            const std::string name =
+                device.name + ":scheduler";
+
             std::string requested;
-            if (schedulerCandidate(device, state, sample, requested) &&
-                requested != sched->second.value) {
-                out.push_back({ResourceDomain::Io, device.name + ":scheduler",
-                               schedulerPath, requested, sched->second.value});
+
+            if (schedulerCandidate(
+                    device,
+                    state,
+                    sample,
+                    requested) &&
+                requested != sched->second.value &&
+                accept(ResourceDomain::Io, name)) {
+
+                out = {
+                    ResourceDomain::Io,
+                    name,
+                    schedulerPath,
+                    requested,
+                    sched->second.value
+                };
+
+                return true;
             }
         }
     }
-    return !out.empty();
+
+    return false;
 }
 
 MutationJournal::Entries ResourceMutationController::factorySnapshot() const {
@@ -285,40 +471,37 @@ MutationResult ResourceMutationController::apply(
     if (restore_failed_) return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
 
     const bool mutation_gate_open =
-    permit.validFor(MutationPermit::Scope::Resource) &&
-    config.mutationMode() == MutationMode::Adaptive &&
-    config.mutationArmed() &&
-    policy.mutation_eligible &&
-    sample.confidence >= config.minConfidence();
+        permit.validFor(MutationPermit::Scope::Resource) &&
+        config.mutationMode() == MutationMode::Adaptive &&
+        config.mutationArmed() &&
+        policy.mutation_eligible &&
+        policy.intervention != InterventionLevel::ObserveOnly &&
+        sample.confidence >= config.minConfidence();
 
-if (!mutation_gate_open) {
-    // No mutation has occurred: this is a policy/gate skip,
-    // not a rollback.
-    if (!mutated_) {
+    if (!mutation_gate_open) {
+        if (!mutated_) {
+            return MutationResult::Skipped;
+        }
+
+        return restoreAll()
+            ? MutationResult::RolledBack
+            : MutationResult::Failed;
+    }
+    Candidate candidate;
+
+    if (!selectCandidate(
+            state,
+            sample,
+            profile,
+            policy,
+            candidate)) {
         return MutationResult::Skipped;
     }
 
-    // A previous mutation exists and the safety/policy gate closed:
-    // restore the resource to its captured baseline.
-    return restoreAll()
-        ? MutationResult::RolledBack
-        : MutationResult::Failed;
-}
+    if (!applyCandidate(candidate, permit)) {
+        return MutationResult::Failed;
+    }
 
-    std::vector<Candidate> candidates;
-    if (!buildCandidates(state, sample, profile, candidates)) return MutationResult::Skipped;
-
-    // The policy plan is an explicit allow-list. A generic actuator may never
-    // mutate merely because its path happens to be writable.
-    auto allowed = [&policy](const Candidate& candidate) {
-        return policy.allows(candidate.domain, candidate.name);
-    };
-    const auto it = std::find_if(candidates.begin(), candidates.end(), allowed);
-    if (it == candidates.end()) return MutationResult::Skipped;
-
-    // One generic-resource write per cycle. This bounds kernel exposure while
-    // keeping the adaptive feedback causal and attributable to one candidate.
-    if (!applyCandidate(*it, permit)) return MutationResult::Failed;
     return MutationResult::Verified;
 }
 

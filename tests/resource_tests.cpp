@@ -35,6 +35,74 @@ public:
     LoadState load(Entries& out) noexcept override { out = entries; return pending ? LoadState::Pending : LoadState::Absent; }
 };
 
+MutationResult applyResourcePolicy(
+    ResourceMutationController& controller,
+    RuntimeState state,
+    const RuntimeSample& sample,
+    const DeviceProfile& profile,
+    const EngineConfig& config,
+    InterventionLevel intervention) {
+
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.intervention = intervention;
+    plan.mutation_eligible = true;
+
+    plan.candidates.push_back({
+        ResourceDomain::Memory,
+        "vm.swappiness",
+        {},
+        sample.confidence,
+        1.0,
+        PolicyAction::Candidate
+    });
+
+    for (const auto& device : profile.io_devices) {
+        plan.candidates.push_back({
+            ResourceDomain::Io,
+            device.name + ":read_ahead_kb",
+            {},
+            sample.confidence,
+            1.0,
+            PolicyAction::Candidate
+        });
+
+        plan.candidates.push_back({
+            ResourceDomain::Io,
+            device.name + ":nr_requests",
+            {},
+            sample.confidence,
+            1.0,
+            PolicyAction::Candidate
+        });
+
+        plan.candidates.push_back({
+            ResourceDomain::Io,
+            device.name + ":scheduler",
+            {},
+            sample.confidence,
+            1.0,
+            PolicyAction::Candidate
+        });
+    }
+
+    const MutationAuthority authority;
+    const MutationPermit permit = authority.authorize(
+        plan,
+        config,
+        state,
+        sample.confidence,
+        MutationPermit::Scope::Resource);
+
+    return controller.apply(
+        state,
+        sample,
+        profile,
+        config,
+        plan,
+        permit);
+}
+
 void test_swappiness_adaptive_path() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_mutation_test";
     fs::remove_all(root);
@@ -63,7 +131,13 @@ void test_swappiness_adaptive_path() {
     ResourceMutationController controller;
     controller.setJournal(&journal);
     CHECK(controller.captureBaseline(profile));
-    CHECK(controller.apply(RuntimeState::Elevated, sample, profile, config) == MutationResult::Verified);
+    CHECK(applyResourcePolicy(
+          controller,
+          RuntimeState::Elevated,
+          sample,
+          profile,
+          config,
+          InterventionLevel::Low) == MutationResult::Verified);
     CHECK(readFile(swappiness) == "70");
     CHECK(controller.mutated());
     CHECK(controller.restoreAll());
@@ -109,7 +183,13 @@ void test_resource_restore_only_owned_paths() {
     ResourceMutationController controller;
     controller.setJournal(&journal);
     CHECK(controller.captureBaseline(profile));
-    CHECK(controller.apply(RuntimeState::Elevated, sample, profile, config) == MutationResult::Verified);
+    CHECK(applyResourcePolicy(
+          controller,
+          RuntimeState::Elevated,
+          sample,
+          profile,
+          config,
+          InterventionLevel::Low) == MutationResult::Verified);
     CHECK(readFile(swappiness) == "65");
     writeFile(readAhead, "2048");
 
@@ -120,14 +200,18 @@ void test_resource_restore_only_owned_paths() {
     fs::remove_all(root);
 }
 
+
 void test_policy_block_without_mutation_is_skipped() {
     const fs::path root =
-        fs::temp_directory_path() / "coreflow_resource_policy_skip_test";
+        fs::temp_directory_path() /
+        "coreflow_resource_policy_skip_test";
 
     fs::remove_all(root);
     fs::create_directories(root);
 
-    const fs::path swappiness = root / "swappiness";
+    const fs::path swappiness =
+        root / "swappiness";
+
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
@@ -149,6 +233,7 @@ void test_policy_block_without_mutation_is_skipped() {
 
     PolicyPlan blocked;
     blocked.action = PolicyAction::ReduceIntervention;
+    blocked.intervention = InterventionLevel::ObserveOnly;
     blocked.mutation_eligible = false;
     blocked.reason = "thermal safety guard";
 
@@ -187,10 +272,6 @@ int main() {
     test_swappiness_adaptive_path();
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
-
-    std::printf(
-        "CoreFlow resource autonomy: %s\n",
-        failures == 0 ? "PASS" : "FAIL");
-
+    std::printf("CoreFlow resource autonomy: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
