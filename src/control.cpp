@@ -2,27 +2,69 @@
 
 namespace coreflow {
 
-PolicyPlan PolicyEngine::evaluate(const SystemContext& context,
-                                  const ResourceStateModel& resources) const noexcept {
+PolicyPlan PolicyEngine::evaluate(
+    const SystemContext& context,
+    const ResourceStateModel& resources
+) const noexcept {
     PolicyPlan plan;
+
+    // Fail-closed: no explicit policy approval means observation only.
     if (!context.mutation_allowed_by_context) {
         plan.action = (context.state == RuntimeState::ThermalGuard ||
                        context.state == RuntimeState::Pressure)
                           ? PolicyAction::ReduceIntervention
                           : PolicyAction::Hold;
+        plan.intervention = InterventionLevel::ObserveOnly;
+        plan.mutation_eligible = false;
         plan.reason = "context safety constraints block intervention";
         return plan;
     }
 
+    // Workloads that do not currently justify resource intervention remain
+    // observation-only. The policy must explicitly opt into mutation.
+    switch (context.workload) {
+        case WorkloadClass::Unknown:
+        case WorkloadClass::Idle:
+        case WorkloadClass::MemoryBound:
+        case WorkloadClass::ThermalLimited:
+        case WorkloadClass::PowerConstrained:
+            plan.action = PolicyAction::Hold;
+            plan.intervention = InterventionLevel::ObserveOnly;
+            plan.mutation_eligible = false;
+            plan.reason = "workload does not justify intervention";
+            return plan;
+
+        default:
+            break;
+    }
+
     plan.action = PolicyAction::Candidate;
-    plan.reason = "context and resource preflight allow bounded autonomous mutation";
+    plan.mutation_eligible = true;
+
+    // Adaptive intervention intensity.
+    //
+    // Moderate intervention requires a strong CPU-bound signal and high
+    // confidence. All other eligible workloads remain bounded at LOW.
+    if (context.state == RuntimeState::Normal &&
+        context.workload == WorkloadClass::CpuBound &&
+        context.confidence >= 0.90 &&
+        context.thermal_headroom &&
+        context.memory_headroom &&
+        context.power_headroom &&
+        context.io_headroom) {
+        plan.intervention = InterventionLevel::Moderate;
+        plan.reason = "high-confidence cpu-bound workload allows moderate intervention";
+    } else {
+        plan.intervention = InterventionLevel::Low;
+        plan.reason = "context and resource preflight allow low intervention";
+    }
 
     // The plan is the single policy authority. It may authorize the CPU governor
     // path even when no generic resource candidate exists, while generic resources
     // must additionally match one of these explicitly enumerated candidates.
-    plan.mutation_eligible = true;
     for (const auto& resource : resources.all()) {
         if (!resource.safeForMutation()) continue;
+
         PolicyCandidate candidate;
         candidate.domain = resource.domain;
         candidate.resource = resource.name;
@@ -30,8 +72,10 @@ PolicyPlan PolicyEngine::evaluate(const SystemContext& context,
         candidate.confidence = context.confidence;
         candidate.risk = 1.0;
         candidate.action = PolicyAction::Candidate;
+
         plan.candidates.push_back(std::move(candidate));
     }
+
     return plan;
 }
 
