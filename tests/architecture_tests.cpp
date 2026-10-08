@@ -137,18 +137,22 @@ int main() {
     {
         const MutationAuthority authority;
 
+        EngineConfig enabled;
+        enabled.setMutationMode(MutationMode::Adaptive);
+        enabled.setMutationArmed(true);
+
         const MutationPermit allowed = authority.authorize(
-            safe_plan,
-            EngineConfig{},
+            plan,
+            enabled,
             RuntimeState::Normal,
-            safe_context.confidence,
+            context.confidence,
             MutationPermit::Scope::Resource);
 
         CHECK(allowed.validFor(MutationPermit::Scope::Resource));
 
         const MutationPermit blocked = authority.authorize(
             held,
-            EngineConfig{},
+            enabled,
             RuntimeState::ThermalGuard,
             hot.confidence,
             MutationPermit::Scope::Resource);
@@ -160,10 +164,10 @@ int main() {
         disarmed.setMutationArmed(false);
 
         const MutationPermit disarmed_permit = authority.authorize(
-            safe_plan,
+            plan,
             disarmed,
             RuntimeState::Normal,
-            safe_context.confidence,
+            context.confidence,
             MutationPermit::Scope::Resource);
 
         CHECK(!disarmed_permit.validFor(MutationPermit::Scope::Resource));
