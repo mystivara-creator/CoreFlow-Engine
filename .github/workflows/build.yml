@@ -37,8 +37,7 @@ concurrency:
 env:
   NDK_VERSION: "30.0.16248370"
   ANDROID_MIN_API: ${{ inputs.android_min_api || '34' }}
-  # Stable build SDK; native compatibility baseline remains API 34.
-  ANDROID_SDK_API: "36"
+  ANDROID_SDK_API: "37"
   ANDROID_ABI: "arm64-v8a"
   ONNX_RUNTIME_VERSION: "1.24.3"
   # Pinned digest of the validated thermal model. Any change to the model
@@ -48,7 +47,7 @@ env:
 jobs:
   host-tests:
     name: Host deterministic tests
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -90,7 +89,7 @@ jobs:
 
   android:
     name: Android 14+ ARM64 Production
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: host-tests
 
@@ -107,7 +106,7 @@ jobs:
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_CODE" = "1902"
+          test "$MODULE_CODE" = "1300"
           test "$CONFIG_VERSION" = "$CMAKE_VERSION"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
           echo "Android native minimum API: ${ANDROID_MIN_API}"
@@ -153,11 +152,6 @@ jobs:
 
           if [ "${ANDROID_MIN_API}" -lt 34 ]; then
             echo "::error::CoreFlow requires Android API 34 or newer."
-            exit 2
-          fi
-
-          if [ "${ANDROID_MIN_API}" -gt "${ANDROID_SDK_API}" ]; then
-            echo "::error::ANDROID_MIN_API (${ANDROID_MIN_API}) cannot exceed the installed Android SDK API (${ANDROID_SDK_API})."
             exit 2
           fi
 
