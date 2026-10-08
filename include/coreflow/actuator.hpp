@@ -6,17 +6,21 @@
 
 namespace coreflow {
 
-class MutationController;
+class MutationAuthority;
 
 class MutationPermit final {
 public:
     MutationPermit(const MutationPermit&) = default;
     MutationPermit& operator=(const MutationPermit&) = default;
+    enum class Scope : std::uint8_t { CpuFreq = 0, Resource };
+
     bool valid() const noexcept { return valid_; }
+    bool validFor(Scope scope) const noexcept { return valid_ && scope_ == scope; }
 private:
-    explicit MutationPermit(bool valid) noexcept : valid_(valid) {}
+    explicit MutationPermit(bool valid, Scope scope) noexcept : valid_(valid), scope_(scope) {}
     bool valid_{false};
-    friend class MutationController;
+    Scope scope_{Scope::CpuFreq};
+    friend class MutationAuthority;
 };
 
 enum class ActuatorDomain : std::uint8_t {

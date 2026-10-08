@@ -5,8 +5,10 @@
 #include <vector>
 
 #include "coreflow/actuator.hpp"
+#include "coreflow/config.hpp"
 #include "coreflow/context.hpp"
 #include "coreflow/resource_model.hpp"
+#include "coreflow/types.hpp"
 
 namespace coreflow {
 
@@ -31,6 +33,26 @@ struct PolicyPlan {
     bool mutation_eligible{false};
     std::string reason;
     std::vector<PolicyCandidate> candidates;
+
+    bool allows(ResourceDomain domain, const std::string& resource) const noexcept {
+        if (!mutation_eligible || action != PolicyAction::Candidate) return false;
+        for (const auto& candidate : candidates) {
+            if (candidate.domain == domain && candidate.resource == resource &&
+                candidate.action == PolicyAction::Candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+class MutationAuthority final {
+public:
+    MutationPermit authorize(const PolicyPlan& plan,
+                             const EngineConfig& config,
+                             RuntimeState state,
+                             double confidence,
+                             MutationPermit::Scope scope) const noexcept;
 };
 
 class PolicyEngine final {

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coreflow/config.hpp"
+#include "coreflow/control.hpp"
 #include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation_journal.hpp"
@@ -40,6 +41,17 @@ public:
     // recovered, or governors still mutated). Callers must not mutate then.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
+    MutationResult apply(
+        RuntimeState state,
+        const RuntimeSample& sample,
+        const DeviceProfile& profile,
+        const EngineConfig& config,
+        const PolicyPlan& policy,
+        const MutationPermit& permit
+    ) noexcept;
+
+    // Compatibility entry point for deterministic/unit callers. It still obtains
+    // its permit from MutationAuthority; no actuator bypass is introduced.
     MutationResult apply(
         RuntimeState state,
         const RuntimeSample& sample,
@@ -90,12 +102,14 @@ private:
         RuntimeState state,
         const RuntimeSample& sample
     ) const noexcept;
-    MutationResult applyPlan(const std::vector<MutationPlanEntry>& plan) noexcept;
+    MutationResult applyPlan(const std::vector<MutationPlanEntry>& plan,
+                              const MutationPermit& permit) noexcept;
     MutationResult restoreGovernors() noexcept;
     // Restore only if this controller actually changed a governor. A controller
     // that never mutated must not write to the kernel at all.
     MutationResult relaxToBaseline() noexcept;
     MutationJournal::Entries factorySnapshot() const;
+    MutationJournal::Entries journalEntriesWith(const std::string& path) const;
 
     std::unordered_map<std::string, Baseline> baseline_;
     std::vector<std::pair<std::string, std::string>> last_applied_governors_;

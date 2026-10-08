@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "coreflow/baseline_intelligence.hpp"
+#include "coreflow/context.hpp"
 #include "coreflow/types.hpp"
 
 namespace coreflow {
@@ -28,6 +30,7 @@ public:
 
     struct Context {
         RuntimeState state{RuntimeState::Idle};
+        WorkloadClass workload{WorkloadClass::Unknown};
         bool charging{false};
         Trend thermal_trend{Trend::Unknown};
         Trend memory_trend{Trend::Unknown};
@@ -47,6 +50,13 @@ public:
 
     bool record(const Record& record) noexcept;
 
+    // Persistence is deliberately bounded and advisory. The store is written
+    // atomically and is never consulted as a safety authority.
+    void setScope(std::string scope) noexcept { scope_ = std::move(scope); }
+    bool load(const std::string& path) noexcept;
+    bool flush(const std::string& path) noexcept;
+    bool dirty() const noexcept { return dirty_; }
+
     bool recordEvaluation(
         const CandidateIdentity& candidate,
         const Context& context,
@@ -65,7 +75,16 @@ private:
     static bool finite(double value) noexcept;
     static double clamp01(double value) noexcept;
 
+    static constexpr std::size_t kMaxRecords = 128;
+    static bool safeToken(const std::string& value) noexcept;
+    static int enumValue(RuntimeState value) noexcept;
+    static int enumValue(Trend value) noexcept;
+    static RuntimeState runtimeStateFromInt(int value) noexcept;
+    static Trend trendFromInt(int value) noexcept;
+
+    std::string scope_;
     std::vector<Record> records_;
+    bool dirty_{false};
 };
 
 } // namespace coreflow

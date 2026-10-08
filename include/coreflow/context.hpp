@@ -25,6 +25,8 @@ struct SystemContext {
     bool thermal_headroom{false};
     bool memory_headroom{false};
     bool power_headroom{false};
+    bool io_headroom{true};
+    bool battery_headroom{true};
     bool mutation_allowed_by_context{false};
     double confidence{0.0};
 };

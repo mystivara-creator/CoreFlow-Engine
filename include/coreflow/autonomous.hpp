@@ -8,6 +8,7 @@
 #include "coreflow/context.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/resource_model.hpp"
+#include "coreflow/resource_mutation.hpp"
 #include "coreflow/controller.hpp"
 #include "coreflow/discovery.hpp"
 #include "coreflow/experience.hpp"
@@ -55,12 +56,15 @@ private:
     HoldReason hold_reason_{HoldReason::None};
     bool last_context_eligible_{false};
     FileMutationJournal journal_;
+    FileMutationJournal resource_journal_;
     MutationController controller_;
+    ResourceMutationController resource_controller_;
     EnvironmentDiscovery discovery_;
     RuntimeObserver observer_;
     AdaptivePolicy policy_;
     ContextEngine context_engine_;
     PolicyEngine policy_engine_;
+    MutationAuthority mutation_authority_;
     ResourceStateModel resource_model_;
     EngineSnapshot snapshot_;
     std::uint64_t sample_count_{0};

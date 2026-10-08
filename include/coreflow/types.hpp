@@ -174,6 +174,18 @@ struct RuntimeSample {
     long battery_temperature_millidegrees{0};
     long battery_current_microamps{0};
     long battery_voltage_microvolts{0};
+    int battery_level_percent{-1};
+    std::string battery_status;
+
+    double io_read_kb_per_sec{0.0};
+    double io_write_kb_per_sec{0.0};
+    bool io_activity_available{false};
+
+    std::uint32_t process_count{0};
+    std::string top_process_name;
+    double top_process_cpu_ratio{0.0};
+    std::uint64_t top_process_memory_kb{0};
+    bool process_profile_available{false};
 
     Trend thermal_trend{Trend::Unknown};
     Trend memory_trend{Trend::Unknown};
