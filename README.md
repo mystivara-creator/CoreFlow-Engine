@@ -1,35 +1,35 @@
 # CoreFlow Autonomous Engine
 
-### v1.0.0-A — Autonomous Foundation
+### v1.3.0 — Source Release
 
-CoreFlow Autonomous Engine is the Autonomous runtime layer of CoreFlow Engine for Android.
+CoreFlow Autonomous Engine is the native adaptive system-intelligence daemon for Android (Magisk module).
 
-It is designed to observe runtime conditions, evaluate the current system state, make bounded adaptive decisions, apply supported CPU governor changes, verify the result, and restore a known baseline when required.
+It observes runtime conditions, evaluates system state, makes confidence-gated adaptive decisions, applies **bounded** CPUFreq governor changes, verifies every write, and restores a known factory baseline when required. Thermal prediction is powered by a pinned ONNX model.
 
-> **Release status:** Pre-release / non-production ready  
-> **Version:** `v1.0.0-A`
+> **Package type:** Source release  
+> **Version:** `v1.3.0` (CMake / runtime: `1.3.0`)  
+> **Binary:** Produced by CI (`.github/workflows/build.yml`) or `tools/build_android.sh`  
+> **Placeholders:** `module/system/bin/coreflowd` and `third_party/jni/arm64-v8a/libonnxruntime.so` are intentional 1-byte stubs. Real artifacts come from the Android NDK + ONNX Runtime build path.
 
 ---
 
 ## Overview
 
-The `v1.0.0-A` release establishes the first frozen baseline of the CoreFlow Autonomous architecture.
+The v1.3.0 release integrates:
 
-The Autonomous layer focuses on:
+- Runtime observation (memory, CPU utilisation, load, thermal, charging)
+- Runtime state evaluation with hysteresis
+- Confidence-based decision gating
+- CPUFreq policy discovery and capability filtering
+- Adaptive governor selection (only governors advertised by the policy)
+- Bounded, verified mutation with durable journal
+- Baseline restoration / rollback
+- Baseline Intelligence efficiency evaluation
+- Experience memory and rejection cooldown
+- ONNX thermal predictor
+- Safe single-instance locking and Magisk supervisor
 
-- Runtime observation
-- Runtime state evaluation
-- Confidence-based decisions
-- CPUFreq policy discovery
-- Adaptive CPU governor selection
-- Capability filtering
-- Hysteresis
-- Mutation verification
-- Baseline restoration
-- Runtime refresh
-- Safe shutdown handling
-
-The release intentionally freezes this Autonomous foundation before development continues into the Control Planner and SysFS execution layers.
+Mutation is **fail-closed by default**. Enable adaptive mode only after device-specific validation.
 
 ---
 
@@ -54,13 +54,16 @@ The release intentionally freezes this Autonomous foundation before development 
 ┌──────────────────────────────┐
 │     Adaptive Decision        │
 │ workload + thermal pressure  │
-│ + capabilities + hysteresis  │
+│ + confidence + capabilities  │
+│ + hysteresis + experience    │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
 │     Bounded Mutation         │
 │ supported CPUFreq governor   │
+│ journal committed before     │
+│ first sysfs write            │
 └──────────────┬───────────────┘
                │
                ▼
@@ -72,19 +75,31 @@ The release intentionally freezes this Autonomous foundation before development 
                ▼
 ┌──────────────────────────────┐
 │   Restore / Rollback         │
-│ baseline when required       │
+│ factory baseline when needed │
 └──────────────────────────────┘
 ```
 
 ---
 
+## Safety Invariants
+
+1. Factory baseline is captured only while governors are known to be unmutated.
+2. Durable journal is committed and fsynced **before** the first sysfs write.
+3. Every write is read back and verified. A failed restore blocks new mutations.
+4. Corrupt or untrusted journal keeps mutation disabled (fail-closed).
+5. Only governors advertised by the discovered CPUFreq policy may be written.
+6. Regressed candidates are suppressed for a bounded cooldown.
+7. Unknown `mutation_mode` values fall back to Disabled.
+8. Single-instance lock prevents concurrent daemons.
+9. Shutdown always attempts restore; incomplete restore preserves the journal for the next start.
+
+---
+
 ## Adaptive Governor Selection
 
-The production Adaptive path is not hardcoded to a single governor such as `schedutil`.
+The adaptive path is not hardcoded to a single governor.
 
-The engine first discovers the CPUFreq policies exposed by the device and evaluates only governors advertised by those policies.
-
-Conceptually:
+Flow:
 
 ```text
 CPUFreq Policy Discovery
@@ -93,20 +108,16 @@ Available Governors
         ↓
 Capability Filter
         ↓
-Adaptive Evaluation
+Adaptive Evaluation + Runtime-State Bias
         ↓
-Runtime-State Bias
-        ↓
-Hysteresis
+Hysteresis + Experience Memory
         ↓
 Selected Governor
         ↓
-Apply
-        ↓
-Read-back Verification
+Apply → Read-back Verification
 ```
 
-Known governor candidates include:
+Typical candidates (only if advertised by the policy):
 
 - `powersave`
 - `conservative`
@@ -114,17 +125,11 @@ Known governor candidates include:
 - `walt`
 - `performance`
 
-A candidate is only eligible when the target CPUFreq policy reports it as available.
-
-The Adaptive selector uses runtime conditions such as workload, thermal pressure, and current runtime state to choose a bounded candidate.
-
-This is a bounded heuristic adaptive system; it does not claim that a selected governor is universally optimal for every Android device or workload.
+This is a bounded heuristic system. It does not claim universal optimality for every device or workload.
 
 ---
 
 ## Runtime States
-
-The Autonomous state machine currently works with:
 
 ```text
 IDLE
@@ -135,263 +140,142 @@ PRESSURE
 THERMAL_GUARD
 ```
 
-State decisions are based on observed runtime signals and confidence.
-
-Example runtime transition:
-
-```text
-THERMAL_GUARD
-      ↓
-    NORMAL
-      ↓
-   WARMING
-      ↓
-THERMAL_GUARD
-```
-
-The state machine is designed to react to changing runtime conditions rather than applying one permanent profile.
-
 ---
 
 ## Configuration
 
-The validated runtime configuration is:
+Default production-safe configuration (`module/system/etc/coreflow/default.conf`):
 
 ```ini
+# Mutation remains disabled until a device-specific policy has been validated.
 monitor_interval=5
 min_confidence=0.70
-mutation_mode=adaptive
+mutation_mode=disabled
 allow_cpu_governor=yes
 runtime_refresh=true
 ```
 
-Runtime configuration:
+Runtime override path:
 
 ```text
 /data/adb/coreflow/config.ini
 ```
 
-The Autonomous layer uses configuration and discovered capabilities as constraints rather than blindly applying predefined hardware assumptions.
+| Key | Meaning | Safe default |
+|-----|---------|--------------|
+| `monitor_interval` | Seconds between ticks (1–60) | `5` |
+| `min_confidence` | Minimum confidence to allow mutation (0.50–1.0) | `0.70` |
+| `mutation_mode` | `disabled` / `observe` / `adaptive` | `disabled` |
+| `allow_cpu_governor` | Permit CPU governor writes | `yes` |
+| `runtime_refresh` | Honour SIGUSR1 rediscovery | `true` |
+
+To enable adaptive mutation after validation on a specific device, set:
+
+```ini
+mutation_mode=adaptive
+```
 
 ---
 
-## Verification
+## Building the Android Binary
 
-Mutations follow a basic verification flow:
+Requirements:
 
-```text
-Discover
-   ↓
-Capture Baseline
-   ↓
-Check Capability
-   ↓
-Apply
-   ↓
-Read Back
-   ↓
-Verify
-   ↓
-Keep / Restore
+- Android NDK `27.3.13750724`
+- Android API `35` / ABI `arm64-v8a`
+- CMake ≥ 3.23 + Ninja
+- An externally extracted ONNX Runtime Android `1.24.3` package
+
+```bash
+# Using the helper script
+export ANDROID_NDK_HOME=/path/to/android-ndk-27.3.13750724
+export COREFLOW_ONNX_ROOT=/path/to/onnxruntime-android-1.24.3
+./tools/build_android.sh
+
+# Or let GitHub Actions fetch the pinned ONNX Runtime and produce the
+# ARM64 ELF + libonnxruntime.so production module.
 ```
 
-The system should avoid treating a write operation as successful merely because the write call returned without an immediate error.
+Source-release integrity check:
+
+```bash
+./tools/verify_source_release.sh
+```
 
 ---
 
-## Validation
+## Magisk Module
 
-The `v1.0.0-A` baseline was validated through host testing and Android device runtime testing.
+After a successful CI/local build, place the real `coreflowd` into `module/system/bin/` and `libonnxruntime.so` into the module library path expected by `service.sh`. The supervisor:
 
-### Host
+- waits for `sys.boot_completed`
+- verifies binary, library and model size
+- sets `LD_LIBRARY_PATH` to the module-local ONNX runtime
+- runs a bounded-restart supervisor
+- recovers any pending mutation journal on start
 
-```text
-Deterministic tests: 3/3 passed
-```
+SELinux rules are supplied in `module/sepolicy.rule`.
 
-### Android ARM64
+---
 
-The release was built and packaged for the target Android ARM64 runtime.
-
-### Device runtime
-
-Observed during validation:
-
-- `coreflowd` running successfully
-- CPUFreq policy discovery working
-- Multiple CPUFreq policies detected
-- Adaptive governor transition observed
-- `powersave → conservative` transition observed
-- Repeated `ACTION VERIFIED` events
-- Runtime confidence reaching `1.00`
-
-Observed state transitions included:
+## Verification Flow
 
 ```text
-THERMAL_GUARD → NORMAL
-NORMAL → WARMING
-WARMING → THERMAL_GUARD
+Discover → Capture Baseline → Capability Check
+    → (Journal commit) → Apply → Read Back → Verify
+    → Keep / Restore
 ```
 
-These results validate the tested device/runtime path. They do **not** imply that every Android device or kernel exposes identical CPUFreq interfaces or will behave identically.
+A write is never treated as successful merely because the write syscall returned.
+
+---
+
+## Thermal Predictor
+
+- Model: `module/system/etc/coreflow/thermal_predictor.onnx`
+- Runtime: ONNX Runtime Android (version pinned in CI)
+- Model content hash is pinned in the CI workflow; any change requires deliberate review
+
+---
+
+## Testing
+
+Host deterministic tests (no NDK required):
+
+```bash
+cmake -S . -B build/host -DCORE_FLOW_BUILD_TESTS=ON
+cmake --build build/host
+ctest --test-dir build/host
+```
+
+CI also performs a strict Android ARM64 Release build with the full warning set treated as errors.
 
 ---
 
 ## Release Status
 
-### `v1.0.0-A`
+**v1.3.0** is a source release of the Autonomous + Baseline Intelligence + ONNX thermal stack.
 
-This release is a **frozen Autonomous baseline** and is intentionally labeled as a **pre-release / non-production-ready release**.
+- Binary artifacts are produced by CI, not shipped inside this ZIP.
+- Mutation defaults to **disabled** for safety.
+- Device-specific validation is required before enabling `mutation_mode=adaptive`.
 
-Frozen does not mean:
+This does **not** claim:
 
-- zero bugs
+- zero bugs on every vendor kernel
 - universal Android compatibility
-- guaranteed optimal performance
-- guaranteed optimal battery life
-- compatibility with every vendor kernel
-
-Frozen means the Autonomous foundation has reached a defined architectural boundary and can now serve as the baseline for subsequent development.
-
----
-
-## Future Architecture
-
-The next phase is planned as:
-
-```text
-CoreFlow Autonomous
-        ↓
-Decision Layer
-        ↓
-Tunable Policy
-        ↓
-Control Planner
-        ↓
-SysFS Executor
-        ↓
-Read-back / Verification / Rollback
-```
-
-The SysFS layer should act as an executor and verifier.
-
-It should not become a second decision-making layer.
-
----
-
-## v1.1 Baseline Intelligence
-
-The v1.1 feature line adds an efficiency-evaluation layer without replacing the factory/OEM configuration or the existing mutation restore baseline.
-
-```text
-Factory / OEM Runtime
-        ↓
-Efficiency Baseline
-        ↓
-Verified Mutation
-        ↓
-Observation Window
-        ↓
-Outcome Evaluation
-        ├── BENEFICIAL → keep
-        ├── NEUTRAL     → keep / continue observing
-        ├── REGRESSION  → restore baseline
-        └── INCONCLUSIVE → no efficiency claim
-```
-
-The first implementation uses only telemetry already exposed by `RuntimeSample`: thermal, load, CPU utilization and memory availability. It intentionally does not claim to measure FPS, application latency, battery power consumption, or I/O throughput because those signals are not part of the current runtime telemetry contract.
-
-`MutationController::captureBaseline()` remains the restore/safety baseline. `BaselineIntelligence` is a separate observational baseline and must not replace it.
-
-## Versioning
-
-CoreFlow follows this planned versioning direction:
-
-```text
-v1.0.x
-    Maintenance / bug fixes
-
-v1.1.x
-    Feature releases
-
-v2.x
-    Architectural changes
-```
-
-`v1.0.0-A` represents the first frozen Autonomous baseline. The current branch develops `v1.1.0-A` as a feature release focused on efficiency evaluation.
-
-Future development should branch from this release rather than modifying the frozen release history directly.
-
----
-
-## Repository Structure
-
-The broader CoreFlow Engine repository is organized around the Autonomous implementation, supporting headers, tests, module integration, and build workflow.
-
-The Autonomous layer is centered around:
-
-```text
-include/coreflow/
-src/
-tests/
-module/
-tools/
-.github/workflows/
-```
-
-The main Autonomous implementation is:
-
-```text
-src/autonomous.cpp
-```
-
----
-
-## Safety Principles
-
-CoreFlow operates close to Android/kernel-facing interfaces, so the Autonomous layer follows conservative principles:
-
-1. Discover capabilities before mutation.
-2. Capture a baseline before changing supported runtime controls.
-3. Reject unsupported candidates.
-4. Keep changes bounded.
-5. Verify changes through read-back.
-6. Restore the baseline when required.
-7. Avoid making assumptions about unavailable hardware interfaces.
-8. Fail closed when required runtime information is unavailable or invalid.
-
----
-
-## Pre-release Notice
-
-This project is provided for development, testing, and evaluation.
-
-Kernel behavior, CPUFreq implementations, vendor modifications, thermal systems, permissions, and available governors can vary significantly between Android devices.
-
-Use appropriate testing and recovery procedures when deploying privileged system software.
+- guaranteed battery or performance gains on every SoC
 
 ---
 
 ## License
 
-MIT License.
+MIT License — Copyright (c) 2026 Mystivara
+
+See [LICENSE](LICENSE).
 
 ---
 
-## CoreFlow Autonomous
+## Security
 
-**`v1.0.0-A` — Frozen Autonomous Foundation**
-
-```text
-Observe
-  ↓
-Evaluate
-  ↓
-Decide
-  ↓
-Adapt
-  ↓
-Verify
-  ↓
-Restore
-```
+See [SECURITY.md](SECURITY.md) for the supported security model and reporting process.

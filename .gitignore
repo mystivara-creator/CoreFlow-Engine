@@ -1,0 +1,11 @@
+# Generated build output
+build/
+artifacts/
+
+# Local Android/ONNX SDK extraction
+third_party/onnxruntime-android/
+third_party/jni/
+
+# Local tooling
+.cache/
+compile_commands.json

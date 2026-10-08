@@ -1,24 +1,18 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(CoreFlowAutonomous
-    VERSION 1.3.0
-    LANGUAGES CXX
-)
+project(CoreFlowAutonomous VERSION 1.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(COREFLOW_ONNX_ROOT ""
-    CACHE PATH
-    "Root of the extracted ONNX Runtime Android package"
-)
+
+set(COREFLOW_ONNX_ROOT "" CACHE PATH
+    "Root of the extracted ONNX Runtime Android package")
+option(CORE_FLOW_BUILD_TESTS "Build host deterministic tests" OFF)
 
 add_library(coreflow_compile_options INTERFACE)
 
-target_compile_features(coreflow_compile_options
-    INTERFACE
-        cxx_std_17
-)
+target_compile_features(coreflow_compile_options INTERFACE cxx_std_17)
 
 target_compile_options(coreflow_compile_options
     INTERFACE
@@ -32,19 +26,25 @@ target_compile_options(coreflow_compile_options
         -Wundef
 )
 
-set(COREFLOW_SOURCES
-    src/main.cpp
+# Platform-independent logic. Compiled for both the Android daemon and the
+# host test binary. Anything that needs Android/ONNX headers stays Android-only.
+set(COREFLOW_CORE_SOURCES
     src/config.cpp
     src/signal_state.cpp
+    src/experience.cpp
+    src/policy.cpp
+    src/baseline_intelligence.cpp
+    src/mutation.cpp
+    src/mutation_journal.cpp
+    src/cpufreq_actuator.cpp
+)
+
+set(COREFLOW_ANDROID_SOURCES
+    src/main.cpp
     src/autonomous.cpp
     src/thermal_predictor.cpp
-    src/baseline_intelligence.cpp
-    src/experience.cpp
     src/discovery.cpp
     src/observer.cpp
-    src/policy.cpp
-    src/mutation.cpp
-    src/cpufreq_actuator.cpp
 )
 
 if(ANDROID)
@@ -56,49 +56,34 @@ if(ANDROID)
 
     if(NOT COREFLOW_ONNX_ROOT)
         message(FATAL_ERROR
-            "COREFLOW_ONNX_ROOT is required for Android ONNX integration."
-        )
+            "COREFLOW_ONNX_ROOT is required for Android ONNX integration.")
     endif()
 
-    set(COREFLOW_ONNX_INCLUDE_DIR
-        "${COREFLOW_ONNX_ROOT}/headers"
-    )
-
-    set(COREFLOW_ONNX_LIBRARY
-        "${COREFLOW_ONNX_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
-    )
+    set(COREFLOW_ONNX_INCLUDE_DIR "${COREFLOW_ONNX_ROOT}/headers")
+    set(COREFLOW_ONNX_LIBRARY "${COREFLOW_ONNX_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")
 
     if(NOT EXISTS "${COREFLOW_ONNX_INCLUDE_DIR}/onnxruntime_cxx_api.h")
         message(FATAL_ERROR
-            "ONNX Runtime headers not found:\n"
-            "  ${COREFLOW_ONNX_INCLUDE_DIR}/onnxruntime_cxx_api.h"
-        )
+            "ONNX Runtime headers not found:\n  ${COREFLOW_ONNX_INCLUDE_DIR}/onnxruntime_cxx_api.h")
     endif()
 
     if(NOT EXISTS "${COREFLOW_ONNX_LIBRARY}")
         message(FATAL_ERROR
-            "ONNX Runtime library not found:\n"
-            "  ${COREFLOW_ONNX_LIBRARY}"
-        )
+            "ONNX Runtime library not found:\n  ${COREFLOW_ONNX_LIBRARY}")
     endif()
 
     add_library(coreflow_onnxruntime SHARED IMPORTED GLOBAL)
-
     set_target_properties(coreflow_onnxruntime PROPERTIES
-        IMPORTED_LOCATION
-            "${COREFLOW_ONNX_LIBRARY}"
-        INTERFACE_INCLUDE_DIRECTORIES
-            "${COREFLOW_ONNX_INCLUDE_DIR}"
+        IMPORTED_LOCATION "${COREFLOW_ONNX_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
     )
 
     add_executable(coreflowd
-        ${COREFLOW_SOURCES}
+        ${COREFLOW_CORE_SOURCES}
+        ${COREFLOW_ANDROID_SOURCES}
     )
 
-    target_include_directories(coreflowd
-        PRIVATE
-            "${PROJECT_SOURCE_DIR}/include"
-    )
+    target_include_directories(coreflowd PRIVATE "${PROJECT_SOURCE_DIR}/include")
 
     target_link_libraries(coreflowd
         PRIVATE
@@ -106,10 +91,7 @@ if(ANDROID)
             coreflow_onnxruntime
     )
 
-    target_compile_definitions(coreflowd
-        PRIVATE
-            CORE_FLOW_ANDROID=1
-    )
+    target_compile_definitions(coreflowd PRIVATE CORE_FLOW_ANDROID=1)
 
     target_compile_options(coreflowd
         PRIVATE
@@ -127,26 +109,29 @@ if(ANDROID)
             -Wl,--gc-sections
     )
 
-    find_library(
-        ANDROID_LOG_LIBRARY
-        log
-        REQUIRED
-    )
-
-    target_link_libraries(coreflowd
-        PRIVATE
-            ${ANDROID_LOG_LIBRARY}
-    )
+    find_library(ANDROID_LOG_LIBRARY log REQUIRED)
+    target_link_libraries(coreflowd PRIVATE ${ANDROID_LOG_LIBRARY})
 
     message(STATUS "CoreFlow target: coreflowd")
-    message(STATUS "CoreFlow version: ${PROJECT_VERSION}")
     message(STATUS "ONNX Runtime root: ${COREFLOW_ONNX_ROOT}")
-    message(STATUS "ONNX Runtime ABI: ${ANDROID_ABI}")
 
 else()
 
-    message(STATUS
-        "Host configure detected: Android daemon target skipped."
-    )
+    message(STATUS "Host configure: Android daemon target skipped.")
+
+    if(CORE_FLOW_BUILD_TESTS)
+        enable_testing()
+
+        add_library(coreflow_core STATIC ${COREFLOW_CORE_SOURCES})
+        target_include_directories(coreflow_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
+        target_link_libraries(coreflow_core PUBLIC coreflow_compile_options)
+        target_compile_options(coreflow_core PRIVATE -Werror)
+
+        add_executable(coreflow_tests tests/mutation_tests.cpp)
+        target_link_libraries(coreflow_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_tests PRIVATE -Werror)
+
+        add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
+    endif()
 
 endif()
