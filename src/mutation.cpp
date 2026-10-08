@@ -69,6 +69,8 @@ bool MutationController::captureBaseline(const DeviceProfile& profile) noexcept 
     actuator_ready_ = false;
 
     baseline_.clear();
+    dirty_governors_.clear();
+    last_applied_governors_.clear();
     rejected_.clear();
     for (const CpuPolicy& policy : profile.cpu_policies) {
         if (!policy.path.empty() && policy.readable &&
@@ -258,6 +260,11 @@ bool MutationController::buildPlan(
 
                 ExperienceMemory::Context context;
                 context.state = state;
+                context.workload = sample.cpu_utilization_available && sample.cpu_utilization >= 0.80
+                    ? WorkloadClass::CpuBound
+                    : (sample.io_activity_available &&
+                       (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) >= 4096.0
+                           ? WorkloadClass::IoBound : WorkloadClass::Interactive);
                 context.charging = sample.charging;
                 context.thermal_trend = sample.thermal_trend;
                 context.memory_trend = sample.memory_trend;
@@ -296,15 +303,30 @@ bool MutationController::buildPlan(
 
 MutationJournal::Entries MutationController::factorySnapshot() const {
     MutationJournal::Entries entries;
-    entries.reserve(baseline_.size());
-    for (const auto& item : baseline_) {
-        if (item.second.valid) entries.emplace_back(item.first, item.second.value);
+    entries.reserve(dirty_governors_.size());
+    for (const auto& path : dirty_governors_) {
+        const auto it = baseline_.find(path);
+        if (it != baseline_.end() && it->second.valid) {
+            entries.emplace_back(path, it->second.value);
+        }
+    }
+    return entries;
+}
+
+MutationJournal::Entries MutationController::journalEntriesWith(const std::string& path) const {
+    MutationJournal::Entries entries = factorySnapshot();
+    if (dirty_governors_.find(path) == dirty_governors_.end()) {
+        const auto it = baseline_.find(path);
+        if (it != baseline_.end() && it->second.valid) {
+            entries.emplace_back(path, it->second.value);
+        }
     }
     return entries;
 }
 
 MutationResult MutationController::applyPlan(
-    const std::vector<MutationPlanEntry>& plan
+    const std::vector<MutationPlanEntry>& plan,
+    const MutationPermit& permit
 ) noexcept {
     if (plan.empty() || !actuator_ready_) return MutationResult::Skipped;
 
@@ -319,19 +341,25 @@ MutationResult MutationController::applyPlan(
     // Resource bound: one verified CPUFreq write per decision cycle.
     const MutationPlanEntry& entry = plan.front();
 
-    // Durability before mutation. If this fails, nothing is written.
-    const bool journal_was_committed = journal_committed_;
-    if (!journal_committed_ && journal_ != nullptr) {
-        if (!journal_->commit(factorySnapshot())) return MutationResult::Failed;
-        journal_committed_ = true;
+    if (!permit.validFor(MutationPermit::Scope::CpuFreq)) {
+        return MutationResult::Skipped;
     }
+
+    // Durability before every new owned mutation. The journal contains only
+    // policies CoreFlow has actually touched (plus the policy about to change),
+    // so crash recovery cannot overwrite an external change on an untouched path.
+    const bool journal_was_committed = journal_committed_;
+    const MutationJournal::Entries journal_entries = journalEntriesWith(entry.path);
+    if (journal_entries.empty() || journal_ == nullptr || !journal_->commit(journal_entries)) {
+        return MutationResult::Failed;
+    }
+    journal_committed_ = true;
 
     ActuatorMutation mutation;
     mutation.id = cpufreq_actuator_.id();
     mutation.target = entry.path;
     mutation.requested = entry.target;
 
-    const MutationPermit permit(true);
     const ActuatorResult result = cpufreq_actuator_.apply(mutation, permit);
 
     // A write may have landed even when verification failed. Track the
@@ -395,10 +423,11 @@ MutationResult MutationController::restoreGovernors() noexcept {
     bool restoredAny = false;
     bool failed = false;
 
-    for (const auto& entry : baseline_) {
-        if (!entry.second.valid) continue;
+    for (const auto& path : dirty_governors_) {
+        const auto entry = baseline_.find(path);
+        if (entry == baseline_.end() || !entry->second.valid) continue;
 
-        const ActuatorResult result = cpufreq_actuator_.restore(entry.first);
+        const ActuatorResult result = cpufreq_actuator_.restore(path);
         if (result.status == ActuatorStatus::NoChange) continue;
         if (!result.succeeded()) {
             failed = true;
@@ -442,7 +471,9 @@ MutationResult MutationController::apply(
     RuntimeState state,
     const RuntimeSample& sample,
     const DeviceProfile& profile,
-    const EngineConfig& config
+    const EngineConfig& config,
+    const PolicyPlan& policy,
+    const MutationPermit& permit
 ) noexcept {
     ++decision_cycle_;
 
@@ -468,15 +499,12 @@ MutationResult MutationController::apply(
         return relaxToBaseline();
     }
 
-    // Hard safety gate: only explicitly adaptive mode may authorize mutation.
-    // Disabled/observe mode must be incapable of reaching applyPlan().
-    if (config.mutationMode() != MutationMode::Adaptive) {
-        return relaxToBaseline();
-    }
-
-    // Confidence and permission gate mutation before any sysfs write.
-    if (!config.mutationArmed() ||
-        !config.allowCpuGovernor() || sample.confidence < config.minConfidence()) {
+    // Hard safety gate: the centralized authority must have issued a CPU permit.
+    // The local config checks remain defense-in-depth for direct unit-test callers.
+    if (!permit.validFor(MutationPermit::Scope::CpuFreq) ||
+        config.mutationMode() != MutationMode::Adaptive ||
+        !config.mutationArmed() || !config.allowCpuGovernor() ||
+        !policy.mutation_eligible || sample.confidence < config.minConfidence()) {
         return relaxToBaseline();
     }
 
@@ -488,7 +516,7 @@ MutationResult MutationController::apply(
     std::vector<MutationPlanEntry> plan;
     if (!buildPlan(state, sample, profile, plan)) return MutationResult::Skipped;
 
-    return applyPlan(plan);
+    return applyPlan(plan, permit);
 }
 
 MutationResult MutationController::relaxToBaseline() noexcept {
@@ -502,6 +530,21 @@ bool MutationController::restoreAll() noexcept {
     // Never write to the kernel to "correct" a governor this controller did not change.
     if (!mutated_ && !restore_failed_) return true;
     return restoreGovernors() != MutationResult::Failed;
+}
+
+MutationResult MutationController::apply(
+    RuntimeState state,
+    const RuntimeSample& sample,
+    const DeviceProfile& profile,
+    const EngineConfig& config
+) noexcept {
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    const MutationAuthority authority;
+    const MutationPermit permit = authority.authorize(
+        plan, config, state, sample.confidence, MutationPermit::Scope::CpuFreq);
+    return apply(state, sample, profile, config, plan, permit);
 }
 
 } // namespace coreflow
