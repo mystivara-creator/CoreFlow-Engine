@@ -2,9 +2,9 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-VERSION="1.3.0"
-MODULE_VERSION="v1.3.0"
-VERSION_CODE="1300"
+VERSION="1.9.2"
+MODULE_VERSION="v1.9.2"
+VERSION_CODE="1902"
 
 required_files="
 CMakeLists.txt
@@ -13,6 +13,16 @@ module/service.sh
 module/system/etc/coreflow/default.conf
 module/system/etc/coreflow/thermal_predictor.onnx
 src/main.cpp
+include/coreflow/environment.hpp
+src/environment.cpp
+include/coreflow/resource_model.hpp
+src/resource_model.cpp
+include/coreflow/context.hpp
+src/context.cpp
+include/coreflow/control.hpp
+src/control.cpp
+include/coreflow/outcome.hpp
+src/outcome.cpp
 README.md
 CHANGELOG.md
 BUILD_STATUS.md
@@ -31,13 +41,20 @@ done
 # Keep the source package small and deterministic: no local ONNX SDK cache.
 [ ! -d "$ROOT/third_party/onnxruntime-android" ] || { echo "error: extracted ONNX Runtime cache must not be shipped" >&2; exit 1; }
 
-grep -q '^version=v1.3.0$' "$ROOT/module/module.prop"
-grep -q '^versionCode=1300$' "$ROOT/module/module.prop"
-grep -q 'project(CoreFlowAutonomous VERSION 1.3.0 LANGUAGES CXX)' "$ROOT/CMakeLists.txt"
-grep -q 'kCoreFlowVersion = "1.3.0"' "$ROOT/include/coreflow/config.hpp"
+grep -q '^version=v1.9.2$' "$ROOT/module/module.prop"
+grep -q '^versionCode=1902$' "$ROOT/module/module.prop"
+grep -q 'project(CoreFlowAutonomous VERSION 1.9.2 LANGUAGES CXX)' "$ROOT/CMakeLists.txt"
+grep -q 'kCoreFlowVersion = "1.9.2"' "$ROOT/include/coreflow/config.hpp"
+grep -q 'ResourceStateModel' "$ROOT/include/coreflow/resource_model.hpp"
+grep -q 'ContextEngine' "$ROOT/include/coreflow/context.hpp"
+grep -q 'PolicyEngine' "$ROOT/include/coreflow/control.hpp"
+grep -q 'ActuatorManager' "$ROOT/include/coreflow/control.hpp"
+grep -q 'DecisionOutcome' "$ROOT/include/coreflow/outcome.hpp"
 grep -q '^mutation_mode=disabled$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'v1.3.0' "$ROOT/README.md"
-grep -q 'v1.3.0' "$ROOT/BUILD_STATUS.md"
+grep -q '^allow_cpu_governor=no$' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q 'v1.9.2' "$ROOT/README.md"
+grep -q 'v1.9.2' "$ROOT/BUILD_STATUS.md"
 
 MODEL="$ROOT/module/system/etc/coreflow/thermal_predictor.onnx"
 MODEL_SHA="$(sha256sum "$MODEL" | cut -d' ' -f1)"
