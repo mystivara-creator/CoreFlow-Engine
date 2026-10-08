@@ -6,6 +6,7 @@
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
 #include "coreflow/policy.hpp"
+#include "coreflow/safety_hold.hpp"
 #include "coreflow/types.hpp"
 
 #include <cstdio>
@@ -100,6 +101,8 @@ RuntimeSample sample(double util, double thermalC) {
 EngineConfig adaptiveConfig() {
     EngineConfig cfg;
     cfg.setMutationMode(MutationMode::Adaptive);
+    cfg.setMutationArmed(true);
+    cfg.setAllowCpuGovernor(true);
     return cfg;
 }
 
@@ -325,6 +328,53 @@ void test_file_journal_roundtrip_and_truncation_detection() {
     CHECK(journal.load(loaded) == MutationJournal::LoadState::Absent);
 }
 
+
+void test_disabled_mode_is_a_hard_no_mutation_gate() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    EngineConfig cfg;
+    cfg.setMutationMode(MutationMode::Disabled);
+    cfg.setAllowCpuGovernor(true);
+
+    const MutationResult r = mc.apply(
+        RuntimeState::Normal, sample(0.5, 30.0), profile, cfg);
+    CHECK(r != MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(journal.commits == 0);
+    CHECK(!mc.mutated());
+}
+
+void test_mutation_requires_durable_journal() {
+    Sandbox box;
+    MutationController mc;
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    const MutationResult r = mc.apply(
+        RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
+    CHECK(r == MutationResult::Failed);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
+void test_empty_governor_advertisement_fails_closed() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    DeviceProfile profile = box.profile();
+    profile.cpu_policies.front().available_governors.clear();
+
+    CHECK(!mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig())
+          != MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
 void test_low_confidence_restores_instead_of_mutating() {
     Sandbox box;
     FakeJournal journal;
@@ -336,6 +386,23 @@ void test_low_confidence_restores_instead_of_mutating() {
     RuntimeSample low = sample(0.5, 30.0);
     low.confidence = 0.10;
     CHECK(mc.apply(RuntimeState::Normal, low, profile, adaptiveConfig()) != MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(journal.commits == 0);
+}
+
+void test_mutation_requires_explicit_arm() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    EngineConfig cfg;
+    cfg.setMutationMode(MutationMode::Adaptive);
+    cfg.setAllowCpuGovernor(true);
+    cfg.setMutationArmed(false);
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, cfg) != MutationResult::Verified);
     CHECK(readLine(box.governor_file) == "powersave");
     CHECK(journal.commits == 0);
 }
@@ -372,7 +439,180 @@ void test_experimental_trial_mode_is_not_enabled_by_config() {
     writeLine(path, "mutation_mode=adaptive");
     CHECK(cfg.load(path));
     CHECK(cfg.mutationMode() == MutationMode::Adaptive);
+    CHECK(!cfg.mutationArmed());
     std::remove(path.c_str());
+}
+
+
+// --- Tier-2 safety ----------------------------------------------------------
+
+void test_observe_mode_never_writes_to_kernel_when_not_mutated() {
+    // Regression for the observe-mode fight: a governor changed by the platform
+    // must not be "corrected" by a controller that never mutated anything.
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    writeLine(box.governor_file, "performance");  // platform change
+    EngineConfig observe;                          // default: Disabled, not armed
+    const MutationResult r = mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, observe);
+    CHECK(r == MutationResult::Skipped);
+    CHECK(readLine(box.governor_file) == "performance");
+    CHECK(journal.commits == 0);
+
+    CHECK(mc.restoreAll());
+    CHECK(readLine(box.governor_file) == "performance");
+}
+
+void test_unarmed_adaptive_mode_never_writes() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    EngineConfig cfg;
+    cfg.setMutationMode(MutationMode::Adaptive);  // adaptive but NOT armed
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, cfg) == MutationResult::Skipped);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(journal.commits == 0);
+}
+
+void test_disabling_mode_restores_only_own_mutation() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "schedutil");
+
+    EngineConfig held;  // operator / guard disables mutation
+    const MutationResult r = mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, held);
+    CHECK(r == MutationResult::RolledBack);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(!mc.mutated());
+}
+
+void test_max_hold_forces_restore_then_cooldown() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    // Stay mutated (schedutil is already the best choice) until the hold limit.
+    for (std::uint64_t i = 1; i < MutationController::kMaxMutationHoldCycles; ++i) {
+        (void)mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
+    }
+    CHECK(readLine(box.governor_file) == "schedutil");
+    CHECK(mc.mutated());
+
+    // The next cycle reaches the hold limit and must restore the factory value.
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::RolledBack);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(!mc.mutated());
+
+    // Cooldown: no new mutation until it elapses.
+    for (std::uint64_t i = 0; i < MutationController::kHoldCooldownCycles - 1; ++i) {
+        (void)mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
+        CHECK(readLine(box.governor_file) == "powersave");
+    }
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "schedutil");
+}
+
+void test_safety_hold_markers() {
+    char tmpl[] = "/tmp/coreflow_hold_XXXXXX";
+    const std::string dir = mkdtemp(tmpl);
+    const SafetyHoldPaths paths{dir + "/DISABLE", dir + "/SAFE_MODE"};
+
+    CHECK(evaluateSafetyHold(paths) == HoldReason::None);
+
+    writeLine(paths.safe_mode, "x");
+    CHECK(evaluateSafetyHold(paths) == HoldReason::SafeMode);
+
+    writeLine(paths.kill_switch, "x");
+    CHECK(evaluateSafetyHold(paths) == HoldReason::KillSwitch);  // kill switch wins
+
+    std::remove(paths.kill_switch.c_str());
+    std::remove(paths.safe_mode.c_str());
+    std::remove(dir.c_str());
+}
+
+void test_environment_capability_matrix_is_fail_closed() {
+    EnvironmentCapabilityMatrix matrix;
+    ResourceCapability uclamp;
+    uclamp.domain = ResourceDomain::UClamp;
+    uclamp.name = "cpu.uclamp.min";
+    uclamp.exists = true;
+    uclamp.readable = true;
+    uclamp.writable = true;
+    uclamp.mutation_ready = false;
+    matrix.resources.push_back(uclamp);
+
+    CHECK(matrix.count(ResourceDomain::UClamp) == 1);
+    CHECK(matrix.has(ResourceDomain::UClamp, "cpu.uclamp.min"));
+    CHECK(matrix.mutationReadyCount() == 0);
+}
+
+void test_resource_domain_names_are_stable() {
+    CHECK(std::string(resourceDomainName(ResourceDomain::CpuFreq)) == "CPUFREQ");
+    CHECK(std::string(resourceDomainName(ResourceDomain::UClamp)) == "UCLAMP");
+    CHECK(std::string(resourceDomainName(ResourceDomain::CpuSet)) == "CPUSET");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Scheduler)) == "SCHEDULER");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Memory)) == "MEMORY");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Io)) == "IO");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Gpu)) == "GPU");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Thermal)) == "THERMAL");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Charging)) == "CHARGING");
+    CHECK(std::string(resourceDomainName(ResourceDomain::Power)) == "POWER");
+    CHECK(std::string(resourceDomainName(ResourceDomain::CGroup)) == "CGROUP");
+    CHECK(std::string(resourceDomainName(ResourceDomain::AndroidRuntime)) == "ANDROID_RUNTIME");
+}
+
+
+void test_multi_policy_mutations_all_restored() {
+    // Two policies changed in separate cycles must both return to factory, and
+    // the journal must clear only after both are restored.
+    Sandbox box;
+    const std::string policy1 = (box.root / "policy1").string();
+    fs::create_directories(policy1);
+    writeLine(policy1 + "/scaling_governor", "powersave");
+
+    FakeJournal journal;
+    MutationController mc;
+    mc.setJournal(&journal);
+    DeviceProfile profile = box.profile();
+    CpuPolicy second;
+    second.id = 1;
+    second.path = policy1;
+    second.governor = "powersave";
+    second.available_governors = {"powersave", "conservative", "schedutil", "performance"};
+    second.readable = true;
+    second.governor_writable = true;
+    profile.cpu_policies.push_back(second);
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "schedutil");
+    CHECK(readLine(policy1 + "/scaling_governor") == "schedutil");
+
+    CHECK(mc.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(readLine(policy1 + "/scaling_governor") == "powersave");
+    CHECK(!mc.mutated());
+    CHECK(journal.clears >= 1);
+    CHECK(!journal.has_pending);
 }
 
 } // namespace
@@ -392,9 +632,21 @@ int main() {
         {"corrupt_journal_blocks_mutation", test_corrupt_journal_blocks_mutation},
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
         {"journal_roundtrip_and_truncation", test_file_journal_roundtrip_and_truncation_detection},
+        {"disabled_mode_hard_gate", test_disabled_mode_is_a_hard_no_mutation_gate},
+        {"mutation_requires_durable_journal", test_mutation_requires_durable_journal},
+        {"empty_governor_advertisement_fails_closed", test_empty_governor_advertisement_fails_closed},
         {"low_confidence_restores", test_low_confidence_restores_instead_of_mutating},
+        {"mutation_requires_explicit_arm", test_mutation_requires_explicit_arm},
         {"thermal_thresholds_consistent", test_thermal_thresholds_are_consistent},
         {"trial_mode_removed_from_config", test_experimental_trial_mode_is_not_enabled_by_config},
+        {"observe_mode_no_kernel_write", test_observe_mode_never_writes_to_kernel_when_not_mutated},
+        {"unarmed_adaptive_no_write", test_unarmed_adaptive_mode_never_writes},
+        {"disabling_restores_only_own", test_disabling_mode_restores_only_own_mutation},
+        {"max_hold_restore_and_cooldown", test_max_hold_forces_restore_then_cooldown},
+        {"safety_hold_markers", test_safety_hold_markers},
+        {"multi_policy_all_restored", test_multi_policy_mutations_all_restored},
+        {"environment_capability_matrix_fail_closed", test_environment_capability_matrix_is_fail_closed},
+        {"resource_domain_names_stable", test_resource_domain_names_are_stable},
     };
 
     for (const Case& c : cases) {
