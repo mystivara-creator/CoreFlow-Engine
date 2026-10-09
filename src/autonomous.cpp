@@ -3,6 +3,7 @@
 #include "coreflow/thermal_guard.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/thermal_predictor.hpp"
+#include "coreflow/decision_trace.hpp"
 
 #include <android/log.h>
 #include <algorithm>
@@ -167,6 +168,8 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
     if (delta < -deadband) return Trend::Falling;
     return Trend::Stable;
 }
+
+
 
 
 } // namespace
@@ -783,6 +786,14 @@ void AutonomousEngine::tick() {
 }
 
         logMutation(mutation, next);
+
+        // Observation-only journal: records the completed evaluation/results;
+        // it does not grant actuator authority or alter any safety gate.
+        appendDecisionTrace(
+            sample_count_, previous, next, decision, sample.confidence,
+            context, ecosystem_plan, hold, config_.mutationMode(),
+            config_.mutationArmed(), config_.allowCpuGovernor(),
+            mutation, resource_mutation);
 
         // STEP 11: Periodic detailed logging (reduced frequency for storage efficiency)
         const bool periodic = (sample_count_ % kPeriodicLogSamples) == 0;
