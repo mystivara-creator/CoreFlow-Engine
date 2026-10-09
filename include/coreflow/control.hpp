@@ -30,6 +30,9 @@ struct PolicyCandidate {
 
 struct PolicyPlan {
     PolicyAction action{PolicyAction::Observe};
+    InterventionLevel intervention{
+        InterventionLevel::ObserveOnly
+    };
     bool mutation_eligible{false};
     std::string reason;
     std::vector<PolicyCandidate> candidates;
