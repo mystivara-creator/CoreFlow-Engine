@@ -89,5 +89,18 @@ run api33_rejected fail "" set_api33
 run tampered_model_rejected fail "" tampered_model
 run adaptive_default_rejected fail "" adaptive_default
 run x86_rejected fail "" none x86_64
+# Effective-mode cases: the report and banner must reflect config.ini, and an
+# adaptive config must trigger the warning even though the installer did not
+# write it.
+adaptive_cfg() { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=true\nallow_cpu_governor=yes\n' > "$1/state/config.ini"; }
+unarmed_cfg()  { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=false\n' > "$1/state/config.ini"; }
+observe_cfg()  { mkdir -p "$1/state"; printf 'mutation_mode=observe\nmutation_armed=false\n' > "$1/state/config.ini"; }
+run existing_adaptive_armed_reports_adaptive ok adaptive adaptive_cfg
+echo "$LAST_OUT" | grep -q "ADAPTIVE mutation" && echo "   warning shown" || { echo "FAIL warning missing"; FAIL=$((FAIL+1)); }
+printf 'mutation_mode=adaptive\nmutation_armed=true\nallow_cpu_governor=yes\n' > "$T/expected.ini"
+cmp -s "$T/existing_adaptive_armed_reports_adaptive/state/config.ini" "$T/expected.ini" && echo "   config left untouched" || { echo "FAIL config modified"; FAIL=$((FAIL+1)); }
+run existing_adaptive_unarmed_reports_observe ok observe unarmed_cfg
+run existing_observe_reports_observe ok observe observe_cfg
+echo "$LAST_OUT" | grep -q "ADAPTIVE mutation" && { echo "FAIL spurious warning"; FAIL=$((FAIL+1)); } || echo "   no spurious warning"
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
