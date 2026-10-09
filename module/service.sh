@@ -36,6 +36,23 @@ echo 0 > "$BOOT_COUNTER" 2>/dev/null
 log "boot confirmed; boot-loop counter reset"
 sleep 5
 
+# Apply explicit WebUI Adaptive opt-in only at service startup (Option A).
+# Keep DISABLE in place until persisted configuration is validated.
+ADAPTIVE_PENDING="$STATE_DIR/webui_adaptive_pending"
+if [ -f "$ADAPTIVE_PENDING" ]; then
+    if [ -f "$SAFE_MODE_MARKER" ]; then
+        log "WebUI Adaptive request remains pending: SAFE_MODE active; DISABLE preserved"
+    elif [ "$(awk -F= '$1=="mutation_mode" {print $2; exit}' "$STATE_DIR/config.ini" 2>/dev/null)" = "adaptive" ] \
+      && [ "$(awk -F= '$1=="mutation_armed" {print $2; exit}' "$STATE_DIR/config.ini" 2>/dev/null)" = "true" ]; then
+        rm -f "$STATE_DIR/DISABLE"
+        rm -f "$ADAPTIVE_PENDING"
+        log "validated explicit WebUI Adaptive opt-in at service startup; DISABLE cleared"
+    else
+        log "WebUI Adaptive request rejected at startup: invalid config; DISABLE preserved"
+        rm -f "$ADAPTIVE_PENDING"
+    fi
+fi
+
 [ -x "$BINARY" ] || { log "coreflowd missing or not executable"; exit 1; }
 [ -s "$LIB_DIR/libonnxruntime.so" ] || { log "libonnxruntime.so missing"; exit 1; }
 [ -s "$MODEL" ] || { log "thermal_predictor.onnx missing"; exit 1; }
