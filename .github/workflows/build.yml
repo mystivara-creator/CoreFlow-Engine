@@ -43,7 +43,7 @@ env:
   ONNX_RUNTIME_VERSION: "1.24.3"
   # Pinned SHA-256 of the thermal model artifact (training provenance: synthetic-only, see BUILD_STATUS.md). Any change to the model
   # must be reviewed and the pin updated deliberately.
-  THERMAL_MODEL_SHA256: "38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6"
+  THERMAL_MODEL_SHA256: "a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
 
 jobs:
   host-tests:
