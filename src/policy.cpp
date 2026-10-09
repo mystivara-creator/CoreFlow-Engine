@@ -12,7 +12,7 @@ RuntimeState AdaptivePolicy::evaluate(
     // Single source of truth for thermal thresholds (see policy.hpp).
     constexpr long kThermalGuardEnter = static_cast<long>(kThermalGuardEnterC * 1000.0);
     constexpr long kThermalGuardExit = static_cast<long>(kThermalGuardExitC * 1000.0);
-    constexpr long kThermalWarm = 40000;
+    constexpr long kThermalWarm = 48000;  // 48 °C — elevated awareness, not a hard block
 
     constexpr double kMemoryPressureEnter = 0.10;
     constexpr double kMemoryPressureExit = 0.15;
@@ -94,9 +94,9 @@ NotificationEvent AdaptivePolicy::notification(
     }
 
     if (sample.thermal_available && sample.thermal_trend == Trend::Rising) {
-        if (sample.thermal_millidegrees >= 42000)
+        if (sample.thermal_millidegrees >= 52000)
             return NotificationEvent::ThermalWarning;
-        if (sample.thermal_millidegrees >= 40000)
+        if (sample.thermal_millidegrees >= 48000)
             return NotificationEvent::ThermalWarming;
     }
 

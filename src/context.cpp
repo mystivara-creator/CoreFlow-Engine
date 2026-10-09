@@ -8,12 +8,14 @@ SystemContext ContextEngine::evaluate(const RuntimeSample& sample,
                                        RuntimeState state) const noexcept {
     SystemContext context;
     context.state = state;
-    context.thermal_headroom = !sample.thermal_available || sample.thermal_millidegrees < 41000;
+    // Headroom is true when the device still has meaningful thermal margin
+    // before the guard band (55 °C). 50 °C leaves ~5 °C of buffer.
+    context.thermal_headroom = !sample.thermal_available || sample.thermal_millidegrees < 50000;
     context.memory_headroom = sample.mem_total_kb == 0 || sample.mem_available_ratio >= 0.15;
     context.battery_headroom = sample.battery_level_percent < 0 ||
                                sample.charging || sample.battery_level_percent >= 20;
     context.power_headroom = context.battery_headroom &&
-                             (!sample.charging || sample.battery_temperature_millidegrees < 42000);
+                             (!sample.charging || sample.battery_temperature_millidegrees < 45000);
     context.io_headroom = !sample.io_activity_available ||
                           (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0;
     context.confidence = std::clamp(sample.confidence, 0.0, 1.0);

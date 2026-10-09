@@ -1,4 +1,5 @@
 #include "coreflow/thermal_predictor.hpp"
+#include "coreflow/thermal_features.hpp"
 
 #include <android/log.h>
 #include <array>
@@ -19,7 +20,9 @@ namespace {
 
 constexpr const char* kLogTag = "CoreFlowThermalML";
 
-constexpr std::size_t kFeatureCount = 14U;
+// v1.2 18-feature contract. Feature order is frozen and must match
+// tools/train_coreflow_thermal_predictor_v1_2_18f.py.
+constexpr std::size_t kFeatureCount = kThermalFeatureCount;
 constexpr int kDefaultHorizonTicks = 3;
 constexpr std::size_t kMinimumHistorySamples = 3U;
 // A one-step-ahead model prediction should never be far from the live sensor.
@@ -29,10 +32,6 @@ constexpr double kMaxModelDeviationC = 12.0;
 // Throttle per-inference INFO logs (one inference per tick otherwise).
 constexpr std::uint64_t kInferenceLogEvery = 60U;
 
-constexpr double kTrendUnknown = 0.0;
-constexpr double kTrendFalling = -1.0;
-constexpr double kTrendStable = 0.5;
-constexpr double kTrendRising = 1.0;
 
 #if defined(__clang__) || defined(__GNUC__)
 #define COREFLOW_PRINTF_FORMAT(format_index, argument_index) \
@@ -73,66 +72,6 @@ void logWarn(const char* fmt, ...) {
 
 double thermalCelsius(const RuntimeSample& sample) noexcept {
     return static_cast<double>(sample.thermal_millidegrees) / 1000.0;
-}
-
-double batteryTemperatureCelsius(const RuntimeSample& sample) noexcept {
-    return static_cast<double>(sample.battery_temperature_millidegrees) / 1000.0;
-}
-
-double batteryCurrentAmps(const RuntimeSample& sample) noexcept {
-    return static_cast<double>(sample.battery_current_microamps) / 1000000.0;
-}
-
-double batteryVoltageVolts(const RuntimeSample& sample) noexcept {
-    return static_cast<double>(sample.battery_voltage_microvolts) / 1000000.0;
-}
-
-double thermalDeltaCelsius(
-    const std::deque<RuntimeSample>& history,
-    const RuntimeSample& current) noexcept {
-    if (history.empty()) {
-        return 0.0;
-    }
-
-    const RuntimeSample& previous = history.back();
-    if (!previous.thermal_available || !current.thermal_available) {
-        return 0.0;
-    }
-
-    return static_cast<double>(
-               current.thermal_millidegrees -
-               previous.thermal_millidegrees) /
-           1000.0;
-}
-
-double trendEncoding(Trend trend) noexcept {
-    switch (trend) {
-        case Trend::Falling:
-            return kTrendFalling;
-        case Trend::Stable:
-            return kTrendStable;
-        case Trend::Rising:
-            return kTrendRising;
-        case Trend::Unknown:
-        default:
-            return kTrendUnknown;
-    }
-}
-
-double uptimeDeltaSeconds(
-    const std::deque<RuntimeSample>& history,
-    const RuntimeSample& current) noexcept {
-    if (history.empty()) {
-        return 0.0;
-    }
-
-    const RuntimeSample& previous = history.back();
-    if (current.uptime_seconds < previous.uptime_seconds) {
-        return 0.0;
-    }
-
-    return static_cast<double>(
-        current.uptime_seconds - previous.uptime_seconds);
 }
 
 double heuristicPrediction(
@@ -248,7 +187,7 @@ bool ThermalPredictor::initialize(const char* model_path) {
             input_shape.size() != 2U ||
             input_shape[1] != static_cast<int64_t>(kFeatureCount)) {
             throw std::runtime_error(
-                "unexpected ONNX 14-feature input contract");
+                "unexpected ONNX 18-feature input contract");
         }
 
         const auto output_info =
@@ -309,83 +248,16 @@ double ThermalPredictor::predict(
         return fallback;
     }
 
-    const double cpu_utilization =
-        current_sample.cpu_utilization_available
-            ? current_sample.cpu_utilization
-            : 0.0;
-
-    const double load1 = current_sample.load1;
-    const double mem_ratio =
-        current_sample.mem_available_ratio;
-    const double thermal_current =
-        thermalCelsius(current_sample);
-    const double thermal_delta =
-        thermalDeltaCelsius(history, current_sample);
-
-    const double charging =
-        current_sample.charging ? 1.0 : 0.0;
-
-    const double battery_temperature =
-        current_sample.charging_telemetry_available
-            ? batteryTemperatureCelsius(current_sample)
-            : 0.0;
-
-    const double battery_current =
-        current_sample.charging_telemetry_available
-            ? batteryCurrentAmps(current_sample)
-            : 0.0;
-
-    const double battery_voltage =
-        current_sample.charging_telemetry_available
-            ? batteryVoltageVolts(current_sample)
-            : 0.0;
-
-    const double uptime_delta =
-        uptimeDeltaSeconds(history, current_sample);
-
-    /*
-     * Feature order is frozen and MUST match
-     * train_coreflow_autonomous_thermal_predictor_v1_1_14f.py:
-     *
-     *  0  cpu_utilization
-     *  1  load1
-     *  2  mem_available_ratio
-     *  3  thermal_current_c
-     *  4  thermal_delta_c
-     *  5  charging
-     *  6  battery_temperature_c
-     *  7  battery_current_a
-     *  8  battery_voltage_v
-     *  9  uptime_delta_s
-     * 10  thermal_trend
-     * 11  memory_trend
-     * 12  load_trend
-     * 13  runtime_confidence
-     */
-    const std::array<float, kFeatureCount> features = {
-        static_cast<float>(cpu_utilization),
-        static_cast<float>(load1),
-        static_cast<float>(mem_ratio),
-        static_cast<float>(thermal_current),
-        static_cast<float>(thermal_delta),
-        static_cast<float>(charging),
-        static_cast<float>(battery_temperature),
-        static_cast<float>(battery_current),
-        static_cast<float>(battery_voltage),
-        static_cast<float>(uptime_delta),
-        static_cast<float>(trendEncoding(current_sample.thermal_trend)),
-        static_cast<float>(trendEncoding(current_sample.memory_trend)),
-        static_cast<float>(trendEncoding(current_sample.load_trend)),
-        static_cast<float>(current_sample.confidence),
-    };
-
-    for (const float value : features) {
-        if (!std::isfinite(static_cast<double>(value))) {
-            logWarn(
-                "ONNX_INFERENCE_SKIPPED reason=nonfinite_input");
-            return fallback;
-        }
+    // Missing telemetry never reaches the model as 0. Incomplete or
+    // out-of-range inputs use the bounded heuristic instead.
+    const ThermalFeatureVector built =
+        buildThermalFeatures(history, current_sample);
+    if (!built.complete) {
+        return fallback;
     }
+    const std::array<float, kThermalFeatureCount>& features = built.values;
+
+    const double thermal_current = thermalCelsius(current_sample);
 
     const std::array<int64_t, 2> input_shape = {
         1,
@@ -463,7 +335,7 @@ double ThermalPredictor::predict(
                 "sampled_every=%llu",
                 thermal_current,
                 prediction,
-                thermal_delta,
+                static_cast<double>(features[4]),  // thermal_delta_c
                 current_sample.confidence,
                 static_cast<unsigned long long>(kInferenceLogEvery));
         }

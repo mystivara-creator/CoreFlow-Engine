@@ -217,8 +217,17 @@ void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
         zone.path = std::string(base) + "/" + name;
         readText(zone.path + "/type", zone.type);
 
+        // Inventory every zone. Sentinel values (-273000, 0, large negatives)
+        // stay listed for completeness but are not marked readable; runtime
+        // observation applies the same plausibility filter on every sample.
         std::ifstream temp(zone.path + "/temp");
-        if (temp && (temp >> zone.temperature_millidegrees)) zone.readable = true;
+        long milli = 0;
+        if (temp && (temp >> milli)) {
+            zone.temperature_millidegrees = milli;
+            if (milli >= 10000 && milli <= 120000) {
+                zone.readable = true;
+            }
+        }
         profile.thermal_zones.push_back(std::move(zone));
     }
     closedir(dir);

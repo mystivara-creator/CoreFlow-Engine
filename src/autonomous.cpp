@@ -1,4 +1,6 @@
 #include "coreflow/autonomous.hpp"
+#include "coreflow/thermal_limits.hpp"
+#include "coreflow/thermal_guard.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/thermal_predictor.hpp"
 
@@ -55,9 +57,6 @@ constexpr std::uint64_t kExperienceFlushSamples = 60;
 // engine and the policy can never disagree about when the guard exits.
 constexpr double kThermalGuardThresholdC = kThermalGuardEnterC;
 
-// Predictive buffer: enter protection 0.5°C earlier if rising trend detected
-// Prevents overshoot during rapid heating
-constexpr double kRisingThermalBufferC = 0.5;
 
 // Adaptive thermal buffer scaling (efficiency feature)
 
@@ -99,8 +98,8 @@ constexpr double kMemoryTrendWeight = 0.05;    // Predictive
 // SAMPLE VALIDATION BOUNDS
 // ============================================================================
 
-constexpr long kThermalMinMillidegrees = -50000;   // -50°C
-constexpr long kThermalMaxMillidegrees = 150000;   // 150°C
+constexpr long kThermalMinMillidegrees = kThermalPlausibleMinMillidegrees;
+constexpr long kThermalMaxMillidegrees = kThermalPlausibleMaxMillidegrees;
 constexpr double kMemoryRatioMin = 0.0;
 constexpr double kMemoryRatioMax = 1.0;
 constexpr double kLoadAverageMax = 100.0;
@@ -513,28 +512,35 @@ void AutonomousEngine::tick() {
 
         // Autonomous safety hysteresis and predictive thermal guard are
         // applied after policy evaluation.
-        if (sample.thermal_available) {
-            const double thermal_c =
+        if (!sample.thermal_available) {
+            // Confirmation streaks count consecutive ticks only.
+            thermal_guard_state_ = ThermalGuardState{};
+        } else {
+            // Safety uses the hottest valid policy-eligible sensor, not only
+            // the representative sensor selected for trend/model features.
+            ThermalGuardInputs guard_in;
+            guard_in.selected_c =
                 static_cast<double>(sample.thermal_millidegrees) / 1000.0;
-            const double predicted_thermal_c =
+            guard_in.hottest_c =
+                static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0;
+            guard_in.predicted_c =
                 thermal_predictor_.predict(history_, sample, 3);
+            guard_in.rising = sample.thermal_trend == Trend::Rising;
 
             if (previous == RuntimeState::ThermalGuard &&
                 next != RuntimeState::ThermalGuard &&
-                thermal_c > kThermalGuardExitC) {
+                thermalGuardShouldHold(guard_in, kThermalGuardExitC)) {
                 next = RuntimeState::ThermalGuard;
-            } else if (
-                next != RuntimeState::ThermalGuard &&
-                (predicted_thermal_c >= kThermalGuardThresholdC ||
-                 (sample.thermal_trend == Trend::Rising &&
-                  thermal_c >=
-                      (kThermalGuardThresholdC -
-                       kRisingThermalBufferC)))) {
+            } else if (next != RuntimeState::ThermalGuard &&
+                       thermalGuardShouldEnter(guard_in,
+                                               kThermalGuardThresholdC,
+                                               thermal_guard_state_)) {
                 next = RuntimeState::ThermalGuard;
                 logWarn(
-                    "PREDICTIVE_THERMAL_TRIGGER: current=%.2fC, "
+                    "THERMAL_GUARD_TRIGGER: selected=%.2fC hottest=%.2fC "
                     "predicted_3ticks=%.2fC",
-                    thermal_c, predicted_thermal_c);
+                    guard_in.selected_c, guard_in.hottest_c,
+                    guard_in.predicted_c);
             }
         }
 
@@ -799,6 +805,31 @@ void AutonomousEngine::tick() {
                 sample.io_write_kb_per_sec,
                 sample.battery_level_percent
             );
+            logInfo("       thermal-sensors total=%u valid=%u selected=%.2fC hottest=%.2fC",
+                    sample.thermal_sensor_count,
+                    sample.thermal_valid_sensor_count,
+                    static_cast<double>(sample.thermal_millidegrees) / 1000.0,
+                    static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0);
+            if (periodic) {
+                for (const ThermalReading& reading : sample.thermal_readings) {
+                    const char* status = "UNREADABLE";
+                    switch (reading.status) {
+                        case ThermalReadingStatus::Valid: status = "VALID"; break;
+                        case ThermalReadingStatus::Unreadable: status = "UNREADABLE"; break;
+                        case ThermalReadingStatus::InvalidRange: status = "INVALID_RANGE"; break;
+                        case ThermalReadingStatus::ExcludedFromPolicy: status = "EXCLUDED_POLICY"; break;
+                    }
+                    if (reading.readable) {
+                        logInfo("       thermal-zone=%s type=%s temp=%.3fC status=%s policy=%s",
+                                reading.zone.c_str(), reading.type.c_str(),
+                                static_cast<double>(reading.temperature_millidegrees) / 1000.0,
+                                status, reading.policy_eligible ? "yes" : "no");
+                    } else {
+                        logInfo("       thermal-zone=%s type=%s status=%s",
+                                reading.zone.c_str(), reading.type.c_str(), status);
+                    }
+                }
+            }
             if (sample.process_profile_available) {
                 logInfo("       top-process=%s cpu=%.1f%% rss=%llukB count=%u",
                         sample.top_process_name.c_str(),
