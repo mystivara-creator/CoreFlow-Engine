@@ -54,6 +54,7 @@ set(COREFLOW_ANDROID_SOURCES
     src/main.cpp
     src/autonomous.cpp
     src/thermal_predictor.cpp
+    src/decision_trace.cpp
     src/discovery.cpp
     src/observer.cpp
 )
