@@ -41,3 +41,12 @@ Installation / build
 This folder is copied into the root of the flashable module by the GitHub Actions build workflow.
 For a local package, ensure the final module ZIP contains webroot/index.html, webroot/style.css
 and webroot/app.js at the module root, beside module.prop and customize.sh.
+
+
+MODE SWITCHING (OPTION A)
+- WebUI mode changes are saved as pending configuration; they do not change the running daemon immediately.
+- Restart the module service or reboot to load the selected mode.
+- Observe writes the DISABLE safety marker immediately.
+- Adaptive keeps DISABLE until startup validates mutation_mode=adaptive, mutation_armed=true, and absence of SAFE_MODE.
+- SAFE_MODE is never cleared or bypassed by WebUI.
+- While restart is pending, the UI distinguishes requested configuration from effective runtime state.
