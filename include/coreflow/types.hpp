@@ -85,6 +85,26 @@ struct ThermalZone {
     bool readable{false};
 };
 
+// Runtime snapshot for every discovered thermal zone. Readings are retained
+// even when invalid or excluded from policy so diagnostics never silently
+// discard a sensor.
+enum class ThermalReadingStatus : std::uint8_t {
+    Valid,
+    Unreadable,
+    InvalidRange,
+    ExcludedFromPolicy
+};
+
+struct ThermalReading {
+    std::string zone;
+    std::string type;
+    long temperature_millidegrees{0};
+    bool readable{false};
+    bool valid{false};
+    bool policy_eligible{false};
+    ThermalReadingStatus status{ThermalReadingStatus::Unreadable};
+};
+
 struct IoDevice {
     std::string path;
     std::string name;
@@ -175,6 +195,9 @@ struct RuntimeSample {
     long hottest_thermal_millidegrees{0};
     bool thermal_available{false};
     ThermalSource thermal_source{ThermalSource::Unknown};
+    std::vector<ThermalReading> thermal_readings;
+    std::uint32_t thermal_sensor_count{0};
+    std::uint32_t thermal_valid_sensor_count{0};
 
     bool charging{false};
     bool charging_telemetry_available{false};

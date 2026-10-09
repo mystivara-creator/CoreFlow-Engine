@@ -7,8 +7,13 @@ namespace coreflow {
 // Thermal thresholds shared by the policy and the engine's predictive guard.
 // Enter ThermalGuard at >= kThermalGuardEnterC; leave only when the reading
 // drops to <= kThermalGuardExitC (hysteresis prevents state bouncing).
-inline constexpr double kThermalGuardEnterC = 43.0;
-inline constexpr double kThermalGuardExitC = 41.5;
+//
+// Values are calibrated for modern mobile SoCs (Qualcomm / MediaTek). Zone
+// readings of 42–50 °C under light load are normal; blocking at 43 °C caused
+// permanent THERMAL_GUARD on real devices. Guard is reserved for sustained
+// high temperature where reducing intervention is actually protective.
+inline constexpr double kThermalGuardEnterC = 55.0;
+inline constexpr double kThermalGuardExitC = 52.0;
 
 class AdaptivePolicy {
 public:
