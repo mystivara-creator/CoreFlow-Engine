@@ -23,7 +23,7 @@ MIN_API=34
 # Pinned digest of the single, universal thermal model. Must equal the
 # THERMAL_MODEL_SHA256 pin in .github/workflows/build.yml (checked by
 # tools/verify_source_release.sh).
-MODEL_SHA256="a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
+MODEL_SHA256="38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6"
 MODEL_INPUT_MARKER="float_input"
 
 # Overridable for host-side testing; the defaults are the device paths.
@@ -101,6 +101,19 @@ soc_family() {
 
 report() {
     echo "$*" >> "$REPORT" 2>/dev/null
+}
+
+# Last value of a key in config.ini, trimmed. Empty when absent. The daemon's
+# parser also keeps the last occurrence of each key, so this matches it.
+config_value() {
+    [ -f "$CONFIG" ] || { echo ""; return 0; }
+    grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null \
+        | tail -n 1 | cut -d= -f2- | tr -d ' \t\r'
+}
+
+# Same truth values the daemon accepts (config.cpp parseBool).
+config_true() {
+    case "$1" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
 # ---- 0. Banner and target identity ---------------------------------------
@@ -203,10 +216,11 @@ decide_mode() {
     fi
 }
 decide_mode
+REQUESTED_MODE="$MODE"
 
-ui_print " [>] Operating mode"
-ui_print "     > mode   : $MODE"
-ui_print "     > reason : $MODE_REASON"
+ui_print " [>] Mode request"
+ui_print "     > requested : $MODE"
+ui_print "     > reason    : $MODE_REASON"
 ui_print " "
 
 # ---- 5. Configuration and state ------------------------------------------
@@ -234,6 +248,41 @@ else
     ui_print " [>] Configuration: config.ini written (mode=$MODE)"
 fi
 
+# ---- 5b. Effective mode: what the daemon will actually run ---------------
+# The installer reports the mode the daemon will read, not the mode it wanted.
+# Adaptive is effective only when mutation_mode=adaptive AND mutation_armed is
+# true, mirroring the daemon's gates. An existing adaptive config is never
+# rewritten here, but it is reported loudly.
+EFF_MODE="$(config_value mutation_mode)"
+EFF_ARMED="$(config_value mutation_armed)"
+EFF_CPU="$(config_value allow_cpu_governor)"
+EFF_REASON="mutation_mode=${EFF_MODE:-unset} mutation_armed=${EFF_ARMED:-unset} allow_cpu_governor=${EFF_CPU:-unset}"
+
+MODE="observe"
+CPU_GOV="no"
+if [ "$EFF_MODE" = "adaptive" ] && config_true "$EFF_ARMED"; then
+    MODE="adaptive"
+    config_true "$EFF_CPU" && CPU_GOV="yes"
+elif [ "$EFF_MODE" = "adaptive" ]; then
+    EFF_REASON="$EFF_REASON (adaptive without arming: no mutation can occur)"
+fi
+
+ui_print " [>] Effective mode (read from config.ini)"
+ui_print "     > effective : $MODE"
+ui_print "     > source    : $EFF_REASON"
+if [ "$MODE" = "adaptive" ]; then
+    ui_print " "
+    ui_print "     ! WARNING: this device will run ADAPTIVE mutation after reboot."
+    ui_print "     ! The installer did not create this setting. If it was not"
+    ui_print "     ! intended, set mutation_mode=observe and mutation_armed=false"
+    ui_print "     ! in /data/adb/coreflow/config.ini before rebooting."
+fi
+if [ "$MODE" != "$REQUESTED_MODE" ] && [ -f "$CONFIG" ]; then
+    ui_print "     ! Note: the installer requested '$REQUESTED_MODE' but an existing"
+    ui_print "     ! config.ini is in effect. The existing config wins."
+fi
+ui_print " "
+
 # The enable flag is one-shot: consume it so it cannot re-trigger later.
 [ -f "$ADAPTIVE_FLAG" ] && rm -f "$ADAPTIVE_FLAG" 2>/dev/null
 
@@ -251,7 +300,9 @@ report "android=$ANDROID_VER api=$API_LEVEL"
 report "kernel=$KERNEL_VER"
 report "model_digest=$MODEL_DIGEST"
 report "probe thermal_read=$THERMAL_READ cpu_read=$CPU_POLICY_READ cpu_write=$CPU_POLICY_WRITE block=$BLOCK_TUNABLE battery=$BATTERY_READ swappiness=$VM_SWAPPINESS"
-report "mode=$MODE reason=$MODE_REASON"
+report "mode=$MODE source=\"$EFF_REASON\""
+report "requested=$REQUESTED_MODE reason=$MODE_REASON"
+report "config_cpu_governor=$CPU_GOV"
 chmod 0600 "$REPORT" 2>/dev/null
 ui_print " [>] Report written: $REPORT"
 ui_print " "
