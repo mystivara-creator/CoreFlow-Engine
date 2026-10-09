@@ -143,4 +143,15 @@ const char* notificationEventName(NotificationEvent event) {
     return "UNKNOWN";
 }
 
+const char* mutationResultName(MutationResult result) {
+    switch (result) {
+        case MutationResult::Skipped:   return "SKIPPED";
+        case MutationResult::Applied:   return "APPLIED";
+        case MutationResult::Verified:  return "VERIFIED";
+        case MutationResult::Failed:    return "FAILED";
+        case MutationResult::RolledBack: return "ROLLED_BACK";
+    }
+    return "UNKNOWN";
+}
+
 } // namespace coreflow
