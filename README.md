@@ -1,8 +1,12 @@
 # CoreFlow Autonomous
 
+## v2.0.1 — Release Hardening
+
+v2.0.1 is the release-hardened revision of v2.0.0. It changes the default to **observe-only**, makes the thermal model inputs fail-safe, unifies thermal plausibility bounds, adds hottest-zone confirmation to ThermalGuard, and adds regression tests. See `CHANGELOG.md`.
+
 ## v2.0.0 — Ecosystem Autonomous Control
 
-Production autonomous adaptive engine with capability-driven discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/VM/I/O mutation and durable recovery.
+Autonomous adaptive engine with capability-driven discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/VM/I/O mutation and durable recovery.
 
 ### Autonomous resource coverage
 - Dynamic block-device discovery (`/sys/block/*`) including scheduler, read-ahead and request-queue controls.
@@ -15,15 +19,15 @@ Production autonomous adaptive engine with capability-driven discovery, workload
 - Resource baseline, durable recovery journal, read-back verification and rollback.
 - Writable resources are policy-eligible only after runtime discovery; the final mutation authority remains `MutationPermit`.
 
-### v2.0.0 — Production Adaptive Engine
+### v2.0.1 — Release Hardened Adaptive Engine
 
 CoreFlow Autonomous Engine is a native C++17 adaptive system-intelligence daemon for Android.
 
-The v2.0.0 source package consolidates environment/capability discovery, unified resource state, context classification, policy planning, centralized mutation authority, CPUFreq and generic-resource actuators, causal outcome evaluation and durable recovery.
+The source package consolidates environment/capability discovery, unified resource state, context classification, policy planning, centralized mutation authority, CPUFreq and generic-resource actuators, causal outcome evaluation and durable recovery.
 
 > **Package type:** Source release  
-> **Version:** `v2.0.0`  
-> **versionCode:** `2000`  
+> **Version:** `v2.0.1`  
+> **versionCode:** `2001`  
 > **ABI:** `arm64-v8a`  
 > **Android minimum API:** `34`  
 > **Build SDK:** `36`  
@@ -32,7 +36,7 @@ The v2.0.0 source package consolidates environment/capability discovery, unified
 
 ## Release position
 
-v2.0.0 is an **audited production source package**. The public artifact is produced deterministically by GitHub Actions for ARM64 Android; the source archive intentionally contains no generated binary.
+v2.0.1 is a **release-candidate source package**. Host tests and source/safety contracts run in CI. The Android ARM64 artifact is produced by GitHub Actions; the source archive intentionally contains no generated binary. Device-level validation has not been performed (see *Scope and limitations*).
 
 The package contains the source, tests, module scaffolding, thermal model, CI workflow and validation tooling required to produce the Android ARM64 artifact.
 
@@ -172,15 +176,15 @@ v2.0.0 makes these components part of the stable autonomous loop. Verified mutat
 
 ## Safety model
 
-The public default configuration enables safe autonomous operation:
+The release default is **observe-only**:
 
 ```text
-mutation_mode=adaptive
-allow_cpu_governor=yes
-mutation_armed=true
+mutation_mode=observe
+allow_cpu_governor=no
+mutation_armed=false
 ```
 
-Autonomous mutation is enabled by default, but activation is not an unconditional kernel-write permission: only policy-allow-listed, preflight-verified resources can receive a scoped mutation permit, and safety holds, journaling, bounded writes, verification, rollback, and ownership checks remain mandatory.
+No kernel control is written until an operator explicitly opts in by setting `mutation_mode=adaptive`, `mutation_armed=true` and `allow_cpu_governor=yes`. Even after opt-in, only policy-allow-listed, preflight-verified resources can receive a scoped mutation permit, and safety holds, journaling, bounded writes, verification, rollback, and ownership checks remain mandatory.
 
 Autonomous mutation requires the established safety path, including:
 
@@ -199,9 +203,18 @@ Autonomous mutation requires the established safety path, including:
 
 A journal entry by itself does not imply that a live mutation exists; mutation state is derived from actuator evidence.
 
+## v2.0.1 release-hardening changes
+
+- Default configuration changed to observe-only (`mutation_mode=observe`, `allow_cpu_governor=no`, `mutation_armed=false`). Autonomous mutation is an explicit opt-in.
+- A malformed `mutation_mode` now fails safe regardless of key order in the config file.
+- Thermal plausibility bounds (10–120 °C) are defined once in `thermal_limits.hpp` and shared by the observer and engine validation.
+- The thermal model feature vector is built by a pure, host-tested module (`thermal_features.cpp`). Missing telemetry is never encoded as `0`; an incomplete vector skips the model and uses the bounded heuristic.
+- ThermalGuard: a trigger that comes only from the hottest policy-eligible zone must persist for two consecutive samples. Representative and predicted triggers still act immediately; the rising-near-threshold trigger uses the representative sensor only.
+- The 18-feature order is cross-checked between the Python training script and the C++ header by `tools/verify_source_release.sh`.
+
 ## v2.0.0 production changes
 
-The audited final release includes:
+The v2.0.0 release included:
 
 - Multi-policy rollback bookkeeping fix so one rollback cannot clear another policy's dirty state.
 - Journal clearing only when no policy remains changed.
@@ -222,15 +235,79 @@ The audited final release includes:
 ```text
 monitor_interval=5
 min_confidence=0.70
+mutation_mode=observe
+allow_cpu_governor=no
+runtime_refresh=true
+mutation_armed=false
+```
+
+See [Enabling adaptive mode](#enabling-adaptive-mode-community-testing) for the full procedure, rollback and safety controls.
+
+
+## Enabling adaptive mode (community testing)
+
+CoreFlow ships in **observe-only** mode. In this mode the daemon samples the device, builds plans and writes logs, but it does not write any kernel control. Start here and move to adaptive mode only after the observe-only logs look healthy on your device.
+
+### 1. Observe first
+
+1. Install the module with Magisk or KernelSU and reboot.
+2. Check that the daemon started:
+
+   ```sh
+   su -c 'tail -n 50 /data/adb/coreflow/logs/coreflowd.log'
+   su -c 'logcat -d -s CoreFlowAutonomous CoreFlowThermalML | tail -n 50'
+   ```
+
+   The startup line `CORE v2.0.1 | mode=DISABLED ...` confirms observe-only operation. Look for `THERMAL_ML status=...`, `CONTEXT`, and any `SAFETY_HOLD` or `THERMAL_GUARD_TRIGGER` lines.
+3. Use the device normally for a day or two. Mutation stays off, so this period only shows whether sampling and thermal reads are stable on your hardware.
+
+### 2. Opt in
+
+Edit `/data/adb/coreflow/config.ini` (root shell, for example `su`) and set:
+
+```text
 mutation_mode=adaptive
 allow_cpu_governor=yes
-runtime_refresh=true
 mutation_armed=true
 ```
 
-The production default is autonomous adaptive operation with the same internal safety authority and recovery gates; observation-only mode remains available by setting mutation_mode=disabled.
+`mutation_mode=adaptive` and `mutation_armed=true` are both required before any mutation can occur. `mutation_mode` selects the adaptive engine and `mutation_armed` is the explicit arming switch. `allow_cpu_governor` controls only CPU governor changes; set it to `no` to keep CPU governors untouched during the first test. An unknown `mutation_mode` value disables mutation.
+
+The configuration is read when the daemon starts, so **reboot after editing it**. Editing the file while the device is running has no effect.
+
+### 3. Verify
+
+After the reboot, the startup line should read `mode=ADAPTIVE`. Mutations are logged with their result. Each change is written to the mutation journal first, read back, and rolled back when the device leaves the protected state.
+
+### Stop or roll back
+
+- **Immediate stop (kill switch):** `su -c 'touch /data/adb/coreflow/DISABLE'`. The daemon logs `SAFETY_HOLD`, switches to observe-only, and restores the values it changed through the normal relax path. This takes effect while the device is running. Restores happen gradually, not instantly. To resume, remove the file: `su -c 'rm /data/adb/coreflow/DISABLE'`.
+- **Return to observe-only:** set `mutation_mode=observe`, `mutation_armed=false` and `allow_cpu_governor=no`, then reboot.
+- **Uninstall:** removing the module stops the daemon with SIGTERM so it can restore the factory baseline. The journal and logs are kept on purpose; they are recovered on the next start.
+
+### Automatic safe mode
+
+CoreFlow protects against boot loops and crash loops:
+
+- Three consecutive boots that never reach `boot_completed` create `/data/adb/coreflow/SAFE_MODE`. The daemon then stays observe-only.
+- Five consecutive failed boots make the module disable itself, using Magisk's `disable` marker. Re-enable it in the Magisk or KernelSU manager after investigating.
+- Repeated daemon crashes also create `SAFE_MODE`.
+
+**`SAFE_MODE` is not cleared automatically.** After you have read the logs and resolved the cause, remove it: `su -c 'rm /data/adb/coreflow/SAFE_MODE'`. Until you do, the daemon stays observe-only even after a successful boot.
+
+### What to report
+
+When you open an issue, include:
+
+- the CoreFlow version (`v2.0.1`), device model, Android version and kernel (`uname -r`),
+- the relevant lines of `/data/adb/coreflow/logs/coreflowd.log` and `logcat`,
+- your `config.ini` with serial numbers and other identifiers removed (see `SECURITY.md`).
+
+All logs and state stay on the device. CoreFlow does not send any data off the device.
 
 ## Thermal predictor
+
+The thermal model is a **synthetic-data baseline**. Its training script generates trajectories when no real traces are supplied, so its holdout metrics describe that generator and not a specific device. It is not device-validated. When the model cannot be used (incomplete telemetry, too little history, unknown trend, load failure, or prediction outside the safe deviation), the daemon uses the bounded heuristic. ONNX retraining on per-device traces is a planned follow-up.
 
 The source package includes:
 
@@ -241,10 +318,16 @@ module/system/etc/coreflow/thermal_predictor.onnx
 Pinned SHA-256:
 
 ```text
-422c64313947688d1cda942f3a6f6612a103b3449991361d66a8bb1839fcab97
+38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6
 ```
 
-The CI workflow verifies the model before it is deployed into the production module.
+The CI workflow verifies the model digest before it is packaged into the module.
+
+### Per-device accuracy
+
+The bundled model uses the same 18 inputs on every device, so it always runs as a generic predictor. It does not learn your device on its own. Predictions are accurate only as far as the bundled synthetic baseline matches your hardware. When the inputs are incomplete, or the prediction is far from the live sensor, the daemon uses the bounded heuristic instead.
+
+The training script can build a per-device model from real traces (`--data`, a CSV with the 18 feature columns and `target_thermal_c`). The daemon does not record these traces yet. Collecting them on device, with explicit opt-in and stored locally, is the planned next step. Until a trace-based model is released with its own digest, the bundled model remains the one in use.
 
 ## Source package contents
 
@@ -348,11 +431,11 @@ A production Android artifact must be generated by the Android build workflow be
 
 ## Scope and limitations
 
-v2.0.0 is a source-package release establishing the ecosystem intelligence/control foundation while retaining the existing mutation safety authority.
+v2.0.1 is a release-candidate source package. Host deterministic tests, the source-release contract and the safety-foundation contract pass. The Android ARM64 build and on-device behavior have not been validated in the source-package environment.
 
 The package does not claim validation across every Android device, vendor kernel, hardware implementation or kernel-control layout.
 
-Device-specific policy validation remains required before enabling adaptive mutation.
+Device-specific policy validation, a real-device thermal trace set, and ONNX retraining remain required before enabling adaptive mutation on a given device.
 
 ## License
 

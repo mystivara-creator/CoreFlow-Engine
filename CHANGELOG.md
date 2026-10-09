@@ -1,4 +1,47 @@
-# CoreFlow v2.0.0
+# Changelog
+
+## v2.0.1 — Release hardening — 2026-10-09
+
+Release-candidate revision of v2.0.0 with changes from the engineering review. No model retraining; the thermal model digest is unchanged.
+
+### Behavior changes
+
+- **Default is observe-only.** Engine defaults and `default.conf` now set `mutation_mode=observe`, `allow_cpu_governor=no`, `mutation_armed=false`. Adaptive mutation is an explicit operator opt-in. New installations receive this default. Existing `/data/adb/coreflow/config.ini` files are not overwritten and keep their previous values; operators upgrading from v2.0.0 should review that file.
+- **ThermalGuard confirmation.** A guard trigger that comes only from the hottest policy-eligible zone must persist for two consecutive samples. The representative-sensor and predicted triggers act immediately as before. The rising-near-threshold trigger now uses the representative sensor only (previously the larger of representative and hottest), so a single hot zone cannot enter the guard early.
+
+### Fixes
+
+- A malformed `mutation_mode` now disables mutation regardless of the order of the other keys. Previously a later `mutation_armed=true` line could re-arm the engine (mutation still required `mutation_mode=adaptive`, so kernel writes were not reachable, but the documented fail-safe was not met).
+- Thermal model inputs: missing telemetry (battery, I/O, CPU, battery level) and unknown thermal or load trends are no longer encoded as `0`. The model is skipped and the bounded heuristic is used. The model input contract (18 features, frozen order, `float_input`, `[N,18]` float32) is unchanged.
+- Thermal plausibility bounds (10–120 °C) are defined once in `thermal_limits.hpp`. The observer and the engine's sample validation previously used different windows.
+- Training script: the ONNX file is written only after the in-memory checker and parity check pass, using an atomic replace. The module docstring states that the default model is trained on synthetic data.
+
+### Engineering
+
+- New pure modules, host-testable and free of Android/ONNX headers: `thermal_features` (18-feature builder), `thermal_guard` (enter/hold decisions), `thermal_limits` (plausibility).
+- New regression suite `tests/release_hardening_tests.cpp` (71 checks): default and opt-in config, fail-safe parsing, plausibility bounds, index-by-index feature mapping, completeness rules, and guard confirmation/hysteresis.
+- `mutation_tests` default assertion updated to the observe-only release contract.
+- Source and safety contract scripts now check the observe-only defaults, the release version, the new modules, and the Python/C++ 18-feature order.
+- CI model comment corrected (the model is synthetic-data-trained and not device-validated).
+
+### Validation
+
+See `ENGINEERING_QC_REPORT.md` for the commands run and their results.
+
+### Not in this release
+
+- ONNX retraining on real per-device traces (requires device telemetry).
+- Android NDK/ARM64 build verification and on-device validation in the source-package environment.
+
+## v2.0.0 source QC revision — 2026-10-09
+
+- Added per-sample `ThermalReading` records for every discovered thermal zone, preserving zone/type, raw millidegree value, read status, validity, and policy eligibility.
+- Thermal reads now distinguish unreadable sensors, implausible values, and valid readings excluded from policy selection; diagnostics no longer silently discard those zones.
+- Thermal guard entry and exit now consider the hottest valid policy-eligible thermal reading in addition to the representative sensor and model prediction.
+- Added periodic per-zone telemetry diagnostics and total/valid sensor counters.
+- Reconciled the documented thermal model SHA-256 with the digest already pinned in the CI workflow.
+- Validation performed: host build and 4/4 CTest checks, source-release contract, safety-foundation contract, and strict-warning host compilation of `observer.cpp` and `autonomous.cpp` using an Android logging stub. A real Android NDK/ARM64 build and on-device behavior were not run in this environment.
+
 
 ## Production adaptive engine
 
