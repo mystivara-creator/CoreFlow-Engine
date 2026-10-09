@@ -41,9 +41,9 @@ env:
   ANDROID_SDK_API: "36"
   ANDROID_ABI: "arm64-v8a"
   ONNX_RUNTIME_VERSION: "1.24.3"
-  # Pinned digest of the validated thermal model. Any change to the model
+  # Pinned SHA-256 of the thermal model artifact (training provenance: synthetic-only, see BUILD_STATUS.md). Any change to the model
   # must be reviewed and the pin updated deliberately.
-  THERMAL_MODEL_SHA256: "422c64313947688d1cda942f3a6f6612a103b3449991361d66a8bb1839fcab97"
+  THERMAL_MODEL_SHA256: "a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
 
 jobs:
   host-tests:
@@ -136,7 +136,7 @@ jobs:
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_CODE" = "2000"
+          test "$MODULE_CODE" = "2001"
           test "$CONFIG_VERSION" = "$CMAKE_VERSION"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
           echo "Android native minimum API: ${ANDROID_MIN_API}"
