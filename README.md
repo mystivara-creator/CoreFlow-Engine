@@ -463,3 +463,19 @@ Device-specific policy validation, a real-device thermal trace set, and ONNX ret
 ## License
 
 See `LICENSE`.
+
+
+## Structured Decision Trace
+
+The daemon writes bounded, line-delimited JSON decision records to
+`/data/adb/coreflow/decision_trace.jsonl`. Each record captures the evaluated
+runtime state, policy decision, confidence, workload context, mutation
+eligibility, candidate count, safety-hold reason, effective mode/arming flags,
+and the actual CPU/resource mutation result returned in that cycle.
+
+The journal is observational only: trace-write failures are non-fatal and do
+not grant mutation authority or change safety gates. The current journal is
+rotated at approximately 512 KiB to a single `.1` file. The WebUI reads only
+the most recent 200 records through its allowlisted diagnostics path. A missing
+journal means no structured records are currently readable; it is not proof
+that no decisions occurred.
