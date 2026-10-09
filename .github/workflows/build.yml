@@ -212,6 +212,17 @@ jobs:
           set -euo pipefail
           bash tools/verify_source_release.sh
 
+      - name: Verify WebUI payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s module/webroot/index.html
+          test -s module/webroot/style.css
+          test -s module/webroot/app.js
+          node --check module/webroot/app.js
+          grep -Fq 'data-view="terminal"' module/webroot/index.html
+          grep -Fq 'mystivara-creator/CoreFlow-Engine/tree/Autonomous-Engine' module/webroot/index.html
+
       - name: Fetch ONNX Runtime Android
         shell: bash
         run: |
@@ -370,12 +381,20 @@ jobs:
           cp module/system/etc/coreflow/default.conf \
             "${MODULE_DIR}/system/etc/coreflow/default.conf"
 
+          # Ship the static KernelSU WebUI with the installable module.
+          test -s module/webroot/index.html
+          test -s module/webroot/app.js
+          test -s module/webroot/style.css
+          cp -R module/webroot "${MODULE_DIR}/webroot"
+
           chmod 0755 \
             "${MODULE_DIR}/system/bin/coreflowd" \
             "${MODULE_DIR}/customize.sh" \
             "${MODULE_DIR}/post-fs-data.sh" \
             "${MODULE_DIR}/service.sh" \
             "${MODULE_DIR}/uninstall.sh"
+
+          find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
 
           chmod 0644 \
             "${MODULE_DIR}/module.prop" \
@@ -433,6 +452,9 @@ jobs:
           unzip -l "$ZIP" | grep -F "system/lib64/libonnxruntime.so"
           unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
           unzip -l "$ZIP" | grep -F "system/etc/coreflow/thermal_predictor.onnx"
+          unzip -l "$ZIP" | grep -F "webroot/index.html"
+          unzip -l "$ZIP" | grep -F "webroot/app.js"
+          unzip -l "$ZIP" | grep -F "webroot/style.css"
 
       - name: Generate binary provenance
         shell: bash
