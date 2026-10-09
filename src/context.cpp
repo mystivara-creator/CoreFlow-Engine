@@ -1,21 +1,36 @@
 #include "coreflow/context.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace coreflow {
 
-SystemContext ContextEngine::evaluate(const RuntimeSample& sample,
-                                       RuntimeState state) const noexcept {
+SystemContext ContextEngine::evaluate(
+    const RuntimeSample& sample,
+    RuntimeState state
+) const noexcept {
     SystemContext context;
     context.state = state;
-    context.thermal_headroom = !sample.thermal_available || sample.thermal_millidegrees < 41000;
-    context.memory_headroom = sample.mem_total_kb == 0 || sample.mem_available_ratio >= 0.15;
-    context.battery_headroom = sample.battery_level_percent < 0 ||
-                               sample.charging || sample.battery_level_percent >= 20;
-    context.power_headroom = context.battery_headroom &&
-                             (!sample.charging || sample.battery_temperature_millidegrees < 42000);
-    context.io_headroom = !sample.io_activity_available ||
-                          (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0;
+
+    context.thermal_headroom =
+        !sample.thermal_available ||
+        sample.thermal_millidegrees < 50000;
+
+    context.memory_headroom =
+        sample.mem_total_kb == 0 ||
+        sample.mem_available_ratio >= 0.18;
+
+    context.power_headroom =
+        !sample.charging_telemetry_available ||
+        sample.battery_level_percent < 0 ||
+        sample.battery_level_percent >= 20;
+
+    context.battery_headroom = context.power_headroom;
+
+    context.io_headroom =
+        !sample.io_activity_available ||
+        (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0;
+
     context.confidence = std::clamp(sample.confidence, 0.0, 1.0);
 
     if (state == RuntimeState::ThermalGuard) {
@@ -41,14 +56,20 @@ SystemContext ContextEngine::evaluate(const RuntimeSample& sample,
         context.workload = WorkloadClass::Interactive;
     }
 
-    context.mutation_allowed_by_context =
+    // Only non-safety states with fresh, sufficiently confident telemetry and
+    // headroom may start a new optimization. ThermalGuard and Pressure are
+    // hold/recovery states; restoration is handled outside this gate.
+    const bool proactive_path =
         state != RuntimeState::ThermalGuard &&
         state != RuntimeState::Pressure &&
+        state != RuntimeState::Idle &&
         context.thermal_headroom &&
         context.memory_headroom &&
         context.power_headroom &&
         context.io_headroom &&
         context.confidence >= 0.70;
+
+    context.mutation_allowed_by_context = proactive_path;
 
     return context;
 }

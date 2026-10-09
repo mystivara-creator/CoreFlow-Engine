@@ -28,6 +28,9 @@ bool EngineConfig::load(const std::string& path) noexcept {
         std::ifstream file(path);
         if (!file) return false;
 
+        // A malformed mutation_mode must fail safe regardless of the order of
+        // the remaining keys, so it is recorded and enforced after parsing.
+        bool invalid_mode = false;
         std::string line;
         while (std::getline(file, line)) {
             line = trim(line);
@@ -45,14 +48,12 @@ bool EngineConfig::load(const std::string& path) noexcept {
                 try { setMinConfidence(std::stod(value)); } catch (...) {}
             } else if (key == "mutation_mode") {
                 // Unknown values, including the removed experimental "trial" mode,
-                // always disable mutation for this load. Production defaults are
-                // autonomous, but malformed explicit configuration must fail safe.
+                // disable mutation for this load (see invalid_mode below).
                 if (value == "adaptive") mutation_mode_ = MutationMode::Adaptive;
                 else if (value == "disabled" || value == "observe") mutation_mode_ = MutationMode::Disabled;
                 else {
+                    invalid_mode = true;
                     mutation_mode_ = MutationMode::Disabled;
-                    mutation_armed_ = false;
-                    allow_cpu_governor_ = false;
                 }
             } else if (key == "allow_cpu_governor") {
                 allow_cpu_governor_ = parseBool(value, false);
@@ -61,6 +62,11 @@ bool EngineConfig::load(const std::string& path) noexcept {
             } else if (key == "mutation_armed") {
                 mutation_armed_ = parseBool(value, false);
             }
+        }
+        if (invalid_mode) {
+            mutation_mode_ = MutationMode::Disabled;
+            mutation_armed_ = false;
+            allow_cpu_governor_ = false;
         }
         return true;
     } catch (...) {

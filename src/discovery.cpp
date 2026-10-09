@@ -217,8 +217,17 @@ void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
         zone.path = std::string(base) + "/" + name;
         readText(zone.path + "/type", zone.type);
 
+        // Inventory every zone. Sentinel values (-273000, 0, large negatives)
+        // stay listed for completeness but are not marked readable; runtime
+        // observation applies the same plausibility filter on every sample.
         std::ifstream temp(zone.path + "/temp");
-        if (temp && (temp >> zone.temperature_millidegrees)) zone.readable = true;
+        long milli = 0;
+        if (temp && (temp >> milli)) {
+            zone.temperature_millidegrees = milli;
+            if (milli >= 10000 && milli <= 120000) {
+                zone.readable = true;
+            }
+        }
         profile.thermal_zones.push_back(std::move(zone));
     }
     closedir(dir);
@@ -371,6 +380,9 @@ void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
         {"vm.dirty_ratio", "/proc/sys/vm/dirty_ratio"},
         {"vm.dirty_background_ratio", "/proc/sys/vm/dirty_background_ratio"},
         {"vm.vfs_cache_pressure", "/proc/sys/vm/vfs_cache_pressure"},
+        {"vm.min_free_kbytes", "/proc/sys/vm/min_free_kbytes"},
+        {"vm.dirty_expire_centisecs", "/proc/sys/vm/dirty_expire_centisecs"},
+        {"vm.dirty_writeback_centisecs", "/proc/sys/vm/dirty_writeback_centisecs"},
         {"kernel.sched_latency_ns", "/proc/sys/kernel/sched_latency_ns"},
         {"kernel.sched_min_granularity_ns", "/proc/sys/kernel/sched_min_granularity_ns"},
         {"kernel.sched_wakeup_granularity_ns", "/proc/sys/kernel/sched_wakeup_granularity_ns"}

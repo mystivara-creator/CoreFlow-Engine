@@ -1,4 +1,5 @@
 #include "coreflow/observer.hpp"
+#include "coreflow/thermal_limits.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -21,12 +22,54 @@ std::string lowerCopy(const std::string& input) {
     return out;
 }
 
-bool isPrimaryThermalType(const std::string& type) {
+// Qualcomm and other Android kernels frequently expose sentinel values for
+// unavailable virtual zones:
+//   -273000  absolute-zero style "not present"
+//   -40000   sys-therm placeholders
+//        0   BCL / zeroc / empty levels
+// Values outside a realistic mobile silicon range are also rejected so a
+// single bad zone cannot force THERMAL_GUARD.
+
+// Explicitly reject virtual / modem / RF / BCL control zones that are not
+// representative of device thermal pressure for policy decisions.
+bool isExcludedThermalType(const std::string& type) {
     const std::string t = lowerCopy(type);
-    return t.find("cpu") != std::string::npos ||
-           t.find("soc") != std::string::npos ||
-           t.find("gpu") != std::string::npos ||
-           t.find("tsens") != std::string::npos;
+    if (t.find("bcl") != std::string::npos) return true;
+    if (t.find("mmw") != std::string::npos) return true;
+    if (t.find("sub1") != std::string::npos) return true;
+    if (t.find("sdr") != std::string::npos) return true;
+    if (t.find("ific") != std::string::npos) return true;
+    if (t.find("zeroc") != std::string::npos) return true;
+    if (t.find("modem") != std::string::npos) return true;
+    if (t.rfind("lvl", 0) != std::string::npos) return true; // *lvl* BCL tiers
+    if (t.find("lvl") != std::string::npos && t.find("pm") != std::string::npos) return true;
+    return false;
+}
+
+// Ranking for representative SoC temperature (higher = preferred).
+// quiet_therm / xo-therm are the most stable skin/xo references on many
+// Qualcomm platforms. Per-core cpu-* zones are useful but spiky; we keep them
+// as primary candidates but prefer quieter sensors when present.
+int thermalTypeRank(const std::string& type) {
+    const std::string t = lowerCopy(type);
+    if (isExcludedThermalType(type)) return -1;
+    if (t == "quiet_therm" || t.find("quiet") != std::string::npos) return 100;
+    if (t == "xo-therm" || t.find("xo_therm") != std::string::npos ||
+        t.find("xo-therm") != std::string::npos) return 95;
+    if (t.find("skin") != std::string::npos || t.find("shell") != std::string::npos) return 90;
+    if (t.find("cpuss") != std::string::npos) return 80;
+    if (t.find("cpu-") != std::string::npos || t.find("cpu_") != std::string::npos) return 70;
+    if (t.find("tsens") != std::string::npos) return 65;
+    if (t.find("gpu") != std::string::npos) return 55;
+    if (t.find("soc") != std::string::npos && t.find("socd") == std::string::npos) return 50;
+    if (t == "battery") return 40;
+    if (t.find("aoss") != std::string::npos) return 35;
+    if (t.find("ddr") != std::string::npos) return 30;
+    return 10; // other readable zones still counted for hottest diagnostics
+}
+
+bool isPrimaryThermalType(const std::string& type) {
+    return thermalTypeRank(type) >= 50;
 }
 
 long readLong(const std::string& path, bool& ok) {
@@ -135,17 +178,62 @@ void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& profile) const {
+    // Keep every discovered sensor in the sample, including unreadable and
+    // policy-excluded zones. Policy uses only plausible, representative zones.
     long hottest = 0;
     long primary_hottest = 0;
+    long preferred = 0;
+    int preferred_rank = -1;
     bool any = false;
     bool primary = false;
 
+    sample.thermal_readings.clear();
+    sample.thermal_readings.reserve(profile.thermal_zones.size());
+    sample.thermal_sensor_count = static_cast<std::uint32_t>(profile.thermal_zones.size());
+    sample.thermal_valid_sensor_count = 0;
+
     for (const ThermalZone& zone : profile.thermal_zones) {
+        ThermalReading reading;
+        const std::size_t separator = zone.path.find_last_of('/');
+        reading.zone = separator == std::string::npos
+                           ? zone.path : zone.path.substr(separator + 1);
+        reading.type = zone.type;
+
         bool ok = false;
         const long value = readLong(zone.path + "/temp", ok);
-        if (!ok) continue;
+        reading.readable = ok;
+        reading.temperature_millidegrees = ok ? value : 0;
+
+        if (!ok) {
+            reading.status = ThermalReadingStatus::Unreadable;
+            sample.thermal_readings.push_back(std::move(reading));
+            continue;
+        }
+        if (!isPlausibleThermalMilli(value)) {
+            reading.status = ThermalReadingStatus::InvalidRange;
+            sample.thermal_readings.push_back(std::move(reading));
+            continue;
+        }
+
+        reading.valid = true;
+        reading.status = ThermalReadingStatus::Valid;
+        ++sample.thermal_valid_sensor_count;
+        const bool excluded = isExcludedThermalType(zone.type);
+        reading.policy_eligible = !excluded;
+        if (excluded) reading.status = ThermalReadingStatus::ExcludedFromPolicy;
+        sample.thermal_readings.push_back(reading);
+        if (excluded) continue;
+
         any = true;
         hottest = std::max(hottest, value);
+
+        const int rank = thermalTypeRank(zone.type);
+        if (rank > preferred_rank) {
+            preferred_rank = rank;
+            preferred = value;
+        } else if (rank == preferred_rank && rank >= 0) {
+            preferred = std::max(preferred, value);
+        }
         if (isPrimaryThermalType(zone.type)) {
             primary = true;
             primary_hottest = std::max(primary_hottest, value);
@@ -155,7 +243,11 @@ void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& pr
     if (!any) return;
     sample.thermal_available = true;
     sample.hottest_thermal_millidegrees = hottest;
-    if (primary) {
+
+    if (preferred_rank >= 50) {
+        sample.thermal_millidegrees = preferred;
+        sample.thermal_source = ThermalSource::Primary;
+    } else if (primary) {
         sample.thermal_millidegrees = primary_hottest;
         sample.thermal_source = ThermalSource::Primary;
     } else {

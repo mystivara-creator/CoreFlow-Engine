@@ -9,10 +9,9 @@ RuntimeState AdaptivePolicy::evaluate(
     const RuntimeSample& sample,
     RuntimeState previous
 ) const {
-    // Single source of truth for thermal thresholds (see policy.hpp).
     constexpr long kThermalGuardEnter = static_cast<long>(kThermalGuardEnterC * 1000.0);
     constexpr long kThermalGuardExit = static_cast<long>(kThermalGuardExitC * 1000.0);
-    constexpr long kThermalWarm = 40000;
+    constexpr long kThermalWarm = 48000;
 
     constexpr double kMemoryPressureEnter = 0.10;
     constexpr double kMemoryPressureExit = 0.15;
@@ -42,14 +41,6 @@ RuntimeState AdaptivePolicy::evaluate(
 
     const bool cpu_busy = sample.cpu_utilization_available &&
                           sample.cpu_utilization >= kElevatedUtil;
-
-    // /proc/loadavg is an absolute runnable-task load value, not a
-    // percentage. On multicore Android devices, a value such as 5-8 can be
-    // perfectly normal while instantaneous CPU utilization is low.
-    //
-    // Use load as a fallback only when CPU utilization is unavailable.
-    // This prevents the policy from pinning the engine in ELEVATED state
-    // during normal multicore workloads.
     const bool load_busy = !sample.cpu_utilization_available &&
                            sample.load1 >= kElevatedLoad;
 
@@ -66,15 +57,21 @@ Decision AdaptivePolicy::decide(
     const RuntimeSample&,
     RuntimeState state
 ) const {
+    // v2.1.0: more proactive but still fail-closed.
+    // Actual mutation eligibility is owned by PolicyEngine + MutationAuthority.
+    // This layer only signals intent.
     switch (state) {
         case RuntimeState::ThermalGuard:
         case RuntimeState::Pressure:
             return Decision::ReduceIntervention;
         case RuntimeState::Warming:
         case RuntimeState::Elevated:
+            // Soft tune allowed — PolicyEngine still gates on context headroom.
             return Decision::Observe;
         case RuntimeState::Idle:
         case RuntimeState::Normal:
+            // Efficiency path — only high-confidence Low intervention.
+            return Decision::NoAction;
         default:
             return Decision::NoAction;
     }
@@ -94,9 +91,9 @@ NotificationEvent AdaptivePolicy::notification(
     }
 
     if (sample.thermal_available && sample.thermal_trend == Trend::Rising) {
-        if (sample.thermal_millidegrees >= 42000)
+        if (sample.thermal_millidegrees >= 52000)
             return NotificationEvent::ThermalWarning;
-        if (sample.thermal_millidegrees >= 40000)
+        if (sample.thermal_millidegrees >= 48000)
             return NotificationEvent::ThermalWarming;
     }
 
@@ -137,22 +134,11 @@ const char* trendName(Trend trend) {
 
 const char* notificationEventName(NotificationEvent event) {
     switch (event) {
+        case NotificationEvent::None: return "NONE";
         case NotificationEvent::ThermalWarming: return "THERMAL_WARMING";
         case NotificationEvent::ThermalWarning: return "THERMAL_WARNING";
         case NotificationEvent::ThermalGuard: return "THERMAL_GUARD";
         case NotificationEvent::ChargingProtection: return "CHARGING_PROTECTION";
-        case NotificationEvent::None: default: return "NONE";
-    }
-    return "NONE";
-}
-
-const char* mutationResultName(MutationResult result) {
-    switch (result) {
-        case MutationResult::Skipped: return "SKIPPED";
-        case MutationResult::Applied: return "APPLIED";
-        case MutationResult::Verified: return "VERIFIED";
-        case MutationResult::Failed: return "FAILED";
-        case MutationResult::RolledBack: return "ROLLED_BACK";
     }
     return "UNKNOWN";
 }
