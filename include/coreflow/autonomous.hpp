@@ -19,6 +19,7 @@
 #include "coreflow/policy.hpp"
 #include "coreflow/types.hpp"
 #include "coreflow/thermal_predictor.hpp"
+#include "coreflow/thermal_guard.hpp"
 
 namespace coreflow {
 
@@ -75,6 +76,7 @@ private:
     ExperienceMemory experience_memory_;
     ThermalPredictor thermal_predictor_;
     std::uint64_t mutation_cooldown_until_sample_{0};
+    ThermalGuardState thermal_guard_state_{};
 };
 
 } // namespace coreflow

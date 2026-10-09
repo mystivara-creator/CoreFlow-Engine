@@ -5,7 +5,7 @@
 
 namespace coreflow {
 
-inline constexpr const char* kCoreFlowVersion = "2.0.0";
+inline constexpr const char* kCoreFlowVersion = "2.0.1";
 
 enum class MutationMode {
     Disabled,
@@ -35,10 +35,12 @@ public:
 private:
     int monitor_interval_seconds_{5};
     double min_confidence_{0.70};
-    MutationMode mutation_mode_{MutationMode::Adaptive};
-    bool allow_cpu_governor_{true};
+    // Release default is observe-only. Kernel mutation requires explicit
+    // opt-in (mutation_mode=adaptive, mutation_armed=true, allow_cpu_governor=yes).
+    MutationMode mutation_mode_{MutationMode::Disabled};
+    bool allow_cpu_governor_{false};
     bool runtime_refresh_enabled_{true};
-    bool mutation_armed_{true};
+    bool mutation_armed_{false};
 };
 
 const char* mutationModeName(MutationMode mode) noexcept;
