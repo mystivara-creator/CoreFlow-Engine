@@ -1,6 +1,14 @@
 # CoreFlow Autonomous Engine v2.1.0
 
 
+## WebUI Command Center
+
+The installable module includes a mobile-first KernelSU WebUI in `module/webroot/` with Overview, Mode & Policy, Diagnostics, Shell Console, and Project & AI pages. Observe remains interactive for log inspection and discovery refresh without arming mutation. Adaptive can be explicitly enabled from the UI after confirmation; CPU governor mutation requires a separate opt-in. The UI writes only the runtime configuration and sends a discovery-refresh signal—it does not write kernel tunables directly. CoreFlow's existing capability/policy gates, mutation journal, verification, rollback, thermal guards, and safety holds remain authoritative. See [`module/webroot/README.txt`](module/webroot/README.txt).
+
+The About page acknowledges Mystivara as the author and Gemini, ChatGPT, Grok AI, Claude, and GitHub Copilot as assistants used during selected development tasks. These acknowledgements do not imply endorsement or an official partnership.
+
+---
+
 ## v2.1.0 — Capability-Driven Autonomous Decision Loop
 
 This source revision introduces a capability-driven resource decision path with structured candidate identity and a consistent benefit/risk/confidence utility. Unknown numeric controls remain observe-only until their semantics are described by a model prior or adapter. I/O queue controls require measured I/O activity; CPU load alone is not sufficient evidence to tune them. ThermalGuard and Pressure are hold/recovery states and cannot authorize a new optimization write.
