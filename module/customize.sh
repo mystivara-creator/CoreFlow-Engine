@@ -463,6 +463,9 @@ for script in customize.sh post-fs-data.sh service.sh uninstall.sh; do
 done
 set_perm "$MODPATH/sepolicy.rule" 0 0 0644
 set_perm "$MODPATH/module.prop" 0 0 0644
+if [ -d "$MODPATH/webroot" ]; then
+    set_perm_recursive "$MODPATH/webroot" 0 0 0755 0644
+fi
 ui_print "     > Permissions applied"
 ui_print " "
 ui_print " [=== INSTALLATION COMPLETE: reboot to start CoreFlow (mode=$MODE) ===]"

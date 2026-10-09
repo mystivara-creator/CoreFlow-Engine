@@ -64,6 +64,9 @@ supervise() {
     restarts=0
     while [ "$STOPPING" -eq 0 ]; do
         log "starting coreflowd attempt=$((restarts + 1)) version=$VERSION"
+        # This marker only tracks UI configuration changes that require a daemon restart.
+        # It is not a safety marker and never changes engine mutation policy.
+        rm -f "$STATE_DIR/webui_config_pending" 2>/dev/null
         "$BINARY" >> "$LOG_FILE" 2>&1 &
         CHILD=$!
 
