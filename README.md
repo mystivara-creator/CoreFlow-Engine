@@ -318,7 +318,7 @@ module/system/etc/coreflow/thermal_predictor.onnx
 Pinned SHA-256:
 
 ```text
-38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6
+a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703
 ```
 
 The CI workflow verifies the model digest before it is packaged into the module.
