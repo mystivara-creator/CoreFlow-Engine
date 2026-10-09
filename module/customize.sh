@@ -23,7 +23,7 @@ MIN_API=34
 # Pinned digest of the single, universal thermal model. Must equal the
 # THERMAL_MODEL_SHA256 pin in .github/workflows/build.yml (checked by
 # tools/verify_source_release.sh).
-MODEL_SHA256="38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6"
+MODEL_SHA256="a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
 MODEL_INPUT_MARKER="float_input"
 
 # Overridable for host-side testing; the defaults are the device paths.
