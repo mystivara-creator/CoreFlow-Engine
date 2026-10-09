@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(CoreFlowAutonomous VERSION 2.0.0 LANGUAGES CXX)
+project(CoreFlowAutonomous VERSION 2.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,6 +45,9 @@ set(COREFLOW_CORE_SOURCES
     src/cpufreq_actuator.cpp
     src/resource_actuator.cpp
     src/resource_mutation.cpp
+    src/effect_model.cpp
+    src/thermal_features.cpp
+    src/thermal_guard.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
@@ -150,8 +153,18 @@ else()
         add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
         add_test(NAME coreflow_architecture_foundation COMMAND coreflow_architecture_tests)
         add_test(NAME coreflow_resource_autonomy COMMAND coreflow_resource_tests)
+        add_executable(coreflow_release_hardening_tests tests/release_hardening_tests.cpp)
+        target_link_libraries(coreflow_release_hardening_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_release_hardening_tests PRIVATE -Werror)
+        target_compile_definitions(coreflow_release_hardening_tests
+            PRIVATE COREFLOW_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
+
+        add_test(NAME coreflow_release_hardening COMMAND coreflow_release_hardening_tests)
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
+        add_test(NAME coreflow_source_release_contract
+            COMMAND "${CMAKE_COMMAND}" -E env COREFLOW_ALLOW_BUILD_DIR=1 bash
+                    "${PROJECT_SOURCE_DIR}/tools/verify_source_release.sh")
     endif()
 
 endif()
