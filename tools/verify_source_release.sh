@@ -68,7 +68,7 @@ grep -q 'v2.0.1' "$ROOT/CHANGELOG.md"
 
 MODEL="$ROOT/module/system/etc/coreflow/thermal_predictor.onnx"
 MODEL_SHA="$(sha256sum "$MODEL" | cut -d' ' -f1)"
-EXPECTED_SHA="38a87e82a50fef0f896846a2bb685928b0c0c85bacc683238759ec930fcbb3c6"
+EXPECTED_SHA="a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
 [ "$MODEL_SHA" = "$EXPECTED_SHA" ] || { echo "error: thermal model digest mismatch" >&2; exit 1; }
 
 # 18-feature contract: the Python training order and the C++ feature header
