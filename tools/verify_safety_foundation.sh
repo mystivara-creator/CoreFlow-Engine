@@ -20,6 +20,7 @@ $ROOT/src/resource_actuator.cpp
 $ROOT/src/mutation_journal.cpp
 $ROOT/src/main.cpp
 $ROOT/src/experience.cpp
+$ROOT/src/decision_trace.cpp
 "
 
 while IFS= read -r f; do
