@@ -9,8 +9,9 @@
 #      check that the shipped default configuration is observe-only.
 #   3. Device profile: SoC family and identifier, plus a read-only sysfs/procfs
 #      capability probe. Nothing is written to kernel controls here.
-#   4. Mode decision: adaptive is written only when every gate in decide_mode
-#      passes. Otherwise the device stays observe-only.
+#   4. Mode decision: volume-key interactive prompt (Up=observe, Down=adaptive).
+#      Timeout and missing keys fall back to observe-only. Adaptive writes
+#      mutation_mode=adaptive + mutation_armed=true; CPU governor is a second prompt.
 #   5. Report: $STATE_DIR/install_report.txt, for support requests.
 #
 # The thermal model is universal: one artifact, one pinned digest, one input
@@ -192,30 +193,201 @@ ui_print "     > battery telemetry      : $BATTERY_READ"
 ui_print "     > vm.swappiness readable : $VM_SWAPPINESS"
 ui_print " "
 
-# ---- 4. Mode decision ----------------------------------------------------
-# Adaptive is written only when ALL of these hold:
-#   - the user placed the enable flag before flashing (explicit request);
-#   - this is a fresh install (an existing config.ini is never rewritten);
-#   - no SAFE_MODE marker is present;
-#   - this SoC is listed in validated_profiles.txt (device evidence exists);
-#   - thermal telemetry is readable and at least one cpufreq governor is writable.
-# Any failed gate keeps the device in observe-only mode and says why.
-decide_mode() {
-    if [ ! -f "$ADAPTIVE_FLAG" ]; then
-        MODE="observe"; MODE_REASON="no adaptive request (flag absent)"
-    elif [ -f "$CONFIG" ]; then
-        MODE="observe"; MODE_REASON="existing config.ini kept (upgrade or reinstall)"
-    elif [ -f "$STATE_DIR/SAFE_MODE" ]; then
-        MODE="observe"; MODE_REASON="SAFE_MODE marker present"
-    elif ! grep -v '^#' "$VALIDATED" 2>/dev/null | grep -qx "$SOC_ID"; then
-        MODE="observe"; MODE_REASON="SoC '$SOC_ID' has no validated profile yet"
-    elif [ "$THERMAL_READ" -lt 1 ] || [ "$CPU_POLICY_WRITE" -lt 1 ]; then
-        MODE="observe"; MODE_REASON="required telemetry or writable governors not found"
-    else
-        MODE="adaptive"; MODE_REASON="adaptive requested and all gates passed"
-    fi
+# ---- 4. Volume-key mode selection ----------------------------------------
+# Interactive installer (Magisk / KernelSU):
+#   Volume Up   = Observe only (recommended / safe default)
+#   Volume Down = Adaptive (mutations allowed after reboot)
+#   Timeout 12s = Observe only
+#
+# If adaptive is chosen, a second prompt:
+#   Volume Up   = Resource-only (VM/I/O) — recommended
+#   Volume Down = Resource + CPU governor
+#   Timeout 10s = Resource-only
+#
+# Existing config.ini:
+#   Volume Up   = Keep existing config
+#   Volume Down = Reset and choose mode again
+#   Timeout 10s = Keep existing
+#
+# Non-interactive fallback: /sdcard/CoreFlow/enable_adaptive still forces
+# adaptive request when present (legacy), subject to SAFE_MODE gate.
+# Adaptive never enables silently without armed=true.
+
+VOLUME_TIMEOUT_MAIN=12
+VOLUME_TIMEOUT_SUB=10
+
+# Returns: up | down | timeout
+# Uses getevent KEY_VOLUME* which works on Magisk and KernelSU installers.
+volume_choice() {
+    _vc_timeout="${1:-10}"
+    _vc_end=$(( $(date +%s) + _vc_timeout ))
+    # Drain a few pending events so a previous key does not leak in.
+    timeout 0.2 getevent -qlc 1 >/dev/null 2>&1 || true
+    while [ "$(date +%s)" -lt "$_vc_end" ]; do
+        _vc_line="$(timeout 1 getevent -qlc 1 2>/dev/null || true)"
+        case "$_vc_line" in
+            *KEY_VOLUMEUP*)
+                echo "up"
+                return 0
+                ;;
+            *KEY_VOLUMEDOWN*)
+                echo "down"
+                return 0
+                ;;
+        esac
+    done
+    echo "timeout"
+    return 0
 }
-decide_mode
+
+write_config_for_mode() {
+    # Args: $1=observe|adaptive  $2=yes|no (allow_cpu_governor)
+    _w_mode="$1"
+    _w_cpu="$2"
+    TMP_CONF="$CONFIG.tmp"
+    cp "$DEFAULT_CONF" "$TMP_CONF" || abort "Could not stage configuration in $STATE_DIR."
+    if [ "$_w_mode" = "adaptive" ]; then
+        sed -e 's/^mutation_mode=observe$/mutation_mode=adaptive/' \
+            -e 's/^mutation_armed=false$/mutation_armed=true/' \
+            "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
+            || abort "Could not write adaptive configuration."
+        if [ "$_w_cpu" = "yes" ]; then
+            sed -e 's/^allow_cpu_governor=no$/allow_cpu_governor=yes/' \
+                "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
+                || abort "Could not enable cpu governor flag."
+        fi
+        grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
+            && grep -qx 'mutation_armed=true' "$TMP_CONF" \
+            || abort "Adaptive configuration did not verify; aborting."
+        if [ "$_w_cpu" = "yes" ]; then
+            grep -qx 'allow_cpu_governor=yes' "$TMP_CONF" \
+                || abort "CPU governor flag did not verify; aborting."
+        else
+            grep -qx 'allow_cpu_governor=no' "$TMP_CONF" \
+                || abort "CPU governor flag did not verify; aborting."
+        fi
+    else
+        # Explicit observe triplet
+        grep -qx 'mutation_mode=observe' "$TMP_CONF" \
+            && grep -qx 'mutation_armed=false' "$TMP_CONF" \
+            || abort "Observe configuration did not verify; aborting."
+    fi
+    mv "$TMP_CONF" "$CONFIG" || abort "Could not install config.ini."
+    chmod 0600 "$CONFIG" 2>/dev/null
+}
+
+MODE="observe"
+MODE_REASON="default observe-only"
+CPU_GOV_CHOICE="no"
+REWRITE_CONFIG=1
+
+mkdir -p "$STATE_DIR/logs" 2>/dev/null
+chmod 0700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null
+
+# SAFE_MODE always forces observe and may rewrite to safe defaults.
+if [ -f "$STATE_DIR/SAFE_MODE" ]; then
+    MODE="observe"
+    MODE_REASON="SAFE_MODE marker present — forced observe"
+    CPU_GOV_CHOICE="no"
+    REWRITE_CONFIG=1
+    ui_print " [>] Mode selection"
+    ui_print "     ! SAFE_MODE detected — observe-only will be written."
+    ui_print " "
+else
+    # Existing config: ask keep vs reset
+    if [ -f "$CONFIG" ]; then
+        ui_print " [>] Existing config.ini detected"
+        ui_print " "
+        ui_print "     Volume Up   = Keep existing config"
+        ui_print "     Volume Down = Reset and choose mode"
+        ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = Keep existing"
+        ui_print " "
+        _keep="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
+        case "$_keep" in
+            down)
+                ui_print "     > choice: RESET config"
+                REWRITE_CONFIG=1
+                ;;
+            *)
+                ui_print "     > choice: KEEP existing config"
+                REWRITE_CONFIG=0
+                MODE_REASON="existing config.ini kept (user or timeout)"
+                ;;
+        esac
+        ui_print " "
+    fi
+
+    if [ "$REWRITE_CONFIG" -eq 1 ]; then
+        # Legacy flag still counts as adaptive request (optional).
+        _legacy_adaptive=0
+        [ -f "$ADAPTIVE_FLAG" ] && _legacy_adaptive=1
+
+        ui_print " [>] Select CoreFlow mode"
+        ui_print " "
+        ui_print "     Volume Up   = OBSERVE only (recommended)"
+        ui_print "                   Monitor only — no kernel mutation"
+        ui_print "     Volume Down = ADAPTIVE"
+        ui_print "                   Bounded mutation after reboot"
+        ui_print "     Timeout ${VOLUME_TIMEOUT_MAIN}s = OBSERVE only"
+        ui_print " "
+        if [ "$_legacy_adaptive" -eq 1 ]; then
+            ui_print "     note: enable_adaptive flag present on storage"
+            ui_print " "
+        fi
+
+        _sel="$(volume_choice "$VOLUME_TIMEOUT_MAIN")"
+        case "$_sel" in
+            down)
+                MODE="adaptive"
+                MODE_REASON="volume down — adaptive armed"
+                ;;
+            up)
+                MODE="observe"
+                MODE_REASON="volume up — observe only"
+                ;;
+            *)
+                if [ "$_legacy_adaptive" -eq 1 ]; then
+                    MODE="adaptive"
+                    MODE_REASON="timeout + enable_adaptive flag — adaptive armed"
+                else
+                    MODE="observe"
+                    MODE_REASON="timeout — observe only (safe default)"
+                fi
+                ;;
+        esac
+        ui_print "     > selected: $MODE"
+        ui_print " "
+
+        CPU_GOV_CHOICE="no"
+        if [ "$MODE" = "adaptive" ]; then
+            ui_print " [>] Adaptive scope"
+            ui_print " "
+            ui_print "     Volume Up   = Resource only (VM / I/O) — recommended"
+            ui_print "     Volume Down = Resource + CPU governor"
+            ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = Resource only"
+            ui_print " "
+            _cpu="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
+            case "$_cpu" in
+                down)
+                    CPU_GOV_CHOICE="yes"
+                    MODE_REASON="$MODE_REASON; cpu_governor=yes"
+                    ui_print "     > scope: resource + CPU governor"
+                    ;;
+                *)
+                    CPU_GOV_CHOICE="no"
+                    MODE_REASON="$MODE_REASON; cpu_governor=no"
+                    ui_print "     > scope: resource only"
+                    ;;
+            esac
+            ui_print " "
+            ui_print "     ! ADAPTIVE will run after reboot."
+            ui_print "     ! Mutations are journaled and restorable."
+            ui_print "     ! Prefer 7 days observe-only on a new device/SoC."
+            ui_print " "
+        fi
+    fi
+fi
+
 REQUESTED_MODE="$MODE"
 
 ui_print " [>] Mode request"
@@ -224,35 +396,15 @@ ui_print "     > reason    : $MODE_REASON"
 ui_print " "
 
 # ---- 5. Configuration and state ------------------------------------------
-mkdir -p "$STATE_DIR/logs" 2>/dev/null
-chmod 0700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null
-
-if [ -f "$CONFIG" ]; then
-    ui_print " [>] Configuration: existing config.ini kept unchanged"
+if [ "$REWRITE_CONFIG" -eq 1 ]; then
+    write_config_for_mode "$MODE" "$CPU_GOV_CHOICE"
+    ui_print " [>] Configuration: config.ini written (mode=$MODE cpu_gov=$CPU_GOV_CHOICE)"
 else
-    TMP_CONF="$CONFIG.tmp"
-    cp "$DEFAULT_CONF" "$TMP_CONF" || abort "Could not stage configuration in $STATE_DIR."
-    if [ "$MODE" = "adaptive" ]; then
-        sed -e 's/^mutation_mode=observe$/mutation_mode=adaptive/' \
-            -e 's/^allow_cpu_governor=no$/allow_cpu_governor=yes/' \
-            -e 's/^mutation_armed=false$/mutation_armed=true/' \
-            "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
-            || abort "Could not write adaptive configuration."
-        grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
-            && grep -qx 'mutation_armed=true' "$TMP_CONF" \
-            && grep -qx 'allow_cpu_governor=yes' "$TMP_CONF" \
-            || abort "Adaptive configuration did not verify; aborting."
-    fi
-    mv "$TMP_CONF" "$CONFIG" || abort "Could not install config.ini."
-    chmod 0600 "$CONFIG" 2>/dev/null
-    ui_print " [>] Configuration: config.ini written (mode=$MODE)"
+    ui_print " [>] Configuration: existing config.ini kept unchanged"
 fi
+ui_print " "
 
 # ---- 5b. Effective mode: what the daemon will actually run ---------------
-# The installer reports the mode the daemon will read, not the mode it wanted.
-# Adaptive is effective only when mutation_mode=adaptive AND mutation_armed is
-# true, mirroring the daemon's gates. An existing adaptive config is never
-# rewritten here, but it is reported loudly.
 EFF_MODE="$(config_value mutation_mode)"
 EFF_ARMED="$(config_value mutation_armed)"
 EFF_CPU="$(config_value allow_cpu_governor)"
@@ -272,18 +424,13 @@ ui_print "     > effective : $MODE"
 ui_print "     > source    : $EFF_REASON"
 if [ "$MODE" = "adaptive" ]; then
     ui_print " "
-    ui_print "     ! WARNING: this device will run ADAPTIVE mutation after reboot."
-    ui_print "     ! The installer did not create this setting. If it was not"
-    ui_print "     ! intended, set mutation_mode=observe and mutation_armed=false"
-    ui_print "     ! in /data/adb/coreflow/config.ini before rebooting."
-fi
-if [ "$MODE" != "$REQUESTED_MODE" ] && [ -f "$CONFIG" ]; then
-    ui_print "     ! Note: the installer requested '$REQUESTED_MODE' but an existing"
-    ui_print "     ! config.ini is in effect. The existing config wins."
+    ui_print "     ! WARNING: ADAPTIVE mutation is armed for the next boot."
+    ui_print "     ! To disable before reboot: set mutation_mode=observe and"
+    ui_print "     ! mutation_armed=false in /data/adb/coreflow/config.ini"
 fi
 ui_print " "
 
-# The enable flag is one-shot: consume it so it cannot re-trigger later.
+# Legacy enable flag is one-shot.
 [ -f "$ADAPTIVE_FLAG" ] && rm -f "$ADAPTIVE_FLAG" 2>/dev/null
 
 # ---- 6. Install report ---------------------------------------------------
