@@ -45,10 +45,13 @@ if grep -RInE 'std::ofstream.*(/sys/|/proc/)|open\([^\n]*(/sys/|/proc/)[^\n]*(O_
   exit 1
 fi
 
-grep -q 'mutation_armed_{true}' "$ROOT/include/coreflow/config.hpp"
-grep -q 'allow_cpu_governor_{true}' "$ROOT/include/coreflow/config.hpp"
-grep -q 'mutation_armed=true' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'allow_cpu_governor=yes' "$ROOT/module/system/etc/coreflow/default.conf"
+# Release defaults are observe-only: no governor writes and no arming until opt-in.
+grep -q 'mutation_armed_{false}' "$ROOT/include/coreflow/config.hpp"
+grep -q 'allow_cpu_governor_{false}' "$ROOT/include/coreflow/config.hpp"
+grep -q 'MutationMode mutation_mode_{MutationMode::Disabled}' "$ROOT/include/coreflow/config.hpp"
+grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q 'mutation_armed=false' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q 'allow_cpu_governor=no' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'MutationPermit' "$ROOT/include/coreflow/actuator.hpp"
 grep -q 'ResourceMutationController' "$ROOT/include/coreflow/resource_mutation.hpp"
 grep -q 'ResourceActuator' "$ROOT/include/coreflow/resource_actuator.hpp"
@@ -67,5 +70,26 @@ grep -q 'kMaxMutationHoldCycles' "$ROOT/include/coreflow/mutation.hpp"
 grep -q 'evaluateSafetyHold({kKillSwitchPath, kSafeModePath})' "$ROOT/src/autonomous.cpp"
 grep -q 'BOOT_LOOP_DISABLE=5' "$ROOT/module/post-fs-data.sh"
 grep -q 'SAFE_MODE set' "$ROOT/module/post-fs-data.sh"
+
+# Thermal model integration contract: missing telemetry must not reach the
+# model as zero, the feature builder is the only feature source, and the guard
+# decisions run through the pure, tested helpers.
+grep -q 'buildThermalFeatures(history, current_sample)' "$ROOT/src/thermal_predictor.cpp"
+grep -q 'if (!built.complete)' "$ROOT/src/thermal_predictor.cpp"
+if grep -q 'batteryVoltageVolts\|trendEncoding' "$ROOT/src/thermal_predictor.cpp"; then
+  echo "error: thermal predictor must not carry its own feature encoding" >&2; exit 1
+fi
+grep -q 'thermalGuardShouldEnter' "$ROOT/src/autonomous.cpp"
+grep -q 'thermalGuardShouldHold' "$ROOT/src/autonomous.cpp"
+grep -q 'kHottestOnlyConfirmSamples' "$ROOT/include/coreflow/thermal_guard.hpp"
+grep -q 'isPlausibleThermalMilli' "$ROOT/include/coreflow/thermal_limits.hpp"
+grep -q 'coreflow_release_hardening' "$ROOT/CMakeLists.txt"
+# The pure feature/guard sources must stay free of Android/ONNX dependencies so
+# they remain host-testable.
+for f in src/thermal_features.cpp src/thermal_guard.cpp include/coreflow/thermal_features.hpp include/coreflow/thermal_guard.hpp include/coreflow/thermal_limits.hpp; do
+  if grep -qE 'android/|onnxruntime' "$ROOT/$f"; then
+    echo "error: $f must not depend on Android or ONNX headers" >&2; exit 1
+  fi
+done
 
 echo "CoreFlow safety foundation contract: PASS"
