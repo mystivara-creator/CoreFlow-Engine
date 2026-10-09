@@ -413,7 +413,9 @@ void test_thermal_thresholds_are_consistent() {
     AdaptivePolicy policy;
     RuntimeSample inside;
     inside.thermal_available = true;
-    inside.thermal_millidegrees = 41'600;  // above exit (41.5C), below enter (43C)
+    // Midway between exit and enter (hysteresis band).
+    inside.thermal_millidegrees = static_cast<long>(
+        ((kThermalGuardExitC + kThermalGuardEnterC) / 2.0) * 1000.0);
     inside.mem_total_kb = 1000;
     inside.mem_available_ratio = 0.5;
     inside.cpu_utilization_available = true;
@@ -430,14 +432,18 @@ void test_thermal_thresholds_are_consistent() {
     CHECK(policy.evaluate(hot, RuntimeState::Normal) == RuntimeState::ThermalGuard);
 }
 
-void test_production_defaults_are_autonomous_but_bounded_by_explicit_gates() {
+void test_release_defaults_are_observe_only_until_explicit_opt_in() {
     EngineConfig cfg;
-    CHECK(cfg.mutationMode() == MutationMode::Adaptive);
-    CHECK(cfg.mutationArmed());
-    CHECK(cfg.allowCpuGovernor());
-
-    cfg.setMutationMode(MutationMode::Disabled);
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
+    CHECK(!cfg.mutationArmed());
+    CHECK(!cfg.allowCpuGovernor());
+
+    // Opting into the adaptive mode alone must not grant CPU governor writes
+    // or arming; each gate is an independent explicit decision.
+    cfg.setMutationMode(MutationMode::Adaptive);
+    CHECK(cfg.mutationMode() == MutationMode::Adaptive);
+    CHECK(!cfg.mutationArmed());
+    CHECK(!cfg.allowCpuGovernor());
 }
 
 void test_experimental_trial_mode_is_not_enabled_by_config() {
@@ -741,7 +747,7 @@ int main() {
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
         {"journal_roundtrip_and_truncation", test_file_journal_roundtrip_and_truncation_detection},
         {"disabled_mode_hard_gate", test_disabled_mode_is_a_hard_no_mutation_gate},
-        {"production_defaults_autonomous", test_production_defaults_are_autonomous_but_bounded_by_explicit_gates},
+        {"release_defaults_observe_only", test_release_defaults_are_observe_only_until_explicit_opt_in},
         {"mutation_requires_durable_journal", test_mutation_requires_durable_journal},
         {"empty_governor_advertisement_fails_closed", test_empty_governor_advertisement_fails_closed},
         {"low_confidence_restores", test_low_confidence_restores_instead_of_mutating},
