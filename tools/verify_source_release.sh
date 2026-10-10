@@ -31,6 +31,13 @@ src/thermal_features.cpp
 include/coreflow/thermal_guard.hpp
 src/thermal_guard.cpp
 tests/release_hardening_tests.cpp
+include/coreflow/status_snapshot.hpp
+src/status_snapshot.cpp
+tests/status_dump.cpp
+tools/test_webui_status.sh
+tools/test_webui_status.js
+tools/test_webui_render.js
+module/webroot/engine_status.js
 README.md
 CHANGELOG.md
 BUILD_STATUS.md
@@ -88,5 +95,8 @@ hdr_names = [n for _, n in sorted((int(i), n) for i, n in pairs)]
 if len(py_names) != 18 or py_names != hdr_names:
     sys.exit("error: 18-feature order mismatch between Python and C++")
 PYEOF
+
+# The WebUI must understand what the C++ engine writes (needs node and g++; says so when skipped).
+sh "$ROOT/tools/test_webui_status.sh"
 
 printf '%s\n' "CoreFlow v${VERSION} source release checks: PASS"

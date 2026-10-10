@@ -21,6 +21,7 @@ $ROOT/src/mutation_journal.cpp
 $ROOT/src/main.cpp
 $ROOT/src/experience.cpp
 $ROOT/src/decision_trace.cpp
+$ROOT/src/status_snapshot.cpp
 "
 
 while IFS= read -r f; do
@@ -44,6 +45,24 @@ EOFWR
 if grep -RInE 'std::ofstream.*(/sys/|/proc/)|open\([^\n]*(/sys/|/proc/)[^\n]*(O_WRONLY|O_RDWR)|::write\([^\n]*(/sys/|/proc/)' "$ROOT/src" --include='*.cpp' 2>/dev/null; then
   echo "UNAPPROVED DIRECT KERNEL WRITE" >&2
   exit 1
+fi
+
+# The live status export (WebUI) is observation-only state. It may write only the engine's
+# own state file, and nothing that decides or actuates may depend on it.
+grep -q 'kStatusPath = "/data/adb/coreflow/status.json"' "$ROOT/src/autonomous.cpp"
+if grep -RIn 'writeStatusFile(' "$ROOT/src" --include='*.cpp' | grep -v 'src/status_snapshot.cpp' | grep -v 'kStatusPath'; then
+  echo "error: writeStatusFile must only be called with kStatusPath" >&2; exit 1
+fi
+for f in src/cpufreq_actuator.cpp src/resource_actuator.cpp src/mutation.cpp src/resource_mutation.cpp \
+         src/control.cpp src/policy.cpp src/context.cpp src/effect_model.cpp \
+         include/coreflow/actuator.hpp include/coreflow/control.hpp include/coreflow/mutation.hpp \
+         include/coreflow/resource_mutation.hpp; do
+  if grep -q 'status_snapshot' "$ROOT/$f"; then
+    echo "error: $f must not depend on the status export (it carries no authority)" >&2; exit 1
+  fi
+done
+if grep -qE '/sys/|/proc/' "$ROOT/src/status_snapshot.cpp"; then
+  echo "error: status_snapshot.cpp must not reference kernel control paths" >&2; exit 1
 fi
 
 # Release defaults are observe-only: no governor writes and no arming until opt-in.

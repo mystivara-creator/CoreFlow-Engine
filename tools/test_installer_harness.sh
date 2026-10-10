@@ -63,7 +63,6 @@ run() {  # run <name> <expect: ok|fail> <mode-expected or -> <setup-fn> [arch]
 }
 none() { :; }
 flag() { touch "$1/flag"; }
-flag_validated() { touch "$1/flag"; cp "$1/mod/system/etc/coreflow/validated_profiles.txt" "$1/vp.bak"; echo kalama >> "$1/mod/system/etc/coreflow/validated_profiles.txt"; }
 existing_cfg() { mkdir -p "$1/state"; echo "mutation_mode=observe" > "$1/state/config.ini"; }
 tampered_model() { echo junk >> "$1/mod/system/etc/coreflow/thermal_predictor.onnx"; }
 adaptive_default() { sed -i 's/^mutation_mode=observe$/mutation_mode=adaptive/' "$1/mod/system/etc/coreflow/default.conf"; }
@@ -75,16 +74,14 @@ bad_arch() { :; }
 run positive_observe_no_flag ok observe none
 grep -q "CoreFlow Autonomous install report" "$T/positive_observe_no_flag/state/install_report.txt" && echo "   report present"
 grep -qx 'mutation_mode=observe' "$T/positive_observe_no_flag/state/config.ini" && echo "   config observe"
-run flag_unvalidated_soc ok observe flag
-grep -q "no validated profile" "$T/flag_unvalidated_soc/state/install_report.txt" && echo "   refused: no validated profile"
-[ -f "$T/flag_unvalidated_soc/flag" ] && echo "   WARN flag not consumed" || echo "   flag consumed"
-run flag_validated_soc_adaptive ok adaptive flag_validated
-grep -qx 'mutation_mode=adaptive' "$T/flag_validated_soc_adaptive/state/config.ini" && grep -qx 'mutation_armed=true' "$T/flag_validated_soc_adaptive/state/config.ini" && grep -qx 'allow_cpu_governor=yes' "$T/flag_validated_soc_adaptive/state/config.ini" && echo "   adaptive triple written"
+# The legacy flag must never arm Adaptive: shared storage is writable by any app.
+run flag_ignored_on_timeout ok observe flag
+echo "$LAST_OUT" | grep -q "flag ignored" && echo "   flag reported as ignored" || { echo "FAIL flag not reported"; FAIL=$((FAIL+1)); }
+grep -qx 'mutation_mode=observe' "$T/flag_ignored_on_timeout/state/config.ini" \
+  && grep -qx 'mutation_armed=false' "$T/flag_ignored_on_timeout/state/config.ini" \
+  && echo "   config observe/unarmed" || { echo "FAIL config armed by flag"; FAIL=$((FAIL+1)); }
 run existing_config_kept ok observe existing_cfg
 grep -q "existing config" "$T/existing_config_kept/state/install_report.txt" && echo "   existing config untouched"
-no_thermal_flag() { touch "$1/flag"; cp "$1/mod/system/etc/coreflow/validated_profiles.txt" "$1/vp.bak"; echo kalama >> "$1/mod/system/etc/coreflow/validated_profiles.txt"; rm -rf "$1/sys/sys/class/thermal"; }
-run flag_validated_no_thermal ok observe no_thermal_flag
-grep -q "required telemetry" "$T/flag_validated_no_thermal/state/install_report.txt" && echo "   refused: telemetry gate"
 run api33_rejected fail "" set_api33
 run tampered_model_rejected fail "" tampered_model
 run adaptive_default_rejected fail "" adaptive_default
