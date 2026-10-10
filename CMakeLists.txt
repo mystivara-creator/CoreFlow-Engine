@@ -50,6 +50,7 @@ set(COREFLOW_CORE_SOURCES
     src/thermal_guard.cpp
     src/status_snapshot.cpp
     src/decision_agent.cpp
+    src/ecosystem_knowledge.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
