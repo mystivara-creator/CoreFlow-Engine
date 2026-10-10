@@ -6,6 +6,7 @@
 #include <iterator>
 #include <locale>
 #include <sstream>
+#include <string>
 #include <unistd.h>
 
 namespace coreflow {
@@ -95,7 +96,15 @@ const std::vector<std::string>& blockerCodes() {
 std::string primaryBlocker(const EngineStatus& s) {
     if (!s.running) return "STOPPED";
     if (s.hold_active) return "SAFETY_HOLD";
-    if (s.mode != "adaptive") return "OBSERVE_MODE";
+    // status.json / WebUI use config-style tokens: "adaptive" | "observe".
+    // Logs historically used mutationModeName() → "ADAPTIVE"/"DISABLED".
+    // Accept either form so Adaptive is never misreported as OBSERVE_MODE.
+    std::string modeLower = s.mode;
+    for (char& c : modeLower) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    const bool adaptive = (modeLower == "adaptive");
+    if (!adaptive) return "OBSERVE_MODE";
     if (!s.armed) return "NOT_ARMED";
     if (!s.baseline_ready) return "BASELINE_CAPTURE";
     if (s.observing) return "OBSERVING_OUTCOME";
@@ -103,7 +112,8 @@ std::string primaryBlocker(const EngineStatus& s) {
     if (s.cooldown_remaining > 0) return "COOLDOWN";
     if (!s.proactive_allowed && !s.stabilizing_allowed) {
         if (s.state == "IDLE") return "CONTEXT_IDLE";
-        if (s.confidence < 0.70) return "CONTEXT_LOW_CONFIDENCE";
+        // Align with EngineConfig min_confidence default (Balance pass: 0.60).
+        if (s.confidence < 0.60) return "CONTEXT_LOW_CONFIDENCE";
         return "CONTEXT_NO_HEADROOM";
     }
     if (!s.mutation_eligible || s.candidates == 0) return "NO_CANDIDATES";
@@ -206,6 +216,10 @@ std::string statusToJson(const EngineStatus& s) {
     appendBool(out, s.stabilizing_only);
     out << ",\"candidates\":" << s.candidates << ",\"plan_reason\":";
     appendEscaped(out, s.plan_reason);
+    out << ",\"agent_mode\":";
+    appendEscaped(out, s.agent_mode);
+    out << ",\"agent_reason\":";
+    appendEscaped(out, s.agent_reason);
     out << ",\"hold_active\":";
     appendBool(out, s.hold_active);
     out << ",\"safety_hold\":";
@@ -223,7 +237,12 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"baseline_ready\":";
     appendBool(out, s.baseline_ready);
     out << ",\"baseline_samples\":" << s.baseline_samples
-        << ",\"baseline_target\":" << s.baseline_target << ",\"observing\":";
+        << ",\"baseline_target\":" << s.baseline_target
+        << ",\"observation_samples\":" << s.observation_samples
+        << ",\"observation_target\":" << s.observation_target
+        << ",\"skip_reason\":";
+    appendEscaped(out, s.skip_reason);
+    out << ",\"observing\":";
     appendBool(out, s.observing);
     out << ",\"cooldown_remaining\":" << s.cooldown_remaining << '}';
 

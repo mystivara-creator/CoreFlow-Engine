@@ -4,6 +4,7 @@
 #include "coreflow/experience.hpp"
 #include "coreflow/thermal_predictor.hpp"
 #include "coreflow/decision_trace.hpp"
+#include "coreflow/decision_agent.hpp"
 
 #include <android/log.h>
 #include <algorithm>
@@ -972,9 +973,14 @@ void AutonomousEngine::publishStatus(
         s.stabilizing_only = plan.stabilizing_only;
         s.candidates = plan.candidates.size();
         s.plan_reason = plan.reason;
+        s.agent_mode = agentReasoningModeName(AgentReasoningMode::ScoringOnly);
+        s.agent_reason = resource_controller_.lastAgentReason();
         s.hold_active = hold != HoldReason::None;
         s.safety_hold = holdReasonName(hold);
-        s.mode = mutationModeName(config_.mutationMode());
+        // WebUI / primaryBlocker expect config-style tokens, not log labels.
+        s.mode = (config_.mutationMode() == MutationMode::Adaptive)
+                     ? "adaptive"
+                     : "observe";
         s.armed = config_.mutationArmed();
         s.allow_cpu_governor = config_.allowCpuGovernor();
         // Re-evaluate the single authority gate for display. authorize() is const
@@ -988,6 +994,8 @@ void AutonomousEngine::publishStatus(
         s.baseline_ready = baseline_intelligence_.baselineReady();
         s.baseline_samples = baseline_intelligence_.baselineSampleCount();
         s.baseline_target = BaselineIntelligence::kBaselineSamples;
+        s.observation_samples = baseline_intelligence_.observationSampleCount();
+        s.observation_target = BaselineIntelligence::kObservationSamples;
         s.observing = baseline_intelligence_.observing();
         s.cooldown_remaining = sample_count_ < mutation_cooldown_until_sample_
             ? mutation_cooldown_until_sample_ - sample_count_ : 0U;
@@ -995,6 +1003,33 @@ void AutonomousEngine::publishStatus(
         s.cpu_mutated = controller_.mutated();
         s.resource_mutated = resource_controller_.mutated();
         s.stabilizing_epoch = resource_controller_.stabilizingEpoch();
+
+        // Human-readable why this cycle did not open a new mutation epoch.
+        if (s.hold_active) {
+            s.skip_reason = "safety hold active";
+        } else if (s.observing) {
+            s.skip_reason = "observing outcome epoch " +
+                std::to_string(s.observation_samples) + "/" +
+                std::to_string(s.observation_target);
+        } else if (s.cpu_mutated || s.resource_mutated) {
+            s.skip_reason = "change held; one mutation epoch at a time";
+        } else if (s.cooldown_remaining > 0) {
+            s.skip_reason = "outcome/regression cooldown " +
+                std::to_string(s.cooldown_remaining) + " sample(s) left";
+        } else if (!s.baseline_ready) {
+            s.skip_reason = "baseline capture " +
+                std::to_string(s.baseline_samples) + "/" +
+                std::to_string(s.baseline_target);
+        } else if (!s.mutation_eligible) {
+            s.skip_reason = s.plan_reason.empty() ? "policy not eligible" : s.plan_reason;
+        } else if (s.candidates == 0) {
+            s.skip_reason = "no ranked candidates this cycle";
+        } else if (cpu == MutationResult::Skipped &&
+                   resource == MutationResult::Skipped) {
+            s.skip_reason = "candidates present; authority or score declined write";
+        } else {
+            s.skip_reason.clear();
+        }
         for (const auto& applied : controller_.lastAppliedGovernors()) {
             s.cpu_applied.emplace_back(applied.first, applied.second);
         }
