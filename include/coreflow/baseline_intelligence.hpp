@@ -63,6 +63,7 @@ public:
 
     // Samples collected so far toward the factory baseline (read-only progress).
     std::size_t baselineSampleCount() const noexcept { return baseline_.samples; }
+    std::size_t observationSampleCount() const noexcept { return observation_.samples; }
 
     bool beginObservation() noexcept;
     bool observing() const noexcept { return phase_ == Phase::Observing; }

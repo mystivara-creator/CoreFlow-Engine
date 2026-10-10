@@ -85,6 +85,8 @@ struct EngineStatus {
     bool stabilizing_only{false};
     std::size_t candidates{0};
     std::string plan_reason;
+    std::string agent_mode;    // ScoringOnly | ...
+    std::string agent_reason;  // last DecisionAgent summary
     bool hold_active{false};
     std::string safety_hold;
     std::string mode;
@@ -96,6 +98,9 @@ struct EngineStatus {
     bool baseline_ready{false};
     std::size_t baseline_samples{0};
     std::size_t baseline_target{0};
+    std::size_t observation_samples{0};
+    std::size_t observation_target{0};
+    std::string skip_reason;  // why NO_ACTION / mutation skipped this cycle
     bool observing{false};
     std::uint64_t cooldown_remaining{0};
 
