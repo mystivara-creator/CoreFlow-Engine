@@ -226,11 +226,11 @@ function renderLive(p){
  setText("liveTitle",sum.title);setText("liveDetail",sum.detail);
  const dot=$("liveDot");if(dot)dot.className="live-dot-lg tone-"+sum.tone;
  const pipe=$("livePipeline");
- if(!p.ok){["liveEyes","liveBrain","liveHands"].forEach(id=>{const h=$(id);if(h)h.replaceChildren()});if(pipe)pipe.replaceChildren();["liveVersion","liveSample","liveAge","livePid"].forEach(id=>setText(id,"—"));return}
+ if(!p.ok){["liveEyes","liveDevice","liveBrain","liveHands"].forEach(id=>{const h=$(id);if(h)h.replaceChildren()});if(pipe)pipe.replaceChildren();["liveVersion","liveSample","liveAge","livePid"].forEach(id=>setText(id,"—"));return}
  const d=p.data;
  setText("liveVersion","v"+d.version);setText("liveSample","#"+d.sample);setText("liveAge",p.age+"s ago");setText("livePid",d.pid?String(d.pid):"—");
  if(pipe){pipe.replaceChildren();S.pipeline(d).forEach((st,i)=>{const c=liveEl("div","stage tone-"+st.tone);c.append(liveEl("span","stage-label",(i+1)+" · "+st.label),liveEl("b",null,st.state),liveEl("small",null,st.note));pipe.appendChild(c)})}
- renderKv("liveEyes",S.eyesRows(d));renderKv("liveBrain",S.brainRows(d));renderKv("liveHands",S.handsRows(d));
+ renderKv("liveEyes",S.eyesRows(d));renderKv("liveDevice",S.deviceRows(d));renderKv("liveBrain",S.brainRows(d));renderKv("liveHands",S.handsRows(d));
 }
 function pollLive(){
  if(state.statusBusy||state.view!=="live"||document.visibilityState==="hidden")return;

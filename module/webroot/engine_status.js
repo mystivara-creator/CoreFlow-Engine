@@ -47,6 +47,7 @@
     var e = isObj(j.eyes) ? j.eyes : {};
     var b = isObj(j.brain) ? j.brain : {};
     var h = isObj(j.hands) ? j.hands : {};
+    var v = isObj(j.device) ? j.device : {};
     return {
       version: str(j.version, 32),
       pid: int(j.pid, 0),
@@ -55,6 +56,21 @@
       interval: int(j.interval_s, 5),
       running: j.running !== false,
       blocker: str(j.blocker, 40),
+      device: {
+        present: isObj(j.device),
+        manufacturer: str(v.manufacturer, 96), model: str(v.model, 96),
+        deviceName: str(v.device_name, 96), product: str(v.product, 96),
+        board: str(v.board, 96), hardware: str(v.hardware, 96),
+        socManufacturer: str(v.soc_manufacturer, 96), socModel: str(v.soc_model, 96),
+        androidRelease: str(v.android_release, 32), sdkLevel: str(v.sdk_level, 16),
+        kernelRelease: str(v.kernel_release, 128), abi: str(v.abi, 32),
+        procAvailable: bool(v.proc_available), sysAvailable: bool(v.sys_available),
+        cgroupV2: bool(v.cgroup_v2), cpuset: bool(v.cpuset_available),
+        uclamp: bool(v.uclamp_available), schedulerControls: bool(v.scheduler_controls_available),
+        devfreq: bool(v.devfreq_available), discoveredResources: int(v.discovered_resources, 0),
+        mutationReadyResources: int(v.mutation_ready_resources, 0),
+        blockQueueMutationsQuarantined: bool(v.block_queue_mutations_quarantined)
+      },
       eyes: {
         // The engine says whether it has a thermal sensor; without one the numbers mean nothing.
         thermal: e.thermal_available === false ? null : num(e.thermal_c),
@@ -183,6 +199,35 @@
     ];
   }
 
+  function deviceRows(d) {
+    var v = d.device;
+    if (!v || !v.present) {
+      return [
+        ["Device profile", "not supplied by this daemon build", "status has no device section"],
+        ["Storage mutation policy", "unknown", "requires updated engine status"]
+      ];
+    }
+    var identity = [v.manufacturer, v.model].filter(Boolean).join(" · ") || "n/a";
+    var soc = [v.socManufacturer, v.socModel || v.hardware].filter(Boolean).join(" · ") || "n/a";
+    var android = v.androidRelease ? v.androidRelease : "n/a";
+    if (v.sdkLevel) android += " · API " + v.sdkLevel;
+    var kernel = [v.kernelRelease, v.abi].filter(Boolean).join(" · ") || "n/a";
+    var interfaces = ["proc " + (v.procAvailable ? "yes" : "no"),
+      "sys " + (v.sysAvailable ? "yes" : "no"),
+      "cgroup v2 " + (v.cgroupV2 ? "yes" : "no"),
+      "uClamp " + (v.uclamp ? "yes" : "no"),
+      "devfreq " + (v.devfreq ? "yes" : "no")].join(" · ");
+    return [
+      ["Manufacturer / model", identity, v.deviceName || v.product || "device properties"],
+      ["SoC / hardware", soc, v.board ? "board " + v.board : "reported properties"],
+      ["Android", android, v.product ? "product " + v.product : "build properties"],
+      ["Kernel / ABI", kernel, "uname / runtime properties"],
+      ["Exposed interfaces", interfaces, v.cpuset ? "cpuset available" : "cpuset not detected"],
+      ["Capabilities", v.discoveredResources + " discovered · " + v.mutationReadyResources + " policy-ready", "writability alone does not grant authorization"],
+      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "not quarantined", v.blockQueueMutationsQuarantined ? "new queue writes are blocked pending device/topology validation" : "check device policy"]
+    ];
+  }
+
   function brainRows(d) {
     var b = d.brain;
     return [
@@ -210,7 +255,7 @@
   var api = {
     SCHEMA: SCHEMA, MAX_BYTES: MAX_BYTES, BLOCKERS: BLOCKERS,
     parse: parse, summary: summary, pipeline: pipeline,
-    eyesRows: eyesRows, brainRows: brainRows, handsRows: handsRows
+    eyesRows: eyesRows, deviceRows: deviceRows, brainRows: brainRows, handsRows: handsRows
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CoreFlowStatus = api;

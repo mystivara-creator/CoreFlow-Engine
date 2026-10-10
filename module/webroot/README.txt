@@ -7,9 +7,10 @@ Host: KernelSU WebUI / compatible KSU WebUI provider with the ksu.exec bridge.
 Pages
 -----
 - Live engine (default): what the C++ engine sees (eyes), decides (brain) and changed (hands),
-  a four-stage decision pipeline (Context, Policy, Authority, Actuators) and a one-line reason
-  when the engine is not acting. Reads /data/adb/coreflow/status.json, which the daemon replaces
-  atomically every cycle. Read-only: this page cannot change anything. It polls every 3 s only
+  a four-stage decision pipeline (Context, Policy, Authority, Actuators), live device/kernel/SoC
+  identity, discovered-vs-policy-ready counts, and a one-line reason when the engine is not acting.
+  Reads /data/adb/coreflow/status.json, which the daemon replaces atomically every cycle. Read-only:
+  this page cannot change anything. It polls every 3 s only
   while visible, slows down after repeated failures, and reports a stalled or stopped daemon.
 - Overview: daemon/config summary, latest log-derived runtime signals and recent events.
 - Mode & policy: explicit Observe / Adaptive selection, separate CPU governor opt-in,
@@ -32,6 +33,7 @@ Safety / runtime behavior
 - Runtime discovery refresh sends SIGUSR1 to coreflowd; it does not directly change any tunable.
 - Shell console commands are fixed/allowlisted and read-only. Do not add arbitrary root command input.
 - Missing telemetry stays marked unavailable instead of being replaced with invented values.
+- Block-device queue writes are shown as quarantined in the live profile. Device discovery/writability is evidence only, not authorization.
 - status.json content comes from kernel-provided strings, so the Live page renders it with
   textContent only (never innerHTML), caps its size, and ignores unknown fields.
 - engine_status.js (pure logic) and the C++ writer are checked against each other by
