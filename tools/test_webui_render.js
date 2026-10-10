@@ -78,6 +78,8 @@ const text = (id) => getEl(id).textContent;
   check(text("liveVersion") === "v2.1.0" && text("liveSample") === "#120", "meta row filled");
   check(getEl("livePipeline").children.length === 4, "pipeline rendered 4 stages");
   check(getEl("liveEyes").children.length >= 6, "eyes rows rendered");
+  check(getEl("liveDevice").children.length >= 6, "device & ecosystem rows rendered");
+  check(getEl("liveDevice").textContent.includes("QUARANTINED"), "block queue safety policy is visible");
   check(getEl("liveBrain").children.length >= 6, "brain rows rendered");
   check(getEl("liveHands").children.length >= 2, "hands rows rendered");
   check(getEl("liveEyes").textContent.includes("41.5"), "temperature visible in eyes");

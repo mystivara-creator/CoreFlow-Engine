@@ -1,14 +1,14 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-VERSION="2.1.0"
-MODULE_VERSION="v2.1.0"
-VERSION_CODE="2100"
+VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' "$ROOT/CMakeLists.txt" | head -n1)"
 
 required_files="
 CMakeLists.txt
 module/module.prop
+module/update.json
+.github/workflows/release-update-feed.yml
 module/service.sh
 module/system/etc/coreflow/default.conf
 module/system/etc/coreflow/thermal_predictor.onnx
@@ -58,10 +58,28 @@ fi
 # Keep the source package small and deterministic: no local ONNX SDK cache.
 [ ! -d "$ROOT/third_party/onnxruntime-android" ] || { echo "error: extracted ONNX Runtime cache must not be shipped" >&2; exit 1; }
 
-grep -q '^version=v2.1.0$' "$ROOT/module/module.prop"
-grep -q '^versionCode=2100$' "$ROOT/module/module.prop"
-grep -q 'project(CoreFlowAutonomous VERSION 2.1.0 LANGUAGES CXX)' "$ROOT/CMakeLists.txt"
-grep -q 'kCoreFlowVersion = "2.1.0"' "$ROOT/include/coreflow/config.hpp"
+MODULE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$ROOT/module/module.prop" | tr -d '[:space:]')"
+MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' "$ROOT/module/module.prop" | tr -d '[:space:]')"
+CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' "$ROOT/CMakeLists.txt" | head -n1)"
+CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' "$ROOT/include/coreflow/config.hpp" | head -n1)"
+[[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 1000 + $2 * 100 + $3 * 10}' <<< "$CMAKE_VERSION")"
+[ "$MODULE_VERSION" = "v${CMAKE_VERSION}" ] || { echo "error: module version does not match CMake version" >&2; exit 1; }
+[ "$MODULE_CODE" = "$EXPECTED_CODE" ] || { echo "error: versionCode must be ${EXPECTED_CODE} for ${CMAKE_VERSION}" >&2; exit 1; }
+[ "$CONFIG_VERSION" = "$CMAKE_VERSION" ] || { echo "error: runtime version does not match CMake version" >&2; exit 1; }
+grep -q 'set(CMAKE_CXX_STANDARD 20)' "$ROOT/CMakeLists.txt"
+grep -q 'target_compile_features(coreflow_compile_options INTERFACE cxx_std_20)' "$ROOT/CMakeLists.txt"
+grep -q '^updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json$' "$ROOT/module/module.prop"
+python3 - "$ROOT/module/update.json" "$MODULE_VERSION" "$MODULE_CODE" <<'PYEOF'
+import json, sys
+path, expected_version, expected_code = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    data = json.load(handle)
+assert data.get("version") == expected_version, "update.json version must match module.prop"
+assert data.get("versionCode") == int(expected_code), "update.json versionCode must match module.prop"
+assert data.get("zipUrl", "").startswith("https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/"), "zipUrl must point to an exact GitHub release asset"
+assert data.get("changelog", "").startswith("https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/"), "changelog URL must be public raw GitHub content"
+PYEOF
 grep -q 'ResourceStateModel' "$ROOT/include/coreflow/resource_model.hpp"
 grep -q 'ContextEngine' "$ROOT/include/coreflow/context.hpp"
 grep -q 'PolicyEngine' "$ROOT/include/coreflow/control.hpp"

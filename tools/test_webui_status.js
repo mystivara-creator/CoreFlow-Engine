@@ -63,6 +63,9 @@ check(S.eyesRows(p.data).some((r) => r[0] === "Temperature" && /hottest 43\.0/.t
 }
 check(S.eyesRows(p.data).some((r) => r[0] === "Memory free" && r[1] === "52%"), "memory row");
 check(S.brainRows(p.data).some((r) => r[0] === "Mode" && /adaptive/.test(r[1]) && /armed/.test(r[1])), "mode row");
+check(S.deviceRows(p.data).some((r) => r[0] === "Manufacturer / model" && /ExampleDevice/.test(r[1])), "live device identity row");
+check(S.deviceRows(p.data).some((r) => r[0] === "Capabilities" && /38 discovered/.test(r[1]) && /7 policy-ready/.test(r[1])), "discovery vs policy-ready capabilities remain distinct");
+check(S.deviceRows(p.data).some((r) => r[0] === "Block I/O mutation" && r[1] === "QUARANTINED"), "quarantined block queue writes are visible in the UI");
 
 // ---- observe mode explains itself ----
 p = S.parse(raw("observe.json"));
