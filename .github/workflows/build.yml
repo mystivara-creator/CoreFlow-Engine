@@ -24,6 +24,7 @@ on:
       - "src/**"
       - "tests/**"
       - "module/**"
+      - "!module/update.json"
       - "tools/**"
       - ".github/workflows/build.yml"
 
@@ -135,8 +136,10 @@ jobs:
           MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
+          [[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 1000 + $2 * 100 + $3 * 10}' <<< "$CMAKE_VERSION")"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_CODE" = "2100"
+          test "$MODULE_CODE" = "$EXPECTED_CODE"
           test "$CONFIG_VERSION" = "$CMAKE_VERSION"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
           echo "Android native minimum API: ${ANDROID_MIN_API}"
@@ -292,7 +295,7 @@ jobs:
             -DANDROID_ABI="${ANDROID_ABI}" \
             -DANDROID_PLATFORM="android-${ANDROID_MIN_API}" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_CXX_STANDARD=20 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
             -DCORE_FLOW_BUILD_TESTS=OFF \
