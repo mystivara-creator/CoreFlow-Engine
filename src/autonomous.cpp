@@ -8,6 +8,8 @@
 #include <android/log.h>
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <unistd.h>
 #include <cstdarg>
 #include <cmath>
 #include <exception>
@@ -30,6 +32,7 @@ constexpr const char* kMutationJournalPath = "/data/adb/coreflow/mutation_journa
 constexpr const char* kExperiencePath = "/data/adb/coreflow/experience.db";
 constexpr const char* kKillSwitchPath = "/data/adb/coreflow/DISABLE";
 constexpr const char* kSafeModePath = "/data/adb/coreflow/SAFE_MODE";
+constexpr const char* kStatusPath = "/data/adb/coreflow/status.json";
 constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
 constexpr std::size_t kHistorySize = 6;
 
@@ -562,12 +565,14 @@ void AutonomousEngine::tick() {
             sample_count_ % 60 == 0) {
             logInfo(
                 "CONTEXT workload=%s confidence=%.2f thermal_headroom=%s "
-                "memory_headroom=%s power_headroom=%s mutation_eligible=%s candidates=%zu",
+                "memory_headroom=%s power_headroom=%s mutation_eligible=%s "
+                "stabilizing_only=%s candidates=%zu",
                 workloadClassName(context.workload), context.confidence,
                 context.thermal_headroom ? "yes" : "no",
                 context.memory_headroom ? "yes" : "no",
                 context.power_headroom ? "yes" : "no",
                 ecosystem_plan.mutation_eligible ? "yes" : "no",
+                ecosystem_plan.stabilizing_only ? "yes" : "no",
                 ecosystem_plan.candidates.size());
             last_context_eligible_ = ecosystem_plan.mutation_eligible;
         }
@@ -732,16 +737,23 @@ void AutonomousEngine::tick() {
         }
 
         // End an explored mutation epoch before selecting another candidate.
-        // Safety states restore immediately; beneficial/neutral epochs restore
-        // after their short hold so the next experiment starts from OEM state.
+        // Idle, a disarmed config, the kill switch and SAFE_MODE restore
+        // immediately. Thermal/memory stress restores too, unless the only change
+        // held is a stabilizing resource write that the current plan still
+        // permits: that change is what responds to the stress, and it is bounded
+        // by the observation window, the outcome hold and regression rollback.
         const bool mutation_epoch_active =
             controller_.mutated() || resource_controller_.mutated();
         const bool hold_expired = sample_count_ >= mutation_cooldown_until_sample_;
-        const bool safety_restore =
-            next == RuntimeState::Idle || next == RuntimeState::Pressure ||
-            next == RuntimeState::ThermalGuard ||
-            config_.mutationMode() != MutationMode::Adaptive ||
-            !config_.mutationArmed();
+        EpochRestoreInputs epoch_inputs;
+        epoch_inputs.state = next;
+        epoch_inputs.mode_adaptive = config_.mutationMode() == MutationMode::Adaptive;
+        epoch_inputs.armed = config_.mutationArmed();
+        epoch_inputs.cpu_mutated = controller_.mutated();
+        epoch_inputs.resource_epoch_stabilizing = resource_controller_.stabilizingEpoch();
+        epoch_inputs.plan_stabilizing_only = ecosystem_plan.stabilizing_only;
+        epoch_inputs.plan_mutation_eligible = ecosystem_plan.mutation_eligible;
+        const bool safety_restore = shouldRestoreEpochNow(epoch_inputs);
         if (mutation_epoch_active && !baseline_intelligence_.observing() &&
             (hold_expired || safety_restore)) {
             const bool cpu_restored = controller_.restoreAll();
@@ -858,6 +870,10 @@ void AutonomousEngine::tick() {
             history_.pop_front();
         }
 
+        // STEP 14: Export live status for the WebUI (best-effort, no authority).
+        publishStatus(sample, previous, next, decision, context, ecosystem_plan,
+                      hold, mutation, resource_mutation);
+
     } catch (const std::exception& e) {
         logError("Exception during tick: %s", e.what());
     } catch (...) {
@@ -865,6 +881,133 @@ void AutonomousEngine::tick() {
     }
 
     ++sample_count_;
+}
+
+void AutonomousEngine::publishStatus(
+    const RuntimeSample& sample,
+    const RuntimeState previous,
+    const RuntimeState next,
+    const Decision decision,
+    const SystemContext& context,
+    const PolicyPlan& plan,
+    const HoldReason hold,
+    const MutationResult cpu,
+    const MutationResult resource
+) noexcept {
+    try {
+        const auto tally = [this](const MutationResult r, const char* kind) {
+            if (r == MutationResult::Verified) ++status_verified_;
+            else if (r == MutationResult::RolledBack) ++status_rolled_back_;
+            else if (r == MutationResult::Failed) ++status_failed_;
+            if (r != MutationResult::Skipped) {
+                last_change_sample_ = sample_count_;
+                last_change_kind_ = kind;
+                last_change_result_ = mutationResultName(r);
+            }
+        };
+        tally(cpu, "cpu");
+        tally(resource, "resource");
+
+        EngineStatus s;
+        s.version = kCoreFlowVersion;
+        s.pid = static_cast<long>(::getpid());
+        s.sample = sample_count_;
+        s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
+        s.interval_s = config_.monitorIntervalSeconds();
+        s.running = true;
+
+        s.thermal_available = sample.thermal_available;
+        s.thermal_c = static_cast<double>(sample.thermal_millidegrees) / 1000.0;
+        s.hottest_c = static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0;
+        s.thermal_trend = trendName(sample.thermal_trend);
+        s.mem_available_ratio = sample.mem_available_ratio;
+        s.memory_trend = trendName(sample.memory_trend);
+        s.cpu_available = sample.cpu_utilization_available;
+        s.cpu_utilization = sample.cpu_utilization;
+        s.load1 = sample.load1;
+        s.load_trend = trendName(sample.load_trend);
+        s.io_available = sample.io_activity_available;
+        s.io_read_kbs = sample.io_read_kb_per_sec;
+        s.io_write_kbs = sample.io_write_kb_per_sec;
+        s.battery_percent = sample.battery_level_percent;
+        s.charging = sample.charging;
+        s.confidence = sample.confidence;
+
+        s.state = stateName(next);
+        s.previous_state = stateName(previous);
+        s.decision = decisionName(decision);
+        s.workload = workloadClassName(context.workload);
+        s.thermal_headroom = context.thermal_headroom;
+        s.memory_headroom = context.memory_headroom;
+        s.power_headroom = context.power_headroom;
+        s.proactive_allowed = context.mutation_allowed_by_context;
+        s.stabilizing_allowed = context.stabilizing_allowed_by_context;
+        s.plan_action = policyActionName(plan.action);
+        s.intervention = interventionLevelName(plan.intervention);
+        s.mutation_eligible = plan.mutation_eligible;
+        s.stabilizing_only = plan.stabilizing_only;
+        s.candidates = plan.candidates.size();
+        s.plan_reason = plan.reason;
+        s.hold_active = hold != HoldReason::None;
+        s.safety_hold = holdReasonName(hold);
+        s.mode = mutationModeName(config_.mutationMode());
+        s.armed = config_.mutationArmed();
+        s.allow_cpu_governor = config_.allowCpuGovernor();
+        // Re-evaluate the single authority gate for display. authorize() is const
+        // and has no side effects; this is not a permit anyone can use.
+        s.permit_resource = mutation_authority_.authorize(
+            plan, config_, next, sample.confidence,
+            MutationPermit::Scope::Resource).valid();
+        s.permit_cpu = mutation_authority_.authorize(
+            plan, config_, next, sample.confidence,
+            MutationPermit::Scope::CpuFreq).valid();
+        s.baseline_ready = baseline_intelligence_.baselineReady();
+        s.baseline_samples = baseline_intelligence_.baselineSampleCount();
+        s.baseline_target = BaselineIntelligence::kBaselineSamples;
+        s.observing = baseline_intelligence_.observing();
+        s.cooldown_remaining = sample_count_ < mutation_cooldown_until_sample_
+            ? mutation_cooldown_until_sample_ - sample_count_ : 0U;
+
+        s.cpu_mutated = controller_.mutated();
+        s.resource_mutated = resource_controller_.mutated();
+        s.stabilizing_epoch = resource_controller_.stabilizingEpoch();
+        for (const auto& applied : controller_.lastAppliedGovernors()) {
+            s.cpu_applied.emplace_back(applied.first, applied.second);
+        }
+        for (const auto& applied : resource_controller_.lastAppliedResources()) {
+            s.resource_applied.emplace_back(applied.first, applied.second);
+        }
+        s.last_cpu_result = mutationResultName(cpu);
+        s.last_resource_result = mutationResultName(resource);
+        s.last_change_kind = last_change_kind_;
+        s.last_change_result = last_change_result_;
+        s.last_change_sample = last_change_sample_;
+        s.verified = status_verified_;
+        s.rolled_back = status_rolled_back_;
+        s.failed = status_failed_;
+
+        last_status_ = s;
+        (void)writeStatusFile(kStatusPath, statusToJson(s));
+    } catch (...) {
+        // Status is advisory. Never let it disturb the control loop.
+    }
+}
+
+void AutonomousEngine::publishStoppedStatus() noexcept {
+    try {
+        EngineStatus s = last_status_;
+        s.running = false;
+        s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
+        s.cpu_mutated = controller_.mutated();
+        s.resource_mutated = resource_controller_.mutated();
+        s.stabilizing_epoch = false;
+        if (!s.cpu_mutated) s.cpu_applied.clear();
+        if (!s.resource_mutated) s.resource_applied.clear();
+        if (s.version.empty()) s.version = kCoreFlowVersion;
+        s.pid = static_cast<long>(::getpid());
+        (void)writeStatusFile(kStatusPath, statusToJson(s));
+    } catch (...) {
+    }
 }
 
 int AutonomousEngine::run() {
@@ -948,6 +1091,8 @@ int AutonomousEngine::run() {
     } catch (...) {
         logError("Unknown exception during shutdown restore");
     }
+
+    publishStoppedStatus();
 
     logInfo("CoreFlow Autonomous shutdown complete");
     return 0;

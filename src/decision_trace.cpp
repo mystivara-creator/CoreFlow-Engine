@@ -114,6 +114,7 @@ void appendDecisionTrace(
             << ",\"workload\":\"" << jsonEscape(workloadClassName(context.workload)) << "\""
             << ",\"context_confidence\":" << context.confidence
             << ",\"mutation_eligible\":" << (plan.mutation_eligible ? "true" : "false")
+            << ",\"stabilizing_only\":" << (plan.stabilizing_only ? "true" : "false")
             << ",\"candidate_count\":" << plan.candidates.size()
             << ",\"safety_hold\":\"" << jsonEscape(holdReasonName(hold)) << "\""
             << ",\"mode\":\"" << (mode == MutationMode::Adaptive ? "adaptive" :

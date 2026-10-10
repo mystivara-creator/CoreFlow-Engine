@@ -125,7 +125,7 @@ bool ResourceMutationController::captureBaseline(
 
         std::string value;
         if (!ResourceActuator::read(cap.path, value)) continue;
-        value = trim(value);
+        value = ResourceActuator::comparableValue(value);
         if (value.empty()) continue;
 
         baseline_[cap.path] = {cap.domain, cap.name, cap.path, value, true};
@@ -138,7 +138,8 @@ bool ResourceMutationController::captureBaseline(
         if (baseline_.count(path)) return;
         std::string value;
         if (!ResourceActuator::read(path, value)) return;
-        baseline_[path] = {domain, name, path, trim(value), true};
+        baseline_[path] = {domain, name, path,
+                           ResourceActuator::comparableValue(value), true};
     };
 
     captureField(ResourceDomain::Memory, "vm.swappiness",
@@ -198,7 +199,10 @@ bool ResourceMutationController::selectCandidate(
         // ReduceIntervention means stop/recover, never start a new resource write.
         return false;
     }
-    if (state == RuntimeState::ThermalGuard || state == RuntimeState::Pressure) {
+    // Thermal/memory safety states accept only a stabilizing plan; anything else
+    // is hold/recovery-only.
+    if ((state == RuntimeState::ThermalGuard || state == RuntimeState::Pressure) &&
+        !policy.stabilizing_only) {
         return false;
     }
 
@@ -306,6 +310,9 @@ bool ResourceMutationController::selectCandidate(
         if (bit == baseline_.end() || !bit->second.valid) continue;
 
         if (!policy.allows(bit->second.domain, name)) continue;
+        // A stressed context accepts only changes that respond to the stress by
+        // reducing load. Everything else waits for headroom.
+        if (policy.stabilizing_only && !scored.stabilizing) continue;
 
         if (!interventionAllows(policy.intervention,
                                 requiredIntervention(bit->second.domain, name))) {
@@ -334,6 +341,8 @@ bool ResourceMutationController::selectCandidate(
         } else {
             if (requested.empty() || requested == bit->second.value) continue;
         }
+
+        if (isRejected(path, requested)) continue;
 
         double utility = scored.utility;
         if (experience_memory_ != nullptr) {
@@ -392,13 +401,15 @@ ResourceMutationController::factorySnapshot() const {
     return entries;
 }
 
-bool ResourceMutationController::applyCandidate(
+MutationResult ResourceMutationController::applyCandidate(
     const Candidate& candidate,
     const MutationPermit& permit
 ) noexcept {
-    if (journal_ == nullptr) return false;
-    if (!permit.validFor(MutationPermit::Scope::Resource)) return false;
+    if (journal_ == nullptr) return MutationResult::Failed;
+    if (!permit.validFor(MutationPermit::Scope::Resource)) return MutationResult::Failed;
 
+    // Durability before the write. The journal holds factory values for every
+    // resource this controller has changed, plus the candidate about to change.
     MutationJournal::Entries entries = factorySnapshot();
     if (dirty_resources_.find(candidate.path) == dirty_resources_.end()) {
         const auto it = baseline_.find(candidate.path);
@@ -406,7 +417,7 @@ bool ResourceMutationController::applyCandidate(
             entries.emplace_back(candidate.path, it->second.value);
         }
     }
-    if (entries.empty() || !journal_->commit(entries)) return false;
+    if (entries.empty() || !journal_->commit(entries)) return MutationResult::Failed;
     journal_committed_ = true;
 
     ActuatorMutation mutation;
@@ -418,24 +429,36 @@ bool ResourceMutationController::applyCandidate(
     mutation.requested = candidate.requested;
 
     const ActuatorResult result = actuator_.apply(mutation, permit);
-    if (result.writes_attempted != 0 &&
-        result.status != ActuatorStatus::RolledBack) {
+
+    // Any attempted write may have landed, even if verification failed, so the
+    // path is tracked as dirty until an explicit rollback clears it.
+    if (result.writes_attempted != 0 && result.status != ActuatorStatus::RolledBack) {
         mutated_ = true;
         dirty_resources_.insert(candidate.path);
-    } else if (!result.succeeded() && result.writes_attempted == 0) {
-        // No kernel write was attempted; do not leave a stale pending journal.
+    }
+
+    if (result.changed()) {
+        last_applied_resources_.clear();
+        last_applied_resources_.emplace_back(candidate.path, candidate.requested);
+        return MutationResult::Verified;
+    }
+
+    // No write landed. Drop a journal epoch that this attempt opened, but only
+    // when no other resource is still changed: the journal must keep the factory
+    // values of anything that is still dirty.
+    if (result.writes_attempted == 0 && !mutated_ && journal_committed_) {
         if (journal_->clear()) {
             journal_committed_ = false;
         } else {
             restore_failed_ = true;
+            return MutationResult::Failed;
         }
     }
-    if (result.changed()) {
-        last_applied_resources_.clear();
-        last_applied_resources_.emplace_back(candidate.path, candidate.requested);
-    }
-    return result.succeeded() &&
-           (result.status == ActuatorStatus::NoChange || result.changed());
+
+    // NoChange means the kernel already holds the requested value. Nothing was
+    // applied, so report Skipped rather than a verified mutation.
+    if (result.status == ActuatorStatus::NoChange) return MutationResult::Skipped;
+    return MutationResult::Failed;
 }
 
 MutationResult ResourceMutationController::apply(
@@ -473,13 +496,18 @@ MutationResult ResourceMutationController::apply(
         return MutationResult::Skipped;
     }
 
-    if (!applyCandidate(candidate, permit)) {
-        if (mutated_ || restore_failed_) {
-            return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
-        }
-        return MutationResult::Failed;
+    const bool was_clean = !mutated_;
+    const MutationResult applied = applyCandidate(candidate, permit);
+    if (applied == MutationResult::Verified) {
+        stabilizing_epoch_ = was_clean ? policy.stabilizing_only
+                                       : (stabilizing_epoch_ && policy.stabilizing_only);
+        return MutationResult::Verified;
     }
-    return MutationResult::Verified;
+    if (applied == MutationResult::Skipped) return MutationResult::Skipped;
+    if (mutated_ || restore_failed_) {
+        return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
+    }
+    return MutationResult::Failed;
 }
 
 MutationResult ResourceMutationController::apply(
@@ -541,10 +569,30 @@ bool ResourceMutationController::restoreAll() noexcept {
     mutated_ = false;
     dirty_resources_.clear();
     last_applied_resources_.clear();
+    stabilizing_epoch_ = false;
     return true;
 }
 
+bool ResourceMutationController::isRejected(
+    const std::string& path,
+    const std::string& requested
+) const noexcept {
+    try {
+        const auto it = rejected_.find(path + "\n" + requested);
+        return it != rejected_.end() &&
+               cycle_ - it->second < kRejectionCooldownCycles;
+    } catch (...) {
+        return true;  // fail closed: treat an unreadable record as rejected
+    }
+}
+
 void ResourceMutationController::rejectLastMutation() noexcept {
+    try {
+        for (const auto& applied : last_applied_resources_) {
+            rejected_[applied.first + "\n" + applied.second] = cycle_;
+        }
+    } catch (...) {
+    }
     last_applied_resources_.clear();
 }
 

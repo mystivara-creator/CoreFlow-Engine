@@ -95,7 +95,9 @@ EffectScore EffectModel::scoreNumeric(
     const EffectContext& ctx
 ) const noexcept {
     EffectScore score;
-    score.confidence = clamp01(ctx.sample_confidence * 0.85);
+    // Balance: do not crush sample confidence; 0.92 keeps ranking sensitive
+    // to telemetry quality without discarding usable samples.
+    score.confidence = clamp01(ctx.sample_confidence * 0.92);
 
     long long base = 0;
     if (!parseInteger(baseline_value, base)) {
@@ -137,14 +139,17 @@ EffectScore EffectModel::scoreNumeric(
     EffectDirection prefer = EffectDirection::None;
     double benefit = 0.0;
     double risk = 0.45;
+    bool stabilizing_branch = false;
 
     if (thermal_pressure) {
         prefer = prior ? prior->thermal_prefer : EffectDirection::Decrease;
+        stabilizing_branch = (prefer == EffectDirection::Decrease);
         benefit = 0.35 + (ctx.thermal_c >= 55.0 ? 0.25 : 0.10);
         risk = 0.30;
         score.confidence = clamp01(score.confidence + 0.08);
     } else if (memory_pressure) {
         prefer = prior ? prior->memory_prefer : EffectDirection::Increase;
+        stabilizing_branch = (prefer != EffectDirection::None);
         benefit = 0.40 + (ctx.mem_available_ratio < 0.10 ? 0.20 : 0.05);
         risk = 0.28;
         score.confidence = clamp01(score.confidence + 0.06);
@@ -241,6 +246,7 @@ EffectScore EffectModel::scoreNumeric(
     score.benefit = clamp01(benefit);
     score.risk = clamp01(risk);
     score.direction = prefer;
+    score.stabilizing = stabilizing_branch;
     score.requested = std::to_string(requested);
     if (score.reason.empty()) {
         score.reason = thermal_pressure
@@ -256,16 +262,18 @@ EffectScore EffectModel::scoreScheduler(
     const EffectContext& ctx
 ) const noexcept {
     EffectScore score;
-    score.confidence = clamp01(ctx.sample_confidence * 0.75);
+    score.confidence = clamp01(ctx.sample_confidence * 0.88);
 
-    // Only consider under sustained load or thermal/memory pressure.
+    // Balance: allow scheduler consideration under moderate activity too,
+    // not only hard elevated/pressure. Still blocked when Idle by policy.
     const bool justify =
         ctx.state == RuntimeState::Elevated ||
         ctx.state == RuntimeState::Warming ||
         ctx.state == RuntimeState::ThermalGuard ||
         ctx.state == RuntimeState::Pressure ||
-        (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
-        ctx.load1 >= 1.50;
+        ctx.state == RuntimeState::Normal ||
+        (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.55) ||
+        ctx.load1 >= 1.00;
 
     if (!justify || ctx.intervention == InterventionLevel::ObserveOnly) {
         score.reason = "scheduler change not justified";
@@ -359,7 +367,9 @@ std::vector<EffectScore> EffectModel::rank(
         if (!score.eligible) continue;
 
         score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
-        if (!std::isfinite(score.utility) || score.utility < 0.05) continue;
+        // Balance: 0.05 discarded many low-risk bounded candidates. 0.02 still
+        // filters noise while letting small stabilizing steps surface.
+        if (!std::isfinite(score.utility) || score.utility < 0.02) continue;
         score.resource_name = cap.name;
         score.path = cap.path;
         score.domain = cap.domain;
