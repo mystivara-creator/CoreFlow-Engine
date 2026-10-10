@@ -27,7 +27,12 @@ struct SystemContext {
     bool power_headroom{false};
     bool io_headroom{true};
     bool battery_headroom{true};
+    // Full proactive tuning: non-idle, confident, with thermal/memory/power headroom.
     bool mutation_allowed_by_context{false};
+    // Stabilizing-only tuning: the system is stressed (thermal/memory) but telemetry
+    // is trustworthy. Only small, load-reducing writes are justified, never a
+    // more aggressive setting. This is the adaptive alternative to a hard block.
+    bool stabilizing_allowed_by_context{false};
     double confidence{0.0};
 };
 

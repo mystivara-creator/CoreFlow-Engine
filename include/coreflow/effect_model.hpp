@@ -35,6 +35,9 @@ struct EffectScore {
     double risk{1.0};          // 0..1 risk of harm
     double confidence{0.0};    // 0..1 model confidence for this resource
     EffectDirection direction{EffectDirection::None};
+    // True only when the change responds to thermal or memory stress by moving a
+    // knob in its load-reducing direction. Stressed contexts accept nothing else.
+    bool stabilizing{false};
     std::string requested;     // concrete value to write (empty if ineligible)
     std::string reason;
     // Structured identity/utility; never encode identity into diagnostic text.

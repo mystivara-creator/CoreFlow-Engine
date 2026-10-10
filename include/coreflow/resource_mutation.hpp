@@ -57,6 +57,13 @@ public:
     }
 
     bool mutated() const noexcept { return mutated_; }
+    // True when every change currently held was made under a stabilizing-only
+    // plan. Such a change may stay in place through a thermal/memory safety
+    // state; any other change must be restored there.
+    bool stabilizingEpoch() const noexcept { return mutated_ && stabilizing_epoch_; }
+    // A candidate whose outcome regressed is not selected again for this many
+    // controller cycles.
+    static constexpr std::uint64_t kRejectionCooldownCycles = 120;
     std::size_t baselineSize() const noexcept { return baseline_.size(); }
 
 private:
@@ -86,8 +93,8 @@ private:
         const DeviceProfile& profile,
         const PolicyPlan& policy,
         Candidate& out) const noexcept;
-    bool applyCandidate(const Candidate& candidate,
-                        const MutationPermit& permit) noexcept;
+    MutationResult applyCandidate(const Candidate& candidate,
+                                  const MutationPermit& permit) noexcept;
     MutationJournal::Entries factorySnapshot() const;
     bool verifySchedulerToken(const std::string& path,
                               const std::string& token,
@@ -105,7 +112,12 @@ private:
     bool journal_committed_{false};
     bool mutated_{false};
     bool restore_failed_{false};
+    bool stabilizing_epoch_{false};
     std::uint64_t cycle_{0};
+    // "path\nrequested" -> cycle at which the candidate was rejected.
+    std::unordered_map<std::string, std::uint64_t> rejected_;
+    bool isRejected(const std::string& path,
+                    const std::string& requested) const noexcept;
 };
 
 } // namespace coreflow

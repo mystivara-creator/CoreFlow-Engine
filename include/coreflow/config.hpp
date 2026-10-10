@@ -34,7 +34,9 @@ public:
 
 private:
     int monitor_interval_seconds_{5};
-    double min_confidence_{0.70};
+    // Balance: 0.60 lets Adaptive act on trustworthy-but-not-perfect samples.
+    // Authority, journal, and regression rollback remain the hard stops.
+    double min_confidence_{0.60};
     // Release default is observe-only. Kernel mutation requires explicit
     // opt-in (mutation_mode=adaptive, mutation_armed=true, allow_cpu_governor=yes).
     MutationMode mutation_mode_{MutationMode::Disabled};

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <string>
 
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/config.hpp"
@@ -15,6 +16,7 @@
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
 #include "coreflow/safety_hold.hpp"
+#include "coreflow/status_snapshot.hpp"
 #include "coreflow/observer.hpp"
 #include "coreflow/policy.hpp"
 #include "coreflow/types.hpp"
@@ -40,6 +42,12 @@ private:
     void logStartup() const;
     void logStateTransition(RuntimeState, RuntimeState) const;
     void logMutation(MutationResult, RuntimeState) const;
+    // Best-effort export of what the engine sees, decides and changed, for the WebUI.
+    // It carries no authority and a failure here never affects control.
+    void publishStatus(const RuntimeSample&, RuntimeState previous, RuntimeState next,
+                       Decision, const SystemContext&, const PolicyPlan&, HoldReason,
+                       MutationResult cpu, MutationResult resource) noexcept;
+    void publishStoppedStatus() noexcept;
 
     bool has_restored_{false};
     bool refresh_pending_{false};
@@ -77,6 +85,14 @@ private:
     ThermalPredictor thermal_predictor_;
     std::uint64_t mutation_cooldown_until_sample_{0};
     ThermalGuardState thermal_guard_state_{};
+
+    EngineStatus last_status_;
+    std::uint64_t status_verified_{0};
+    std::uint64_t status_rolled_back_{0};
+    std::uint64_t status_failed_{0};
+    std::uint64_t last_change_sample_{0};
+    std::string last_change_kind_;
+    std::string last_change_result_;
 };
 
 } // namespace coreflow

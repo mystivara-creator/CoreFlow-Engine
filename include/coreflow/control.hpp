@@ -34,6 +34,9 @@ struct PolicyPlan {
         InterventionLevel::ObserveOnly
     };
     bool mutation_eligible{false};
+    // True when the plan permits only stabilizing (load-reducing) resource
+    // writes. Such a plan never authorizes the CPU governor.
+    bool stabilizing_only{false};
     std::string reason;
     std::vector<PolicyCandidate> candidates;
 
@@ -48,6 +51,25 @@ struct PolicyPlan {
         return false;
     }
 };
+
+// Inputs for the per-cycle decision to end the active mutation epoch immediately.
+struct EpochRestoreInputs {
+    RuntimeState state{RuntimeState::Idle};
+    bool mode_adaptive{false};
+    bool armed{false};
+    bool cpu_mutated{false};
+    // Every change the resource controller holds was made under a stabilizing plan.
+    bool resource_epoch_stabilizing{false};
+    bool plan_stabilizing_only{false};
+    bool plan_mutation_eligible{false};
+};
+
+// True when the active epoch must be restored this cycle rather than held for
+// its observation/outcome window. Idle, a disarmed config (this includes the
+// kill switch and SAFE_MODE, which disable the config) and any CPU governor change
+// under stress always restore. Under thermal/memory stress a held change is kept
+// only if it is a stabilizing resource write and the current plan still permits one.
+bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept;
 
 class MutationAuthority final {
 public:

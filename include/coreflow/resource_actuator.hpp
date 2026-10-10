@@ -21,7 +21,17 @@ public:
                            std::string_view baseline) noexcept;
 
     static bool read(std::string_view path, std::string& value) noexcept;
+    // Like read(), but returns the comparable form (see comparableValue).
+    static bool readComparable(std::string_view path, std::string& value) noexcept;
     static bool writable(std::string_view path) noexcept;
+
+    // Selector-style sysfs nodes (e.g. queue/scheduler) read back the whole
+    // list with the active entry in brackets: "[mq-deadline] kyber none".
+    // The kernel accepts only the bare token on write, and the read-back shows
+    // the bracketed list. This returns the bracketed token when present, or the
+    // trimmed raw value otherwise, so write, verify, and baseline all compare
+    // the same kind of value.
+    static std::string comparableValue(std::string_view raw);
 };
 
 } // namespace coreflow
