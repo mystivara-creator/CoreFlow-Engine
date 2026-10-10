@@ -329,6 +329,7 @@ bool ResourceMutationController::selectCandidate(
     agent_observation.stabilizing_allowed_by_context = policy.stabilizing_only;
     agent_observation.max_candidates = 8;
     const AgentProposal proposal = decision_agent_.reason(agent_observation);
+    last_agent_reason_ = proposal.reasoning_summary;
     if (!proposal.valid) return false;
     const auto& ranked = proposal.ranked;
 
