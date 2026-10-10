@@ -26,6 +26,31 @@ struct EngineStatus {
     int interval_s{0};
     bool running{true};
 
+    // Device & ecosystem intelligence. These fields are observed identity and
+    // discovered-interface facts, not inferred mutation permission.
+    std::string manufacturer;
+    std::string model;
+    std::string device;
+    std::string product;
+    std::string board;
+    std::string hardware;
+    std::string soc_manufacturer;
+    std::string soc_model;
+    std::string android_release;
+    std::string sdk_level;
+    std::string kernel_release;
+    std::string abi;
+    bool proc_available{false};
+    bool sys_available{false};
+    bool cgroup_v2{false};
+    bool cpuset_available{false};
+    bool uclamp_available{false};
+    bool scheduler_controls_available{false};
+    bool devfreq_available{false};
+    std::size_t discovered_resources{0};
+    std::size_t mutation_ready_resources{0};
+    bool block_queue_mutations_quarantined{true};
+
     // eyes: what the engine measured this cycle
     bool thermal_available{false};
     double thermal_c{0.0};

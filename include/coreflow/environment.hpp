@@ -28,7 +28,12 @@ struct ResourceCapability {
     bool exists{false};
     bool readable{false};
     bool writable{false};
+    // Effective OS-level write access is evidence, not an optimization policy.
     bool permission_granted{false};
+    // Explicit engine policy approval for this exact resource class/path.
+    // A writable or readable node never sets this field by itself.
+    bool policy_authorized{false};
+    // Runtime-read confirmation; this does not prove that a write is safe.
     bool runtime_verified{false};
     bool mutation_ready{false};
 };

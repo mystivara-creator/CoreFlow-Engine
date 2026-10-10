@@ -8,7 +8,7 @@
 
 #include "coreflow/config.hpp"
 #include "coreflow/control.hpp"
-#include "coreflow/effect_model.hpp"
+#include "coreflow/decision_agent.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation_journal.hpp"
 #include "coreflow/resource_actuator.hpp"
@@ -28,9 +28,9 @@ public:
     void setJournal(MutationJournal* journal) noexcept;
     void setExperienceMemory(const ExperienceMemory* memory) noexcept;
 
-    // Capture factory baselines for every mutation_ready Memory/Io/Scheduler
-    // capability that is currently readable. Paths come from the capability
-    // matrix produced by EnvironmentDiscovery.
+    // Capture factory baselines only for explicitly policy-authorized,
+    // mutation-ready resources. Production block queue controls are quarantined;
+    // legacy journal restore is still permitted for recovery.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
     bool restoreAll() noexcept;
@@ -103,7 +103,7 @@ private:
     MutationJournal* journal_{nullptr};
     const ExperienceMemory* experience_memory_{nullptr};
     ResourceActuator actuator_;
-    EffectModel effect_model_;
+    ScoringDecisionAgent decision_agent_;
     std::unordered_map<std::string, Baseline> baseline_;
     std::unordered_set<std::string> dirty_resources_;
     std::vector<std::pair<std::string, std::string>> last_applied_resources_;

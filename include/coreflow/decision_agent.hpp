@@ -51,6 +51,7 @@ struct AgentObservation {
     double sample_confidence{0.0};
     bool mutation_allowed_by_context{false};
     bool stabilizing_allowed_by_context{false};
+    std::size_t max_candidates{8};
 };
 
 // Pure interface. Implementations must be noexcept where possible and

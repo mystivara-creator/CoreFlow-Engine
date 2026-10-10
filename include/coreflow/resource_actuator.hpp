@@ -24,6 +24,11 @@ public:
     // Like read(), but returns the comparable form (see comparableValue).
     static bool readComparable(std::string_view path, std::string& value) noexcept;
     static bool writable(std::string_view path) noexcept;
+    // Production target allow-list for new resource writes. At this source
+    // revision only exact, reviewed VM sysctl paths are admitted; the host-test
+    // library has a separate temporary-file fixture exception. Restore is not
+    // subject to this new-write allow-list so old journals can recover.
+    static bool mutationTargetAllowed(std::string_view path) noexcept;
 
     // Selector-style sysfs nodes (e.g. queue/scheduler) read back the whole
     // list with the active entry in brackets: "[mq-deadline] kyber none".
