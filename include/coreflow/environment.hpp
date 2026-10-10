@@ -51,6 +51,13 @@ struct AndroidEnvironment {
     std::string soc_model;
     std::string abi;
     std::string kernel_release;
+    std::string fingerprint;
+    std::string security_patch;
+    std::string incremental;
+    std::string treble_enabled;
+    std::string gsi_running;
+    std::string hardware_sku;
+    std::string bootloader;
 
     bool proc_available{false};
     bool sys_available{false};
