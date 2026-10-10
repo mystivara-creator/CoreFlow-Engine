@@ -48,6 +48,8 @@ set(COREFLOW_CORE_SOURCES
     src/effect_model.cpp
     src/thermal_features.cpp
     src/thermal_guard.cpp
+    src/status_snapshot.cpp
+    src/decision_agent.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES

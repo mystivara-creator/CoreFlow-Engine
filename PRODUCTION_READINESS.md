@@ -20,7 +20,7 @@ This document scores readiness to **begin serious device testing and partial cer
 | Observability | 5% | 8.0 | Structured logs; experience persistence |
 | Host/CI proof | 5% | 8.5 | Local CMake/CTest and ASan/UBSan pass; operator CI remains separate |
 | On-device validation | 5% | 3.0 | Not yet run on hardware in this package |
-| **Weighted total** | 100% | **~8.7 → rounded 9/10 source-test readiness** | |
+| **Weighted total** | 100% | **~8.7 as originally scored; not re-derived after the audit** | |
 
 Interpretation:
 - **9/10 siap diuji** = architecture, safety contracts, and autonomous path are mature enough that testing is the bottleneck, not redesign.
@@ -35,17 +35,22 @@ Interpretation:
 - [x] Capability-driven resource candidates with semantic priors; unknown numeric controls fail closed
 - [x] EffectModel ranks Memory/Io/Scheduler only
 - [x] Journal commit before write; restore on safety/shutdown
-- [x] ThermalGuard/Pressure block new optimization writes; restoration remains available
+- [x] ThermalGuard/Pressure permit only stabilizing (load-reducing) resource writes at Low intervention; CPU governor and non-stabilizing plans get no permit; restoration remains available
+- [x] WebUI Live view reads engine-written status.json (host contract + render smoke tested)
+- [ ] status.json written and read on a real device through the KernelSU bridge (path permissions, SELinux, bridge latency)
+- [ ] Stabilizing writes validated on device: direction and size of each prior (swappiness, dirty ratios, read_ahead, nr_requests) are source-level assumptions, not measurements
 - [x] ARCHITECTURE.md + this scorecard exist
 - [x] `tools/verify_safety_foundation.sh` passes in local validation
 - [x] `tools/verify_source_release.sh` passes against staged source
-- [x] Host CTest passes locally (6/6)
+- [x] Host test binaries and contract scripts pass (audit run; CTest itself was not available, tests were built manually with the CMake flags)
+- [x] Installer harness passes (10/10); the `/sdcard` enable_adaptive flag cannot arm Adaptive
+- [ ] Scheduler write/verify/rollback exercised on real sysfs (host tests use regular files)
 
 ### Gate B — Artifact
 - [ ] Reproducible ARM64 strip of `coreflowd`
 - [ ] Magisk module ZIP with matching `module.prop` version
 - [ ] ONNX model digest pinned and present
-- [ ] Installer refuses adaptive defaults
+- [x] Installer refuses adaptive defaults (harness: adaptive_default_rejected)
 
 ### Gate C — Observe-only field (minimum 7 days)
 - [ ] Boot completed every reboot; no SAFE_MODE from this module

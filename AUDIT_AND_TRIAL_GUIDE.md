@@ -10,7 +10,7 @@ This package continues the supplied v2.1.0 source tree; it is not a clean-room r
 - Required measured I/O activity before tuning read-ahead or request-queue controls; CPU load alone is not enough.
 - Made `endsWith()` useful for classifying scheduler resources by semantic suffix, and added active-token parsing so scheduler fallback cannot reapply the already active token.
 - Connected `ExperienceMemory` to resource candidate selection. Compatible, sufficiently confident verified outcomes adjust utility modestly; regression history penalizes a proposal. Experience cannot grant authority or bypass safety checks.
-- Changed `ReduceIntervention` semantics to hold/recovery only. `ThermalGuard` and `Pressure` cannot start a new optimization write; existing restore/rollback paths remain available.
+- Changed `ReduceIntervention` semantics to hold/recovery only. (Superseded in the Unreleased changes: `ThermalGuard` and `Pressure` may start a stabilizing-only resource write. Look for `"stabilizing_only":true` in `decision_trace.jsonl`.) Existing restore/rollback paths remain available.
 - Added immediate restoration after a resource write/read-back failure where a write may have occurred, and journal cleanup when no write was attempted.
 - Corrected v2.1.0 source-release validation, added it to CTest, and updated architecture/security/readiness documentation.
 - Added tests for structured ranking metadata and fail-closed behavior on unknown numeric semantics.
