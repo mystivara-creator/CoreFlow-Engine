@@ -14,7 +14,7 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
     }
 
     // Classic EffectModel ranking — behaviour preserved from prior releases.
-    auto ranked = model_.rank(*obs.matrix, *obs.baselines, obs.effect_ctx, 3);
+    auto ranked = model_.rank(*obs.matrix, *obs.baselines, obs.effect_ctx, obs.max_candidates);
     if (ranked.empty()) {
         proposal.reasoning_summary = "no eligible bounded candidates";
         return proposal;

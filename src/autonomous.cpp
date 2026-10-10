@@ -916,6 +916,30 @@ void AutonomousEngine::publishStatus(
         s.interval_s = config_.monitorIntervalSeconds();
         s.running = true;
 
+        const AndroidEnvironment& env = snapshot_.profile.environment;
+        s.manufacturer = env.manufacturer;
+        s.model = env.model;
+        s.device = env.device;
+        s.product = env.product;
+        s.board = env.board;
+        s.hardware = env.hardware;
+        s.soc_manufacturer = env.soc_manufacturer;
+        s.soc_model = env.soc_model;
+        s.android_release = env.release;
+        s.sdk_level = env.sdk_level;
+        s.kernel_release = env.kernel_release;
+        s.abi = env.abi;
+        s.proc_available = snapshot_.profile.proc_available;
+        s.sys_available = snapshot_.profile.sys_available;
+        s.cgroup_v2 = env.cgroup_v2;
+        s.cpuset_available = env.cpuset_available;
+        s.uclamp_available = env.uclamp_available;
+        s.scheduler_controls_available = env.scheduler_controls_available;
+        s.devfreq_available = env.devfreq_available;
+        s.discovered_resources = snapshot_.profile.capabilities.resources.size();
+        s.mutation_ready_resources = snapshot_.profile.capabilities.mutationReadyCount();
+        s.block_queue_mutations_quarantined = true;
+
         s.thermal_available = sample.thermal_available;
         s.thermal_c = static_cast<double>(sample.thermal_millidegrees) / 1000.0;
         s.hottest_c = static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0;

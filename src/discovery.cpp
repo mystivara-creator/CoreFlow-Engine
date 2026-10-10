@@ -22,6 +22,30 @@ std::string property(const char* key) {
     return value;
 }
 
+bool policyAuthorizesResource(ResourceDomain domain, const std::string& name,
+                              const std::string& path) {
+    // These VM controls have explicit semantic priors in EffectModel. Keep the
+    // allow-list narrow: discovered scheduler/sysfs writability is not evidence
+    // that mutation is useful or safe on an unknown Android vendor kernel.
+    if (domain != ResourceDomain::Memory ||
+        path.rfind("/proc/sys/vm/", 0) != 0) return false;
+
+    struct ApprovedControl { const char* name; const char* path; };
+    static constexpr ApprovedControl supported[] = {
+        {"vm.swappiness", "/proc/sys/vm/swappiness"},
+        {"vm.dirty_ratio", "/proc/sys/vm/dirty_ratio"},
+        {"vm.dirty_background_ratio", "/proc/sys/vm/dirty_background_ratio"},
+        {"vm.vfs_cache_pressure", "/proc/sys/vm/vfs_cache_pressure"},
+        {"vm.min_free_kbytes", "/proc/sys/vm/min_free_kbytes"},
+        {"vm.dirty_expire_centisecs", "/proc/sys/vm/dirty_expire_centisecs"},
+        {"vm.dirty_writeback_centisecs", "/proc/sys/vm/dirty_writeback_centisecs"},
+    };
+    for (const auto& candidate : supported) {
+        if (name == candidate.name && path == candidate.path) return true;
+    }
+    return false;
+}
+
 void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
                    const std::string& name, const std::string& path,
                    bool exists, bool readable, bool writable,
@@ -33,11 +57,14 @@ void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
     cap.exists = exists;
     cap.readable = readable;
     cap.writable = writable;
-    cap.permission_granted = permission_granted || writable;
-    cap.runtime_verified = readable;
-    // v2.0.0: structurally valid writable resources are preflight candidates; final authorization remains centralized.
-    // The final MutationPermit is still created only by the mutation authority.
-    cap.mutation_ready = readable && writable && cap.permission_granted;
+    // Keep OS access evidence separate from policy approval. W_OK answers only
+    // whether this process appears able to write the node; it is not consent.
+    cap.permission_granted = permission_granted || (exists && writable);
+    cap.policy_authorized = policyAuthorizesResource(domain, name, path);
+    cap.runtime_verified = exists && readable;
+    cap.mutation_ready = cap.exists && cap.readable && cap.writable &&
+                         cap.permission_granted && cap.runtime_verified &&
+                         cap.policy_authorized;
     matrix.resources.push_back(std::move(cap));
 }
 

@@ -318,8 +318,8 @@ EffectScore EffectModel::evaluate(
 ) const noexcept {
     EffectScore score;
     if (!capability.exists || !capability.mutation_ready ||
-        !capability.permission_granted || !capability.runtime_verified ||
-        !capability.writable || !capability.readable) {
+        !capability.permission_granted || !capability.policy_authorized ||
+        !capability.runtime_verified || !capability.writable || !capability.readable) {
         score.reason = "not mutation_ready";
         return score;
     }
@@ -358,7 +358,8 @@ std::vector<EffectScore> EffectModel::rank(
 
     for (const auto& cap : matrix.resources) {
         if (!cap.exists || !cap.mutation_ready || !cap.permission_granted ||
-            !cap.runtime_verified || !cap.readable || !cap.writable ||
+            !cap.policy_authorized || !cap.runtime_verified ||
+            !cap.readable || !cap.writable ||
             cap.path.empty()) continue;
         const auto baseline = baselines.find(cap.path);
         if (baseline == baselines.end()) continue;

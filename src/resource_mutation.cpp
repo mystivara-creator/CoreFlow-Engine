@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <sstream>
+#include <utility>
 
 namespace coreflow {
 namespace {
@@ -49,6 +50,48 @@ bool isMutableDomain(ResourceDomain domain) noexcept {
     return domain == ResourceDomain::Memory ||
            domain == ResourceDomain::Io ||
            domain == ResourceDomain::Scheduler;
+}
+
+bool fallbackPolicyAuthorized(ResourceDomain domain, const std::string& name,
+                              const std::string& path) noexcept {
+    if (!ResourceActuator::mutationTargetAllowed(path)) return false;
+    if (domain == ResourceDomain::Memory) {
+        // Exact production name/path pairs. The fallback is only for legacy
+        // DeviceProfile adapters; it must not re-authorize another sysctl.
+        static constexpr std::pair<const char*, const char*> approved[] = {
+            {"vm.swappiness", "/proc/sys/vm/swappiness"},
+            {"vm.dirty_ratio", "/proc/sys/vm/dirty_ratio"},
+            {"vm.dirty_background_ratio", "/proc/sys/vm/dirty_background_ratio"},
+            {"vm.vfs_cache_pressure", "/proc/sys/vm/vfs_cache_pressure"},
+            {"vm.min_free_kbytes", "/proc/sys/vm/min_free_kbytes"},
+            {"vm.dirty_expire_centisecs", "/proc/sys/vm/dirty_expire_centisecs"},
+            {"vm.dirty_writeback_centisecs", "/proc/sys/vm/dirty_writeback_centisecs"},
+        };
+        for (const auto& candidate : approved) {
+            if (name == candidate.first && path == candidate.second) return true;
+        }
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+        // Synthetic profiles backed by /tmp are confined to host tests.
+        static constexpr const char* names[] = {
+            "vm.swappiness", "vm.dirty_ratio", "vm.dirty_background_ratio",
+            "vm.vfs_cache_pressure", "vm.min_free_kbytes",
+            "vm.dirty_expire_centisecs", "vm.dirty_writeback_centisecs"};
+        if (path.rfind("/tmp/", 0) == 0) {
+            for (const char* candidate : names) {
+                if (name == candidate) return true;
+            }
+        }
+#endif
+        return false;
+    }
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+    // Synthetic I/O/scheduler fixtures model legacy tests only. No equivalent
+    // production sysfs/procfs target is authorized by this compatibility path.
+    return (domain == ResourceDomain::Io || domain == ResourceDomain::Scheduler) &&
+           path.rfind("/tmp/", 0) == 0;
+#else
+    return false;
+#endif
 }
 
 InterventionLevel requiredIntervention(ResourceDomain /*domain*/,
@@ -120,8 +163,10 @@ bool ResourceMutationController::captureBaseline(
 
     for (const auto& cap : profile.capabilities.resources) {
         if (!isMutableDomain(cap.domain)) continue;
-        if (!cap.mutation_ready || !cap.readable || !cap.writable) continue;
-        if (cap.path.empty()) continue;
+        if (!cap.mutation_ready || !cap.policy_authorized ||
+            !cap.readable || !cap.writable) continue;
+        if (cap.path.empty() ||
+            !fallbackPolicyAuthorized(cap.domain, cap.name, cap.path)) continue;
 
         std::string value;
         if (!ResourceActuator::read(cap.path, value)) continue;
@@ -134,7 +179,9 @@ bool ResourceMutationController::captureBaseline(
     auto captureField = [this](ResourceDomain domain, const std::string& name,
                                const std::string& path, bool readable,
                                bool writable) {
-        if (path.empty() || !readable || !writable) return;
+        if (path.empty() || !readable || !writable ||
+            !ResourceActuator::mutationTargetAllowed(path) ||
+            !fallbackPolicyAuthorized(domain, name, path)) return;
         if (baseline_.count(path)) return;
         std::string value;
         if (!ResourceActuator::read(path, value)) return;
@@ -249,6 +296,11 @@ bool ResourceMutationController::selectCandidate(
                 return capability.path == item.first;
             });
         if (present) continue;
+        // Legacy/manual profiles may not carry the discovery matrix. Never
+        // synthesize authorization for a production sysfs/procfs target.
+        if (!fallbackPolicyAuthorized(item.second.domain, item.second.name, item.first)) {
+            continue;
+        }
         ResourceCapability capability;
         capability.domain = item.second.domain;
         capability.name = item.second.name;
@@ -257,13 +309,28 @@ bool ResourceMutationController::selectCandidate(
         capability.readable = true;
         capability.writable = true;
         capability.permission_granted = true;
+        capability.policy_authorized = true;
         capability.runtime_verified = true;
         capability.mutation_ready = true;
         effective_matrix.resources.push_back(std::move(capability));
     }
 
-    const auto ranked =
-        effect_model_.rank(effective_matrix, baseline_values, ctx, 8);
+    // The DecisionAgent is the proposal layer for resource candidates. It only
+    // ranks observed capabilities; this controller still independently enforces
+    // policy, intervention level, experience confidence, rejection cooldown,
+    // MutationAuthority, journaling, verification and rollback before any write.
+    AgentObservation agent_observation;
+    agent_observation.effect_ctx = ctx;
+    agent_observation.matrix = &effective_matrix;
+    agent_observation.baselines = &baseline_values;
+    agent_observation.state = state;
+    agent_observation.sample_confidence = sample.confidence;
+    agent_observation.mutation_allowed_by_context = !policy.stabilizing_only;
+    agent_observation.stabilizing_allowed_by_context = policy.stabilizing_only;
+    agent_observation.max_candidates = 8;
+    const AgentProposal proposal = decision_agent_.reason(agent_observation);
+    if (!proposal.valid) return false;
+    const auto& ranked = proposal.ranked;
 
     ExperienceMemory::Context experience_context;
     experience_context.state = state;
@@ -307,7 +374,8 @@ bool ResourceMutationController::selectCandidate(
         if (name.empty() || path.empty()) continue;
 
         auto bit = baseline_.find(path);
-        if (bit == baseline_.end() || !bit->second.valid) continue;
+        if (bit == baseline_.end() || !bit->second.valid ||
+            !fallbackPolicyAuthorized(bit->second.domain, name, path)) continue;
 
         if (!policy.allows(bit->second.domain, name)) continue;
         // A stressed context accepts only changes that respond to the stress by
@@ -407,6 +475,9 @@ MutationResult ResourceMutationController::applyCandidate(
 ) noexcept {
     if (journal_ == nullptr) return MutationResult::Failed;
     if (!permit.validFor(MutationPermit::Scope::Resource)) return MutationResult::Failed;
+    if (!fallbackPolicyAuthorized(candidate.domain, candidate.name, candidate.path)) {
+        return MutationResult::Skipped;
+    }
 
     // Durability before the write. The journal holds factory values for every
     // resource this controller has changed, plus the candidate about to change.

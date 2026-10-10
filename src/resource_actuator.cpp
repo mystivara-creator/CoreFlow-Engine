@@ -76,11 +76,39 @@ bool ResourceActuator::writable(std::string_view path) noexcept {
     return access(std::string(path).c_str(), W_OK) == 0;
 }
 
+bool ResourceActuator::mutationTargetAllowed(std::string_view path) noexcept {
+    // Production allow-list: only known VM controls currently have reviewed
+    // semantics and bounded effect priors. A path being writable, discovered,
+    // or suggested by a model is not authorization to mutate it.
+    static constexpr std::string_view approvedVmPaths[] = {
+        "/proc/sys/vm/swappiness",
+        "/proc/sys/vm/dirty_ratio",
+        "/proc/sys/vm/dirty_background_ratio",
+        "/proc/sys/vm/vfs_cache_pressure",
+        "/proc/sys/vm/min_free_kbytes",
+        "/proc/sys/vm/dirty_expire_centisecs",
+        "/proc/sys/vm/dirty_writeback_centisecs",
+    };
+    for (const auto approved : approvedVmPaths) {
+        if (path == approved) return true;
+    }
+
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+    // Tests use temporary files to model kernel nodes. This exception is
+    // compiled only into the host-test library; it is absent from coreflowd.
+    if (path.size() >= 6U && path.substr(0U, 5U) == "/tmp/") return true;
+#endif
+    // This also quarantines all block queue controls, including loop/dm and
+    // physical storage nodes, without relying on their names or writability.
+    return false;
+}
+
 ActuatorResult ResourceActuator::apply(const ActuatorMutation& mutation,
                                        const MutationPermit& permit) noexcept {
     ActuatorResult result;
     if (!permit.validFor(MutationPermit::Scope::Resource) ||
-        mutation.target.empty() || mutation.requested.empty()) {
+        mutation.target.empty() || mutation.requested.empty() ||
+        !mutationTargetAllowed(mutation.target)) {
         result.status = ActuatorStatus::SafetyRejected;
         return result;
     }
