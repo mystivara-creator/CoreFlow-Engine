@@ -13,12 +13,12 @@ This document scores readiness to **begin serious device testing and partial cer
 |--------|--------|--------------|-------|
 | Safety defaults & fail-closed | 20% | 9.5 | Observe-only default; malformed mode disables; journal before write |
 | Authority separation | 15% | 9.0 | Discovery ≠ Effect ≠ Policy ≠ Actuator ≠ Journal |
-| Capability-driven autonomy | 15% | 8.5 | EffectModel + matrix-driven candidates; priors soft only |
+| Capability-driven autonomy | 15% | 8.0 | Explicit per-resource policy gate; block queue writes quarantined pending dependency proof |
 | Mutation lifecycle | 15% | 9.0 | Baseline → journal → write → verify → measure → restore |
-| Thermal / context policy | 10% | 9.0 | Hysteresis; ThermalGuard/Pressure are hold/restore only; proactive path needs headroom |
+| Thermal / context policy | 10% | 9.0 | Hysteresis; ThermalGuard/Pressure can start only explicitly stabilizing resource candidates; proactive path needs headroom |
 | Boot / recovery | 10% | 9.0 | SAFE_MODE, module disable, separate journals |
 | Observability | 5% | 8.0 | Structured logs; experience persistence |
-| Host/CI proof | 5% | 8.5 | Local CMake/CTest and ASan/UBSan pass; operator CI remains separate |
+| Host/CI proof | 5% | 8.0 | Local CMake/CTest and WebUI status/render checks pass; ASan/UBSan and operator CI not run for this patch |
 | On-device validation | 5% | 3.0 | Not yet run on hardware in this package |
 | **Weighted total** | 100% | **~8.7 as originally scored; not re-derived after the audit** | |
 
@@ -32,17 +32,19 @@ Interpretation:
 
 ### Gate A — Source (v2.1.0)
 - [x] Observe-only defaults in `default.conf` and engine
-- [x] Capability-driven resource candidates with semantic priors; unknown numeric controls fail closed
-- [x] EffectModel ranks Memory/Io/Scheduler only
+- [x] Capability candidates require explicit `policy_authorized` in addition to discovered access evidence
+- [x] EffectModel requires separate policy authorization; current production discovery policy approves named VM tunables only
+- [x] The central resource actuator admits only seven exact approved VM sysctl paths; new block queue writes and other resource paths are denied at discovery, baseline/candidate paths and the actuator
 - [x] Journal commit before write; restore on safety/shutdown
 - [x] ThermalGuard/Pressure permit only stabilizing (load-reducing) resource writes at Low intervention; CPU governor and non-stabilizing plans get no permit; restoration remains available
 - [x] WebUI Live view reads engine-written status.json (host contract + render smoke tested)
 - [ ] status.json written and read on a real device through the KernelSU bridge (path permissions, SELinux, bridge latency)
-- [ ] Stabilizing writes validated on device: direction and size of each prior (swappiness, dirty ratios, read_ahead, nr_requests) are source-level assumptions, not measurements
+- [ ] Stabilizing VM writes validated on device: direction and size of each active prior remain source-level assumptions, not measurements
+- [ ] Verify no new block queue writes occur in Adaptive; do not remove the quarantine before device-topology and recovery evidence exist
 - [x] ARCHITECTURE.md + this scorecard exist
 - [x] `tools/verify_safety_foundation.sh` passes in local validation
 - [x] `tools/verify_source_release.sh` passes against staged source
-- [x] Host test binaries and contract scripts pass (audit run; CTest itself was not available, tests were built manually with the CMake flags)
+- [x] Host CMake build and CTest pass (6/6); WebUI status contract passes (166/166); WebUI render smoke passes (23/23). ASan/UBSan and operator CI remain pending for this patch.
 - [x] Installer harness passes (10/10); the `/sdcard` enable_adaptive flag cannot arm Adaptive
 - [ ] Scheduler write/verify/rollback exercised on real sysfs (host tests use regular files)
 
@@ -54,12 +56,13 @@ Interpretation:
 
 ### Gate C — Observe-only field (minimum 7 days)
 - [ ] Boot completed every reboot; no SAFE_MODE from this module
-- [ ] Discovery lists expected writable VM/Io nodes
+- [ ] Discovery lists expected VM/I/O nodes with access evidence kept separate from policy authorization
 - [ ] Zero sysfs writes (audit journal absent or empty)
 - [ ] Log noise acceptable; no crash loops
 
 ### Gate D — Adaptive field (operator opt-in)
-- [ ] Mutations only when armed; each has journal entry
+- [ ] Mutations only when armed; each supported VM change has a journal entry
+- [ ] No new writes to `/sys/block/*/queue/{scheduler,nr_requests,read_ahead_kb}` or equivalent paths
 - [ ] Read-back matches requested; else Failed + restore
 - [ ] ThermalGuard triggers restore/hold, never deeper aggression
 - [ ] Uninstall / disable restores factory baselines

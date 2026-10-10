@@ -7,7 +7,7 @@ This package continues the supplied v2.1.0 source tree; it is not a clean-room r
 - Replaced `EffectScore::reason` identity packing with structured `resource_name`, `path`, `domain`, and `utility` fields. Controller logic no longer parses `name|path|reason` strings.
 - Unified candidate ranking around one benefit/risk/confidence utility and deterministic tie-breaking.
 - Made unknown numeric controls ineligible until a semantic prior or adapter defines safe bounds and direction.
-- Required measured I/O activity before tuning read-ahead or request-queue controls; CPU load alone is not enough.
+- Historical v2.1.0 model required measured I/O activity before tuning read-ahead or request-queue controls. The current unreleased safety follow-up supersedes that: production discovery does not authorize these block queue writes and the actuator blocks them regardless of measured I/O.
 - Made `endsWith()` useful for classifying scheduler resources by semantic suffix, and added active-token parsing so scheduler fallback cannot reapply the already active token.
 - Connected `ExperienceMemory` to resource candidate selection. Compatible, sufficiently confident verified outcomes adjust utility modestly; regression history penalizes a proposal. Experience cannot grant authority or bypass safety checks.
 - Changed `ReduceIntervention` semantics to hold/recovery only. (Superseded in the Unreleased changes: `ThermalGuard` and `Pressure` may start a stabilizing-only resource write. Look for `"stabilizing_only":true` in `decision_trace.jsonl`.) Existing restore/rollback paths remain available.
@@ -15,13 +15,18 @@ This package continues the supplied v2.1.0 source tree; it is not a clean-room r
 - Corrected v2.1.0 source-release validation, added it to CTest, and updated architecture/security/readiness documentation.
 - Added tests for structured ranking metadata and fail-closed behavior on unknown numeric semantics.
 
-## Validation performed here
+## Validation recorded for the supplied base revision
 
-- Release host CMake/Ninja build with strict warnings and `-Werror`: passed.
-- Host CTest: **6/6 passed**.
-- ASan/UBSan host CTest: **6/6 passed**.
-- Source-release and safety-foundation contracts: passed against the source tree under test conditions.
-- Android NDK/ARM64 linking, CI artifacts, ONNX inference on a phone, and real-device mutation/rollback were **not** performed here. CI remains with the operator, as requested.
+The source archive already recorded a release host CMake/Ninja build with strict warnings, host CTest 6/6, ASan/UBSan CTest 6/6, and passing source-release/safety-foundation contracts. These are historical base-revision records, not sanitizer evidence for the current safety follow-up.
+
+## Current safety-follow-up validation
+
+- Host CMake build with strict warnings and `-Werror`: **passed**.
+- Host CTest: **6/6 passed**, including source-release and safety-foundation contracts.
+- WebUI status writer/parser contract: **166/166 passed**.
+- End-to-end WebUI render smoke: **23/23 passed**.
+- Strict-warning syntax-only compile of `src/discovery.cpp` using a stub for the Android system-properties header: **passed**; not an NDK build.
+- ASan/UBSan, GitHub Actions, Android NDK/ARM64 linking, ONNX inference on a phone, and real-device mutation/rollback were **not** performed here. CI remains with the operator.
 
 ## Trial recommendations
 
@@ -36,7 +41,7 @@ Keep the shipped default unchanged: `mutation_mode=observe`, `mutation_armed=fal
 - journal state, recovery state, SAFE_MODE/boot-loop guard events;
 - CPU and resource controller decisions, including why no candidate was selected.
 
-Do not move to adaptive if any mode has stale or implausible telemetry accepted as current, unexplained journal entries, repeated crashes/restarts, or any kernel write while observe-only.
+Do not move to adaptive until the operator ARM64 CI is green and the patch has been reviewed on-device. Do not proceed if any mode has stale or implausible telemetry accepted as current, unexplained journal entries, repeated crashes/restarts, or any kernel write while observe-only. Given the previously reported storage regression, keep the primary device on Observe until the staged recovery/storage checks pass.
 
 ### Seven-day adaptive phase
 
@@ -56,4 +61,4 @@ Do not treat seven days on one device as proof of universal safety. It is a cont
 
 - The EffectModel still relies on semantic priors for the currently supported numeric controls; unknown controls are intentionally not mutated.
 - The outcome loop can attribute an outcome to the currently active mutation epoch, but external workload changes can confound causality. Use stable workload windows and retain uncertainty rather than assuming every improvement was caused by the mutation.
-- Device-specific SELinux behavior, writable kernel interfaces, scheduler semantics, ONNX runtime integration, and boot/recovery behavior require real-device verification.
+- Device-specific SELinux behavior, VM semantic priors, ONNX runtime integration, and boot/recovery behavior require real-device verification. Block-device queue mutation is not an adaptive feature in this source patch; treat it as a separately gated future capability.

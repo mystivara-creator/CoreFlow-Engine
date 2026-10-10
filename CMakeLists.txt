@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(CoreFlowAutonomous VERSION 2.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -12,7 +12,7 @@ option(CORE_FLOW_BUILD_TESTS "Build host deterministic tests" OFF)
 
 add_library(coreflow_compile_options INTERFACE)
 
-target_compile_features(coreflow_compile_options INTERFACE cxx_std_17)
+target_compile_features(coreflow_compile_options INTERFACE cxx_std_20)
 
 target_compile_options(coreflow_compile_options
     INTERFACE
@@ -139,6 +139,7 @@ else()
         add_library(coreflow_core STATIC ${COREFLOW_CORE_SOURCES})
         target_include_directories(coreflow_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
         target_link_libraries(coreflow_core PUBLIC coreflow_compile_options)
+        target_compile_definitions(coreflow_core PRIVATE COREFLOW_HOST_TEST_FIXTURES=1)
         target_compile_options(coreflow_core PRIVATE -Werror)
 
         add_executable(coreflow_tests tests/mutation_tests.cpp)

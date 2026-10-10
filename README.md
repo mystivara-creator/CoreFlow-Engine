@@ -9,9 +9,16 @@ The About page acknowledges Mystivara as the author and Gemini, ChatGPT, Grok AI
 
 ---
 
+
+## KernelSU / KernelSU Next update notifications
+
+`module/module.prop` points `updateJson` to the latest GitHub Release asset at `releases/latest/download/update.json`. The `KernelSU Update Feed` workflow attaches a version-specific JSON file when a release is published. That JSON carries the packaged `version`, increasing integer `versionCode`, exact release ZIP URL, and that release's changelog URL. It reads version metadata from the ZIP itself rather than guessing from a moving branch.
+
+For each release, attach the CI-produced ZIP named `CoreFlow-Autonomous-vX.Y.Z-minapi34-arm64.zip` before publishing the GitHub Release. The workflow then uploads `update.json` to that release. For an already-published release, run **Actions → KernelSU Update Feed → Run workflow** with the tag, or leave it blank to sync the latest release. The workflow must be present on the repository's default branch and GitHub Actions must allow release asset writes. Installed clients only offer an update when the published `versionCode` is greater than the installed module's code.
+
 ## v2.1.0 — Capability-Driven Autonomous Decision Loop
 
-This source revision introduces a capability-driven resource decision path with structured candidate identity and a consistent benefit/risk/confidence utility. Unknown numeric controls remain observe-only until their semantics are described by a model prior or adapter. I/O queue controls require measured I/O activity; CPU load alone is not sufficient evidence to tune them. The WebUI opens on a live view fed by the engine itself (`status.json`): eyes, brain, hands and the reason the engine is or is not acting. Safety is graded: under thermal or memory stress (ThermalGuard, Pressure, or missing thermal/memory headroom) with trustworthy telemetry, the engine may make small, load-reducing resource writes at Low intervention (`stabilizing_only` plans). It never writes the CPU governor there, never writes a more aggressive setting, and restores on Idle, low confidence, disarm, kill switch, SAFE_MODE or a measured regression.
+This source continuation adds an explicit policy authorization gate to the capability-driven resource path. A readable or writable interface is only a discovery fact; model inference does not grant permission. The live WebUI now shows the device/SoC/kernel identity and separates discovered capabilities from policy-ready resources. Unknown controls remain observe-only. Following the storage regression reported during field use, new writes to block queue nodes (`scheduler`, `nr_requests`, `read_ahead_kb`) are quarantined at discovery, baseline capture, candidate selection and the actuator, regardless of measured I/O activity. The production `ResourceMutationController` and central resource actuator are limited to seven exact policy-approved VM paths with semantic priors; other resource paths are denied for new writes. CPUFreq is a separate authority path and remains off by default (`allow_cpu_governor=no`). Existing journal restore remains available for recovery from older changes. The package remains v2.1.0 source and is not certified for Android/device behavior until operator CI and staged testing pass.
 
 The source-release validator is versioned with the package, and the host CTest suite includes the source-release contract. This does not certify Android ARM64 or device-level behavior; those remain part of the operator's build and staged device validation.
 
@@ -29,12 +36,12 @@ v2.0.1 is the release-hardened revision of v2.0.0. It changes the default to **o
 
 ## v2.0.0 — Ecosystem Autonomous Control
 
-Autonomous adaptive engine with capability-driven discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/VM/I/O mutation and durable recovery.
+Autonomous adaptive engine with device-aware capability discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/approved VM mutation and durable recovery. Block-device queue writes are currently quarantined pending device-topology validation.
 
 ### Autonomous resource coverage
-- Dynamic block-device discovery (`/sys/block/*`) including scheduler, read-ahead and request-queue controls.
+- Read-only discovery of block-device queue controls (`/sys/block/*`); control writes remain quarantined in the current source policy.
 - VM swappiness discovery and adaptive intervention under real memory pressure.
-- Adaptive I/O queue/read-ahead tuning for sustained workloads.
+- Historical I/O queue/read-ahead effect priors retained for future evaluation; the current production discovery path does not authorize writes to those nodes.
 - CPUFreq governor adaptation with bounded, verified experiments.
 - Runtime I/O-rate and throttled process profiling for workload classification.
 - Battery level/status/current/voltage/temperature awareness and power-constrained policy.
@@ -44,7 +51,7 @@ Autonomous adaptive engine with capability-driven discovery, workload/power inte
 
 ### v2.0.1 — Release Hardened Adaptive Engine
 
-CoreFlow Autonomous Engine is a native C++17 adaptive system-intelligence daemon for Android.
+CoreFlow Autonomous Engine is a native C++20 adaptive system-intelligence daemon for Android.
 
 The source package consolidates environment/capability discovery, unified resource state, context classification, policy planning, centralized mutation authority, CPUFreq and generic-resource actuators, causal outcome evaluation and durable recovery.
 
@@ -123,9 +130,9 @@ Android / Kernel Environment
 
 ### Environment & Capability Intelligence
 
-The discovery layer inventories Android/kernel resources and records capability information such as existence, readability, writability, permission state, runtime verification and mutation readiness.
+The discovery layer records device identity, Android/kernel environment and exposed interfaces, including existence, readability, writability and runtime-read evidence. The separate `policy_authorized` flag must also be true before a capability can become mutation-ready.
 
-A writable path is **not** treated as permission to mutate it.
+A writable path is **not** treated as permission to mutate it. In the current v2.1.0 safety follow-up, production policy authorizes only named VM controls with semantic priors. Block queue tunables are discovery-only, and a central actuator guard denies new queue writes even if another path proposes them.
 
 The resource vocabulary covers:
 
@@ -134,7 +141,7 @@ The resource vocabulary covers:
 - CPU sets / cgroups
 - Scheduler controls
 - Memory / VM tunables
-- I/O queue controls
+- I/O queue controls (observed; new writes quarantined pending topology validation)
 - GPU / devfreq
 - Thermal resources
 - Charging / power
@@ -269,7 +276,7 @@ See [Enabling adaptive mode](#enabling-adaptive-mode-community-testing) for the 
 
 ## Enabling adaptive mode (community testing)
 
-CoreFlow ships in **observe-only** mode. In this mode the daemon samples the device, builds plans and writes logs, but it does not write any kernel control. Start here and move to adaptive mode only after the observe-only logs look healthy on your device.
+CoreFlow ships in **observe-only** mode. In this mode the daemon samples the device, builds plans and writes logs, but it does not write any kernel control. Start here and move to Adaptive only after the Observe logs look healthy. Adaptive remains limited to the resource classes explicitly approved by the source policy; for this source continuation, block-device queue controls are quarantined in every mode.
 
 ### 1. Observe first
 
@@ -296,7 +303,7 @@ mutation_armed=true
 
 `mutation_mode=adaptive` and `mutation_armed=true` are both required before any mutation can occur. `mutation_mode` selects the adaptive engine and `mutation_armed` is the explicit arming switch. `allow_cpu_governor` controls only CPU governor changes; set it to `no` to keep CPU governors untouched during the first test. An unknown `mutation_mode` value disables mutation.
 
-The configuration is read when the daemon starts, so **reboot after editing it**. Editing the file while the device is running has no effect.
+The configuration is read when the daemon starts, so **reboot after editing it**. Editing the file while the device is running has no effect. Even when Adaptive is explicitly armed, the current source policy does not authorize block-device queue writes.
 
 ### 3. Verify
 
@@ -322,7 +329,7 @@ CoreFlow protects against boot loops and crash loops:
 
 When you open an issue, include:
 
-- the CoreFlow version (`v2.0.1`), device model, Android version and kernel (`uname -r`),
+- the CoreFlow version (`v2.1.0`), device model, Android version and kernel (`uname -r`),
 - the relevant lines of `/data/adb/coreflow/logs/coreflowd.log` and `logcat`,
 - your `config.ini` with serial numbers and other identifiers removed (see `SECURITY.md`).
 
@@ -387,7 +394,7 @@ tools/verify_source_release.sh
 
 ## Build — host tests
 
-Requirements include CMake, Ninja and a C++17 compiler.
+Requirements include CMake, Ninja and a C++20 compiler.
 
 ```bash
 cmake -S . -B build/host -G Ninja   -DCORE_FLOW_BUILD_TESTS=ON   -DCMAKE_BUILD_TYPE=Debug

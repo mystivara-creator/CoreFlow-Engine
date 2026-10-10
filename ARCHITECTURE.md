@@ -8,8 +8,8 @@ It does **not** ship a fixed list of “resources we like.”
 On every device it:
 
 1. **Discovers** what the kernel exposes
-2. **Marks** what is readable + writable + verifiable
-3. **Scores** whether a bounded change is likely to improve stability *in this context*
+2. **Separates evidence**: discovered access, explicit policy authorization, model inference, and verified outcome
+3. **Scores** only supported resources where a semantic prior and bounded change are defined
 4. **Gates** through policy, confidence, config opt-in, and experience
 5. **Applies** at most one verified mutation per epoch
 6. **Measures** outcome against a factory baseline window
@@ -54,8 +54,9 @@ The machine decides from capability + effect + context.
 
 | Owner | Owns | Must not |
 |-------|------|----------|
-| Discovery | existence, R/W flags | decide *whether* to mutate |
-| EffectModel | benefit/risk score, requested value | write kernel |
+| Discovery | device identity, interface presence, effective R/W evidence | infer benefit or silently authorize a path |
+| Resource policy | explicit per-domain/path authorization | infer benefit or write kernel |
+| EffectModel | model inference: benefit/risk score, requested value | write kernel or grant authority |
 | PolicyEngine | *when* intervention is justified | pick arbitrary paths |
 | MutationAuthority | final permit | bypass config opt-in |
 | Actuator | bounded write + read-back | choose values |
@@ -89,7 +90,7 @@ IDLE ──► NORMAL ──► ELEVATED / WARMING ──► THERMAL_GUARD
 
 ## 4. Mutation epoch contract
 
-1. Capture factory baseline (all mutation_ready Memory/Io/Scheduler + CPU governors)
+1. Capture factory baseline only for explicitly policy-authorized and mutation-ready resources + supported CPU governor targets
 2. Authority issues permit
 3. EffectModel ranks eligible candidates with structured identity; controller applies ≤1 best candidate this cycle
 4. Journal **commit** (fsync) **before** first write
@@ -105,8 +106,8 @@ One resource mutation epoch and one CPU epoch are independent journals so recove
 ## 5. Capability-driven resource path (v2.1.0+)
 
 ```
-for cap in capability_matrix where mutation_ready
-    && domain in {Memory, Io, Scheduler}:
+for cap in capability_matrix where mutation_ready && policy_authorized
+    && domain in {supported Memory tunables}:
         score = EffectModel.evaluate(cap, baseline, context)
         if score.eligible: rank by one benefit/risk/confidence utility
 
@@ -114,7 +115,7 @@ pick top eligible that policy.allows
 apply bounded value only when semantic bounds/direction are known
 ```
 
-Soft priors (swappiness, dirty_*, vfs_cache_pressure, read-ahead, request depth, …) provide semantic bounds and preferred directions. They are not a replacement for discovery. Unknown numeric writables remain observe-only until an adapter or prior defines safe semantics. I/O queue controls require measured I/O activity; CPU load alone does not justify changing them.
+Soft priors for supported VM knobs (swappiness, dirty ratios/timers, vfs_cache_pressure and min_free_kbytes) provide candidate bounds and preferred directions. They are not a replacement for discovery, explicit policy authorization or live evidence. Unknown numeric writables remain observe-only. The model retains historical priors for I/O, but production discovery does not authorize block queue writes in this safety follow-up. The production `ResourceActuator` allow-list admits only the seven exact approved `/proc/sys/vm/` paths; all other resource paths are denied for new writes. Thus `/sys/block/*/queue/{scheduler,nr_requests,read_ahead_kb}`, equivalent `/sys/devices/.../block/...` paths, kernel scheduler sysctls and unknown controls remain read-only until separately reviewed and validated. I/O throughput remains telemetry, not permission to write. CPUFreq uses a separate actuator/authority path and remains disabled by default through `allow_cpu_governor=no`.
 
 **Never autonomous (telemetry only until proven):** charging limits, GPU governors, uClamp, cpuset, ART, Android properties.
 

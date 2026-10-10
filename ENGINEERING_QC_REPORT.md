@@ -1,40 +1,36 @@
-# CoreFlow Engineering QC Report — v2.1.0
+# CoreFlow Engineering QC Report — v2.1.0 source safety follow-up
 
 ## Scope
 
-Upgrade from v2.0.1 rebased source to **capability-driven fully autonomous** resource path while preserving fail-closed safety defaults.
+This patch starts from the supplied `CoreFlow-Engine-Autonomous-Engine` source archive and keeps its `v2.1.0` / `versionCode 2100` identity. It is a source hardening continuation, not a release declaration.
 
-## Architectural changes
+## Changes in this patch
 
 | Area | Change |
-|------|--------|
-| EffectModel | New component: scores discovered writables by stability benefit/risk under thermal/memory/load context |
-| ResourceMutationController | Candidates from capability matrix + EffectModel rank; baseline captures all mutation_ready Memory/Io/Scheduler |
-| PolicyEngine | Supported active workload → Candidate; ThermalGuard/Pressure → hold/restore; Idle → Hold |
-| ContextEngine | New optimization writes require non-safety state, headroom, and confidence≥0.70; ThermalGuard/Pressure allow stabilizing-only resource writes (see CHANGELOG, Unreleased) |
-| Discovery | Additional VM tunables: min_free_kbytes, dirty_expire_centisecs, dirty_writeback_centisecs |
-| Docs | ARCHITECTURE.md, PRODUCTION_READINESS.md, CHANGELOG v2.1.0 |
+|---|---|
+| Capability evidence | Added `policy_authorized` separately from OS access/readability and model inference. A discovered writable node is not automatically eligible. |
+| Storage safety | Quarantined new writes to block queue `scheduler`, `nr_requests`, and `read_ahead_kb` paths at discovery, baseline capture, fallback synthesis, selection and central actuator. |
+| Recovery-first | The write quarantine does not prevent restore of previously journaled paths, so old changes can still be rolled back. |
+| Device intelligence | Live status exports Android/API, manufacturer/model, SoC/board, kernel/ABI, interface facts, and discovered vs policy-ready counts. |
+| WebUI | Added an observed device/ecosystem profile and explicit indication that block queue mutations are quarantined. |
+| Knowledge base | Added `KERNEL_KNOWLEDGE_BASE.md` with evidence levels, policy scope, review gates and authoritative documentation links. |
 
-## Safety regressions checked
+## Checks performed in this work session
 
-| Check | Expected | Status in source |
-|-------|----------|------------------|
-| default.conf observe-only | mutation_mode=observe, armed=false | PASS (file content) |
-| Engine default MutationMode::Disabled | no write without opt-in | PASS (config.hpp) |
-| Journal before write | commit then apply | PASS (resource_mutation.cpp) |
-| Domain filter | no charging/GPU/ART mutation via EffectModel | PASS (evaluate domain switch) |
-| Unknown numeric semantics | Observe-only until a semantic prior/adapter exists | PASS (EffectModel) |
-| I/O controls | Require measured I/O activity; CPU load alone is insufficient | PASS (EffectModel) |
-| Candidate identity and utility | Structured metadata and one consistent utility formula | PASS (EffectModel + controller) |
-| ThermalGuard/Pressure | Only stabilizing resource writes at Low intervention; no CPU governor; restoration remains available | PASS (context + policy + authority + epoch rule, host-tested) |
+- Host configure/build with strict warnings and `-Werror`: **passed**.
+- CTest: **6/6 passed** (including source-release and safety-foundation contracts).
+- WebUI status writer/parser contract: **166/166 passed**.
+- End-to-end WebUI render smoke test: **23/23 passed** when run independently after the combined invocation hit its time limit.
+- Strict-warning syntax-only compile of `src/discovery.cpp` with a stub Android system-properties header: **passed**; this is not an Android NDK build.
+- ASan/UBSan: **not run in this session**.
 
-## Not verified in this environment
+## Not verified here
 
-- Android NDK link of coreflowd
-- ONNX inference on device
-- Real-device mutation/rollback
+- Android NDK/ARM64 `coreflowd` link and ONNX Runtime integration.
+- GitHub Actions workflow or artifact digest.
+- Actual Android `status.json` permissions/SELinux behavior.
+- Real-device Observe soak, Adaptive VM mutation, old-journal recovery, or storage regression root cause.
 
-## QC verdict
+## Acceptance state
 
-**Host source tests: PASS in the current local environment (CTest + ASan/UBSan).**  
-**Android/device release: NOT CERTIFIED** until the operator's ARM64 build and staged device validation are complete.
+**Host source checks passed; Android/device release is not certified.** Keep the device on Observe until the patch is reviewed, the operator's ARM64 CI is green, and staged device validation confirms no unexpected writes, stable storage and working recovery. The earlier storage issue correlated with an observed `loop0` scheduler mutation but has not been causally proven; the current policy treats it as a safety incident worth preventing against, not as confirmed root cause.

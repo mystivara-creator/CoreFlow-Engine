@@ -15,3 +15,10 @@ The reference is used to restore the capability surface that existed in the earl
 ## v2.0.0 rule
 
 A discovered writable resource is eligible for autonomous policy consideration when it is readable, writable and runtime-verified. Policy chooses whether intervention is useful for the current device context. Final mutation remains owned by `MutationPermit`, with durable baseline journaling, read-back verification and rollback.
+
+
+## v2.1.0 safety follow-up (current source policy)
+
+The historical v2.0.0 rule above that treated readable/writable/runtime-verified interfaces as eligible for policy consideration is superseded by the explicit `policy_authorized` gate. Discovery records observed interfaces and access evidence separately from engine policy. Only named VM controls with explicit semantic priors are policy-authorized through production discovery at this point.
+
+Block-device queue writes (`scheduler`, `nr_requests`, `read_ahead_kb`) are quarantined at multiple layers while the engine lacks a validated block-device dependency map for Android storage stacks. This does **not** disable restoration of older changes from a committed journal. Reopening this domain requires its own reviewed source change and device-specific validation; it must not be enabled merely because a path is writable.

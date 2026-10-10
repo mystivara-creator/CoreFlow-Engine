@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — v2.1.0 safety and observability follow-up
+
+This is a source hardening continuation of the supplied v2.1.0 tree, not a version reset or new public release.
+
+- Added `policy_authorized` as a distinct capability fact; `writable`/`permission_granted` evidence and model inference no longer substitute for the explicit policy gate.
+- Restricted the production `ResourceMutationController` and central resource actuator to seven exact VM paths with semantic priors; other resource paths are denied for new writes. The separate CPUFreq path remains behind its explicit `allow_cpu_governor` opt-in (default `no`). Block-device queue writes (`scheduler`, `nr_requests`, `read_ahead_kb`) are quarantined across discovery, baseline capture, ranking/selection and the central actuator, including fallback paths.
+- Kept journal-based restore available for recovery from changes recorded by older builds; the new-write guard is intentionally not applied to restore.
+- Added live device/ecosystem data to `status.json` and the WebUI: manufacturer/model, Android/API, kernel/ABI, SoC/board, interface presence, discovered capabilities and policy-ready count.
+- Added regression coverage for policy authorization and protected block queue targets, plus WebUI contract/render assertions.
+- Migrated the native build contract to C++20 for host and Android NDK builds.
+- Connected `ScoringDecisionAgent` to the real resource-candidate ranking path. It returns explainable ranked proposals only; policy authorization, MutationAuthority, journal, actuator verification, ExperienceMemory scoring and rollback remain downstream.
+- Added a KernelSU / KernelSU Next `updateJson` feed. A GitHub Release workflow validates the versioned install ZIP and attaches a release-specific `update.json` so the manager can detect newer `versionCode` values.
+- Host build/CTest passed in this work. Android NDK/ARM64 linking, Android ONNX integration and device-level behavior still require the operator's CI and staged validation.
+
 ## v2.1.0 — Balance pass (community evaluation target)
 
 Identity: **Observe. Understand. Balance. Adapt.**
