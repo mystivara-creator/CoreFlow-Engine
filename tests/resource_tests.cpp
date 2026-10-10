@@ -515,6 +515,234 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
 
 } // namespace
 
+// Regression (v2.1.1): sysfs selector nodes such as queue/scheduler read back as
+// "[mq-deadline] kyber none". The kernel accepts only the bare token on write,
+// so a baseline captured as the bracketed line could never be restored.
+void test_selector_value_comparable_form() {
+    CHECK(ResourceActuator::comparableValue("[mq-deadline] kyber none") == "mq-deadline");
+    CHECK(ResourceActuator::comparableValue("mq-deadline [none]") == "none");
+    CHECK(ResourceActuator::comparableValue("none") == "none");
+    CHECK(ResourceActuator::comparableValue("  128 \n") == "128");
+    CHECK(ResourceActuator::comparableValue("performance") == "performance");
+    CHECK(ResourceActuator::comparableValue("") == "");
+}
+
+void test_selector_scheduler_restore_writes_bare_token() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_selector_scheduler_regress";
+    fs::remove_all(root);
+    fs::create_directories(root / "queue");
+    const fs::path schedulerPath = root / "queue" / "scheduler";
+    writeFile(schedulerPath, "[mq-deadline] none");
+
+    DeviceProfile profile;
+    IoDevice device;
+    device.path = root.string();
+    device.name = "testblk";
+    device.scheduler_readable = true;
+    device.scheduler_writable = true;
+    profile.io_devices.push_back(device);
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 500;
+    sample.mem_available_ratio = 0.50;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.80;
+    sample.cpu_utilization_available = true;
+    sample.load1 = 2.0;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+    CHECK(controller.captureBaseline(profile));
+
+    CHECK(applyResourcePolicy(controller, RuntimeState::Elevated, sample,
+                              profile, config, InterventionLevel::High)
+          == MutationResult::Verified);
+    CHECK(readFile(schedulerPath) == "none");
+    CHECK(controller.mutated());
+
+    // Rollback must write the bare factory token the kernel accepts.
+    CHECK(controller.restoreAll());
+    CHECK(readFile(schedulerPath) == "mq-deadline");
+    CHECK(!controller.mutated());
+
+    fs::remove_all(root);
+}
+
+// A journal written by an earlier build may hold the bracketed line. Recovery
+// and restore must normalize it instead of writing an unacceptable value.
+void test_legacy_bracketed_journal_value_is_normalized() {
+    const fs::path path = fs::temp_directory_path() / "coreflow_legacy_journal_sched";
+    writeFile(path, "none");
+
+    ResourceActuator actuator;
+    const ActuatorResult result = actuator.restore(path.string(), "[mq-deadline] none");
+    CHECK(result.status == ActuatorStatus::RolledBack);
+    CHECK(readFile(path) == "mq-deadline");
+
+    fs::remove(path);
+}
+
+// The CPU governor permit must not be issued without the separate opt-in.
+void test_cpu_permit_requires_governor_opt_in() {
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setAllowCpuGovernor(false);
+
+    const MutationAuthority authority;
+    CHECK(!authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
+                               MutationPermit::Scope::CpuFreq)
+              .validFor(MutationPermit::Scope::CpuFreq));
+
+    config.setAllowCpuGovernor(true);
+    CHECK(authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
+                              MutationPermit::Scope::CpuFreq)
+              .validFor(MutationPermit::Scope::CpuFreq));
+}
+
+// ---- v2.1.1: graded safety. Stress allows small load-reducing writes only. ----
+namespace stab {
+
+struct Fixture {
+    fs::path root;
+    fs::path swappiness;
+    DeviceProfile profile;
+    RuntimeSample sample;
+    EngineConfig config;
+    Journal journal;
+    ResourceMutationController controller;
+
+    explicit Fixture(const std::string& name) {
+        root = fs::temp_directory_path() / name;
+        fs::remove_all(root);
+        fs::create_directories(root);
+        swappiness = root / "swappiness";
+        writeFile(swappiness, "60");
+        profile.vm_swappiness.path = swappiness.string();
+        profile.vm_swappiness.readable = true;
+        profile.vm_swappiness.writable = true;
+        sample.mem_total_kb = 1000;
+        sample.mem_available_kb = 500;
+        sample.mem_available_ratio = 0.50;
+        sample.confidence = 1.0;
+        sample.cpu_utilization = 0.50;
+        sample.cpu_utilization_available = true;
+        sample.thermal_available = true;
+        sample.thermal_millidegrees = 30000;
+        config.setMutationMode(MutationMode::Adaptive);
+        config.setMutationArmed(true);
+        controller.setJournal(&journal);
+    }
+    ~Fixture() { fs::remove_all(root); }
+
+    static PolicyPlan stabilizingPlan() {
+        PolicyPlan plan;
+        plan.action = PolicyAction::Candidate;
+        plan.intervention = InterventionLevel::Low;
+        plan.mutation_eligible = true;
+        plan.stabilizing_only = true;
+        plan.candidates.push_back({ResourceDomain::Memory, "vm.swappiness", {}, 1.0, 0.3,
+                                   PolicyAction::Candidate});
+        return plan;
+    }
+
+    MutationResult run(RuntimeState state, const PolicyPlan& plan) {
+        const MutationAuthority authority;
+        const MutationPermit permit = authority.authorize(
+            plan, config, state, sample.confidence, MutationPermit::Scope::Resource);
+        return controller.apply(state, sample, profile, config, plan, permit);
+    }
+};
+
+} // namespace stab
+
+void test_thermal_guard_allows_stabilizing_write_and_restores() {
+    stab::Fixture f("coreflow_stab_thermal");
+    f.sample.thermal_millidegrees = 55000;
+    CHECK(f.controller.captureBaseline(f.profile));
+
+    CHECK(f.run(RuntimeState::ThermalGuard, stab::Fixture::stabilizingPlan()) ==
+          MutationResult::Verified);
+    const int value = std::stoi(readFile(f.swappiness));
+    CHECK(value < 60);      // load-reducing direction under thermal stress
+    CHECK(value >= 45);     // bounded by the prior's max step
+    CHECK(f.controller.mutated());
+    CHECK(f.controller.stabilizingEpoch());
+    CHECK(f.journal.pending);
+
+    CHECK(f.controller.restoreAll());
+    CHECK(readFile(f.swappiness) == "60");
+    CHECK(!f.controller.stabilizingEpoch());
+    CHECK(!f.journal.pending);
+}
+
+void test_pressure_allows_stabilizing_write() {
+    stab::Fixture f("coreflow_stab_pressure");
+    f.sample.mem_available_ratio = 0.08;
+    f.sample.mem_available_kb = 80;
+    CHECK(f.controller.captureBaseline(f.profile));
+
+    CHECK(f.run(RuntimeState::Pressure, stab::Fixture::stabilizingPlan()) ==
+          MutationResult::Verified);
+    CHECK(std::stoi(readFile(f.swappiness)) > 60);  // memory prior: raise
+    CHECK(f.controller.stabilizingEpoch());
+    CHECK(f.controller.restoreAll());
+    CHECK(readFile(f.swappiness) == "60");
+}
+
+void test_stabilizing_plan_rejects_non_stabilizing_candidates() {
+    // A calm system under a stabilizing-only plan: the EffectModel would offer a
+    // mild efficiency tweak, but that is not a response to stress, so nothing is
+    // written.
+    stab::Fixture f("coreflow_stab_calm");
+    CHECK(f.controller.captureBaseline(f.profile));
+    CHECK(f.run(RuntimeState::Normal, stab::Fixture::stabilizingPlan()) ==
+          MutationResult::Skipped);
+    CHECK(readFile(f.swappiness) == "60");
+    CHECK(!f.controller.mutated());
+}
+
+void test_safety_state_without_stabilizing_plan_never_writes() {
+    stab::Fixture f("coreflow_stab_plain");
+    f.sample.thermal_millidegrees = 55000;
+    CHECK(f.controller.captureBaseline(f.profile));
+    PolicyPlan plain = stab::Fixture::stabilizingPlan();
+    plain.stabilizing_only = false;   // an ordinary candidate plan
+    CHECK(f.run(RuntimeState::ThermalGuard, plain) == MutationResult::Skipped);
+    CHECK(readFile(f.swappiness) == "60");
+    CHECK(!f.controller.mutated());
+}
+
+void test_regressed_candidate_is_suppressed() {
+    stab::Fixture f("coreflow_stab_reject");
+    f.sample.thermal_millidegrees = 55000;
+    CHECK(f.controller.captureBaseline(f.profile));
+    const PolicyPlan plan = stab::Fixture::stabilizingPlan();
+
+    CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Verified);
+    // The daemon rejects the candidate when its measured outcome regressed, then
+    // restores.
+    f.controller.rejectLastMutation();
+    CHECK(f.controller.restoreAll());
+    CHECK(readFile(f.swappiness) == "60");
+
+    // The same candidate is not selected again within the cooldown.
+    CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Skipped);
+    CHECK(readFile(f.swappiness) == "60");
+    CHECK(!f.controller.mutated());
+}
+
 int main() {
     test_swappiness_adaptive_path();
     test_resource_restore_only_owned_paths();
@@ -522,6 +750,15 @@ int main() {
     test_intervention_level_boundaries();
     test_disarmed_policy_performs_no_write();
     test_effect_model_structured_rank_and_unknown_semantics();
+    test_selector_value_comparable_form();
+    test_selector_scheduler_restore_writes_bare_token();
+    test_legacy_bracketed_journal_value_is_normalized();
+    test_cpu_permit_requires_governor_opt_in();
+    test_thermal_guard_allows_stabilizing_write_and_restores();
+    test_pressure_allows_stabilizing_write();
+    test_stabilizing_plan_rejects_non_stabilizing_candidates();
+    test_safety_state_without_stabilizing_plan_never_writes();
+    test_regressed_candidate_is_suppressed();
     std::printf("CoreFlow resource autonomy: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

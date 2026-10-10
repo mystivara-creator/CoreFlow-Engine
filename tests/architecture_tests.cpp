@@ -75,9 +75,25 @@ int main() {
     const SystemContext hot = context_engine.evaluate(sample, RuntimeState::ThermalGuard);
     CHECK(hot.workload == WorkloadClass::ThermalLimited);
     CHECK(!hot.mutation_allowed_by_context);
+    // Stress is graded, not binary. With trustworthy telemetry the policy allows
+    // small load-reducing writes (stabilizing_only); it never allows more.
+    CHECK(hot.stabilizing_allowed_by_context);
     const PolicyPlan held = policy.evaluate(hot, resources);
-    CHECK(held.action == PolicyAction::ReduceIntervention);
-    CHECK(!held.mutation_eligible);
+    CHECK(held.action == PolicyAction::Candidate);
+    CHECK(held.mutation_eligible);
+    CHECK(held.stabilizing_only);
+    CHECK(held.intervention == InterventionLevel::Low);
+
+    // Untrustworthy telemetry under stress remains a hard hold.
+    RuntimeSample unsure = sample;
+    unsure.confidence = 0.20;
+    const SystemContext unsure_hot =
+        context_engine.evaluate(unsure, RuntimeState::ThermalGuard);
+    CHECK(!unsure_hot.stabilizing_allowed_by_context);
+    const PolicyPlan unsure_plan = policy.evaluate(unsure_hot, resources);
+    CHECK(unsure_plan.action == PolicyAction::ReduceIntervention);
+    CHECK(!unsure_plan.mutation_eligible);
+    CHECK(!unsure_plan.stabilizing_only);
 
 
     // Commit 5: adaptive intervention policy coverage.
@@ -118,9 +134,10 @@ int main() {
         const PolicyPlan thermal_plan =
             policy.evaluate(thermal_context, resources);
 
-        CHECK(thermal_plan.action == PolicyAction::ReduceIntervention);
-        CHECK(thermal_plan.intervention == InterventionLevel::ObserveOnly);
-        CHECK(!thermal_plan.mutation_eligible);
+        CHECK(thermal_plan.action == PolicyAction::Candidate);
+        CHECK(thermal_plan.intervention == InterventionLevel::Low);
+        CHECK(thermal_plan.mutation_eligible);
+        CHECK(thermal_plan.stabilizing_only);
 
         RuntimeSample unknown_sample = safe_sample;
         unknown_sample.confidence = 0.0;
@@ -156,14 +173,36 @@ int main() {
 
         CHECK(allowed.validFor(MutationPermit::Scope::Resource));
 
-        const MutationPermit blocked = authority.authorize(
+        // A stabilizing plan may start a resource write in ThermalGuard...
+        const MutationPermit stabilizing = authority.authorize(
             held,
             enabled,
             RuntimeState::ThermalGuard,
             hot.confidence,
             MutationPermit::Scope::Resource);
+        CHECK(stabilizing.validFor(MutationPermit::Scope::Resource));
 
-        CHECK(!blocked.validFor(MutationPermit::Scope::Resource));
+        // ...but never the CPU governor, even when the operator allowed it.
+        EngineConfig cpu_enabled = enabled;
+        cpu_enabled.setAllowCpuGovernor(true);
+        CHECK(!authority.authorize(held, cpu_enabled, RuntimeState::ThermalGuard,
+                                   hot.confidence, MutationPermit::Scope::CpuFreq)
+                   .valid());
+        CHECK(!authority.authorize(held, cpu_enabled, RuntimeState::Normal,
+                                   hot.confidence, MutationPermit::Scope::CpuFreq)
+                   .valid());
+
+        // A plan that is not stabilizing gets no permit in a safety state.
+        PolicyPlan plain;
+        plain.action = PolicyAction::Candidate;
+        plain.mutation_eligible = true;
+        CHECK(!authority.authorize(plain, enabled, RuntimeState::ThermalGuard, 1.0,
+                                   MutationPermit::Scope::Resource).valid());
+        CHECK(!authority.authorize(plain, enabled, RuntimeState::Pressure, 1.0,
+                                   MutationPermit::Scope::Resource).valid());
+        CHECK(!authority.authorize(unsure_plan, enabled, RuntimeState::ThermalGuard,
+                                   unsure.confidence,
+                                   MutationPermit::Scope::Resource).valid());
 
         EngineConfig disarmed;
         disarmed.setMutationMode(MutationMode::Adaptive);
@@ -186,6 +225,97 @@ int main() {
     ActuatorResult rejected;
     rejected.status = ActuatorStatus::SafetyRejected;
     CHECK(classifyOutcome(rejected) == OutcomeClass::SafetyBlocked);
+
+    // v2.1.1 daemon epoch rule: when must an active mutation be restored now?
+    {
+        EpochRestoreInputs in;
+        in.state = RuntimeState::ThermalGuard;
+        in.mode_adaptive = true;
+        in.armed = true;
+        in.resource_epoch_stabilizing = true;
+        in.plan_stabilizing_only = true;
+        in.plan_mutation_eligible = true;
+        // The one case that is held through stress.
+        CHECK(!shouldRestoreEpochNow(in));
+        in.state = RuntimeState::Pressure;
+        CHECK(!shouldRestoreEpochNow(in));
+
+        // Every deviation restores.
+        EpochRestoreInputs e = in;  e.cpu_mutated = true;
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.resource_epoch_stabilizing = false;
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.plan_stabilizing_only = false;
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.plan_mutation_eligible = false;   // e.g. confidence dropped
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.armed = false;                    // disarmed / kill switch
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.mode_adaptive = false;            // SAFE_MODE disables the config
+        CHECK(shouldRestoreEpochNow(e));
+        e = in;  e.state = RuntimeState::Idle;
+        CHECK(shouldRestoreEpochNow(e));
+
+        // Outside stress the epoch runs its normal window; disarm still restores.
+        e = in;  e.state = RuntimeState::Normal;
+        CHECK(!shouldRestoreEpochNow(e));
+        e.armed = false;
+        CHECK(shouldRestoreEpochNow(e));
+    }
+
+    // v2.1.1 graded context gate.
+    {
+        RuntimeSample base;
+        base.load1 = 1.0;
+        base.cpu_utilization = 0.50;
+        base.cpu_utilization_available = true;
+        base.mem_total_kb = 100000;
+        base.mem_available_kb = 60000;
+        base.mem_available_ratio = 0.60;
+        base.thermal_available = true;
+        base.thermal_millidegrees = 39000;
+        base.confidence = 0.95;
+
+        // Heavy I/O no longer blocks tuning.
+        RuntimeSample heavy_io = base;
+        heavy_io.io_activity_available = true;
+        heavy_io.io_read_kb_per_sec = 150000.0;
+        const SystemContext io_ctx = context_engine.evaluate(heavy_io, RuntimeState::Normal);
+        CHECK(!io_ctx.io_headroom);
+        CHECK(io_ctx.mutation_allowed_by_context);
+
+        // Low memory headroom: proactive tuning waits, stabilization is allowed.
+        RuntimeSample low_mem = base;
+        low_mem.mem_available_ratio = 0.10;
+        low_mem.mem_available_kb = 10000;
+        const SystemContext mem_ctx = context_engine.evaluate(low_mem, RuntimeState::Normal);
+        CHECK(!mem_ctx.mutation_allowed_by_context);
+        CHECK(mem_ctx.stabilizing_allowed_by_context);
+
+        // Pressure is stressed too.
+        const SystemContext pressure_ctx =
+            context_engine.evaluate(low_mem, RuntimeState::Pressure);
+        CHECK(!pressure_ctx.mutation_allowed_by_context);
+        CHECK(pressure_ctx.stabilizing_allowed_by_context);
+
+        // Idle never tunes; low confidence never tunes, stressed or not.
+        const SystemContext idle_ctx = context_engine.evaluate(base, RuntimeState::Idle);
+        CHECK(!idle_ctx.mutation_allowed_by_context);
+        CHECK(!idle_ctx.stabilizing_allowed_by_context);
+        const SystemContext idle_hot = context_engine.evaluate(low_mem, RuntimeState::Idle);
+        CHECK(!idle_hot.stabilizing_allowed_by_context);
+
+        RuntimeSample weak = low_mem;
+        weak.confidence = 0.40;
+        const SystemContext weak_ctx = context_engine.evaluate(weak, RuntimeState::Pressure);
+        CHECK(!weak_ctx.mutation_allowed_by_context);
+        CHECK(!weak_ctx.stabilizing_allowed_by_context);
+
+        // A comfortable system is not "stressed": no stabilization path.
+        const SystemContext calm = context_engine.evaluate(base, RuntimeState::Normal);
+        CHECK(calm.mutation_allowed_by_context);
+        CHECK(!calm.stabilizing_allowed_by_context);
+    }
 
     std::cout << (failures == 0 ? "CoreFlow architecture foundation: PASS\n"
                                 : "CoreFlow architecture foundation: FAIL\n");

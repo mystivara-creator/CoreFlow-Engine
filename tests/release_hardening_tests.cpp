@@ -5,6 +5,7 @@
 // and the thermal guard entry/hold logic including hottest-only confirmation.
 
 #include "coreflow/config.hpp"
+#include "coreflow/status_snapshot.hpp"
 #include "coreflow/thermal_features.hpp"
 #include "coreflow/thermal_guard.hpp"
 #include "coreflow/thermal_limits.hpp"
@@ -16,6 +17,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 
@@ -296,6 +298,332 @@ void testGuardHoldsUntilExitThreshold() {
 
 }  // namespace
 
+// ---- v2.1.1: live status snapshot consumed by the WebUI. ----
+
+// Minimal strict JSON validator (RFC 8259 grammar), so the test proves the
+// snapshot is parseable by any JSON.parse without depending on a library.
+struct JsonCheck {
+    const std::string& t;
+    std::size_t i{0};
+    explicit JsonCheck(const std::string& text) : t(text) {}
+
+    bool at(char c) const { return i < t.size() && t[i] == c; }
+    bool digit() const { return i < t.size() && t[i] >= '0' && t[i] <= '9'; }
+
+    void ws() {
+        while (i < t.size() &&
+               (t[i] == ' ' || t[i] == '\n' || t[i] == '\r' || t[i] == '\t')) {
+            ++i;
+        }
+    }
+
+    bool lit(const std::string& word) {
+        if (t.compare(i, word.size(), word) != 0) return false;
+        i += word.size();
+        return true;
+    }
+
+    bool hex4() {
+        for (int k = 0; k < 4; ++k) {
+            ++i;
+            if (i >= t.size()) return false;
+            const char h = t[i];
+            const bool ok = (h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') ||
+                            (h >= 'A' && h <= 'F');
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    bool str() {
+        if (!at('"')) return false;
+        ++i;
+        while (i < t.size()) {
+            const unsigned char c = static_cast<unsigned char>(t[i]);
+            if (c == '"') {
+                ++i;
+                return true;
+            }
+            if (c < 0x20) return false;
+            if (c == '\\') {
+                ++i;
+                if (i >= t.size()) return false;
+                const char e = t[i];
+                if (e == 'u') {
+                    if (!hex4()) return false;
+                } else if (std::string("\"\\/bfnrt").find(e) == std::string::npos) {
+                    return false;
+                }
+            }
+            ++i;
+        }
+        return false;
+    }
+
+    bool num() {
+        const std::size_t start = i;
+        if (at('-')) ++i;
+        if (at('0')) {
+            ++i;
+        } else if (digit()) {
+            while (digit()) ++i;
+        } else {
+            return false;
+        }
+        if (at('.')) {
+            ++i;
+            const std::size_t d = i;
+            while (digit()) ++i;
+            if (i == d) return false;
+        }
+        if (at('e') || at('E')) {
+            ++i;
+            if (at('+') || at('-')) ++i;
+            const std::size_t d = i;
+            while (digit()) ++i;
+            if (i == d) return false;
+        }
+        return i > start;
+    }
+
+    bool object() {
+        ++i;
+        ws();
+        if (at('}')) {
+            ++i;
+            return true;
+        }
+        for (;;) {
+            ws();
+            if (!str()) return false;
+            ws();
+            if (!at(':')) return false;
+            ++i;
+            if (!value()) return false;
+            ws();
+            if (at(',')) {
+                ++i;
+                continue;
+            }
+            if (at('}')) {
+                ++i;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    bool array() {
+        ++i;
+        ws();
+        if (at(']')) {
+            ++i;
+            return true;
+        }
+        for (;;) {
+            if (!value()) return false;
+            ws();
+            if (at(',')) {
+                ++i;
+                continue;
+            }
+            if (at(']')) {
+                ++i;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    bool value() {
+        ws();
+        if (i >= t.size()) return false;
+        switch (t[i]) {
+            case '{': return object();
+            case '[': return array();
+            case '"': return str();
+            case 't': return lit("true");
+            case 'f': return lit("false");
+            case 'n': return lit("null");
+            default: return num();
+        }
+    }
+
+    bool document() {
+        if (!value()) return false;
+        ws();
+        return i == t.size();
+    }
+};
+
+bool validJson(const std::string& text) { JsonCheck c(text); return c.document(); }
+bool has(const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; }
+
+EngineStatus adaptiveReady() {
+    EngineStatus s;
+    s.version = "2.1.0";
+    s.mode = "adaptive";
+    s.armed = true;
+    s.baseline_ready = true;
+    s.proactive_allowed = true;
+    s.mutation_eligible = true;
+    s.candidates = 3;
+    s.confidence = 0.9;
+    s.state = "NORMAL";
+    return s;
+}
+
+void testStatusJsonIsStrictAndHostile() {
+    EngineStatus s = adaptiveReady();
+    s.thermal_available = true;
+    s.thermal_c = std::numeric_limits<double>::quiet_NaN();
+    s.hottest_c = std::numeric_limits<double>::infinity();
+    s.load1 = -std::numeric_limits<double>::infinity();
+    s.mem_available_ratio = 0.4217;
+    s.plan_reason = std::string("quote\" back\\slash\nnewline\ttab\x01ctl </script> \xc3\xa9");
+    s.resource_applied.emplace_back("/proc/sys/vm/swappiness\"x", "45\n");
+    const std::string json = statusToJson(s);
+    CHECK(validJson(json));
+    CHECK(has(json, "\"thermal_c\":null"));      // NaN never leaks as a bare token
+    CHECK(has(json, "\"hottest_c\":null"));
+    CHECK(has(json, "\"load1\":null"));
+    CHECK(has(json, "\"mem_available_ratio\":0.4217"));
+    CHECK(!has(json, "nan"));
+    CHECK(!has(json, "inf"));
+    CHECK(!has(json, "\x01"));
+}
+
+void testStatusJsonContractShape() {
+    const std::string json = statusToJson(adaptiveReady());
+    CHECK(validJson(json));
+    CHECK(has(json, "\"schema\":1"));
+    CHECK(has(json, "\"eyes\":{"));
+    CHECK(has(json, "\"brain\":{"));
+    CHECK(has(json, "\"hands\":{"));
+    CHECK(has(json, "\"blocker\":\"READY\""));
+    CHECK(has(json, "\"stabilizing_only\":false"));
+    CHECK(has(json, "\"permit_cpu\":false"));
+    // Unavailable sensors are null, not zero.
+    EngineStatus off = adaptiveReady();
+    off.thermal_available = false;
+    off.cpu_available = false;
+    off.io_available = false;
+    off.battery_percent = -1;
+    const std::string off_json = statusToJson(off);
+    CHECK(has(off_json, "\"thermal_c\":null"));
+    CHECK(has(off_json, "\"cpu_utilization\":null"));
+    CHECK(has(off_json, "\"io_read_kbs\":null"));
+    CHECK(has(off_json, "\"battery_percent\":null"));
+}
+
+void testStatusJsonIsBounded() {
+    EngineStatus s = adaptiveReady();
+    s.plan_reason = std::string(100000, 'x');
+    for (int i = 0; i < 100; ++i) {
+        s.resource_applied.emplace_back("/p/" + std::to_string(i), "1");
+    }
+    const std::string json = statusToJson(s);
+    CHECK(validJson(json));
+    CHECK(json.size() < 16 * 1024);              // the WebUI refuses larger documents
+    CHECK(has(json, "/p/15"));
+    CHECK(!has(json, "/p/16"));                  // list capped at 16 entries
+}
+
+void testPrimaryBlockerOrder() {
+    const EngineStatus ready = adaptiveReady();
+    CHECK(primaryBlocker(ready) == "READY");
+
+    struct Case {
+        const char* expected;
+        void (*mutate)(EngineStatus&);
+    };
+    const Case cases[] = {
+        {"STOPPED", [](EngineStatus& s) { s.running = false; }},
+        {"SAFETY_HOLD", [](EngineStatus& s) { s.hold_active = true; }},
+        {"OBSERVE_MODE", [](EngineStatus& s) { s.mode = "observe"; }},
+        {"NOT_ARMED", [](EngineStatus& s) { s.armed = false; }},
+        {"BASELINE_CAPTURE", [](EngineStatus& s) { s.baseline_ready = false; }},
+        {"OBSERVING_OUTCOME", [](EngineStatus& s) { s.observing = true; }},
+        {"CHANGE_HELD", [](EngineStatus& s) { s.resource_mutated = true; }},
+        {"CHANGE_HELD", [](EngineStatus& s) { s.cpu_mutated = true; }},
+        {"COOLDOWN", [](EngineStatus& s) { s.cooldown_remaining = 3; }},
+        {"CONTEXT_IDLE", [](EngineStatus& s) {
+             s.proactive_allowed = false;
+             s.state = "IDLE";
+         }},
+        {"CONTEXT_LOW_CONFIDENCE", [](EngineStatus& s) {
+             s.proactive_allowed = false;
+             s.confidence = 0.40;
+         }},
+        {"CONTEXT_NO_HEADROOM", [](EngineStatus& s) { s.proactive_allowed = false; }},
+        {"READY", [](EngineStatus& s) {
+             s.proactive_allowed = false;
+             s.stabilizing_allowed = true;
+         }},
+        {"NO_CANDIDATES", [](EngineStatus& s) { s.candidates = 0; }},
+        {"NO_CANDIDATES", [](EngineStatus& s) { s.mutation_eligible = false; }},
+        // The first thing that stops the engine wins.
+        {"SAFETY_HOLD", [](EngineStatus& s) {
+             s.mode = "observe";
+             s.baseline_ready = false;
+             s.hold_active = true;
+         }},
+        {"STOPPED", [](EngineStatus& s) {
+             s.running = false;
+             s.hold_active = true;
+         }},
+    };
+    for (const Case& c : cases) {
+        EngineStatus s = ready;
+        c.mutate(s);
+        CHECK(primaryBlocker(s) == c.expected);
+    }
+}
+
+void testEveryBlockerIsListed() {
+    const auto& codes = blockerCodes();
+    CHECK(codes.size() == 13);
+    EngineStatus s = adaptiveReady();
+    auto listed = [&](const std::string& c) {
+        for (const auto& k : codes) if (k == c) return true;
+        return false;
+    };
+    CHECK(listed(primaryBlocker(s)));
+    s.running = false;           CHECK(listed(primaryBlocker(s)));
+    s.running = true; s.hold_active = true;  CHECK(listed(primaryBlocker(s)));
+    s.hold_active = false; s.mode = "observe"; CHECK(listed(primaryBlocker(s)));
+}
+
+void testWriteStatusFileIsAtomic() {
+    const fs::path dir = fs::temp_directory_path() / "coreflow_status_write_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string path = (dir / "status.json").string();
+
+    const std::string first = statusToJson(adaptiveReady());
+    CHECK(writeStatusFile(path, first));
+    {
+        std::ifstream in(path); std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == first);
+    }
+    EngineStatus next = adaptiveReady();
+    next.sample = 99;
+    const std::string second = statusToJson(next);
+    CHECK(writeStatusFile(path, second));
+    {
+        std::ifstream in(path); std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == second);
+        CHECK(validJson(body));
+    }
+    CHECK(!fs::exists(path + ".tmp"));            // no leftover temp file
+
+    // Best-effort: failure is reported, never thrown, and leaves nothing behind.
+    CHECK(!writeStatusFile((dir / "missing" / "status.json").string(), first));
+    CHECK(!writeStatusFile("", first));
+    CHECK(!writeStatusFile(path, ""));
+    fs::remove_all(dir);
+}
+
 int main() {
     testEngineDefaultsAreObserveOnly();
     testShippedDefaultConfIsObserveOnly();
@@ -312,6 +640,12 @@ int main() {
     testSustainedHottestOnlyTriggersGuard();
     testStreakRequiresConsecutiveSamples();
     testGuardHoldsUntilExitThreshold();
+    testStatusJsonIsStrictAndHostile();
+    testStatusJsonContractShape();
+    testStatusJsonIsBounded();
+    testPrimaryBlockerOrder();
+    testEveryBlockerIsListed();
+    testWriteStatusFileIsAtomic();
 
     if (failures != 0) {
         std::fprintf(stderr, "CoreFlow release hardening: %d/%d checks FAILED\n",
