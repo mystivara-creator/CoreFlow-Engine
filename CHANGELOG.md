@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.1.0 — Hardening (status truth + agent visibility)
+
+### Fixed
+- **Adaptive shown as Observe on Live page**: `status.json` now publishes `mode` as
+  `adaptive`/`observe` (config tokens). `primaryBlocker` accepts case-insensitive mode
+  so legacy `ADAPTIVE`/`DISABLED` log tokens cannot force `OBSERVE_MODE`.
+- **Confidence gate in status blocker** aligned to 0.60 (Balance default).
+
+### Improved
+### Polish
+- `skip_reason` + observation epoch progress (`observation_samples` / `observation_target=5`) in status.json
+- WebUI Brain shows observation epoch and skip/wait reason (no silent NO_ACTION)
+- `default.conf` `min_confidence=0.60` aligned with Balance EngineConfig
+
+- **DecisionAgent** proposal summaries include resource, utility, benefit, risk, confidence.
+- **ResourceMutationController** records `lastAgentReason()`; published in status as
+  `brain.agent_mode` / `brain.agent_reason`.
+- **WebUI** Brain panel shows Decision agent row.
+- Host tests: `ADAPTIVE` mode must not map to `OBSERVE_MODE`.
+- `DEVICE_VALIDATION.md` staged checklist for real-device RC evidence.
+
+
 ## Unreleased — v2.1.0 safety and observability follow-up
 
 This is a source hardening continuation of the supplied v2.1.0 tree, not a version reset or new public release.
