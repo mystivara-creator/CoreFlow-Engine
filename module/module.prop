@@ -3,4 +3,5 @@ name=CoreFlow Autonomous
 version=v2.1.0
 versionCode=2100
 author=Mystivara
-description=Fully autonomous adaptive intelligence engine for Android — capability-driven discovery, effect-model ranking, experience-gated bounded mutation, causal measurement, verification, and safe rollback.
+description=Observe. Understand. Balance. Adapt. Capability-driven native C++ autonomous engine — graded safety, bounded mutation, verified rollback.
+

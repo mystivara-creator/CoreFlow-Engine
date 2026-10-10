@@ -35,7 +35,6 @@ ADAPTIVE_FLAG="${COREFLOW_ADAPTIVE_FLAG:-/sdcard/CoreFlow/enable_adaptive}"
 CONFIG="$STATE_DIR/config.ini"
 REPORT="$STATE_DIR/install_report.txt"
 DEFAULT_CONF="$MODPATH/system/etc/coreflow/default.conf"
-VALIDATED="$MODPATH/system/etc/coreflow/validated_profiles.txt"
 DAEMON="$MODPATH/system/bin/coreflowd"
 ONNX_LIB="$MODPATH/system/lib64/libonnxruntime.so"
 MODEL="$MODPATH/system/etc/coreflow/thermal_predictor.onnx"
@@ -209,9 +208,9 @@ ui_print " "
 #   Volume Down = Reset and choose mode again
 #   Timeout 10s = Keep existing
 #
-# Non-interactive fallback: /sdcard/CoreFlow/enable_adaptive still forces
-# adaptive request when present (legacy), subject to SAFE_MODE gate.
-# Adaptive never enables silently without armed=true.
+# The legacy /sdcard/CoreFlow/enable_adaptive flag is ignored: shared storage is
+# writable by any app, so it must never arm kernel mutation. Only an explicit
+# Volume Down press selects Adaptive. Timeout and missing keys mean observe.
 
 VOLUME_TIMEOUT_MAIN=12
 VOLUME_TIMEOUT_SUB=10
@@ -331,7 +330,7 @@ else
         ui_print "     Timeout ${VOLUME_TIMEOUT_MAIN}s = OBSERVE only"
         ui_print " "
         if [ "$_legacy_adaptive" -eq 1 ]; then
-            ui_print "     note: enable_adaptive flag present on storage"
+            ui_print "     note: enable_adaptive flag ignored (cannot arm Adaptive)"
             ui_print " "
         fi
 
@@ -346,11 +345,10 @@ else
                 MODE_REASON="volume up — observe only"
                 ;;
             *)
+                MODE="observe"
                 if [ "$_legacy_adaptive" -eq 1 ]; then
-                    MODE="adaptive"
-                    MODE_REASON="timeout + enable_adaptive flag — adaptive armed"
+                    MODE_REASON="timeout — observe only (enable_adaptive flag ignored)"
                 else
-                    MODE="observe"
                     MODE_REASON="timeout — observe only (safe default)"
                 fi
                 ;;

@@ -19,4 +19,7 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
+# The live status snapshot is derived state; remove it so a later install never shows it as current.
+rm -f "$STATE_DIR/status.json" "$STATE_DIR/status.json.tmp"
+
 # Runtime state, logs and any unrecovered mutation journal are kept on purpose.
