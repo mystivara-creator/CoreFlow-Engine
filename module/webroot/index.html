@@ -9,7 +9,8 @@
   <div class="brand"><div class="brand-mark">CF<span>•</span></div><div><b>CoreFlow</b><small>AUTONOMOUS ENGINE</small></div></div>
   <div class="side-caption">COMMAND CENTER</div>
   <nav id="mainNav" aria-label="Primary navigation">
-   <button class="nav-item active" data-view="overview"><i>◈</i> Overview <span class="nav-pip"></span></button>
+   <button class="nav-item active" data-view="live"><i>◉</i> Live engine <span class="nav-pip"></span></button>
+   <button class="nav-item" data-view="overview"><i>◈</i> Overview</button>
    <button class="nav-item" data-view="control"><i>⌘</i> Mode & policy</button>
    <button class="nav-item" data-view="diagnostics"><i>⌁</i> Diagnostics</button>
    <button class="nav-item" data-view="trace"><i>≋</i> Decision trace</button>
@@ -19,9 +20,22 @@
   <div class="sidebar-bottom"><div class="live-dot"></div><div><b id="connectionLabel">Bridge not checked</b><small id="connectionSub">KSU WebUI bridge</small></div><button id="btnCheckBridge" class="icon-btn" aria-label="Check bridge">↻</button></div>
  </aside>
  <main class="main">
-  <header class="topbar"><button id="menuToggle" class="icon-btn menu-toggle" aria-label="Toggle navigation">☰</button><div><div class="eyebrow">SYSTEM INTELLIGENCE / ANDROID</div><h1 id="pageTitle">Overview</h1></div><div class="top-actions"><span class="version-chip">v2.1.0</span><button id="btnRefresh" class="btn primary">↻ <span>Refresh data</span></button></div></header>
+  <header class="topbar"><button id="menuToggle" class="icon-btn menu-toggle" aria-label="Toggle navigation">☰</button><div><div class="eyebrow">SYSTEM INTELLIGENCE / ANDROID</div><h1 id="pageTitle">Live engine</h1></div><div class="top-actions"><span class="version-chip">v2.1.0</span><button id="btnRefresh" class="btn primary">↻ <span>Refresh data</span></button></div></header>
   <div class="content">
-   <section class="view active" id="view-overview">
+   <section class="view active" id="view-live">
+    <div class="page-intro"><span class="eyebrow cyan">LIVE · STRAIGHT FROM THE C++ ENGINE</span><h2>Eyes, brain, hands.</h2><p>What the engine measures, how it judges it, and what it has changed. This page only reads the engine's own status; it cannot move a kernel setting.</p></div>
+    <div class="live-banner tone-info" id="liveBanner"><span class="live-dot-lg" id="liveDot"></span><div><b id="liveTitle">Connecting to the engine…</b><p id="liveDetail">Reading status.json</p></div></div>
+    <div class="live-meta"><span>ENGINE <b id="liveVersion">—</b></span><span>SAMPLE <b id="liveSample">—</b></span><span>UPDATED <b id="liveAge">—</b></span><span>PID <b id="livePid">—</b></span></div>
+    <div class="section-heading"><div><span class="eyebrow">DECISION PIPELINE</span><h3>Where a change gets stopped</h3></div></div>
+    <div class="pipeline" id="livePipeline" aria-label="Decision pipeline"></div>
+    <div class="triad">
+     <article class="panel live-card"><div class="panel-head"><div><span class="eyebrow">EYES · MATA</span><h3>What it sees</h3></div></div><dl class="kv" id="liveEyes"></dl></article>
+     <article class="panel live-card"><div class="panel-head"><div><span class="eyebrow">BRAIN · OTAK</span><h3>What it decides</h3></div></div><dl class="kv" id="liveBrain"></dl></article>
+     <article class="panel live-card"><div class="panel-head"><div><span class="eyebrow">HANDS · TANGAN</span><h3>What it changed</h3></div></div><dl class="kv" id="liveHands"></dl></article>
+    </div>
+    <p class="source-note" id="liveNote">Values come from <code>/data/adb/coreflow/status.json</code>, written by the daemon every cycle. “n/a” means the engine has no reading; it is never shown as zero.</p>
+   </section>
+   <section class="view" id="view-overview">
     <div class="hero"><div class="hero-copy"><div class="eyebrow cyan">OBSERVE · REASON · VERIFY · ADAPT</div><h2>Intelligence that<br><span>respects the device.</span></h2><p>Capability-driven runtime decisions. Every action is bounded, verified, and reversible.</p><div class="hero-actions"><button class="btn primary" data-goto="control">Configure engine ↗</button><button class="btn subtle" data-goto="diagnostics">Run diagnostics</button></div></div><div class="orb-wrap"><div class="orb-ring ring-one"></div><div class="orb-ring ring-two"></div><div class="orb-core"><span>CF</span><small>AUTONOMOUS</small></div><div class="orb-label label-top">CAPABILITY</div><div class="orb-label label-bottom">SAFETY FIRST</div></div></div>
     <div class="status-strip"><div class="status-leading"><span id="stateDot" class="status-dot"></span><div><b id="modeHeadline">Checking engine mode…</b><small id="modeDescription">Waiting for live configuration</small></div></div><div class="status-meta"><span>DAEMON <b id="daemonStatus">Checking…</b></span><span>UPDATED <b id="lastRefresh">—</b></span></div></div>
     <div class="section-heading"><div><span class="eyebrow">LIVE TELEMETRY</span><h3>Runtime signals</h3></div><span class="muted-small">Direct device reads · sampled on refresh</span></div>
@@ -70,5 +84,6 @@ No free-form root command input is available in this console.</pre></div><div cl
 </div>
 <div id="toastRegion" class="toast-region" aria-live="polite"></div>
 <dialog id="confirmDialog" class="confirm-dialog"><form method="dialog"><div class="dialog-icon" id="dialogIcon">!</div><span class="eyebrow" id="dialogEyebrow">CONFIRM CHANGE</span><h3 id="dialogTitle">Enable Adaptive?</h3><p id="dialogMessage">This changes CoreFlow's runtime policy.</p><div id="dialogDetail" class="dialog-detail"></div><div class="dialog-actions"><button class="btn subtle" value="cancel">Cancel</button><button class="btn primary" id="dialogConfirm" value="confirm">Confirm</button></div></form></dialog>
+<script src="engine_status.js"></script>
 <script src="app.js"></script>
 </body></html>
