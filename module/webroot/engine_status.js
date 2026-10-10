@@ -89,10 +89,13 @@
         planAction: str(b.plan_action, 32), intervention: str(b.intervention, 24),
         eligible: bool(b.mutation_eligible), stabilizingOnly: bool(b.stabilizing_only),
         candidates: int(b.candidates, 0), planReason: str(b.plan_reason, 200),
+        agentMode: str(b.agent_mode, 24), agentReason: str(b.agent_reason, 240),
         holdActive: bool(b.hold_active), hold: str(b.safety_hold, 24),
         mode: str(b.mode, 16), armed: bool(b.armed), allowCpu: bool(b.allow_cpu_governor),
         permitResource: bool(b.permit_resource), permitCpu: bool(b.permit_cpu),
         baselineReady: bool(b.baseline_ready), baselineSamples: int(b.baseline_samples, 0), baselineTarget: int(b.baseline_target, 0),
+        observationSamples: int(b.observation_samples, 0), observationTarget: int(b.observation_target, 0),
+        skipReason: str(b.skip_reason, 200),
         observing: bool(b.observing), cooldown: int(b.cooldown_remaining, 0)
       },
       hands: {
@@ -143,6 +146,9 @@
     if (d.blocker === "BASELINE_CAPTURE" && d.brain.baselineTarget) detail += " (" + d.brain.baselineSamples + "/" + d.brain.baselineTarget + " samples)";
     if (d.blocker === "COOLDOWN") detail += " " + d.brain.cooldown + " sample(s) left.";
     if (d.blocker === "CONTEXT_LOW_CONFIDENCE" && d.eyes.confidence != null) detail += " Now " + Math.round(d.eyes.confidence * 100) + "%.";
+    if (d.blocker === "OBSERVING_OUTCOME" && d.brain.observationTarget)
+      detail += " Epoch " + d.brain.observationSamples + "/" + d.brain.observationTarget + ".";
+    if (d.brain.skipReason) detail += " · " + d.brain.skipReason;
     return { tone: info.tone, title: info.title, detail: detail, code: d.blocker };
   }
 
@@ -165,7 +171,7 @@
     if (b.permitResource || b.permitCpu) {
       auth = { tone: "ok", state: "Permit", note: "resource " + (b.permitResource ? "yes" : "no") + " · CPU governor " + (b.permitCpu ? "yes" : "no") };
     } else {
-      var why = b.holdActive ? "safety hold" : b.mode !== "adaptive" ? "observe mode" : !b.armed ? "not armed" : "plan not permitted";
+      var mode = String(b.mode || "").toLowerCase(); var why = b.holdActive ? "safety hold" : mode !== "adaptive" ? "observe mode" : !b.armed ? "not armed" : "plan not permitted";
       auth = { tone: "bad", state: "Denied", note: why };
     }
 
@@ -236,7 +242,10 @@
       ["Decision", b.decision, ""],
       ["Plan", b.planAction + " · " + b.intervention, b.stabilizingOnly ? "stabilizing only" : ""],
       ["Mode", b.mode + (b.armed ? " · armed" : " · not armed"), b.allowCpu ? "CPU governor allowed" : "CPU governor off"],
-      ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), b.observing ? "observing a change" : ""],
+      ["Decision agent", b.agentMode || "ScoringOnly", b.agentReason || "no proposal this cycle"],
+      ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
+      ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],
+      ["Skip / wait reason", b.skipReason || "—", b.cooldown ? (b.cooldown + " cooldown left") : ""],
       ["Safety hold", b.holdActive ? b.hold : "none", ""]
     ];
   }
