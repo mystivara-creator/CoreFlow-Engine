@@ -57,6 +57,9 @@ public:
     }
 
     bool mutated() const noexcept { return mutated_; }
+
+    // Last DecisionAgent reasoning summary for this cycle (empty if none).
+    const std::string& lastAgentReason() const noexcept { return last_agent_reason_; }
     // True when every change currently held was made under a stabilizing-only
     // plan. Such a change may stay in place through a thermal/memory safety
     // state; any other change must be restored there.
@@ -113,6 +116,8 @@ private:
     bool mutated_{false};
     bool restore_failed_{false};
     bool stabilizing_epoch_{false};
+    // Written from const selectCandidate for status visibility only.
+    mutable std::string last_agent_reason_;
     std::uint64_t cycle_{0};
     // "path\nrequested" -> cycle at which the candidate was rejected.
     std::unordered_map<std::string, std::uint64_t> rejected_;
