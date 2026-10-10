@@ -483,6 +483,7 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     known.readable = true;
     known.writable = true;
     known.permission_granted = true;
+    known.policy_authorized = true;
     known.runtime_verified = true;
     known.mutation_ready = true;
     matrix.resources.push_back(known);
@@ -511,11 +512,62 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     const EffectScore unknown_score = model.evaluate(unknown, "100", context);
     CHECK(!unknown_score.eligible);
     CHECK(unknown_score.requested.empty());
+
+    ResourceCapability notAuthorized = known;
+    notAuthorized.policy_authorized = false;
+    const EffectScore denied = model.evaluate(notAuthorized, "60", context);
+    CHECK(!denied.eligible);
+    CHECK(denied.reason == "not mutation_ready");
+}
+
+void test_block_queue_mutation_targets_are_quarantined() {
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/block/loop0/queue/scheduler"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/block/dm-0/queue/nr_requests"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/block/mmcblk0/queue/read_ahead_kb"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/platform/ufs/block/sda/queue/scheduler"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/kernel/sched_latency_ns"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/vm/swappiness_extra"));
+
+    // Only exact, reviewed production VM paths are eligible. Synthetic fixture
+    // paths exist only in the host-test build and cannot reach coreflowd.
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/vm/swappiness"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/vm/dirty_background_ratio"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/tmp/coreflow-test/queue/scheduler"));
+
+    // Exercise the central actuator guard with a genuinely valid resource
+    // permit: path denial must happen before any filesystem read/write.
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    plan.intervention = InterventionLevel::Low;
+    const MutationAuthority authority;
+    const MutationPermit permit = authority.authorize(
+        plan, config, RuntimeState::Elevated, 1.0,
+        MutationPermit::Scope::Resource);
+    CHECK(permit.validFor(MutationPermit::Scope::Resource));
+    ResourceActuator actuator;
+    const ActuatorMutation mutation{
+        {ActuatorDomain::Io, 0}, "/sys/block/loop0/queue/scheduler", "none"};
+    const ActuatorResult result = actuator.apply(mutation, permit);
+    CHECK(result.status == ActuatorStatus::SafetyRejected);
+    CHECK(result.writes_attempted == 0);
 }
 
 } // namespace
 
-// Regression (v2.1.1): sysfs selector nodes such as queue/scheduler read back as
+// Regression: sysfs selector nodes such as queue/scheduler read back as
 // "[mq-deadline] kyber none". The kernel accepts only the bare token on write,
 // so a baseline captured as the bracketed line could never be restored.
 void test_selector_value_comparable_form() {
@@ -750,6 +802,7 @@ int main() {
     test_intervention_level_boundaries();
     test_disarmed_policy_performs_no_write();
     test_effect_model_structured_rank_and_unknown_semantics();
+    test_block_queue_mutation_targets_are_quarantined();
     test_selector_value_comparable_form();
     test_selector_scheduler_restore_writes_bare_token();
     test_legacy_bracketed_journal_value_is_normalized();

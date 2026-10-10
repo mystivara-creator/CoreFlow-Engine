@@ -1,4 +1,5 @@
 #include "coreflow/context.hpp"
+#include "coreflow/decision_agent.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/environment.hpp"
 #include "coreflow/outcome.hpp"
@@ -6,6 +7,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 
 namespace {
 int failures = 0;
@@ -315,6 +317,51 @@ int main() {
         const SystemContext calm = context_engine.evaluate(base, RuntimeState::Normal);
         CHECK(calm.mutation_allowed_by_context);
         CHECK(!calm.stabilizing_allowed_by_context);
+    }
+
+
+    // DecisionAgent is used by ResourceMutationController to propose ranked
+    // candidates. It remains a scorer/proposer only; authority stays downstream.
+    {
+        EnvironmentCapabilityMatrix proposal_matrix;
+        std::unordered_map<std::string, std::string> proposal_baselines;
+        for (int i = 0; i < 4; ++i) {
+            ResourceCapability candidate;
+            candidate.domain = ResourceDomain::Memory;
+            candidate.name = "vm.swappiness";
+            candidate.path = i == 0 ? "/proc/sys/vm/swappiness"
+                                    : "/test/coreflow/swappiness_" + std::to_string(i);
+            candidate.exists = true;
+            candidate.readable = true;
+            candidate.writable = true;
+            candidate.permission_granted = true;
+            candidate.policy_authorized = true;
+            candidate.runtime_verified = true;
+            candidate.mutation_ready = true;
+            proposal_baselines.emplace(candidate.path, "60");
+            proposal_matrix.resources.push_back(candidate);
+        }
+
+        AgentObservation observation;
+        observation.matrix = &proposal_matrix;
+        observation.baselines = &proposal_baselines;
+        observation.state = RuntimeState::Pressure;
+        observation.sample_confidence = 0.95;
+        observation.mutation_allowed_by_context = false;
+        observation.stabilizing_allowed_by_context = true;
+        observation.max_candidates = 8;
+        observation.effect_ctx.state = RuntimeState::Pressure;
+        observation.effect_ctx.mem_available_ratio = 0.08;
+        observation.effect_ctx.sample_confidence = 0.95;
+        observation.effect_ctx.intervention = InterventionLevel::Low;
+
+        ScoringDecisionAgent agent;
+        const AgentProposal proposal = agent.reason(observation);
+        CHECK(proposal.valid);
+        CHECK(proposal.mode == AgentReasoningMode::ScoringOnly);
+        CHECK(proposal.ranked.size() == 4);
+        CHECK(proposal.best.stabilizing);
+        CHECK(proposal.best.requested == "75" || proposal.best.requested == "67");
     }
 
     std::cout << (failures == 0 ? "CoreFlow architecture foundation: PASS\n"
