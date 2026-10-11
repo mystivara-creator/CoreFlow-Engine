@@ -28,9 +28,9 @@ namespace coreflow {
 // ---------------------------------------------------------------------------
 
 enum class AgentReasoningMode : std::uint8_t {
-    ScoringOnly = 0,   // classic EffectModel ranking (current default)
-    ReActLite,         // reason → act proposal → evaluate (future)
-    PlanExecute        // multi-step plan then single best action (future)
+    ScoringOnly = 0,   // legacy rank-only mode
+    ReActLite,         // bounded observe → hypothesize → rank → safety-review
+    PlanExecute        // reserved for future explicitly validated plans
 };
 
 struct AgentProposal {
@@ -67,13 +67,14 @@ public:
     virtual AgentProposal reason(const AgentObservation& obs) const noexcept = 0;
 };
 
-// Default implementation: thin wrapper around the existing EffectModel.
-// Keeps behaviour identical to v2.0.x / early v2.1 while opening the door
-// for richer agents later without touching the safety path.
+// Bounded on-device reasoning over EffectModel candidates. This layer only
+// proposes; existing policy, permit, actuator verification and rollback remain
+// the only path to a mutation. No model output or historical record can grant
+// authority.
 class ScoringDecisionAgent final : public IDecisionAgent {
 public:
     AgentReasoningMode mode() const noexcept override {
-        return AgentReasoningMode::ScoringOnly;
+        return AgentReasoningMode::ReActLite;
     }
 
     AgentProposal reason(const AgentObservation& obs) const noexcept override;

@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "coreflow/high_capability.hpp"
+
 namespace coreflow {
 
 // Live engine status exported for the WebUI. The engine is the only writer; the
@@ -49,6 +51,7 @@ struct EngineStatus {
     bool devfreq_available{false};
     std::size_t discovered_resources{0};
     std::size_t mutation_ready_resources{0};
+    std::vector<ExpandedDomainStatus> expanded_domains;
     bool block_queue_mutations_quarantined{true};
 
     // eyes: what the engine measured this cycle

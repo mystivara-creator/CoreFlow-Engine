@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "coreflow/environment.hpp"
+#include "coreflow/high_capability.hpp"
 
 namespace coreflow {
 
@@ -179,6 +180,7 @@ struct DeviceProfile {
     ChargingCapability charging;
     AndroidEnvironment environment;
     EnvironmentCapabilityMatrix capabilities;
+    std::vector<ExpandedDomainStatus> expanded_domains;
 };
 
 struct RuntimeSample {
