@@ -358,10 +358,18 @@ int main() {
         ScoringDecisionAgent agent;
         const AgentProposal proposal = agent.reason(observation);
         CHECK(proposal.valid);
-        CHECK(proposal.mode == AgentReasoningMode::ScoringOnly);
+        CHECK(proposal.mode == AgentReasoningMode::ReActLite);
         CHECK(proposal.ranked.size() == 4);
         CHECK(proposal.best.stabilizing);
         CHECK(proposal.best.requested == "75" || proposal.best.requested == "67");
+        CHECK(proposal.reasoning_summary.find("observe → hypothesize → review → propose") !=
+              std::string::npos);
+
+        observation.sample_confidence = 1.5;
+        const AgentProposal invalid_evidence = agent.reason(observation);
+        CHECK(!invalid_evidence.valid);
+        CHECK(invalid_evidence.ranked.empty());
+        CHECK(invalid_evidence.reasoning_summary.find("fail closed") != std::string::npos);
     }
 
     std::cout << (failures == 0 ? "CoreFlow architecture foundation: PASS\n"
