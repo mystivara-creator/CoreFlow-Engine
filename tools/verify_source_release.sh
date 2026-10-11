@@ -40,7 +40,7 @@ tools/test_webui_render.js
 module/webroot/engine_status.js
 README.md
 CHANGELOG.md
-BUILD_STATUS.md
+docs/BUILD_STATUS.md
 "
 
 for rel in $required_files; do
