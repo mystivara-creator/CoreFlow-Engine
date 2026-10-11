@@ -153,6 +153,7 @@ DeviceProfile EnvironmentDiscovery::discover() const {
     discoverSystemControls(profile);
     discoverGpu(profile);
     finalizeCapabilities(profile);
+    profile.expanded_domains = HighCapabilityExpansion::assess(profile.capabilities);
     return profile;
 }
 

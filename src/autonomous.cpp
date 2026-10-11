@@ -1001,6 +1001,7 @@ void AutonomousEngine::publishStatus(
         s.devfreq_available = env.devfreq_available;
         s.discovered_resources = snapshot_.profile.capabilities.resources.size();
         s.mutation_ready_resources = snapshot_.profile.capabilities.mutationReadyCount();
+        s.expanded_domains = snapshot_.profile.expanded_domains;
         s.block_queue_mutations_quarantined = true;
 
         s.thermal_available = sample.thermal_available;
@@ -1035,7 +1036,7 @@ void AutonomousEngine::publishStatus(
         s.stabilizing_only = plan.stabilizing_only;
         s.candidates = plan.candidates.size();
         s.plan_reason = plan.reason;
-        s.agent_mode = agentReasoningModeName(AgentReasoningMode::ScoringOnly);
+        s.agent_mode = agentReasoningModeName(AgentReasoningMode::ReActLite);
         s.agent_reason = resource_controller_.lastAgentReason();
         s.hold_active = hold != HoldReason::None;
         s.safety_hold = holdReasonName(hold);

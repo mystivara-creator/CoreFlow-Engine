@@ -156,6 +156,25 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"devfreq_available\":"; appendBool(out, s.devfreq_available);
     out << ",\"discovered_resources\":" << s.discovered_resources;
     out << ",\"mutation_ready_resources\":" << s.mutation_ready_resources;
+    out << ",\"expanded_domains\":[";
+    for (std::size_t i = 0; i < s.expanded_domains.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& domain = s.expanded_domains[i];
+        const char* evidence = "unknown";
+        switch (domain.evidence) {
+            case CapabilityEvidence::Unavailable: evidence = "unavailable"; break;
+            case CapabilityEvidence::Detected: evidence = "detected"; break;
+            case CapabilityEvidence::Observable: evidence = "observable"; break;
+            default: break;
+        }
+        out << "{\"id\":" << static_cast<unsigned int>(domain.id)
+            << ",\"evidence\":\"" << evidence
+            << "\",\"matched\":" << domain.matched_resources
+            << ",\"readable\":" << domain.readable_resources
+            << ",\"mutation_authorized\":"
+            << (domain.mutation_authorized ? "true" : "false") << '}';
+    }
+    out << ']';
     out << ",\"block_queue_mutations_quarantined\":";
     appendBool(out, s.block_queue_mutations_quarantined);
     out << "},\"eyes\":{\"thermal_available\":";
