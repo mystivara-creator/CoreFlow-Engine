@@ -109,6 +109,13 @@ void ResourceMutationController::setJournal(MutationJournal* journal) noexcept {
     journal_ = journal;
 }
 
+void ResourceMutationController::setRetainedStateStore(RetainedStateStore* store) noexcept {
+    retained_store_ = store;
+    retained_entries_.clear();
+    retained_active_resources_.clear();
+    active_resources_cache_.clear();
+}
+
 void ResourceMutationController::setExperienceMemory(
     const ExperienceMemory* memory) noexcept {
     experience_memory_ = memory;
@@ -157,8 +164,15 @@ bool ResourceMutationController::captureBaseline(
 ) noexcept {
     if (!recoverIfNeeded() || mutated_) return false;
 
+    baseline_captured_ = false;
+    retained_entries_.clear();
+    retained_active_resources_.clear();
+    active_resources_cache_.clear();
+    pending_outcome_ = false;
     baseline_.clear();
     dirty_resources_.clear();
+    retained_active_resources_.clear();
+    active_resources_cache_.clear();
     last_applied_resources_.clear();
 
     for (const auto& cap : profile.capabilities.resources) {
@@ -204,7 +218,60 @@ bool ResourceMutationController::captureBaseline(
                      device.scheduler_readable, device.scheduler_writable);
     }
 
+    if (baseline_.empty()) return false;
+
+    if (retained_store_ != nullptr) {
+        RetainedStateStore::Entries entries;
+        const RetainedStateStore::LoadState load_state = retained_store_->load(entries);
+        if (load_state == RetainedStateStore::LoadState::Corrupt) return false;
+        retained_entries_ = std::move(entries);
+        const std::string scope = retainedScopeFor(profile);
+        std::vector<std::string> stale_paths;
+        for (const auto& retained : retained_entries_) {
+            if (retained.scope != scope) {
+                stale_paths.push_back(retained.path);
+                continue;
+            }
+            const auto baseline_it = baseline_.find(retained.path);
+            if (baseline_it == baseline_.end() ||
+                !fallbackPolicyAuthorized(baseline_it->second.domain,
+                                          baseline_it->second.name, retained.path)) {
+                stale_paths.push_back(retained.path);
+                continue;
+            }
+            if (isSchedulerResource(baseline_it->second.name)) {
+                std::string resolved;
+                if (!verifySchedulerToken(retained.path, retained.target, resolved) ||
+                    resolved != retained.target) {
+                    stale_paths.push_back(retained.path);
+                    continue;
+                }
+            }
+            std::string live;
+            if (!ResourceActuator::readComparable(retained.path, live)) return false;
+            if (live == retained.target) {
+                baseline_it->second.value = retained.baseline;
+                dirty_resources_.insert(retained.path);
+                mutated_ = true;
+            } else if (live == retained.baseline) {
+                baseline_it->second.value = retained.baseline;
+            } else {
+                // The node was changed by another actor; a retained record must
+                // never turn into authority to overwrite that external value.
+                baseline_it->second.value = live;
+                stale_paths.push_back(retained.path);
+            }
+        }
+        for (const std::string& path : stale_paths) {
+            if (!retained_store_->erasePath(path)) return false;
+            retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
+                [&path](const RetainedStateEntry& entry) { return entry.path == path; }),
+                retained_entries_.end());
+        }
+    }
+
     baseline_captured_ = !baseline_.empty();
+    if (baseline_captured_) refreshRetainedActiveCache();
     return baseline_captured_;
 }
 
@@ -409,6 +476,9 @@ bool ResourceMutationController::selectCandidate(
             requested = resolved;
         } else {
             if (requested.empty() || requested == bit->second.value) continue;
+            std::string live;
+            if (!ResourceActuator::readComparable(path, live)) continue;
+            if (live == requested) continue;
         }
 
         if (isRejected(path, requested)) continue;
@@ -434,6 +504,14 @@ bool ResourceMutationController::selectCandidate(
                     default:
                         break;
                 }
+            }
+        }
+        for (const auto& retained : retained_entries_) {
+            if (retained.path == path && retained.target == requested) {
+                // Bounded preference only; the candidate already passed fresh
+                // capability, domain, policy, intervention and risk ranking.
+                utility += 0.08;
+                break;
             }
         }
         if (utility < 0.05 || utility <= best_utility) continue;
@@ -480,6 +558,16 @@ MutationResult ResourceMutationController::applyCandidate(
         return MutationResult::Skipped;
     }
 
+    std::string previous_value;
+    if (!ResourceActuator::readComparable(candidate.path, previous_value)) {
+        return MutationResult::Failed;
+    }
+    const bool was_dirty_before = dirty_resources_.find(candidate.path) != dirty_resources_.end();
+    const bool from_retained = std::any_of(retained_entries_.begin(), retained_entries_.end(),
+        [&candidate](const RetainedStateEntry& retained) {
+            return retained.path == candidate.path && retained.target == candidate.requested;
+        });
+
     // Durability before the write. The journal holds factory values for every
     // resource this controller has changed, plus the candidate about to change.
     MutationJournal::Entries entries = factorySnapshot();
@@ -509,9 +597,33 @@ MutationResult ResourceMutationController::applyCandidate(
         dirty_resources_.insert(candidate.path);
     }
 
+    if (result.status == ActuatorStatus::RolledBack) {
+        if (!was_dirty_before) dirty_resources_.erase(candidate.path);
+        mutated_ = !dirty_resources_.empty();
+        if (journal_committed_ && journal_ != nullptr) {
+            const MutationJournal::Entries snapshot = factorySnapshot();
+            const bool journal_ok = snapshot.empty() ? journal_->clear()
+                                                     : journal_->commit(snapshot);
+            if (!journal_ok) {
+                restore_failed_ = true;
+                mutated_ = true;
+                return MutationResult::Failed;
+            }
+            journal_committed_ = !snapshot.empty();
+        }
+        return MutationResult::RolledBack;
+    }
+
     if (result.changed()) {
         last_applied_resources_.clear();
         last_applied_resources_.emplace_back(candidate.path, candidate.requested);
+        pending_outcome_ = true;
+        last_mutation_path_ = candidate.path;
+        last_mutation_target_ = candidate.requested;
+        last_previous_value_ = previous_value;
+        last_path_was_dirty_before_ = was_dirty_before;
+        last_candidate_from_retained_ = from_retained;
+        refreshActiveSettingsCache();
         return MutationResult::Verified;
     }
 
@@ -562,6 +674,7 @@ MutationResult ResourceMutationController::apply(
         if (!mutated_) return MutationResult::Skipped;
         return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
     }
+    if (pending_outcome_) return MutationResult::Skipped;
 
     Candidate candidate;
     if (!selectCandidate(state, sample, profile, policy, candidate)) {
@@ -576,6 +689,7 @@ MutationResult ResourceMutationController::apply(
         return MutationResult::Verified;
     }
     if (applied == MutationResult::Skipped) return MutationResult::Skipped;
+    if (applied == MutationResult::RolledBack) return MutationResult::RolledBack;
     if (mutated_ || restore_failed_) {
         return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
     }
@@ -640,9 +754,175 @@ bool ResourceMutationController::restoreAll() noexcept {
     restore_failed_ = false;
     mutated_ = false;
     dirty_resources_.clear();
+    retained_active_resources_.clear();
+    active_resources_cache_.clear();
     last_applied_resources_.clear();
     stabilizing_epoch_ = false;
+    pending_outcome_ = false;
+    last_mutation_path_.clear();
+    last_mutation_target_.clear();
+    last_previous_value_.clear();
+    last_path_was_dirty_before_ = false;
+    last_candidate_from_retained_ = false;
     return true;
+}
+
+bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
+    if (!pending_outcome_ || retained_store_ == nullptr ||
+        last_mutation_path_.empty() || last_mutation_target_.empty()) return false;
+    const auto baseline = baseline_.find(last_mutation_path_);
+    if (baseline == baseline_.end() || !baseline->second.valid ||
+        baseline->second.value == last_mutation_target_) return false;
+    std::string live;
+    if (!ResourceActuator::readComparable(last_mutation_path_, live) ||
+        live != last_mutation_target_) return false;
+
+    RetainedStateEntry entry;
+    entry.scope = retainedScopeFor(profile);
+    entry.path = last_mutation_path_;
+    entry.baseline = baseline->second.value;
+    entry.target = last_mutation_target_;
+    RetainedStateStore::Entries updated_entries;
+    try {
+        updated_entries = retained_entries_;
+        updated_entries.erase(std::remove_if(updated_entries.begin(), updated_entries.end(),
+            [&entry](const RetainedStateEntry& current) { return current.path == entry.path; }),
+            updated_entries.end());
+        updated_entries.push_back(entry);
+    } catch (...) {
+        return false;
+    }
+    if (!retained_store_->upsert(entry)) {
+        // A rename may have succeeded even if the final directory sync failed.
+        // Best-effort restore the last known-good ledger so an unaccepted
+        // candidate cannot become a retained preference after restart.
+        (void)retained_store_->commit(retained_entries_);
+        return false;
+    }
+    retained_entries_.swap(updated_entries);
+    pending_outcome_ = false;
+    last_applied_resources_.clear();
+    refreshRetainedActiveCache();
+    last_mutation_path_.clear();
+    last_mutation_target_.clear();
+    last_previous_value_.clear();
+    last_path_was_dirty_before_ = false;
+    last_candidate_from_retained_ = false;
+    return true;
+}
+
+bool ResourceMutationController::rollbackLastMutation() noexcept {
+    if (!pending_outcome_ || last_mutation_path_.empty() || last_previous_value_.empty()) {
+        return false;
+    }
+
+    std::string live;
+    if (!ResourceActuator::readComparable(last_mutation_path_, live)) {
+        restore_failed_ = true;
+        mutated_ = true;
+        return false;
+    }
+
+    bool external_override = false;
+    bool storage_ok = true;
+    if (live == last_mutation_target_) {
+        const ActuatorResult result = actuator_.restore(last_mutation_path_, last_previous_value_);
+        if (!(result.succeeded() || result.status == ActuatorStatus::RolledBack)) {
+            restore_failed_ = true;
+            mutated_ = true;
+            return false;
+        }
+    } else if (live != last_previous_value_) {
+        // Do not overwrite a value changed externally after the candidate write.
+        external_override = true;
+        const auto baseline = baseline_.find(last_mutation_path_);
+        if (baseline != baseline_.end()) baseline->second.value = live;
+        dirty_resources_.erase(last_mutation_path_);
+        if (retained_store_ != nullptr) {
+            storage_ok = retained_store_->erasePath(last_mutation_path_);
+        }
+        retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
+            [this](const RetainedStateEntry& entry) {
+                return entry.path == last_mutation_path_;
+            }), retained_entries_.end());
+    }
+
+    if (!external_override && !last_path_was_dirty_before_) {
+        dirty_resources_.erase(last_mutation_path_);
+    }
+    mutated_ = !dirty_resources_.empty();
+
+    if (journal_ != nullptr && journal_committed_) {
+        MutationJournal::Entries snapshot = factorySnapshot();
+        const bool journal_ok = snapshot.empty() ? journal_->clear()
+                                                 : journal_->commit(snapshot);
+        if (!journal_ok) {
+            restore_failed_ = true;
+            mutated_ = true;
+            return false;
+        }
+        journal_committed_ = !snapshot.empty();
+    }
+
+    if (last_candidate_from_retained_ && !last_path_was_dirty_before_ &&
+        !external_override && retained_store_ != nullptr) {
+        if (!retained_store_->erasePath(last_mutation_path_)) storage_ok = false;
+        retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
+            [this](const RetainedStateEntry& entry) {
+                return entry.path == last_mutation_path_;
+            }), retained_entries_.end());
+    }
+
+    pending_outcome_ = false;
+    last_applied_resources_.clear();
+    refreshRetainedActiveCache();
+    last_mutation_path_.clear();
+    last_mutation_target_.clear();
+    last_previous_value_.clear();
+    last_path_was_dirty_before_ = false;
+    last_candidate_from_retained_ = false;
+    if (!storage_ok) {
+        restore_failed_ = true;
+        mutated_ = true;
+        return false;
+    }
+    return true;
+}
+
+void ResourceMutationController::refreshRetainedActiveCache() noexcept {
+    try {
+        retained_active_resources_.clear();
+        for (const auto& retained : retained_entries_) {
+            std::string live;
+            if (!ResourceActuator::readComparable(retained.path, live) ||
+                live != retained.target) continue;
+            retained_active_resources_.emplace_back(retained.path, retained.target);
+        }
+        refreshActiveSettingsCache();
+    } catch (...) {
+        retained_active_resources_.clear();
+        active_resources_cache_.clear();
+    }
+}
+
+void ResourceMutationController::refreshActiveSettingsCache() noexcept {
+    try {
+        active_resources_cache_ = retained_active_resources_;
+        if (!pending_outcome_) return;
+        for (const auto& candidate : last_applied_resources_) {
+            const auto same_path = std::find_if(active_resources_cache_.begin(),
+                active_resources_cache_.end(), [&candidate](const auto& current) {
+                    return current.first == candidate.first;
+                });
+            if (same_path == active_resources_cache_.end()) {
+                active_resources_cache_.push_back(candidate);
+            } else {
+                *same_path = candidate;
+            }
+        }
+    } catch (...) {
+        active_resources_cache_.clear();
+    }
 }
 
 bool ResourceMutationController::isRejected(
