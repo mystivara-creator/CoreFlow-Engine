@@ -1,4 +1,5 @@
 #include "coreflow/effect_model.hpp"
+#include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/resource_actuator.hpp"
 #include "coreflow/resource_mutation.hpp"
 
@@ -518,6 +519,32 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     const EffectScore denied = model.evaluate(notAuthorized, "60", context);
     CHECK(!denied.eligible);
     CHECK(denied.reason == "not mutation_ready");
+
+    // Catalog lookup must distinguish dynamic per-device queue nodes.
+    const auto* scheduler = lookupEcosystemKnowledgeByPath(
+        "/sys/block/dm-0/queue/scheduler");
+    const auto* readAhead = lookupEcosystemKnowledgeByPath(
+        "/sys/block/mmcblk0/queue/read_ahead_kb");
+    const auto* requests = lookupEcosystemKnowledgeByPath(
+        "/sys/devices/platform/soc/1d84000.ufshc/block/sda/queue/nr_requests");
+    CHECK(scheduler != nullptr && std::string(scheduler->key) == "block.queue.scheduler");
+    CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
+    CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
+
+    ResourceCapability quarantined = known;
+    quarantined.domain = ResourceDomain::Memory;
+    quarantined.name = "vm.drop_caches";
+    quarantined.path = "/proc/sys/vm/drop_caches";
+    const EffectScore quarantinedScore = model.evaluate(quarantined, "3", context);
+    CHECK(!quarantinedScore.eligible);
+    CHECK(quarantinedScore.reason == "ecosystem knowledge quarantines this resource");
+
+    ResourceCapability unknownCatalog = known;
+    unknownCatalog.name = "experimental_numeric_knob";
+    unknownCatalog.path = "/proc/sys/vm/experimental_numeric_knob";
+    const EffectScore unknownCatalogScore = model.evaluate(unknownCatalog, "100", context);
+    CHECK(!unknownCatalogScore.eligible);
+    CHECK(unknownCatalogScore.reason == "unknown numeric semantics; mutation withheld");
 }
 
 void test_block_queue_mutation_targets_are_quarantined() {
