@@ -49,8 +49,8 @@ public:
         bool valid{false};
     };
 
-    static constexpr std::size_t kBaselineSamples = 5;
-    static constexpr std::size_t kObservationSamples = 5;
+    static constexpr std::size_t kBaselineSamples = 4;
+    static constexpr std::size_t kObservationSamples = 4;
 
     void reset() noexcept;
 

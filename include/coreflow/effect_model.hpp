@@ -13,13 +13,14 @@ namespace coreflow {
 
 // EffectModel is the capability-driven brain of autonomous resource mutation.
 // It does NOT hard-code which resources may be touched. Discovery marks what
-// is readable/writable; this model scores whether a bounded change is likely
-// to improve stability under the current runtime context.
+// is readable/writable; policy admits safe *surface classes*; this model scores
+// whether a bounded change is likely to improve stability under the current
+// runtime context.
 //
 // Soft knowledge (safe ranges, preferred direction) exists as semantic priors
-// for known kernel knobs. Unknown writable numerics remain ineligible until a
-// semantic prior or adapter defines safe direction and bounds. Text controls
-// (schedulers) use kernel-exposed candidates only.
+// that improve confidence and bounds for known knobs. Unknown writable numerics
+// remain eligible under conservative structural bounds derived from the live
+// baseline. Text controls (schedulers) use kernel-exposed candidates only.
 
 enum class EffectDirection : std::uint8_t {
     None = 0,
