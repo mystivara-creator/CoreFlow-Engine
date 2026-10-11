@@ -41,6 +41,7 @@ set(COREFLOW_CORE_SOURCES
     src/baseline_intelligence.cpp
     src/mutation.cpp
     src/mutation_journal.cpp
+    src/retained_state.cpp
     src/safety_hold.cpp
     src/cpufreq_actuator.cpp
     src/resource_actuator.cpp
