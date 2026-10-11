@@ -18,6 +18,7 @@ expected_list="
 $ROOT/src/cpufreq_actuator.cpp
 $ROOT/src/resource_actuator.cpp
 $ROOT/src/mutation_journal.cpp
+$ROOT/src/retained_state.cpp
 $ROOT/src/main.cpp
 $ROOT/src/experience.cpp
 $ROOT/src/decision_trace.cpp
@@ -86,7 +87,10 @@ grep -q 'journal_was_committed' "$ROOT/src/mutation.cpp"
 # are evaluated every tick.
 grep -q 'MutationResult MutationController::relaxToBaseline' "$ROOT/src/mutation.cpp"
 grep -q 'if (!mutated_ && !restore_failed_) return true;' "$ROOT/src/mutation.cpp"
-grep -q 'kMaxMutationHoldCycles' "$ROOT/include/coreflow/mutation.hpp"
+grep -q 'retainLastMutation' "$ROOT/include/coreflow/mutation.hpp"
+grep -q 'rollbackLastMutation' "$ROOT/include/coreflow/mutation.hpp"
+grep -q 'RetainedStateStore' "$ROOT/include/coreflow/retained_state.hpp"
+grep -q 'EFFICIENCY_BENEFICIAL action=RETAINED' "$ROOT/src/autonomous.cpp"
 grep -q 'evaluateSafetyHold({kKillSwitchPath, kSafeModePath})' "$ROOT/src/autonomous.cpp"
 grep -q 'BOOT_LOOP_DISABLE=5' "$ROOT/module/post-fs-data.sh"
 grep -q 'SAFE_MODE set' "$ROOT/module/post-fs-data.sh"
