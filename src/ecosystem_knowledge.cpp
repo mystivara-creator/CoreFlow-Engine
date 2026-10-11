@@ -206,16 +206,37 @@ std::size_t ecosystemKnowledgeCount() noexcept {
 const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
     const std::string& path) noexcept {
     if (path.empty()) return nullptr;
+
+    // Queue controls are per-device nodes; classify by their stable suffix,
+    // not by the shared /sys/block root (which made all three entries collide).
+    if (path.compare(0, 11, "/sys/block/") == 0 ||
+        path.compare(0, 13, "/sys/devices/") == 0) {
+        const auto hasSuffix = [&path](const char* suffix) noexcept {
+            const std::size_t n = std::strlen(suffix);
+            return path.size() >= n && path.compare(path.size() - n, n, suffix) == 0;
+        };
+        if (hasSuffix("/queue/scheduler"))
+            return lookupEcosystemKnowledgeByKey("block.queue.scheduler");
+        if (hasSuffix("/queue/read_ahead_kb"))
+            return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
+        if (hasSuffix("/queue/nr_requests"))
+            return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+    }
+
+    // Prefer the most-specific matching catalog path. Several entries may
+    // describe related roots, so returning the first prefix is ambiguous.
+    const EcosystemKnowledgeEntry* best = nullptr;
+    std::size_t bestLength = 0;
     for (const auto& e : kCatalog) {
         if (path == e.path) return &e;
-        // Prefix match for directory roots such as /sys/block
         const std::size_t n = std::strlen(e.path);
-        if (n > 1 && path.size() >= n && path.compare(0, n, e.path) == 0 &&
-            (path.size() == n || path[n] == '/')) {
-            return &e;
+        if (n > 1 && n >= bestLength && path.size() > n &&
+            path.compare(0, n, e.path) == 0 && path[n] == '/') {
+            best = &e;
+            bestLength = n;
         }
     }
-    return nullptr;
+    return best;
 }
 
 const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByKey(
