@@ -11,6 +11,7 @@
 #include "coreflow/decision_agent.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation_journal.hpp"
+#include "coreflow/retained_state.hpp"
 #include "coreflow/resource_actuator.hpp"
 #include "coreflow/resource_model.hpp"
 #include "coreflow/types.hpp"
@@ -26,6 +27,7 @@ namespace coreflow {
 class ResourceMutationController final {
 public:
     void setJournal(MutationJournal* journal) noexcept;
+    void setRetainedStateStore(RetainedStateStore* store) noexcept;
     void setExperienceMemory(const ExperienceMemory* memory) noexcept;
 
     // Capture factory baselines only for explicitly policy-authorized,
@@ -34,6 +36,9 @@ public:
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
     bool restoreAll() noexcept;
+    bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    bool rollbackLastMutation() noexcept;
+    bool hasPendingOutcome() const noexcept { return pending_outcome_; }
 
     MutationResult apply(const RuntimeState state,
                          const RuntimeSample& sample,
@@ -55,6 +60,8 @@ public:
     lastAppliedResources() const noexcept {
         return last_applied_resources_;
     }
+    const std::vector<std::pair<std::string, std::string>>&
+    activeResourceSettings() const noexcept { return active_resources_cache_; }
 
     bool mutated() const noexcept { return mutated_; }
 
@@ -104,6 +111,10 @@ private:
                               std::string& resolved) const noexcept;
 
     MutationJournal* journal_{nullptr};
+    RetainedStateStore* retained_store_{nullptr};
+    RetainedStateStore::Entries retained_entries_;
+    std::vector<std::pair<std::string, std::string>> retained_active_resources_;
+    std::vector<std::pair<std::string, std::string>> active_resources_cache_;
     const ExperienceMemory* experience_memory_{nullptr};
     ResourceActuator actuator_;
     ScoringDecisionAgent decision_agent_;
@@ -116,11 +127,19 @@ private:
     bool mutated_{false};
     bool restore_failed_{false};
     bool stabilizing_epoch_{false};
+    bool pending_outcome_{false};
+    std::string last_mutation_path_;
+    std::string last_mutation_target_;
+    std::string last_previous_value_;
+    bool last_path_was_dirty_before_{false};
+    bool last_candidate_from_retained_{false};
     // Written from const selectCandidate for status visibility only.
     mutable std::string last_agent_reason_;
     std::uint64_t cycle_{0};
     // "path\nrequested" -> cycle at which the candidate was rejected.
     std::unordered_map<std::string, std::uint64_t> rejected_;
+    void refreshRetainedActiveCache() noexcept;
+    void refreshActiveSettingsCache() noexcept;
     bool isRejected(const std::string& path,
                     const std::string& requested) const noexcept;
 };

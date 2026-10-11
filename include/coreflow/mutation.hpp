@@ -13,6 +13,7 @@
 #include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation_journal.hpp"
+#include "coreflow/retained_state.hpp"
 #include "coreflow/types.hpp"
 
 namespace coreflow {
@@ -35,6 +36,7 @@ public:
     MutationController() = default;
 
     void setJournal(MutationJournal* journal) noexcept;
+    void setRetainedStateStore(RetainedStateStore* store) noexcept;
     void setExperienceMemory(const ExperienceMemory* memory) noexcept;
 
     // Returns false when no trustworthy baseline exists (pending journal not
@@ -62,20 +64,22 @@ public:
     // True only when every touched governor has been verified at its factory value.
     bool restoreAll() noexcept;
 
-    // Suppress the targets of the most recent verified mutation for a bounded cooldown.
+    // Persist the most recent candidate only after a beneficial outcome was measured.
+    bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    // Roll back only the candidate under evaluation, preserving earlier retained settings.
+    bool rollbackLastMutation() noexcept;
     void rejectLastMutation() noexcept;
 
     bool mutated() const noexcept { return mutated_; }
+    bool hasPendingOutcome() const noexcept { return pending_outcome_; }
     std::size_t baselineSize() const noexcept { return baseline_.size(); }
     const std::vector<std::pair<std::string, std::string>>& lastAppliedGovernors() const noexcept {
         return last_applied_governors_;
     }
+    const std::vector<std::pair<std::string, std::string>>&
+    activeGovernorSettings() const noexcept { return active_governors_cache_; }
 
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
-    // Bounded exposure: one hour at the 5 s monitor interval.
-    static constexpr std::uint64_t kMaxMutationHoldCycles = 720;
-    // After a forced hold expiry, no new mutation for this many cycles (10 min).
-    static constexpr std::uint64_t kHoldCooldownCycles = 120;
 
 private:
     struct Baseline {
@@ -97,6 +101,8 @@ private:
         std::vector<MutationPlanEntry>& plan
     ) const noexcept;
     bool isRejected(const std::string& policy_path, const std::string& governor) const noexcept;
+    void refreshRetainedActiveCache() noexcept;
+    void refreshActiveSettingsCache() noexcept;
     double governorScore(
         const std::string& governor,
         RuntimeState state,
@@ -117,11 +123,13 @@ private:
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> rejected_;
     const ExperienceMemory* experience_memory_{nullptr};
     MutationJournal* journal_{nullptr};
+    RetainedStateStore* retained_store_{nullptr};
+    RetainedStateStore::Entries retained_entries_;
+    std::vector<std::pair<std::string, std::string>> retained_active_governors_;
+    std::vector<std::pair<std::string, std::string>> active_governors_cache_;
     const DeviceProfile* profile_{nullptr};
     CpuFreqActuator cpufreq_actuator_{};
     std::uint64_t decision_cycle_{0};
-    std::uint64_t mutation_started_cycle_{0};
-    std::uint64_t hold_cooldown_until_cycle_{0};
 
     bool actuator_ready_{false};
     bool baseline_captured_{false};
@@ -132,6 +140,12 @@ private:
     bool journal_committed_{false};  // journal holds factory values for this epoch
     bool restore_failed_{false};     // last restore incomplete: block new mutations
     bool recovery_pending_{true};    // a previous run's journal must be recovered
+    bool pending_outcome_{false};
+    std::string last_mutation_path_;
+    std::string last_mutation_target_;
+    std::string last_previous_value_;
+    bool last_path_was_dirty_before_{false};
+    bool last_candidate_from_retained_{false};
     // Factory values recovered from a previous run's journal. Discovery after a
     // crash reads the mutated governor, so these must override the profile.
     MutationJournal::Entries recovered_factory_;

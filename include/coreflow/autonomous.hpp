@@ -15,6 +15,7 @@
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
+#include "coreflow/retained_state.hpp"
 #include "coreflow/safety_hold.hpp"
 #include "coreflow/status_snapshot.hpp"
 #include "coreflow/observer.hpp"
@@ -66,6 +67,8 @@ private:
     bool last_context_eligible_{false};
     FileMutationJournal journal_;
     FileMutationJournal resource_journal_;
+    FileRetainedStateStore cpu_retained_store_;
+    FileRetainedStateStore resource_retained_store_;
     MutationController controller_;
     ResourceMutationController resource_controller_;
     EnvironmentDiscovery discovery_;
