@@ -1,5 +1,28 @@
 # CoreFlow Autonomous Engine v2.1.0
 
+## How to read this source package
+
+CoreFlow is **capability-driven**: the daemon discovers what the device exposes, then decides what is safe to change. It is not a hard-coded list of `vm.*` parameters.
+
+Engine code under `src/` is grouped by function:
+
+| Folder | Pillar | Role |
+|--------|--------|------|
+| `src/observe/` | Observe | Discovery & sampling — what exists on *this* device |
+| `src/understand/` | Understand | Context, effect scoring, experience, thermal intelligence |
+| `src/balance/` | Balance | Policy state machine, authority permit, safety hold |
+| `src/adapt/` | Adapt | Bounded mutation, actuators, baseline outcome |
+| `src/conscience/` | Conscience | Journals, retained state, decision trace |
+| `src/runtime/` | Runtime | Daemon entry, tick loop, config, `status.json` |
+
+**Start here:**
+1. [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) — what every file is for  
+2. [`docs/DEVELOPER_DEBUG.md`](docs/DEVELOPER_DEBUG.md) — full-engine debug checklist (for developers)  
+3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — authority boundaries & epoch contract  
+
+Headers stay under `include/coreflow/` (stable include paths). Implementation lives in the pillar folders above.
+
+
 
 ## WebUI Command Center
 

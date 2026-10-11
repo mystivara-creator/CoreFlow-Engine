@@ -28,40 +28,47 @@ target_compile_options(coreflow_compile_options
 
 # Platform-independent logic. Compiled for both the Android daemon and the
 # host test binary. Anything that needs Android/ONNX headers stays Android-only.
+# Source layout mirrors the engine pillars (not a grab-bag of files):
+#   observe/    — discovery & sampling
+#   understand/ — context, effect model, experience, thermal intelligence
+#   balance/    — policy gates & safety hold
+#   adapt/      — mutation controllers, actuators, outcome measurement
+#   conscience/ — journals, retained state, decision trace
+#   runtime/    — daemon entry, tick loop, config, status export
 set(COREFLOW_CORE_SOURCES
-    src/environment.cpp
-    src/resource_model.cpp
-    src/context.cpp
-    src/control.cpp
-    src/outcome.cpp
-    src/config.cpp
-    src/signal_state.cpp
-    src/experience.cpp
-    src/policy.cpp
-    src/baseline_intelligence.cpp
-    src/mutation.cpp
-    src/mutation_journal.cpp
-    src/retained_state.cpp
-    src/safety_hold.cpp
-    src/cpufreq_actuator.cpp
-    src/resource_actuator.cpp
-    src/resource_mutation.cpp
-    src/effect_model.cpp
-    src/thermal_features.cpp
-    src/thermal_guard.cpp
-    src/status_snapshot.cpp
-    src/decision_agent.cpp
-    src/ecosystem_knowledge.cpp
-    src/high_capability.cpp
+    src/observe/environment.cpp
+    src/observe/ecosystem_knowledge.cpp
+    src/observe/high_capability.cpp
+    src/understand/context.cpp
+    src/understand/effect_model.cpp
+    src/understand/decision_agent.cpp
+    src/understand/experience.cpp
+    src/understand/thermal_features.cpp
+    src/understand/thermal_guard.cpp
+    src/balance/policy.cpp
+    src/balance/control.cpp
+    src/balance/safety_hold.cpp
+    src/adapt/resource_model.cpp
+    src/adapt/resource_actuator.cpp
+    src/adapt/resource_mutation.cpp
+    src/adapt/cpufreq_actuator.cpp
+    src/adapt/mutation.cpp
+    src/adapt/baseline_intelligence.cpp
+    src/adapt/outcome.cpp
+    src/conscience/mutation_journal.cpp
+    src/conscience/retained_state.cpp
+    src/runtime/config.cpp
+    src/runtime/signal_state.cpp
+    src/runtime/status_snapshot.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
-    src/main.cpp
-    src/autonomous.cpp
-    src/thermal_predictor.cpp
-    src/decision_trace.cpp
-    src/discovery.cpp
-    src/observer.cpp
+    src/runtime/main.cpp
+    src/runtime/autonomous.cpp
+    src/understand/thermal_predictor.cpp
+    src/conscience/decision_trace.cpp
+    src/observe/discovery.cpp
+    src/observe/observer.cpp
 )
 
 if(ANDROID)
