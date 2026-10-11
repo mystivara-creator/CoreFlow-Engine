@@ -69,6 +69,20 @@
         uclamp: bool(v.uclamp_available), schedulerControls: bool(v.scheduler_controls_available),
         devfreq: bool(v.devfreq_available), discoveredResources: int(v.discovered_resources, 0),
         mutationReadyResources: int(v.mutation_ready_resources, 0),
+        expandedDomains: (function () {
+          var out = [];
+          if (!Array.isArray(v.expanded_domains)) return out;
+          for (var i = 0; i < v.expanded_domains.length && i < 15; i++) {
+            var x = v.expanded_domains[i];
+            if (!isObj(x)) continue;
+            var evidence = str(x.evidence, 16);
+            if (["unavailable", "detected", "observable"].indexOf(evidence) < 0) evidence = "unavailable";
+            out.push({ id: int(x.id, 0), evidence: evidence,
+              matched: int(x.matched, 0), readable: int(x.readable, 0),
+              mutationAuthorized: bool(x.mutation_authorized) });
+          }
+          return out;
+        })(),
         blockQueueMutationsQuarantined: bool(v.block_queue_mutations_quarantined)
       },
       eyes: {
@@ -230,6 +244,7 @@
       ["Kernel / ABI", kernel, "uname / runtime properties"],
       ["Exposed interfaces", interfaces, v.cpuset ? "cpuset available" : "cpuset not detected"],
       ["Capabilities", v.discoveredResources + " discovered · " + v.mutationReadyResources + " policy-ready", "writability alone does not grant authorization"],
+      ["Expanded domains", v.expandedDomains.filter(function (x) { return x.evidence !== "unavailable"; }).length + " / 15 detected · " + v.expandedDomains.filter(function (x) { return x.evidence === "observable"; }).length + " observable", "discovery is observation-only; domain status never grants mutation authority"],
       ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "not quarantined", v.blockQueueMutationsQuarantined ? "new queue writes are blocked pending device/topology validation" : "check device policy"]
     ];
   }
