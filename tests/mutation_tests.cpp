@@ -6,6 +6,7 @@
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
+#include "coreflow/retained_state.hpp"
 #include "coreflow/policy.hpp"
 #include "coreflow/safety_hold.hpp"
 #include "coreflow/types.hpp"
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -137,6 +139,31 @@ public:
     }
 };
 
+class FakeRetainedStateStore final : public RetainedStateStore {
+public:
+    bool fail_commit{false};
+    bool corrupt{false};
+    Entries stored;
+
+    LoadState load(Entries& out) noexcept override {
+        out = stored;
+        if (corrupt) return LoadState::Corrupt;
+        return stored.empty() ? LoadState::Absent : LoadState::Valid;
+    }
+    bool commit(const Entries& entries) noexcept override {
+        if (fail_commit) return false;
+        stored = entries;
+        corrupt = false;
+        return true;
+    }
+    bool clear() noexcept override {
+        if (fail_commit) return false;
+        stored.clear();
+        corrupt = false;
+        return true;
+    }
+};
+
 // ---------------------------------------------------------------------------
 
 void test_restore_returns_to_factory_and_clears_journal() {
@@ -165,17 +192,21 @@ void test_live_governor_drives_decisions_not_stale_snapshot() {
     // a hot ThermalGuard decision must move the live governor to powersave.
     Sandbox box;
     FakeJournal journal;
+    FakeRetainedStateStore retained;
     MutationController mc;
     mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
     const DeviceProfile profile = box.profile();
 
     CHECK(mc.captureBaseline(profile));
     CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.retainLastMutation(profile));
     CHECK(readLine(box.governor_file) == "schedutil");
 
     const MutationResult hot = mc.apply(RuntimeState::ThermalGuard, sample(0.0, 45.0), profile, adaptiveConfig());
     CHECK(hot == MutationResult::RolledBack);
     CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(!mc.mutated());
 }
 
 void test_rejected_candidate_is_not_reselected_during_cooldown() {
@@ -524,34 +555,191 @@ void test_disabling_mode_restores_only_own_mutation() {
     CHECK(!mc.mutated());
 }
 
-void test_max_hold_forces_restore_then_cooldown() {
+void test_beneficial_mutation_is_retained_without_time_expiry() {
     Sandbox box;
     FakeJournal journal;
+    FakeRetainedStateStore retained;
     MutationController mc;
     mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
     const DeviceProfile profile = box.profile();
     CHECK(mc.captureBaseline(profile));
 
-    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
-    // Stay mutated (schedutil is already the best choice) until the hold limit.
-    for (std::uint64_t i = 1; i < MutationController::kMaxMutationHoldCycles; ++i) {
-        (void)mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.retainLastMutation(profile));
+    CHECK(!mc.hasPendingOutcome());
+    CHECK(retained.stored.size() == 1U);
+    CHECK(retained.stored.front().baseline == "powersave");
+    CHECK(retained.stored.front().target == "schedutil");
+    CHECK(mc.activeGovernorSettings().size() == 1U);
+
+    // The elapsed time alone must never expire an accepted optimization.
+    for (std::uint64_t i = 0; i < 900U; ++i) {
+        (void)mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                       adaptiveConfig());
     }
     CHECK(readLine(box.governor_file) == "schedutil");
     CHECK(mc.mutated());
+    CHECK(retained.stored.size() == 1U);
 
-    // The next cycle reaches the hold limit and must restore the factory value.
-    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::RolledBack);
+    // A deliberate disarm still restores the original value.
+    EngineConfig held;
+    held.setMutationMode(MutationMode::Disabled);
+    held.setMutationArmed(false);
+    held.setAllowCpuGovernor(false);
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, held) ==
+          MutationResult::RolledBack);
     CHECK(readLine(box.governor_file) == "powersave");
     CHECK(!mc.mutated());
+    CHECK(mc.activeGovernorSettings().empty());
+}
 
-    // Cooldown: no new mutation until it elapses.
-    for (std::uint64_t i = 0; i < MutationController::kHoldCooldownCycles - 1; ++i) {
-        (void)mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
-        CHECK(readLine(box.governor_file) == "powersave");
-    }
-    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+void test_rollback_only_latest_candidate_and_preserve_retained_value() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const std::string second_policy = (box.root / "policy1").string();
+    fs::create_directories(second_policy);
+    writeLine(second_policy + "/scaling_governor", "powersave");
+    DeviceProfile profile = box.profile();
+    CpuPolicy second;
+    second.id = 1;
+    second.path = second_policy;
+    second.governor = "powersave";
+    second.available_governors = {"powersave", "conservative", "schedutil", "performance"};
+    second.readable = true;
+    second.governor_writable = true;
+    profile.cpu_policies.push_back(second);
+    CHECK(mc.captureBaseline(profile));
+
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.retainLastMutation(profile));
     CHECK(readLine(box.governor_file) == "schedutil");
+
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(second_policy + "/scaling_governor") == "schedutil");
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.rollbackLastMutation());
+    CHECK(readLine(second_policy + "/scaling_governor") == "powersave");
+    CHECK(readLine(box.governor_file) == "schedutil");
+    CHECK(mc.mutated());
+    CHECK(!mc.hasPendingOutcome());
+    CHECK(retained.stored.size() == 1U);
+    CHECK(retained.stored.front().target == "schedutil");
+}
+
+void test_external_override_is_preserved_during_candidate_rollback() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+    CHECK(mc.captureBaseline(profile));
+
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "schedutil");
+    // Emulate another actor changing the governor while CoreFlow evaluates.
+    writeLine(box.governor_file, "conservative");
+    CHECK(mc.rollbackLastMutation());
+    CHECK(readLine(box.governor_file) == "conservative");
+    CHECK(!mc.mutated());
+    CHECK(!journal.has_pending);
+    CHECK(retained.stored.empty());
+}
+
+void test_corrupt_retained_state_fails_closed() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    retained.corrupt = true;
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(!mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) != MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(!journal.has_pending);
+}
+
+void test_retained_cpu_state_restores_saved_baseline_after_restart() {
+    Sandbox box;
+    FakeJournal first_journal;
+    FakeRetainedStateStore retained;
+    MutationController first;
+    first.setJournal(&first_journal);
+    first.setRetainedStateStore(&retained);
+    const DeviceProfile first_profile = box.profile();
+    CHECK(first.captureBaseline(first_profile));
+    CHECK(first.apply(RuntimeState::Normal, sample(0.5, 30.0), first_profile,
+                      adaptiveConfig()) == MutationResult::Verified);
+    CHECK(first.retainLastMutation(first_profile));
+    CHECK(readLine(box.governor_file) == "schedutil");
+
+    // Model a daemon restart while the accepted setting is still live.
+    FakeJournal restarted_journal;
+    MutationController restarted;
+    restarted.setJournal(&restarted_journal);
+    restarted.setRetainedStateStore(&retained);
+    const DeviceProfile rediscovered = box.profile("schedutil");
+    CHECK(restarted.captureBaseline(rediscovered));
+    CHECK(restarted.mutated());
+    CHECK(restarted.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(retained.stored.size() == 1U);
+    CHECK(retained.stored.front().baseline == "powersave");
+    CHECK(retained.stored.front().target == "schedutil");
+}
+
+void test_retained_state_store_round_trip_and_corruption() {
+    char tmpl[] = "/tmp/coreflow_retained_XXXXXX";
+    char* made = mkdtemp(tmpl);
+    CHECK(made != nullptr);
+    if (made == nullptr) return;
+    const fs::path root(made);
+    const fs::path storePath = root / "retained.db";
+    FileRetainedStateStore store(storePath.string());
+    RetainedStateEntry entry;
+    entry.scope = "vendor|device|soc|android|kernel|arm64";
+    entry.path = "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor";
+    entry.baseline = "powersave";
+    entry.target = "schedutil";
+    CHECK(store.upsert(entry));
+
+    FileRetainedStateStore restarted(storePath.string());
+    RetainedStateStore::Entries loaded;
+    CHECK(restarted.load(loaded) == RetainedStateStore::LoadState::Valid);
+    CHECK(loaded.size() == 1U);
+    if (!loaded.empty()) {
+        CHECK(loaded.front().scope == entry.scope);
+        CHECK(loaded.front().baseline == "powersave");
+        CHECK(loaded.front().target == "schedutil");
+    }
+
+    std::ifstream originalFile(storePath);
+    std::string contents((std::istreambuf_iterator<char>(originalFile)),
+                         std::istreambuf_iterator<char>());
+    const std::size_t baselinePos = contents.find("powersave");
+    CHECK(baselinePos != std::string::npos);
+    if (baselinePos != std::string::npos) contents.replace(baselinePos, 9U, "performance");
+    std::ofstream corruptedFile(storePath, std::ios::trunc);
+    corruptedFile << contents;
+    corruptedFile.close();
+    CHECK(restarted.load(loaded) == RetainedStateStore::LoadState::Corrupt);
+    std::error_code ec;
+    fs::remove_all(root, ec);
 }
 
 void test_safety_hold_markers() {
@@ -665,8 +853,10 @@ void test_multi_policy_mutations_all_restored() {
     writeLine(policy1 + "/scaling_governor", "powersave");
 
     FakeJournal journal;
+    FakeRetainedStateStore retained;
     MutationController mc;
     mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
     DeviceProfile profile = box.profile();
     CpuPolicy second;
     second.id = 1;
@@ -679,7 +869,9 @@ void test_multi_policy_mutations_all_restored() {
 
     CHECK(mc.captureBaseline(profile));
     CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.retainLastMutation(profile));
     CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.retainLastMutation(profile));
     CHECK(readLine(box.governor_file) == "schedutil");
     CHECK(readLine(policy1 + "/scaling_governor") == "schedutil");
 
@@ -757,7 +949,12 @@ int main() {
         {"observe_mode_no_kernel_write", test_observe_mode_never_writes_to_kernel_when_not_mutated},
         {"unarmed_adaptive_no_write", test_unarmed_adaptive_mode_never_writes},
         {"disabling_restores_only_own", test_disabling_mode_restores_only_own_mutation},
-        {"max_hold_restore_and_cooldown", test_max_hold_forces_restore_then_cooldown},
+        {"beneficial_mutation_retained_without_time_expiry", test_beneficial_mutation_is_retained_without_time_expiry},
+        {"rollback_latest_candidate_preserves_retained_value", test_rollback_only_latest_candidate_and_preserve_retained_value},
+        {"external_override_preserved", test_external_override_is_preserved_during_candidate_rollback},
+        {"corrupt_retained_state_fail_closed", test_corrupt_retained_state_fails_closed},
+        {"retained_cpu_state_recovery_baseline", test_retained_cpu_state_restores_saved_baseline_after_restart},
+        {"retained_state_store_roundtrip_and_corruption", test_retained_state_store_round_trip_and_corruption},
         {"safety_hold_markers", test_safety_hold_markers},
         {"multi_policy_all_restored", test_multi_policy_mutations_all_restored},
         {"restore_only_owned_policies", test_restore_only_owned_policies},

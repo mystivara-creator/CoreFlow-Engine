@@ -2,6 +2,7 @@
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/resource_actuator.hpp"
 #include "coreflow/resource_mutation.hpp"
+#include "coreflow/retained_state.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -145,6 +146,66 @@ void test_swappiness_adaptive_path() {
     CHECK(controller.restoreAll());
     CHECK(readFile(swappiness) == "60");
     CHECK(!controller.mutated());
+    fs::remove_all(root);
+}
+
+void test_retained_resource_state_survives_restart_and_revalidates() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_resource_retained_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path swappiness = root / "swappiness";
+    const fs::path retainedPath = root / "retained.db";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 100;
+    sample.mem_available_ratio = 0.10;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.2;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+
+    Journal firstJournal;
+    FileRetainedStateStore retained(retainedPath.string());
+    ResourceMutationController first;
+    first.setJournal(&firstJournal);
+    first.setRetainedStateStore(&retained);
+    CHECK(first.captureBaseline(profile));
+    CHECK(applyResourcePolicy(first, RuntimeState::Elevated, sample, profile, config,
+                              InterventionLevel::Low) == MutationResult::Verified);
+    CHECK(first.retainLastMutation(profile));
+    CHECK(readFile(swappiness) == "67");
+    CHECK(first.activeResourceSettings().size() == 1U);
+    CHECK(first.restoreAll());
+    CHECK(readFile(swappiness) == "60");
+    CHECK(first.activeResourceSettings().empty());
+
+    // Re-open the store as a new daemon would. The retained value is a
+    // preference only; normal capability/policy/actuator validation still runs.
+    Journal secondJournal;
+    FileRetainedStateStore reopened(retainedPath.string());
+    ResourceMutationController restarted;
+    restarted.setJournal(&secondJournal);
+    restarted.setRetainedStateStore(&reopened);
+    CHECK(restarted.captureBaseline(profile));
+    CHECK(applyResourcePolicy(restarted, RuntimeState::Elevated, sample, profile, config,
+                              InterventionLevel::Low) == MutationResult::Verified);
+    CHECK(readFile(swappiness) == "67");
+    CHECK(restarted.hasPendingOutcome());
+    CHECK(restarted.rollbackLastMutation());
+    CHECK(readFile(swappiness) == "60");
+
+    RetainedStateStore::Entries entries;
+    CHECK(reopened.load(entries) == RetainedStateStore::LoadState::Absent);
     fs::remove_all(root);
 }
 
@@ -824,6 +885,7 @@ void test_regressed_candidate_is_suppressed() {
 
 int main() {
     test_swappiness_adaptive_path();
+    test_retained_resource_state_survives_restart_and_revalidates();
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
     test_intervention_level_boundaries();
