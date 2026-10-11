@@ -40,7 +40,7 @@ tools/test_webui_render.js
 module/webroot/engine_status.js
 README.md
 CHANGELOG.md
-BUILD_STATUS.md
+docs/BUILD_STATUS.md
 "
 
 for rel in $required_files; do
@@ -90,7 +90,7 @@ grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf
 grep -q '^allow_cpu_governor=no$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'v2.1.0' "$ROOT/README.md"
-grep -q 'v2.1.0' "$ROOT/BUILD_STATUS.md"
+grep -q 'v2.1.0' "$ROOT/docs/BUILD_STATUS.md"
 grep -q 'v2.1.0' "$ROOT/CHANGELOG.md"
 
 MODEL="$ROOT/module/system/etc/coreflow/thermal_predictor.onnx"
