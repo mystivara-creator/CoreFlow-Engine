@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(CoreFlowAutonomous VERSION 2.1.0 LANGUAGES CXX)
+project(CoreFlowAutonomous VERSION 2.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,7 @@ set(COREFLOW_CORE_SOURCES
     src/status_snapshot.cpp
     src/decision_agent.cpp
     src/ecosystem_knowledge.cpp
+    src/high_capability.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
@@ -158,6 +159,10 @@ else()
 
         add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
         add_test(NAME coreflow_architecture_foundation COMMAND coreflow_architecture_tests)
+        add_executable(coreflow_capability_expansion_tests tests/high_capability_tests.cpp)
+        target_link_libraries(coreflow_capability_expansion_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_capability_expansion_tests PRIVATE -Werror)
+        add_test(NAME coreflow_high_capability_expansion COMMAND coreflow_capability_expansion_tests)
         add_test(NAME coreflow_resource_autonomy COMMAND coreflow_resource_tests)
         add_executable(coreflow_release_hardening_tests tests/release_hardening_tests.cpp)
         target_link_libraries(coreflow_release_hardening_tests PRIVATE coreflow_core)

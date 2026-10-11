@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.2.0 — Adaptive reasoning + 15-domain capability expansion
+
+### Added
+- Bounded multi-stage decision review: observation validation, candidate generation,
+  evidence/risk review, ambiguity handling, and proposal-only output.
+- Fifteen additional domain capability descriptors with detected/observable/unavailable
+  evidence levels; domain discovery never grants actuator authority.
+- Live status JSON and WebUI summary for expanded domain coverage.
+
+### Safety
+- Existing policy permits, actuator verification, rollback, and quarantined interfaces
+  remain authoritative. Newly catalogued domains are observation-only.
+
+
 ## v2.1.0 — Hardening (status truth + agent visibility)
 
 ### Fixed
