@@ -1,4 +1,5 @@
 #include "coreflow/effect_model.hpp"
+#include "coreflow/ecosystem_knowledge.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -340,11 +341,58 @@ EffectScore EffectModel::evaluate(
             return score;
     }
 
+    // Knowledge is a semantic gate, never an authority grant. The capability
+    // must already have passed discovery, runtime verification, and policy.
+    const EcosystemKnowledgeEntry* knowledge =
+        lookupEcosystemKnowledgeByKey(capability.name);
+    if (!knowledge) knowledge = lookupEcosystemKnowledgeByPath(capability.path);
+    // Discovery and host fixtures may expose a leaf name rather than the
+    // catalog's stable key. Resolve only known leaf aliases, never arbitrary
+    // names, so this does not turn the catalog into a permissive allowlist.
+    if (!knowledge) {
+        if (capability.name == "read_ahead_kb")
+            knowledge = lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
+        else if (capability.name == "nr_requests")
+            knowledge = lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+        else if (capability.name == "scheduler")
+            knowledge = lookupEcosystemKnowledgeByKey("block.queue.scheduler");
+    }
+    if (knowledge && knowledge->domain != capability.domain) {
+        score.reason = "ecosystem knowledge domain mismatch";
+        return score;
+    }
+    if (knowledge) {
+        switch (knowledge->risk) {
+            case KnowledgeRisk::ObserveOnly:
+                score.reason = "ecosystem knowledge is observe-only";
+                return score;
+            case KnowledgeRisk::Quarantined:
+                score.reason = "ecosystem knowledge quarantines this resource";
+                return score;
+            case KnowledgeRisk::FrameworkOwned:
+                score.reason = "resource is owned by Android framework";
+                return score;
+            case KnowledgeRisk::BoundedTune:
+            case KnowledgeRisk::VendorVolatile:
+                break;
+        }
+    }
+
     const std::string& name = capability.name;
     if (name.find("scheduler") != std::string::npos) {
-        return scoreScheduler(capability, baseline_value, ctx);
+        score = scoreScheduler(capability, baseline_value, ctx);
+    } else {
+        score = scoreNumeric(capability, baseline_value, ctx);
     }
-    return scoreNumeric(capability, baseline_value, ctx);
+    // Vendor-dependent semantics remain possible only under existing policy,
+    // but pay an explicit risk cost; knowledge cannot make a candidate eligible.
+    if (knowledge && knowledge->risk == KnowledgeRisk::VendorVolatile && score.eligible) {
+        score.risk = std::min(1.0, score.risk + 0.12);
+        score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
+                         score.confidence >= kMinConfidence;
+        if (!score.eligible) score.reason = "vendor volatility raises risk above threshold";
+    }
+    return score;
 }
 
 std::vector<EffectScore> EffectModel::rank(
