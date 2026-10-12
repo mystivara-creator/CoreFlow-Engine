@@ -1,4 +1,5 @@
 #include "coreflow/discovery.hpp"
+#include "coreflow/consultation.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -22,81 +23,6 @@ std::string property(const char* key) {
     return value;
 }
 
-bool isVirtualBlockDevice(const std::string& name) noexcept {
-    return name.rfind("loop", 0) == 0 ||
-           name.rfind("dm-", 0) == 0 ||
-           name.rfind("zram", 0) == 0 ||
-           name.rfind("ram", 0) == 0 ||
-           name.rfind("ubiblock", 0) == 0 ||
-           name.rfind("md", 0) == 0 ||
-           name == "zram0";
-}
-
-// Capability-driven policy: authorize by surface *class*, never by a hard-coded
-// list of parameter names. Discovery finds what the device exposes; this gate
-// only decides whether the surface is a known-safe class of control.
-// EffectModel + journal + verify still decide whether any specific write runs.
-bool isDeniedMutationPath(const std::string& path, const std::string& name) noexcept {
-    static constexpr const char* kDeniedSuffixes[] = {
-        "drop_caches",
-        "compact_memory",
-        "stat_refresh",
-        "overcommit_memory",
-        "overcommit_ratio",
-        "panic",
-        "panic_on_oom",
-        "sysrq",
-    };
-    for (const char* suffix : kDeniedSuffixes) {
-        const std::size_t n = std::char_traits<char>::length(suffix);
-        if (name.size() >= n &&
-            name.compare(name.size() - n, n, suffix) == 0) {
-            return true;
-        }
-        if (path.size() >= n &&
-            path.compare(path.size() - n, n, suffix) == 0) {
-            return true;
-        }
-    }
-    if (path.find("/drop_caches") != std::string::npos) return true;
-    if (path.find("/compact_memory") != std::string::npos) return true;
-    if (path.find("memory.force_empty") != std::string::npos) return true;
-    if (path.find("cgroup.kill") != std::string::npos) return true;
-    if (path.rfind("/proc/sys/kernel/sysrq", 0) == 0) return true;
-    if (path.rfind("/proc/sys/kernel/panic", 0) == 0) return true;
-    return false;
-}
-
-bool policyAuthorizesResource(ResourceDomain domain, const std::string& name,
-                              const std::string& path) {
-    if (path.empty() || isDeniedMutationPath(path, name)) return false;
-
-    // Class: Linux VM sysctl surface. Any discovered node under /proc/sys/vm/
-    // is policy-eligible; EffectModel bounds the step and may still reject.
-    if (domain == ResourceDomain::Memory &&
-        path.rfind("/proc/sys/vm/", 0) == 0) {
-        return true;
-    }
-
-    // Class: physical block-queue numeric tunables (not virtual devices).
-    // Scheduler tokens stay out — they need a separate token model.
-    if (domain == ResourceDomain::Io) {
-        constexpr const char* prefix = "/sys/block/";
-        if (path.rfind(prefix, 0) != 0) return false;
-        const auto rest = path.substr(std::char_traits<char>::length(prefix));
-        const auto slash = rest.find('/');
-        if (slash == std::string::npos) return false;
-        const std::string device = rest.substr(0, slash);
-        if (isVirtualBlockDevice(device)) return false;
-        const std::string tail = rest.substr(slash);
-        return tail == "/queue/read_ahead_kb" || tail == "/queue/nr_requests";
-    }
-
-    // Other domains remain observation-only until a structural value model
-    // exists. Discovery still inventories them.
-    return false;
-}
-
 void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
                    const std::string& name, const std::string& path,
                    bool exists, bool readable, bool writable,
@@ -111,7 +37,10 @@ void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
     // Keep OS access evidence separate from policy approval. W_OK answers only
     // whether this process appears able to write the node; it is not consent.
     cap.permission_granted = permission_granted || (exists && writable);
-    cap.policy_authorized = policyAuthorizesResource(domain, name, path);
+    // The eye asks the brain whether this surface class is admissible. It does
+    // not decide admissibility itself; the consultation module owns that rule.
+    cap.policy_authorized =
+        classifySurface(domain, name, path) == SurfaceClass::Admissible;
     cap.runtime_verified = exists && readable;
     cap.mutation_ready = cap.exists && cap.readable && cap.writable &&
                          cap.permission_granted && cap.runtime_verified &&
