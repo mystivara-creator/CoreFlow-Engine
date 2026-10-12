@@ -11,7 +11,7 @@ if (!dir) { console.error("usage: test_webui_status.js <fixture-dir>"); process.
 
 const S = require(path.join(root, "module/webroot/engine_status.js"));
 const jsSource = fs.readFileSync(path.join(root, "module/webroot/engine_status.js"), "utf8");
-const cppSource = fs.readFileSync(path.join(root, "src/status_snapshot.cpp"), "utf8");
+const cppSource = fs.readFileSync(path.join(root, "src/runtime/status_snapshot.cpp"), "utf8");
 
 let checks = 0, failures = 0;
 function check(cond, label) {

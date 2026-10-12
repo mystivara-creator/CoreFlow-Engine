@@ -12,27 +12,27 @@ module/update.json
 module/service.sh
 module/system/etc/coreflow/default.conf
 module/system/etc/coreflow/thermal_predictor.onnx
-src/main.cpp
+src/runtime/main.cpp
 include/coreflow/environment.hpp
-src/environment.cpp
+src/observe/environment.cpp
 include/coreflow/experience.hpp
-src/experience.cpp
+src/understand/experience.cpp
 include/coreflow/resource_model.hpp
-src/resource_model.cpp
+src/balance/resource_model.cpp
 include/coreflow/context.hpp
-src/context.cpp
+src/understand/context.cpp
 include/coreflow/control.hpp
-src/control.cpp
+src/balance/control.cpp
 include/coreflow/outcome.hpp
-src/outcome.cpp
+src/mutation/mutation.cpp
 include/coreflow/thermal_limits.hpp
 include/coreflow/thermal_features.hpp
-src/thermal_features.cpp
+src/understand/thermal_features.cpp
 include/coreflow/thermal_guard.hpp
-src/thermal_guard.cpp
+src/understand/thermal_guard.cpp
 tests/release_hardening_tests.cpp
 include/coreflow/status_snapshot.hpp
-src/status_snapshot.cpp
+src/runtime/status_snapshot.cpp
 tests/status_dump.cpp
 tools/test_webui_status.sh
 tools/test_webui_status.js
@@ -89,8 +89,8 @@ grep -q 'DecisionOutcome' "$ROOT/include/coreflow/outcome.hpp"
 grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^allow_cpu_governor=no$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'v2.1.0' "$ROOT/README.md"
-grep -q 'v2.1.0' "$ROOT/docs/BUILD_STATUS.md"
+grep -q 'v2.2.0' "$ROOT/README.md"
+grep -q 'v2.2.0' "$ROOT/docs/BUILD_STATUS.md"
 grep -q 'v2.1.0' "$ROOT/CHANGELOG.md"
 
 MODEL="$ROOT/module/system/etc/coreflow/thermal_predictor.onnx"

@@ -9,7 +9,7 @@ per-device traces before relying on the model's predictions.
 
 Trains a compact regressor that predicts thermal temperature (°C) a few
 monitor ticks ahead, then exports a float32 ONNX model compatible with the
-C++ ThermalPredictor in src/thermal_predictor.cpp.
+C++ ThermalPredictor in src/understand/thermal_predictor.cpp.
 
 Feature order is FROZEN and MUST match the C++ side:
 

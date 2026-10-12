@@ -7,7 +7,7 @@ if ! command -v g++ >/dev/null 2>&1; then echo "SKIP: g++ not installed; WebUI s
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 g++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/include" \
-    "$ROOT/tests/status_dump.cpp" "$ROOT/src/status_snapshot.cpp" -o "$TMP/status_dump"
+    "$ROOT/tests/status_dump.cpp" "$ROOT/src/runtime/status_snapshot.cpp" -o "$TMP/status_dump"
 mkdir -p "$TMP/out"
 "$TMP/status_dump" "$TMP/out"
 node "$ROOT/tools/test_webui_status.js" "$TMP/out"

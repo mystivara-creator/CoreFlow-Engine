@@ -2,6 +2,28 @@
 # Host harness for module/customize.sh. Stubs the Magisk installer API.
 SRC="${COREFLOW_MODULE_SRC:-$(cd "$(dirname "$0")/../module" && pwd)}"
 T=$(mktemp -d)
+# Make the volume-key timeout deterministic and instant in the host harness.
+# The production installer still uses the platform `timeout` and `getevent`.
+mkdir -p "$T/bin"
+cat > "$T/bin/timeout" <<'TIMEOUT_STUB'
+#!/bin/sh
+exit 124
+TIMEOUT_STUB
+cat > "$T/bin/date" <<'DATE_STUB'
+#!/bin/sh
+# Advance synthetic epoch on each call so volume_choice reaches timeout instantly.
+[ "${1:-}" = "+%s" ] || exec /usr/bin/date "$@"
+COUNT_FILE="${COREFLOW_TEST_DATE_COUNTER:-/tmp/coreflow-test-date-counter}"
+COUNT=0
+[ ! -f "$COUNT_FILE" ] || COUNT=$(cat "$COUNT_FILE")
+COUNT=$((COUNT + 1))
+printf '%s\n' "$COUNT" > "$COUNT_FILE"
+printf '%s\n' "$COUNT"
+DATE_STUB
+chmod +x "$T/bin/timeout" "$T/bin/date"
+export COREFLOW_TEST_DATE_COUNTER="$T/date-counter"
+PATH="$T/bin:$PATH"
+export PATH
 PASS=0; FAIL=0
 prelude() { cat <<'P'
 ui_print() { echo "UI: $*"; }
