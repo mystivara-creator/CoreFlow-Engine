@@ -1,3 +1,6 @@
+#include "coreflow/cpufreq_actuator.hpp"
+#include "coreflow/control.hpp"
+#include "coreflow/actuator.hpp"
 // Deterministic host tests for the CoreFlow mutation-safety invariants.
 // The CPUFreq sysfs tree is simulated with a temporary directory, so these
 // tests never touch the real kernel interface.
@@ -921,6 +924,125 @@ void test_experience_persists_and_is_bounded() {
     fs::remove(path);
 }
 
+
+void test_capability_bound_permit_rejects_scope_and_mismatches() {
+    // Scope-only permit must never authorize an actuator write.
+    MutationAuthority authority;
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setAllowCpuGovernor(true);
+    config.setMinConfidence(0.5);
+
+    const MutationPermit scope_only = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, MutationPermit::Scope::CpuFreq);
+    CHECK(scope_only.valid());
+    CHECK(scope_only.validFor(MutationPermit::Scope::CpuFreq));
+    CHECK(!scope_only.isCapabilityBound());
+
+    ActuatorMutation mut;
+    mut.id = {ActuatorDomain::CpuFreq, 0};
+    mut.target = "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor";
+    mut.requested = "schedutil";
+    CHECK(!scope_only.validFor(mut));
+
+    // Capability-bound permit for exact target succeeds.
+    ActuatorCapability cap;
+    cap.id = mut.id;
+    cap.mode = ActuatorMode::Autonomous;
+    cap.readable = true;
+    cap.writable = true;
+    cap.verifiable = true;
+    cap.rollbackable = true;
+    cap.max_writes_per_cycle = 1;
+
+    const MutationPermit bound = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, cap, mut.target);
+    CHECK(bound.valid());
+    CHECK(bound.isCapabilityBound());
+    CHECK(bound.validFor(mut));
+
+    // Wrong actuator id rejected.
+    ActuatorMutation wrong_id = mut;
+    wrong_id.id.instance = 99;
+    CHECK(!bound.validFor(wrong_id));
+
+    // Wrong target rejected.
+    ActuatorMutation wrong_target = mut;
+    wrong_target.target = "/sys/devices/system/cpu/cpufreq/policy1/scaling_governor";
+    CHECK(!bound.validFor(wrong_target));
+
+    // Empty / unsafe capability yields pure invalid.
+    ActuatorCapability unsafe;
+    unsafe.id = mut.id;
+    const MutationPermit bad_cap = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, unsafe, mut.target);
+    CHECK(!bad_cap.valid());
+    CHECK(!bad_cap.isCapabilityBound());
+    CHECK(!bad_cap.validFor(mut));
+}
+
+void test_cpufreq_actuator_rejects_scope_only_permit() {
+    // Host fixture: temporary governor file.
+    const fs::path root = fs::temp_directory_path() / "coreflow_permit_test";
+    fs::create_directories(root / "policy0");
+    const std::string gov = (root / "policy0" / "scaling_governor").string();
+    writeLine(gov, "powersave");
+
+    DeviceProfile profile;
+    CpuPolicy policy;
+    policy.path = (root / "policy0").string();
+    policy.readable = true;
+    policy.governor_writable = true;
+    policy.governor = "powersave";
+    policy.available_governors = {"powersave", "schedutil", "performance"};
+    profile.cpu_policies.push_back(policy);
+
+    CpuFreqActuator actuator;
+    actuator.setProfile(&profile);
+    CHECK(actuator.discover() == ActuatorStatus::Ok);
+    CHECK(actuator.capability().mutationSafe());
+
+    ActuatorMutation mutation;
+    mutation.id = actuator.id();
+    mutation.target = gov;
+    mutation.requested = "schedutil";
+
+    MutationAuthority authority;
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setAllowCpuGovernor(true);
+    config.setMinConfidence(0.5);
+
+    // Scope-only → SafetyRejected, no write.
+    const MutationPermit scope = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, MutationPermit::Scope::CpuFreq);
+    const ActuatorResult rejected = actuator.apply(mutation, scope);
+    CHECK(rejected.status == ActuatorStatus::SafetyRejected);
+    CHECK(readLine(gov) == "powersave");
+
+    // Capability-bound exact match → may write (or NoChange if already set).
+    const MutationPermit bound = authority.authorize(
+        plan, config, RuntimeState::Normal, 1.0, actuator.capability(), gov);
+    const ActuatorResult ok = actuator.apply(mutation, bound);
+    CHECK(ok.status == ActuatorStatus::Ok || ok.status == ActuatorStatus::NoChange);
+    if (ok.changed()) {
+        CHECK(readLine(gov) == "schedutil");
+        // Restore to leave fixture clean.
+        (void)actuator.restore(gov);
+    }
+
+    fs::remove_all(root);
+}
+
+
 } // namespace
 
 int main() {
@@ -962,6 +1084,10 @@ int main() {
         {"environment_capability_matrix_fail_closed", test_environment_capability_matrix_is_fail_closed},
         {"resource_domain_names_stable", test_resource_domain_names_are_stable},
         {"experience_persistence_and_scope", test_experience_persists_and_is_bounded},
+        {"capability_bound_permit_rejects_scope_and_mismatches",
+         test_capability_bound_permit_rejects_scope_and_mismatches},
+        {"cpufreq_actuator_rejects_scope_only_permit",
+         test_cpufreq_actuator_rejects_scope_only_permit},
     };
 
     for (const Case& c : cases) {

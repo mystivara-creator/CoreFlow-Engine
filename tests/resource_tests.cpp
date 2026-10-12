@@ -106,6 +106,50 @@ MutationResult applyResourcePolicy(
         permit);
 }
 
+// Safety property: with mutation armed and adaptive, but without the user's
+// grant, a device under real pressure must still leave the kernel untouched.
+// The brain defers, the hands never run, and the ledger says why.
+void test_no_write_without_user_grant() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_resource_no_grant_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 100;
+    sample.mem_available_ratio = 0.10;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.2;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    // Deliberately no grants.
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+    CHECK(controller.captureBaseline(profile));
+    const MutationResult result = applyResourcePolicy(
+        controller, RuntimeState::Elevated, sample, profile, config,
+        InterventionLevel::Low);
+
+    CHECK(result != MutationResult::Verified);
+    CHECK(readFile(swappiness) == "60");
+    CHECK(!controller.mutated());
+    const auto& ledger = controller.consultationLedger();
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] >= 1U);
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] == 0U);
+}
+
 void test_swappiness_adaptive_path() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_mutation_test";
     fs::remove_all(root);
@@ -129,6 +173,10 @@ void test_swappiness_adaptive_path() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
 
     Journal journal;
     ResourceMutationController controller;
@@ -173,6 +221,10 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
 
     Journal firstJournal;
     FileRetainedStateStore retained(retainedPath.string());
@@ -222,11 +274,14 @@ void test_resource_restore_only_owned_paths() {
     profile.vm_swappiness.path = swappiness.string();
     profile.vm_swappiness.readable = true;
     profile.vm_swappiness.writable = true;
+    // The block device stays in the profile so restore isolation is exercised,
+    // but read_ahead is not writable here: block-queue writes are quarantined,
+    // and this test is about owning only the swappiness write it performed.
     IoDevice device;
     device.path = root.string();
     device.name = "testblk";
     device.read_ahead_readable = true;
-    device.read_ahead_writable = true;
+    device.read_ahead_writable = false;
     profile.io_devices.push_back(device);
 
     RuntimeSample sample;
@@ -241,6 +296,10 @@ void test_resource_restore_only_owned_paths() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
 
     Journal journal;
     ResourceMutationController controller;
@@ -293,6 +352,10 @@ void test_policy_block_without_mutation_is_skipped() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
 
     PolicyPlan blocked;
     blocked.action = PolicyAction::ReduceIntervention;
@@ -391,6 +454,10 @@ void test_intervention_level_boundaries() {
         EngineConfig config;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        // The user has granted these namespaces; a device need alone never does.
+        config.setGrantMemory(true);
+        config.setGrantBlockQueue(true);
+        config.setGrantScheduler(true);
 
         Journal journal;
         ResourceMutationController controller;
@@ -608,34 +675,49 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(unknownCatalogScore.reason == "unknown numeric semantics; mutation withheld");
 }
 
-void test_block_queue_mutation_targets_are_quarantined() {
+void test_block_queue_mutation_targets_are_admitted_for_physical() {
+    // Scheduler tokens and virtual devices stay denied.
     CHECK(!ResourceActuator::mutationTargetAllowed(
         "/sys/block/loop0/queue/scheduler"));
     CHECK(!ResourceActuator::mutationTargetAllowed(
         "/sys/block/dm-0/queue/nr_requests"));
     CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/block/mmcblk0/queue/read_ahead_kb"));
+        "/sys/block/zram0/queue/read_ahead_kb"));
     CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/devices/platform/ufs/block/sda/queue/scheduler"));
+        "/sys/block/mmcblk0/queue/scheduler"));
     CHECK(!ResourceActuator::mutationTargetAllowed(
         "/proc/sys/kernel/sched_latency_ns"));
     CHECK(!ResourceActuator::mutationTargetAllowed(
         "/proc/sys/vm/swappiness_extra"));
 
-    // Only exact, reviewed production VM paths are eligible. Synthetic fixture
-    // paths exist only in the host-test build and cannot reach coreflowd.
+    // Reviewed VM paths (including the two previously excluded priors).
     CHECK(ResourceActuator::mutationTargetAllowed(
         "/proc/sys/vm/swappiness"));
     CHECK(ResourceActuator::mutationTargetAllowed(
         "/proc/sys/vm/dirty_background_ratio"));
     CHECK(ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/vm/watermark_scale_factor"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/proc/sys/vm/page-cluster"));
+    // Physical block-queue numeric tunables are now admitted.
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/sys/block/mmcblk0/queue/read_ahead_kb"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/sys/block/sda/queue/nr_requests"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/sys/block/nvme0n1/queue/read_ahead_kb"));
+    // Host-test fixture exception.
+    CHECK(ResourceActuator::mutationTargetAllowed(
         "/tmp/coreflow-test/queue/scheduler"));
 
-    // Exercise the central actuator guard with a genuinely valid resource
-    // permit: path denial must happen before any filesystem read/write.
+    // Exercise the central actuator guard: virtual/scheduler paths still
+    // rejected before any filesystem read/write.
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -695,6 +777,10 @@ void test_selector_scheduler_restore_writes_bare_token() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
 
     Journal journal;
     ResourceMutationController controller;
@@ -738,6 +824,10 @@ void test_cpu_permit_requires_governor_opt_in() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    // The user has granted these namespaces; a device need alone never does.
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
     config.setAllowCpuGovernor(false);
 
     const MutationAuthority authority;
@@ -782,6 +872,10 @@ struct Fixture {
         sample.thermal_millidegrees = 30000;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        // The user has granted these namespaces; a device need alone never does.
+        config.setGrantMemory(true);
+        config.setGrantBlockQueue(true);
+        config.setGrantScheduler(true);
         controller.setJournal(&journal);
     }
     ~Fixture() { fs::remove_all(root); }
@@ -883,7 +977,40 @@ void test_regressed_candidate_is_suppressed() {
     CHECK(!f.controller.mutated());
 }
 
+
+void test_resource_actuator_rejects_scope_only_permit() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_resource_scope_permit_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    ActuatorMutation mutation;
+    mutation.id = {ActuatorDomain::Vm, 0};
+    mutation.target = swappiness.string();
+    mutation.requested = "67";
+
+    PolicyPlan plan;
+    plan.action = PolicyAction::Candidate;
+    plan.mutation_eligible = true;
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setGrantMemory(true);
+
+    const MutationAuthority authority;
+    const MutationPermit scope = authority.authorize(
+        plan, config, RuntimeState::Elevated, 1.0, MutationPermit::Scope::Resource);
+    ResourceActuator actuator;
+    const ActuatorResult result = actuator.apply(mutation, scope);
+    CHECK(result.status == ActuatorStatus::SafetyRejected);
+    CHECK(readFile(swappiness) == "60");
+    fs::remove_all(root);
+}
+
 int main() {
+    test_resource_actuator_rejects_scope_only_permit();
+    test_no_write_without_user_grant();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();
     test_resource_restore_only_owned_paths();
@@ -891,7 +1018,7 @@ int main() {
     test_intervention_level_boundaries();
     test_disarmed_policy_performs_no_write();
     test_effect_model_structured_rank_and_unknown_semantics();
-    test_block_queue_mutation_targets_are_quarantined();
+    test_block_queue_mutation_targets_are_admitted_for_physical();
     test_selector_value_comparable_form();
     test_selector_scheduler_restore_writes_bare_token();
     test_legacy_bracketed_journal_value_is_normalized();

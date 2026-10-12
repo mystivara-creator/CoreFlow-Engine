@@ -74,6 +74,10 @@ EngineStatus base() {
     s.baseline_ready = true;
     s.baseline_samples = 5;
     s.baseline_target = 5;
+    s.consultation_ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] = 4;
+    s.consultation_ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] = 2;
+    s.consultation_ledger.last_reason[static_cast<std::size_t>(ControlNamespace::VmSysctl)] = ConsultReason::AwaitingUserGrant;
+    s.consultation_ledger.last_need[static_cast<std::size_t>(ControlNamespace::VmSysctl)] = true;
     return s;
 }
 
