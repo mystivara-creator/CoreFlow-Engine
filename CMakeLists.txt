@@ -26,15 +26,16 @@ target_compile_options(coreflow_compile_options
         -Wundef
 )
 
-# Platform-independent logic. Compiled for both the Android daemon and the
-# host test binary. Anything that needs Android/ONNX headers stays Android-only.
-# Source layout mirrors the engine pillars (not a grab-bag of files):
-#   observe/    — discovery & sampling
-#   understand/ — context, effect model, experience, thermal intelligence
-#   balance/    — policy gates & safety hold
-#   adapt/      — mutation controllers, actuators, outcome measurement
-#   conscience/ — journals, retained state, decision trace
-#   runtime/    — daemon entry, tick loop, config, status export
+# Platform-independent logic shared by Android and host tests. Sources follow
+# the engine's three-role model:
+#   observe/     eyes      — environment sensing, discovery, capability registry
+#   understand/  reasoning — context, effect model, decision agent, thermal, baseline
+#   balance/     brain     — policy, safety hold, consultation, resource model
+#   mutation/    hands     — actuators and mutation controllers (permit required)
+#   conscience/  memory    — journal, retained state, decision trace
+#   runtime/     lifecycle — configuration, paths, signals, status snapshot, entry
+#   autonomous/  loop      — autonomous tick orchestration
+# Nothing under observe/ may decide mutation policy; it asks balance/.
 set(COREFLOW_CORE_SOURCES
     src/observe/environment.cpp
     src/observe/ecosystem_knowledge.cpp
@@ -48,25 +49,25 @@ set(COREFLOW_CORE_SOURCES
     src/balance/policy.cpp
     src/balance/control.cpp
     src/balance/safety_hold.cpp
-    src/adapt/resource_model.cpp
-    src/adapt/resource_actuator.cpp
-    src/adapt/resource_mutation.cpp
-    src/adapt/cpufreq_actuator.cpp
-    src/adapt/mutation.cpp
-    src/adapt/baseline_intelligence.cpp
-    src/adapt/outcome.cpp
+    src/balance/resource_model.cpp
+    src/balance/consultation.cpp
+    src/mutation/resource_actuator.cpp
+    src/mutation/resource_mutation.cpp
+    src/mutation/cpufreq_actuator.cpp
+    src/mutation/mutation.cpp
+    src/understand/baseline_intelligence.cpp
     src/conscience/mutation_journal.cpp
     src/conscience/retained_state.cpp
     src/runtime/config.cpp
     src/runtime/signal_state.cpp
     src/runtime/status_snapshot.cpp
     src/runtime/runtime_paths.cpp
-    src/balance/capability_registry.cpp
+    src/observe/capability_registry.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
     src/runtime/main.cpp
-    src/runtime/autonomous.cpp
+    src/autonomous/autonomous.cpp
     src/understand/thermal_predictor.cpp
     src/conscience/decision_trace.cpp
     src/observe/discovery.cpp
@@ -173,6 +174,10 @@ else()
         target_compile_options(coreflow_capability_expansion_tests PRIVATE -Werror)
         add_test(NAME coreflow_high_capability_expansion COMMAND coreflow_capability_expansion_tests)
         add_test(NAME coreflow_resource_autonomy COMMAND coreflow_resource_tests)
+        add_executable(coreflow_consultation_tests tests/consultation_tests.cpp)
+        target_link_libraries(coreflow_consultation_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_consultation_tests PRIVATE -Werror)
+        add_test(NAME coreflow_consultation_brain COMMAND coreflow_consultation_tests)
         add_executable(coreflow_release_hardening_tests tests/release_hardening_tests.cpp)
         target_link_libraries(coreflow_release_hardening_tests PRIVATE coreflow_core)
         target_compile_options(coreflow_release_hardening_tests PRIVATE -Werror)

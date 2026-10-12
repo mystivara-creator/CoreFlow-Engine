@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.2.0 — Final development snapshot (not yet device-certified)
+
+### Merged improvements (post-merge audit)
+- Expanded `ResourceActuator::mutationTargetAllowed` beyond the hard-coded seven VM paths: now admits all EffectModel-prior VM sysctls (`watermark_scale_factor`, `page-cluster` included) and physical block-queue numeric nodes (`/sys/block/<dev>/queue/{read_ahead_kb,nr_requests}`). Virtual devices and scheduler tokens remain denied.
+- Aligned actuator allow-list with consultation `SurfaceClass::Admissible` and the existing EffectModel I/O priors so `grant_block_queue=yes` can actually take effect.
+- Updated host tests to assert physical queue admission and continued virtual/scheduler denial.
+
+### Included
+- Capability-bound resource authorization and consultation Allow/Defer/Deny ledger exposed in runtime status and WebUI.
+- Expanded domain evidence summaries and aligned module/CMake/runtime version identity (`v2.2.0`, `versionCode 2200`).
+- Updated handoff and readiness documentation to distinguish completed host validation from outstanding Android/device gates.
+
+### Not certified
+- Android NDK/ARM64 + ONNX Runtime link, KernelSU/Magisk install tests, and real-device soak/recovery validation remain outstanding.
+- Settings DB observation, grant/revoke control API, and grant TTL remain intentionally out of scope until their permission and authority boundaries are reviewed.
+
+## Unreleased — Consultation brain and user grants
+
+### Changed
+- Source tree reorganized by role: `observe/` (eyes), `understand/` and `balance/` (reasoning and brain), `mutation/` (hands), `conscience/` (memory), `runtime/`, and `autonomous/`.
+- Discovery no longer decides mutation admissibility by itself. It asks `balance/consultation` through `classifySurface`.
+
+### Added
+- Expose the bounded consultation ledger in the read-only `status.json` snapshot: cumulative counts by reason plus each namespace's latest reason and whether runtime need was present.
+- Render consultation reason counts and last namespace decisions in the WebUI's live Brain panel. Older daemon snapshots remain readable and show an explicit unavailable message.
+- Consultation: every resource candidate gets an Allow, Defer, or Deny verdict with a reason. Order: observe-only namespaces and kernel-critical surfaces are denied; missing observation, baseline, semantic knowledge, stress compatibility, runtime need, and EffectModel benefit are deferred; user permission is checked last.
+- Per-namespace user grants: `grant_memory`, `grant_block_queue`, `grant_scheduler` (default `no`). A device need never grants permission on its own.
+- Bounded consultation ledger for status and diagnostics.
+- `coreflow_consultation_tests` and an end-to-end test proving that no kernel value changes without a user grant.
+
+### Safety
+- Build properties and settings database are observed, never written, in this build.
+- Benefit judgment reuses EffectModel's single eligibility definition; no second threshold was introduced.
+
 ## v2.2.0 — Adaptive reasoning + 15-domain capability expansion
 
 ### Added

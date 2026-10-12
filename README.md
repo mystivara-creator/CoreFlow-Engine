@@ -1,19 +1,22 @@
-# CoreFlow Autonomous Engine v2.1.0
+# CoreFlow Autonomous Engine v2.2.0
 
 ## How to read this source package
 
 CoreFlow is **capability-driven**: the daemon discovers what the device exposes, then decides what is safe to change. It is not a hard-coded list of `vm.*` parameters.
 
-Engine code under `src/` is grouped by function:
+Engine code under `src/` is grouped around compact functional boundaries:
 
-| Folder | Pillar | Role |
-|--------|--------|------|
-| `src/observe/` | Observe | Discovery & sampling — what exists on *this* device |
-| `src/understand/` | Understand | Context, effect scoring, experience, thermal intelligence |
-| `src/balance/` | Balance | Policy state machine, authority permit, safety hold |
-| `src/adapt/` | Adapt | Bounded mutation, actuators, baseline outcome |
-| `src/conscience/` | Conscience | Journals, retained state, decision trace |
-| `src/runtime/` | Runtime | Daemon entry, tick loop, config, `status.json` |
+| Folder | Role | Responsibility |
+|--------|------|----------------|
+| `src/observe/` | Eyes | Discovery, sampling, capability registry. Observes only; asks `balance/` before any decision. |
+| `src/understand/` | Reasoning | Context, effect model, decision agent, thermal and baseline analysis. |
+| `src/balance/` | Brain | Policy, safety hold, consultation (Allow / Defer / Deny), resource model. |
+| `src/mutation/` | Hands | Actuators and mutation controllers. Write only with a valid permit. |
+| `src/conscience/` | Memory | Mutation journal, retained state, decision trace. |
+| `src/runtime/` | Lifecycle | Daemon entry, config, signals, status export, runtime paths. |
+| `src/autonomous/` | Loop | Autonomous tick orchestration. |
+
+We intentionally avoid creating a separate file for every actuator or resource: compatible resources should flow through generic capability and mutation interfaces. A dedicated implementation is justified only when the underlying interface has genuinely different semantics or safety requirements.
 
 **Start here:**
 1. [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) — what every file is for  
@@ -39,9 +42,9 @@ The About page acknowledges Mystivara as the author and Gemini, ChatGPT, Grok AI
 
 For each release, attach the CI-produced ZIP named `CoreFlow-Autonomous-vX.Y.Z-minapi34-arm64.zip` before publishing the GitHub Release. The workflow then uploads `update.json` to that release. For an already-published release, run **Actions → KernelSU Update Feed → Run workflow** with the tag, or leave it blank to sync the latest release. The workflow must be present on the repository's default branch and GitHub Actions must allow release asset writes. Installed clients only offer an update when the published `versionCode` is greater than the installed module's code.
 
-## v2.1.0 — Capability-Driven Autonomous Decision Loop
+## v2.2.0 — Final development snapshot
 
-This source continuation adds an explicit policy authorization gate to the capability-driven resource path. A readable or writable interface is only a discovery fact; model inference does not grant permission. The live WebUI now shows the device/SoC/kernel identity and separates discovered capabilities from policy-ready resources. Unknown controls remain observe-only. Following the storage regression reported during field use, new writes to block queue nodes (`scheduler`, `nr_requests`, `read_ahead_kb`) are quarantined at discovery, baseline capture, candidate selection and the actuator, regardless of measured I/O activity. The production `ResourceMutationController` and central resource actuator are limited to seven exact policy-approved VM paths with semantic priors; other resource paths are denied for new writes. CPUFreq is a separate authority path and remains off by default (`allow_cpu_governor=no`). Existing journal restore remains available for recovery from older changes. The package remains v2.1.0 source and is not certified for Android/device behavior until operator CI and staged testing pass.
+This source continuation adds an explicit policy authorization gate to the capability-driven resource path. A readable or writable interface is only a discovery fact; model inference does not grant permission. The live WebUI now shows the device/SoC/kernel identity and separates discovered capabilities from policy-ready resources. Unknown controls remain observe-only. The production `ResourceActuator` allow-list admits every VM sysctl that has a reviewed EffectModel prior (including `watermark_scale_factor` and `page-cluster`) plus physical block-queue numeric tunables (`read_ahead_kb` / `nr_requests`). Scheduler tokens and virtual block devices (loop/dm/zram/…) remain denied. CPUFreq is a separate authority path and remains off by default (`allow_cpu_governor=no`). Existing journal restore remains available for recovery from older changes. This v2.2.0 package is a final development snapshot, not a device-certified release. Android ARM64 linking and staged device/recovery testing remain outstanding.
 
 The source-release validator is versioned with the package, and the host CTest suite includes the source-release contract. This does not certify Android ARM64 or device-level behavior; those remain part of the operator's build and staged device validation.
 
@@ -59,12 +62,12 @@ v2.0.1 is the release-hardened revision of v2.0.0. It changes the default to **o
 
 ## v2.0.0 — Ecosystem Autonomous Control
 
-Autonomous adaptive engine with device-aware capability discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/approved VM mutation and durable recovery. Block-device queue writes are currently quarantined pending device-topology validation.
+Autonomous adaptive engine with device-aware capability discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/approved VM + physical block-queue mutation and durable recovery. Scheduler tokens remain out-of-class.
 
 ### Autonomous resource coverage
-- Read-only discovery of block-device queue controls (`/sys/block/*`); control writes remain quarantined in the current source policy.
-- VM swappiness discovery and adaptive intervention under real memory pressure.
-- Historical I/O queue/read-ahead effect priors retained for future evaluation; the current production discovery path does not authorize writes to those nodes.
+- Discovery and (when `grant_block_queue=yes`) bounded writes of physical block-queue numeric controls (`read_ahead_kb`, `nr_requests`); scheduler tokens stay out-of-class.
+- VM sysctl discovery and adaptive intervention for every path that has a reviewed EffectModel prior (9 paths, not a hard 7).
+- I/O queue/read-ahead effect priors are active in the EffectModel for ranking.
 - CPUFreq governor adaptation with bounded, verified experiments.
 - Runtime I/O-rate and throttled process profiling for workload classification.
 - Battery level/status/current/voltage/temperature awareness and power-constrained policy.
@@ -155,7 +158,7 @@ Android / Kernel Environment
 
 The discovery layer records device identity, Android/kernel environment and exposed interfaces, including existence, readability, writability and runtime-read evidence. The separate `policy_authorized` flag must also be true before a capability can become mutation-ready.
 
-A writable path is **not** treated as permission to mutate it. In the current v2.1.0 safety follow-up, production policy authorizes only named VM controls with semantic priors. Block queue tunables are discovery-only, and a central actuator guard denies new queue writes even if another path proposes them.
+A writable path is **not** treated as permission to mutate it. In the current v2.2.0 source policy, production policy authorizes named VM controls with semantic priors plus physical block-queue numeric tunables when the operator sets `grant_block_queue=yes`. Scheduler tokens and virtual devices remain denied by the central actuator guard.
 
 The resource vocabulary covers:
 
@@ -164,7 +167,7 @@ The resource vocabulary covers:
 - CPU sets / cgroups
 - Scheduler controls
 - Memory / VM tunables
-- I/O queue controls (observed; new writes quarantined pending topology validation)
+- I/O queue controls (physical `read_ahead_kb` / `nr_requests` admitted when granted; scheduler tokens still denied)
 - GPU / devfreq
 - Thermal resources
 - Charging / power
@@ -352,7 +355,7 @@ CoreFlow protects against boot loops and crash loops:
 
 When you open an issue, include:
 
-- the CoreFlow version (`v2.1.0`), device model, Android version and kernel (`uname -r`),
+- the CoreFlow version (`v2.2.0`), device model, Android version and kernel (`uname -r`),
 - the relevant lines of `/data/adb/coreflow/logs/coreflowd.log` and `logcat`,
 - your `config.ini` with serial numbers and other identifiers removed (see `SECURITY.md`).
 
@@ -509,3 +512,14 @@ rotated at approximately 512 KiB to a single `.1` file. The WebUI reads only
 the most recent 200 records through its allowlisted diagnostics path. A missing
 journal means no structured records are currently readable; it is not proof
 that no decisions occurred.
+
+### Capability-bound mutation permits
+
+`MutationAuthority` now exposes a capability-bound authorization overload. It
+requires an actuator capability and an exact target, and the resulting permit
+is checked against the actuator identity and target at application time.
+The older scope-based overload remains temporarily for existing controller
+and test call sites; it is a migration compatibility path, not the final
+global capability-driven contract. New actuator integrations should use the
+capability-bound overload, and the legacy path should be removed once all
+controllers issue target-bound permits.
