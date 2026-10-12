@@ -202,9 +202,10 @@ bool AutonomousEngine::initialize() {
     resource_controller_.setExperienceMemory(&experience_memory_);
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
-    if (!config_.load(kConfigPath)) {
-        logWarn("Config unavailable; using built-in defaults path=%s", kConfigPath);
-    }
+    if (!config_.load(kPaths.config_ini)) { ... }
+(void)experience_memory_.load(kPaths.experience_db);
+const bool ml_ready = thermal_predictor_.initialize(kPaths.thermal_model);
+
     configured_mode_ = config_.mutationMode();
     configured_armed_ = config_.mutationArmed();
 
