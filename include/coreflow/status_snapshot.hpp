@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "coreflow/high_capability.hpp"
+#include "coreflow/consultation.hpp"
 
 namespace coreflow {
 
@@ -104,6 +105,9 @@ struct EngineStatus {
     std::size_t observation_samples{0};
     std::size_t observation_target{0};
     std::string skip_reason;  // why NO_ACTION / mutation skipped this cycle
+
+    // Read-only consultation telemetry. Counts are cumulative since daemon start.
+    ConsultationLedger consultation_ledger;
     bool observing{false};
     std::uint64_t cooldown_remaining{0};
 

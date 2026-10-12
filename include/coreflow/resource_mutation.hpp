@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "coreflow/config.hpp"
+#include "coreflow/consultation.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/decision_agent.hpp"
 #include "coreflow/experience.hpp"
@@ -31,8 +32,10 @@ public:
     void setExperienceMemory(const ExperienceMemory* memory) noexcept;
 
     // Capture factory baselines only for explicitly policy-authorized,
-    // mutation-ready resources. Production block queue controls are quarantined;
-    // legacy journal restore is still permitted for recovery.
+    // mutation-ready resources. Block-queue numeric controls (read_ahead_kb /
+    // nr_requests on physical devices) are admitted when grant_block_queue is
+    // enabled; scheduler tokens remain out-of-class. Legacy journal restore is
+    // still permitted for recovery.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
     bool restoreAll() noexcept;
@@ -76,6 +79,11 @@ public:
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
     std::size_t baselineSize() const noexcept { return baseline_.size(); }
 
+    // Bounded record of consultation outcomes, for status and diagnostics.
+    const ConsultationLedger& consultationLedger() const noexcept {
+        return consultation_ledger_;
+    }
+
 private:
     struct Baseline {
         ResourceDomain domain{ResourceDomain::AndroidRuntime};
@@ -102,9 +110,13 @@ private:
         const RuntimeSample& sample,
         const DeviceProfile& profile,
         const PolicyPlan& policy,
+        const UserGrants& grants,
         Candidate& out) const noexcept;
     MutationResult applyCandidate(const Candidate& candidate,
-                                  const MutationPermit& permit) noexcept;
+                                  RuntimeState state,
+                                  double confidence,
+                                  const EngineConfig& config,
+                                  const PolicyPlan& policy) noexcept;
     MutationJournal::Entries factorySnapshot() const;
     bool verifySchedulerToken(const std::string& path,
                               const std::string& token,
@@ -113,6 +125,7 @@ private:
     MutationJournal* journal_{nullptr};
     RetainedStateStore* retained_store_{nullptr};
     RetainedStateStore::Entries retained_entries_;
+    mutable ConsultationLedger consultation_ledger_;
     std::vector<std::pair<std::string, std::string>> retained_active_resources_;
     std::vector<std::pair<std::string, std::string>> active_resources_cache_;
     const ExperienceMemory* experience_memory_{nullptr};

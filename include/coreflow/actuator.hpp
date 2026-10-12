@@ -3,32 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <string>
+#include <utility>
 
 namespace coreflow {
 
 class MutationAuthority;
-
-class MutationPermit final {
-public:
-    MutationPermit(const MutationPermit&) = default;
-    MutationPermit& operator=(const MutationPermit&) = default;
-
-    bool valid() const noexcept { return valid_; }
-    bool validFor(ActuatorDomain domain) const noexcept {
-        return valid_ && domain_ == domain;
-    }
-    bool validFor(const ActuatorCapability& cap) const noexcept {
-        return validFor(cap.id.domain);
-    }
-
-private:
-    explicit MutationPermit(bool valid, ActuatorDomain domain) noexcept
-        : valid_(valid), domain_(domain) {}
-
-    bool valid_{false};
-    ActuatorDomain domain_{ActuatorDomain::CpuFreq};
-    friend class MutationAuthority;
-};
 
 enum class ActuatorDomain : std::uint8_t {
     CpuFreq = 0,
@@ -111,6 +91,52 @@ struct ActuatorResult {
         return status == ActuatorStatus::Ok &&
                writes_verified != 0;
     }
+};
+
+class MutationPermit final {
+public:
+    // Legacy scope retained only while existing controller call sites migrate.
+    // New code should use the capability-bound authorization overload.
+    enum class Scope : std::uint8_t { CpuFreq = 0, Resource };
+
+    MutationPermit(const MutationPermit&) = default;
+    MutationPermit& operator=(const MutationPermit&) = default;
+
+    bool valid() const noexcept { return valid_; }
+    bool isCapabilityBound() const noexcept { return valid_ && capability_bound_; }
+    bool validFor(Scope scope) const noexcept {
+        return valid_ && legacy_scope_bound_ && scope_ == scope;
+    }
+
+    // A capability-bound permit is valid only for the exact actuator, target,
+    // and operation for which it was issued. Target is owned by the permit so
+    // callers cannot invalidate authorization by changing a temporary string.
+    bool validFor(const ActuatorMutation& mutation) const noexcept {
+        if (!valid_ || !capability_bound_) return false;
+        return mutation.id == actuator_id_ &&
+               mutation.target == target_ &&
+               mutation_operation_ == Operation::Write;
+    }
+
+    enum class Operation : std::uint8_t { Read = 0, Write, Restore };
+
+private:
+    explicit MutationPermit(bool valid, Scope scope) noexcept
+        : valid_(valid), scope_(scope), legacy_scope_bound_(true) {}
+
+    MutationPermit(bool valid, ActuatorId id, std::string target,
+                   Operation operation)
+        : valid_(valid), capability_bound_(valid), actuator_id_(id),
+          target_(std::move(target)), mutation_operation_(operation) {}
+
+    bool valid_{false};
+    Scope scope_{Scope::CpuFreq};
+    bool legacy_scope_bound_{false};
+    bool capability_bound_{false};
+    ActuatorId actuator_id_{};
+    std::string target_;
+    Operation mutation_operation_{Operation::Write};
+    friend class MutationAuthority;
 };
 
 class IActuator {

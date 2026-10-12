@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "coreflow/actuator.hpp"
@@ -78,6 +79,12 @@ public:
                              RuntimeState state,
                              double confidence,
                              MutationPermit::Scope scope) const noexcept;
+    MutationPermit authorize(const PolicyPlan& plan,
+                             const EngineConfig& config,
+                             RuntimeState state,
+                             double confidence,
+                             const ActuatorCapability& capability,
+                             std::string_view target) const noexcept;
 };
 
 class PolicyEngine final {

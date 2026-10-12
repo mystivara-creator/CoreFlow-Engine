@@ -15,6 +15,7 @@ class ResourceActuator final {
 public:
     ResourceActuator() = default;
 
+    ActuatorCapability capability(ActuatorId id, std::string_view target) const noexcept;
     ActuatorResult apply(const ActuatorMutation& mutation,
                          const MutationPermit& permit) noexcept;
     ActuatorResult restore(std::string_view path,
@@ -24,10 +25,12 @@ public:
     // Like read(), but returns the comparable form (see comparableValue).
     static bool readComparable(std::string_view path, std::string& value) noexcept;
     static bool writable(std::string_view path) noexcept;
-    // Production target allow-list for new resource writes. At this source
-    // revision only exact, reviewed VM sysctl paths are admitted; the host-test
-    // library has a separate temporary-file fixture exception. Restore is not
-    // subject to this new-write allow-list so old journals can recover.
+    // Production target allow-list for new resource writes. Admits every VM
+    // sysctl that has a reviewed EffectModel prior (including watermark_scale_factor
+    // and page-cluster) plus physical block-queue numeric nodes (read_ahead_kb /
+    // nr_requests). Scheduler tokens and virtual block devices stay denied.
+    // Host-test fixtures get a temporary-file exception. Restore is not subject
+    // to this new-write allow-list so old journals can recover.
     static bool mutationTargetAllowed(std::string_view path) noexcept;
 
     // Selector-style sysfs nodes (e.g. queue/scheduler) read back the whole

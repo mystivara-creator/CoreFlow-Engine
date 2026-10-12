@@ -24,6 +24,10 @@ public:
     bool allowCpuGovernor() const noexcept { return allow_cpu_governor_; }
     bool mutationArmed() const noexcept { return mutation_armed_; }
     bool runtimeRefreshEnabled() const noexcept { return runtime_refresh_enabled_; }
+    // User permission per control namespace. A device need never grants this.
+    bool grantMemory() const noexcept { return grant_memory_; }
+    bool grantBlockQueue() const noexcept { return grant_block_queue_; }
+    bool grantScheduler() const noexcept { return grant_scheduler_; }
 
     void setMonitorIntervalSeconds(int seconds) noexcept;
     void setMinConfidence(double confidence) noexcept;
@@ -31,6 +35,9 @@ public:
     void setAllowCpuGovernor(bool enabled) noexcept { allow_cpu_governor_ = enabled; }
     void setMutationArmed(bool enabled) noexcept { mutation_armed_ = enabled; }
     void setRuntimeRefreshEnabled(bool enabled) noexcept { runtime_refresh_enabled_ = enabled; }
+    void setGrantMemory(bool enabled) noexcept { grant_memory_ = enabled; }
+    void setGrantBlockQueue(bool enabled) noexcept { grant_block_queue_ = enabled; }
+    void setGrantScheduler(bool enabled) noexcept { grant_scheduler_ = enabled; }
 
 private:
     int monitor_interval_seconds_{5};
@@ -43,6 +50,10 @@ private:
     bool allow_cpu_governor_{false};
     bool runtime_refresh_enabled_{true};
     bool mutation_armed_{false};
+    // Per-namespace user grants. Default is none; an invalid mode clears all.
+    bool grant_memory_{false};
+    bool grant_block_queue_{false};
+    bool grant_scheduler_{false};
 };
 
 const char* mutationModeName(MutationMode mode) noexcept;
