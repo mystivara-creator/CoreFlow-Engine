@@ -1,8 +1,8 @@
-# CoreFlow v2.1.0 — Source Hardening & Field Trial Guide
+# CoreFlow v2.2.0 — Final Source Handoff & Field Trial Guide
 
 ## What changed in this continuation
 
-This package continues the supplied v2.1.0 source tree; it is not a clean-room rewrite.
+This package consolidates the supplied source history as v2.2.0; it is a source handoff, not a clean-room rewrite or device-certified release.
 
 - Replaced `EffectScore::reason` identity packing with structured `resource_name`, `path`, `domain`, and `utility` fields. Controller logic no longer parses `name|path|reason` strings.
 - Unified candidate ranking around one benefit/risk/confidence utility and deterministic tie-breaking.

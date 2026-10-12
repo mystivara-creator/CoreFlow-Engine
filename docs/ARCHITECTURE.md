@@ -115,7 +115,7 @@ pick top eligible that policy.allows
 apply bounded value only when semantic bounds/direction are known
 ```
 
-Soft priors for supported VM knobs (swappiness, dirty ratios/timers, vfs_cache_pressure and min_free_kbytes) provide candidate bounds and preferred directions. They are not a replacement for discovery, explicit policy authorization or live evidence. Unknown numeric writables remain observe-only. The model retains historical priors for I/O, but production discovery does not authorize block queue writes in this safety follow-up. The production `ResourceActuator` allow-list admits only the seven exact approved `/proc/sys/vm/` paths; all other resource paths are denied for new writes. Thus `/sys/block/*/queue/{scheduler,nr_requests,read_ahead_kb}`, equivalent `/sys/devices/.../block/...` paths, kernel scheduler sysctls and unknown controls remain read-only until separately reviewed and validated. I/O throughput remains telemetry, not permission to write. CPUFreq uses a separate actuator/authority path and remains disabled by default through `allow_cpu_governor=no`.
+Soft priors for supported VM knobs (swappiness, dirty ratios/timers, vfs_cache_pressure and min_free_kbytes) provide candidate bounds and preferred directions. They are not a replacement for discovery, explicit policy authorization or live evidence. Unknown numeric writables remain observe-only. The model retains historical priors for I/O, but production discovery does not authorize block queue writes in this safety follow-up. The production `ResourceActuator` allow-list admits every `/proc/sys/vm/` path that has a reviewed EffectModel prior (including `watermark_scale_factor` and `page-cluster`) plus physical `/sys/block/<dev>/queue/{read_ahead_kb,nr_requests}`. Scheduler tokens, virtual block devices, kernel scheduler sysctls and unknown controls remain read-only. I/O throughput remains telemetry, not permission to write. CPUFreq uses a separate actuator/authority path and remains disabled by default through `allow_cpu_governor=no`.
 
 **Never autonomous (telemetry only until proven):** charging limits, GPU governors, uClamp, cpuset, ART, Android properties.
 
@@ -145,7 +145,7 @@ Soft priors for supported VM knobs (swappiness, dirty ratios/timers, vfs_cache_p
 | **P5 — Multi-device** | 3 SoC families | Same safety invariants; per-device experience scope |
 | **P6 — Production stable** | Signed release | Thermal model device-trace trained optional; docs + incident process |
 
-v2.1.0 targets **end of P0 + ready to enter P1–P3** (test-ready, not production-stable).
+The v2.2.0 source snapshot targets **end of P0 + ready for staged P1–P3 validation** (pre-production, not production-stable).
 
 ---
 
@@ -157,3 +157,9 @@ v2.1.0 targets **end of P0 + ready to enter P1–P3** (test-ready, not productio
 - **Not:** silent always-on kernel rewriting without measurement or recovery  
 
 Autonomy without a conscience is a brick risk. This architecture keeps the conscience mandatory.
+
+## Compact source layout decision
+
+The source package is organized by role: `src/observe/` (eyes), `src/understand/` and `src/balance/` (reasoning and brain), `src/mutation/` (hands), `src/conscience/` (memory), `src/runtime/` (lifecycle), and `src/autonomous/` (loop). This is a responsibility boundary, not a requirement that every folder contain exactly one translation unit. Large or independently tested implementations may remain separate within a functional area; tiny tightly coupled outcome logic belongs with mutation orchestration rather than gaining a file solely for its name.
+
+Actuator enrollment is global and capability-driven. Discovery reports available interfaces and their observed metadata; the registry tracks capability facts; mutation authority evaluates whether a requested operation is permitted; the mutation engine performs validation, write, read-back verification, journaling, and supported recovery. Discovery of a writable interface is not itself authorization. Device-specific restrictions should be added only when a concrete semantic or safety reason requires them, and should be documented as such.

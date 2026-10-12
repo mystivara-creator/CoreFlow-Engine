@@ -1,23 +1,26 @@
-# Build Status — v2.1.0
+# Build Status — CoreFlow v2.2.0
 
-## What changed from v2.0.1
-- New `EffectModel` component (`include/coreflow/effect_model.hpp`, `src/effect_model.cpp`)
-- `ResourceMutationController` uses discovery plus explicit per-resource policy authorization; writable paths alone do not qualify
-- Block queue mutations are quarantined at discovery/baseline/candidate/actuator boundaries; journal restore remains enabled for recovery
-- Live status/WebUI expose Android, kernel, SoC/board identity and separate discovered vs policy-ready counts
-- `PolicyEngine` authorizes Low intervention under Warming/Elevated/active workloads
-- Discovery matrix includes additional VM tunables
-- Version bumped to 2.1.0 / versionCode 2100
+## Package state
 
-## Still required before production certification
-1. Android NDK ARM64 build of `coreflowd` (operator-managed CI)
-2. On-device observe-only validation across the planned seven modes
-3. On-device adaptive validation with rollback checks over the planned seven-day trial
-4. Confirm telemetry quality, stale-sample handling, journal recovery, and boot-loop recovery
-5. Optional: retrain thermal ONNX on representative device traces
+This is the final development snapshot for the current source line. It consolidates the capability-bound mutation safety work, consultation brain, read-only consultation ledger in `status.json`/WebUI, and expanded domain capability summaries. It is **not** an Android/device-certified production release.
 
-## Local source validation
-For the current source patch, host CMake build and CTest passed (6/6), the WebUI status writer/parser contract passed (166/166), and the end-to-end WebUI render smoke passed (23/23). The Android NDK/ARM64 build, ONNX linking and real-device behavior remain unverified; host tests are not device certification.
+## Current behavior and safety boundaries
 
-## Safety defaults
-Unchanged: observe-only until operator sets `mutation_mode=adaptive` and `mutation_armed=true`.
+- Installed defaults are Observe-only: `mutation_mode=observe`, `mutation_armed=false`, and `allow_cpu_governor=no`.
+- New generic resource writes require exact policy authorization, a target-bound permit, journaling, bounded application, and read-back verification.
+- New block queue writes (`scheduler`, `nr_requests`, `read_ahead_kb`) remain quarantined; journal-based restore of prior changes remains available.
+- Build properties and Android Settings Database are observation-only; Settings DB collection is not implemented in this package.
+- Consultation ledger and grants are informational/config-backed respectively. There is no remote WebUI grant/revoke endpoint and no grant TTL.
+
+## Local validation in this package
+
+The package must pass a fresh host CMake build, all CTest targets, WebUI status contract, WebUI render smoke, source-release contract, safety-foundation contract, and installer harness before handoff. Exact results are recorded in `FINAL_HANDOFF.md` and `FINAL_AUDIT_REPORT.txt`.
+
+## Remaining external gates
+
+1. Android NDK/ARM64 build and ONNX Runtime link in the operator's Android toolchain.
+2. KernelSU/Magisk install/uninstall validation on supported devices.
+3. Observe-only soak, journal recovery checks, then a separately reviewed controlled Adaptive trial.
+4. Review and implement Settings DB observation only if there is a supported, permission-correct API path.
+
+Host success does not imply Android or device certification. Keep installed devices in Observe mode until these gates pass.

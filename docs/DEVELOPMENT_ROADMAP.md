@@ -1,41 +1,37 @@
-# CoreFlow Autonomous Engine — Roadmap
+# CoreFlow Autonomous Engine — Final Development Handoff
 
-**Current target:** stabilize **v2.1.0** for community evaluation  
-**Identity:** Observe. Understand. Balance. Adapt.
+**Current source identity:** `v2.2.0` / `versionCode 2200`  
+**Position:** final development snapshot; pre-production, not device-certified.
 
-## Done in this Balance pass
+## Completed in this source snapshot
 
-- Loosened dead-band gates that prevented real-device mutation while keeping hard safety:
-  confidence 0.60, thermal headroom 52°C, memory headroom 0.14, CpuBound/Moderate thresholds,
-  EffectModel confidence multipliers and utility floor.
-- Version identity restored to `v2.1.0` / `versionCode 2100`.
-- `IDecisionAgent` foundation present (ScoringDecisionAgent); not yet the primary path in the tick loop.
+- Capability discovery is separate from explicit policy authorization.
+- Resource mutations require target-bound permits and retain journal-before-write, bounded writes, read-back verification, and rollback behavior.
+- New block-device queue writes are quarantined; restore of old journaled values remains possible.
+- Consultation returns Allow/Defer/Deny with explicit reasons and per-namespace user-grant checks.
+- Consultation ledger is exposed as read-only runtime telemetry and rendered in the WebUI.
+- Expanded domain capabilities are described as evidence, not permission.
+- CMake/module/runtime version identity is v2.2.0.
 
-## Current safety follow-up (still v2.1.0; no release version bump)
+## Deliberately not included in this final snapshot
 
-- Split discovered OS access evidence from `policy_authorized`; only named VM tunables with semantic priors are eligible through production discovery.
-- Quarantine new block-device queue writes at discovery, baseline capture, candidate selection and the central actuator (`scheduler`, `nr_requests`, `read_ahead_kb` on `/sys/block` and equivalent block paths).
-- Preserve journal restore for paths changed by earlier builds; recovery must not be disabled by the new-write quarantine.
-- Publish the live device/kernel/SoC profile and counts of discovered versus policy-ready capabilities in `status.json` and the WebUI.
+- WebUI grant/revoke controls: no authenticated, narrowly scoped daemon command interface exists yet. A UI-only toggle would be misleading and unsafe.
+- Grant expiry/TTL: config-backed grants remain opt-in and have no expiry semantics.
+- Android Settings Database collection: it needs a permission-correct Android-specific implementation and device verification; filesystem guessing is not an acceptable substitute.
+- Android NDK/ARM64 link and physical-device validation: unavailable in the local host-only validation environment.
 
-## Community evaluation checklist
+## Next gates (outside this source-only handoff)
 
-1. Observe-only soak (default) — no writes, `status.json` + logs healthy.
-2. Adaptive + armed, `allow_cpu_governor=no` — evaluate only supported VM candidates; storage queue writes must remain absent.
-3. Confirm journal + verify + restore on Idle / disarm / regression and recovery of any pre-existing committed journal.
-4. ThermalGuard path only allows policy-approved, stabilizing changes; no new block queue writes.
-5. Multi-device notes (SoC, Android/kernel branch, device topology, Magisk vs KSU). Re-enable I/O mutations only after a separate reviewed policy and device-level proof.
+1. Build and link ARM64 with the pinned Android NDK/ONNX Runtime toolchain.
+2. Install and uninstall on test devices under both supported root managers.
+3. Verify Observe mode performs no new kernel writes and old journals recover correctly.
+4. Run a documented device-specific soak before considering any Adaptive trial.
+5. Only after a reviewed daemon control channel exists, design authenticated grant/revoke operations and explicit grant lifetime semantics.
 
-## After community accepts v2.1.0
+## Non-negotiable invariants
 
-- Phase 2: wire DecisionAgent into the tick loop; optional ReAct-lite.
-- Phase 3: stronger experience-aware ranking (still never grants permission).
-- Phase 4: tool-style actuators.
-
-## Non-negotiable safety invariants
-
-1. Journal commit before any write
-2. Read-back verification
-3. Restore on Idle / disarm / kill-switch / SAFE_MODE / measured regression
-4. CPU governor requires explicit opt-in
-5. Default remains observe-only
+1. Observe-only defaults remain unchanged.
+2. A grant never overrides a denied actuator surface or missing target-bound permit.
+3. Journal commit precedes every new write.
+4. A write is not success until read-back verification passes.
+5. Failed recovery remains visible; unresolved journal state is never silently discarded.

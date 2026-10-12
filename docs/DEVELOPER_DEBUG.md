@@ -82,7 +82,7 @@ allow_cpu_governor=no
 
 Ulangi untuk beberapa kandidat (VM class dan IO fisik jika ada).
 
-**Gagal verify/restore → hentikan adaptive.** Perbaiki `src/adapt/` + `src/conscience/`.
+**Gagal verify/restore → hentikan adaptive.** Perbaiki `src/mutation/` + `src/conscience/`.
 
 ---
 

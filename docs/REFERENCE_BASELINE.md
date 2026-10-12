@@ -17,7 +17,7 @@ The reference is used to restore the capability surface that existed in the earl
 A discovered writable resource is eligible for autonomous policy consideration when it is readable, writable and runtime-verified. Policy chooses whether intervention is useful for the current device context. Final mutation remains owned by `MutationPermit`, with durable baseline journaling, read-back verification and rollback.
 
 
-## v2.1.0 safety follow-up (current source policy)
+## v2.2.0 current source policy
 
 The historical v2.0.0 rule above that treated readable/writable/runtime-verified interfaces as eligible for policy consideration is superseded by the explicit `policy_authorized` gate. Discovery records observed interfaces and access evidence separately from engine policy. Only named VM controls with explicit semantic priors are policy-authorized through production discovery at this point.
 

@@ -1,4 +1,4 @@
-# Production Readiness Scorecard — CoreFlow v2.1.0
+# Production Readiness Scorecard — CoreFlow v2.2.0
 
 **Verdict: TEST-READY / PRE-PRODUCTION — Target rating 9/10 for “siap diuji”, not “production stable.”**
 
@@ -30,11 +30,11 @@ Interpretation:
 
 ## Must-pass before calling a build “production candidate”
 
-### Gate A — Source (v2.1.0)
+### Gate A — Source (v2.2.0)
 - [x] Observe-only defaults in `default.conf` and engine
 - [x] Capability candidates require explicit `policy_authorized` in addition to discovered access evidence
 - [x] EffectModel requires separate policy authorization; current production discovery policy approves named VM tunables only
-- [x] The central resource actuator admits only seven exact approved VM sysctl paths; new block queue writes and other resource paths are denied at discovery, baseline/candidate paths and the actuator
+- [x] The central resource actuator admits all EffectModel-prior VM sysctls plus physical block-queue numeric nodes; scheduler tokens and virtual devices remain denied
 - [x] Journal commit before write; restore on safety/shutdown
 - [x] ThermalGuard/Pressure permit only stabilizing (load-reducing) resource writes at Low intervention; CPU governor and non-stabilizing plans get no permit; restoration remains available
 - [x] WebUI Live view reads engine-written status.json (host contract + render smoke tested)
@@ -94,7 +94,7 @@ Protocol recommendation: complete all seven observe modes with zero writes, then
 ## Certification language (use this, not marketing)
 
 **Allowed:**  
-“CoreFlow v2.1.0 is a pre-production autonomous engine with production-grade safety architecture. It is certified for controlled field testing under observe-only by default; adaptive mutation requires explicit operator opt-in and device-level validation.”
+“CoreFlow v2.2.0 is a pre-production autonomous engine with production-grade safety architecture. It is certified for controlled field testing under observe-only by default; adaptive mutation requires explicit operator opt-in and device-level validation.”
 
 **Not allowed yet:**  
 “Production stable,” “safe for all users with mutation on,” “validated on all SoCs.”

@@ -1,8 +1,8 @@
-# CoreFlow Engineering QC Report — v2.1.0 source safety follow-up
+# CoreFlow Engineering QC Report — v2.2.0 final development snapshot
 
 ## Scope
 
-This patch starts from the supplied `CoreFlow-Engine-Autonomous-Engine` source archive and keeps its `v2.1.0` / `versionCode 2100` identity. It is a source hardening continuation, not a release declaration.
+This package consolidates the current source line as `v2.2.0` / `versionCode 2200`. It is a final development handoff, not a public release or device-certification claim.
 
 ## Changes in this patch
 
