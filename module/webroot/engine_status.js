@@ -8,6 +8,11 @@
 
   var MAX_BYTES = 65536;
   var SCHEMA = 1;
+  // Stable consultation-ledger keys emitted by status_snapshot.cpp.
+  var CONSULT_REASONS = ["NO_WRITE_ACTUATOR", "OUT_OF_SCOPE", "SURFACE_DENIED", "NOT_OBSERVABLE",
+    "NO_ROLLBACK_BASELINE", "NO_SEMANTIC_PRIOR", "STRESSED_NON_STABILIZING", "NO_NEED",
+    "NO_BENEFIT_EVIDENCE", "AWAITING_USER_GRANT", "ALLOWED"];
+  var CONSULT_NAMESPACES = ["VM_SYSCTL", "BLOCK_QUEUE", "SCHEDULER", "CPU_FREQ", "BUILD_PROP", "SETTINGS_DB", "OTHER"];
 
   // Must match blockerCodes() in src/status_snapshot.cpp (checked by tools/test_webui_status.js).
   var BLOCKERS = {
@@ -110,7 +115,21 @@
         baselineReady: bool(b.baseline_ready), baselineSamples: int(b.baseline_samples, 0), baselineTarget: int(b.baseline_target, 0),
         observationSamples: int(b.observation_samples, 0), observationTarget: int(b.observation_target, 0),
         skipReason: str(b.skip_reason, 200),
-        observing: bool(b.observing), cooldown: int(b.cooldown_remaining, 0)
+        observing: bool(b.observing), cooldown: int(b.cooldown_remaining, 0),
+        consultation: (function () {
+          var c = isObj(b.consultation) ? b.consultation : {};
+          var reasons = isObj(c.by_reason) ? c.by_reason : {};
+          var namespaces = isObj(c.by_namespace) ? c.by_namespace : {};
+          var reasonCounts = {};
+          CONSULT_REASONS.forEach(function (key) { if (Object.prototype.hasOwnProperty.call(reasons, key)) reasonCounts[key] = int(reasons[key], 0); });
+          var last = {};
+          CONSULT_NAMESPACES.forEach(function (key) {
+            if (!Object.prototype.hasOwnProperty.call(namespaces, key)) return;
+            var item = isObj(namespaces[key]) ? namespaces[key] : {};
+            last[str(key, 32)] = { reason: str(item.last_reason, 48), need: bool(item.need_present) };
+          });
+          return { reasons: reasonCounts, namespaces: last };
+        })()
       },
       hands: {
         cpuMutated: bool(h.cpu_mutated), resourceMutated: bool(h.resource_mutated), stabilizingEpoch: bool(h.stabilizing_epoch),
@@ -261,7 +280,9 @@
       ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
       ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],
       ["Skip / wait reason", b.skipReason || "—", b.cooldown ? (b.cooldown + " cooldown left") : ""],
-      ["Safety hold", b.holdActive ? b.hold : "none", ""]
+      ["Safety hold", b.holdActive ? b.hold : "none", ""],
+      ["Consultation ledger", Object.keys(b.consultation.reasons).length ? Object.keys(b.consultation.reasons).map(function (k) { return k + " " + b.consultation.reasons[k]; }).join(" · ") : "not supplied by this daemon", "cumulative since daemon start"],
+      ["Last namespace reasons", Object.keys(b.consultation.namespaces).map(function (k) { return k + ": " + b.consultation.namespaces[k].reason + (b.consultation.namespaces[k].need ? " (need present)" : ""); }).join(" · ") || "not supplied by this daemon", "read-only consultation telemetry"]
     ];
   }
 
