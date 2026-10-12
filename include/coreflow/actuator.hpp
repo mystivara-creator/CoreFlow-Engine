@@ -12,14 +12,21 @@ class MutationPermit final {
 public:
     MutationPermit(const MutationPermit&) = default;
     MutationPermit& operator=(const MutationPermit&) = default;
-    enum class Scope : std::uint8_t { CpuFreq = 0, Resource };
 
     bool valid() const noexcept { return valid_; }
-    bool validFor(Scope scope) const noexcept { return valid_ && scope_ == scope; }
+    bool validFor(ActuatorDomain domain) const noexcept {
+        return valid_ && domain_ == domain;
+    }
+    bool validFor(const ActuatorCapability& cap) const noexcept {
+        return validFor(cap.id.domain);
+    }
+
 private:
-    explicit MutationPermit(bool valid, Scope scope) noexcept : valid_(valid), scope_(scope) {}
+    explicit MutationPermit(bool valid, ActuatorDomain domain) noexcept
+        : valid_(valid), domain_(domain) {}
+
     bool valid_{false};
-    Scope scope_{Scope::CpuFreq};
+    ActuatorDomain domain_{ActuatorDomain::CpuFreq};
     friend class MutationAuthority;
 };
 
