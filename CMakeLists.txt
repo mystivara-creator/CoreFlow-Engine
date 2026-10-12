@@ -60,6 +60,8 @@ set(COREFLOW_CORE_SOURCES
     src/runtime/config.cpp
     src/runtime/signal_state.cpp
     src/runtime/status_snapshot.cpp
+    src/runtime/runtime_paths.cpp
+    src/balance/capability_registry.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
