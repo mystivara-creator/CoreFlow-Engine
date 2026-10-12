@@ -185,6 +185,33 @@ MutationPermit MutationAuthority::authorize(
     return MutationPermit(true, scope);
 }
 
+
+MutationPermit MutationAuthority::authorize(
+    const PolicyPlan& plan,
+    const EngineConfig& config,
+    RuntimeState state,
+    double confidence,
+    const ActuatorCapability& capability,
+    std::string_view target
+) const noexcept {
+    if (!capability.mutationSafe() || target.empty())
+        return MutationPermit(false, MutationPermit::Scope::Resource);
+
+    const MutationPermit::Scope scope =
+        capability.id.domain == ActuatorDomain::CpuFreq
+            ? MutationPermit::Scope::CpuFreq
+            : MutationPermit::Scope::Resource;
+    const MutationPermit coarse = authorize(plan, config, state, confidence, scope);
+    if (!coarse.valid())
+        return MutationPermit(false, MutationPermit::Scope::Resource);
+    try {
+        return MutationPermit(true, capability.id, std::string(target),
+                              MutationPermit::Operation::Write);
+    } catch (...) {
+        return MutationPermit(false, MutationPermit::Scope::Resource);
+    }
+}
+
 bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept {
     if (in.state == RuntimeState::Idle) return true;
     if (!in.mode_adaptive || !in.armed) return true;
