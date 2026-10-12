@@ -19,6 +19,7 @@
 #include <filesystem>
 
 #include "coreflow/signal_state.hpp"
+#include "coreflow/runtime_paths.hpp"
 
 namespace coreflow {
 namespace {
@@ -27,17 +28,9 @@ namespace {
 // CONFIGURATION & CONSTANTS
 // ============================================================================
 
-constexpr const char* kLogTag = "CoreFlowAutonomous";
-constexpr const char* kConfigPath = "/data/adb/coreflow/config.ini";
-constexpr const char* kMutationJournalPath = "/data/adb/coreflow/mutation_journal.txt";
-constexpr const char* kCpuRetainedStatePath = "/data/adb/coreflow/retained_cpufreq.db";
-constexpr const char* kResourceRetainedStatePath = "/data/adb/coreflow/retained_resource.db";
-constexpr const char* kExperiencePath = "/data/adb/coreflow/experience.db";
-constexpr const char* kKillSwitchPath = "/data/adb/coreflow/DISABLE";
-constexpr const char* kSafeModePath = "/data/adb/coreflow/SAFE_MODE";
-constexpr const char* kStatusPath = "/data/adb/coreflow/status.json";
-constexpr const char* kThermalModelPath = "/data/adb/modules/coreflow_autonomous/system/etc/coreflow/thermal_predictor.onnx";
-constexpr std::size_t kHistorySize = 6;
+RuntimePaths::defaults()
+
+const RuntimePaths kPaths = RuntimePaths::defaults();
 
 // Notification throttling: prevents repeated events
 constexpr std::uint64_t kNotificationCooldownSamples = 12;
@@ -178,10 +171,10 @@ Trend calculateTrend(double oldest, double newest, double deadband) {
 // ============================================================================
 
 AutonomousEngine::AutonomousEngine()
-    : journal_(kMutationJournalPath),
-      resource_journal_("/data/adb/coreflow_resource_mutation_journal.txt"),
-      cpu_retained_store_(kCpuRetainedStatePath),
-      resource_retained_store_(kResourceRetainedStatePath) {}
+    : journal_(kPaths.mutation_journal_cpu),
+      resource_journal_(kPaths.mutation_journal_resource),
+      cpu_retained_store_(kPaths.retained_cpu),
+      resource_retained_store_(kPaths.retained_resource) {}
 
 AutonomousEngine::~AutonomousEngine() {
     try {
