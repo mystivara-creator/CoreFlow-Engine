@@ -1106,7 +1106,14 @@ void AutonomousEngine::publishStatus(
         s.failed = status_failed_;
 
         last_status_ = s;
-        (void)writeStatusFile(kPaths.status_json, statusToJson(s));
+        // When Idle, throttle status.json writes to reduce storage wakeups
+        // that would otherwise prevent deep sleep. Always write on the first
+        // sample and every 3rd idle cycle thereafter; non-idle always writes.
+        const bool idle = (next == RuntimeState::Idle);
+        const bool should_write = !idle || (sample_count_ % 3U) == 0U;
+        if (should_write) {
+            (void)writeStatusFile(kPaths.status_json, statusToJson(s));
+        }
     } catch (...) {
         // Status is advisory. Never let it disturb the control loop.
     }
@@ -1151,24 +1158,35 @@ int AutonomousEngine::run() {
 
         const int configured = std::max(1, config_.monitorIntervalSeconds());
         int sleep_seconds = configured;
+        // Slice between stop/refresh checks. Idle uses a coarse slice so the
+        // process does not interrupt deep sleep with 250 ms wakeups.
+        int slice_ms = 1000;
 
         switch (snapshot_.state) {
             case RuntimeState::Idle:
-                sleep_seconds = configured > 15 ? 60 : configured * 4;
+                // Deep-sleep friendly: long quiescent period. Factory settings
+                // are already restored on Idle (shouldRestoreEpochNow), so the
+                // daemon only needs a rare heartbeat while the SoC sleeps.
+                sleep_seconds = std::max(180, configured * 12);
+                if (sleep_seconds > 300) sleep_seconds = 300;
+                slice_ms = 10000;
                 break;
 
             case RuntimeState::Warming:
             case RuntimeState::Elevated:
             case RuntimeState::Pressure:
                 sleep_seconds = std::max(1, configured / 2);
+                slice_ms = 500;
                 break;
 
             case RuntimeState::ThermalGuard:
                 sleep_seconds = 1;
+                slice_ms = 250;
                 break;
 
             case RuntimeState::Normal:
             default:
+                slice_ms = 1000;
                 break;
         }
 
@@ -1186,7 +1204,8 @@ int AutonomousEngine::run() {
             const auto remaining = next_tick_time - now;
             const auto sleep_for = std::min(
                 remaining,
-                std::chrono::steady_clock::duration{std::chrono::milliseconds(250)});
+                std::chrono::steady_clock::duration{
+                    std::chrono::milliseconds(slice_ms)});
 
             std::this_thread::sleep_for(sleep_for);
         }
