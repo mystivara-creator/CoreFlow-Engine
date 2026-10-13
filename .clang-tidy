@@ -1,0 +1,9 @@
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/coreflow/.*'
