@@ -264,7 +264,7 @@
       ["Exposed interfaces", interfaces, v.cpuset ? "cpuset available" : "cpuset not detected"],
       ["Capabilities", v.discoveredResources + " discovered · " + v.mutationReadyResources + " policy-ready", "writability alone does not grant authorization"],
       ["Expanded domains", v.expandedDomains.filter(function (x) { return x.evidence !== "unavailable"; }).length + " / 15 detected · " + v.expandedDomains.filter(function (x) { return x.evidence === "observable"; }).length + " observable", "discovery is observation-only; domain status never grants mutation authority"],
-      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "not quarantined", v.blockQueueMutationsQuarantined ? "new queue writes are blocked pending device/topology validation" : "check device policy"]
+      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "admitted (grant-gated)", v.blockQueueMutationsQuarantined ? "new queue writes are blocked" : "physical read_ahead_kb / nr_requests when grant_block_queue=yes"]
     ];
   }
 
