@@ -241,8 +241,10 @@ volume_choice() {
 
 write_config_for_mode() {
     # Args: $1=observe|adaptive  $2=yes|no (allow_cpu_governor)
+    #       $3=yes|no (grant VM memory + block-queue tuning)
     _w_mode="$1"
     _w_cpu="$2"
+    _w_grant="${3:-no}"
     TMP_CONF="$CONFIG.tmp"
     cp "$DEFAULT_CONF" "$TMP_CONF" || abort "Could not stage configuration in $STATE_DIR."
     if [ "$_w_mode" = "adaptive" ]; then
@@ -254,6 +256,15 @@ write_config_for_mode() {
             sed -e 's/^allow_cpu_governor=no$/allow_cpu_governor=yes/' \
                 "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
                 || abort "Could not enable cpu governor flag."
+        fi
+        if [ "$_w_grant" = "yes" ]; then
+            sed -e 's/^grant_memory=no$/grant_memory=yes/' \
+                -e 's/^grant_block_queue=no$/grant_block_queue=yes/' \
+                "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
+                || abort "Could not write grant configuration."
+            grep -qx 'grant_memory=yes' "$TMP_CONF" \
+                && grep -qx 'grant_block_queue=yes' "$TMP_CONF" \
+                || abort "Grant configuration did not verify; aborting."
         fi
         grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
             && grep -qx 'mutation_armed=true' "$TMP_CONF" \
@@ -278,6 +289,7 @@ write_config_for_mode() {
 MODE="observe"
 MODE_REASON="default observe-only"
 CPU_GOV_CHOICE="no"
+GRANT_CHOICE="no"
 REWRITE_CONFIG=1
 
 mkdir -p "$STATE_DIR/logs" 2>/dev/null
@@ -378,6 +390,25 @@ else
                     ;;
             esac
             ui_print " "
+            ui_print " [>] Grants (kernel control namespaces)"
+            ui_print " "
+            ui_print "     Volume Up   = No grants (recommended)"
+            ui_print "     Volume Down = Grant VM memory + block-queue tuning"
+            ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = No grants"
+            ui_print " "
+            _grant="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
+            case "$_grant" in
+                down)
+                    GRANT_CHOICE="yes"
+                    MODE_REASON="$MODE_REASON; grants=memory+block_queue"
+                    ui_print "     > grants: memory + block queue"
+                    ;;
+                *)
+                    GRANT_CHOICE="no"
+                    ui_print "     > grants: none"
+                    ;;
+            esac
+            ui_print " "
             ui_print "     ! ADAPTIVE will run after reboot."
             ui_print "     ! Mutations are journaled and restorable."
             ui_print "     ! Prefer 7 days observe-only on a new device/SoC."
@@ -395,8 +426,8 @@ ui_print " "
 
 # ---- 5. Configuration and state ------------------------------------------
 if [ "$REWRITE_CONFIG" -eq 1 ]; then
-    write_config_for_mode "$MODE" "$CPU_GOV_CHOICE"
-    ui_print " [>] Configuration: config.ini written (mode=$MODE cpu_gov=$CPU_GOV_CHOICE)"
+    write_config_for_mode "$MODE" "$CPU_GOV_CHOICE" "$GRANT_CHOICE"
+    ui_print " [>] Configuration: config.ini written (mode=$MODE cpu_gov=$CPU_GOV_CHOICE grants=$GRANT_CHOICE)"
 else
     ui_print " [>] Configuration: existing config.ini kept unchanged"
 fi
