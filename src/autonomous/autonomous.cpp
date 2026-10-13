@@ -44,7 +44,6 @@ constexpr std::uint64_t kNotificationCooldownSamples = 12;
 // Periodic diagnostics: balance between detail and storage efficiency
 // Optimized: every 10 samples (less frequently than 6, reduces storage wear)
 constexpr std::uint64_t kPeriodicLogSamples = 10;
-constexpr std::uint64_t kExperienceFlushSamples = 60;
 
 // ============================================================================
 // EFFICIENCY & SAFETY CONSTANTS
@@ -599,21 +598,38 @@ void AutonomousEngine::tick() {
             last_notification_sample_ = sample_count_;
         }
 
-        // STEP 9: Build the efficiency baseline before allowing mutations.
-        // The first baseline window represents the observed factory/OEM runtime
-        // state; it is deliberately separate from MutationController's restore
-        // baseline.
-        if (!baseline_intelligence_.baselineReady()) {
+        // STEP 9: Maintain the rolling efficiency baseline. It is refreshed with
+        // every sample while no candidate is pending, so the next candidate is
+        // always compared with the workload immediately before it (not with a
+        // window captured once at daemon start). It is frozen while observing.
+        // It is deliberately separate from MutationController's restore baseline.
+        if (!baseline_intelligence_.observing() &&
+            !controller_.hasPendingOutcome() &&
+            !resource_controller_.hasPendingOutcome()) {
+            const bool was_ready = baseline_intelligence_.baselineReady();
             const bool ready = baseline_intelligence_.captureBaseline(sample);
-            if (ready) {
+            if (ready && !was_ready) {
                 logInfo("EFFICIENCY_BASELINE_READY samples=%zu",
                         BaselineIntelligence::kBaselineSamples);
-            } else {
+            } else if (!ready) {
                 logInfo("EFFICIENCY_BASELINE_CAPTURE %zu/%zu",
-                        sample_count_ + 1U,
+                        baseline_intelligence_.baselineSampleCount(),
                         BaselineIntelligence::kBaselineSamples);
             }
         }
+
+        // Experience is keyed by the context in which the candidate was chosen,
+        // because that is the context the controllers look it up with.
+        const auto decisionContext = [&]() noexcept {
+            ExperienceMemory::Context c;
+            c.state = next;
+            c.workload = context.workload;
+            c.charging = sample.charging;
+            c.thermal_trend = sample.thermal_trend;
+            c.memory_trend = sample.memory_trend;
+            c.load_trend = sample.load_trend;
+            return c;
+        };
 
         // STEP 10: Observe a verified mutation without allowing another
         // mutation to alter the candidate during the observation window.
@@ -631,14 +647,9 @@ void AutonomousEngine::tick() {
                     evaluation.baseline_samples,
                     evaluation.observation_samples);
 
-                // STEP 10b: Persist the verified outcome as advisory experience.
-                ExperienceMemory::Context experience_context;
-                experience_context.state = next;
-                experience_context.workload = context.workload;
-                experience_context.charging = sample.charging;
-                experience_context.thermal_trend = sample.thermal_trend;
-                experience_context.memory_trend = sample.memory_trend;
-                experience_context.load_trend = sample.load_trend;
+                // STEP 10b: Persist the verified outcome as advisory experience,
+                // under the decision-time context captured at observation begin.
+                const ExperienceMemory::Context experience_context = observation_context_;
 
                 for (const auto& applied : controller_.lastAppliedGovernors()) {
                     ExperienceMemory::CandidateIdentity candidate;
@@ -665,9 +676,10 @@ void AutonomousEngine::tick() {
                         candidate, experience_context, evaluation);
                 }
 
-                if ((sample_count_ % kExperienceFlushSamples) == 0U) {
-                    (void)experience_memory_.flush(kPaths.experience_db);
-                }
+                // Outcomes are rare (one per baseline+observation epoch), so
+                // persist each one. Gating on sample_count_ % N here almost never
+                // matched and left experience only in RAM until shutdown.
+                (void)experience_memory_.flush(kPaths.experience_db);
 
                 switch (evaluation.outcome) {
                     case BaselineIntelligence::Outcome::Beneficial: {
@@ -792,6 +804,7 @@ void AutonomousEngine::tick() {
 
             if (mutation == MutationResult::Verified) {
                 if (baseline_intelligence_.beginObservation()) {
+                    observation_context_ = decisionContext();
                     logInfo("EFFICIENCY_OBSERVATION_BEGIN samples=%zu",
                             BaselineIntelligence::kObservationSamples);
                 }
@@ -830,7 +843,11 @@ void AutonomousEngine::tick() {
         // the efficiency measurement causal and attributable to one candidate.
         MutationResult resource_mutation = MutationResult::Skipped;
         const bool resource_mutation_cooldown = sample_count_ < mutation_cooldown_until_sample_;
+        // A candidate may only be applied when its outcome can be measured: a
+        // resource write without a ready baseline could never begin observation,
+        // stayed pending forever and blocked every later candidate.
         if (!resource_mutation_cooldown && mutation != MutationResult::Verified &&
+            baseline_intelligence_.baselineReady() &&
             !baseline_intelligence_.observing() && !controller_.hasPendingOutcome() &&
             !resource_controller_.hasPendingOutcome()) {
             const MutationPermit resource_permit = mutation_authority_.authorize(
@@ -840,6 +857,7 @@ void AutonomousEngine::tick() {
                 next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit);
             if (resource_mutation == MutationResult::Verified &&
                 baseline_intelligence_.beginObservation()) {
+                observation_context_ = decisionContext();
                 logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
                         BaselineIntelligence::kObservationSamples);
             }

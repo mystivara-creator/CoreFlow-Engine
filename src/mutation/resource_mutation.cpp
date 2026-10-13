@@ -1,4 +1,5 @@
 #include "coreflow/resource_mutation.hpp"
+#include "coreflow/context.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -387,31 +388,9 @@ bool ResourceMutationController::selectCandidate(
 
     ExperienceMemory::Context experience_context;
     experience_context.state = state;
-    const bool power_headroom =
-        !sample.charging_telemetry_available || sample.battery_level_percent < 0 ||
-        sample.battery_level_percent >= 20;
-    const double io_rate = sample.io_read_kb_per_sec + sample.io_write_kb_per_sec;
-    if (state == RuntimeState::ThermalGuard) {
-        experience_context.workload = WorkloadClass::ThermalLimited;
-    } else if (!power_headroom) {
-        experience_context.workload = WorkloadClass::PowerConstrained;
-    } else if (state == RuntimeState::Pressure) {
-        experience_context.workload = WorkloadClass::MemoryBound;
-    } else if (sample.io_activity_available && io_rate >= 4096.0 &&
-               (!sample.cpu_utilization_available || sample.cpu_utilization < 0.65)) {
-        experience_context.workload = WorkloadClass::IoBound;
-    } else if (sample.mem_available_ratio > 0.0 && sample.mem_available_ratio < 0.20) {
-        experience_context.workload = WorkloadClass::MemoryBound;
-    } else if (sample.load1 < 0.20 &&
-               (!sample.cpu_utilization_available || sample.cpu_utilization < 0.15)) {
-        experience_context.workload = WorkloadClass::Idle;
-    } else if (sample.cpu_utilization_available && sample.cpu_utilization >= 0.80) {
-        experience_context.workload = WorkloadClass::CpuBound;
-    } else if (sample.thermal_trend == Trend::Rising && sample.cpu_utilization >= 0.65) {
-        experience_context.workload = WorkloadClass::Sustained;
-    } else {
-        experience_context.workload = WorkloadClass::Interactive;
-    }
+    // Same classifier that produced the recorded experience context; a local
+    // copy with different thresholds (0.80/0.65 vs 0.72/0.60) made lookups miss.
+    experience_context.workload = ContextEngine{}.evaluate(sample, state).workload;
     experience_context.charging = sample.charging;
     experience_context.thermal_trend = sample.thermal_trend;
     experience_context.memory_trend = sample.memory_trend;
@@ -697,6 +676,13 @@ MutationResult ResourceMutationController::apply(
 
     if (!mutation_gate_open) {
         if (!mutated_) return MutationResult::Skipped;
+        // Only an authority loss restores here. A merely ineligible plan or a
+        // transient confidence dip means "no new candidate"; accepted settings
+        // persist until shouldRestoreEpochNow() reports a safety/authority
+        // transition (Idle, stress with a non-stabilizing epoch, mode/arm off).
+        const bool authority_lost =
+            config.mutationMode() != MutationMode::Adaptive || !config.mutationArmed();
+        if (!authority_lost) return MutationResult::Skipped;
         return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
     }
     if (pending_outcome_) return MutationResult::Skipped;

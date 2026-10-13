@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -8,8 +9,14 @@
 namespace coreflow {
 
 /**
- * Compares a verified post-mutation runtime window against the factory/OEM
- * runtime baseline captured before mutation.
+ * Compares a verified post-mutation runtime window against the runtime
+ * baseline captured immediately before that mutation.
+ *
+ * The baseline is a rolling window of the most recent kBaselineSamples
+ * pre-mutation samples. It is frozen while a candidate is observed, so the
+ * comparison is always "the same workload, just before vs. just after".
+ * A one-shot baseline captured at daemon start compared candidates against a
+ * workload that could be hours old and made outcomes mostly workload noise.
  *
  * This class is deliberately independent from MutationController's restore
  * baseline. MutationController answers "what must be restored?" while this
@@ -61,7 +68,7 @@ public:
                phase_ == Phase::Observing;
     }
 
-    // Samples collected so far toward the factory baseline (read-only progress).
+    // Samples currently held in the rolling pre-mutation baseline window.
     std::size_t baselineSampleCount() const noexcept { return baseline_.samples; }
     std::size_t observationSampleCount() const noexcept { return observation_.samples; }
 
@@ -108,7 +115,23 @@ private:
         }
     };
 
+    // Allocation-free projection of the RuntimeSample fields the aggregate uses,
+    // so the rolling window never copies strings/vectors.
+    struct BaselinePoint {
+        bool thermal{false};
+        double thermal_c{0.0};
+        double load{0.0};
+        bool cpu_available{false};
+        double cpu{0.0};
+        double memory{0.0};
+        bool charging_telemetry{false};
+        bool charging{false};
+    };
+
+    static BaselinePoint project(const RuntimeSample&) noexcept;
+    static void accumulate(Aggregate&, const BaselinePoint&) noexcept;
     static void accumulate(Aggregate&, const RuntimeSample&) noexcept;
+    void rebuildBaseline() noexcept;
 
     static void accumulateMetric(MetricAggregate&, double) noexcept;
     static double average(const MetricAggregate&) noexcept;
@@ -132,6 +155,9 @@ private:
     static bool contextCompatible(const Aggregate& baseline,
                                   const Aggregate& candidate) noexcept;
 
+    std::array<BaselinePoint, kBaselineSamples> window_{};
+    std::size_t window_count_{0};
+    std::size_t window_head_{0};
     Aggregate baseline_{};
     Aggregate observation_{};
     Phase phase_{Phase::Idle};

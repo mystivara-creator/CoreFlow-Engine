@@ -85,6 +85,8 @@ private:
     NotificationEvent last_notification_{NotificationEvent::None};
     BaselineIntelligence baseline_intelligence_;
     ExperienceMemory experience_memory_;
+    // Context in which the currently observed candidate was chosen.
+    ExperienceMemory::Context observation_context_{};
     ThermalPredictor thermal_predictor_;
     std::uint64_t mutation_cooldown_until_sample_{0};
     ThermalGuardState thermal_guard_state_{};

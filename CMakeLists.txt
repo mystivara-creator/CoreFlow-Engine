@@ -185,6 +185,11 @@ else()
             PRIVATE COREFLOW_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
 
         add_test(NAME coreflow_release_hardening COMMAND coreflow_release_hardening_tests)
+        add_executable(coreflow_logic_fix_tests tests/logic_fix_tests.cpp
+            src/understand/thermal_predictor.cpp)
+        target_link_libraries(coreflow_logic_fix_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_logic_fix_tests PRIVATE -Werror)
+        add_test(NAME coreflow_logic_fixes COMMAND coreflow_logic_fix_tests)
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
         add_test(NAME coreflow_source_release_contract

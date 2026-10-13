@@ -42,6 +42,20 @@ double heuristicPredict(
         delta_c = (static_cast<double>(current.thermal_millidegrees) -
                    static_cast<double>(previous.thermal_millidegrees)) /
                   1000.0;
+
+        // The delta is extrapolated per "step", but the sample cadence varies
+        // from 1 s (ThermalGuard) to 300 s (Idle deep sleep). A slow +3 C drift
+        // over a 5-minute idle gap must not be projected as +3 C per step,
+        // which caused false predictive ThermalGuard entries after idle. Rate-
+        // normalize gaps longer than a normal tick to a nominal step length.
+        constexpr double kMaxStepSeconds = 10.0;
+        if (current.uptime_seconds > previous.uptime_seconds) {
+            const double dt = static_cast<double>(
+                current.uptime_seconds - previous.uptime_seconds);
+            if (dt > kMaxStepSeconds) {
+                delta_c *= kMaxStepSeconds / dt;
+            }
+        }
     }
 
     // Mild trend bias when the classified trend is available.

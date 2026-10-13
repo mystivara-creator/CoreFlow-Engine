@@ -14,12 +14,17 @@ constexpr double kStabilityWeight = 0.20;
 
 constexpr double kBeneficialThreshold = 0.05;
 constexpr double kRegressionThreshold = -0.05;
-constexpr double kVarianceEpsilon = 1.0e-9;
 constexpr double kContextMismatchTolerance = 0.40;
+// Minimum coefficient of variation treated as real variability. Sensors are
+// quantized (thermal often 1 C steps), so a perfectly flat baseline followed by
+// a single 1 C step must not be scored as a total stability collapse.
+constexpr double kStabilityCvFloor = 0.02;
 
 } // namespace
 
 void BaselineIntelligence::reset() noexcept {
+    window_count_ = 0;
+    window_head_ = 0;
     baseline_.reset();
     observation_.reset();
     phase_ = Phase::Idle;
@@ -66,39 +71,60 @@ double BaselineIntelligence::standardDeviation(
     return std::sqrt(variance(metric));
 }
 
+BaselineIntelligence::BaselinePoint BaselineIntelligence::project(
+    const RuntimeSample& sample) noexcept {
+    BaselinePoint point;
+    point.thermal = sample.thermal_available;
+    point.thermal_c = static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0;
+    point.load = sample.load1;
+    point.cpu_available = sample.cpu_utilization_available;
+    point.cpu = sample.cpu_utilization;
+    point.memory = sample.mem_available_ratio;
+    point.charging_telemetry = sample.charging_telemetry_available;
+    point.charging = sample.charging;
+    return point;
+}
+
+void BaselineIntelligence::accumulate(
+    Aggregate& aggregate,
+    const BaselinePoint& point) noexcept {
+    ++aggregate.samples;
+
+    if (point.thermal) {
+        accumulateMetric(aggregate.thermal_c, point.thermal_c);
+    }
+
+    if (finite(point.load) && point.load >= 0.0) {
+        accumulateMetric(aggregate.load, point.load);
+    }
+
+    if (point.cpu_available && finite(point.cpu) &&
+        point.cpu >= 0.0 && point.cpu <= 1.0) {
+        accumulateMetric(aggregate.cpu, point.cpu);
+    }
+
+    if (finite(point.memory) && point.memory >= 0.0 && point.memory <= 1.0) {
+        accumulateMetric(aggregate.memory, point.memory);
+    }
+
+    if (point.charging_telemetry) {
+        ++aggregate.charging_telemetry_samples;
+        if (point.charging) {
+            ++aggregate.charging_true_samples;
+        }
+    }
+}
+
 void BaselineIntelligence::accumulate(
     Aggregate& aggregate,
     const RuntimeSample& sample) noexcept {
-    ++aggregate.samples;
+    accumulate(aggregate, project(sample));
+}
 
-    if (sample.thermal_available) {
-        accumulateMetric(
-            aggregate.thermal_c,
-            static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0);
-    }
-
-    if (finite(sample.load1) && sample.load1 >= 0.0) {
-        accumulateMetric(aggregate.load, sample.load1);
-    }
-
-    if (sample.cpu_utilization_available &&
-        finite(sample.cpu_utilization) &&
-        sample.cpu_utilization >= 0.0 &&
-        sample.cpu_utilization <= 1.0) {
-        accumulateMetric(aggregate.cpu, sample.cpu_utilization);
-    }
-
-    if (finite(sample.mem_available_ratio) &&
-        sample.mem_available_ratio >= 0.0 &&
-        sample.mem_available_ratio <= 1.0) {
-        accumulateMetric(aggregate.memory, sample.mem_available_ratio);
-    }
-
-    if (sample.charging_telemetry_available) {
-        ++aggregate.charging_telemetry_samples;
-        if (sample.charging) {
-            ++aggregate.charging_true_samples;
-        }
+void BaselineIntelligence::rebuildBaseline() noexcept {
+    baseline_.reset();
+    for (std::size_t i = 0; i < window_count_; ++i) {
+        accumulate(baseline_, window_[i]);
     }
 }
 
@@ -145,13 +171,13 @@ double BaselineIntelligence::stabilityScore(
         return 0.5;
     }
 
-    if (baselineCv <= kVarianceEpsilon) {
-        if (candidateCv <= kVarianceEpsilon) return 0.5;
-        return 0.0;
-    }
+    // Variability below the noise floor is equivalent; only a change that
+    // exceeds sensor quantization counts as more or less stable.
+    const double flooredBaselineCv = std::max(baselineCv, kStabilityCvFloor);
+    const double flooredCandidateCv = std::max(candidateCv, kStabilityCvFloor);
 
     const double relativeChange =
-        (baselineCv - candidateCv) / baselineCv;
+        (flooredBaselineCv - flooredCandidateCv) / flooredBaselineCv;
     return clamp01(0.5 + (relativeChange * 2.0));
 }
 
@@ -245,13 +271,21 @@ double BaselineIntelligence::calculateConfidence(
 
 bool BaselineIntelligence::captureBaseline(
     const RuntimeSample& sample) noexcept {
+    // The baseline is frozen while a candidate is being observed.
     if (phase_ == Phase::Observing) return false;
 
-    accumulate(baseline_, sample);
+    // Rolling window: the oldest sample is replaced, so the baseline always
+    // describes the workload immediately before the next candidate.
+    window_[window_head_] = project(sample);
+    window_head_ = (window_head_ + 1U) % kBaselineSamples;
+    if (window_count_ < kBaselineSamples) ++window_count_;
+    rebuildBaseline();
 
     if (baseline_.samples >= kBaselineSamples) {
-        phase_ = Phase::BaselineReady;
-        evaluation_ = Evaluation{};
+        if (phase_ != Phase::BaselineReady) {
+            phase_ = Phase::BaselineReady;
+            evaluation_ = Evaluation{};
+        }
         return true;
     }
 
@@ -276,7 +310,14 @@ bool BaselineIntelligence::observe(
     if (observation_.samples < kObservationSamples) return false;
 
     evaluation_ = evaluate();
-    phase_ = Phase::BaselineReady;
+    // The pre-mutation window no longer describes the device: the candidate was
+    // either retained (new operating point) or rolled back. Require a fresh
+    // window before the next candidate can be judged. evaluation_ stays readable.
+    window_count_ = 0;
+    window_head_ = 0;
+    baseline_.reset();
+    observation_.reset();
+    phase_ = Phase::Idle;
     return true;
 }
 

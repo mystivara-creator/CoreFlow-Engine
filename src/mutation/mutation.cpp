@@ -1,5 +1,7 @@
 #include "coreflow/mutation.hpp"
+#include "coreflow/context.hpp"
 #include "coreflow/outcome.hpp"
+#include "coreflow/policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,8 +15,12 @@ namespace {
 constexpr char kGovernorSuffix[] = "/scaling_governor";
 constexpr std::size_t kGovernorSuffixSize = sizeof(kGovernorSuffix) - 1U;
 constexpr double kAdaptiveHysteresis = 0.10;
-constexpr double kThermalComfortC = 35.0;
-constexpr double kThermalPressureC = 43.0;
+// Thermal normalization must use the same calibration as AdaptivePolicy.
+// The previous 35-43 C span saturated at 43 C, while 42-50 C is normal light
+// load on real SoCs (see policy.hpp), so every Normal/Warming sample looked
+// "fully hot" and the score could no longer tell governors apart.
+constexpr double kThermalComfortC = 40.0;
+constexpr double kThermalPressureC = kThermalGuardEnterC;
 constexpr double kLoadNormalization = 8.0;
 
 const char* knownGovernor(const std::string& governor) noexcept {
@@ -315,40 +321,46 @@ bool MutationController::buildPlan(
         std::string current;
         if (!readLiveGovernor(governorPath, current)) continue;
 
-        const double currentScore = governorScore(current, state, sample);
-        std::string bestGovernor;
-        double bestScore = -1.0;
+        // Workload classification must match the classifier used when the
+        // experience was recorded (ContextEngine), otherwise lookups miss.
+        ExperienceMemory::Context experience_context;
+        experience_context.state = state;
+        experience_context.workload = ContextEngine{}.evaluate(sample, state).workload;
+        experience_context.charging = sample.charging;
+        experience_context.thermal_trend = sample.thermal_trend;
+        experience_context.memory_trend = sample.memory_trend;
+        experience_context.load_trend = sample.load_trend;
 
-        for (const std::string& governor : policy.available_governors) {
-            if (governor.empty() || isRejected(policy.path, governor)) continue;
-
+        // One scoring function for every governor, including the live one, so
+        // hysteresis compares like with like (experience + retained preference
+        // used to be added to candidates only, never to the current governor).
+        const auto adjustedScore = [&](const std::string& governor) noexcept {
             double score = governorScore(governor, state, sample);
-            if (score < 0.0) continue;
+            if (score < 0.0) return score;
 
-            // Experience is advisory: blend only for an exact compatible record.
+            // Experience is advisory, keyed exactly as AutonomousEngine records
+            // it ("cpufreq:<policy>:<governor>"), with the same outcome-based
+            // adjustment the resource controller applies.
             if (experience_memory_ != nullptr) {
                 ExperienceMemory::CandidateIdentity identity;
-                identity.key = policy.path + ":" + governor;
-
-                ExperienceMemory::Context context;
-                context.state = state;
-                context.workload = sample.cpu_utilization_available && sample.cpu_utilization >= 0.80
-                    ? WorkloadClass::CpuBound
-                    : (sample.io_activity_available &&
-                       (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) >= 4096.0
-                           ? WorkloadClass::IoBound : WorkloadClass::Interactive);
-                context.charging = sample.charging;
-                context.thermal_trend = sample.thermal_trend;
-                context.memory_trend = sample.memory_trend;
-                context.load_trend = sample.load_trend;
-
+                identity.key = "cpufreq:" + policy.path + ":" + governor;
                 if (const ExperienceMemory::Record* record =
-                        experience_memory_->find(identity, context);
-                    record != nullptr && record->confidence > 0.0) {
-                    const double memoryWeight =
-                        std::clamp(record->confidence * 0.30, 0.0, 0.30);
-                    score = (score * (1.0 - memoryWeight)) +
-                            (record->score * memoryWeight);
+                        experience_memory_->find(identity, experience_context);
+                    record != nullptr && record->observations > 0 &&
+                    record->confidence >= 0.60) {
+                    switch (record->outcome) {
+                        case BaselineIntelligence::Outcome::Beneficial:
+                            score += 0.08 * record->confidence;
+                            break;
+                        case BaselineIntelligence::Outcome::Neutral:
+                            score -= 0.05 * record->confidence;
+                            break;
+                        case BaselineIntelligence::Outcome::Regression:
+                            score -= 0.30 * record->confidence;
+                            break;
+                        default:
+                            break;
+                    }
                 }
             }
 
@@ -361,6 +373,18 @@ bool MutationController::buildPlan(
                     break;
                 }
             }
+            return std::max(score, 0.0);
+        };
+
+        const double currentScore = adjustedScore(current);
+        std::string bestGovernor;
+        double bestScore = -1.0;
+
+        for (const std::string& governor : policy.available_governors) {
+            if (governor.empty() || isRejected(policy.path, governor)) continue;
+
+            const double score = adjustedScore(governor);
+            if (score < 0.0) continue;
 
             if (score > bestScore) {
                 bestScore = score;
@@ -768,18 +792,26 @@ MutationResult MutationController::apply(
         return relaxToBaseline();
     }
 
-    // Coarse safety gate (mode / arm / policy / confidence). The concrete
-    // capability-bound permit is issued after the candidate path is known.
+    // Authority loss and thermal stress restore the factory baseline. A CPU
+    // governor is never kept under a stabilizing (stressed) plan.
     if (config.mutationMode() != MutationMode::Adaptive ||
         !config.mutationArmed() || !config.allowCpuGovernor() ||
-        !policy.mutation_eligible || sample.confidence < config.minConfidence()) {
+        state == RuntimeState::ThermalGuard || policy.stabilizing_only) {
         return relaxToBaseline();
+    }
+    // Otherwise a closed gate (plan Hold, transient low confidence, no permit)
+    // only means "no new candidate now". Accepted settings persist until a real
+    // safety/authority transition, consistent with shouldRestoreEpochNow();
+    // relaxing here silently discarded every retained beneficial governor on
+    // the first ineligible tick.
+    if (!policy.mutation_eligible || sample.confidence < config.minConfidence()) {
+        return MutationResult::Skipped;
     }
     // Accept either a capability-bound permit already issued for a CPU target,
     // or a legacy scope permit that will be upgraded below.
     if (!(permit.isCapabilityBound() ? permit.valid()
                                      : permit.validFor(MutationPermit::Scope::CpuFreq))) {
-        return relaxToBaseline();
+        return MutationResult::Skipped;
     }
 
     // One candidate must finish its outcome window before another is applied.

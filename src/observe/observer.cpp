@@ -325,8 +325,15 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
         std::uint64_t wr_sectors = 0;
         if (!(in >> major >> minor >> name >> rd_completed >> rd_merged >> rd_sectors
               >> read_ms >> read_weighted_ms >> wr_completed >> wr_merged >> wr_sectors)) continue;
-        // Avoid counting loop/ram devices and prefer physical/block-backed activity.
-        if (name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0) continue;
+        // Count each physical I/O exactly once. /proc/diskstats lists whole
+        // disks AND their partitions (mmcblk0 + mmcblk0p*, sda + sda*), plus
+        // dm-* (stacked on a disk) and zram (memory, not storage). Summing all
+        // of them multiplied the real rate. Only whole disks appear directly
+        // under /sys/block, so use that as the filter.
+        if (name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
+            name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0) continue;
+        const std::string block_path = "/sys/block/" + name;
+        if (::access(block_path.c_str(), F_OK) != 0) continue;
         reads += rd_sectors;
         writes += wr_sectors;
     }
@@ -340,9 +347,10 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
     const std::uint64_t wr_delta = writes >= previous_io_write_sectors_ ? writes - previous_io_write_sectors_ : 0;
     previous_io_read_sectors_ = reads;
     previous_io_write_sectors_ = writes;
-    // Linux diskstats sectors are normally 512-byte sectors. Runtime interval is
-    // intentionally estimated from the engine's five-second default cadence.
-    const double interval = std::clamp(last_interval_seconds_, 0.25, 60.0);
+    // Linux diskstats sectors are normally 512-byte sectors. The interval is the
+    // measured gap between samples; Idle deep sleep reaches 300 s, so the old
+    // 60 s ceiling overstated post-idle I/O rates up to 5x.
+    const double interval = std::clamp(last_interval_seconds_, 0.25, 3600.0);
     sample.io_read_kb_per_sec = static_cast<double>(rd_delta) * 0.5 / interval;
     sample.io_write_kb_per_sec = static_cast<double>(wr_delta) * 0.5 / interval;
     sample.io_activity_available = true;

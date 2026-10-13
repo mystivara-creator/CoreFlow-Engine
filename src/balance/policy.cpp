@@ -19,6 +19,10 @@ RuntimeState AdaptivePolicy::evaluate(
     constexpr double kElevatedUtil = 0.78;
     constexpr double kElevatedLoad = 1.50;
 
+    // Order of precedence: ThermalGuard > Pressure > Warming. Memory pressure is
+    // a ReduceIntervention state, while Warming is only Observe, so a warm
+    // device that is also out of memory must report Pressure. Checking Warming
+    // first masked Pressure (and its exit hysteresis) whenever temp >= 48 C.
     if (sample.thermal_available) {
         if (previous == RuntimeState::ThermalGuard &&
             sample.thermal_millidegrees > kThermalGuardExit) {
@@ -26,8 +30,6 @@ RuntimeState AdaptivePolicy::evaluate(
         }
         if (sample.thermal_millidegrees >= kThermalGuardEnter)
             return RuntimeState::ThermalGuard;
-        if (sample.thermal_millidegrees >= kThermalWarm)
-            return RuntimeState::Warming;
     }
 
     if (sample.mem_total_kb > 0) {
@@ -39,6 +41,9 @@ RuntimeState AdaptivePolicy::evaluate(
             return RuntimeState::Pressure;
     }
 
+    if (sample.thermal_available && sample.thermal_millidegrees >= kThermalWarm)
+        return RuntimeState::Warming;
+
     const bool cpu_busy = sample.cpu_utilization_available &&
                           sample.cpu_utilization >= kElevatedUtil;
     const bool load_busy = !sample.cpu_utilization_available &&
@@ -47,7 +52,12 @@ RuntimeState AdaptivePolicy::evaluate(
     if (cpu_busy || load_busy)
         return RuntimeState::Elevated;
 
-    if (sample.load1 < 0.20)
+    // load1 is a 1-minute average and lags real activity. Idle triggers deep
+    // sleep (180-300 s) and an epoch restore, so it also requires low measured
+    // CPU utilization, matching ContextEngine's Idle workload definition.
+    constexpr double kIdleUtil = 0.15;
+    if (sample.load1 < 0.20 &&
+        (!sample.cpu_utilization_available || sample.cpu_utilization < kIdleUtil))
         return RuntimeState::Idle;
 
     return RuntimeState::Normal;
