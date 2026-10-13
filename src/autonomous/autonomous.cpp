@@ -217,6 +217,10 @@ bool AutonomousEngine::initialize() {
 
     snapshot_.profile = discovery_.discover();
     resource_model_.reset(snapshot_.profile.capabilities);
+    logInfo("CAPABILITY_SURFACE vendor_files=%zu vendor_knobs=%zu walked=%zu tunables=%zu fatal_skipped=%zu",
+            snapshot_.profile.vendor_files_parsed, snapshot_.profile.vendor_knobs,
+            snapshot_.profile.tunables_walked, snapshot_.profile.tunables_added,
+            snapshot_.profile.tunables_fatal_skipped);
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
     sample_count_ = 0;
@@ -292,6 +296,10 @@ bool AutonomousEngine::refreshEnvironment() {
     DeviceProfile refreshed = discovery_.discover();
     snapshot_.profile = std::move(refreshed);
     resource_model_.reset(snapshot_.profile.capabilities);
+    logInfo("CAPABILITY_SURFACE vendor_files=%zu vendor_knobs=%zu walked=%zu tunables=%zu fatal_skipped=%zu",
+            snapshot_.profile.vendor_files_parsed, snapshot_.profile.vendor_knobs,
+            snapshot_.profile.tunables_walked, snapshot_.profile.tunables_added,
+            snapshot_.profile.tunables_fatal_skipped);
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
     sample_count_ = 0;

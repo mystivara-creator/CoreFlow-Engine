@@ -9,7 +9,7 @@ On every device it:
 
 1. **Discovers** what the kernel exposes
 2. **Separates evidence**: discovered access, explicit policy authorization, model inference, and verified outcome
-3. **Scores** only supported resources where a semantic prior and bounded change are defined
+3. **Scores** every discovered non-fatal tunable from capability evidence (vendor values, kernel options, ordered scale, bounded step) — see `CAPABILITY_DRIVEN.md`
 4. **Gates** through policy, confidence, config opt-in, and experience
 5. **Applies** at most one verified mutation per epoch
 6. **Measures** outcome against a factory baseline window
@@ -115,7 +115,7 @@ pick top eligible that policy.allows
 apply bounded value only when semantic bounds/direction are known
 ```
 
-Soft priors for supported VM knobs (swappiness, dirty ratios/timers, vfs_cache_pressure and min_free_kbytes) provide candidate bounds and preferred directions. They are not a replacement for discovery, explicit policy authorization or live evidence. Unknown numeric writables remain observe-only. The model retains historical priors for I/O, but production discovery does not authorize block queue writes in this safety follow-up. The production `ResourceActuator` allow-list admits every `/proc/sys/vm/` path that has a reviewed EffectModel prior (including `watermark_scale_factor` and `page-cluster`) plus physical `/sys/block/<dev>/queue/{read_ahead_kb,nr_requests}`. Scheduler tokens, virtual block devices, kernel scheduler sysctls and unknown controls remain read-only. I/O throughput remains telemetry, not permission to write. CPUFreq uses a separate actuator/authority path and remains disabled by default through `allow_cpu_governor=no`.
+Superseded: EffectModel no longer has parameter priors and the actuator no longer has an allow-list. Candidate values are derived from vendor configuration and kernel-advertised capability evidence, and only universally fatal surfaces are blocked. See `CAPABILITY_DRIVEN.md`. CPUFreq governor changes keep their separate actuator/authority path (`allow_cpu_governor`).
 
 **Never autonomous (telemetry only until proven):** charging limits, GPU governors, uClamp, cpuset, ART, Android properties.
 

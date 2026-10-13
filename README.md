@@ -44,7 +44,7 @@ For each release, attach the CI-produced ZIP named `CoreFlow-Autonomous-vX.Y.Z-m
 
 ## v2.2.0 — Final development snapshot
 
-This source continuation adds an explicit policy authorization gate to the capability-driven resource path. A readable or writable interface is only a discovery fact; model inference does not grant permission. The live WebUI now shows the device/SoC/kernel identity and separates discovered capabilities from policy-ready resources. Unknown controls remain observe-only. The production `ResourceActuator` allow-list admits every VM sysctl that has a reviewed EffectModel prior (including `watermark_scale_factor` and `page-cluster`) plus physical block-queue numeric tunables (`read_ahead_kb` / `nr_requests`). Scheduler tokens and virtual block devices (loop/dm/zram/…) remain denied. CPUFreq is a separate authority path and remains off by default (`allow_cpu_governor=no`). Existing journal restore remains available for recovery from older changes. This v2.2.0 package is a final development snapshot, not a device-certified release. Android ARM64 linking and staged device/recovery testing remain outstanding.
+This source continuation adds an explicit policy authorization gate to the capability-driven resource path. A readable or writable interface is only a discovery fact; model inference does not grant permission. The live WebUI now shows the device/SoC/kernel identity and separates discovered capabilities from policy-ready resources. Unknown controls remain observe-only. Resource autonomy is capability-driven (see `docs/CAPABILITY_DRIVEN.md`): every discovered, kernel-writable tunable across VM, scheduler, cpufreq tunables, block I/O, GPU/devfreq, uclamp/cpuctl and cpuset is a candidate, candidate values come from vendor configuration and kernel-advertised capability evidence, and only universally fatal surface classes are blocked. CPUFreq is a separate authority path and remains off by default (`allow_cpu_governor=no`). Existing journal restore remains available for recovery from older changes. This v2.2.0 package is a final development snapshot, not a device-certified release. Android ARM64 linking and staged device/recovery testing remain outstanding.
 
 The source-release validator is versioned with the package, and the host CTest suite includes the source-release contract. This does not certify Android ARM64 or device-level behavior; those remain part of the operator's build and staged device validation.
 
@@ -65,7 +65,7 @@ v2.0.1 is the release-hardened revision of v2.0.0. It changes the default to **o
 Autonomous adaptive engine with device-aware capability discovery, workload/power intelligence, persistent scoped experience, centralized mutation authorization, causal baseline evaluation, bounded CPUFreq/approved VM + physical block-queue mutation and durable recovery. Scheduler tokens remain out-of-class.
 
 ### Autonomous resource coverage
-- Discovery and (when `grant_block_queue=yes`) bounded writes of physical block-queue numeric controls (`read_ahead_kb`, `nr_requests`); scheduler tokens stay out-of-class.
+- Capability-driven discovery and writes of every non-fatal tunable (VM, scheduler, cpufreq tunables, block queue and I/O scheduler, GPU/devfreq, uclamp, cpuset), with candidate values from vendor init/power-HAL configuration and kernel-advertised options. See `docs/CAPABILITY_DRIVEN.md`.
 - VM sysctl discovery and adaptive intervention for every path that has a reviewed EffectModel prior (9 paths, not a hard 7).
 - I/O queue/read-ahead effect priors are active in the EffectModel for ranking.
 - CPUFreq governor adaptation with bounded, verified experiments.
@@ -158,7 +158,7 @@ Android / Kernel Environment
 
 The discovery layer records device identity, Android/kernel environment and exposed interfaces, including existence, readability, writability and runtime-read evidence. The separate `policy_authorized` flag must also be true before a capability can become mutation-ready.
 
-A writable path is **not** treated as permission to mutate it. In the current v2.2.0 source policy, production policy authorizes named VM controls with semantic priors plus physical block-queue numeric tunables when the operator sets `grant_block_queue=yes`. Scheduler tokens and virtual devices remain denied by the central actuator guard.
+A writable path is a candidate, not a guaranteed change: the node must also survive the universal fatal-surface guard, yield a candidate value from capability evidence (vendor configuration, kernel-advertised options, ordered scale or a bounded step), pass consultation and permit checks, and prove itself in a measured observation window. See `docs/CAPABILITY_DRIVEN.md`.
 
 The resource vocabulary covers:
 
@@ -240,7 +240,7 @@ allow_cpu_governor=no
 mutation_armed=false
 ```
 
-No kernel control is written until an operator explicitly opts in by setting `mutation_mode=adaptive`, `mutation_armed=true` and `allow_cpu_governor=yes`. Even after opt-in, only policy-allow-listed, preflight-verified resources can receive a scoped mutation permit, and safety holds, journaling, bounded writes, verification, rollback, and ownership checks remain mandatory.
+No kernel control is written until an operator explicitly opts in by setting `mutation_mode=adaptive`, `mutation_armed=true` and `allow_cpu_governor=yes`. Even after opt-in, only discovered, non-fatal, preflight-verified resources can receive a scoped mutation permit, and safety holds, journaling, bounded writes, verification, rollback, and ownership checks remain mandatory.
 
 Autonomous mutation requires the established safety path, including:
 
@@ -302,7 +302,7 @@ See [Enabling adaptive mode](#enabling-adaptive-mode-community-testing) for the 
 
 ## Enabling adaptive mode (community testing)
 
-CoreFlow ships in **observe-only** mode. In this mode the daemon samples the device, builds plans and writes logs, but it does not write any kernel control. Start here and move to Adaptive only after the Observe logs look healthy. Adaptive remains limited to the resource classes explicitly approved by the source policy; for this source continuation, block-device queue controls are quarantined in every mode.
+CoreFlow ships in **observe-only** mode. In this mode the daemon samples the device, builds plans and writes logs, but it does not write any kernel control. Start here and move to Adaptive only after the Observe logs look healthy. In Adaptive, every non-fatal discovered tunable is a candidate (see `docs/CAPABILITY_DRIVEN.md`).
 
 ### 1. Observe first
 

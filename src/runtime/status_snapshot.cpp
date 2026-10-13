@@ -18,8 +18,14 @@ constexpr const char* kConsultReasons[] = {
     "NO_NEED", "NO_BENEFIT_EVIDENCE", "AWAITING_USER_GRANT", "ALLOWED"
 };
 constexpr const char* kConsultNamespaces[] = {
-    "VM_SYSCTL", "BLOCK_QUEUE", "SCHEDULER", "CPU_FREQ", "BUILD_PROP", "SETTINGS_DB", "OTHER"
+    "VM_SYSCTL", "BLOCK_QUEUE", "SCHEDULER", "GPU", "CGROUP", "CPUFREQ_TUNABLE",
+    "KERNEL_TUNABLE", "CPU_FREQ", "BUILD_PROP", "SETTINGS_DB", "OTHER"
 };
+// Must match ControlNamespace exactly; a mismatch reads past the array.
+static_assert(sizeof(kConsultNamespaces) / sizeof(kConsultNamespaces[0]) == kControlNamespaceCount,
+              "kConsultNamespaces out of sync with ControlNamespace");
+static_assert(sizeof(kConsultReasons) / sizeof(kConsultReasons[0]) == kConsultReasonCount,
+              "kConsultReasons out of sync with ConsultReason");
 
 // Keep this list in sync with the WebUI (engine_status.js); a host check compares them.
 constexpr const char* kBlockerCodes[] = {

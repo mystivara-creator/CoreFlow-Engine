@@ -1,54 +1,11 @@
 #include "coreflow/consultation.hpp"
+#include "coreflow/fatal_surface.hpp"
 
 #include <cstddef>
 #include <string>
 
 namespace coreflow {
 namespace {
-
-bool isDeniedSurface(const std::string& path, const std::string& name) noexcept {
-    // Kernel-critical controls that no policy may ever write. The list names
-    // operations and panic/sysrq surfaces, not parameters, so unknown future
-    // controls with the same semantics are still denied.
-    static constexpr const char* kDeniedSuffixes[] = {
-        "drop_caches",
-        "compact_memory",
-        "stat_refresh",
-        "overcommit_memory",
-        "overcommit_ratio",
-        "panic",
-        "panic_on_oom",
-        "sysrq",
-    };
-    for (const char* suffix : kDeniedSuffixes) {
-        const std::size_t n = std::char_traits<char>::length(suffix);
-        if (name.size() >= n &&
-            name.compare(name.size() - n, n, suffix) == 0) {
-            return true;
-        }
-        if (path.size() >= n &&
-            path.compare(path.size() - n, n, suffix) == 0) {
-            return true;
-        }
-    }
-    if (path.find("/drop_caches") != std::string::npos) return true;
-    if (path.find("/compact_memory") != std::string::npos) return true;
-    if (path.find("memory.force_empty") != std::string::npos) return true;
-    if (path.find("cgroup.kill") != std::string::npos) return true;
-    if (path.rfind("/proc/sys/kernel/sysrq", 0) == 0) return true;
-    if (path.rfind("/proc/sys/kernel/panic", 0) == 0) return true;
-    return false;
-}
-
-bool isVirtualBlockDevice(const std::string& name) noexcept {
-    return name.rfind("loop", 0) == 0 ||
-           name.rfind("dm-", 0) == 0 ||
-           name.rfind("zram", 0) == 0 ||
-           name.rfind("ram", 0) == 0 ||
-           name.rfind("ubiblock", 0) == 0 ||
-           name.rfind("md", 0) == 0 ||
-           name == "zram0";
-}
 
 constexpr std::size_t index(ControlNamespace ns) noexcept {
     return static_cast<std::size_t>(ns);
@@ -74,6 +31,10 @@ bool UserGrants::allows(ControlNamespace ns) const noexcept {
         case ControlNamespace::VmSysctl:  return memory;
         case ControlNamespace::BlockQueue: return block_queue;
         case ControlNamespace::Scheduler: return scheduler;
+        case ControlNamespace::Gpu:       return gpu;
+        case ControlNamespace::Cgroup:    return cgroup;
+        case ControlNamespace::CpuFreqTunable: return cpufreq;
+        case ControlNamespace::KernelTunable:  return kernel;
         default:                          return false;
     }
 }
@@ -90,12 +51,23 @@ bool isStressedState(RuntimeState state) noexcept {
 }
 
 ControlNamespace namespaceOf(ResourceDomain domain, const std::string& name) noexcept {
-    (void)name;
     switch (domain) {
         case ResourceDomain::Memory:    return ControlNamespace::VmSysctl;
         case ResourceDomain::Io:        return ControlNamespace::BlockQueue;
         case ResourceDomain::Scheduler: return ControlNamespace::Scheduler;
-        case ResourceDomain::CpuFreq:   return ControlNamespace::CpuFreq;
+        case ResourceDomain::Gpu:       return ControlNamespace::Gpu;
+        case ResourceDomain::UClamp:
+        case ResourceDomain::CpuSet:    return ControlNamespace::Cgroup;
+        case ResourceDomain::Vendor:    return ControlNamespace::KernelTunable;
+        case ResourceDomain::CpuFreq: {
+            // The governor node belongs to MutationController; every other
+            // cpufreq node is an ordinary resource tunable.
+            const bool governor =
+                name == "policies" ||
+                (name.size() >= 16U &&
+                 name.compare(name.size() - 16U, 16U, "scaling_governor") == 0);
+            return governor ? ControlNamespace::CpuFreq : ControlNamespace::CpuFreqTunable;
+        }
         default:                        return ControlNamespace::Other;
     }
 }
@@ -103,33 +75,16 @@ ControlNamespace namespaceOf(ResourceDomain domain, const std::string& name) noe
 SurfaceClass classifySurface(ResourceDomain domain, const std::string& name,
                              const std::string& path) noexcept {
     if (path.empty()) return SurfaceClass::OutOfClass;
-    if (isDeniedSurface(path, name)) return SurfaceClass::Denied;
-
-    // Class: Linux VM sysctl surface. Any discovered node under /proc/sys/vm/
-    // is admissible as a candidate. The actuator's exact allow-list and the
-    // EffectModel still decide whether a specific write runs.
-    if (domain == ResourceDomain::Memory &&
-        path.rfind("/proc/sys/vm/", 0) == 0) {
-        return SurfaceClass::Admissible;
-    }
-
-    // Class: physical block-queue numeric tunables. Virtual devices are
-    // excluded. Scheduler tokens need their own model and stay out of this class.
-    if (domain == ResourceDomain::Io) {
-        constexpr const char* prefix = "/sys/block/";
-        if (path.rfind(prefix, 0) != 0) return SurfaceClass::OutOfClass;
-        const auto rest = path.substr(std::char_traits<char>::length(prefix));
-        const auto slash = rest.find('/');
-        if (slash == std::string::npos) return SurfaceClass::OutOfClass;
-        const std::string device = rest.substr(0, slash);
-        if (isVirtualBlockDevice(device)) return SurfaceClass::OutOfClass;
-        const std::string tail = rest.substr(slash);
-        return (tail == "/queue/read_ahead_kb" || tail == "/queue/nr_requests")
-                   ? SurfaceClass::Admissible
-                   : SurfaceClass::OutOfClass;
-    }
-
-    return SurfaceClass::OutOfClass;
+    // The only hard denial: universally fatal surfaces (fatal_surface.hpp).
+    if (isFatalSurface(path)) return SurfaceClass::Denied;
+    // Inventory/telemetry domains are not autonomous tunables.
+    if (!isTunableResourceDomain(domain)) return SurfaceClass::OutOfClass;
+    // The CPU governor has its own authority (MutationController).
+    if (namespaceOf(domain, name) == ControlNamespace::CpuFreq) return SurfaceClass::OutOfClass;
+    if (path.size() >= 16U && path.compare(path.size() - 16U, 16U, "scaling_governor") == 0)
+        return SurfaceClass::OutOfClass;
+    // Capability-driven: every other discovered kernel tunable is a candidate.
+    return SurfaceClass::Admissible;
 }
 
 Consultation consult(const ControlFact& fact, RuntimeState state,
@@ -149,6 +104,10 @@ Consultation consult(const ControlFact& fact, RuntimeState state,
         case ControlNamespace::VmSysctl:
         case ControlNamespace::BlockQueue:
         case ControlNamespace::Scheduler:
+        case ControlNamespace::Gpu:
+        case ControlNamespace::Cgroup:
+        case ControlNamespace::CpuFreqTunable:
+        case ControlNamespace::KernelTunable:
             break;
     }
 
@@ -221,6 +180,10 @@ const char* controlNamespaceName(ControlNamespace ns) noexcept {
         case ControlNamespace::VmSysctl:  return "VM_SYSCTL";
         case ControlNamespace::BlockQueue: return "BLOCK_QUEUE";
         case ControlNamespace::Scheduler: return "SCHEDULER";
+        case ControlNamespace::Gpu:       return "GPU";
+        case ControlNamespace::Cgroup:    return "CGROUP";
+        case ControlNamespace::CpuFreqTunable: return "CPUFREQ_TUNABLE";
+        case ControlNamespace::KernelTunable:  return "KERNEL_TUNABLE";
         case ControlNamespace::CpuFreq:   return "CPUFREQ";
         case ControlNamespace::BuildProp: return "BUILD_PROP";
         case ControlNamespace::SettingsDb: return "SETTINGS_DB";

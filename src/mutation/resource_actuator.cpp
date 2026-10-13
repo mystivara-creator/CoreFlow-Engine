@@ -1,9 +1,11 @@
 #include "coreflow/resource_actuator.hpp"
+#include "coreflow/fatal_surface.hpp"
 
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace coreflow {
@@ -73,62 +75,25 @@ bool ResourceActuator::readComparable(std::string_view path, std::string& value)
 }
 
 bool ResourceActuator::writable(std::string_view path) noexcept {
-    return access(std::string(path).c_str(), W_OK) == 0;
+    const std::string target(path);
+    if (access(target.c_str(), W_OK) != 0) return false;
+    // Root passes access(W_OK) on read-only sysfs/procfs nodes because of
+    // CAP_DAC_OVERRIDE; the kernel exposes real writability via the mode bits.
+    struct stat st {};
+    if (::stat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    return (st.st_mode & 0222) != 0;
 }
 
 bool ResourceActuator::mutationTargetAllowed(std::string_view path) noexcept {
-    // Production allow-list: all VM sysctls that have reviewed semantic priors
-    // in EffectModel, plus physical block-queue numeric tunables (read_ahead_kb
-    // and nr_requests) that consultation already classifies as Admissible.
-    // Scheduler tokens remain out-of-class (need their own model).
-    // Virtual block devices (loop/dm/zram/ram/md/ubiblock) are excluded.
-    // Restore of journaled paths does not go through this guard.
-    static constexpr std::string_view kApprovedVmPaths[] = {
-        "/proc/sys/vm/swappiness",
-        "/proc/sys/vm/dirty_ratio",
-        "/proc/sys/vm/dirty_background_ratio",
-        "/proc/sys/vm/vfs_cache_pressure",
-        "/proc/sys/vm/min_free_kbytes",
-        "/proc/sys/vm/dirty_expire_centisecs",
-        "/proc/sys/vm/dirty_writeback_centisecs",
-        // Extra priors present in EffectModel (previously blocked by the
-        // hard-coded seven-path limit).
-        "/proc/sys/vm/watermark_scale_factor",
-        "/proc/sys/vm/page-cluster",
-    };
-    for (const auto approved : kApprovedVmPaths) {
-        if (path == approved) return true;
-    }
-
-    // Physical block-queue numeric controls. Match consultation::classifySurface.
-    constexpr std::string_view kBlockPrefix = "/sys/block/";
-    if (path.size() > kBlockPrefix.size() &&
-        path.compare(0, kBlockPrefix.size(), kBlockPrefix) == 0) {
-        const std::string_view rest = path.substr(kBlockPrefix.size());
-        const auto slash = rest.find('/');
-        if (slash != std::string_view::npos) {
-            const std::string_view device = rest.substr(0, slash);
-            const std::string_view tail = rest.substr(slash);
-            const bool virtual_dev =
-                device.rfind("loop", 0) == 0 ||
-                device.rfind("dm-", 0) == 0 ||
-                device.rfind("zram", 0) == 0 ||
-                device.rfind("ram", 0) == 0 ||
-                device.rfind("ubiblock", 0) == 0 ||
-                device.rfind("md", 0) == 0;
-            if (!virtual_dev &&
-                (tail == "/queue/read_ahead_kb" || tail == "/queue/nr_requests")) {
-                return true;
-            }
-        }
-    }
-
-#ifdef COREFLOW_HOST_TEST_FIXTURES
-    // Host fixtures stand in for sysfs/procfs with temporary files. This branch
-    // is compiled out of the Android daemon.
-    if (path.size() >= 6U && path.substr(0U, 5U) == "/tmp/") return true;
-#endif
-    return false;
+    // Capability-driven: there is no per-parameter allow-list. Any kernel
+    // tunable is admissible unless it belongs to a universally fatal class
+    // (see FatalSurfaceGuard). The CPU governor node is owned by the separate
+    // MutationController authority and is never written by this actuator.
+    if (isFatalSurface(path)) return false;
+    const auto slash = path.rfind('/');
+    const std::string_view leaf = slash == std::string_view::npos ? path : path.substr(slash + 1);
+    if (leaf == "scaling_governor") return false;
+    return true;
 }
 
 ActuatorCapability ResourceActuator::capability(
@@ -175,7 +140,7 @@ ActuatorResult ResourceActuator::apply(const ActuatorMutation& mutation,
         return result;
     }
 
-    if (!writable(mutation.target)) {
+    if (!writable(mutation.target) || isFatalValue(current, requested)) {
         result.status = ActuatorStatus::SafetyRejected;
         return result;
     }

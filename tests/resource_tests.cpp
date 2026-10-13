@@ -2,6 +2,7 @@
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/resource_actuator.hpp"
 #include "coreflow/resource_mutation.hpp"
+#include "coreflow/tunable_discovery.hpp"
 #include "coreflow/retained_state.hpp"
 
 #include <cstdio>
@@ -132,7 +133,14 @@ void test_no_write_without_user_grant() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
-    // Deliberately no grants.
+    // Grants are opt-out; this user explicitly opts every namespace out.
+    config.setGrantMemory(false);
+    config.setGrantBlockQueue(false);
+    config.setGrantScheduler(false);
+    config.setGrantGpu(false);
+    config.setGrantCgroup(false);
+    config.setGrantCpuFreq(false);
+    config.setGrantKernel(false);
 
     Journal journal;
     ResourceMutationController controller;
@@ -189,7 +197,7 @@ void test_swappiness_adaptive_path() {
           profile,
           config,
           InterventionLevel::Low) == MutationResult::Verified);
-    CHECK(readFile(swappiness) == "67");
+    CHECK(readFile(swappiness) == "53");  // bounded step, conservative probe first
     CHECK(controller.mutated());
     CHECK(controller.restoreAll());
     CHECK(readFile(swappiness) == "60");
@@ -235,7 +243,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     CHECK(applyResourcePolicy(first, RuntimeState::Elevated, sample, profile, config,
                               InterventionLevel::Low) == MutationResult::Verified);
     CHECK(first.retainLastMutation(profile));
-    CHECK(readFile(swappiness) == "67");
+    CHECK(readFile(swappiness) == "53");  // bounded step, conservative probe first
     CHECK(first.activeResourceSettings().size() == 1U);
     CHECK(first.restoreAll());
     CHECK(readFile(swappiness) == "60");
@@ -251,7 +259,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     CHECK(restarted.captureBaseline(profile));
     CHECK(applyResourcePolicy(restarted, RuntimeState::Elevated, sample, profile, config,
                               InterventionLevel::Low) == MutationResult::Verified);
-    CHECK(readFile(swappiness) == "67");
+    CHECK(readFile(swappiness) == "53");  // bounded step, conservative probe first
     CHECK(restarted.hasPendingOutcome());
     CHECK(restarted.rollbackLastMutation());
     CHECK(readFile(swappiness) == "60");
@@ -312,7 +320,7 @@ void test_resource_restore_only_owned_paths() {
           profile,
           config,
           InterventionLevel::Low) == MutationResult::Verified);
-    CHECK(readFile(swappiness) == "67");
+    CHECK(readFile(swappiness) == "53");  // bounded step, conservative probe first
     writeFile(readAhead, "2048");
 
     CHECK(controller.restoreAll());
@@ -492,7 +500,7 @@ void test_intervention_level_boundaries() {
             false,
             false,
             root / "queue" / "read_ahead_kb",
-            "192");
+            "112");
     }
 
     {
@@ -506,7 +514,7 @@ void test_intervention_level_boundaries() {
             true,
             false,
             root / "queue" / "nr_requests",
-            "160");
+            "112");
     }
 
     {
@@ -632,21 +640,28 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
 
     const auto ranked = model.rank(matrix, baselines, context, 4);
     CHECK(!ranked.empty());
-    CHECK(ranked.front().resource_name == "vm.swappiness");
-    CHECK(ranked.front().path == known.path);
-    CHECK(ranked.front().domain == ResourceDomain::Memory);
-    CHECK(ranked.front().utility > 0.0);
-    CHECK(ranked.front().requested == "67");
+    bool swappiness_ranked = false;
+    for (const auto& score : ranked) {
+        if (score.path == known.path) {
+            swappiness_ranked = true;
+            CHECK(score.domain == ResourceDomain::Memory);
+            CHECK(score.utility > 0.0);
+            CHECK(score.requested == "53" || score.requested == "67");
+            CHECK(score.source == CandidateSource::BoundedStep);
+        }
+    }
+    CHECK(swappiness_ranked);
 
+    // Capability-driven: a node with no name-table entry is still a candidate.
     const EffectScore unknown_score = model.evaluate(unknown, "100", context);
-    CHECK(!unknown_score.eligible);
-    CHECK(unknown_score.requested.empty());
+    CHECK(unknown_score.eligible);
+    CHECK(unknown_score.requested == "88" || unknown_score.requested == "112");
 
     ResourceCapability notAuthorized = known;
     notAuthorized.policy_authorized = false;
     const EffectScore denied = model.evaluate(notAuthorized, "60", context);
     CHECK(!denied.eligible);
-    CHECK(denied.reason == "not mutation_ready");
+    CHECK(denied.requested.empty());
 
     // Catalog lookup must distinguish dynamic per-device queue nodes.
     const auto* scheduler = lookupEcosystemKnowledgeByPath(
@@ -659,65 +674,60 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
     CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
 
-    ResourceCapability quarantined = known;
-    quarantined.domain = ResourceDomain::Memory;
-    quarantined.name = "vm.drop_caches";
-    quarantined.path = "/proc/sys/vm/drop_caches";
-    const EffectScore quarantinedScore = model.evaluate(quarantined, "3", context);
-    CHECK(!quarantinedScore.eligible);
-    CHECK(quarantinedScore.reason == "ecosystem knowledge quarantines this resource");
+    // Fatal surfaces are never candidates, even if marked mutation_ready.
+    ResourceCapability fatal = known;
+    fatal.name = "vm.drop_caches";
+    fatal.path = "/proc/sys/vm/drop_caches";
+    CHECK(!model.evaluate(fatal, "3", context).eligible);
 
-    ResourceCapability unknownCatalog = known;
-    unknownCatalog.name = "experimental_numeric_knob";
-    unknownCatalog.path = "/proc/sys/vm/experimental_numeric_knob";
-    const EffectScore unknownCatalogScore = model.evaluate(unknownCatalog, "100", context);
-    CHECK(!unknownCatalogScore.eligible);
-    CHECK(unknownCatalogScore.reason == "unknown numeric semantics; mutation withheld");
+    // Vendor knowledge outranks blind exploration.
+    ResourceCapability vendor = known;
+    vendor.name = "vm.vendor_knob";
+    vendor.path = "/proc/sys/vm/vendor_knob";
+    vendor.vendor_values.push_back(VendorValue{"40", VendorProfile::Efficiency, "test.rc"});
+    const EffectScore vendor_score = model.evaluate(vendor, "100", context);
+    CHECK(vendor_score.eligible);
+    CHECK(vendor_score.requested == "40");
+    CHECK(vendor_score.source == CandidateSource::VendorEfficiency);
 }
 
 void test_block_queue_mutation_targets_are_admitted_for_physical() {
-    // Scheduler tokens and virtual devices stay denied.
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/block/loop0/queue/scheduler"));
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/block/dm-0/queue/nr_requests"));
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/block/zram0/queue/read_ahead_kb"));
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/sys/block/mmcblk0/queue/scheduler"));
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/kernel/sched_latency_ns"));
-    CHECK(!ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/vm/swappiness_extra"));
+    // Capability-driven: every kernel tunable is admitted, including scheduler
+    // tokens, virtual block devices, sched sysctls, GPU and uclamp nodes.
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/block/loop0/queue/scheduler"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/block/dm-0/queue/nr_requests"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/block/zram0/queue/read_ahead_kb"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/block/mmcblk0/queue/scheduler"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/proc/sys/kernel/sched_latency_ns"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/proc/sys/vm/swappiness"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/proc/sys/vm/page-cluster"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/class/kgsl/kgsl-3d0/max_gpuclk"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/sys/class/devfreq/soc:qcom,gpubw/governor"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/dev/cpuctl/top-app/cpu.uclamp.min"));
+    CHECK(ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/system/cpu/cpufreq/policy4/schedutil/up_rate_limit_us"));
+    CHECK(ResourceActuator::mutationTargetAllowed("/tmp/coreflow-test/queue/scheduler"));
 
-    // Reviewed VM paths (including the two previously excluded priors).
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/vm/swappiness"));
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/vm/dirty_background_ratio"));
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/vm/watermark_scale_factor"));
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/proc/sys/vm/page-cluster"));
-    // Physical block-queue numeric tunables are now admitted.
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/sys/block/mmcblk0/queue/read_ahead_kb"));
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/sys/block/sda/queue/nr_requests"));
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/sys/block/nvme0n1/queue/read_ahead_kb"));
-    // Host-test fixture exception.
-    CHECK(ResourceActuator::mutationTargetAllowed(
-        "/tmp/coreflow-test/queue/scheduler"));
+    // Only universally fatal classes are refused.
+    CHECK(!ResourceActuator::mutationTargetAllowed("/proc/sys/vm/drop_caches"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/proc/sys/kernel/panic"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/proc/sys/vm/overcommit_memory"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/class/thermal/thermal_zone0/mode"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/class/power_supply/battery/charge_control_limit"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/devices/system/cpu/cpu1/online"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/block/sda/queue/write_cache"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/fs/selinux/enforce"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/dev/cpuctl/top-app/cgroup.procs"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/sys/kernel/debug/sched_features"));
+    CHECK(!ResourceActuator::mutationTargetAllowed("/data/local/tmp/anything"));
+    // The CPU governor belongs to MutationController.
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"));
 
-    // Exercise the central actuator guard: virtual/scheduler paths still
-    // rejected before any filesystem read/write.
+    // The central actuator guard rejects fatal paths before any I/O.
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
-    config.setGrantMemory(true);
-    config.setGrantBlockQueue(true);
-    config.setGrantScheduler(true);
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -729,7 +739,7 @@ void test_block_queue_mutation_targets_are_admitted_for_physical() {
     CHECK(permit.validFor(MutationPermit::Scope::Resource));
     ResourceActuator actuator;
     const ActuatorMutation mutation{
-        {ActuatorDomain::Io, 0}, "/sys/block/loop0/queue/scheduler", "none"};
+        {ActuatorDomain::Vm, 0}, "/proc/sys/vm/drop_caches", "3"};
     const ActuatorResult result = actuator.apply(mutation, permit);
     CHECK(result.status == ActuatorStatus::SafetyRejected);
     CHECK(result.writes_attempted == 0);
@@ -847,6 +857,7 @@ namespace stab {
 struct Fixture {
     fs::path root;
     fs::path swappiness;
+    fs::path gpu_max;
     DeviceProfile profile;
     RuntimeSample sample;
     EngineConfig config;
@@ -859,6 +870,22 @@ struct Fixture {
         fs::create_directories(root);
         swappiness = root / "swappiness";
         writeFile(swappiness, "60");
+        // An ordered hardware scale (GPU-style max_freq + available list).
+        fs::create_directories(root / "gpu");
+        gpu_max = root / "gpu" / "max_freq";
+        writeFile(gpu_max, "600");
+        writeFile(root / "gpu" / "available_frequencies", "300 450 600");
+        {
+            ResourceCapability cap;
+            cap.domain = ResourceDomain::Gpu;
+            cap.name = "gpu.max_freq";
+            cap.path = gpu_max.string();
+            cap.exists = cap.readable = cap.writable = true;
+            cap.permission_granted = cap.policy_authorized = true;
+            cap.runtime_verified = cap.mutation_ready = true;
+            profile.capabilities.resources.push_back(cap);
+            TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
+        }
         profile.vm_swappiness.path = swappiness.string();
         profile.vm_swappiness.readable = true;
         profile.vm_swappiness.writable = true;
@@ -888,6 +915,8 @@ struct Fixture {
         plan.stabilizing_only = true;
         plan.candidates.push_back({ResourceDomain::Memory, "vm.swappiness", {}, 1.0, 0.3,
                                    PolicyAction::Candidate});
+        plan.candidates.push_back({ResourceDomain::Gpu, "gpu.max_freq", {}, 1.0, 0.3,
+                                   PolicyAction::Candidate});
         return plan;
     }
 
@@ -902,21 +931,22 @@ struct Fixture {
 } // namespace stab
 
 void test_thermal_guard_allows_stabilizing_write_and_restores() {
-    stab::Fixture f("coreflow_stab_thermal");
+    stab::Fixture f("coreflow_stab_hot");
     f.sample.thermal_millidegrees = 55000;
     CHECK(f.controller.captureBaseline(f.profile));
 
     CHECK(f.run(RuntimeState::ThermalGuard, stab::Fixture::stabilizingPlan()) ==
           MutationResult::Verified);
-    const int value = std::stoi(readFile(f.swappiness));
-    CHECK(value < 60);      // load-reducing direction under thermal stress
-    CHECK(value >= 45);     // bounded by the prior's max step
+    // Thermal stress: one step down the hardware's own advertised scale. The
+    // memory knob has no load-reducing evidence and is left untouched.
+    CHECK(readFile(f.gpu_max) == "450");
+    CHECK(readFile(f.swappiness) == "60");
     CHECK(f.controller.mutated());
     CHECK(f.controller.stabilizingEpoch());
     CHECK(f.journal.pending);
 
     CHECK(f.controller.restoreAll());
-    CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
     CHECK(!f.controller.stabilizingEpoch());
     CHECK(!f.journal.pending);
 }
@@ -929,7 +959,10 @@ void test_pressure_allows_stabilizing_write() {
 
     CHECK(f.run(RuntimeState::Pressure, stab::Fixture::stabilizingPlan()) ==
           MutationResult::Verified);
-    CHECK(std::stoi(readFile(f.swappiness)) > 60);  // memory prior: raise
+    // Memory pressure: the pressured domain itself is explored (measured and
+    // rolled back if it does not help); the GPU scale is not a memory response.
+    CHECK(readFile(f.swappiness) == "53");
+    CHECK(readFile(f.gpu_max) == "600");
     CHECK(f.controller.stabilizingEpoch());
     CHECK(f.controller.restoreAll());
     CHECK(readFile(f.swappiness) == "60");
@@ -955,6 +988,7 @@ void test_safety_state_without_stabilizing_plan_never_writes() {
     plain.stabilizing_only = false;   // an ordinary candidate plan
     CHECK(f.run(RuntimeState::ThermalGuard, plain) == MutationResult::Skipped);
     CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
     CHECK(!f.controller.mutated());
 }
 
@@ -967,13 +1001,14 @@ void test_regressed_candidate_is_suppressed() {
     CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Verified);
     // The daemon rejects the candidate when its measured outcome regressed, then
     // restores.
+    CHECK(readFile(f.gpu_max) == "450");
     f.controller.rejectLastMutation();
     CHECK(f.controller.restoreAll());
-    CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
 
     // The same candidate is not selected again within the cooldown.
     CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Skipped);
-    CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
     CHECK(!f.controller.mutated());
 }
 

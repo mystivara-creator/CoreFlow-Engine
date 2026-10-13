@@ -63,6 +63,9 @@ set(COREFLOW_CORE_SOURCES
     src/runtime/status_snapshot.cpp
     src/runtime/runtime_paths.cpp
     src/observe/capability_registry.cpp
+    src/observe/vendor_knowledge.cpp
+    src/observe/tunable_discovery.cpp
+    src/conscience/fatal_surface.cpp
 )
 
 set(COREFLOW_ANDROID_SOURCES
@@ -190,6 +193,10 @@ else()
         target_link_libraries(coreflow_logic_fix_tests PRIVATE coreflow_core)
         target_compile_options(coreflow_logic_fix_tests PRIVATE -Werror)
         add_test(NAME coreflow_logic_fixes COMMAND coreflow_logic_fix_tests)
+        add_executable(coreflow_capability_driven_tests tests/capability_driven_tests.cpp)
+        target_link_libraries(coreflow_capability_driven_tests PRIVATE coreflow_core)
+        target_compile_options(coreflow_capability_driven_tests PRIVATE -Werror)
+        add_test(NAME coreflow_capability_driven COMMAND coreflow_capability_driven_tests)
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
         add_test(NAME coreflow_source_release_contract

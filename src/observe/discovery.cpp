@@ -1,5 +1,7 @@
 #include "coreflow/discovery.hpp"
 #include "coreflow/consultation.hpp"
+#include "coreflow/tunable_discovery.hpp"
+#include "coreflow/vendor_knowledge.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -27,6 +29,15 @@ void addCapability(EnvironmentCapabilityMatrix& matrix, ResourceDomain domain,
                    const std::string& name, const std::string& path,
                    bool exists, bool readable, bool writable,
                    bool permission_granted = false) {
+    // One record per node: later probes of the same path add nothing new.
+    for (const auto& existing : matrix.resources) {
+        if (!path.empty() && existing.path == path) return;
+    }
+    // Real writability: root passes access(W_OK) on read-only sysfs nodes, so
+    // filesystem paths must also be regular files with a kernel write bit.
+    if (writable && !path.empty() && path.front() == '/') {
+        writable = TunableDiscovery::kernelWritable(path);
+    }
     ResourceCapability cap;
     cap.domain = domain;
     cap.name = name;
@@ -486,6 +497,18 @@ void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
 
     // Wide Android ecosystem inventory (observe/export only).
     expandEcosystemSurface(profile);
+
+    // Capability-driven tunable surface: learn what the vendor configures,
+    // walk every kernel tunable filesystem, and attach advertised options and
+    // vendor values. Only universally fatal surfaces are excluded.
+    VendorKnowledge vendor;
+    (void)vendor.harvest();
+    const TunableDiscoveryStats stats = TunableDiscovery{}.discover(matrix, vendor);
+    profile.vendor_files_parsed = vendor.filesParsed();
+    profile.vendor_knobs = vendor.knobs().size();
+    profile.tunables_walked = stats.walked;
+    profile.tunables_added = stats.added;
+    profile.tunables_fatal_skipped = stats.fatal_skipped;
 }
 
 void EnvironmentDiscovery::expandEcosystemSurface(DeviceProfile& profile) const {

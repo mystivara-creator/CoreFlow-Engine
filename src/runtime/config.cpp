@@ -62,11 +62,19 @@ bool EngineConfig::load(const std::string& path) noexcept {
             } else if (key == "mutation_armed") {
                 mutation_armed_ = parseBool(value, false);
             } else if (key == "grant_memory") {
-                grant_memory_ = parseBool(value, false);
+                grant_memory_ = parseBool(value, true);
             } else if (key == "grant_block_queue") {
-                grant_block_queue_ = parseBool(value, false);
+                grant_block_queue_ = parseBool(value, true);
             } else if (key == "grant_scheduler") {
-                grant_scheduler_ = parseBool(value, false);
+                grant_scheduler_ = parseBool(value, true);
+            } else if (key == "grant_gpu") {
+                grant_gpu_ = parseBool(value, true);
+            } else if (key == "grant_cgroup") {
+                grant_cgroup_ = parseBool(value, true);
+            } else if (key == "grant_cpufreq") {
+                grant_cpufreq_ = parseBool(value, true);
+            } else if (key == "grant_kernel") {
+                grant_kernel_ = parseBool(value, true);
             }
         }
         if (invalid_mode) {
@@ -76,6 +84,10 @@ bool EngineConfig::load(const std::string& path) noexcept {
             grant_memory_ = false;
             grant_block_queue_ = false;
             grant_scheduler_ = false;
+            grant_gpu_ = false;
+            grant_cgroup_ = false;
+            grant_cpufreq_ = false;
+            grant_kernel_ = false;
         }
         return true;
     } catch (...) {

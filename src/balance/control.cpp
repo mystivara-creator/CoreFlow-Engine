@@ -20,10 +20,9 @@ PolicyPlan PolicyEngine::evaluate(
             for (const auto& state : resources.all()) {
                 if (!state.mutation_permitted) continue;
                 if (!state.readable || !state.writable || !state.runtime_verified) continue;
-                if (state.domain != ResourceDomain::Memory &&
-                    state.domain != ResourceDomain::Io) {
-                    continue;
-                }
+                // Every tunable domain may contribute a stabilizing candidate;
+                // EffectModel decides which value (if any) is load-reducing.
+                if (!isTunableResourceDomain(state.domain)) continue;
                 PolicyCandidate c;
                 c.domain = state.domain;
                 c.resource = state.name;
@@ -120,12 +119,7 @@ PolicyPlan PolicyEngine::evaluate(
     for (const auto& state : resources.all()) {
         if (!state.mutation_permitted) continue;
         if (!state.readable || !state.writable || !state.runtime_verified) continue;
-        if (state.domain != ResourceDomain::Memory &&
-            state.domain != ResourceDomain::Io &&
-            state.domain != ResourceDomain::Scheduler &&
-            state.domain != ResourceDomain::CpuFreq) {
-            continue;
-        }
+        if (!isTunableResourceDomain(state.domain)) continue;
         PolicyCandidate c;
         c.domain = state.domain;
         c.resource = state.name;

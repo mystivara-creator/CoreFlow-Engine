@@ -12,23 +12,44 @@
 namespace coreflow {
 
 // EffectModel is the capability-driven brain of autonomous resource mutation.
-// It does NOT hard-code which resources may be touched. Discovery marks what
-// is readable/writable; policy admits safe *surface classes*; this model scores
-// whether a bounded change is likely to improve stability under the current
-// runtime context.
+// It contains no parameter tables. Every candidate value is derived from
+// evidence the device itself provides:
 //
-// Soft knowledge (safe ranges, preferred direction) exists as semantic priors
-// that improve confidence and bounds for known knobs. Unknown writable numerics
-// remain eligible under conservative structural bounds derived from the live
-// baseline. Text controls (schedulers) use kernel-exposed candidates only.
+//   1. Vendor configuration   values the vendor's init / power HAL writes to
+//                             this node, tagged boot/default/efficiency/
+//                             performance (VendorKnowledge)
+//   2. Kernel advertisement   tokens from a "[a] b c" selector line or a
+//                             sibling available_* list
+//   3. Ordered hardware scale one step along an advertised frequency/level list
+//   4. Bounded exploration    a +/-12.5% step from the factory value for plain
+//                             integers (never for 0/1 toggles, never sign flips)
+//
+// Stressed contexts (thermal/memory) accept only stabilizing candidates:
+// vendor efficiency-profile values, a step down an ordered hardware scale, or
+// a lower utilization clamp. Everything else is explored only with headroom,
+// and BaselineIntelligence measures each outcome; experience then steers later
+// choices. With no other evidence, a step down is tried before a step up (the
+// lower resource commitment is the conservative probe). The only hard
+// restriction lives in FatalSurfaceGuard.
 
 enum class EffectDirection : std::uint8_t {
     None = 0,
     Increase,
     Decrease,
-    PreferLowOverhead,   // e.g. scheduler "none" on non-rotational
-    PreferDeadline       // e.g. mq-deadline on rotational
+    Select,   // choose one of several advertised / vendor-declared values
 };
+
+enum class CandidateSource : std::uint8_t {
+    None = 0,
+    VendorEfficiency,
+    VendorPerformance,
+    VendorDefault,
+    KernelOption,
+    OrderedScale,
+    BoundedStep,
+};
+
+const char* candidateSourceName(CandidateSource source) noexcept;
 
 struct EffectScore {
     bool eligible{false};
@@ -40,6 +61,7 @@ struct EffectScore {
     // knob in its load-reducing direction. Stressed contexts accept nothing else.
     bool stabilizing{false};
     std::string requested;     // concrete value to write (empty if ineligible)
+    CandidateSource source{CandidateSource::None};
     std::string reason;
     // Structured identity/utility; never encode identity into diagnostic text.
     std::string resource_name;
@@ -75,10 +97,18 @@ public:
         const EffectContext& ctx
     ) const noexcept;
 
+    // Every candidate value derivable for one capability, scored. Ineligible
+    // entries are omitted.
+    std::vector<EffectScore> proposals(
+        const ResourceCapability& capability,
+        const std::string& baseline_value,
+        const EffectContext& ctx
+    ) const noexcept;
+
     // Rank all mutation-ready capabilities with one benefit/risk/confidence
-    // utility function. Structured identity travels with each score; diagnostic
-    // text is never parsed to recover the target. Empty vector
-    // means no safe intervention this cycle.
+    // utility function. At most kProposalsPerResource candidates per node are
+    // kept so one rich node cannot crowd out the rest of the device.
+    static constexpr std::size_t kProposalsPerResource = 2;
     std::vector<EffectScore> rank(
         const EnvironmentCapabilityMatrix& matrix,
         const std::unordered_map<std::string, std::string>& baselines,
@@ -87,35 +117,9 @@ public:
     ) const noexcept;
 
 private:
-    EffectScore scoreNumeric(
-        const ResourceCapability& capability,
-        const std::string& baseline_value,
-        const EffectContext& ctx
-    ) const noexcept;
-
-    EffectScore scoreScheduler(
-        const ResourceCapability& capability,
-        const std::string& baseline_value,
-        const EffectContext& ctx
-    ) const noexcept;
-
     static bool parseInteger(const std::string& value, long long& out) noexcept;
     static std::string trim(std::string value) noexcept;
     static double clamp01(double v) noexcept;
-
-    // Semantic priors for well-known knobs. These describe meaning, ranges,
-    // and bounded direction; Discovery still decides existence/writability.
-    struct NumericPrior {
-        const char* name_suffix;   // matched against capability.name
-        long long absolute_min;
-        long long absolute_max;
-        long long max_delta;       // max absolute step from baseline per cycle
-        // Preferred direction under thermal pressure / memory pressure.
-        EffectDirection thermal_prefer;
-        EffectDirection memory_prefer;
-    };
-
-    static const NumericPrior* findPrior(const std::string& name) noexcept;
 };
 
 } // namespace coreflow

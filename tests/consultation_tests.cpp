@@ -10,6 +10,15 @@ int failures = 0;
 
 using namespace coreflow;
 
+// Grants are opt-out: a default UserGrants permits every namespace, so tests
+// that need "no grant" build an explicitly opted-out set.
+UserGrants noGrants() {
+    UserGrants g;
+    g.memory = g.block_queue = g.scheduler = false;
+    g.gpu = g.cgroup = g.cpufreq = g.kernel = false;
+    return g;
+}
+
 // A fact in which every check passes for the VM namespace. Each test flips
 // exactly one field, so the reason it returns is the one under test.
 ControlFact passingVmFact() {
@@ -54,7 +63,7 @@ void testAllowWhenEverythingPasses() {
 void testNoGrantDefersEvenWhenSafeAndNeeded() {
     // Everything is evidently safe and useful; only the user's permission is
     // missing. The device should ask, not act.
-    const auto c = consult(passingVmFact(), RuntimeState::Pressure, UserGrants{});
+    const auto c = consult(passingVmFact(), RuntimeState::Pressure, noGrants());
     expect(c, ConsultVerdict::Defer, ConsultReason::AwaitingUserGrant, "no grant");
     CHECK(c.need_present);
 }
@@ -155,18 +164,24 @@ void testDenyOutranksDefer() {
     ControlFact f = passingVmFact();
     f.ns = ControlNamespace::BuildProp;
     f.baseline_captured = false;
-    expect(consult(f, RuntimeState::Pressure, UserGrants{}),
+    expect(consult(f, RuntimeState::Pressure, noGrants()),
            ConsultVerdict::Deny, ConsultReason::NoWriteActuator, "deny outranks defer");
 }
 
 void testGrantsArePerNamespace() {
-    UserGrants memoryOnly;
+    UserGrants memoryOnly = noGrants();
     memoryOnly.memory = true;
     CHECK(memoryOnly.allows(ControlNamespace::VmSysctl));
     CHECK(!memoryOnly.allows(ControlNamespace::BlockQueue));
     CHECK(!memoryOnly.allows(ControlNamespace::Scheduler));
     CHECK(!memoryOnly.allows(ControlNamespace::BuildProp));
-    CHECK(!UserGrants{}.allows(ControlNamespace::VmSysctl));
+    CHECK(!noGrants().allows(ControlNamespace::VmSysctl));
+    // Opt-out default: every tunable namespace is permitted.
+    CHECK(UserGrants{}.allows(ControlNamespace::VmSysctl));
+    CHECK(UserGrants{}.allows(ControlNamespace::Gpu));
+    CHECK(UserGrants{}.allows(ControlNamespace::Cgroup));
+    CHECK(!UserGrants{}.allows(ControlNamespace::CpuFreq));  // governor authority
+    CHECK(!UserGrants{}.allows(ControlNamespace::BuildProp));
 
     ControlFact io = passingVmFact();
     io.ns = ControlNamespace::BlockQueue;
@@ -191,19 +206,34 @@ void testSurfaceClassification() {
           SurfaceClass::Denied);
     CHECK(classifySurface(ResourceDomain::Io, "sda:read_ahead_kb",
                           "/sys/block/sda/queue/read_ahead_kb") == SurfaceClass::Admissible);
+    // Capability-driven: every non-fatal kernel tunable is admissible.
     CHECK(classifySurface(ResourceDomain::Io, "sda:scheduler",
-                          "/sys/block/sda/queue/scheduler") == SurfaceClass::OutOfClass);
+                          "/sys/block/sda/queue/scheduler") == SurfaceClass::Admissible);
     CHECK(classifySurface(ResourceDomain::Io, "zram0:read_ahead_kb",
-                          "/sys/block/zram0/queue/read_ahead_kb") == SurfaceClass::OutOfClass);
+                          "/sys/block/zram0/queue/read_ahead_kb") == SurfaceClass::Admissible);
     CHECK(classifySurface(ResourceDomain::Scheduler, "kernel.sched_latency_ns",
-                          "/proc/sys/kernel/sched_latency_ns") == SurfaceClass::OutOfClass);
+                          "/proc/sys/kernel/sched_latency_ns") == SurfaceClass::Admissible);
+    CHECK(classifySurface(ResourceDomain::Gpu, "/sys/class/kgsl/kgsl-3d0/max_gpuclk",
+                          "/sys/class/kgsl/kgsl-3d0/max_gpuclk") == SurfaceClass::Admissible);
+    CHECK(classifySurface(ResourceDomain::UClamp, "/dev/cpuctl/top-app/cpu.uclamp.min",
+                          "/dev/cpuctl/top-app/cpu.uclamp.min") == SurfaceClass::Admissible);
+    // Fatal classes and the governor authority boundary.
+    CHECK(classifySurface(ResourceDomain::Gpu, "x", "/sys/class/kgsl/kgsl-3d0/throttling") ==
+          SurfaceClass::Denied);
+    CHECK(classifySurface(ResourceDomain::Vendor, "x", "/sys/class/thermal/thermal_zone3/mode") ==
+          SurfaceClass::Denied);
+    CHECK(classifySurface(ResourceDomain::CpuFreq, "x",
+                          "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor") ==
+          SurfaceClass::OutOfClass);
+    CHECK(classifySurface(ResourceDomain::Thermal, "x", "/sys/class/foo/bar") ==
+          SurfaceClass::OutOfClass);
     CHECK(classifySurface(ResourceDomain::Memory, "vm.x", "") == SurfaceClass::OutOfClass);
 }
 
 void testLedgerRecordsOutcomes() {
     ConsultationLedger ledger;
     ledger.record(ControlNamespace::VmSysctl,
-                  consult(passingVmFact(), RuntimeState::Pressure, UserGrants{}));
+                  consult(passingVmFact(), RuntimeState::Pressure, noGrants()));
     ledger.record(ControlNamespace::VmSysctl,
                   consult(passingVmFact(), RuntimeState::Pressure, grantAll()));
     ControlFact prop = passingVmFact();

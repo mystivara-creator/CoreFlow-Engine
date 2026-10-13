@@ -1,5 +1,5 @@
 #include "coreflow/effect_model.hpp"
-#include "coreflow/ecosystem_knowledge.hpp"
+#include "coreflow/fatal_surface.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,8 +9,7 @@
 namespace coreflow {
 namespace {
 
-// Balance: slightly lower gates so more policy-ready candidates can rank when
-// context is open, while still rejecting weak/noisy proposals.
+// Gates applied to every derived candidate.
 constexpr double kMinBenefit = 0.10;
 constexpr double kMaxRisk = 0.58;
 constexpr double kMinConfidence = 0.50;
@@ -52,293 +51,249 @@ double EffectModel::clamp01(double v) noexcept {
     return v;
 }
 
-const EffectModel::NumericPrior* EffectModel::findPrior(
-    const std::string& name
-) noexcept {
-    // Soft knowledge only. Discovery still owns existence/writability.
-    static constexpr NumericPrior kPriors[] = {
-        // name_suffix, abs_min, abs_max, max_delta, thermal_prefer, memory_prefer
-        {"vm.swappiness", 10, 100, 15,
-         EffectDirection::Decrease, EffectDirection::Increase},
-        {"vm.dirty_ratio", 5, 40, 5,
-         EffectDirection::Decrease, EffectDirection::Increase},
-        {"vm.dirty_background_ratio", 3, 20, 3,
-         EffectDirection::Decrease, EffectDirection::Increase},
-        {"vm.vfs_cache_pressure", 50, 200, 25,
-         EffectDirection::Decrease, EffectDirection::Increase},
-        {"vm.min_free_kbytes", 4096, 262144, 8192,
-         EffectDirection::Increase, EffectDirection::Increase},
-        {"vm.dirty_expire_centisecs", 500, 6000, 500,
-         EffectDirection::Decrease, EffectDirection::Increase},
-        {"vm.dirty_writeback_centisecs", 100, 2000, 200,
-         EffectDirection::Decrease, EffectDirection::None},
-        // Larger watermark_scale_factor → earlier kswapd; helpful under memory pressure.
-        {"vm.watermark_scale_factor", 10, 1000, 50,
-         EffectDirection::None, EffectDirection::Increase},
-        // page-cluster controls swap readahead pages (2^n). Lower under thermal.
-        {"vm.page-cluster", 0, 5, 1,
-         EffectDirection::Decrease, EffectDirection::None},
-        {"read_ahead_kb", 16, 2048, 256,
-         EffectDirection::Decrease, EffectDirection::None},
-        {"nr_requests", 32, 512, 64,
-         EffectDirection::Decrease, EffectDirection::None},
-    };
-    for (const auto& prior : kPriors) {
-        if (name == prior.name_suffix) return &prior;
-        // Allow "sda:read_ahead_kb" style names.
-        if (name.size() > std::char_traits<char>::length(prior.name_suffix)) {
-            const auto pos = name.rfind(prior.name_suffix);
-            if (pos != std::string::npos &&
-                pos + std::char_traits<char>::length(prior.name_suffix) == name.size() &&
-                (pos == 0 || name[pos - 1] == ':' || name[pos - 1] == '.')) {
-                return &prior;
-            }
-        }
+const char* candidateSourceName(CandidateSource source) noexcept {
+    switch (source) {
+        case CandidateSource::None:              return "none";
+        case CandidateSource::VendorEfficiency:  return "vendor-efficiency";
+        case CandidateSource::VendorPerformance: return "vendor-performance";
+        case CandidateSource::VendorDefault:     return "vendor-default";
+        case CandidateSource::KernelOption:      return "kernel-option";
+        case CandidateSource::OrderedScale:      return "ordered-scale";
+        case CandidateSource::BoundedStep:       return "bounded-step";
     }
-    return nullptr;
+    return "none";
 }
 
-EffectScore EffectModel::scoreNumeric(
+namespace {
+
+struct Situation {
+    bool thermal{false};
+    bool memory{false};
+    bool elevated{false};
+    bool calm_explore{false};
+    bool stressed() const noexcept { return thermal || memory; }
+};
+
+Situation classify(const EffectContext& ctx) noexcept {
+    Situation s;
+    s.thermal = ctx.thermal_available &&
+                (ctx.state == RuntimeState::ThermalGuard || ctx.state == RuntimeState::Warming ||
+                 ctx.thermal_c >= 48.0);
+    s.memory = ctx.state == RuntimeState::Pressure || ctx.mem_available_ratio < 0.15;
+    s.elevated = ctx.state == RuntimeState::Elevated ||
+                 (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
+                 ctx.load1 >= 1.50;
+    s.calm_explore = (ctx.state == RuntimeState::Normal) &&
+                     ctx.intervention >= InterventionLevel::Low &&
+                     ctx.sample_confidence >= 0.75;
+    return s;
+}
+
+bool isUtilizationClamp(const ResourceCapability& cap) noexcept {
+    // uclamp / schedtune semantics are a property of the cgroup controller
+    // class: a lower clamp or boost always lowers the DVFS request.
+    return (cap.domain == ResourceDomain::UClamp) &&
+           (cap.path.find("uclamp") != std::string::npos ||
+            cap.path.find("schedtune.boost") != std::string::npos);
+}
+
+} // namespace
+
+std::vector<EffectScore> EffectModel::proposals(
     const ResourceCapability& capability,
     const std::string& baseline_value,
     const EffectContext& ctx
 ) const noexcept {
-    EffectScore score;
-    // Balance: do not crush sample confidence; 0.92 keeps ranking sensitive
-    // to telemetry quality without discarding usable samples.
-    score.confidence = clamp01(ctx.sample_confidence * 0.92);
-
-    long long base = 0;
-    if (!parseInteger(baseline_value, base)) {
-        score.reason = "baseline not integer";
-        return score;
-    }
-
-    const NumericPrior* prior = findPrior(capability.name);
-    // Unknown numeric writables are observe-only. Without a reviewed semantic
-    // prior there is no basis for a safe step size or direction, and the
-    // architecture contract keeps such controls read-only.
-    if (!prior) {
-        score.reason = "unknown numeric semantics; mutation withheld";
-        return score;
-    }
-
-    const bool thermal_pressure =
-        ctx.thermal_available &&
-        (ctx.state == RuntimeState::ThermalGuard ||
-         ctx.state == RuntimeState::Warming ||
-         ctx.thermal_c >= 48.0);
-
-    const bool memory_pressure =
-        ctx.state == RuntimeState::Pressure ||
-        ctx.mem_available_ratio < 0.15;
-
-    const bool elevated =
-        ctx.state == RuntimeState::Elevated ||
-        (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
-        ctx.load1 >= 1.50;
-    const bool io_pressure = ctx.io_activity_available &&
-        (ctx.io_read_kb_per_sec + ctx.io_write_kb_per_sec) >= 1024.0;
-    const bool read_ahead_resource =
-        capability.name.find("read_ahead") != std::string::npos;
-    const bool request_depth_resource =
-        capability.name.find("nr_requests") != std::string::npos;
-    // Heuristic name hints for floor-like knobs (prefer increase under memory pressure).
-    const bool floor_like =
-        capability.name.find("min_free") != std::string::npos ||
-        capability.name.find("watermark") != std::string::npos ||
-        capability.name.find("extra_free") != std::string::npos;
-
-    EffectDirection prefer = EffectDirection::None;
-    double benefit = 0.0;
-    double risk = prior ? 0.40 : 0.52;  // unknown numerics start more cautious
-    bool stabilizing_branch = false;
-
-    if (thermal_pressure) {
-        prefer = prior ? prior->thermal_prefer : EffectDirection::Decrease;
-        if (prefer == EffectDirection::None) prefer = EffectDirection::Decrease;
-        stabilizing_branch = (prefer == EffectDirection::Decrease);
-        benefit = 0.35 + (ctx.thermal_c >= 55.0 ? 0.25 : 0.10);
-        risk = prior ? 0.30 : 0.42;
-        score.confidence = clamp01(score.confidence + (prior ? 0.08 : 0.0));
-    } else if (memory_pressure) {
-        if (prior) {
-            prefer = prior->memory_prefer;
-        } else {
-            prefer = floor_like ? EffectDirection::Increase
-                                : EffectDirection::Increase;
+    std::vector<EffectScore> out;
+    try {
+        if (!capability.exists || !capability.mutation_ready ||
+            !capability.permission_granted || !capability.policy_authorized ||
+            !capability.runtime_verified || !capability.writable || !capability.readable ||
+            !isTunableResourceDomain(capability.domain) ||
+            isFatalSurface(capability.path)) {
+            return out;
         }
-        if (prefer == EffectDirection::None) prefer = EffectDirection::Increase;
-        stabilizing_branch = (prefer != EffectDirection::None);
-        benefit = 0.40 + (ctx.mem_available_ratio < 0.10 ? 0.20 : 0.05);
-        risk = prior ? 0.28 : 0.40;
-        score.confidence = clamp01(score.confidence + (prior ? 0.06 : 0.0));
-    } else if (io_pressure && ctx.intervention >= InterventionLevel::Low &&
-               capability.domain == ResourceDomain::Io) {
-        if (read_ahead_resource) {
-            prefer = EffectDirection::Increase;
-            benefit = 0.22;
-            risk = prior ? 0.34 : 0.40;
-        } else if (request_depth_resource) {
-            prefer = EffectDirection::Increase;
-            benefit = 0.16;
-            risk = prior ? 0.42 : 0.48;
-        } else {
-            // Unknown IO numeric: small decrease under pressure as safer default.
-            prefer = EffectDirection::Decrease;
-            benefit = 0.12;
-            risk = 0.48;
-        }
-    } else if (elevated && ctx.intervention >= InterventionLevel::Low) {
-        // Mild load-reducing step when no prior; prior-backed may use thermal prefer.
-        if (prior && prior->thermal_prefer != EffectDirection::None) {
-            prefer = prior->thermal_prefer;
-            benefit = 0.16;
-            risk = 0.38;
-        } else {
-            prefer = EffectDirection::Decrease;
-            benefit = 0.12;
-            risk = prior ? 0.40 : 0.50;
-        }
-    } else if (ctx.state == RuntimeState::Idle || ctx.state == RuntimeState::Normal) {
-        // Mild optimization at Low+ intervention with solid confidence.
-        if (ctx.intervention >= InterventionLevel::Low &&
-            ctx.sample_confidence >= 0.75) {
-            prefer = EffectDirection::Decrease;
-            benefit = prior ? 0.14 : 0.11;
-            risk = prior ? 0.40 : 0.50;
-        }
-    }
+        const std::string base_text = trim(baseline_value);
+        if (base_text.empty() || ctx.intervention == InterventionLevel::ObserveOnly) return out;
 
-    if (prefer == EffectDirection::None || prefer == EffectDirection::PreferLowOverhead ||
-        prefer == EffectDirection::PreferDeadline) {
-        score.reason = "no numeric direction justified";
-        return score;
-    }
+        const Situation situation = classify(ctx);
+        if (!situation.stressed() && !situation.elevated && !situation.calm_explore) return out;
 
-    // Bounds come from the reviewed prior.
-    const long long abs_min = prior->absolute_min;
-    const long long abs_max = prior->absolute_max;
-    const long long max_delta = prior->max_delta;
-    if (base < abs_min || base > abs_max) {
-        score.reason = "baseline outside semantic bounds";
-        return score;
-    }
+        const double base_confidence = clamp01(ctx.sample_confidence * 0.92);
+        long long base_num = 0;
+        const bool base_numeric = parseInteger(base_text, base_num);
 
-    long long delta = 0;
-    if (prefer == EffectDirection::Increase) {
-        delta = std::min(max_delta, memory_pressure ? max_delta : max_delta / 2);
-        if (delta < 1) delta = 1;
-    } else if (prefer == EffectDirection::Decrease) {
-        delta = -std::min(max_delta, thermal_pressure ? max_delta : max_delta / 2);
-        if (delta > -1) delta = -1;
-    }
-
-    // Compute the bounded target without signed overflow.
-    long long requested = base;
-    if (delta > 0 && base > abs_max - delta) {
-        requested = abs_max;
-    } else if (delta < 0 && base < abs_min - delta) {
-        requested = abs_min;
-    } else {
-        requested = std::clamp(base + delta, abs_min, abs_max);
-    }
-    if (requested == base) {
-        score.reason = "requested equals baseline";
-        return score;
-    }
-
-    // Intervention level clamps aggressiveness.
-    if (ctx.intervention == InterventionLevel::ObserveOnly) {
-        score.reason = "observe-only intervention";
-        return score;
-    }
-    if (ctx.intervention == InterventionLevel::Low) {
-        // Allow only half step.
-        const long long mid = base + (requested - base) / 2;
-        if (mid == base) {
-            // Keep at least 1 unit move if possible.
-            if (requested > base && base < abs_max) requested = base + 1;
-            else if (requested < base && base > abs_min) requested = base - 1;
-            requested = std::clamp(requested, abs_min, abs_max);
-            if (requested == base) {
-                score.reason = "low intervention cannot move";
-                return score;
+        auto emit = [&](const std::string& requested, CandidateSource source,
+                        EffectDirection direction, bool stabilizing, double benefit,
+                        double risk, const char* reason) {
+            if (requested.empty() || requested == base_text) return;
+            if (isFatalValue(base_text, requested)) return;
+            // Memory pressure without thermal stress: experimenting on the
+            // pressured resource's own domain is the stabilizing action; the
+            // measured outcome (and rollback) decides which direction helps.
+            if (situation.memory && !situation.thermal &&
+                capability.domain == ResourceDomain::Memory) {
+                stabilizing = true;
+                benefit = std::max(benefit, 0.24);
             }
-        } else {
-            requested = mid;
+            // Stressed contexts accept only load-reducing changes.
+            if (situation.stressed() && !stabilizing) return;
+            for (const auto& existing : out) {
+                if (existing.requested == requested) return;  // keep first (strongest) source
+            }
+            EffectScore score;
+            score.requested = requested;
+            score.source = source;
+            score.direction = direction;
+            score.stabilizing = stabilizing;
+            score.confidence = clamp01(base_confidence +
+                                       (source == CandidateSource::VendorEfficiency ||
+                                                source == CandidateSource::VendorPerformance ||
+                                                source == CandidateSource::VendorDefault
+                                            ? 0.05
+                                            : 0.0));
+            if (ctx.intervention == InterventionLevel::Low) risk += 0.05;
+            score.benefit = clamp01(benefit);
+            score.risk = clamp01(risk);
+            score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
+                             score.confidence >= kMinConfidence;
+            score.reason = reason;
+            score.resource_name = capability.name;
+            score.path = capability.path;
+            score.domain = capability.domain;
+            if (score.eligible) out.push_back(std::move(score));
+        };
+
+        auto directionOf = [&](const std::string& requested) {
+            long long next = 0;
+            if (base_numeric && parseInteger(requested, next)) {
+                return next > base_num ? EffectDirection::Increase : EffectDirection::Decrease;
+            }
+            return EffectDirection::Select;
+        };
+
+        // ---- 1. Vendor configuration (device-validated operating points) ----
+        for (const auto& vendor : capability.vendor_values) {
+            const std::string value = trim(vendor.value);
+            const EffectDirection dir = directionOf(value);
+            switch (vendor.profile) {
+                case VendorProfile::Efficiency:
+                    emit(value, CandidateSource::VendorEfficiency, dir, true,
+                         situation.stressed() ? 0.44 : 0.20, 0.18,
+                         "vendor efficiency profile value");
+                    break;
+                case VendorProfile::Performance:
+                    emit(value, CandidateSource::VendorPerformance, dir, false,
+                         situation.elevated ? 0.34 : 0.16, 0.22,
+                         "vendor performance profile value");
+                    break;
+                case VendorProfile::Default:
+                case VendorProfile::Boot:
+                    emit(value, CandidateSource::VendorDefault, dir, false, 0.28, 0.20,
+                         "vendor factory configuration value");
+                    break;
+            }
         }
-        risk = std::min(1.0, risk + 0.05);
+
+        // ---- 2/3. Kernel-advertised options ----
+        if (!capability.options.empty()) {
+            if (capability.ordered_scale && base_numeric) {
+                // Neighbour steps along the hardware's own ordered scale.
+                long long below = 0;
+                long long above = 0;
+                bool has_below = false;
+                bool has_above = false;
+                for (const auto& option : capability.options) {
+                    long long v = 0;
+                    if (!parseInteger(option, v)) continue;
+                    if (v < base_num && (!has_below || v > below)) { below = v; has_below = true; }
+                    if (v > base_num && (!has_above || v < above)) { above = v; has_above = true; }
+                }
+                if (has_below) {
+                    emit(std::to_string(below), CandidateSource::OrderedScale,
+                         EffectDirection::Decrease, situation.thermal,
+                         situation.thermal ? 0.36 : 0.16, 0.24,
+                         "one step down the advertised hardware scale");
+                }
+                if (has_above) {
+                    emit(std::to_string(above), CandidateSource::OrderedScale,
+                         EffectDirection::Increase, false,
+                         situation.elevated ? 0.24 : 0.12, 0.30,
+                         "one step up the advertised hardware scale");
+                }
+            } else if (!capability.ordered_scale) {
+                for (const auto& option : capability.options) {
+                    const bool vendor_low_power = [&] {
+                        for (const auto& v : capability.vendor_values) {
+                            if (v.value == option && v.profile == VendorProfile::Efficiency) return true;
+                        }
+                        return false;
+                    }();
+                    emit(option, CandidateSource::KernelOption, EffectDirection::Select,
+                         vendor_low_power, situation.elevated ? 0.20 : 0.16, 0.30,
+                         "kernel-advertised option");
+                }
+            }
+        }
+
+        // ---- 4. Bounded exploration for plain integers and fixed decimals ----
+        // Fixed-point values (e.g. cpu.uclamp.min "10.00") keep their precision:
+        // the step is computed on the scaled integer and formatted back.
+        int decimals = 0;
+        long long scaled = base_num;
+        bool numeric = base_numeric;
+        if (!numeric) {
+            const auto dot = base_text.find('.');
+            if (dot != std::string::npos && dot > 0 && dot + 1 < base_text.size() &&
+                base_text.size() - dot - 1 <= 6U) {
+                const std::string digits = base_text.substr(0, dot) + base_text.substr(dot + 1);
+                long long parsed = 0;
+                if (parseInteger(digits, parsed)) {
+                    decimals = static_cast<int>(base_text.size() - dot - 1);
+                    scaled = parsed;
+                    numeric = true;
+                }
+            }
+        }
+        auto format = [decimals](long long v) {
+            if (decimals == 0) return std::to_string(v);
+            long long div = 1;
+            for (int i = 0; i < decimals; ++i) div *= 10;
+            const bool negative = v < 0;
+            const long long a = negative ? -v : v;
+            std::string frac = std::to_string(a % div);
+            while (static_cast<int>(frac.size()) < decimals) frac.insert(0, "0");
+            return std::string(negative ? "-" : "") + std::to_string(a / div) + "." + frac;
+        };
+        if (numeric && capability.options.empty()) {
+            const long long magnitude = scaled < 0 ? -scaled : scaled;
+            // 0/1 are feature toggles: only vendor-declared values may flip them.
+            // A fixed-point 0.00 / 1.00 is a real quantity, not a toggle.
+            if (magnitude >= 2 || (decimals > 0 && magnitude > 0)) {
+                const long long step = std::max<long long>(1, magnitude / 8);
+                const long long lower_bound = scaled > 0 ? std::max<long long>(1, scaled / 2)
+                                                           : scaled * 2;
+                const long long upper_bound = scaled > 0 ? scaled * 2 : scaled / 2;
+                const long long down = std::max(lower_bound, scaled - step);
+                const long long up = std::min(upper_bound, scaled + step);
+                const bool clamp = isUtilizationClamp(capability);
+                if (down != scaled) {
+                    emit(format(down), CandidateSource::BoundedStep,
+                         EffectDirection::Decrease, clamp,
+                         clamp && situation.stressed() ? 0.30 : 0.16, 0.34,
+                         clamp ? "lower utilization clamp" : "bounded exploration step down");
+                }
+                if (up != scaled) {
+                    emit(format(up), CandidateSource::BoundedStep,
+                         EffectDirection::Increase, false, 0.16, 0.34,
+                         "bounded exploration step up");
+                }
+            }
+        }
+    } catch (...) {
+        out.clear();
     }
-
-    score.eligible = benefit >= kMinBenefit && risk <= kMaxRisk &&
-                     score.confidence >= kMinConfidence;
-    score.benefit = clamp01(benefit);
-    score.risk = clamp01(risk);
-    score.direction = prefer;
-    score.stabilizing = stabilizing_branch;
-    score.requested = std::to_string(requested);
-    if (score.reason.empty()) {
-        score.reason = thermal_pressure
-                           ? "thermal stability"
-                           : (memory_pressure ? "memory stability" : "efficiency");
-    }
-    return score;
-}
-
-EffectScore EffectModel::scoreScheduler(
-    const ResourceCapability& capability,
-    const std::string& baseline_value,
-    const EffectContext& ctx
-) const noexcept {
-    EffectScore score;
-    score.confidence = clamp01(ctx.sample_confidence * 0.88);
-
-    // Balance: allow scheduler consideration under moderate activity too,
-    // not only hard elevated/pressure. Still blocked when Idle by policy.
-    const bool justify =
-        ctx.state == RuntimeState::Elevated ||
-        ctx.state == RuntimeState::Warming ||
-        ctx.state == RuntimeState::ThermalGuard ||
-        ctx.state == RuntimeState::Pressure ||
-        ctx.state == RuntimeState::Normal ||
-        (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.55) ||
-        ctx.load1 >= 1.00;
-
-    if (!justify || ctx.intervention == InterventionLevel::ObserveOnly) {
-        score.reason = "scheduler change not justified";
-        return score;
-    }
-
-    // baseline_value for scheduler is the full kernel string e.g.
-    // "[mq-deadline] kyber none" or current selection. We need available list.
-    // Resource mutation layer re-reads the live scheduler file for candidates;
-    // here we only signal preferred direction.
-    const bool thermal =
-        ctx.thermal_available &&
-        (ctx.state == RuntimeState::ThermalGuard || ctx.thermal_c >= 50.0);
-
-    if (thermal || ctx.state == RuntimeState::Pressure) {
-        score.direction = EffectDirection::PreferLowOverhead;
-        score.benefit = 0.22;
-        score.risk = 0.38;
-        score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
-                         score.confidence >= kMinConfidence;
-        score.requested = "none";  // preferred token; applicator verifies availability
-        score.reason = "prefer low-overhead scheduler under pressure";
-        return score;
-    }
-
-    score.direction = EffectDirection::PreferDeadline;
-    score.benefit = 0.16;
-    score.risk = 0.42;
-    score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
-                     score.confidence >= kMinConfidence;
-    score.requested = "mq-deadline";
-    score.reason = "prefer deadline scheduler under sustained load";
-    (void)capability;
-    (void)baseline_value;
-    return score;
+    return out;
 }
 
 EffectScore EffectModel::evaluate(
@@ -346,82 +301,16 @@ EffectScore EffectModel::evaluate(
     const std::string& baseline_value,
     const EffectContext& ctx
 ) const noexcept {
-    EffectScore score;
-    if (!capability.exists || !capability.mutation_ready ||
-        !capability.permission_granted || !capability.policy_authorized ||
-        !capability.runtime_verified || !capability.writable || !capability.readable) {
-        score.reason = "not mutation_ready";
-        return score;
-    }
-    if (baseline_value.empty()) {
-        score.reason = "no baseline";
-        return score;
-    }
-
-    // Domain gate: only Memory / Io / Scheduler numeric-or-scheduler knobs.
-    // Charging, Thermal sensors, AndroidRuntime, etc. stay telemetry-only.
-    switch (capability.domain) {
-        case ResourceDomain::Memory:
-        case ResourceDomain::Io:
-        case ResourceDomain::Scheduler:
-            break;
-        default:
-            score.reason = "domain not autonomously mutable";
-            return score;
-    }
-
-    // Knowledge is a semantic gate, never an authority grant. The capability
-    // must already have passed discovery, runtime verification, and policy.
-    const EcosystemKnowledgeEntry* knowledge =
-        lookupEcosystemKnowledgeByKey(capability.name);
-    if (!knowledge) knowledge = lookupEcosystemKnowledgeByPath(capability.path);
-    // Discovery and host fixtures may expose a leaf name rather than the
-    // catalog's stable key. Resolve only known leaf aliases, never arbitrary
-    // names, so this does not turn the catalog into a permissive allowlist.
-    if (!knowledge) {
-        if (capability.name == "read_ahead_kb")
-            knowledge = lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
-        else if (capability.name == "nr_requests")
-            knowledge = lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
-        else if (capability.name == "scheduler")
-            knowledge = lookupEcosystemKnowledgeByKey("block.queue.scheduler");
-    }
-    if (knowledge && knowledge->domain != capability.domain) {
-        score.reason = "ecosystem knowledge domain mismatch";
-        return score;
-    }
-    if (knowledge) {
-        switch (knowledge->risk) {
-            case KnowledgeRisk::ObserveOnly:
-                score.reason = "ecosystem knowledge is observe-only";
-                return score;
-            case KnowledgeRisk::Quarantined:
-                score.reason = "ecosystem knowledge quarantines this resource";
-                return score;
-            case KnowledgeRisk::FrameworkOwned:
-                score.reason = "resource is owned by Android framework";
-                return score;
-            case KnowledgeRisk::BoundedTune:
-            case KnowledgeRisk::VendorVolatile:
-                break;
+    EffectScore best;
+    best.reason = "no candidate derivable from capability evidence";
+    try {
+        for (auto& score : proposals(capability, baseline_value, ctx)) {
+            score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
+            if (!best.eligible || score.utility > best.utility) best = std::move(score);
         }
+    } catch (...) {
     }
-
-    const std::string& name = capability.name;
-    if (name.find("scheduler") != std::string::npos) {
-        score = scoreScheduler(capability, baseline_value, ctx);
-    } else {
-        score = scoreNumeric(capability, baseline_value, ctx);
-    }
-    // Vendor-dependent semantics remain possible only under existing policy,
-    // but pay an explicit risk cost; knowledge cannot make a candidate eligible.
-    if (knowledge && knowledge->risk == KnowledgeRisk::VendorVolatile && score.eligible) {
-        score.risk = std::min(1.0, score.risk + 0.12);
-        score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
-                         score.confidence >= kMinConfidence;
-        if (!score.eligible) score.reason = "vendor volatility raises risk above threshold";
-    }
-    return score;
+    return best;
 }
 
 std::vector<EffectScore> EffectModel::rank(
@@ -441,17 +330,19 @@ std::vector<EffectScore> EffectModel::rank(
         const auto baseline = baselines.find(cap.path);
         if (baseline == baselines.end()) continue;
 
-        EffectScore score = evaluate(cap, baseline->second, ctx);
-        if (!score.eligible) continue;
-
-        score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
-        // Balance: 0.05 discarded many low-risk bounded candidates. 0.02 still
-        // filters noise while letting small stabilizing steps surface.
-        if (!std::isfinite(score.utility) || score.utility < 0.02) continue;
-        score.resource_name = cap.name;
-        score.path = cap.path;
-        score.domain = cap.domain;
-        ranked.push_back(std::move(score));
+        std::vector<EffectScore> local = proposals(cap, baseline->second, ctx);
+        for (auto& score : local) {
+            score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
+        }
+        std::stable_sort(local.begin(), local.end(),
+                         [](const EffectScore& a, const EffectScore& b) { return a.utility > b.utility; });
+        std::size_t kept = 0;
+        for (auto& score : local) {
+            if (kept >= kProposalsPerResource) break;
+            if (!std::isfinite(score.utility) || score.utility < 0.02) continue;
+            ranked.push_back(std::move(score));
+            ++kept;
+        }
     }
 
     std::stable_sort(ranked.begin(), ranked.end(),
@@ -461,7 +352,7 @@ std::vector<EffectScore> EffectModel::rank(
                          if (lhs.confidence != rhs.confidence)
                              return lhs.confidence > rhs.confidence;
                          if (lhs.path != rhs.path) return lhs.path < rhs.path;
-                         return lhs.resource_name < rhs.resource_name;
+                         return lhs.requested < rhs.requested;
                      });
 
     if (ranked.size() > max_results) ranked.resize(max_results);

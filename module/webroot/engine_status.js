@@ -12,7 +12,7 @@
   var CONSULT_REASONS = ["NO_WRITE_ACTUATOR", "OUT_OF_SCOPE", "SURFACE_DENIED", "NOT_OBSERVABLE",
     "NO_ROLLBACK_BASELINE", "NO_SEMANTIC_PRIOR", "STRESSED_NON_STABILIZING", "NO_NEED",
     "NO_BENEFIT_EVIDENCE", "AWAITING_USER_GRANT", "ALLOWED"];
-  var CONSULT_NAMESPACES = ["VM_SYSCTL", "BLOCK_QUEUE", "SCHEDULER", "CPU_FREQ", "BUILD_PROP", "SETTINGS_DB", "OTHER"];
+  var CONSULT_NAMESPACES = ["VM_SYSCTL", "BLOCK_QUEUE", "SCHEDULER", "GPU", "CGROUP", "CPUFREQ_TUNABLE", "KERNEL_TUNABLE", "CPU_FREQ", "BUILD_PROP", "SETTINGS_DB", "OTHER"];
 
   // Must match blockerCodes() in src/status_snapshot.cpp (checked by tools/test_webui_status.js).
   var BLOCKERS = {
@@ -264,7 +264,7 @@
       ["Exposed interfaces", interfaces, v.cpuset ? "cpuset available" : "cpuset not detected"],
       ["Capabilities", v.discoveredResources + " discovered · " + v.mutationReadyResources + " policy-ready", "writability alone does not grant authorization"],
       ["Expanded domains", v.expandedDomains.filter(function (x) { return x.evidence !== "unavailable"; }).length + " / 15 detected · " + v.expandedDomains.filter(function (x) { return x.evidence === "observable"; }).length + " observable", "discovery is observation-only; domain status never grants mutation authority"],
-      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "admitted (grant-gated)", v.blockQueueMutationsQuarantined ? "new queue writes are blocked" : "physical read_ahead_kb / nr_requests when grant_block_queue=yes"]
+      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "capability-driven", v.blockQueueMutationsQuarantined ? "new queue writes are blocked" : "every non-fatal queue / iosched tunable (opt-out: grant_block_queue=no)"]
     ];
   }
 

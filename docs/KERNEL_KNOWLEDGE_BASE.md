@@ -13,7 +13,7 @@ This is a compact, version-aware reference map for maintainers, not a runtime fe
 ## Current policy in this source tree
 
 - `mutation_mode=observe`, `mutation_armed=false`, `allow_cpu_governor=no` remain the installed defaults.
-- Production resource policy and the central `ResourceActuator` allow-list admit every `/proc/sys/vm/` path with a named `EffectModel` prior plus physical block-queue numeric nodes (`read_ahead_kb` / `nr_requests`). Scheduler tokens and virtual devices stay denied. CPUFreq remains off by default (`allow_cpu_governor=no`).
+- Superseded by `CAPABILITY_DRIVEN.md`: the central `ResourceActuator` admits every kernel tunable except the universal fatal classes. CPUFreq governor writes remain off by default (`allow_cpu_governor=no`).
 - New writes to block queue nodes—`scheduler`, `nr_requests`, and `read_ahead_kb` under `/sys/block/.../queue/` and equivalent `/sys/devices/.../block/.../queue/` paths—are quarantined even if writable or proposed by a fallback candidate.
 - Restores from a previously committed resource journal remain allowed so recovery from an older run can complete. A restore failure must remain visible and must never clear an unresolved journal.
 - CPU governor mutation is a separate authority path controlled by `allow_cpu_governor`; it is not authorized by this resource policy.

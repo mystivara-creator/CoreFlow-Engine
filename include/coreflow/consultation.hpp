@@ -26,8 +26,12 @@ namespace coreflow {
 enum class ControlNamespace : std::uint8_t {
     VmSysctl = 0,   // /proc/sys/vm/*
     BlockQueue,     // /sys/block/<physical>/queue/*
-    Scheduler,      // scheduler tokens
-    CpuFreq,        // separate authority path; out of scope here
+    Scheduler,      // scheduler sysctls / governor tunables / core_ctl / walt
+    Gpu,            // devfreq, kgsl, mali and other GPU/bus clock domains
+    Cgroup,         // uclamp, cpu.shares/weight, cpuset, schedtune
+    CpuFreqTunable, // cpufreq nodes other than the governor (min/max freq, ...)
+    KernelTunable,  // any other non-fatal kernel tunable (vendor-declared)
+    CpuFreq,        // CPU governor; separate MutationController authority
     BuildProp,      // system properties; observe-only in this build
     SettingsDb,     // Android settings providers; observe-only in this build
     Other,
@@ -50,7 +54,7 @@ enum class ConsultReason : std::uint8_t {
     // Defer
     NotObservable,           // eye lacks readable/writable/verified evidence
     NoRollbackBaseline,      // no captured baseline to restore from
-    NoSemanticPrior,         // no reviewed meaning for this control
+    NoSemanticPrior,         // no candidate value derivable from capability evidence
     StressedNonStabilizing,  // stressed context accepts only load-reducing writes
     NoNeed,                  // runtime state shows no demand right now
     NoBenefitEvidence,       // predicted benefit does not exceed risk
@@ -92,10 +96,17 @@ struct ControlFact {
 
 // Explicit user permission, per namespace. Defaults to none. A device need
 // alone never grants permission.
+// Per-namespace user grants. CoreFlow is capability-driven, so grants are an
+// opt-OUT: every namespace is permitted by default once Adaptive mode is armed,
+// and a user may exclude a namespace with grant_<name>=no.
 struct UserGrants {
-    bool memory{false};       // permits ControlNamespace::VmSysctl
-    bool block_queue{false};  // permits ControlNamespace::BlockQueue
-    bool scheduler{false};    // permits ControlNamespace::Scheduler
+    bool memory{true};        // ControlNamespace::VmSysctl
+    bool block_queue{true};   // ControlNamespace::BlockQueue
+    bool scheduler{true};     // ControlNamespace::Scheduler
+    bool gpu{true};           // ControlNamespace::Gpu
+    bool cgroup{true};        // ControlNamespace::Cgroup
+    bool cpufreq{true};       // ControlNamespace::CpuFreqTunable
+    bool kernel{true};        // ControlNamespace::KernelTunable
 
     bool allows(ControlNamespace ns) const noexcept;
 };

@@ -1,5 +1,6 @@
 #include "coreflow/resource_mutation.hpp"
 #include "coreflow/context.hpp"
+#include "coreflow/tunable_discovery.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -25,58 +26,16 @@ std::string trim(std::string value) {
     return value;
 }
 
-bool endsWith(const std::string& value, const char* suffix) noexcept {
-    const std::size_t suffixLength = std::char_traits<char>::length(suffix);
-    return value.size() >= suffixLength &&
-           value.compare(value.size() - suffixLength, suffixLength, suffix) == 0;
-}
-
-bool isSchedulerResource(const std::string& name) noexcept {
-    return name == "scheduler" || endsWith(name, ":scheduler") ||
-           endsWith(name, ".scheduler");
-}
-
-bool activeSchedulerIs(const std::string& live, const std::string& token) {
-    std::istringstream stream(live);
-    std::string part;
-    while (stream >> part) {
-        const bool selected = part.size() >= 2 && part.front() == '[' &&
-                              part.back() == ']';
-        if (selected && part.substr(1, part.size() - 2) == token) return true;
-    }
-    return false;
-}
-
 bool isMutableDomain(ResourceDomain domain) noexcept {
-    return domain == ResourceDomain::Memory ||
-           domain == ResourceDomain::Io ||
-           domain == ResourceDomain::Scheduler;
+    return isTunableResourceDomain(domain);
 }
 
 bool fallbackPolicyAuthorized(ResourceDomain domain, const std::string& name,
                               const std::string& path) noexcept {
-    // Mirror actuator surface classes. No per-parameter name tables.
-    (void)name;
+    // Capability-driven: the same rule discovery applies. Only fatal surfaces
+    // (actuator gate) and non-tunable/governor-owned nodes are refused.
     if (!ResourceActuator::mutationTargetAllowed(path)) return false;
-    if (domain == ResourceDomain::Memory) {
-        if (path.rfind("/proc/sys/vm/", 0) == 0) return true;
-#ifdef COREFLOW_HOST_TEST_FIXTURES
-        // Host fixtures stand in for /proc/sys/vm with temp files.
-        return path.rfind("/tmp/", 0) == 0;
-#else
-        return false;
-#endif
-    }
-    if (domain == ResourceDomain::Io) {
-        // Path class already validated by mutationTargetAllowed.
-        return true;
-    }
-#ifdef COREFLOW_HOST_TEST_FIXTURES
-    return (domain == ResourceDomain::Io || domain == ResourceDomain::Scheduler) &&
-           path.rfind("/tmp/", 0) == 0;
-#else
-    return false;
-#endif
+    return classifySurface(domain, name, path) == SurfaceClass::Admissible;
 }
 
 InterventionLevel requiredIntervention(ResourceDomain /*domain*/,
@@ -224,14 +183,6 @@ bool ResourceMutationController::captureBaseline(
                 stale_paths.push_back(retained.path);
                 continue;
             }
-            if (isSchedulerResource(baseline_it->second.name)) {
-                std::string resolved;
-                if (!verifySchedulerToken(retained.path, retained.target, resolved) ||
-                    resolved != retained.target) {
-                    stale_paths.push_back(retained.path);
-                    continue;
-                }
-            }
             std::string live;
             if (!ResourceActuator::readComparable(retained.path, live)) return false;
             if (live == retained.target) {
@@ -341,6 +292,7 @@ bool ResourceMutationController::selectCandidate(
     // the same path, and only because captureBaseline already verified both
     // readability and writability for that adapter.
     EnvironmentCapabilityMatrix effective_matrix = profile.capabilities;
+    EnvironmentCapabilityMatrix legacy_matrix;
     for (const auto& item : baseline_) {
         if (!item.second.valid) continue;
         const bool present = std::any_of(
@@ -365,7 +317,15 @@ bool ResourceMutationController::selectCandidate(
         capability.policy_authorized = true;
         capability.runtime_verified = true;
         capability.mutation_ready = true;
-        effective_matrix.resources.push_back(std::move(capability));
+        legacy_matrix.resources.push_back(std::move(capability));
+    }
+    // Legacy adapters get the same capability evidence as discovered nodes
+    // (kernel-advertised options); there is no vendor data for them here.
+    if (!legacy_matrix.resources.empty()) {
+        TunableDiscovery{}.enrich(legacy_matrix, VendorKnowledge{});
+        for (auto& capability : legacy_matrix.resources) {
+            effective_matrix.resources.push_back(std::move(capability));
+        }
     }
 
     // The DecisionAgent is the proposal layer for resource candidates. It only
@@ -380,7 +340,7 @@ bool ResourceMutationController::selectCandidate(
     agent_observation.sample_confidence = sample.confidence;
     agent_observation.mutation_allowed_by_context = !policy.stabilizing_only;
     agent_observation.stabilizing_allowed_by_context = policy.stabilizing_only;
-    agent_observation.max_candidates = 8;
+    agent_observation.max_candidates = 16;
     const AgentProposal proposal = decision_agent_.reason(agent_observation);
     last_agent_reason_ = proposal.reasoning_summary;
     if (!proposal.valid) return false;
@@ -447,27 +407,12 @@ bool ResourceMutationController::selectCandidate(
             continue;
         }
 
-        std::string requested = scored.requested;
-        if (isSchedulerResource(name)) {
-            std::string resolved;
-            if (!verifySchedulerToken(path, requested, resolved)) continue;
-
-            std::string live;
-            if (!ResourceActuator::read(path, live)) continue;
-            live = trim(live);
-            if (activeSchedulerIs(live, resolved)) {
-                // A preference is not a mandate. If it is already active,
-                // consider a known, advertised alternative; never guess one.
-                std::string alternative;
-                if (!verifySchedulerToken(path, "none", alternative) ||
-                    activeSchedulerIs(live, alternative)) {
-                    continue;
-                }
-                resolved = alternative;
-            }
-            requested = resolved;
-        } else {
-            if (requested.empty() || requested == bit->second.value) continue;
+        // The candidate value came from capability evidence (vendor config,
+        // kernel-advertised options, ordered scale or a bounded step). Skip it
+        // when it is already live; the actuator verifies the write by read-back.
+        const std::string requested = scored.requested;
+        if (requested.empty() || requested == bit->second.value) continue;
+        {
             std::string live;
             if (!ResourceActuator::readComparable(path, live)) continue;
             if (live == requested) continue;
@@ -554,9 +499,14 @@ MutationResult ResourceMutationController::applyCandidate(
     }
 
     ActuatorMutation mutation;
+    // Resource writes never use the CpuFreq actuator domain: that domain is the
+    // governor authority and needs allow_cpu_governor.
     mutation.id = {ActuatorDomain::Io, 0};
-    if (candidate.domain == ResourceDomain::Memory) {
-        mutation.id.domain = ActuatorDomain::Vm;
+    switch (candidate.domain) {
+        case ResourceDomain::Memory: mutation.id.domain = ActuatorDomain::Vm; break;
+        case ResourceDomain::UClamp: mutation.id.domain = ActuatorDomain::Uclamp; break;
+        case ResourceDomain::CpuSet: mutation.id.domain = ActuatorDomain::CpuSet; break;
+        default: break;
     }
     mutation.target = candidate.path;
     mutation.requested = candidate.requested;
@@ -692,6 +642,10 @@ MutationResult ResourceMutationController::apply(
     grants.memory = config.grantMemory();
     grants.block_queue = config.grantBlockQueue();
     grants.scheduler = config.grantScheduler();
+    grants.gpu = config.grantGpu();
+    grants.cgroup = config.grantCgroup();
+    grants.cpufreq = config.grantCpuFreq();
+    grants.kernel = config.grantKernel();
     if (!selectCandidate(state, sample, profile, policy, grants, candidate)) {
         return MutationResult::Skipped;
     }

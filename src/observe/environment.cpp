@@ -40,8 +40,30 @@ const char* resourceDomainName(ResourceDomain domain) noexcept {
         case ResourceDomain::Power: return "POWER";
         case ResourceDomain::CGroup: return "CGROUP";
         case ResourceDomain::AndroidRuntime: return "ANDROID_RUNTIME";
+        case ResourceDomain::Vendor: return "VENDOR";
     }
     return "UNKNOWN";
+}
+
+bool isTunableResourceDomain(ResourceDomain domain) noexcept {
+    switch (domain) {
+        case ResourceDomain::CpuFreq:
+        case ResourceDomain::UClamp:
+        case ResourceDomain::CpuSet:
+        case ResourceDomain::Scheduler:
+        case ResourceDomain::Memory:
+        case ResourceDomain::Io:
+        case ResourceDomain::Gpu:
+        case ResourceDomain::Vendor:
+            return true;
+        case ResourceDomain::Thermal:
+        case ResourceDomain::Charging:
+        case ResourceDomain::Power:
+        case ResourceDomain::CGroup:
+        case ResourceDomain::AndroidRuntime:
+            return false;
+    }
+    return false;
 }
 
 } // namespace coreflow

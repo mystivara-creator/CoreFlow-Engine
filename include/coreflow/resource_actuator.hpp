@@ -8,8 +8,8 @@
 
 namespace coreflow {
 
-// Generic bounded sysfs/procfs resource actuator. It is intentionally narrow:
-// callers provide an already-discovered path and a validated requested value.
+// Generic sysfs/procfs/cgroup resource actuator. Callers provide an
+// already-discovered path and a candidate value; only fatal surfaces are denied.
 // All kernel writes are centralized here and every write is read back.
 class ResourceActuator final {
 public:
@@ -25,12 +25,11 @@ public:
     // Like read(), but returns the comparable form (see comparableValue).
     static bool readComparable(std::string_view path, std::string& value) noexcept;
     static bool writable(std::string_view path) noexcept;
-    // Production target allow-list for new resource writes. Admits every VM
-    // sysctl that has a reviewed EffectModel prior (including watermark_scale_factor
-    // and page-cluster) plus physical block-queue numeric nodes (read_ahead_kb /
-    // nr_requests). Scheduler tokens and virtual block devices stay denied.
-    // Host-test fixtures get a temporary-file exception. Restore is not subject
-    // to this new-write allow-list so old journals can recover.
+    // Capability-driven target gate for new resource writes: every kernel
+    // tunable is admitted except the universally fatal classes defined by
+    // FatalSurfaceGuard (fatal_surface.hpp) and the CPU governor node, which
+    // belongs to MutationController. There is no per-parameter allow-list.
+    // Restore is not subject to this gate so old journals can always recover.
     static bool mutationTargetAllowed(std::string_view path) noexcept;
 
     // Selector-style sysfs nodes (e.g. queue/scheduler) read back the whole

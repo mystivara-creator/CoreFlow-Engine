@@ -181,6 +181,13 @@ struct DeviceProfile {
     AndroidEnvironment environment;
     EnvironmentCapabilityMatrix capabilities;
     std::vector<ExpandedDomainStatus> expanded_domains;
+
+    // Capability-driven discovery evidence (status/diagnostics).
+    std::size_t vendor_files_parsed{0};
+    std::size_t vendor_knobs{0};
+    std::size_t tunables_walked{0};
+    std::size_t tunables_added{0};
+    std::size_t tunables_fatal_skipped{0};
 };
 
 struct RuntimeSample {

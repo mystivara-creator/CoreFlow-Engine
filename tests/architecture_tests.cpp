@@ -330,7 +330,7 @@ int main() {
             candidate.domain = ResourceDomain::Memory;
             candidate.name = "vm.swappiness";
             candidate.path = i == 0 ? "/proc/sys/vm/swappiness"
-                                    : "/test/coreflow/swappiness_" + std::to_string(i);
+                                    : "/proc/sys/vm/test_knob_" + std::to_string(i);
             candidate.exists = true;
             candidate.readable = true;
             candidate.writable = true;
@@ -359,9 +359,10 @@ int main() {
         const AgentProposal proposal = agent.reason(observation);
         CHECK(proposal.valid);
         CHECK(proposal.mode == AgentReasoningMode::ReActLite);
-        CHECK(proposal.ranked.size() == 4);
+        // Up to kProposalsPerResource candidates per node (step down / up).
+        CHECK(proposal.ranked.size() >= 4);
         CHECK(proposal.best.stabilizing);
-        CHECK(proposal.best.requested == "75" || proposal.best.requested == "67");
+        CHECK(proposal.best.requested == "53" || proposal.best.requested == "67");
         CHECK(proposal.reasoning_summary.find("observe → hypothesize → review → propose") !=
               std::string::npos);
 

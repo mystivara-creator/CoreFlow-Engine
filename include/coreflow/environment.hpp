@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "coreflow/vendor_knowledge.hpp"
+
 namespace coreflow {
 
 enum class ResourceDomain {
@@ -18,8 +20,17 @@ enum class ResourceDomain {
     Charging,
     Power,
     CGroup,
-    AndroidRuntime
+    AndroidRuntime,
+    // Any other kernel tunable discovered from vendor configuration or the
+    // generic walkers that does not belong to one of the domains above.
+    Vendor
 };
+
+// Domains whose discovered nodes are autonomous mutation candidates. The
+// excluded domains are inventory/telemetry (thermal zones, charging, power
+// supply, cgroup structure, Android runtime markers); their write surfaces are
+// fatal classes anyway (see fatal_surface.hpp).
+bool isTunableResourceDomain(ResourceDomain domain) noexcept;
 
 struct ResourceCapability {
     ResourceDomain domain{ResourceDomain::AndroidRuntime};
@@ -36,6 +47,15 @@ struct ResourceCapability {
     // Runtime-read confirmation; this does not prove that a write is safe.
     bool runtime_verified{false};
     bool mutation_ready{false};
+
+    // Capability evidence used to generate candidate values (no name tables):
+    //   options        values the kernel itself advertises for this node, from a
+    //                  "[a] b c" selector line or a sibling available_* file
+    //   ordered_scale  options are an ordered hardware scale (frequencies/levels)
+    //   vendor_values  values the vendor's own init/power-HAL config writes
+    std::vector<std::string> options{};
+    bool ordered_scale{false};
+    std::vector<VendorValue> vendor_values{};
 };
 
 struct AndroidEnvironment {
