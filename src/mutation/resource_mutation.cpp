@@ -74,6 +74,7 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
             recovery_pending_ = false;
             return true;
         case MutationJournal::LoadState::Corrupt:
+            last_failure_stage_ = ResourceMutationFailureStage::JournalCorrupt;
             return false;
         case MutationJournal::LoadState::Pending:
             break;
@@ -81,21 +82,34 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
 
     bool restored = true;
     for (const auto& entry : entries) {
-        if (!std::filesystem::exists(entry.first)) continue;
+        // Do not silently skip missing paths: restore() reports the read
+        // failure, and the pending journal remains available for diagnosis.
         const ActuatorResult result =
             actuator_.restore(entry.first, entry.second);
-        if (!(result.status == ActuatorStatus::RolledBack ||
-              result.status == ActuatorStatus::NoChange ||
-              result.status == ActuatorStatus::Ok)) {
+        const bool entry_restored =
+            result.status == ActuatorStatus::RolledBack ||
+            result.status == ActuatorStatus::NoChange ||
+            result.status == ActuatorStatus::Ok;
+
+        // Preserve the first failure status while still attempting the
+        // remaining entries, so one failed resource cannot be masked.
+        if (restored || !entry_restored) {
+            last_actuator_status_ = result.status;
+        }
+        if (!entry_restored) {
             restored = false;
         }
     }
     if (!restored) {
         mutated_ = true;
         restore_failed_ = true;
+        last_failure_stage_ = ResourceMutationFailureStage::RecoveryActuator;
         return false;
     }
-    if (!journal_->clear()) return false;
+    if (!journal_->clear()) {
+        last_failure_stage_ = ResourceMutationFailureStage::JournalCleanup;
+        return false;
+    }
     recovery_pending_ = false;
     journal_committed_ = false;
     mutated_ = false;
@@ -500,7 +514,10 @@ MutationResult ResourceMutationController::applyCandidate(
     const EngineConfig& config,
     const PolicyPlan& policy
 ) noexcept {
-    if (journal_ == nullptr) return MutationResult::Failed;
+    if (journal_ == nullptr) {
+        last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
+        return MutationResult::Failed;
+    }
     if (!policy.allows(candidate.domain, candidate.name)) return MutationResult::Skipped;
     if (!fallbackPolicyAuthorized(candidate.domain, candidate.name, candidate.path)) {
         return MutationResult::Skipped;
@@ -530,6 +547,7 @@ MutationResult ResourceMutationController::applyCandidate(
 
     std::string previous_value;
     if (!ResourceActuator::readComparable(candidate.path, previous_value)) {
+        last_failure_stage_ = ResourceMutationFailureStage::BaselineRead;
         return MutationResult::Failed;
     }
     const bool was_dirty_before = dirty_resources_.find(candidate.path) != dirty_resources_.end();
@@ -547,10 +565,26 @@ MutationResult ResourceMutationController::applyCandidate(
             entries.emplace_back(candidate.path, it->second.value);
         }
     }
-    if (entries.empty() || !journal_->commit(entries)) return MutationResult::Failed;
+    if (entries.empty() || !journal_->commit(entries)) {
+        last_failure_stage_ = ResourceMutationFailureStage::JournalCommit;
+        return MutationResult::Failed;
+    }
     journal_committed_ = true;
 
     const ActuatorResult result = actuator_.apply(mutation, permit);
+    last_actuator_status_ = result.status;
+    if (result.status == ActuatorStatus::ReadFailed) {
+        last_failure_stage_ = ResourceMutationFailureStage::ActuatorRead;
+    } else if (result.status == ActuatorStatus::SafetyRejected) {
+        last_failure_stage_ = ResourceMutationFailureStage::ActuatorSafety;
+    } else if (result.status == ActuatorStatus::VerifyFailed ||
+               result.status == ActuatorStatus::WriteFailed) {
+        last_failure_stage_ = ResourceMutationFailureStage::ActuatorWriteOrVerify;
+    } else if (result.status != ActuatorStatus::Ok &&
+               result.status != ActuatorStatus::NoChange &&
+               result.status != ActuatorStatus::RolledBack) {
+        last_failure_stage_ = ResourceMutationFailureStage::ActuatorOther;
+    }
 
     // Any attempted write may have landed, even if verification failed, so the
     // path is tracked as dirty until an explicit rollback clears it.
@@ -569,6 +603,7 @@ MutationResult ResourceMutationController::applyCandidate(
             if (!journal_ok) {
                 restore_failed_ = true;
                 mutated_ = true;
+                last_failure_stage_ = ResourceMutationFailureStage::JournalCleanup;
                 return MutationResult::Failed;
             }
             journal_committed_ = !snapshot.empty();
@@ -597,6 +632,7 @@ MutationResult ResourceMutationController::applyCandidate(
             journal_committed_ = false;
         } else {
             restore_failed_ = true;
+            last_failure_stage_ = ResourceMutationFailureStage::JournalCleanup;
             return MutationResult::Failed;
         }
     }
@@ -616,12 +652,21 @@ MutationResult ResourceMutationController::apply(
     const MutationPermit& permit
 ) noexcept {
     ++cycle_;
-    if (!recoverIfNeeded()) return MutationResult::Failed;
+    last_failure_stage_ = ResourceMutationFailureStage::None;
+    last_actuator_status_ = ActuatorStatus::Invalid;
+    if (!recoverIfNeeded()) {
+        if (last_failure_stage_ == ResourceMutationFailureStage::None) {
+            last_failure_stage_ = ResourceMutationFailureStage::Recovery;
+        }
+        return MutationResult::Failed;
+    }
     if (!baseline_captured_ && !captureBaseline(profile)) {
         return MutationResult::Skipped;
     }
     if (restore_failed_) {
-        return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
+        if (restoreAll()) return MutationResult::RolledBack;
+        last_failure_stage_ = ResourceMutationFailureStage::Rollback;
+        return MutationResult::Failed;
     }
 
     const bool mutation_gate_open =
@@ -669,7 +714,12 @@ MutationResult ResourceMutationController::apply(
     if (applied == MutationResult::Skipped) return MutationResult::Skipped;
     if (applied == MutationResult::RolledBack) return MutationResult::RolledBack;
     if (mutated_ || restore_failed_) {
-        return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
+        if (restoreAll()) return MutationResult::RolledBack;
+        last_failure_stage_ = ResourceMutationFailureStage::Rollback;
+        return MutationResult::Failed;
+    }
+    if (last_failure_stage_ == ResourceMutationFailureStage::None) {
+        last_failure_stage_ = ResourceMutationFailureStage::ActuatorOther;
     }
     return MutationResult::Failed;
 }
@@ -721,11 +771,13 @@ bool ResourceMutationController::restoreAll() noexcept {
     if (!ok) {
         restore_failed_ = true;
         mutated_ = true;
+        last_failure_stage_ = ResourceMutationFailureStage::Rollback;
         return false;
     }
     if (journal_committed_ && journal_ != nullptr && !journal_->clear()) {
         restore_failed_ = true;
         mutated_ = true;
+        last_failure_stage_ = ResourceMutationFailureStage::JournalCleanup;
         return false;
     }
     journal_committed_ = false;

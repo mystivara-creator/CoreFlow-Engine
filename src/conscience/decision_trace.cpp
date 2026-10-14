@@ -1,4 +1,5 @@
 #include "coreflow/decision_trace.hpp"
+#include "coreflow/decision_trace_reason.hpp"
 
 #include <cstdio>
 #include <ctime>
@@ -91,16 +92,8 @@ void appendDecisionTrace(
         if (now != static_cast<std::time_t>(-1) && gmtime_r(&now, &tm) != nullptr) {
             (void)std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
         }
-        const char* reason = "NO_VERIFIED_MUTATION";
-        if (hold != HoldReason::None) reason = "SAFETY_HOLD";
-        else if (mode != MutationMode::Adaptive || !armed) reason = "OBSERVE_OR_NOT_ARMED";
-        else if (!plan.mutation_eligible) reason = "POLICY_BLOCKED";
-        else if (cpuMutation == MutationResult::Failed ||
-                 resourceMutation == MutationResult::Failed) reason = "MUTATION_FAILED";
-        else if (cpuMutation == MutationResult::Verified ||
-                 resourceMutation == MutationResult::Verified) reason = "MUTATION_VERIFIED";
-        else if (cpuMutation == MutationResult::RolledBack ||
-                 resourceMutation == MutationResult::RolledBack) reason = "MUTATION_ROLLED_BACK";
+        const char* reason = decisionTraceReason(
+            hold, mode, armed, plan.mutation_eligible, cpuMutation, resourceMutation);
 
         std::ofstream out(kDecisionTracePath, std::ios::out | std::ios::app);
         if (!out) return;

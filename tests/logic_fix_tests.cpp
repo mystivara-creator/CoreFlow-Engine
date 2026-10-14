@@ -1,3 +1,4 @@
+#include "coreflow/decision_trace_reason.hpp"
 // Regression tests for the Autonomous-Engine logic review fixes.
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/policy.hpp"
@@ -7,6 +8,7 @@
 
 #include <deque>
 #include <iostream>
+#include <string>
 #include <limits>
 #include <cmath>
 
@@ -62,6 +64,39 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         CHECK(std::abs(normalizePsiPercent(-1.0)) < 1e-9);
         CHECK(std::abs(normalizePsiPercent(
             std::numeric_limits<double>::quiet_NaN())) < 1e-9);
+    }
+
+    // Decision trace reason precedence: report a real failure even when the
+    // policy plan is ineligible, but preserve safety and mode gates.
+    {
+        using coreflow::HoldReason;
+        using coreflow::MutationMode;
+        using coreflow::MutationResult;
+        using coreflow::decisionTraceReason;
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::None, MutationMode::Adaptive, true, false,
+            MutationResult::Skipped, MutationResult::Failed)) == "MUTATION_FAILED");
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::None, MutationMode::Adaptive, true, false,
+            MutationResult::Skipped, MutationResult::Skipped)) == "POLICY_BLOCKED");
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::SafeMode, MutationMode::Adaptive, true, false,
+            MutationResult::Failed, MutationResult::Failed)) == "SAFETY_HOLD");
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::None, MutationMode::Disabled, true, true,
+            MutationResult::Failed, MutationResult::Failed)) == "OBSERVE_OR_NOT_ARMED");
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::None, MutationMode::Adaptive, true, true,
+            MutationResult::Verified, MutationResult::Skipped)) == "MUTATION_VERIFIED");
+
+        CHECK(std::string(decisionTraceReason(
+            HoldReason::None, MutationMode::Adaptive, true, true,
+            MutationResult::RolledBack, MutationResult::Skipped)) == "MUTATION_ROLLED_BACK");
     }
 
     AdaptivePolicy policy;

@@ -34,9 +34,31 @@ class Journal final : public MutationJournal {
 public:
     Entries entries;
     bool pending{false};
-    bool commit(const Entries& e) noexcept override { entries = e; pending = true; return true; }
-    bool clear() noexcept override { entries.clear(); pending = false; return true; }
-    LoadState load(Entries& out) noexcept override { out = entries; return pending ? LoadState::Pending : LoadState::Absent; }
+    bool fail_commit{false};
+    bool fail_clear{false};
+    bool corrupt{false};
+
+    bool commit(const Entries& e) noexcept override {
+        if (fail_commit) return false;
+        entries = e;
+        pending = true;
+        corrupt = false;
+        return true;
+    }
+
+    bool clear() noexcept override {
+        if (fail_clear) return false;
+        entries.clear();
+        pending = false;
+        corrupt = false;
+        return true;
+    }
+
+    LoadState load(Entries& out) noexcept override {
+        out = entries;
+        if (corrupt) return LoadState::Corrupt;
+        return pending ? LoadState::Pending : LoadState::Absent;
+    }
 };
 
 MutationResult applyResourcePolicy(
@@ -156,6 +178,169 @@ void test_no_write_without_user_grant() {
     const auto& ledger = controller.consultationLedger();
     CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] >= 1U);
     CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] == 0U);
+}
+
+void test_journal_commit_failure_is_diagnosed() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_resource_journal_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 100;
+    sample.mem_available_ratio = 0.10;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.2;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setGrantMemory(true);
+
+    Journal journal;
+    journal.fail_commit = true;
+
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+    CHECK(controller.captureBaseline(profile));
+
+    const MutationResult result = applyResourcePolicy(
+        controller, RuntimeState::Elevated, sample, profile, config,
+        InterventionLevel::Low);
+
+    CHECK(result == MutationResult::Failed);
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::JournalCommit);
+    CHECK(readFile(swappiness) == "60");
+    CHECK(!controller.mutated());
+    CHECK(!journal.pending);
+
+    fs::remove_all(root);
+}
+
+
+void test_corrupt_journal_blocks_mutation() {
+    Journal journal;
+    journal.corrupt = true;
+
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    DeviceProfile profile;
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::JournalCorrupt);
+    CHECK(journal.corrupt);
+    CHECK(!controller.mutated());
+}
+
+void test_journal_clear_failure_blocks_recovery() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_journal_clear_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    Journal journal;
+    journal.entries.emplace_back(swappiness.string(), "60");
+    journal.pending = true;
+    journal.fail_clear = true;
+
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    // Recovery must not proceed while the durable journal cannot be cleared.
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::JournalCleanup);
+    CHECK(journal.pending);
+    CHECK(readFile(swappiness) == "60");
+    CHECK(!controller.mutated());
+
+    fs::remove_all(root);
+}
+
+
+void test_recovery_actuator_failure_is_diagnosed() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_recovery_actuator_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path target = root / "resource";
+    const fs::path secondary = root / "secondary";
+    writeFile(target, "90");
+    writeFile(secondary, "90");
+
+    DeviceProfile profile;
+    Journal journal;
+    journal.entries.emplace_back(target.string(), "60");
+    journal.entries.emplace_back(secondary.string(), "60");
+    journal.pending = true;
+
+    // The actuator's writable() check inspects mode bits, even when tests run
+    // as root. The existing file remains readable but is not writable.
+    fs::permissions(target, fs::perms::owner_read,
+                    fs::perm_options::replace);
+
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::RecoveryActuator);
+    CHECK(controller.lastActuatorStatus() == ActuatorStatus::SafetyRejected);
+    CHECK(journal.pending);
+    CHECK(readFile(target) == "90");
+    CHECK(readFile(secondary) == "60");
+
+    fs::permissions(target, fs::perms::owner_all,
+                    fs::perm_options::replace);
+    fs::remove_all(root);
+}
+
+
+void test_missing_recovery_path_keeps_journal() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_missing_recovery_path_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path missing = root / "resource-that-does-not-exist";
+
+    DeviceProfile profile;
+    Journal journal;
+    journal.entries.emplace_back(missing.string(), "60");
+    journal.pending = true;
+
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::RecoveryActuator);
+    CHECK(controller.lastActuatorStatus() == ActuatorStatus::ReadFailed);
+    CHECK(journal.pending);
+    CHECK(!fs::exists(missing));
+
+    fs::remove_all(root);
 }
 
 void test_swappiness_adaptive_path() {
@@ -1046,6 +1231,11 @@ void test_resource_actuator_rejects_scope_only_permit() {
 
 int main() {
     test_resource_actuator_rejects_scope_only_permit();
+    test_journal_commit_failure_is_diagnosed();
+    test_corrupt_journal_blocks_mutation();
+    test_journal_clear_failure_blocks_recovery();
+    test_recovery_actuator_failure_is_diagnosed();
+    test_missing_recovery_path_keeps_journal();
     test_no_write_without_user_grant();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();

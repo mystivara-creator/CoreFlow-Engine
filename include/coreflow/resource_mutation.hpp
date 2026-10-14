@@ -25,6 +25,45 @@ namespace coreflow {
 // EffectModel scores whether a bounded change improves stability; this
 // controller applies at most one verified mutation per cycle with journal
 // and rollback.
+enum class ResourceMutationFailureStage : std::uint8_t {
+    None = 0,
+    Recovery,
+    JournalCorrupt,
+    RecoveryActuator,
+    JournalUnavailable,
+    BaselineRead,
+    JournalCommit,
+    ActuatorRead,
+    ActuatorSafety,
+    ActuatorWriteOrVerify,
+    ActuatorOther,
+    JournalCleanup,
+    Rollback
+};
+
+inline const char* resourceMutationFailureStageName(
+    ResourceMutationFailureStage stage
+) noexcept {
+    switch (stage) {
+        case ResourceMutationFailureStage::None: return "NONE";
+        case ResourceMutationFailureStage::Recovery: return "RECOVERY_FAILED";
+        case ResourceMutationFailureStage::JournalCorrupt: return "JOURNAL_CORRUPT";
+        case ResourceMutationFailureStage::RecoveryActuator:
+            return "RECOVERY_ACTUATOR_FAILED";
+        case ResourceMutationFailureStage::JournalUnavailable: return "JOURNAL_UNAVAILABLE";
+        case ResourceMutationFailureStage::BaselineRead: return "BASELINE_READ_FAILED";
+        case ResourceMutationFailureStage::JournalCommit: return "JOURNAL_COMMIT_FAILED";
+        case ResourceMutationFailureStage::ActuatorRead: return "ACTUATOR_READ_FAILED";
+        case ResourceMutationFailureStage::ActuatorSafety: return "ACTUATOR_SAFETY_REJECTED";
+        case ResourceMutationFailureStage::ActuatorWriteOrVerify:
+            return "ACTUATOR_WRITE_OR_VERIFY_FAILED";
+        case ResourceMutationFailureStage::ActuatorOther: return "ACTUATOR_FAILED";
+        case ResourceMutationFailureStage::JournalCleanup: return "JOURNAL_CLEANUP_FAILED";
+        case ResourceMutationFailureStage::Rollback: return "ROLLBACK_FAILED";
+    }
+    return "UNKNOWN";
+}
+
 class ResourceMutationController final {
 public:
     void setJournal(MutationJournal* journal) noexcept;
@@ -67,6 +106,12 @@ public:
     activeResourceSettings() const noexcept { return active_resources_cache_; }
 
     bool mutated() const noexcept { return mutated_; }
+    ResourceMutationFailureStage lastFailureStage() const noexcept {
+        return last_failure_stage_;
+    }
+    ActuatorStatus lastActuatorStatus() const noexcept {
+        return last_actuator_status_;
+    }
 
     // Last DecisionAgent reasoning summary for this cycle (empty if none).
     const std::string& lastAgentReason() const noexcept { return last_agent_reason_; }
@@ -141,6 +186,8 @@ private:
     bool restore_failed_{false};
     bool stabilizing_epoch_{false};
     bool pending_outcome_{false};
+    ResourceMutationFailureStage last_failure_stage_{ResourceMutationFailureStage::None};
+    ActuatorStatus last_actuator_status_{ActuatorStatus::Invalid};
     std::string last_mutation_path_;
     std::string last_mutation_target_;
     std::string last_previous_value_;

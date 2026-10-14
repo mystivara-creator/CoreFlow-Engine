@@ -871,14 +871,22 @@ void AutonomousEngine::tick() {
             }
         }
         if (resource_mutation != MutationResult::Skipped) {
-    logInfo(
-        "RESOURCE_AUTONOMOUS result=%s",
-        mutationResultName(resource_mutation));
-} else if (!ecosystem_plan.mutation_eligible) {
-    logInfo(
-        "RESOURCE_AUTONOMOUS result=SKIPPED reason=POLICY_BLOCKED state=%s",
-        stateName(next));
-}
+            logInfo("RESOURCE_AUTONOMOUS result=%s",
+                    mutationResultName(resource_mutation));
+            const auto failure_stage = resource_controller_.lastFailureStage();
+            if (failure_stage != ResourceMutationFailureStage::None &&
+                (resource_mutation == MutationResult::Failed ||
+                 resource_mutation == MutationResult::RolledBack)) {
+                logError("RESOURCE_MUTATION_DIAG result=%s stage=%s actuator_status=%u",
+                         mutationResultName(resource_mutation),
+                         resourceMutationFailureStageName(failure_stage),
+                         static_cast<unsigned>(
+                             resource_controller_.lastActuatorStatus()));
+            }
+        } else if (!ecosystem_plan.mutation_eligible) {
+            logInfo("RESOURCE_AUTONOMOUS result=SKIPPED reason=POLICY_BLOCKED state=%s",
+                    stateName(next));
+        }
 
         logMutation(mutation, next);
 
