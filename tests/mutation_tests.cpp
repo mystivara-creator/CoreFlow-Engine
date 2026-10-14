@@ -52,6 +52,43 @@ void writeLine(const std::string& path, const std::string& value) {
     f << value << "\n";
 }
 
+
+fs::path createTempDirectory(const std::string& prefix) {
+    std::vector<fs::path> candidates;
+    const char* configured_tmp = std::getenv("TMPDIR");
+    if (configured_tmp != nullptr && configured_tmp[0] != '\0') {
+        candidates.emplace_back(configured_tmp);
+    }
+    candidates.emplace_back("/data/data/com.termux/files/usr/tmp");
+
+    std::error_code ec;
+    const fs::path system_tmp = fs::temp_directory_path(ec);
+    if (!ec) candidates.push_back(system_tmp);
+
+    ec.clear();
+    const fs::path working_dir = fs::current_path(ec);
+    if (!ec) candidates.push_back(working_dir);
+
+    std::string last_pattern;
+    for (const auto& base : candidates) {
+        ec.clear();
+        if (!fs::is_directory(base, ec) || ec) continue;
+
+        const std::string pattern =
+            (base / (prefix + "XXXXXX")).string();
+        last_pattern = pattern;
+        std::vector<char> buffer(pattern.begin(), pattern.end());
+        buffer.push_back('\0');
+
+        char* made = mkdtemp(buffer.data());
+        if (made != nullptr) return fs::path(made);
+    }
+
+    std::fprintf(stderr, "Cannot create temp directory: %s\n",
+                 last_pattern.c_str());
+    return {};
+}
+
 struct Sandbox {
     fs::path root;
     std::string policy;
@@ -59,9 +96,25 @@ struct Sandbox {
     std::string journal_file;
 
     Sandbox() {
-        char tmpl[] = "/tmp/coreflow_test_XXXXXX";
-        char* made = mkdtemp(tmpl);
-        if (made == nullptr) std::abort();
+        const char* configured_tmp = std::getenv("TMPDIR");
+        fs::path temp_dir;
+        if (configured_tmp != nullptr && configured_tmp[0] != '\0' &&
+            fs::is_directory(configured_tmp)) {
+            temp_dir = configured_tmp;
+        } else if (fs::is_directory("/data/data/com.termux/files/usr/tmp")) {
+            temp_dir = "/data/data/com.termux/files/usr/tmp";
+        } else {
+            temp_dir = fs::temp_directory_path();
+        }
+        const std::string pattern =
+            (temp_dir / "coreflow_test_XXXXXX").string();
+        std::vector<char> tmpl(pattern.begin(), pattern.end());
+        tmpl.push_back('\0');
+        char* made = mkdtemp(tmpl.data());
+        if (made == nullptr) {
+            std::fprintf(stderr, "mkdtemp failed; temp dir: %s\n", pattern.c_str());
+            std::abort();
+        }
         root = made;
         policy = (root / "policy0").string();
         governor_file = policy + "/scaling_governor";
@@ -481,7 +534,10 @@ void test_release_defaults_are_observe_only_until_explicit_opt_in() {
 }
 
 void test_experimental_trial_mode_is_not_enabled_by_config() {
-    const std::string path = "/tmp/coreflow_test_config_trial.ini";
+    const fs::path config_dir = createTempDirectory("coreflow_config_");
+    CHECK(!config_dir.empty());
+    if (config_dir.empty()) return;
+    const std::string path = (config_dir / "config_trial.ini").string();
     writeLine(path, "mutation_mode=trial");
     EngineConfig cfg;
     CHECK(cfg.load(path));
@@ -491,7 +547,8 @@ void test_experimental_trial_mode_is_not_enabled_by_config() {
     CHECK(cfg.load(path));
     CHECK(cfg.mutationMode() == MutationMode::Adaptive);
     CHECK(!cfg.mutationArmed());
-    std::remove(path.c_str());
+    std::error_code cleanup_ec;
+    fs::remove_all(config_dir, cleanup_ec);
 }
 
 
@@ -707,11 +764,9 @@ void test_retained_cpu_state_restores_saved_baseline_after_restart() {
 }
 
 void test_retained_state_store_round_trip_and_corruption() {
-    char tmpl[] = "/tmp/coreflow_retained_XXXXXX";
-    char* made = mkdtemp(tmpl);
-    CHECK(made != nullptr);
-    if (made == nullptr) return;
-    const fs::path root(made);
+    const fs::path root = createTempDirectory("coreflow_retained_");
+    CHECK(!root.empty());
+    if (root.empty()) return;
     const fs::path storePath = root / "retained.db";
     FileRetainedStateStore store(storePath.string());
     RetainedStateEntry entry;
@@ -746,8 +801,10 @@ void test_retained_state_store_round_trip_and_corruption() {
 }
 
 void test_safety_hold_markers() {
-    char tmpl[] = "/tmp/coreflow_hold_XXXXXX";
-    const std::string dir = mkdtemp(tmpl);
+    const fs::path root = createTempDirectory("coreflow_hold_");
+    CHECK(!root.empty());
+    if (root.empty()) return;
+    const std::string dir = root.string();
     const SafetyHoldPaths paths{dir + "/DISABLE", dir + "/SAFE_MODE"};
 
     CHECK(evaluateSafetyHold(paths) == HoldReason::None);
@@ -760,7 +817,8 @@ void test_safety_hold_markers() {
 
     std::remove(paths.kill_switch.c_str());
     std::remove(paths.safe_mode.c_str());
-    std::remove(dir.c_str());
+    std::error_code cleanup_ec;
+    fs::remove_all(root, cleanup_ec);
 }
 
 void test_environment_capability_matrix_is_fail_closed() {
@@ -886,6 +944,67 @@ void test_multi_policy_mutations_all_restored() {
     CHECK(!journal.has_pending);
 }
 
+
+
+void test_experience_score_ranks_beneficial_governor() {
+    Sandbox box;
+    FakeJournal journal;
+    ExperienceMemory memory;
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setExperienceMemory(&memory);
+
+    const DeviceProfile profile = box.profile();
+    const RuntimeSample runtime = sample(0.5, 30.0);
+
+    ExperienceMemory::Record record;
+    record.candidate.key = "cpufreq:" + box.policy + ":performance";
+    record.context.state = RuntimeState::Normal;
+    record.context.workload = WorkloadClass::Interactive;
+    record.context.charging = false;
+    record.outcome = BaselineIntelligence::Outcome::Beneficial;
+    record.score = 0.95;
+    record.confidence = 0.95;
+    record.observations = 8;
+    CHECK(memory.record(record));
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, runtime, profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "performance");
+    CHECK(mc.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
+void test_regressed_governor_is_not_bootstrapped() {
+    Sandbox box;
+    FakeJournal journal;
+    ExperienceMemory memory;
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setExperienceMemory(&memory);
+
+    const DeviceProfile profile = box.profile();
+    const RuntimeSample runtime = sample(0.5, 30.0);
+
+    ExperienceMemory::Record record;
+    record.candidate.key = "cpufreq:" + box.policy + ":schedutil";
+    record.context.state = RuntimeState::Normal;
+    record.context.workload = WorkloadClass::Interactive;
+    record.context.charging = false;
+    record.outcome = BaselineIntelligence::Outcome::Regression;
+    record.score = 0.05;
+    record.confidence = 0.95;
+    record.observations = 8;
+    CHECK(memory.record(record));
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, runtime, profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) != "schedutil");
+    CHECK(mc.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
+}
 
 void test_experience_persists_and_is_bounded() {
     const fs::path path = fs::temp_directory_path() / "coreflow_experience_test.db";
@@ -1083,6 +1202,8 @@ int main() {
         {"mutation_authority_single_gate", test_mutation_authority_is_single_gate},
         {"environment_capability_matrix_fail_closed", test_environment_capability_matrix_is_fail_closed},
         {"resource_domain_names_stable", test_resource_domain_names_are_stable},
+        {"experience_score_ranks_beneficial_governor", test_experience_score_ranks_beneficial_governor},
+        {"regressed_governor_is_not_bootstrapped", test_regressed_governor_is_not_bootstrapped},
         {"experience_persistence_and_scope", test_experience_persists_and_is_bounded},
         {"capability_bound_permit_rejects_scope_and_mismatches",
          test_capability_bound_permit_rejects_scope_and_mismatches},

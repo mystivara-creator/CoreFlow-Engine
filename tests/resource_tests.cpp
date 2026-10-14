@@ -1022,7 +1022,8 @@ void test_resource_actuator_rejects_scope_only_permit() {
 
     ActuatorMutation mutation;
     mutation.id = {ActuatorDomain::Vm, 0};
-    mutation.target = swappiness.string();
+    const std::string swappiness_target = swappiness.string();
+    mutation.target = swappiness_target;
     mutation.requested = "67";
 
     PolicyPlan plan;

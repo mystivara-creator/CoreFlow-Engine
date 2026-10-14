@@ -273,6 +273,17 @@ bool ResourceMutationController::selectCandidate(
     ctx.charging = sample.charging;
     ctx.sample_confidence = sample.confidence;
     ctx.intervention = policy.intervention;
+    // Outcome-driven pressure signals — machine measures, model scales.
+    ctx.psi_available = sample.psi_available;
+    ctx.psi_cpu = sample.psi_cpu_some_avg10;
+    ctx.psi_memory = sample.psi_memory_some_avg10;
+    ctx.psi_io = sample.psi_io_some_avg10;
+    ctx.throttling_detected = sample.throttling_detected;
+    ctx.throttle_ratio = sample.throttle_ratio;
+    ctx.memory_stall_detected = sample.memory_stall_detected;
+    ctx.memory_stall_score = sample.memory_stall_score;
+    ctx.io_latency_available = sample.io_latency_available;
+    ctx.io_avg_latency_ms = sample.io_avg_latency_ms;
 
     if (policy.action == PolicyAction::ReduceIntervention) {
         ctx.intervention = InterventionLevel::Low;
@@ -359,6 +370,7 @@ bool ResourceMutationController::selectCandidate(
     double best_utility = -1.0;
     Candidate best_candidate;
     bool found_candidate = false;
+    bool best_candidate_retained = false;
 
     for (const auto& scored : ranked) {
         const std::string& name = scored.resource_name;
@@ -420,40 +432,36 @@ bool ResourceMutationController::selectCandidate(
 
         if (isRejected(path, requested)) continue;
 
-        double utility = scored.utility;
+        // EffectModel utility ranges from -0.25 to 0.75. DecisionAgent
+        // may subtract up to 0.04 for evidence uncertainty, so normalize
+        // [-0.29, 0.75] to [0,1] before blending empirical experience.
+        double utility = std::clamp((scored.utility + 0.29) / 1.04, 0.0, 1.0);
         if (experience_memory_ != nullptr) {
             ExperienceMemory::CandidateIdentity identity;
             identity.key = "resource:" + path + ":" + requested;
-            if (const auto* record = experience_memory_->find(identity, experience_context);
-                record != nullptr && record->observations > 0 &&
-                record->confidence >= 0.60) {
-                switch (record->outcome) {
-                    case BaselineIntelligence::Outcome::Beneficial:
-                        utility += 0.08 * record->confidence;
-                        break;
-                    case BaselineIntelligence::Outcome::Neutral:
-                        utility -= 0.05 * record->confidence;
-                        break;
-                    case BaselineIntelligence::Outcome::Regression:
-                        utility -= 0.30 * record->confidence;
-                        break;
-                    case BaselineIntelligence::Outcome::Unknown:
-                    default:
-                        break;
-                }
-            }
+            utility = blendExperienceScore(
+                utility, experience_memory_->find(identity, experience_context));
         }
-        for (const auto& retained : retained_entries_) {
-            if (retained.path == path && retained.target == requested) {
-                // Bounded preference only; the candidate already passed fresh
-                // capability, domain, policy, intervention and risk ranking.
-                utility += 0.08;
-                break;
-            }
+
+        const bool candidate_retained = std::any_of(
+            retained_entries_.begin(), retained_entries_.end(),
+            [&path, &requested](const RetainedStateEntry& entry) {
+                return entry.path == path && entry.target == requested;
+            });
+
+        // Preserve the original raw-utility admission threshold of 0.05
+        // after the affine normalization above.
+        constexpr double normalized_min_utility = (0.05 + 0.29) / 1.04;
+        if (utility < normalized_min_utility ||
+            utility < best_utility ||
+            (utility == best_utility &&
+             (!candidate_retained || best_candidate_retained))) {
+            continue;
         }
-        if (utility < 0.05 || utility <= best_utility) continue;
+
 
         best_utility = utility;
+        best_candidate_retained = candidate_retained;
         best_candidate.domain = bit->second.domain;
         best_candidate.name = name;
         best_candidate.path = path;

@@ -71,7 +71,12 @@ struct Situation {
     bool memory{false};
     bool elevated{false};
     bool calm_explore{false};
-    bool stressed() const noexcept { return thermal || memory; }
+    bool io_pressure{false};
+    bool throttling{false};
+    // 0..1 continuous severity derived from PSI / stalls / thermal — used to
+    // scale benefit instead of fixed score tables.
+    double severity{0.0};
+    bool stressed() const noexcept { return thermal || memory || throttling; }
 };
 
 Situation classify(const EffectContext& ctx) noexcept {
@@ -79,14 +84,80 @@ Situation classify(const EffectContext& ctx) noexcept {
     s.thermal = ctx.thermal_available &&
                 (ctx.state == RuntimeState::ThermalGuard || ctx.state == RuntimeState::Warming ||
                  ctx.thermal_c >= 48.0);
-    s.memory = ctx.state == RuntimeState::Pressure || ctx.mem_available_ratio < 0.15;
+    s.memory = ctx.state == RuntimeState::Pressure || ctx.mem_available_ratio < 0.15 ||
+               ctx.memory_stall_detected;
     s.elevated = ctx.state == RuntimeState::Elevated ||
                  (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
                  ctx.load1 >= 1.50;
     s.calm_explore = (ctx.state == RuntimeState::Normal) &&
                      ctx.intervention >= InterventionLevel::Low &&
                      ctx.sample_confidence >= 0.75;
+    s.io_pressure = (ctx.psi_available && ctx.psi_io >= 0.08) ||
+                    (ctx.io_latency_available && ctx.io_avg_latency_ms >= 25.0);
+    s.throttling = ctx.throttling_detected;
+
+    double sev = 0.0;
+    if (ctx.psi_available) {
+        sev = std::max({ctx.psi_cpu, ctx.psi_memory, ctx.psi_io * 0.85});
+    }
+    if (ctx.throttle_ratio > sev) sev = ctx.throttle_ratio;
+    if (ctx.memory_stall_score > sev) sev = ctx.memory_stall_score;
+    if (s.thermal && ctx.thermal_available) {
+        const double t = std::clamp((ctx.thermal_c - 48.0) / 12.0, 0.0, 1.0);
+        sev = std::max(sev, t);
+    }
+    if (s.memory && ctx.mem_available_ratio < 0.20) {
+        sev = std::max(sev, 1.0 - ctx.mem_available_ratio);
+    }
+    s.severity = std::clamp(sev, 0.0, 1.0);
     return s;
+}
+
+// Outcome-driven base benefit: severity need + experience prior.
+// No fixed "0.44 for efficiency" table — device situation and measured
+// history set the numbers.
+double outcomeBenefit(const Situation& s, bool stabilizing, CandidateSource source,
+                      const EffectContext& ctx) noexcept {
+    double need = s.severity;
+    if (s.elevated && !s.stressed()) need = std::max(need, 0.25);
+    if (s.calm_explore) need = std::max(need, 0.12);
+    if (s.io_pressure) need = std::max(need, 0.18);
+
+    double source_bias = 0.0;
+    switch (source) {
+        case CandidateSource::VendorEfficiency:  source_bias = stabilizing ? 0.08 : 0.02; break;
+        case CandidateSource::VendorPerformance: source_bias = s.elevated ? 0.06 : 0.0; break;
+        case CandidateSource::VendorDefault:     source_bias = 0.04; break;
+        case CandidateSource::OrderedScale:      source_bias = 0.03; break;
+        case CandidateSource::KernelOption:      source_bias = 0.02; break;
+        case CandidateSource::BoundedStep:       source_bias = 0.01; break;
+        default: break;
+    }
+
+    double benefit = 0.10 + need * 0.35 + source_bias;
+    if (stabilizing && s.stressed()) benefit += 0.08;
+
+    if (ctx.has_experience && ctx.experience_confidence >= 0.40) {
+        const double exp_delta = (ctx.experience_score - 0.5) * 2.0;
+        benefit += exp_delta * 0.25 * ctx.experience_confidence;
+    }
+    return std::clamp(benefit, 0.0, 1.0);
+}
+
+double outcomeRisk(const Situation& s, bool stabilizing, CandidateSource source,
+                   const EffectContext& ctx, EffectDirection direction) noexcept {
+    double risk = 0.22;
+    if (s.stressed() && !stabilizing) risk += 0.25;
+    if (direction == EffectDirection::Increase && s.thermal) risk += 0.12;
+    if (direction == EffectDirection::Increase && s.memory) risk += 0.10;
+    if (source == CandidateSource::BoundedStep) risk += 0.08;
+    if (source == CandidateSource::KernelOption) risk += 0.05;
+    if (ctx.intervention == InterventionLevel::Low) risk += 0.04;
+    if (ctx.has_experience && ctx.experience_confidence >= 0.40) {
+        if (ctx.experience_score < 0.45) risk += (0.45 - ctx.experience_score) * 0.40;
+        else if (ctx.experience_score > 0.55) risk -= (ctx.experience_score - 0.55) * 0.20;
+    }
+    return std::clamp(risk, 0.05, 0.95);
 }
 
 bool isUtilizationClamp(const ResourceCapability& cap) noexcept {
@@ -124,23 +195,21 @@ std::vector<EffectScore> EffectModel::proposals(
         const bool base_numeric = parseInteger(base_text, base_num);
 
         auto emit = [&](const std::string& requested, CandidateSource source,
-                        EffectDirection direction, bool stabilizing, double benefit,
-                        double risk, const char* reason) {
+                        EffectDirection direction, bool stabilizing, const char* reason) {
             if (requested.empty() || requested == base_text) return;
             if (isFatalValue(base_text, requested)) return;
-            // Memory pressure without thermal stress: experimenting on the
-            // pressured resource's own domain is the stabilizing action; the
-            // measured outcome (and rollback) decides which direction helps.
+            // Memory pressure without thermal stress: the resource domain itself
+            // is the stabilizing surface; measured outcome decides direction.
             if (situation.memory && !situation.thermal &&
                 capability.domain == ResourceDomain::Memory) {
                 stabilizing = true;
-                benefit = std::max(benefit, 0.24);
             }
-            // Stressed contexts accept only load-reducing changes.
             if (situation.stressed() && !stabilizing) return;
             for (const auto& existing : out) {
-                if (existing.requested == requested) return;  // keep first (strongest) source
+                if (existing.requested == requested) return;
             }
+            const double benefit = outcomeBenefit(situation, stabilizing, source, ctx);
+            const double risk = outcomeRisk(situation, stabilizing, source, ctx, direction);
             EffectScore score;
             score.requested = requested;
             score.source = source;
@@ -151,8 +220,8 @@ std::vector<EffectScore> EffectModel::proposals(
                                                 source == CandidateSource::VendorPerformance ||
                                                 source == CandidateSource::VendorDefault
                                             ? 0.05
-                                            : 0.0));
-            if (ctx.intervention == InterventionLevel::Low) risk += 0.05;
+                                            : 0.0) +
+                                       (ctx.has_experience ? ctx.experience_confidence * 0.08 : 0.0));
             score.benefit = clamp01(benefit);
             score.risk = clamp01(risk);
             score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
@@ -179,17 +248,15 @@ std::vector<EffectScore> EffectModel::proposals(
             switch (vendor.profile) {
                 case VendorProfile::Efficiency:
                     emit(value, CandidateSource::VendorEfficiency, dir, true,
-                         situation.stressed() ? 0.44 : 0.20, 0.18,
                          "vendor efficiency profile value");
                     break;
                 case VendorProfile::Performance:
                     emit(value, CandidateSource::VendorPerformance, dir, false,
-                         situation.elevated ? 0.34 : 0.16, 0.22,
                          "vendor performance profile value");
                     break;
                 case VendorProfile::Default:
                 case VendorProfile::Boot:
-                    emit(value, CandidateSource::VendorDefault, dir, false, 0.28, 0.20,
+                    emit(value, CandidateSource::VendorDefault, dir, false,
                          "vendor factory configuration value");
                     break;
             }
@@ -211,14 +278,12 @@ std::vector<EffectScore> EffectModel::proposals(
                 }
                 if (has_below) {
                     emit(std::to_string(below), CandidateSource::OrderedScale,
-                         EffectDirection::Decrease, situation.thermal,
-                         situation.thermal ? 0.36 : 0.16, 0.24,
+                         EffectDirection::Decrease, situation.thermal || situation.throttling,
                          "one step down the advertised hardware scale");
                 }
                 if (has_above) {
                     emit(std::to_string(above), CandidateSource::OrderedScale,
                          EffectDirection::Increase, false,
-                         situation.elevated ? 0.24 : 0.12, 0.30,
                          "one step up the advertised hardware scale");
                 }
             } else if (!capability.ordered_scale) {
@@ -230,7 +295,7 @@ std::vector<EffectScore> EffectModel::proposals(
                         return false;
                     }();
                     emit(option, CandidateSource::KernelOption, EffectDirection::Select,
-                         vendor_low_power, situation.elevated ? 0.20 : 0.16, 0.30,
+                         vendor_low_power,
                          "kernel-advertised option");
                 }
             }
@@ -280,12 +345,11 @@ std::vector<EffectScore> EffectModel::proposals(
                 if (down != scaled) {
                     emit(format(down), CandidateSource::BoundedStep,
                          EffectDirection::Decrease, clamp,
-                         clamp && situation.stressed() ? 0.30 : 0.16, 0.34,
                          clamp ? "lower utilization clamp" : "bounded exploration step down");
                 }
                 if (up != scaled) {
                     emit(format(up), CandidateSource::BoundedStep,
-                         EffectDirection::Increase, false, 0.16, 0.34,
+                         EffectDirection::Increase, false,
                          "bounded exploration step up");
                 }
             }

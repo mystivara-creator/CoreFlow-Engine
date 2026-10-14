@@ -15,13 +15,6 @@ namespace {
 constexpr char kGovernorSuffix[] = "/scaling_governor";
 constexpr std::size_t kGovernorSuffixSize = sizeof(kGovernorSuffix) - 1U;
 constexpr double kAdaptiveHysteresis = 0.10;
-// Thermal normalization must use the same calibration as AdaptivePolicy.
-// The previous 35-43 C span saturated at 43 C, while 42-50 C is normal light
-// load on real SoCs (see policy.hpp), so every Normal/Warming sample looked
-// "fully hot" and the score could no longer tell governors apart.
-constexpr double kThermalComfortC = 40.0;
-constexpr double kThermalPressureC = kThermalGuardEnterC;
-constexpr double kLoadNormalization = 8.0;
 
 const char* knownGovernor(const std::string& governor) noexcept {
     if (governor == "performance") return "performance";
@@ -243,60 +236,25 @@ bool MutationController::isRejected(
 double MutationController::governorScore(
     const std::string& governor,
     RuntimeState state,
-    const RuntimeSample& sample
+    const RuntimeSample& /*sample*/
 ) const noexcept {
+    // This function establishes eligibility, not a hand-authored ranking.
+    // Empirical ranking is applied from ExperienceMemory in buildPlan().
     if (knownGovernor(governor) == nullptr) return -1.0;
 
-    const double workload = sample.cpu_utilization_available
-        ? std::clamp(sample.cpu_utilization, 0.0, 1.0)
-        : std::clamp(sample.load1 / kLoadNormalization, 0.0, 1.0);
-
-    const double thermal = sample.thermal_available
-        ? std::clamp(
-            (static_cast<double>(sample.thermal_millidegrees) / 1000.0 -
-             kThermalComfortC) / (kThermalPressureC - kThermalComfortC),
-            0.0, 1.0)
-        : 0.5;
-
-    double score = 0.0;
-    if (governor == "performance") {
-        score = (0.70 * workload) + (0.30 * (1.0 - thermal));
-    } else if (governor == "walt") {
-        score = (0.60 * workload) + (0.25 * (1.0 - thermal)) + 0.15;
-    } else if (governor == "schedutil") {
-        score = (0.50 * workload) + (0.30 * (1.0 - thermal)) + 0.20;
-    } else if (governor == "conservative") {
-        score = (0.35 * (1.0 - workload)) + (0.45 * thermal) + 0.20;
-    } else if (governor == "powersave") {
-        score = (0.15 * (1.0 - workload)) + (0.70 * thermal) + 0.15;
-    }
-
     switch (state) {
-        case RuntimeState::ThermalGuard:
-            if (governor == "powersave") score += 0.25;
-            else if (governor == "conservative") score += 0.20;
-            else if (governor == "schedutil") score += 0.10;
-            else if (governor == "walt") score -= 0.10;
-            else if (governor == "performance") score -= 0.30;
-            break;
-        case RuntimeState::Elevated:
-            if (governor == "walt") score += 0.08;
-            else if (governor == "schedutil" || governor == "performance") score += 0.05;
-            else if (governor == "powersave") score -= 0.10;
-            break;
-        case RuntimeState::Warming:
-            if (governor == "conservative" || governor == "schedutil") score += 0.08;
-            else if (governor == "walt") score += 0.03;
-            else if (governor == "performance") score -= 0.10;
-            break;
-        case RuntimeState::Normal:
-            break;
         case RuntimeState::Idle:
         case RuntimeState::Pressure:
             return -1.0;
+        case RuntimeState::ThermalGuard:
+            // Explicit safety fallback: do not explore under thermal guard.
+            return governor == "powersave" ? 0.5 : -1.0;
+        case RuntimeState::Normal:
+        case RuntimeState::Warming:
+        case RuntimeState::Elevated:
+            return 0.5;  // neutral prior; no claimed empirical advantage
     }
-
-    return std::clamp(score, 0.0, 1.0);
+    return -1.0;
 }
 
 bool MutationController::buildPlan(
@@ -334,51 +292,49 @@ bool MutationController::buildPlan(
         // One scoring function for every governor, including the live one, so
         // hysteresis compares like with like (experience + retained preference
         // used to be added to candidates only, never to the current governor).
+        const auto experienceRecordFor =
+            [&](const std::string& governor) noexcept
+                -> const ExperienceMemory::Record* {
+            if (experience_memory_ == nullptr) return nullptr;
+
+            ExperienceMemory::CandidateIdentity identity;
+            identity.key = "cpufreq:" + policy.path + ":" + governor;
+            const auto* record =
+                experience_memory_->find(identity, experience_context);
+
+            if (record == nullptr || record->observations == 0 ||
+                !std::isfinite(record->score) ||
+                !std::isfinite(record->confidence) ||
+                record->confidence < 0.60 ||
+                record->score < 0.0 || record->score > 1.0) {
+                return nullptr;
+            }
+
+            switch (record->outcome) {
+                case BaselineIntelligence::Outcome::Beneficial:
+                case BaselineIntelligence::Outcome::Neutral:
+                case BaselineIntelligence::Outcome::Regression:
+                    return record;
+                case BaselineIntelligence::Outcome::Unknown:
+                case BaselineIntelligence::Outcome::Inconclusive:
+                    return nullptr;
+            }
+            return nullptr;
+        };
+
         const auto adjustedScore = [&](const std::string& governor) noexcept {
             double score = governorScore(governor, state, sample);
             if (score < 0.0) return score;
 
-            // Experience is advisory, keyed exactly as AutonomousEngine records
-            // it ("cpufreq:<policy>:<governor>"), with the same outcome-based
-            // adjustment the resource controller applies.
-            if (experience_memory_ != nullptr) {
-                ExperienceMemory::CandidateIdentity identity;
-                identity.key = "cpufreq:" + policy.path + ":" + governor;
-                if (const ExperienceMemory::Record* record =
-                        experience_memory_->find(identity, experience_context);
-                    record != nullptr && record->observations > 0 &&
-                    record->confidence >= 0.60) {
-                    switch (record->outcome) {
-                        case BaselineIntelligence::Outcome::Beneficial:
-                            score += 0.08 * record->confidence;
-                            break;
-                        case BaselineIntelligence::Outcome::Neutral:
-                            score -= 0.05 * record->confidence;
-                            break;
-                        case BaselineIntelligence::Outcome::Regression:
-                            score -= 0.30 * record->confidence;
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            }
-
-            // A previously measured-beneficial setting gets only a small
-            // preference. Current live scoring, advertised capability, policy,
-            // permit and hysteresis remain authoritative.
-            for (const auto& retained : retained_entries_) {
-                if (retained.path == governorPath && retained.target == governor) {
-                    score += 0.08;
-                    break;
-                }
-            }
-            return std::max(score, 0.0);
+            score = blendExperienceScore(
+                score, experienceRecordFor(governor));
+            return std::clamp(score, 0.0, 1.0);
         };
 
         const double currentScore = adjustedScore(current);
         std::string bestGovernor;
         double bestScore = -1.0;
+        bool bestGovernorRetained = false;
 
         for (const std::string& governor : policy.available_governors) {
             if (governor.empty() || isRejected(policy.path, governor)) continue;
@@ -386,18 +342,87 @@ bool MutationController::buildPlan(
             const double score = adjustedScore(governor);
             if (score < 0.0) continue;
 
-            if (score > bestScore) {
+            const bool candidateRetained = std::any_of(
+                retained_entries_.begin(), retained_entries_.end(),
+                [&governorPath, &governor](const RetainedStateEntry& entry) {
+                    return entry.path == governorPath &&
+                           entry.target == governor;
+                });
+            if (score > bestScore ||
+                (score == bestScore && candidateRetained &&
+                 !bestGovernorRetained)) {
                 bestScore = score;
                 bestGovernor = governor;
+                bestGovernorRetained = candidateRetained;
             }
         }
 
         if (bestGovernor.empty() || bestScore < 0.0) continue;
+
+        const bool withinHysteresis =
+            currentScore >= 0.0 &&
+            bestScore < currentScore + kAdaptiveHysteresis;
+        const bool needsExploration =
+            bestGovernor == current || withinHysteresis;
+
+        if (needsExploration) {
+            const auto* currentRecord = experienceRecordFor(current);
+            const bool currentRetained = std::any_of(
+                retained_entries_.begin(), retained_entries_.end(),
+                [&governorPath, &current](const RetainedStateEntry& entry) {
+                    return entry.path == governorPath && entry.target == current;
+                });
+
+            // Do not explore away from a measured-beneficial or retained
+            // setting merely to generate another experiment.
+            if (state == RuntimeState::ThermalGuard || currentRetained ||
+                (currentRecord != nullptr &&
+                 currentRecord->outcome == BaselineIntelligence::Outcome::Beneficial)) {
+                continue;
+            }
+
+            const auto advertised = [&policy](const std::string& value) {
+                return std::find(policy.available_governors.begin(),
+                                 policy.available_governors.end(), value) !=
+                       policy.available_governors.end();
+            };
+
+            std::string bootstrap;
+            const bool schedutilAdvertised = advertised("schedutil");
+
+            // Bootstrap with a generally adaptive governor if it is advertised
+            // and unmeasured. Respect its rejection cooldown rather than
+            // switching to a different candidate to bypass that cooldown.
+            if (schedutilAdvertised && current != "schedutil" &&
+                experienceRecordFor("schedutil") == nullptr) {
+                if (isRejected(policy.path, "schedutil")) continue;
+                bootstrap = "schedutil";
+            } else {
+                // If that bootstrap candidate is already current or has usable
+                // experience, try the first advertised, unmeasured alternative.
+                for (const std::string& candidate : policy.available_governors) {
+                    if (candidate.empty() || candidate == current ||
+                        knownGovernor(candidate) == nullptr ||
+                        isRejected(policy.path, candidate) ||
+                        experienceRecordFor(candidate) != nullptr) {
+                        continue;
+                    }
+                    bootstrap = candidate;
+                    break;
+                }
+            }
+
+            if (bootstrap.empty()) continue;
+            bestGovernor = bootstrap;
+        }
+
         if (bestGovernor == current) continue;
 
-        // Hysteresis against the live governor, so a marginal score difference
-        // cannot cause flapping.
-        if (currentScore >= 0.0 && bestScore < currentScore + kAdaptiveHysteresis) {
+        // Hysteresis is retained for empirically ranked choices. The explicit
+        // bootstrap branch above is a bounded experiment, not a claimed score
+        // advantage, and never runs in ThermalGuard/Pressure/Idle.
+        if (!needsExploration && currentScore >= 0.0 &&
+            bestScore < currentScore + kAdaptiveHysteresis) {
             continue;
         }
 

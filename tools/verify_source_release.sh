@@ -55,8 +55,26 @@ fi
 [ ! -e "$ROOT/module/system/lib64/libonnxruntime.so" ] || { echo "error: source package must not ship libonnxruntime.so" >&2; exit 1; }
 [ ! -e "$ROOT/third_party/jni/arm64-v8a/libonnxruntime.so" ] || { echo "error: extracted ONNX Runtime must not be shipped" >&2; exit 1; }
 
-# Keep the source package small and deterministic: no local ONNX SDK cache.
-[ ! -d "$ROOT/third_party/onnxruntime-android" ] || { echo "error: extracted ONNX Runtime cache must not be shipped" >&2; exit 1; }
+# A real source-release invocation must not contain the extracted SDK cache.
+# Host tests may retain a local cache only when Git ignores it and tracks no files there.
+ORT_CACHE="$ROOT/third_party/onnxruntime-android"
+if [ "${COREFLOW_ALLOW_IGNORED_ORT_CACHE:-0}" = "1" ]; then
+    if [ -e "$ORT_CACHE" ]; then
+        git -C "$ROOT" check-ignore -q third_party/onnxruntime-android/ || {
+            echo "error: local ONNX cache is not Git-ignored" >&2
+            exit 1
+        }
+        [ -z "$(git -C "$ROOT" ls-files -- third_party/onnxruntime-android)" ] || {
+            echo "error: tracked ONNX cache must not be shipped" >&2
+            exit 1
+        }
+    fi
+else
+    [ ! -d "$ORT_CACHE" ] || {
+        echo "error: extracted ONNX Runtime cache must not be shipped" >&2
+        exit 1
+    }
+fi
 
 MODULE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$ROOT/module/module.prop" | tr -d '[:space:]')"
 MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' "$ROOT/module/module.prop" | tr -d '[:space:]')"

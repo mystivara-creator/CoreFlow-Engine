@@ -66,7 +66,9 @@ bool literal(std::string_view v) noexcept {
 
 bool kernelPath(std::string_view p) noexcept {
 #ifdef COREFLOW_HOST_TEST_FIXTURES
-    if (p.rfind("/tmp/", 0) == 0) return true;  // host fixture trees
+    if (p.rfind("/tmp/", 0) == 0 ||
+        p.rfind("/data/data/com.termux/files/usr/tmp/", 0) == 0)
+        return true;  // host fixture trees
 #endif
     return p.rfind("/proc/sys/", 0) == 0 || p.rfind("/sys/", 0) == 0 ||
            p.rfind("/dev/cpuctl/", 0) == 0 || p.rfind("/dev/cpuset/", 0) == 0 ||

@@ -1,9 +1,11 @@
 #include "coreflow/observer.hpp"
+#include "coreflow/observer_metrics.hpp"
 #include "coreflow/thermal_limits.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <dirent.h>
 #include <fstream>
 #include <sstream>
@@ -307,53 +309,61 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
 void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
     std::ifstream file("/proc/diskstats");
     if (!file) return;
-    std::uint64_t reads = 0;
-    std::uint64_t writes = 0;
+
+    observer_metrics::DiskCounterMap current;
     std::string line;
+
     while (std::getline(file, line)) {
         std::istringstream in(line);
         int major = 0;
         int minor = 0;
         std::string name;
-        std::uint64_t rd_completed = 0;
+
+        std::uint64_t rd_ios = 0;
         std::uint64_t rd_merged = 0;
         std::uint64_t rd_sectors = 0;
-        std::uint64_t read_ms = 0;
-        std::uint64_t read_weighted_ms = 0;
-        std::uint64_t wr_completed = 0;
+        std::uint64_t rd_ms = 0;
+        std::uint64_t wr_ios = 0;
         std::uint64_t wr_merged = 0;
         std::uint64_t wr_sectors = 0;
-        if (!(in >> major >> minor >> name >> rd_completed >> rd_merged >> rd_sectors
-              >> read_ms >> read_weighted_ms >> wr_completed >> wr_merged >> wr_sectors)) continue;
-        // Count each physical I/O exactly once. /proc/diskstats lists whole
-        // disks AND their partitions (mmcblk0 + mmcblk0p*, sda + sda*), plus
-        // dm-* (stacked on a disk) and zram (memory, not storage). Summing all
-        // of them multiplied the real rate. Only whole disks appear directly
-        // under /sys/block, so use that as the filter.
-        if (name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
-            name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0) continue;
+        std::uint64_t wr_ms = 0;
+
+        if (!(in >> major >> minor >> name
+                 >> rd_ios >> rd_merged >> rd_sectors >> rd_ms
+                 >> wr_ios >> wr_merged >> wr_sectors >> wr_ms)) {
+            continue;
+        }
+
+        if (name.rfind("loop", 0) == 0 ||
+            name.rfind("ram", 0) == 0 ||
+            name.rfind("zram", 0) == 0 ||
+            name.rfind("dm-", 0) == 0) {
+            continue;
+        }
+
         const std::string block_path = "/sys/block/" + name;
         if (::access(block_path.c_str(), F_OK) != 0) continue;
-        reads += rd_sectors;
-        writes += wr_sectors;
+
+        const std::string key =
+            std::to_string(major) + ":" +
+            std::to_string(minor) + ":" + name;
+
+        current[key] = observer_metrics::DiskCounters{
+            rd_sectors, wr_sectors, rd_ios, wr_ios, rd_ms, wr_ms
+        };
     }
-    if (!have_io_baseline_) {
-        previous_io_read_sectors_ = reads;
-        previous_io_write_sectors_ = writes;
-        have_io_baseline_ = true;
-        return;
-    }
-    const std::uint64_t rd_delta = reads >= previous_io_read_sectors_ ? reads - previous_io_read_sectors_ : 0;
-    const std::uint64_t wr_delta = writes >= previous_io_write_sectors_ ? writes - previous_io_write_sectors_ : 0;
-    previous_io_read_sectors_ = reads;
-    previous_io_write_sectors_ = writes;
-    // Linux diskstats sectors are normally 512-byte sectors. The interval is the
-    // measured gap between samples; Idle deep sleep reaches 300 s, so the old
-    // 60 s ceiling overstated post-idle I/O rates up to 5x.
-    const double interval = std::clamp(last_interval_seconds_, 0.25, 3600.0);
-    sample.io_read_kb_per_sec = static_cast<double>(rd_delta) * 0.5 / interval;
-    sample.io_write_kb_per_sec = static_cast<double>(wr_delta) * 0.5 / interval;
-    sample.io_activity_available = true;
+
+    const auto delta = observer_metrics::calculateIoDelta(
+        current, previous_io_devices_, last_interval_seconds_);
+
+    sample.io_read_kb_per_sec = delta.read_kb_per_sec;
+    sample.io_write_kb_per_sec = delta.write_kb_per_sec;
+    sample.io_activity_available = delta.activity_available;
+
+    sample.io_read_latency_ms = delta.read_latency_ms;
+    sample.io_write_latency_ms = delta.write_latency_ms;
+    sample.io_avg_latency_ms = delta.avg_latency_ms;
+    sample.io_latency_available = delta.latency_available;
 }
 
 void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
@@ -410,6 +420,64 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
     }
 }
 
+
+void RuntimeObserver::readPsi(RuntimeSample& sample) const {
+    auto parsePsiLine = [](const std::string& line,
+                           double& some_avg10,
+                           double& full_avg10) -> bool {
+        return observer_metrics::parsePsiLine(
+            line, some_avg10, full_avg10);
+    };
+
+    auto readResource = [&](const char* path, double& some, double& full) -> bool {
+        std::ifstream file(path);
+        if (!file) return false;
+        std::string line;
+        bool got = false;
+        while (std::getline(file, line)) {
+            if (parsePsiLine(line, some, full)) got = true;
+        }
+        return got;
+    };
+
+    bool any = false;
+    any |= readResource("/proc/pressure/cpu", sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
+    any |= readResource("/proc/pressure/memory", sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
+    any |= readResource("/proc/pressure/io", sample.psi_io_some_avg10, sample.psi_io_full_avg10);
+    if (!any) return;
+
+    sample.psi_available = true;
+    // Linux PSI avg10/avg60/avg300 are percentages in [0, 100].
+    // Convert every valid value to a ratio in [0, 1].
+    auto norm = [](double& value) {
+        value = observer_metrics::normalizePsiPercent(value);
+    };
+    norm(sample.psi_cpu_some_avg10);
+    norm(sample.psi_memory_some_avg10);
+    norm(sample.psi_io_some_avg10);
+    norm(sample.psi_cpu_full_avg10);
+    norm(sample.psi_memory_full_avg10);
+    norm(sample.psi_io_full_avg10);
+}
+
+void RuntimeObserver::diagnoseStalls(RuntimeSample& sample) const {
+    // PSI CPU measures CPU contention, not direct scheduler/cgroup throttling.
+    // Do not report throttling without a dedicated throttling counter.
+    sample.throttle_ratio = 0.0;
+    sample.throttling_detected = false;
+
+    double mem_score = 0.0;
+    if (sample.psi_available) {
+        mem_score = std::max(sample.psi_memory_some_avg10, sample.psi_memory_full_avg10 * 1.2);
+    }
+    if (sample.mem_total_kb > 0 && sample.mem_available_ratio < 0.12) {
+        mem_score = std::max(mem_score, 1.0 - sample.mem_available_ratio);
+    }
+    sample.memory_stall_score = std::clamp(mem_score, 0.0, 1.0);
+    sample.memory_stall_detected = sample.memory_stall_score >= 0.10;
+}
+
+
 RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
     RuntimeSample sample;
     ++sample_counter_;
@@ -431,6 +499,8 @@ RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
     readThermal(sample, profile);
     readCharging(sample);
     readIoActivity(sample);
+    readPsi(sample);
+    diagnoseStalls(sample);
     readProcessProfile(sample);
     return sample;
 }

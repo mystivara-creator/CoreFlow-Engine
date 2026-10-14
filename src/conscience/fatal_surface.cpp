@@ -63,7 +63,9 @@ FatalClass classifyFatalSurface(std::string_view path) noexcept {
 #ifdef COREFLOW_HOST_TEST_FIXTURES
     // Host fixtures stand in for sysfs/procfs with temporary files; the class
     // checks below still apply to the fixture-relative path.
-    const bool host_fixture = startsWith(path, "/tmp/");
+    const bool host_fixture =
+        startsWith(path, "/tmp/") ||
+        startsWith(path, "/data/data/com.termux/files/usr/tmp/");
 #else
     const bool host_fixture = false;
 #endif

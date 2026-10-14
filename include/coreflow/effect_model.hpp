@@ -84,6 +84,25 @@ struct EffectContext {
     bool charging{false};
     double sample_confidence{0.0};
     InterventionLevel intervention{InterventionLevel::ObserveOnly};
+
+    // Outcome-driven pressure signals (from PSI / stall diagnosis).
+    // The model uses these to scale benefit/risk instead of fixed tables.
+    bool psi_available{false};
+    double psi_cpu{0.0};       // some avg10
+    double psi_memory{0.0};
+    double psi_io{0.0};
+    bool throttling_detected{false};
+    double throttle_ratio{0.0};
+    bool memory_stall_detected{false};
+    double memory_stall_score{0.0};
+    bool io_latency_available{false};
+    double io_avg_latency_ms{0.0};
+
+    // Experience prior: when the same candidate was measured before, the
+    // machine's own score replaces the static prior. 0.5 = neutral/unknown.
+    double experience_score{0.5};
+    double experience_confidence{0.0};
+    bool has_experience{false};
 };
 
 class EffectModel final {

@@ -220,6 +220,28 @@ struct RuntimeSample {
     double io_write_kb_per_sec{0.0};
     bool io_activity_available{false};
 
+    // Pressure Stall Information (PSI) when the kernel exposes /proc/pressure/*.
+    // avg10 is the 10-second average of stall time (fraction 0..1).
+    bool psi_available{false};
+    double psi_cpu_some_avg10{0.0};
+    double psi_memory_some_avg10{0.0};
+    double psi_io_some_avg10{0.0};
+    double psi_cpu_full_avg10{0.0};
+    double psi_memory_full_avg10{0.0};
+    double psi_io_full_avg10{0.0};
+
+    // Throttling / stall diagnosis derived from PSI + thermal + reclaim pressure.
+    bool throttling_detected{false};
+    double throttle_ratio{0.0};          // 0..1 estimated limited fraction
+    bool memory_stall_detected{false};
+    double memory_stall_score{0.0};      // 0..1 composite PSI memory + reclaim
+
+    // I/O latency (ms) from diskstats weighted wait times when available.
+    bool io_latency_available{false};
+    double io_read_latency_ms{0.0};
+    double io_write_latency_ms{0.0};
+    double io_avg_latency_ms{0.0};
+
     std::uint32_t process_count{0};
     std::string top_process_name;
     double top_process_cpu_ratio{0.0};

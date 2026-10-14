@@ -77,7 +77,7 @@ set(COREFLOW_ANDROID_SOURCES
     src/observe/observer.cpp
 )
 
-if(ANDROID)
+if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
 
     message(STATUS "Configuring CoreFlow Autonomous Engine for Android")
     message(STATUS "CoreFlow version: ${PROJECT_VERSION}")
@@ -200,7 +200,7 @@ else()
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
         add_test(NAME coreflow_source_release_contract
-            COMMAND "${CMAKE_COMMAND}" -E env COREFLOW_ALLOW_BUILD_DIR=1 bash
+            COMMAND "${CMAKE_COMMAND}" -E env COREFLOW_ALLOW_BUILD_DIR=1 COREFLOW_ALLOW_IGNORED_ORT_CACHE=1 bash
                     "${PROJECT_SOURCE_DIR}/tools/verify_source_release.sh")
     endif()
 

@@ -24,7 +24,15 @@ SystemContext ContextEngine::evaluate(
     // "safe enough" for proactive tuning. 0.14 keeps a real safety margin.
     context.memory_headroom =
         sample.mem_total_kb == 0 ||
-        sample.mem_available_ratio >= 0.14;
+        (sample.mem_available_ratio >= 0.14 &&
+         !(sample.memory_stall_detected && sample.memory_stall_score >= 0.25));
+
+    // I/O headroom: high PSI-io or sustained high latency counts as pressure.
+    context.io_headroom =
+        !sample.io_activity_available ||
+        ((sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0 &&
+         !(sample.psi_available && sample.psi_io_some_avg10 >= 0.15) &&
+         !(sample.io_latency_available && sample.io_avg_latency_ms >= 40.0));
 
     context.power_headroom =
         !sample.charging_telemetry_available ||
@@ -32,10 +40,6 @@ SystemContext ContextEngine::evaluate(
         sample.battery_level_percent >= 20;
 
     context.battery_headroom = context.power_headroom;
-
-    context.io_headroom =
-        !sample.io_activity_available ||
-        (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0;
 
     context.confidence = std::clamp(sample.confidence, 0.0, 1.0);
 
@@ -77,7 +81,9 @@ SystemContext ContextEngine::evaluate(
     // usable but not perfect. 0.60 still rejects noisy/unknown sensors.
     const bool confident = context.confidence >= 0.60;
     const bool stressed =
-        safety_state || !context.thermal_headroom || !context.memory_headroom;
+        safety_state || !context.thermal_headroom || !context.memory_headroom ||
+        sample.throttling_detected ||
+        (sample.psi_available && sample.psi_cpu_some_avg10 >= 0.20);
 
     context.mutation_allowed_by_context =
         !safety_state &&

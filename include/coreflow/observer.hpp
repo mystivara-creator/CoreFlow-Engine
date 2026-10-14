@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "coreflow/types.hpp"
+#include "coreflow/observer_metrics.hpp"
 
 namespace coreflow {
 
@@ -21,14 +22,14 @@ private:
     void readThermal(RuntimeSample&, const DeviceProfile&) const;
     void readCharging(RuntimeSample&) const;
     void readIoActivity(RuntimeSample&) const;
+    void readPsi(RuntimeSample&) const;
+    void diagnoseStalls(RuntimeSample&) const;
     void readProcessProfile(RuntimeSample&) const;
 
     mutable bool have_cpu_baseline_{false};
     mutable std::uint64_t previous_cpu_total_{0};
     mutable std::uint64_t previous_cpu_idle_{0};
-    mutable bool have_io_baseline_{false};
-    mutable std::uint64_t previous_io_read_sectors_{0};
-    mutable std::uint64_t previous_io_write_sectors_{0};
+    mutable observer_metrics::DiskCounterMap previous_io_devices_;
     mutable std::uint64_t sample_counter_{0};
     mutable double last_interval_seconds_{5.0};
     mutable std::chrono::steady_clock::time_point previous_sample_time_{};

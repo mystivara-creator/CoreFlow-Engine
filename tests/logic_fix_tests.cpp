@@ -2,9 +2,13 @@
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/policy.hpp"
 #include "coreflow/thermal_predictor.hpp"
+#include "coreflow/observer_metrics.hpp"
+#include "coreflow/experience.hpp"
 
 #include <deque>
 #include <iostream>
+#include <limits>
+#include <cmath>
 
 namespace {
 int failures = 0;
@@ -24,8 +28,42 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
 }
 } // namespace
 
-int main() {
+
+    int main() {
     using namespace coreflow;
+
+// PSI parser: valid percentages, malformed tokens, and boundaries.
+    {
+        using coreflow::observer_metrics::parsePsiLine;
+        using coreflow::observer_metrics::normalizePsiPercent;
+
+        double some = -1.0;
+        double full = -1.0;
+
+        CHECK(parsePsiLine(
+            "some avg10=12.50 avg60=8.00 avg300=3.00 total=10",
+            some, full));
+        CHECK(std::abs(some - 12.50) < 1e-9);
+
+        CHECK(parsePsiLine(
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+            some, full));
+        CHECK(std::abs(full) < 1e-9);
+
+        CHECK(!parsePsiLine("some avg10=invalid total=0", some, full));
+        CHECK(!parsePsiLine("some avg10=12.5oops total=0", some, full));
+        CHECK(!parsePsiLine("some avg10=-1 total=0", some, full));
+        CHECK(!parsePsiLine("some avg10=101 total=0", some, full));
+        CHECK(!parsePsiLine("other avg10=12 total=0", some, full));
+
+        CHECK(std::abs(normalizePsiPercent(0.0)) < 1e-9);
+        CHECK(std::abs(normalizePsiPercent(12.5) - 0.125) < 1e-9);
+        CHECK(std::abs(normalizePsiPercent(100.0) - 1.0) < 1e-9);
+        CHECK(std::abs(normalizePsiPercent(-1.0)) < 1e-9);
+        CHECK(std::abs(normalizePsiPercent(
+            std::numeric_limits<double>::quiet_NaN())) < 1e-9);
+    }
+
     AdaptivePolicy policy;
 
     // Memory pressure must win over Warming (48 C <= t < 55 C).
@@ -97,6 +135,104 @@ int main() {
         c.uptime_seconds = 1005;  // +3 C in 5 s is a genuine fast rise
         const double fast = predictor.predict(history, c, 3);
         CHECK(fast > 52.0);
+    }
+
+
+
+    // Shared empirical scoring: confidence blends measured results with prior.
+    {
+        using coreflow::BaselineIntelligence;
+        using coreflow::ExperienceMemory;
+        using coreflow::blendExperienceScore;
+
+        ExperienceMemory::Record record;
+        record.candidate.key = "test-candidate";
+        record.outcome = BaselineIntelligence::Outcome::Beneficial;
+        record.score = 0.90;
+        record.confidence = 0.80;
+        record.observations = 5;
+
+        CHECK(std::abs(blendExperienceScore(0.50, &record) - 0.82) < 1e-9);
+
+        record.outcome = BaselineIntelligence::Outcome::Regression;
+        record.score = 0.10;
+        record.confidence = 0.90;
+        CHECK(std::abs(blendExperienceScore(0.50, &record) - 0.14) < 1e-9);
+
+        record.outcome = BaselineIntelligence::Outcome::Unknown;
+        CHECK(std::abs(blendExperienceScore(0.40, &record) - 0.40) < 1e-9);
+
+        record.outcome = BaselineIntelligence::Outcome::Beneficial;
+        record.confidence = 0.20;
+        CHECK(std::abs(blendExperienceScore(0.40, &record) - 0.40) < 1e-9);
+    }
+
+    // Per-device I/O delta regression tests.
+    {
+        using namespace coreflow::observer_metrics;
+
+        DiskCounterMap previous;
+        DiskCounterMap current;
+
+        current["8:0:sda"] = {
+            100U, 200U, 10U, 20U, 50U, 100U
+        };
+
+        auto delta = calculateIoDelta(current, previous, 5.0);
+        CHECK(!delta.activity_available);
+        CHECK(!delta.latency_available);
+        CHECK(previous.size() == 1U);
+
+        current["8:0:sda"] = {
+            140U, 240U, 12U, 22U, 70U, 130U
+        };
+
+        delta = calculateIoDelta(current, previous, 5.0);
+        CHECK(delta.activity_available);
+        CHECK(delta.latency_available);
+        CHECK(std::abs(delta.read_kb_per_sec - 4.0) < 1e-9);
+        CHECK(std::abs(delta.write_kb_per_sec - 4.0) < 1e-9);
+        CHECK(std::abs(delta.read_latency_ms - 10.0) < 1e-9);
+        CHECK(std::abs(delta.write_latency_ms - 15.0) < 1e-9);
+        CHECK(std::abs(delta.avg_latency_ms - 12.5) < 1e-9);
+
+        // Read counters reset; unaffected write counters remain usable.
+        current["8:0:sda"] = {
+            5U, 260U, 1U, 24U, 3U, 160U
+        };
+
+        delta = calculateIoDelta(current, previous, 5.0);
+        CHECK(delta.activity_available);
+        CHECK(std::abs(delta.read_kb_per_sec) < 1e-9);
+        CHECK(std::abs(delta.write_kb_per_sec - 2.0) < 1e-9);
+        CHECK(delta.latency_available);
+        CHECK(std::abs(delta.read_latency_ms) < 1e-9);
+        CHECK(std::abs(delta.write_latency_ms - 15.0) < 1e-9);
+
+        // A newly detected device establishes a baseline, not a fake delta.
+        current["8:0:sda"] = {
+            15U, 270U, 3U, 26U, 13U, 190U
+        };
+        current["259:0:nvme0"] = {
+            10000U, 20000U, 100U, 200U, 500U, 600U
+        };
+
+        delta = calculateIoDelta(current, previous, 5.0);
+        CHECK(delta.activity_available);
+        CHECK(std::abs(delta.read_kb_per_sec - 1.0) < 1e-9);
+        CHECK(std::abs(delta.write_kb_per_sec - 1.0) < 1e-9);
+
+        // A removed device must not contribute a stale or negative delta.
+        current.clear();
+        current["259:0:nvme0"] = {
+            10050U, 20030U, 101U, 202U, 505U, 630U
+        };
+
+        delta = calculateIoDelta(current, previous, 5.0);
+        CHECK(delta.activity_available);
+        CHECK(std::abs(delta.read_kb_per_sec - 5.0) < 1e-9);
+        CHECK(std::abs(delta.write_kb_per_sec - 3.0) < 1e-9);
+        CHECK(previous.size() == 1U);
     }
 
     if (failures == 0) std::cout << "logic fix tests passed\n";

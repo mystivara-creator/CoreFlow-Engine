@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -86,5 +88,40 @@ private:
     std::vector<Record> records_;
     bool dirty_{false};
 };
+
+
+// Blend a candidate's prior score with its measured outcome.
+// Both scores use [0,1], where 0.5 represents a neutral outcome.
+// Unknown/inconclusive or low-confidence history never changes the prior.
+inline double blendExperienceScore(
+    double prior_score,
+    const ExperienceMemory::Record* record) noexcept {
+    if (!std::isfinite(prior_score)) return 0.0;
+    prior_score = std::clamp(prior_score, 0.0, 1.0);
+
+    if (record == nullptr || record->observations == 0 ||
+        !std::isfinite(record->score) ||
+        !std::isfinite(record->confidence) ||
+        record->confidence < 0.60 ||
+        record->score < 0.0 || record->score > 1.0) {
+        return prior_score;
+    }
+
+    switch (record->outcome) {
+        case BaselineIntelligence::Outcome::Beneficial:
+        case BaselineIntelligence::Outcome::Neutral:
+        case BaselineIntelligence::Outcome::Regression:
+            break;
+        case BaselineIntelligence::Outcome::Unknown:
+        case BaselineIntelligence::Outcome::Inconclusive:
+            return prior_score;
+    }
+
+    const double confidence =
+        std::clamp(record->confidence, 0.0, 1.0);
+    return std::clamp(
+        prior_score + (record->score - prior_score) * confidence,
+        0.0, 1.0);
+}
 
 } // namespace coreflow

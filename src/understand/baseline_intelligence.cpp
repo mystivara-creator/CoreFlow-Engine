@@ -6,11 +6,13 @@
 namespace coreflow {
 namespace {
 
-constexpr double kThermalWeight = 0.30;
-constexpr double kLoadWeight = 0.20;
-constexpr double kCpuWeight = 0.15;
-constexpr double kMemoryWeight = 0.15;
-constexpr double kStabilityWeight = 0.20;
+constexpr double kThermalWeight = 0.22;
+constexpr double kLoadWeight = 0.12;
+constexpr double kCpuWeight = 0.10;
+constexpr double kMemoryWeight = 0.12;
+constexpr double kStabilityWeight = 0.16;
+constexpr double kPsiWeight = 0.18;
+constexpr double kIoLatencyWeight = 0.10;
 
 constexpr double kBeneficialThreshold = 0.05;
 constexpr double kRegressionThreshold = -0.05;
@@ -82,6 +84,17 @@ BaselineIntelligence::BaselinePoint BaselineIntelligence::project(
     point.memory = sample.mem_available_ratio;
     point.charging_telemetry = sample.charging_telemetry_available;
     point.charging = sample.charging;
+    point.psi_available = sample.psi_available;
+    if (sample.psi_available) {
+        point.psi_pressure = std::max({
+            sample.psi_cpu_some_avg10,
+            sample.psi_memory_some_avg10,
+            sample.psi_io_some_avg10,
+            sample.throttle_ratio,
+            sample.memory_stall_score});
+    }
+    point.io_latency_available = sample.io_latency_available;
+    point.io_latency_ms = sample.io_avg_latency_ms;
     return point;
 }
 
@@ -105,6 +118,16 @@ void BaselineIntelligence::accumulate(
 
     if (finite(point.memory) && point.memory >= 0.0 && point.memory <= 1.0) {
         accumulateMetric(aggregate.memory, point.memory);
+    }
+
+    if (point.psi_available && finite(point.psi_pressure) &&
+        point.psi_pressure >= 0.0 && point.psi_pressure <= 1.0) {
+        accumulateMetric(aggregate.psi_pressure, point.psi_pressure);
+    }
+
+    if (point.io_latency_available && finite(point.io_latency_ms) &&
+        point.io_latency_ms >= 0.0) {
+        accumulateMetric(aggregate.io_latency_ms, point.io_latency_ms);
     }
 
     if (point.charging_telemetry) {
@@ -383,6 +406,26 @@ BaselineIntelligence::evaluate() const noexcept {
         calculateStabilityScore(baseline_, observation_);
     weightedScore += result.stability_score * kStabilityWeight;
     totalWeight += kStabilityWeight;
+
+    if (baseline_.psi_pressure.samples > 0U &&
+        observation_.psi_pressure.samples > 0U) {
+        result.psi_score = lowerIsBetter(
+            average(baseline_.psi_pressure),
+            average(observation_.psi_pressure));
+        result.psi_available = true;
+        weightedScore += result.psi_score * kPsiWeight;
+        totalWeight += kPsiWeight;
+    }
+
+    if (baseline_.io_latency_ms.samples > 0U &&
+        observation_.io_latency_ms.samples > 0U) {
+        result.io_latency_score = lowerIsBetter(
+            average(baseline_.io_latency_ms),
+            average(observation_.io_latency_ms));
+        result.io_latency_available = true;
+        weightedScore += result.io_latency_score * kIoLatencyWeight;
+        totalWeight += kIoLatencyWeight;
+    }
 
     if (totalWeight <= 0.0) {
         result.outcome = Outcome::Inconclusive;

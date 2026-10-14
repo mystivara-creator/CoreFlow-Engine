@@ -46,12 +46,16 @@ public:
         double cpu_score{0.0};
         double memory_score{0.0};
         double stability_score{0.0};
+        double psi_score{0.0};          // lower PSI is better
+        double io_latency_score{0.0};   // lower latency is better
         double confidence{0.0};
         std::size_t baseline_samples{0};
         std::size_t observation_samples{0};
         bool thermal_available{false};
         bool cpu_available{false};
         bool memory_available{false};
+        bool psi_available{false};
+        bool io_latency_available{false};
         bool context_compatible{true};
         bool valid{false};
     };
@@ -99,6 +103,8 @@ private:
         MetricAggregate load;
         MetricAggregate cpu;
         MetricAggregate memory;
+        MetricAggregate psi_pressure;   // max of cpu/mem/io some avg10
+        MetricAggregate io_latency_ms;
 
         std::size_t samples{0};
         std::size_t charging_telemetry_samples{0};
@@ -109,6 +115,8 @@ private:
             load.reset();
             cpu.reset();
             memory.reset();
+            psi_pressure.reset();
+            io_latency_ms.reset();
             samples = 0;
             charging_telemetry_samples = 0;
             charging_true_samples = 0;
@@ -126,6 +134,10 @@ private:
         double memory{0.0};
         bool charging_telemetry{false};
         bool charging{false};
+        bool psi_available{false};
+        double psi_pressure{0.0};
+        bool io_latency_available{false};
+        double io_latency_ms{0.0};
     };
 
     static BaselinePoint project(const RuntimeSample&) noexcept;

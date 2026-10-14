@@ -221,6 +221,8 @@ void testGenericDiscovery() {
     hot.intervention = InterventionLevel::Low;
 
     // Thermal: a step down the advertised GPU/CPU scale.
+    CHECK(gpu_max != nullptr);
+    if (gpu_max == nullptr) return;
     const EffectScore g = model.evaluate(*gpu_max, "900000000", hot);
     CHECK(g.eligible && g.requested == "600000000" && g.stabilizing &&
           g.source == CandidateSource::OrderedScale);
