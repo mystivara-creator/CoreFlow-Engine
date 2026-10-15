@@ -454,6 +454,56 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     fs::remove_all(root);
 }
 
+void test_restore_all_keeps_journal_when_dirty_path_disappears() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_restore_missing_dirty_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    profile.vm_swappiness.path = swappiness.string();
+    profile.vm_swappiness.readable = true;
+    profile.vm_swappiness.writable = true;
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 100;
+    sample.mem_available_ratio = 0.50;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.2;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    config.setGrantMemory(true);
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(controller.captureBaseline(profile));
+    CHECK(applyResourcePolicy(
+        controller, RuntimeState::Elevated, sample, profile, config,
+        InterventionLevel::Low) == MutationResult::Verified);
+    CHECK(controller.mutated());
+    CHECK(journal.pending);
+
+    // Simulasikan node resource menghilang setelah mutasi.
+    fs::remove(swappiness);
+
+    CHECK(!controller.restoreAll());
+    CHECK(controller.mutated());
+    CHECK(journal.pending);
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::Rollback);
+
+    fs::remove_all(root);
+}
+
 void test_resource_restore_only_owned_paths() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_owned_test";
     fs::remove_all(root);
@@ -1290,6 +1340,7 @@ int main() {
     test_no_write_without_user_grant();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();
+    test_restore_all_keeps_journal_when_dirty_path_disappears();
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
     test_intervention_level_boundaries();

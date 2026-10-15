@@ -756,8 +756,11 @@ bool ResourceMutationController::restoreAll() noexcept {
     bool ok = true;
     for (const auto& path : dirty_resources_) {
         const auto item = baseline_.find(path);
+        std::error_code path_error;
+        const bool path_exists = std::filesystem::exists(path, path_error);
         if (item == baseline_.end() || !item->second.valid ||
-            !std::filesystem::exists(path)) {
+            path_error || !path_exists) {
+            ok = false;
             continue;
         }
         const ActuatorResult result =
