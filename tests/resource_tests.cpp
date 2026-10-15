@@ -130,7 +130,7 @@ MutationResult applyResourcePolicy(
 }
 
 // Safety property: with mutation armed and adaptive, but without the user's
-// grant, a device under real pressure must still leave the kernel untouched.
+// grant, an otherwise eligible headroom candidate must leave the kernel untouched.
 // The brain defers, the hands never run, and the ledger says why.
 void test_no_write_without_user_grant() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_no_grant_test";
@@ -147,7 +147,7 @@ void test_no_write_without_user_grant() {
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -197,7 +197,7 @@ void test_journal_commit_failure_is_diagnosed() {
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -358,7 +358,7 @@ void test_swappiness_adaptive_path() {
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -406,7 +406,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -480,7 +480,7 @@ void test_resource_restore_only_owned_paths() {
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.8;
     sample.cpu_utilization_available = true;
@@ -824,21 +824,22 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     context.intervention = InterventionLevel::Low;
 
     const auto ranked = model.rank(matrix, baselines, context, 4);
-    CHECK(!ranked.empty());
-    bool swappiness_ranked = false;
-    for (const auto& score : ranked) {
-        if (score.path == known.path) {
-            swappiness_ranked = true;
-            CHECK(score.domain == ResourceDomain::Memory);
-            CHECK(score.utility > 0.0);
-            CHECK(score.requested == "53" || score.requested == "67");
-            CHECK(score.source == CandidateSource::BoundedStep);
-        }
-    }
-    CHECK(swappiness_ranked);
+    // A memory-pressure label is not enough to justify arbitrary numeric steps.
+    CHECK(ranked.empty());
+    const EffectScore pressured_swappiness = model.evaluate(known, "60", context);
+    CHECK(!pressured_swappiness.eligible);
+    CHECK(pressured_swappiness.requested.empty());
 
-    // Capability-driven: a node with no name-table entry is still a candidate.
-    const EffectScore unknown_score = model.evaluate(unknown, "100", context);
+    // Unknown numeric nodes remain capability-driven, but exploration waits for
+    // headroom rather than guessing that a direction relieves memory pressure.
+    const EffectScore pressured_unknown = model.evaluate(unknown, "100", context);
+    CHECK(!pressured_unknown.eligible);
+    CHECK(pressured_unknown.requested.empty());
+
+    EffectContext headroom = context;
+    headroom.state = RuntimeState::Elevated;
+    headroom.mem_available_ratio = 0.50;
+    const EffectScore unknown_score = model.evaluate(unknown, "100", headroom);
     CHECK(unknown_score.eligible);
     CHECK(unknown_score.requested == "88" || unknown_score.requested == "112");
 
@@ -847,6 +848,12 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     const EffectScore denied = model.evaluate(notAuthorized, "60", context);
     CHECK(!denied.eligible);
     CHECK(denied.requested.empty());
+
+    // Catalog risk levels are inputs to proposal eligibility, not just UI text.
+    ResourceCapability observeOnly = known;
+    observeOnly.name = "vm.overcommit_memory";
+    observeOnly.path = "/proc/sys/vm/overcommit_memory";
+    CHECK(!model.evaluate(observeOnly, "2", headroom).eligible);
 
     // Catalog lookup must distinguish dynamic per-device queue nodes.
     const auto* scheduler = lookupEcosystemKnowledgeByPath(
@@ -858,6 +865,50 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(scheduler != nullptr && std::string(scheduler->key) == "block.queue.scheduler");
     CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
     CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
+
+
+    // Regression: physical block queue tunables remain explorable with
+    // headroom, but are not presumed to stabilize memory pressure.
+    ResourceCapability readAheadCap = known;
+    readAheadCap.domain = ResourceDomain::Io;
+    readAheadCap.name = "sda:read_ahead_kb";
+    readAheadCap.path = "/sys/block/sda/queue/read_ahead_kb";
+
+    ResourceCapability requestsCap = known;
+    requestsCap.domain = ResourceDomain::Io;
+    requestsCap.name = "sda:nr_requests";
+    requestsCap.path = "/sys/block/sda/queue/nr_requests";
+
+    const EffectScore readAheadHeadroom =
+        model.evaluate(readAheadCap, "128", headroom);
+    CHECK(readAheadHeadroom.eligible);
+    CHECK(readAheadHeadroom.requested == "112" ||
+          readAheadHeadroom.requested == "144");
+
+    const EffectScore requestsHeadroom =
+        model.evaluate(requestsCap, "128", headroom);
+    CHECK(requestsHeadroom.eligible);
+    CHECK(requestsHeadroom.requested == "112" ||
+          requestsHeadroom.requested == "144");
+
+    const EffectScore readAheadPressure =
+        model.evaluate(readAheadCap, "128", context);
+    CHECK(!readAheadPressure.eligible);
+    CHECK(readAheadPressure.requested.empty());
+
+    const EffectScore requestsPressure =
+        model.evaluate(requestsCap, "128", context);
+    CHECK(!requestsPressure.eligible);
+    CHECK(requestsPressure.requested.empty());
+
+    // The canonical path must take precedence over a misleading capability
+    // name. A scheduler path must not inherit read_ahead_kb's BoundedTune risk.
+    ResourceCapability pathWins = readAheadCap;
+    pathWins.name = "block.queue.read_ahead_kb";
+    pathWins.path = "/sys/block/sda/queue/scheduler";
+    const EffectScore schedulerPressure =
+        model.evaluate(pathWins, "[mq-deadline] kyber none", context);
+    CHECK(!schedulerPressure.eligible);
 
     // Fatal surfaces are never candidates, even if marked mutation_ready.
     ResourceCapability fatal = known;
@@ -871,7 +922,7 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     vendor.path = "/proc/sys/vm/vendor_knob";
     vendor.vendor_values.push_back(VendorValue{"40", VendorProfile::Efficiency, "test.rc"});
     const EffectScore vendor_score = model.evaluate(vendor, "100", context);
-    CHECK(vendor_score.eligible);
+    CHECK(vendor_score.eligible && vendor_score.stabilizing);
     CHECK(vendor_score.requested == "40");
     CHECK(vendor_score.source == CandidateSource::VendorEfficiency);
 }
@@ -1136,21 +1187,21 @@ void test_thermal_guard_allows_stabilizing_write_and_restores() {
     CHECK(!f.journal.pending);
 }
 
-void test_pressure_allows_stabilizing_write() {
+void test_pressure_defers_without_memory_evidence() {
     stab::Fixture f("coreflow_stab_pressure");
     f.sample.mem_available_ratio = 0.08;
     f.sample.mem_available_kb = 80;
     CHECK(f.controller.captureBaseline(f.profile));
 
     CHECK(f.run(RuntimeState::Pressure, stab::Fixture::stabilizingPlan()) ==
-          MutationResult::Verified);
-    // Memory pressure: the pressured domain itself is explored (measured and
-    // rolled back if it does not help); the GPU scale is not a memory response.
-    CHECK(readFile(f.swappiness) == "53");
-    CHECK(readFile(f.gpu_max) == "600");
-    CHECK(f.controller.stabilizingEpoch());
-    CHECK(f.controller.restoreAll());
+          MutationResult::Skipped);
+    // Neither swappiness nor an unrelated GPU scale has memory-specific
+    // stabilizing evidence, so pressure triggers a hold instead of exploration.
     CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
+    CHECK(!f.controller.stabilizingEpoch());
+    CHECK(!f.controller.mutated());
+    CHECK(!f.journal.pending);
 }
 
 void test_stabilizing_plan_rejects_non_stabilizing_candidates() {
@@ -1250,7 +1301,7 @@ int main() {
     test_legacy_bracketed_journal_value_is_normalized();
     test_cpu_permit_requires_governor_opt_in();
     test_thermal_guard_allows_stabilizing_write_and_restores();
-    test_pressure_allows_stabilizing_write();
+    test_pressure_defers_without_memory_evidence();
     test_stabilizing_plan_rejects_non_stabilizing_candidates();
     test_safety_state_without_stabilizing_plan_never_writes();
     test_regressed_candidate_is_suppressed();

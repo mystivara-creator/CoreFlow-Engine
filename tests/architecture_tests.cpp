@@ -325,6 +325,7 @@ int main() {
     {
         EnvironmentCapabilityMatrix proposal_matrix;
         std::unordered_map<std::string, std::string> proposal_baselines;
+
         for (int i = 0; i < 4; ++i) {
             ResourceCapability candidate;
             candidate.domain = ResourceDomain::Memory;
@@ -338,6 +339,7 @@ int main() {
             candidate.policy_authorized = true;
             candidate.runtime_verified = true;
             candidate.mutation_ready = true;
+
             proposal_baselines.emplace(candidate.path, "60");
             proposal_matrix.resources.push_back(candidate);
         }
@@ -345,32 +347,49 @@ int main() {
         AgentObservation observation;
         observation.matrix = &proposal_matrix;
         observation.baselines = &proposal_baselines;
-        observation.state = RuntimeState::Pressure;
+        observation.state = RuntimeState::Elevated;
         observation.sample_confidence = 0.95;
-        observation.mutation_allowed_by_context = false;
-        observation.stabilizing_allowed_by_context = true;
+        observation.mutation_allowed_by_context = true;
+        observation.stabilizing_allowed_by_context = false;
         observation.max_candidates = 8;
-        observation.effect_ctx.state = RuntimeState::Pressure;
-        observation.effect_ctx.mem_available_ratio = 0.08;
+        observation.effect_ctx.state = RuntimeState::Elevated;
+        observation.effect_ctx.mem_available_ratio = 0.55;
         observation.effect_ctx.sample_confidence = 0.95;
         observation.effect_ctx.intervention = InterventionLevel::Low;
 
         ScoringDecisionAgent agent;
         const AgentProposal proposal = agent.reason(observation);
+
+        // With available headroom, numeric candidates may be explored,
+        // but they must not be mislabeled as proven stabilizing actions.
         CHECK(proposal.valid);
         CHECK(proposal.mode == AgentReasoningMode::ReActLite);
-        // Up to kProposalsPerResource candidates per node (step down / up).
         CHECK(proposal.ranked.size() >= 4);
-        CHECK(proposal.best.stabilizing);
+        CHECK(!proposal.best.stabilizing);
         CHECK(proposal.best.requested == "53" || proposal.best.requested == "67");
-        CHECK(proposal.reasoning_summary.find("observe → hypothesize → review → propose") !=
-              std::string::npos);
+        CHECK(proposal.reasoning_summary.find(
+                  "observe → hypothesize → review → propose") != std::string::npos);
 
+        // Generic Memory-domain candidates are not automatically stabilizing
+        // under pressure just because the runtime allows stabilizing actions.
+        AgentObservation pressure_observation = observation;
+        pressure_observation.state = RuntimeState::Pressure;
+        pressure_observation.mutation_allowed_by_context = false;
+        pressure_observation.stabilizing_allowed_by_context = true;
+        pressure_observation.effect_ctx.state = RuntimeState::Pressure;
+        pressure_observation.effect_ctx.mem_available_ratio = 0.08;
+
+        const AgentProposal pressure_proposal = agent.reason(pressure_observation);
+        CHECK(!pressure_proposal.valid);
+        CHECK(pressure_proposal.ranked.empty());
+
+        // Invalid confidence must still fail closed.
         observation.sample_confidence = 1.5;
         const AgentProposal invalid_evidence = agent.reason(observation);
         CHECK(!invalid_evidence.valid);
         CHECK(invalid_evidence.ranked.empty());
-        CHECK(invalid_evidence.reasoning_summary.find("fail closed") != std::string::npos);
+        CHECK(invalid_evidence.reasoning_summary.find("fail closed") !=
+              std::string::npos);
     }
 
     std::cout << (failures == 0 ? "CoreFlow architecture foundation: PASS\n"

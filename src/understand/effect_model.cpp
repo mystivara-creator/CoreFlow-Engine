@@ -1,4 +1,5 @@
 #include "coreflow/effect_model.hpp"
+#include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/fatal_surface.hpp"
 
 #include <algorithm>
@@ -188,6 +189,30 @@ std::vector<EffectScore> EffectModel::proposals(
         if (base_text.empty() || ctx.intervention == InterventionLevel::ObserveOnly) return out;
 
         const Situation situation = classify(ctx);
+
+        // Apply the embedded semantic catalog before deriving values. It is a
+        // risk prior, not mutation authority: the controller still enforces the
+        // user's grants, permit, journal, actuator checks and read-back.
+        const EcosystemKnowledgeEntry* knowledge =
+            lookupEcosystemKnowledgeByPath(capability.path);
+        if (knowledge == nullptr) {
+            knowledge = lookupEcosystemKnowledgeByKey(capability.name);
+        }
+        if (knowledge != nullptr) {
+            switch (knowledge->risk) {
+                case KnowledgeRisk::ObserveOnly:
+                case KnowledgeRisk::FrameworkOwned:
+                    return out;
+                case KnowledgeRisk::Quarantined:
+                    // Keep quarantined surfaces discoverable and usable when
+                    // there is headroom; never probe them as an emergency fix.
+                    if (situation.stressed()) return out;
+                    break;
+                case KnowledgeRisk::BoundedTune:
+                case KnowledgeRisk::VendorVolatile:
+                    break;
+            }
+        }
         if (!situation.stressed() && !situation.elevated && !situation.calm_explore) return out;
 
         const double base_confidence = clamp01(ctx.sample_confidence * 0.92);
@@ -198,11 +223,17 @@ std::vector<EffectScore> EffectModel::proposals(
                         EffectDirection direction, bool stabilizing, const char* reason) {
             if (requested.empty() || requested == base_text) return;
             if (isFatalValue(base_text, requested)) return;
-            // Memory pressure without thermal stress: the resource domain itself
-            // is the stabilizing surface; measured outcome decides direction.
-            if (situation.memory && !situation.thermal &&
-                capability.domain == ResourceDomain::Memory) {
-                stabilizing = true;
+            // Domain membership alone is not evidence that a change will
+            // stabilize the device. Under memory-only pressure, allow only a
+            // vendor-declared efficiency value on a Memory resource; generic
+            // numeric steps (including swappiness) must wait for headroom or
+            // candidate-specific outcome evidence.
+            const bool memory_only_pressure = situation.memory &&
+                !situation.thermal && !situation.throttling;
+            if (memory_only_pressure &&
+                (capability.domain != ResourceDomain::Memory ||
+                 source != CandidateSource::VendorEfficiency)) {
+                return;
             }
             if (situation.stressed() && !stabilizing) return;
             for (const auto& existing : out) {
@@ -341,7 +372,8 @@ std::vector<EffectScore> EffectModel::proposals(
                 const long long upper_bound = scaled > 0 ? scaled * 2 : scaled / 2;
                 const long long down = std::max(lower_bound, scaled - step);
                 const long long up = std::min(upper_bound, scaled + step);
-                const bool clamp = isUtilizationClamp(capability);
+                const bool clamp = isUtilizationClamp(capability) &&
+                                    (situation.thermal || situation.throttling);
                 if (down != scaled) {
                     emit(format(down), CandidateSource::BoundedStep,
                          EffectDirection::Decrease, clamp,
