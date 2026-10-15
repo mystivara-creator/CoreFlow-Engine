@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.2.5 — Evidence-Based Resource Reasoning & Release Validation
+
+### Changed
+
+- Refined EffectModel eligibility to use semantic evidence, runtime context, and risk rather than assuming that a writable interface implies benefit.
+- Memory-pressure handling no longer assumes arbitrary numeric tunables, such as swappiness, will stabilize memory. Stabilizing candidates require relevant domain and vendor evidence.
+- Utilization-clamp candidates are considered stabilizing only in relevant thermal or throttling contexts.
+- Physical block-queue controls (`read_ahead_kb` and `nr_requests`) remain eligible for evaluation when device capability, policy, and runtime evidence permit them. They are not globally disabled; stress and safety gates remain.
+- Aligned release version metadata across CMake, runtime configuration, module metadata, updater metadata, README, and packaged default configuration.
+
+### Safety
+
+- Default mode remains `mutation_mode=observe`.
+- Mutation remains disarmed by default (`mutation_armed=false`).
+- CPU governor changes remain disabled unless explicitly permitted (`allow_cpu_governor=no`).
+- Discovery does not grant mutation authority. Policy authorization, capability checks, bounded writes, journaling, read-back verification, safety holds, and rollback remain required.
+- Fatal and protected surfaces remain outside the normal mutation path.
+
+### Validation
+
+- Host deterministic tests: passed in GitHub Actions.
+- Android 14+ ARM64 production build and package validation: passed in GitHub Actions.
+- ASan + UBSan: passed in GitHub Actions.
+
+### Scope and limitations
+
+- CI success does not certify behavior on every Android device.
+- KernelSU/Magisk installation, device-specific behavior, sustained observation, and recovery testing should be validated on the target device before enabling Adaptive mode.
+- Publish the public release only with the verified CI-produced ZIP and matching release metadata.
+
+---
+
 ## v2.2.0 — Final development snapshot (not yet device-certified)
 
 ### Merged improvements (post-merge audit)
