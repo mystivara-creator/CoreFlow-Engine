@@ -2,6 +2,53 @@
 
 ## How to read this source package
 
+## Current Release — v2.2.5
+
+**Identity:** Observe. Understand. Balance. Adapt.
+
+CoreFlow Autonomous is a capability-driven native C++ engine for Android. It discovers exposed device and kernel interfaces, evaluates resource candidates using semantic evidence and runtime context, and keeps mutation decisions behind explicit policy and safety authority.
+
+### Release metadata
+
+| Property | Value |
+|---|---|
+| Version | `v2.2.5` |
+| Module version code | `2250` |
+| ABI | `arm64-v8a` |
+| Minimum Android API | `34` |
+| Default mode | Observe-only |
+
+### Highlights
+
+- Evidence-based EffectModel reasoning for resource candidates.
+- Capability-driven discovery rather than a hard-coded list of kernel tunables.
+- Block-queue controls remain eligible for evaluation when device capability, policy, and runtime evidence permit them.
+- Explicit mutation arming, CPU governor opt-in, mutation journaling, read-back verification, and rollback safeguards.
+- Mobile-first KernelSU WebUI for status, policy selection, diagnostics, and shell access.
+- ONNX-backed thermal prediction support in the packaged ARM64 build.
+
+### Safe defaults
+
+```ini
+mutation_mode=observe
+mutation_armed=false
+allow_cpu_governor=no
+```
+
+Observe-only is the default. Do not enable Adaptive mode until the target device has passed staged validation and recovery checks. A successful CI build does not guarantee identical behavior on every kernel or device.
+
+### Validation status
+
+The v2.2.5 candidate passed the GitHub Actions host test, Android 14+ ARM64 production build, and ASan/UBSan jobs. These results validate the tested build pipeline; they do not replace device-level installation, soak, and recovery testing.
+
+### Release package
+
+Use the ZIP attached to the corresponding GitHub Release. Verify that its version, module metadata, configuration, and release asset URL agree. Do not use an expired CI artifact as a permanent release download.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for changes and [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) for resource eligibility and safety boundaries.
+
+---
+
 CoreFlow is **capability-driven**: the daemon discovers what the device exposes, then decides what is safe to change. It is not a hard-coded list of `vm.*` parameters.
 
 Engine code under `src/` is grouped around compact functional boundaries:
