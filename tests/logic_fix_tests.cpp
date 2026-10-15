@@ -1,4 +1,4 @@
-#include "coreflow/decision_trace_reason.hpp"
+#include "coreflow/decision_trace.hpp"
 // Regression tests for the Autonomous-Engine logic review fixes.
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/policy.hpp"

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <string>
 
@@ -45,7 +46,13 @@ bool EngineConfig::load(const std::string& path) noexcept {
             if (key == "monitor_interval") {
                 try { setMonitorIntervalSeconds(std::stoi(value)); } catch (...) {}
             } else if (key == "min_confidence") {
-                try { setMinConfidence(std::stod(value)); } catch (...) {}
+                try {
+                    std::size_t parsed = 0;
+                    const double confidence = std::stod(value, &parsed);
+                    if (parsed == value.size() && std::isfinite(confidence)) {
+                        setMinConfidence(confidence);
+                    }
+                } catch (...) {}
             } else if (key == "mutation_mode") {
                 // Unknown values, including the removed experimental "trial" mode,
                 // disable mutation for this load (see invalid_mode below).
@@ -100,6 +107,10 @@ void EngineConfig::setMonitorIntervalSeconds(int seconds) noexcept {
 }
 
 void EngineConfig::setMinConfidence(double confidence) noexcept {
+    if (!std::isfinite(confidence)) {
+        min_confidence_ = 0.60;
+        return;
+    }
     min_confidence_ = std::clamp(confidence, 0.50, 1.0);
 }
 

@@ -14,7 +14,6 @@ module/system/etc/coreflow/default.conf
 module/system/etc/coreflow/thermal_predictor.onnx
 src/runtime/main.cpp
 include/coreflow/environment.hpp
-src/observe/environment.cpp
 include/coreflow/experience.hpp
 src/understand/experience.cpp
 include/coreflow/resource_model.hpp

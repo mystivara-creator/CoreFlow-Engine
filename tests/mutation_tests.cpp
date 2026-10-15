@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -517,6 +518,43 @@ void test_thermal_thresholds_are_consistent() {
     RuntimeSample hot = inside;
     hot.thermal_millidegrees = static_cast<long>(kThermalGuardEnterC * 1000.0);
     CHECK(policy.evaluate(hot, RuntimeState::Normal) == RuntimeState::ThermalGuard);
+}
+
+void test_min_confidence_rejects_non_finite_and_malformed_values() {
+    EngineConfig direct;
+    direct.setMinConfidence(0.80);
+    CHECK(direct.minConfidence() == 0.80);
+
+    direct.setMinConfidence(std::numeric_limits<double>::quiet_NaN());
+    CHECK(direct.minConfidence() == 0.60);
+
+    direct.setMinConfidence(std::numeric_limits<double>::infinity());
+    CHECK(direct.minConfidence() == 0.60);
+
+    const fs::path config_dir = createTempDirectory("coreflow_confidence_");
+    CHECK(!config_dir.empty());
+    if (config_dir.empty()) return;
+
+    const std::string path = (config_dir / "config.ini").string();
+    EngineConfig loaded;
+    writeLine(path, "min_confidence=0.8xyz");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.60);
+
+    writeLine(path, "min_confidence=0.8");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    writeLine(path, "min_confidence=nan");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    writeLine(path, "min_confidence=inf");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    std::error_code cleanup_ec;
+    fs::remove_all(config_dir, cleanup_ec);
 }
 
 void test_release_defaults_are_observe_only_until_explicit_opt_in() {
@@ -1180,6 +1218,7 @@ int main() {
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
         {"journal_roundtrip_and_truncation", test_file_journal_roundtrip_and_truncation_detection},
         {"disabled_mode_hard_gate", test_disabled_mode_is_a_hard_no_mutation_gate},
+        {"min_confidence_rejects_non_finite_and_malformed", test_min_confidence_rejects_non_finite_and_malformed_values},
         {"release_defaults_observe_only", test_release_defaults_are_observe_only_until_explicit_opt_in},
         {"mutation_requires_durable_journal", test_mutation_requires_durable_journal},
         {"empty_governor_advertisement_fails_closed", test_empty_governor_advertisement_fails_closed},

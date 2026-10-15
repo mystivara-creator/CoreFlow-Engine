@@ -37,7 +37,6 @@ target_compile_options(coreflow_compile_options
 #   autonomous/  loop      — autonomous tick orchestration
 # Nothing under observe/ may decide mutation policy; it asks balance/.
 set(COREFLOW_CORE_SOURCES
-    src/observe/environment.cpp
     src/observe/ecosystem_knowledge.cpp
     src/observe/high_capability.cpp
     src/understand/context.cpp
@@ -59,9 +58,7 @@ set(COREFLOW_CORE_SOURCES
     src/conscience/mutation_journal.cpp
     src/conscience/retained_state.cpp
     src/runtime/config.cpp
-    src/runtime/signal_state.cpp
     src/runtime/status_snapshot.cpp
-    src/runtime/runtime_paths.cpp
     src/observe/capability_registry.cpp
     src/observe/vendor_knowledge.cpp
     src/observe/tunable_discovery.cpp
@@ -104,8 +101,9 @@ if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
 
     add_library(coreflow_onnxruntime SHARED IMPORTED GLOBAL)
     set_target_properties(coreflow_onnxruntime PROPERTIES
-        IMPORTED_LOCATION "${COREFLOW_ONNX_LIBRARY}"
-        INTERFACE_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
+    IMPORTED_LOCATION "${COREFLOW_ONNX_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
     )
 
     add_executable(coreflowd

@@ -218,8 +218,17 @@ bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept {
 }
 
 bool ActuatorManager::registerActuator(IActuator& actuator) noexcept {
-    if (find(actuator.id()) != nullptr) return false;
-    actuators_.push_back(&actuator);
+    if (find(actuator.id()) != nullptr) {
+        return false;
+    }
+
+    try {
+        actuators_.push_back(&actuator);
+    } catch (...) {
+        // Registration failure must not terminate the daemon.
+        return false;
+    }
+
     return true;
 }
 

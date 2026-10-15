@@ -10,7 +10,6 @@
 #include "coreflow/control.hpp"
 #include "coreflow/resource_model.hpp"
 #include "coreflow/resource_mutation.hpp"
-#include "coreflow/controller.hpp"
 #include "coreflow/discovery.hpp"
 #include "coreflow/experience.hpp"
 #include "coreflow/mutation.hpp"

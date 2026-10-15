@@ -50,7 +50,8 @@ fi
 
 # The live status export (WebUI) is observation-only state. It may write only the engine's
 # own state file, and nothing that decides or actuates may depend on it.
-grep -q 'p.status_json = p.root + "/status.json"' "$ROOT/src/runtime/runtime_paths.cpp"
+# RuntimePaths is header-defined after source consolidation.
+grep -q 'p.status_json = p.root + "/status.json"' "$ROOT/include/coreflow/runtime_paths.hpp"
 grep -q 'writeStatusFile(kPaths.status_json' "$ROOT/src/autonomous/autonomous.cpp"
 if grep -RIn 'writeStatusFile(' "$ROOT/src" --include='*.cpp' | grep -v 'src/runtime/status_snapshot.cpp' | grep -v 'kPaths.status_json'; then
   echo "error: writeStatusFile must only be called with kPaths.status_json" >&2; exit 1
