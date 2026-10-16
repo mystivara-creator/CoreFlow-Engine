@@ -4,6 +4,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+namespace coreflow::testing {
+void failNextJournalDirectorySync(bool fail) noexcept;
+}
+#endif
+
 namespace coreflow {
 
 /**

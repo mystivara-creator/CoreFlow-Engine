@@ -1,4 +1,7 @@
 #include "coreflow/mutation_journal.hpp"
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+#include <atomic>
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -7,13 +10,20 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_set>
 
 namespace coreflow {
 namespace {
 
 constexpr const char* kHeader = "coreflow-mutation-journal v1";
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+std::atomic<bool> g_fail_next_directory_sync{false};
+#endif
 
 bool fsyncDirectoryOf(const std::string& path) noexcept {
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+    if (g_fail_next_directory_sync.exchange(false)) return false;
+#endif
     const std::size_t slash = path.find_last_of('/');
     const std::string dir = (slash == std::string::npos) ? "." :
         (slash == 0 ? "/" : path.substr(0, slash));
@@ -47,15 +57,34 @@ bool writeAll(int fd, const std::string& data) noexcept {
 
 } // namespace
 
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+void testing::failNextJournalDirectorySync(bool fail) noexcept {
+    g_fail_next_directory_sync.store(fail);
+}
+#endif
+
+
 bool FileMutationJournal::commit(const Entries& factory_values) noexcept {
     if (factory_values.empty()) return false;
+
+    std::unordered_set<std::string> seen_paths;
+    seen_paths.reserve(factory_values.size());
+
+    for (const auto& entry : factory_values) {
+        if (!validField(entry.first) || !validField(entry.second)) {
+            return false;
+        }
+
+        if (!seen_paths.insert(entry.first).second) {
+            return false;
+        }
+    }
 
     std::string body;
     body.reserve(128 * factory_values.size());
     body += kHeader;
     body += '\n';
     for (const auto& entry : factory_values) {
-        if (!validField(entry.first) || !validField(entry.second)) return false;
         body += entry.first;
         body += '\t';
         body += entry.second;
@@ -89,35 +118,67 @@ bool FileMutationJournal::clear() noexcept {
 MutationJournal::LoadState FileMutationJournal::load(Entries& out) noexcept {
     out.clear();
 
+    const auto corrupt = [&out]() {
+        out.clear();
+        return MutationJournal::LoadState::Corrupt;
+    };
+
     struct stat st {};
     if (::stat(path_.c_str(), &st) != 0) {
-        return errno == ENOENT ? LoadState::Absent : LoadState::Corrupt;
+        return errno == ENOENT
+            ? LoadState::Absent
+            : LoadState::Corrupt;
     }
 
-    std::ifstream file(path_);
+    std::ifstream file(path_, std::ios::binary);
     if (!file) return LoadState::Corrupt;
 
     std::string line;
-    if (!std::getline(file, line) || line != kHeader) return LoadState::Corrupt;
+    if (!std::getline(file, line) || line != kHeader) {
+        return corrupt();
+    }
 
+    std::unordered_set<std::string> seen_paths;
     bool terminated = false;
+
     while (std::getline(file, line)) {
         if (line == "end") {
             terminated = true;
+
+            // "end" must be the final content in the file.
+            if (file.peek() != std::char_traits<char>::eof()) {
+                return corrupt();
+            }
+
+            if (file.bad()) return corrupt();
             break;
         }
+
         const std::size_t tab = line.find('\t');
-        if (tab == std::string::npos) return LoadState::Corrupt;
-        std::string path = line.substr(0, tab);
+        if (tab == std::string::npos) {
+            return corrupt();
+        }
+
+        std::string resource_path = line.substr(0, tab);
         std::string value = line.substr(tab + 1);
-        if (!validField(path) || !validField(value)) return LoadState::Corrupt;
-        out.emplace_back(std::move(path), std::move(value));
+
+        if (!validField(resource_path) || !validField(value)) {
+            return corrupt();
+        }
+
+        if (!seen_paths.insert(resource_path).second) {
+            return corrupt();
+        }
+
+        out.emplace_back(
+            std::move(resource_path),
+            std::move(value));
     }
 
-    if (!terminated || out.empty()) {
-        out.clear();
-        return LoadState::Corrupt;
+    if (file.bad() || !terminated || out.empty()) {
+        return corrupt();
     }
+
     return LoadState::Pending;
 }
 

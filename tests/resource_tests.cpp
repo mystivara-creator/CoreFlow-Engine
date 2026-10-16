@@ -1,3 +1,4 @@
+#include "coreflow/mutation_journal.hpp"
 #include "coreflow/effect_model.hpp"
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/resource_actuator.hpp"
@@ -228,6 +229,98 @@ void test_journal_commit_failure_is_diagnosed() {
     fs::remove_all(root);
 }
 
+void test_file_journal_clear_reports_directory_sync_failure() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_journal_fsync_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    FileMutationJournal journal(journal_path.string());
+    const MutationJournal::Entries entries{{(root / "resource").string(), "60"}};
+
+    CHECK(journal.commit(entries));
+    CHECK(fs::exists(journal_path));
+
+    coreflow::testing::failNextJournalDirectorySync(true);
+    const bool cleared = journal.clear();
+
+    CHECK(!cleared);
+    CHECK(!fs::exists(journal_path));
+    MutationJournal::Entries loaded;
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Absent);
+    CHECK(loaded.empty());
+
+    fs::remove_all(root);
+}
+
+void test_file_journal_commit_reports_directory_sync_failure() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_journal_commit_fsync_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    FileMutationJournal journal(journal_path.string());
+    const MutationJournal::Entries entries{
+        {(root / "resource").string(), "60"}
+    };
+
+    coreflow::testing::failNextJournalDirectorySync(true);
+    CHECK(!journal.commit(entries));
+
+    // Rename may already have succeeded before directory fsync fails.
+    CHECK(fs::exists(journal_path));
+
+    MutationJournal::Entries loaded;
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
+    CHECK(loaded == entries);
+
+    CHECK(journal.clear());
+    fs::remove_all(root);
+}
+
+void test_file_journal_rejects_ambiguous_records() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_file_journal_ambiguous_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    const std::string resource = (root / "resource").string();
+    FileMutationJournal journal(journal_path.string());
+    MutationJournal::Entries loaded;
+
+    const MutationJournal::Entries duplicate_entries{
+        {resource, "60"},
+        {resource, "70"}
+    };
+
+    CHECK(!journal.commit(duplicate_entries));
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Absent);
+    CHECK(loaded.empty());
+
+    const auto writeRaw = [&](const std::string& content) {
+        std::ofstream file(
+            journal_path, std::ios::binary | std::ios::trunc);
+        file << content;
+        file.close();
+        CHECK(static_cast<bool>(file));
+    };
+
+    const std::string header = "coreflow-mutation-journal v1\n";
+
+    writeRaw(header + resource + "\t60\nend\nunexpected-data\n");
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    writeRaw(header + resource + "\t60\n" +
+             resource + "\t70\nend\n");
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    fs::remove_all(root);
+}
 
 void test_corrupt_journal_blocks_mutation() {
     Journal journal;
@@ -1333,6 +1426,9 @@ void test_resource_actuator_rejects_scope_only_permit() {
 int main() {
     test_resource_actuator_rejects_scope_only_permit();
     test_journal_commit_failure_is_diagnosed();
+    test_file_journal_clear_reports_directory_sync_failure();
+    test_file_journal_commit_reports_directory_sync_failure();
+    test_file_journal_rejects_ambiguous_records();
     test_corrupt_journal_blocks_mutation();
     test_journal_clear_failure_blocks_recovery();
     test_recovery_actuator_failure_is_diagnosed();

@@ -354,6 +354,89 @@ void test_crash_recovery_restores_factory_before_capture() {
     CHECK(readLine(box.governor_file) == "powersave");
 }
 
+void test_recovery_clear_failure_keeps_journal_and_blocks_mutation() {
+    Sandbox box;
+    FakeJournal journal;
+
+    {
+        MutationController original;
+        original.setJournal(&journal);
+        const DeviceProfile profile = box.profile();
+
+        CHECK(original.captureBaseline(profile));
+        CHECK(original.apply(
+            RuntimeState::Normal,
+            sample(0.5, 30.0),
+            profile,
+            adaptiveConfig()) == MutationResult::Verified);
+
+        CHECK(journal.has_pending);
+        CHECK(readLine(box.governor_file) == "schedutil");
+    }
+
+    // Simulate a restart where recovery restores the factory value,
+    // but journal cleanup fails.
+    journal.fail_clear = true;
+
+    MutationController restarted;
+    restarted.setJournal(&journal);
+    const DeviceProfile profile = box.profile("schedutil");
+
+    CHECK(!restarted.captureBaseline(profile));
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+
+    // A subsequent attempt must not treat the failed recovery as complete.
+    CHECK(restarted.apply(
+        RuntimeState::Normal,
+        sample(0.5, 30.0),
+        profile,
+        adaptiveConfig()) == MutationResult::Failed);
+
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
+void test_recovery_missing_policy_keeps_journal() {
+    Sandbox box;
+    FakeJournal journal;
+
+    {
+        MutationController original;
+        original.setJournal(&journal);
+
+        const DeviceProfile profile = box.profile();
+        CHECK(original.captureBaseline(profile));
+
+        CHECK(original.apply(
+            RuntimeState::Normal,
+            sample(0.5, 30.0),
+            profile,
+            adaptiveConfig()) == MutationResult::Verified);
+
+        CHECK(journal.has_pending);
+    }
+
+    // The journal references the original governor path, but discovery
+    // currently provides no CPU policies.
+    MutationController restarted;
+    restarted.setJournal(&journal);
+
+    DeviceProfile incomplete = box.profile("schedutil");
+    incomplete.cpu_policies.clear();
+
+    CHECK(!restarted.captureBaseline(incomplete));
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "schedutil");
+
+    // Rediscovery makes the original policy available again.
+    const DeviceProfile rediscovered = box.profile("schedutil");
+
+    CHECK(restarted.captureBaseline(rediscovered));
+    CHECK(!journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
 void test_failed_journal_commit_prevents_any_write() {
     Sandbox box;
     FakeJournal journal;
@@ -1213,6 +1296,7 @@ int main() {
         {"rejected_candidate_cooldown", test_rejected_candidate_is_not_reselected_during_cooldown},
         {"refresh_cannot_rebaseline_mutated", test_refresh_cannot_rebaseline_a_mutated_system},
         {"crash_recovery_before_capture", test_crash_recovery_restores_factory_before_capture},
+        {"recovery_clear_failure_keeps_journal", test_recovery_clear_failure_keeps_journal_and_blocks_mutation},
         {"failed_commit_prevents_write", test_failed_journal_commit_prevents_any_write},
         {"corrupt_journal_blocks_mutation", test_corrupt_journal_blocks_mutation},
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
@@ -1248,7 +1332,9 @@ int main() {
          test_capability_bound_permit_rejects_scope_and_mismatches},
         {"cpufreq_actuator_rejects_scope_only_permit",
          test_cpufreq_actuator_rejects_scope_only_permit},
-    };
+        {"recovery_missing_policy_keeps_journal",
+         test_recovery_missing_policy_keeps_journal},
+};
 
     for (const Case& c : cases) {
         const int before = g_failures;

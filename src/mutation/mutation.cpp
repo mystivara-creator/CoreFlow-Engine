@@ -166,8 +166,10 @@ bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept 
     if (!recovery_pending_) return true;
 
     if (journal_ == nullptr) {
-        recovery_pending_ = false;
-        return true;
+        // Recovery cannot be verified without the journal.
+        // Keep recovery_pending_ set and fail closed.
+        restore_failed_ = true;
+        return false;
     }
 
     MutationJournal::Entries entries;
@@ -195,8 +197,14 @@ bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept 
                 break;
             }
         }
-        // Policy no longer exists on this boot: nothing to restore.
-        if (!present) continue;
+
+	// A journal entry must be accounted for before recovery can complete.
+	// Missing policy may indicate incomplete discovery or a changed device
+	// topology; do not discard the recovery record based on absence alone.
+        if (!present) {
+            all_restored = false;
+            continue;
+    }
 
         const ActuatorResult result =
             cpufreq_actuator_.restoreTo(entry.first, entry.second);
@@ -209,7 +217,11 @@ bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept 
         return false;
     }
 
-    if (!journal_->clear()) return false;
+    if (!journal_->clear()) {
+        mutated_ = true;
+        restore_failed_ = true;
+        return false;
+    }
 
     recovered_factory_ = std::move(entries);
     recovery_pending_ = false;
@@ -570,7 +582,8 @@ MutationResult MutationController::applyPlan(
 
 MutationResult MutationController::restoreGovernors() noexcept {
     if (!actuator_ready_) {
-        return mutated_ ? MutationResult::Failed : MutationResult::Skipped;
+        return mutated_ ? MutationResult::Failed
+                        : MutationResult::Skipped;
     }
 
     bool restoredAny = false;
@@ -578,15 +591,27 @@ MutationResult MutationController::restoreGovernors() noexcept {
 
     for (const auto& path : dirty_governors_) {
         const auto entry = baseline_.find(path);
-        if (entry == baseline_.end() || !entry->second.valid) continue;
 
-        const ActuatorResult result = cpufreq_actuator_.restoreTo(path, entry->second.value);
-        if (result.status == ActuatorStatus::NoChange) continue;
+        if (entry == baseline_.end() || !entry->second.valid) {
+            failed = true;
+            continue;
+        }
+
+        const ActuatorResult result =
+            cpufreq_actuator_.restoreTo(path, entry->second.value);
+
+        if (result.status == ActuatorStatus::NoChange) {
+            continue;
+        }
+
         if (!result.succeeded()) {
             failed = true;
             continue;
         }
-        if (result.changed()) restoredAny = true;
+
+        if (result.changed()) {
+            restoredAny = true;
+        }
     }
 
     if (failed) {
@@ -618,7 +643,8 @@ MutationResult MutationController::restoreGovernors() noexcept {
     last_path_was_dirty_before_ = false;
     last_candidate_from_retained_ = false;
 
-    return restoredAny ? MutationResult::RolledBack : MutationResult::Skipped;
+    return restoredAny ? MutationResult::RolledBack
+                       : MutationResult::Skipped;
 }
 
 bool MutationController::retainLastMutation(const DeviceProfile& profile) noexcept {

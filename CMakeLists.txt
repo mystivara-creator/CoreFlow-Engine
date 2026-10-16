@@ -166,6 +166,8 @@ else()
 
         add_executable(coreflow_resource_tests tests/resource_tests.cpp)
         target_link_libraries(coreflow_resource_tests PRIVATE coreflow_core)
+        target_compile_definitions(coreflow_resource_tests
+            PRIVATE COREFLOW_HOST_TEST_FIXTURES=1)
         target_compile_options(coreflow_resource_tests PRIVATE -Werror)
 
         add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)

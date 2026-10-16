@@ -139,7 +139,7 @@ private:
     std::unordered_set<std::string> dirty_governors_;
     bool journal_committed_{false};  // journal holds factory values for this epoch
     bool restore_failed_{false};     // last restore incomplete: block new mutations
-    bool recovery_pending_{true};    // a previous run's journal must be recovered
+    bool recovery_pending_{false};    // a previous run's journal must be recovered
     bool pending_outcome_{false};
     std::string last_mutation_path_;
     std::string last_mutation_target_;
