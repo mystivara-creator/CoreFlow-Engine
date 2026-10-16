@@ -93,11 +93,15 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
 
         // Preserve the first failure status while still attempting the
         // remaining entries, so one failed resource cannot be masked.
-        if (restored || !entry_restored) {
-            last_actuator_status_ = result.status;
-        }
+        // Only overwrite last_actuator_status_ on success while every prior
+        // entry succeeded, or on the first failure encountered.
         if (!entry_restored) {
+            if (restored) {
+                last_actuator_status_ = result.status;
+            }
             restored = false;
+        } else if (restored) {
+            last_actuator_status_ = result.status;
         }
     }
     if (!restored) {
@@ -146,34 +150,6 @@ bool ResourceMutationController::captureBaseline(
         if (value.empty()) continue;
 
         baseline_[cap.path] = {cap.domain, cap.name, cap.path, value, true};
-    }
-
-    auto captureField = [this](ResourceDomain domain, const std::string& name,
-                               const std::string& path, bool readable,
-                               bool writable) {
-        if (path.empty() || !readable || !writable ||
-            !ResourceActuator::mutationTargetAllowed(path) ||
-            !fallbackPolicyAuthorized(domain, name, path)) return;
-        if (baseline_.count(path)) return;
-        std::string value;
-        if (!ResourceActuator::read(path, value)) return;
-        baseline_[path] = {domain, name, path,
-                           ResourceActuator::comparableValue(value), true};
-    };
-
-    captureField(ResourceDomain::Memory, "vm.swappiness",
-                 profile.vm_swappiness.path, profile.vm_swappiness.readable,
-                 profile.vm_swappiness.writable);
-    for (const auto& device : profile.io_devices) {
-        captureField(ResourceDomain::Io, device.name + ":read_ahead_kb",
-                     device.path + "/queue/read_ahead_kb",
-                     device.read_ahead_readable, device.read_ahead_writable);
-        captureField(ResourceDomain::Io, device.name + ":nr_requests",
-                     device.path + "/queue/nr_requests",
-                     device.nr_requests_readable, device.nr_requests_writable);
-        captureField(ResourceDomain::Io, device.name + ":scheduler",
-                     device.path + "/queue/scheduler",
-                     device.scheduler_readable, device.scheduler_writable);
     }
 
     if (baseline_.empty()) return false;

@@ -693,23 +693,59 @@ void AutonomousEngine::tick() {
                     case BaselineIntelligence::Outcome::Beneficial: {
                         mutation_cooldown_until_sample_ =
                             sample_count_ + kOutcomeHoldSamples + 1U;
-                        bool retained = false;
-                        if (controller_.hasPendingOutcome() &&
-                            !resource_controller_.hasPendingOutcome()) {
-                            retained = controller_.retainLastMutation(snapshot_.profile);
-                        } else if (resource_controller_.hasPendingOutcome() &&
-                                   !controller_.hasPendingOutcome()) {
-                            retained = resource_controller_.retainLastMutation(snapshot_.profile);
+                        // Both controllers may hold a pending candidate from the
+                        // same observation epoch. Handle each independently so a
+                        // dual-pending window never leaves one controller active
+                        // while the other is retained or rolled back.
+                        const bool cpu_pending = controller_.hasPendingOutcome();
+                        const bool resource_pending =
+                            resource_controller_.hasPendingOutcome();
+                        // A single observation score cannot attribute benefit to
+                        // two actuator classes. Dual-pending violates the
+                        // one-actuator-per-epoch invariant, so do not retain either
+                        // candidate based on ambiguous evidence.
+                        if (cpu_pending && resource_pending) {
+                            bool rolled_back = controller_.rollbackLastMutation();
+                            if (!resource_controller_.rollbackLastMutation()) {
+                                rolled_back = false;
+                            }
+                            if (!rolled_back) {
+                                const bool cpu_recovered = controller_.restoreAll();
+                                const bool resource_recovered = resource_controller_.restoreAll();
+                                rolled_back = cpu_recovered && resource_recovered;
+                            }
+                            refresh_pending_ = !rolled_back;
+                            mutation = rolled_back ? MutationResult::RolledBack
+                                                   : MutationResult::Failed;
+                            logError("DUAL_PENDING_OUTCOME action=ROLLBACK result=%s",
+                                     rolled_back ? "verified" : "failed");
+                            break;
                         }
-                        if (!retained) {
+                        bool retained = false;
+                        if (cpu_pending) {
+                            retained = controller_.retainLastMutation(snapshot_.profile);
+                        } else if (resource_pending) {
+                            retained = resource_controller_.retainLastMutation(
+                                snapshot_.profile);
+                        }
+                        if ((cpu_pending || resource_pending) && !retained) {
                             // Never leave a candidate active as "beneficial" if
                             // its durable retained record could not be committed.
-                            bool rolled_back = controller_.hasPendingOutcome()
-                                ? controller_.rollbackLastMutation()
-                                : resource_controller_.rollbackLastMutation();
+                            bool rolled_back = true;
+                            if (controller_.hasPendingOutcome()) {
+                                if (!controller_.rollbackLastMutation()) {
+                                    rolled_back = false;
+                                }
+                            }
+                            if (resource_controller_.hasPendingOutcome()) {
+                                if (!resource_controller_.rollbackLastMutation()) {
+                                    rolled_back = false;
+                                }
+                            }
                             if (!rolled_back) {
-                                const bool recovered = controller_.restoreAll() &&
-                                                       resource_controller_.restoreAll();
+                                const bool cpu_recovered = controller_.restoreAll();
+                                const bool resource_recovered = resource_controller_.restoreAll();
+                                const bool recovered = cpu_recovered && resource_recovered;
                                 refresh_pending_ = !recovered;
                                 rolled_back = recovered;
                             }
@@ -717,7 +753,7 @@ void AutonomousEngine::tick() {
                                                    : MutationResult::Failed;
                             logError("RETAINED_STATE_COMMIT_FAILED recovery=%s",
                                      rolled_back ? "verified" : "failed");
-                        } else {
+                        } else if (cpu_pending || resource_pending) {
                             logInfo("EFFICIENCY_BENEFICIAL action=RETAINED "
                                     "hold_until_sample=%llu",
                                     static_cast<unsigned long long>(
@@ -731,19 +767,29 @@ void AutonomousEngine::tick() {
                     case BaselineIntelligence::Outcome::Unknown: {
                         mutation_cooldown_until_sample_ =
                             sample_count_ + kOutcomeHoldSamples + 1U;
+                        const bool cpu_pending = controller_.hasPendingOutcome();
+                        const bool resource_pending =
+                            resource_controller_.hasPendingOutcome();
                         const bool had_pending_candidate =
-                            controller_.hasPendingOutcome() || resource_controller_.hasPendingOutcome();
-                        bool rolled_back = false;
-                        if (controller_.hasPendingOutcome() &&
-                            !resource_controller_.hasPendingOutcome()) {
-                            rolled_back = controller_.rollbackLastMutation();
-                        } else if (resource_controller_.hasPendingOutcome() &&
-                                   !controller_.hasPendingOutcome()) {
-                            rolled_back = resource_controller_.rollbackLastMutation();
+                            cpu_pending || resource_pending;
+                        bool rolled_back = true;
+                        if (cpu_pending) {
+                            if (!controller_.rollbackLastMutation()) {
+                                rolled_back = false;
+                            }
+                        }
+                        if (resource_pending) {
+                            if (!resource_controller_.rollbackLastMutation()) {
+                                rolled_back = false;
+                            }
+                        }
+                        if (!had_pending_candidate) {
+                            rolled_back = false;
                         }
                         if (!rolled_back) {
-                            const bool recovered = controller_.restoreAll() &&
-                                                   resource_controller_.restoreAll();
+                            const bool cpu_recovered = controller_.restoreAll();
+                            const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool recovered = cpu_recovered && resource_recovered;
                             refresh_pending_ = !recovered;
                             rolled_back = recovered;
                         }
@@ -761,21 +807,31 @@ void AutonomousEngine::tick() {
                     case BaselineIntelligence::Outcome::Regression: {
                         mutation_cooldown_until_sample_ =
                             sample_count_ + kRegressionCooldownSamples + 1U;
+                        const bool cpu_pending = controller_.hasPendingOutcome();
+                        const bool resource_pending =
+                            resource_controller_.hasPendingOutcome();
                         const bool had_pending_candidate =
-                            controller_.hasPendingOutcome() || resource_controller_.hasPendingOutcome();
-                        bool restored = false;
-                        if (controller_.hasPendingOutcome() &&
-                            !resource_controller_.hasPendingOutcome()) {
+                            cpu_pending || resource_pending;
+                        bool restored = true;
+                        if (cpu_pending) {
                             controller_.rejectLastMutation();
-                            restored = controller_.rollbackLastMutation();
-                        } else if (resource_controller_.hasPendingOutcome() &&
-                                   !controller_.hasPendingOutcome()) {
+                            if (!controller_.rollbackLastMutation()) {
+                                restored = false;
+                            }
+                        }
+                        if (resource_pending) {
                             resource_controller_.rejectLastMutation();
-                            restored = resource_controller_.rollbackLastMutation();
+                            if (!resource_controller_.rollbackLastMutation()) {
+                                restored = false;
+                            }
+                        }
+                        if (!had_pending_candidate) {
+                            restored = false;
                         }
                         if (!restored) {
-                            const bool recovered = controller_.restoreAll() &&
-                                                   resource_controller_.restoreAll();
+                            const bool cpu_recovered = controller_.restoreAll();
+                            const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool recovered = cpu_recovered && resource_recovered;
                             refresh_pending_ = !recovered;
                             restored = recovered;
                         }
@@ -815,6 +871,17 @@ void AutonomousEngine::tick() {
                     observation_context_ = decisionContext();
                     logInfo("EFFICIENCY_OBSERVATION_BEGIN samples=%zu",
                             BaselineIntelligence::kObservationSamples);
+                } else {
+                    // A verified write without a measurable observation window
+                    // would leave pending_outcome stuck and block all later
+                    // candidates. Roll back immediately (fail-closed).
+                    const bool rolled = controller_.rollbackLastMutation() ||
+                                       controller_.restoreAll();
+                    mutation = rolled ? MutationResult::RolledBack
+                                     : MutationResult::Failed;
+                    logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED action=ROLLBACK "
+                             "result=%s",
+                             rolled ? "verified" : "failed");
                 }
             }
         }
@@ -863,11 +930,23 @@ void AutonomousEngine::tick() {
                 MutationPermit::Scope::Resource);
             resource_mutation = resource_controller_.apply(
                 next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit);
-            if (resource_mutation == MutationResult::Verified &&
-                baseline_intelligence_.beginObservation()) {
-                observation_context_ = decisionContext();
-                logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
-                        BaselineIntelligence::kObservationSamples);
+            if (resource_mutation == MutationResult::Verified) {
+                if (baseline_intelligence_.beginObservation()) {
+                    observation_context_ = decisionContext();
+                    logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
+                            BaselineIntelligence::kObservationSamples);
+                } else {
+                    // Same fail-closed rule as CPU: never leave a verified
+                    // resource write without an observation epoch.
+                    const bool rolled =
+                        resource_controller_.rollbackLastMutation() ||
+                        resource_controller_.restoreAll();
+                    resource_mutation = rolled ? MutationResult::RolledBack
+                                               : MutationResult::Failed;
+                    logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED resource "
+                             "action=ROLLBACK result=%s",
+                             rolled ? "verified" : "failed");
+                }
             }
         }
         if (resource_mutation != MutationResult::Skipped) {

@@ -13,7 +13,10 @@ void ResourceStateModel::reset(const EnvironmentCapabilityMatrix& capabilities) 
         state.readable = capability.readable;
         state.writable = capability.writable;
         state.runtime_verified = capability.runtime_verified;
-        state.mutation_permitted = capability.mutation_ready;
+        // Discovery's mutation_ready flag describes a structurally admissible
+        // candidate, not permission to mutate. Permission is granted explicitly
+        // later by the policy/controller path after baseline and context checks.
+        state.mutation_permitted = false;
         state.lifecycle = capability.exists || capability.readable || capability.writable
                               ? ResourceLifecycle::Observed : ResourceLifecycle::Unknown;
         states_.push_back(std::move(state));

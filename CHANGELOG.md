@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — Mount-derived capability discovery
+
+### Changed
+- Tunable roots are read from the kernel mount table (`/proc/mounts`), not from a list of paths in source. Procfs mounts contribute their sysctl tree, sysfs mounts their attribute tree, and cgroup mounts their controller files. A root exists only if the kernel mounted it.
+- The tunable walk is breadth-first, bounded by depth (`kSysfsDepth`, `kSysctlDepth`, `kCgroupDepth`), by a visit budget (`kMaxVisits`), and by filesystem boundary. Symlinks are never followed. A truncated walk is reported in the profile (`tunables_truncated`).
+- Admission is by evidence: a writable node is a candidate only if its subsystem is recognised from its location, or the vendor's own configuration declares it. Writable nodes that match neither are counted as `tunables_unclaimed` and not admitted.
+- `TunableDiscovery` is the single authority for writable kernel surfaces. Inventory probes for classes (thermal, power, cpufreq, devfreq, block queues) and pressure files remain.
+- Availability flags (`uclamp_available`, `cpuset_available`, `scheduler_controls_available`) are derived from discovered, readable capabilities. cgroup v2 is derived from the mount table.
+
+### Removed
+- Hard-coded tunable tables (`vm.*`, `kernel.sched_*`, cpu, cgroup, gpu, runtime) and their duplicate probes in discovery.
+- The `vm_swappiness`, `uclamp_min`, `uclamp_max` and `cpuset_effective_cpus` profile fields, and the baseline fallbacks that named `vm.swappiness` and block-queue leaves. Baselines come from the same capability matrix as every other candidate.
+- Binder, ion, dma_heap and lmkd marker probes (observe-only inventory, not used by policy).
+
+### Fixed
+- Tunable walk followed symlinks through `stat()`, which could duplicate nodes or loop through `/sys/bus/*/devices`.
+- The comment on `UserGrants` said grants default to none. The code and `default.conf` default them to opt-out (`yes`). The comment now matches the code.
+
+### Tests
+- `coreflow_capability_driven` adds: tunable roots come from the mount table; unrecognised writable nodes are not admitted; symlinks do not duplicate nodes.
+- Resource fixtures build capabilities the way discovery does, instead of the removed profile fields.
+
+### Documentation
+- Restored `docs/` to the source package. `tools/verify_source_release.sh` passes, including the WebUI status and render checks.
+- `docs/CAPABILITY_DRIVEN.md` now describes mount-derived roots and the unclaimed admission rule. `docs/ANDROID_ECOSYSTEM_MAP.md` no longer refers to the removed `expandEcosystemSurface`.
+
+### Known remaining hard-coded policy (deliberately not changed in this release)
+- `observer.cpp` ranks and excludes thermal zones by type name. Replacement evidence (trip points bound to cooling devices) needs validation on device logs.
+- `ecosystem_knowledge.cpp` is a name-keyed risk catalog that gates ObserveOnly, FrameworkOwned and Quarantined surfaces. Removing it without replacement would weaken safety.
+- `fatal_surface.cpp` is a path-prefix denylist. It is kept as the only hard-coded safety rule.
+- `high_capability.cpp` matches name tokens for observation-only status.
+
+### Validation
+- Host suite (8 binaries) passes. Safety foundation contract passes.
+- Key suites pass under AddressSanitizer and UBSan.
+- `tools/verify_source_release.sh` fails on the source package because `docs/BUILD_STATUS.md` is not in the archive.
+- Android ARM64 build and device validation have not been run.
+
+
 ## v2.2.5 — Evidence-Based Resource Reasoning & Release Validation
 
 ### Changed

@@ -26,6 +26,52 @@ std::string readFile(const fs::path& p) {
     return s;
 }
 
+// Mirrors what discovery produces for a writable, policy-admitted tunable.
+void addSwappinessCapability(DeviceProfile& profile, const std::string& path) {
+    ResourceCapability cap;
+    cap.domain = ResourceDomain::Memory;
+    cap.name = "vm.swappiness";
+    cap.path = path;
+    cap.exists = true;
+    cap.readable = true;
+    cap.writable = true;
+    cap.permission_granted = true;
+    cap.runtime_verified = true;
+    cap.policy_authorized = true;
+    cap.mutation_ready = true;
+    profile.capabilities.resources.push_back(std::move(cap));
+}
+
+// Block-queue nodes as discovery admits them: one capability per queue node,
+// named like the walker names it, with mutation readiness from its own flags.
+void addBlockQueueCapability(DeviceProfile& profile, const IoDevice& device,
+                             const std::string& leaf, bool readable, bool writable) {
+    if (!readable && !writable) return;
+    ResourceCapability cap;
+    cap.domain = ResourceDomain::Io;
+    cap.name = device.name + ":" + leaf;
+    cap.path = device.path + "/queue/" + leaf;
+    cap.exists = true;
+    cap.readable = readable;
+    cap.writable = writable;
+    cap.permission_granted = writable;
+    cap.runtime_verified = readable;
+    cap.policy_authorized = true;
+    cap.mutation_ready = readable && writable;
+    profile.capabilities.resources.push_back(std::move(cap));
+}
+
+void addBlockQueueCapabilities(DeviceProfile& profile, const IoDevice& device) {
+    addBlockQueueCapability(profile, device, "read_ahead_kb",
+                            device.read_ahead_readable, device.read_ahead_writable);
+    addBlockQueueCapability(profile, device, "nr_requests",
+                            device.nr_requests_readable, device.nr_requests_writable);
+    addBlockQueueCapability(profile, device, "scheduler",
+                            device.scheduler_readable, device.scheduler_writable);
+    // Discovery attaches kernel-advertised options after admission; do the same.
+    TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
+}
+
 void writeFile(const fs::path& p, const std::string& s) {
     std::ofstream f(p, std::ios::trunc);
     f << s << '\n';
@@ -141,9 +187,7 @@ void test_no_write_without_user_grant() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -191,9 +235,7 @@ void test_journal_commit_failure_is_diagnosed() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -347,9 +389,7 @@ void test_journal_clear_failure_blocks_recovery() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     Journal journal;
     journal.entries.emplace_back(swappiness.string(), "60");
@@ -444,9 +484,7 @@ void test_swappiness_adaptive_path() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -492,9 +530,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -557,9 +593,7 @@ void test_restore_all_keeps_journal_when_dirty_path_disappears() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -607,9 +641,7 @@ void test_resource_restore_only_owned_paths() {
     writeFile(readAhead, "128");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
     // The block device stays in the profile so restore isolation is exercised,
     // but read_ahead is not writable here: block-queue writes are quarantined,
     // and this test is about owning only the swappiness write it performed.
@@ -619,6 +651,7 @@ void test_resource_restore_only_owned_paths() {
     device.read_ahead_readable = true;
     device.read_ahead_writable = false;
     profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -673,9 +706,7 @@ void test_policy_block_without_mutation_is_skipped() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -774,6 +805,7 @@ void test_intervention_level_boundaries() {
         device.scheduler_writable = scheduler;
 
         profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
         RuntimeSample sample;
         sample.mem_total_kb = 1000;
@@ -873,9 +905,7 @@ void test_disarmed_policy_performs_no_write() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -1153,6 +1183,7 @@ void test_selector_scheduler_restore_writes_bare_token() {
     device.scheduler_readable = true;
     device.scheduler_writable = true;
     profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -1192,6 +1223,42 @@ void test_selector_scheduler_restore_writes_bare_token() {
 
 // A journal written by an earlier build may hold the bracketed line. Recovery
 // and restore must normalize it instead of writing an unacceptable value.
+void test_restore_enforces_mutation_surface_guard() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "coreflow_restore_surface_guard";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path fatal = root / "drop_caches";
+    writeFile(fatal, "0");
+    ResourceActuator actuator;
+    const ActuatorResult fatal_result = actuator.restore(fatal.string(), "3");
+    CHECK(fatal_result.status == ActuatorStatus::SafetyRejected);
+    CHECK(readFile(fatal) == "0");
+
+    // CPU governor writes belong exclusively to CpuFreqActuator, including
+    // during crash recovery from a resource journal.
+    const fs::path governor = root / "scaling_governor";
+    writeFile(governor, "schedutil");
+    const ActuatorResult governor_result = actuator.restore(governor.string(), "performance");
+    CHECK(governor_result.status == ActuatorStatus::SafetyRejected);
+    CHECK(readFile(governor) == "schedutil");
+
+    const fs::path ordinary = root / "ordinary_tunable";
+    const fs::path symlink = root / "redirected_tunable";
+    writeFile(ordinary, "10");
+    std::error_code symlink_error;
+    fs::create_symlink(ordinary, symlink, symlink_error);
+    if (!symlink_error) {
+        CHECK(!ResourceActuator::writable(symlink.string()));
+        const ActuatorResult symlink_result = actuator.restore(symlink.string(), "20");
+        CHECK(symlink_result.status == ActuatorStatus::SafetyRejected);
+        CHECK(readFile(ordinary) == "10");
+    }
+
+    fs::remove_all(root);
+}
+
 void test_legacy_bracketed_journal_value_is_normalized() {
     const fs::path path = fs::temp_directory_path() / "coreflow_legacy_journal_sched";
     writeFile(path, "none");
@@ -1265,9 +1332,7 @@ struct Fixture {
             profile.capabilities.resources.push_back(cap);
             TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
         }
-        profile.vm_swappiness.path = swappiness.string();
-        profile.vm_swappiness.readable = true;
-        profile.vm_swappiness.writable = true;
+        addSwappinessCapability(profile, swappiness.string());
         sample.mem_total_kb = 1000;
         sample.mem_available_kb = 500;
         sample.mem_available_ratio = 0.50;
@@ -1445,6 +1510,7 @@ int main() {
     test_block_queue_mutation_targets_are_admitted_for_physical();
     test_selector_value_comparable_form();
     test_selector_scheduler_restore_writes_bare_token();
+    test_restore_enforces_mutation_surface_guard();
     test_legacy_bracketed_journal_value_is_normalized();
     test_cpu_permit_requires_governor_opt_in();
     test_thermal_guard_allows_stabilizing_write_and_restores();

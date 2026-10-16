@@ -26,8 +26,12 @@ int main() {
         true, true, false, true, true, false});
 
     ResourceStateModel resources;
+    matrix.resources[0].mutation_ready = true;
     resources.reset(matrix);
     CHECK(resources.size() == 2);
+    // Discovery can establish candidacy, never mutation permission.
+    const auto* discovered = resources.find(ResourceDomain::Memory, "vm.swappiness");
+    CHECK(discovered != nullptr && !discovered->mutation_permitted);
     CHECK(resources.observe(ResourceDomain::Memory, "vm.swappiness", "0"));
     CHECK(resources.setBaseline(ResourceDomain::Memory, "vm.swappiness", "0"));
     CHECK(resources.setDesired(ResourceDomain::Memory, "vm.swappiness", "20"));

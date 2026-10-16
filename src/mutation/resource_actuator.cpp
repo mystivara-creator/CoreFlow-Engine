@@ -80,7 +80,10 @@ bool ResourceActuator::writable(std::string_view path) noexcept {
     // Root passes access(W_OK) on read-only sysfs/procfs nodes because of
     // CAP_DAC_OVERRIDE; the kernel exposes real writability via the mode bits.
     struct stat st {};
-    if (::stat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    // Do not follow a final-component symlink: privileged mutation must target
+    // the discovered kernel node itself, not an arbitrary file redirected to
+    // by a stale or substituted path.
+    if (::lstat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
     return (st.st_mode & 0222) != 0;
 }
 
@@ -165,6 +168,15 @@ ActuatorResult ResourceActuator::restore(std::string_view path,
     const std::string target = comparableValue(baseline);
     if (path.empty() || target.empty()) {
         result.status = ActuatorStatus::Invalid;
+        return result;
+    }
+
+    // Recovery is a write path too. A syntactically valid journal must never
+    // bypass the same surface guard used by normal mutations; otherwise a
+    // stale or tampered journal could write a fatal control or the separately
+    // owned CPU governor. Validate before reading or writing the target.
+    if (!mutationTargetAllowed(path)) {
+        result.status = ActuatorStatus::SafetyRejected;
         return result;
     }
 

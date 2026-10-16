@@ -140,6 +140,21 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         CHECK(!bi.baselineReady());
     }
 
+    // A zero available-memory baseline is valid telemetry. A subsequent
+    // positive ratio is a real recovery signal, not an undefined ratio.
+    {
+        BaselineIntelligence bi;
+        for (std::size_t i = 0; i < BaselineIntelligence::kBaselineSamples; ++i)
+            (void)bi.captureBaseline(base(40000, 0.5, 0.2, 0.0));
+        CHECK(bi.baselineReady());
+        CHECK(bi.beginObservation());
+        bool done = false;
+        for (std::size_t i = 0; i < BaselineIntelligence::kObservationSamples; ++i)
+            done = bi.observe(base(40000, 0.5, 0.2, 0.1));
+        CHECK(done);
+        CHECK(bi.result().memory_score > 0.5);
+    }
+
     // Stability floor: flat baseline + one 1 C quantization step is not a collapse.
     {
         BaselineIntelligence bi;

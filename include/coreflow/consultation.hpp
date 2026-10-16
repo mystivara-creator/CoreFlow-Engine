@@ -94,11 +94,11 @@ struct ControlFact {
     bool benefit_justified{false};
 };
 
-// Explicit user permission, per namespace. Defaults to none. A device need
-// alone never grants permission.
-// Per-namespace user grants. CoreFlow is capability-driven, so grants are an
-// opt-OUT: every namespace is permitted by default once Adaptive mode is armed,
-// and a user may exclude a namespace with grant_<name>=no.
+// Per-namespace user grants. CoreFlow is capability-driven, so grants are
+// opt-OUT: every namespace is permitted by default once Adaptive mode is armed
+// (grant_<name>=yes in default.conf), and a user may exclude a namespace with
+// grant_<name>=no. Mutation itself stays disarmed until mutation_armed=true, so
+// a device need alone never writes a value.
 struct UserGrants {
     bool memory{true};        // ControlNamespace::VmSysctl
     bool block_queue{true};   // ControlNamespace::BlockQueue

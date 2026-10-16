@@ -60,6 +60,7 @@ set(COREFLOW_CORE_SOURCES
     src/runtime/config.cpp
     src/runtime/status_snapshot.cpp
     src/observe/capability_registry.cpp
+    src/observe/kernel_roots.cpp
     src/observe/vendor_knowledge.cpp
     src/observe/tunable_discovery.cpp
     src/conscience/fatal_surface.cpp

@@ -2,16 +2,19 @@
 
 #include "coreflow/consultation.hpp"
 #include "coreflow/fatal_surface.hpp"
+#include "coreflow/kernel_roots.hpp"
 
 #include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <dirent.h>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace coreflow {
 namespace {
@@ -68,20 +71,34 @@ std::vector<std::string> listDir(const std::string& dir) {
     return out;
 }
 
-bool isDirectory(const std::string& path) noexcept {
-    struct stat st {};
-    return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+// Directory names that are kernel device-model plumbing rather than tunables.
+// These describe the device model, not a parameter, so they are not a tuning list.
+bool acceptAllDirs(std::string_view) { return true; }
+
+bool acceptSysfsDir(std::string_view name) {
+    return name != "stats" && name != "power" && name != "subsystem" && name != "device" &&
+           name != "driver" && name != "holders" && name != "slaves" && name != "firmware_node";
 }
 
-bool acceptNone(std::string_view) { return false; }
-bool acceptAll(std::string_view name) { return name != "stats" && name != "power" && name != "subsystem" && name != "device"; }
-bool acceptCgroupGroup(std::string_view name) { return !startsWith(name, "cgroup.") && name != "uid_0" && !startsWith(name, "uid_") && !startsWith(name, "pid_"); }
+bool acceptCgroupGroup(std::string_view name) {
+    return !startsWith(name, "cgroup.") && !startsWith(name, "uid_") && !startsWith(name, "pid_");
+}
+
+// A node is vendor-declared when the vendor's own init/power configuration
+// writes it. This is the only way an unrecognised subsystem is admitted.
+bool vendorDeclares(const VendorKnowledge& vendor, const std::string& path) noexcept {
+    return vendor.find(VendorKnowledge::canonicalPath(path)) != nullptr ||
+           vendor.find(path) != nullptr;
+}
 
 } // namespace
 
 bool TunableDiscovery::kernelWritable(const std::string& path) noexcept {
     struct stat st {};
-    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    // Match walkTree's no-symlink rule for vendor-declared paths as well.
+    // Following a leaf symlink could otherwise misclassify a non-kernel file
+    // as a writable tunable.
+    if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
     // Root passes access(W_OK) everywhere (CAP_DAC_OVERRIDE). The kernel marks
     // nodes that actually accept writes with a write permission bit.
     if ((st.st_mode & 0222) == 0) return false;
@@ -147,6 +164,7 @@ std::string TunableDiscovery::nameFor(std::string_view raw) const {
 }
 
 bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std::string& path,
+                                  const VendorKnowledge& vendor,
                                   TunableDiscoveryStats& stats) const noexcept {
     try {
         if (matrix.resources.size() >= kMaxTunables) return false;
@@ -156,6 +174,15 @@ bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std
             return false;
         }
         if (!kernelWritable(path)) return false;
+
+        const ResourceDomain domain = domainFor(path);
+        // Admission: a subsystem the kernel exposes, or a node the vendor declares.
+        // Anything else that is writable is recorded as unclaimed and not admitted.
+        if (domain == ResourceDomain::Vendor && !vendorDeclares(vendor, path)) {
+            ++stats.unclaimed;
+            return false;
+        }
+
         std::string value;
         if (!readFirstLine(path, value)) return false;  // write-only or empty
 
@@ -164,7 +191,7 @@ bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std
         }
 
         ResourceCapability cap;
-        cap.domain = domainFor(path);
+        cap.domain = domain;
         cap.name = nameFor(path);
         cap.path = path;
         cap.exists = true;
@@ -183,17 +210,46 @@ bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std
     }
 }
 
-void TunableDiscovery::walk(EnvironmentCapabilityMatrix& matrix, const std::string& dir,
-                            std::size_t depth, TunableDiscoveryStats& stats,
-                            bool (*accept_dir)(std::string_view)) const noexcept {
+// Breadth-first walk. Shallow nodes are visited before deep ones, so the visit
+// budget can only truncate the deepest levels, and it reports that explicitly.
+// Symlinks are never followed, and a subtree on another filesystem (a nested
+// mount such as debugfs) is never entered.
+void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const VendorKnowledge& vendor,
+                                const std::string& root, std::size_t max_depth,
+                                bool (*accept_dir)(std::string_view),
+                                TunableDiscoveryStats& stats) const noexcept {
     try {
-        for (const auto& name : listDir(dir)) {
-            const std::string full = dir + "/" + name;
-            if (isDirectory(full)) {
-                if (depth > 0U && accept_dir(name)) walk(matrix, full, depth - 1U, stats, accept_dir);
-                continue;
+        struct stat root_st {};
+        if (::lstat(root.c_str(), &root_st) != 0 || !S_ISDIR(root_st.st_mode)) return;
+
+        std::deque<std::pair<std::string, std::size_t>> queue;
+        queue.emplace_back(root, 0U);
+        std::size_t visits = 0;
+
+        while (!queue.empty()) {
+            const std::string dir = queue.front().first;
+            const std::size_t depth = queue.front().second;
+            queue.pop_front();
+
+            for (const auto& name : listDir(dir)) {
+                if (++visits > kMaxVisits) {
+                    stats.truncated = true;
+                    return;
+                }
+                const std::string full = dir + "/" + name;
+                struct stat st {};
+                if (::lstat(full.c_str(), &st) != 0) continue;
+                if (S_ISLNK(st.st_mode)) continue;
+                if (S_ISDIR(st.st_mode)) {
+                    if (depth + 1U <= max_depth && st.st_dev == root_st.st_dev &&
+                        accept_dir(name)) {
+                        queue.emplace_back(full, depth + 1U);
+                    }
+                    continue;
+                }
+                if (!S_ISREG(st.st_mode)) continue;
+                (void)addTunable(matrix, full, vendor, stats);
             }
-            (void)addTunable(matrix, full, stats);
         }
     } catch (...) {
     }
@@ -203,51 +259,30 @@ TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& ma
                                                  const VendorKnowledge& vendor) const noexcept {
     TunableDiscoveryStats stats;
     try {
-        const std::string& r = prefix_;
-
-        walk(matrix, r + "/proc/sys/vm", 0, stats, acceptNone);
-        walk(matrix, r + "/proc/sys/kernel", 0, stats, acceptNone);
-        walk(matrix, r + "/proc/sys/walt", 2, stats, acceptAll);
-
-        // cpufreq policies: policy nodes + governor tunable subdirectories.
-        const std::string cpufreq = r + "/sys/devices/system/cpu/cpufreq";
-        for (const auto& name : listDir(cpufreq)) {
-            if (startsWith(name, "policy")) walk(matrix, cpufreq + "/" + name, 1, stats, acceptAll);
-        }
-        // Per-CPU core_ctl (vendor hotplug governor; its "enable"/limits are
-        // tunables, while cpuN/online stays fatal).
-        const std::string cpus = r + "/sys/devices/system/cpu";
-        for (const auto& name : listDir(cpus)) {
-            if (startsWith(name, "cpu") && name.size() > 3U &&
-                name.find_first_not_of("0123456789", 3) == std::string::npos) {
-                walk(matrix, cpus + "/" + name + "/core_ctl", 0, stats, acceptNone);
+        // The kernel mount table is the inventory of tunable filesystems. Nothing
+        // here names a directory: a root exists only if the kernel mounted it.
+        for (const KernelMount& mount : readKernelMounts(prefix_)) {
+            switch (mount.kind) {
+                case KernelFsKind::Procfs:
+                    walkTree(matrix, vendor, mount.mountpoint + "/sys", kSysctlDepth,
+                             acceptAllDirs, stats);
+                    break;
+                case KernelFsKind::Sysfs:
+                    walkTree(matrix, vendor, mount.mountpoint, kSysfsDepth, acceptSysfsDir, stats);
+                    break;
+                case KernelFsKind::Cgroup:
+                    walkTree(matrix, vendor, mount.mountpoint, kCgroupDepth, acceptCgroupGroup,
+                             stats);
+                    break;
+                case KernelFsKind::Other:
+                    break;
             }
         }
 
-        // Block queues (+ I/O scheduler tunables). Loop/ram devices are noise.
-        const std::string block = r + "/sys/block";
-        for (const auto& name : listDir(block)) {
-            if (startsWith(name, "loop") || startsWith(name, "ram")) continue;
-            walk(matrix, block + "/" + name + "/queue", 1, stats, acceptAll);
-        }
-
-        // GPU / bus clock domains.
-        const std::string devfreq = r + "/sys/class/devfreq";
-        for (const auto& name : listDir(devfreq)) walk(matrix, devfreq + "/" + name, 0, stats, acceptNone);
-        const std::string kgsl = r + "/sys/class/kgsl";
-        for (const auto& name : listDir(kgsl)) walk(matrix, kgsl + "/" + name, 1, stats, acceptAll);
-        walk(matrix, r + "/sys/class/misc/mali0/device", 0, stats, acceptNone);
-        walk(matrix, r + "/sys/kernel/gpu", 0, stats, acceptNone);
-
-        // cpu / uclamp / schedtune / cpuset cgroups (root + one group level).
-        walk(matrix, r + "/dev/cpuctl", 1, stats, acceptCgroupGroup);
-        walk(matrix, r + "/dev/stune", 1, stats, acceptCgroupGroup);
-        walk(matrix, r + "/dev/cpuset", 1, stats, acceptCgroupGroup);
-        walk(matrix, r + "/sys/fs/cgroup", 1, stats, acceptCgroupGroup);
-
-        // Every node the vendor itself configures, wherever it lives.
+        // Every node the vendor itself configures, wherever it lives. These are
+        // declared by the device's own configuration, so they are admitted here.
         for (const auto& knob : vendor.knobs()) {
-            if (addTunable(matrix, knob.path, stats)) ++stats.vendor_paths;
+            if (addTunable(matrix, knob.path, vendor, stats)) ++stats.vendor_paths;
         }
 
         enrich(matrix, vendor);
