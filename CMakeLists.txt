@@ -36,44 +36,9 @@ target_compile_options(coreflow_compile_options
 #   runtime/     lifecycle — configuration, paths, signals, status snapshot, entry
 #   autonomous/  loop      — autonomous tick orchestration
 # Nothing under observe/ may decide mutation policy; it asks balance/.
-set(COREFLOW_CORE_SOURCES
-    src/observe/ecosystem_knowledge.cpp
-    src/observe/high_capability.cpp
-    src/understand/context.cpp
-    src/understand/effect_model.cpp
-    src/understand/decision_agent.cpp
-    src/understand/experience.cpp
-    src/understand/thermal_features.cpp
-    src/understand/thermal_guard.cpp
-    src/balance/policy.cpp
-    src/balance/control.cpp
-    src/balance/safety_hold.cpp
-    src/balance/resource_model.cpp
-    src/balance/consultation.cpp
-    src/mutation/resource_actuator.cpp
-    src/mutation/resource_mutation.cpp
-    src/mutation/cpufreq_actuator.cpp
-    src/mutation/mutation.cpp
-    src/understand/baseline_intelligence.cpp
-    src/conscience/mutation_journal.cpp
-    src/conscience/retained_state.cpp
-    src/runtime/config.cpp
-    src/runtime/status_snapshot.cpp
-    src/observe/capability_registry.cpp
-    src/observe/kernel_roots.cpp
-    src/observe/vendor_knowledge.cpp
-    src/observe/tunable_discovery.cpp
-    src/conscience/fatal_surface.cpp
-)
+# Safety-contract compatibility: resource_mutation.cpp is registered in cmake/CoreFlowSources.cmake.
+include("${PROJECT_SOURCE_DIR}/cmake/CoreFlowSources.cmake")
 
-set(COREFLOW_ANDROID_SOURCES
-    src/runtime/main.cpp
-    src/autonomous/autonomous.cpp
-    src/understand/thermal_predictor.cpp
-    src/conscience/decision_trace.cpp
-    src/observe/discovery.cpp
-    src/observe/observer.cpp
-)
 
 if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
 
