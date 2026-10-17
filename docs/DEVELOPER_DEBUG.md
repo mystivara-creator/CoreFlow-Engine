@@ -33,3 +33,20 @@ Use this checklist before attributing a runtime problem to CoreFlow. Collect evi
 ## 5. Device validation gate
 
 A successful host test is necessary but not sufficient. Before enabling Adaptive mode, verify the Android ARM64 link, installation/uninstallation, service lifecycle, crash recovery, journal restoration, read-back behavior, thermal holds, and the exact kernel interfaces on the target device. Make one bounded change at a time and preserve a recovery path. If evidence is ambiguous, remain in Observe mode.
+
+
+## Decision trace: cause and effect
+
+`decision_trace.jsonl` is a bounded, best-effort diagnostic journal written by the daemon. Each `coreflow.decision.v1` record describes one engine cycle; it is not proof by itself that a kernel resource changed. The WebUI must distinguish the policy decision from actuator execution and from read-back verification.
+
+The trace reports the selected runtime state, decision, confidence, workload, mutation eligibility, candidate count, safety hold, mode/arming state, CPU-governor opt-in, mutation result fields, policy action, intervention level, and policy explanation. `plan_reason` explains the policy plan; `reason` is the normalized cycle outcome category. They answer different questions and must not be conflated.
+
+Interpret outcomes carefully:
+
+- `OBSERVE_OR_NOT_ARMED`: the mode or arm gate prevents mutation; this is not evidence that a candidate was evaluated as beneficial.
+- `POLICY_BLOCKED`: the current plan is not mutation-eligible; inspect `plan_reason`, state, confidence, and candidate count.
+- `NO_VERIFIED_MUTATION`: the cycle has no verified mutation result. It does not uniquely identify why no write occurred.
+- `MUTATION_VERIFIED`: the mutation path reported verification; this is daemon-reported read-back status, not a performance-benefit claim.
+- `MUTATION_ROLLED_BACK` / `MUTATION_FAILED`: inspect mutation journal and runtime logs for the resource-level cause and recovery result.
+
+Trace writing is deliberately non-fatal and best-effort: a filesystem error must not block the control loop or grant mutation authority. Missing trace entries mean observability is incomplete, not that no decision happened. WebUI labels derived from this trace must never claim independent confirmation of a system effect.

@@ -108,6 +108,9 @@ void appendDecisionTrace(
             << ",\"mutation_eligible\":" << (plan.mutation_eligible ? "true" : "false")
             << ",\"stabilizing_only\":" << (plan.stabilizing_only ? "true" : "false")
             << ",\"candidate_count\":" << plan.candidates.size()
+            << ",\"plan_action\":\"" << jsonEscape(policyActionName(plan.action)) << "\""
+            << ",\"intervention\":" << static_cast<unsigned>(plan.intervention)
+            << ",\"plan_reason\":\"" << jsonEscape(plan.reason) << "\""
             << ",\"safety_hold\":\"" << jsonEscape(holdReasonName(hold)) << "\""
             << ",\"mode\":\"" << (mode == MutationMode::Adaptive ? "adaptive" :
                                       hold != HoldReason::None ? "disabled" : "observe") << "\""

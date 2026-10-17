@@ -106,7 +106,7 @@ grep -q 'DecisionOutcome' "$ROOT/include/coreflow/outcome.hpp"
 grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^allow_cpu_governor=no$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'v2.2.0' "$ROOT/README.md"
+grep -q "v${VERSION}" "$ROOT/README.md"
 grep -q "v${VERSION}" "$ROOT/docs/BUILD_STATUS.md"
 grep -q 'v2.1.0' "$ROOT/CHANGELOG.md"
 
