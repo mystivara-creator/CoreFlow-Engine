@@ -1,5 +1,6 @@
 #include "coreflow/resource_mutation.hpp"
 #include "coreflow/context.hpp"
+#include "coreflow/decision_trace.hpp"
 #include "coreflow/tunable_discovery.hpp"
 
 #include <algorithm>
@@ -494,10 +495,19 @@ MutationResult ResourceMutationController::applyCandidate(
     RuntimeState state,
     double confidence,
     const EngineConfig& config,
-    const PolicyPlan& policy
+    const PolicyPlan& policy,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     if (journal_ == nullptr) {
         last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
+        if (trace_context != nullptr) {
+            DecisionTraceEvent event{"mutation_preflight_failed", "resource", "FAILED",
+                                     "mutation_journal_unavailable"};
+            event.target = candidate.path.c_str();
+            event.requested = candidate.requested.c_str();
+            event.baseline_value = candidate.baseline.c_str();
+            appendDecisionTraceEvent(*trace_context, event);
+        }
         return MutationResult::Failed;
     }
     if (!policy.allows(candidate.domain, candidate.name)) return MutationResult::Skipped;
@@ -525,10 +535,44 @@ MutationResult ResourceMutationController::applyCandidate(
     const MutationAuthority authority;
     const MutationPermit permit = authority.authorize(
         policy, config, state, confidence, capability, mutation.target);
-    if (!permit.validFor(mutation)) return MutationResult::Skipped;
+    const bool permit_valid = permit.validFor(mutation);
+    if (trace_context != nullptr) {
+        const char* permit_reason = nullptr;
+        if (permit_valid) {
+            permit_reason = "target_bound_permit_issued";
+        } else if (!capability.mutationSafe()) {
+            permit_reason = "resource_actuator_capability_not_mutation_safe";
+        } else {
+            permit_reason = mutationPermitBlockReason(
+                policy, config, state, confidence, MutationPermit::Scope::Resource);
+            if (permit_reason == nullptr) permit_reason = "target_bound_permit_invalid";
+        }
+        DecisionTraceEvent event{"target_permit_checked", "resource",
+                                 permit_valid ? "ISSUED" : "DENIED", permit_reason};
+        event.permit_known = true;
+        event.permit_valid = permit_valid;
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!permit_valid) return MutationResult::Skipped;
 
     std::string previous_value;
-    if (!ResourceActuator::readComparable(candidate.path, previous_value)) {
+    const bool prewrite_read_ok = ResourceActuator::readComparable(
+        candidate.path, previous_value);
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"prewrite_read_completed", "resource",
+                                 prewrite_read_ok ? "READ" : "FAILED",
+                                 prewrite_read_ok ? "live_resource_value_read"
+                                                  : "live_resource_value_read_failed"};
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = prewrite_read_ok ? previous_value.c_str() : nullptr;
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!prewrite_read_ok) {
         last_failure_stage_ = ResourceMutationFailureStage::BaselineRead;
         return MutationResult::Failed;
     }
@@ -547,14 +591,57 @@ MutationResult ResourceMutationController::applyCandidate(
             entries.emplace_back(candidate.path, it->second.value);
         }
     }
-    if (entries.empty() || !journal_->commit(entries)) {
+    const bool journal_entries_ready = !entries.empty();
+    const bool journal_commit_ok = journal_entries_ready && journal_->commit(entries);
+    if (trace_context != nullptr) {
+        const char* journal_reason = journal_commit_ok
+            ? "factory_snapshot_committed_before_actuator_write"
+            : journal_entries_ready ? "journal_commit_failed_no_actuator_write"
+                                    : "journal_snapshot_empty_no_actuator_write";
+        DecisionTraceEvent event{"mutation_journal_commit", "resource",
+                                 journal_commit_ok ? "COMMITTED" : "FAILED",
+                                 journal_reason};
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!journal_commit_ok) {
         last_failure_stage_ = ResourceMutationFailureStage::JournalCommit;
         return MutationResult::Failed;
     }
     journal_committed_ = true;
 
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"actuator_apply_started", "resource", "STARTED",
+                                 "target_bound_permit_and_prewrite_journal_confirmed"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
     const ActuatorResult result = actuator_.apply(mutation, permit);
     last_actuator_status_ = result.status;
+    if (trace_context != nullptr) {
+        const std::string_view status = actuatorStatusName(result.status);
+        DecisionTraceEvent event{"actuator_apply_completed", "resource", status.data(),
+                                 "actuator_return_reports_write_and_readback_counts"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.actuator_status = status.data();
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        event.write_counts_known = true;
+        event.writes_attempted = result.writes_attempted;
+        event.writes_verified = result.writes_verified;
+        appendDecisionTraceEvent(*trace_context, event);
+    }
     if (result.status == ActuatorStatus::ReadFailed) {
         last_failure_stage_ = ResourceMutationFailureStage::ActuatorRead;
     } else if (result.status == ActuatorStatus::SafetyRejected) {
@@ -631,7 +718,8 @@ MutationResult ResourceMutationController::apply(
     const DeviceProfile& profile,
     const EngineConfig& config,
     const PolicyPlan& policy,
-    const MutationPermit& permit
+    const MutationPermit& permit,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     ++cycle_;
     last_failure_stage_ = ResourceMutationFailureStage::None;
@@ -687,7 +775,7 @@ MutationResult ResourceMutationController::apply(
 
     const bool was_clean = !mutated_;
     const MutationResult applied = applyCandidate(
-        candidate, state, sample.confidence, config, policy);
+        candidate, state, sample.confidence, config, policy, trace_context);
     if (applied == MutationResult::Verified) {
         stabilizing_epoch_ = was_clean ? policy.stabilizing_only
                                        : (stabilizing_epoch_ && policy.stabilizing_only);

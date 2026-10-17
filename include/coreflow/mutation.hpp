@@ -18,6 +18,8 @@
 
 namespace coreflow {
 
+struct DecisionTraceContext;
+
 /**
  * Bounded, verified, restorable CPUFreq governor controller.
  *
@@ -49,7 +51,8 @@ public:
         const DeviceProfile& profile,
         const EngineConfig& config,
         const PolicyPlan& policy,
-        const MutationPermit& permit
+        const MutationPermit& permit,
+        const DecisionTraceContext* trace_context = nullptr
     ) noexcept;
 
     // Compatibility entry point for deterministic/unit callers. It still obtains
@@ -109,7 +112,8 @@ private:
         const RuntimeSample& sample
     ) const noexcept;
     MutationResult applyPlan(const std::vector<MutationPlanEntry>& plan,
-                              const MutationPermit& permit) noexcept;
+                              const MutationPermit& permit,
+                              const DecisionTraceContext* trace_context) noexcept;
     MutationResult restoreGovernors() noexcept;
     // Restore only if this controller actually changed a governor. A controller
     // that never mutated must not write to the kernel at all.

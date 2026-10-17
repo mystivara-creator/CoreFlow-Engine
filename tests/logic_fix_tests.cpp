@@ -99,6 +99,59 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
             MutationResult::RolledBack, MutationResult::Skipped)) == "MUTATION_ROLLED_BACK");
     }
 
+    // The diagnostic gate reason and actual coarse authorization use the same
+    // predicate, so WebUI explanations cannot silently diverge from the gate.
+    {
+        EngineConfig config;
+        config.setMutationMode(MutationMode::Adaptive);
+        config.setMutationArmed(true);
+        config.setAllowCpuGovernor(true);
+        PolicyPlan plan;
+        plan.action = PolicyAction::Candidate;
+        plan.mutation_eligible = true;
+        MutationAuthority authority;
+
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq) == nullptr);
+        CHECK(authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+
+        CHECK(std::string(mutationPermitBlockReason(
+              plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::quiet_NaN(),
+              MutationPermit::Scope::CpuFreq)) == "confidence_not_finite");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::quiet_NaN(),
+              MutationPermit::Scope::CpuFreq).valid());
+        CHECK(std::string(mutationPermitBlockReason(
+              plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::infinity(),
+              MutationPermit::Scope::Resource)) == "confidence_not_finite");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::infinity(),
+              MutationPermit::Scope::Resource).valid());
+
+        plan.stabilizing_only = true;
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq)) == "stabilizing_plan_disallows_cpu");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::Resource) == nullptr);
+
+        plan.stabilizing_only = false;
+        config.setAllowCpuGovernor(false);
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq)) == "cpu_governor_opt_in_disabled");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+
+        config.setAllowCpuGovernor(true);
+        config.setMutationArmed(false);
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::Resource)) == "adaptive_mode_or_arming_required");
+    }
+
     AdaptivePolicy policy;
 
     // Memory pressure must win over Warming (48 C <= t < 55 C).

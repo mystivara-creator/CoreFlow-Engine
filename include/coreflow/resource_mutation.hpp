@@ -19,6 +19,8 @@
 
 namespace coreflow {
 
+struct DecisionTraceContext;
+
 // Autonomous tuning for *discovered* VM/I/O/Scheduler resources.
 // Candidate generation is capability-driven via EffectModel — not a fixed
 // allow-list of resource names. Discovery decides what exists and is writable;
@@ -87,7 +89,8 @@ public:
                          const DeviceProfile& profile,
                          const EngineConfig& config,
                          const PolicyPlan& policy,
-                         const MutationPermit& permit) noexcept;
+                         const MutationPermit& permit,
+                         const DecisionTraceContext* trace_context = nullptr) noexcept;
 
     // Convenience overload used by tests — builds a permissive plan.
     MutationResult apply(const RuntimeState state,
@@ -161,7 +164,8 @@ private:
                                   RuntimeState state,
                                   double confidence,
                                   const EngineConfig& config,
-                                  const PolicyPlan& policy) noexcept;
+                                  const PolicyPlan& policy,
+                                  const DecisionTraceContext* trace_context) noexcept;
     MutationJournal::Entries factorySnapshot() const;
     bool verifySchedulerToken(const std::string& path,
                               const std::string& token,

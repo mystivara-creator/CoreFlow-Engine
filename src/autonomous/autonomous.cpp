@@ -639,9 +639,26 @@ void AutonomousEngine::tick() {
             return c;
         };
 
+        // The event context links actual milestones within this cycle. Event
+        // records are diagnostic only and never participate in authorization.
+        MutationResult mutation = MutationResult::Skipped;
+        // Keep the CPU actuator result separate from outcome-resolution results,
+        // which may refer to a resource candidate from the previous epoch.
+        MutationResult cpu_mutation_for_trace = MutationResult::Skipped;
+        DecisionTraceContext trace_context{
+            sample_count_, previous, next, decision, sample.confidence,
+            &context, &ecosystem_plan, hold, config_.mutationMode(),
+            config_.mutationArmed(), config_.allowCpuGovernor(), mutation,
+            MutationResult::Skipped};
+        appendDecisionTraceEvent(trace_context, {
+            "policy_evaluated", "policy",
+            (ecosystem_plan.mutation_eligible &&
+             ecosystem_plan.action == PolicyAction::Candidate) ? "ELIGIBLE" : "BLOCKED",
+            ecosystem_plan.reason.empty() ? "policy_plan_has_no_explanation"
+                                          : ecosystem_plan.reason.c_str()});
+
         // STEP 10: Observe a verified mutation without allowing another
         // mutation to alter the candidate during the observation window.
-        MutationResult mutation = MutationResult::Skipped;
         if (baseline_intelligence_.observing()) {
             const bool complete = baseline_intelligence_.observe(sample);
             if (complete) {
@@ -848,6 +865,31 @@ void AutonomousEngine::tick() {
                     }
 
                 }
+
+                const char* outcome_reason = "observation_outcome_unknown";
+                switch (evaluation.outcome) {
+                    case BaselineIntelligence::Outcome::Beneficial:
+                        outcome_reason = (mutation == MutationResult::RolledBack ||
+                                          mutation == MutationResult::Failed)
+                            ? "beneficial_outcome_retention_failed_recovery_attempted"
+                            : "beneficial_outcome_candidate_retained";
+                        break;
+                    case BaselineIntelligence::Outcome::Neutral:
+                        outcome_reason = "neutral_outcome_candidate_rollback_attempted";
+                        break;
+                    case BaselineIntelligence::Outcome::Inconclusive:
+                        outcome_reason = "inconclusive_outcome_candidate_rollback_attempted";
+                        break;
+                    case BaselineIntelligence::Outcome::Unknown:
+                        outcome_reason = "unknown_outcome_candidate_rollback_attempted";
+                        break;
+                    case BaselineIntelligence::Outcome::Regression:
+                        outcome_reason = "regression_outcome_candidate_rejection_and_rollback_attempted";
+                        break;
+                }
+                appendDecisionTraceEvent(trace_context, {
+                    "outcome_resolved", "pending_mutation_epoch",
+                    mutationResultName(mutation), outcome_reason});
             }
         } else if (baseline_intelligence_.baselineReady()) {
             const bool mutationCooldownActive =
@@ -855,12 +897,34 @@ void AutonomousEngine::tick() {
 
             if (!mutationCooldownActive && !controller_.hasPendingOutcome() &&
                 !resource_controller_.hasPendingOutcome()) {
+                const char* cpu_gate_reason = mutationPermitBlockReason(
+                    ecosystem_plan, config_, next, sample.confidence,
+                    MutationPermit::Scope::CpuFreq);
                 const MutationPermit cpu_permit = mutation_authority_.authorize(
                     ecosystem_plan, config_, next, sample.confidence,
                     MutationPermit::Scope::CpuFreq);
+                appendDecisionTraceEvent(trace_context, {
+                    "scope_gate_checked", "cpu_freq_coarse",
+                    cpu_permit.valid() ? "ALLOW" : "DENY",
+                    cpu_permit.valid()
+                        ? "coarse_scope_passed_target_capability_still_required"
+                        : cpu_gate_reason,
+                    true, cpu_permit.valid()});
                 mutation = controller_.apply(
-                    next, sample, snapshot_.profile, config_, ecosystem_plan, cpu_permit);
+                    next, sample, snapshot_.profile, config_, ecosystem_plan, cpu_permit,
+                    &trace_context);
+                cpu_mutation_for_trace = mutation;
+                trace_context.cpu_mutation = cpu_mutation_for_trace;
+                trace_context.cpu_mutation_known = true;
+                appendDecisionTraceEvent(trace_context, {
+                    "mutation_controller_returned", "cpu_freq",
+                    mutationResultName(mutation), mutationTraceOutcomeReason(mutation)});
             } else {
+                const char* held_reason = mutationCooldownActive
+                    ? "mutation_cooldown_active"
+                    : "pending_outcome_blocks_new_cpu_candidate";
+                appendDecisionTraceEvent(trace_context, {
+                    "mutation_held", "cpu_freq", "HELD", held_reason});
                 logInfo(
                     "EFFICIENCY_MUTATION_HELD until_sample=%llu",
                     static_cast<unsigned long long>(mutation_cooldown_until_sample_));
@@ -869,21 +933,37 @@ void AutonomousEngine::tick() {
             if (mutation == MutationResult::Verified) {
                 if (baseline_intelligence_.beginObservation()) {
                     observation_context_ = decisionContext();
+                    appendDecisionTraceEvent(trace_context, {
+                        "observation_window_started", "cpu_freq", "STARTED",
+                        "verified_mutation_has_measurement_window"});
                     logInfo("EFFICIENCY_OBSERVATION_BEGIN samples=%zu",
                             BaselineIntelligence::kObservationSamples);
                 } else {
                     // A verified write without a measurable observation window
                     // would leave pending_outcome stuck and block all later
                     // candidates. Roll back immediately (fail-closed).
+                    appendDecisionTraceEvent(trace_context, {
+                        "observation_window_failed", "cpu_freq", "FAILED",
+                        "verified_mutation_could_not_open_observation_window"});
                     const bool rolled = controller_.rollbackLastMutation() ||
                                        controller_.restoreAll();
                     mutation = rolled ? MutationResult::RolledBack
                                      : MutationResult::Failed;
+                    cpu_mutation_for_trace = mutation;
+                    trace_context.cpu_mutation = cpu_mutation_for_trace;
+                    trace_context.cpu_mutation_known = true;
+                    appendDecisionTraceEvent(trace_context, {
+                        "rollback_completed", "cpu_freq", mutationResultName(mutation),
+                        rolled ? "observation_window_failure_rollback_succeeded"
+                               : "observation_window_failure_rollback_failed"});
                     logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED action=ROLLBACK "
                              "result=%s",
                              rolled ? "verified" : "failed");
                 }
             }
+        } else {
+            appendDecisionTraceEvent(trace_context, {
+                "mutation_held", "cpu_freq", "HELD", "baseline_capture_not_ready"});
         }
 
         // Accepted settings persist until a real safety/authority transition.
@@ -903,6 +983,15 @@ void AutonomousEngine::tick() {
         if (mutation_epoch_active && safety_restore) {
             const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
+            trace_context.cpu_mutation = cpu_mutation_for_trace;
+            appendDecisionTraceEvent(trace_context, {
+                "safety_restore_completed", "mutation_epoch",
+                (cpu_restored && resource_restored) ? "RESTORED" : "FAILED",
+                cpu_restored
+                    ? (resource_restored ? "cpu_restore_ok_resource_restore_ok"
+                                         : "cpu_restore_ok_resource_restore_failed")
+                    : (resource_restored ? "cpu_restore_failed_resource_restore_ok"
+                                         : "cpu_restore_failed_resource_restore_failed")});
             if (!cpu_restored || !resource_restored) {
                 logError("MUTATION_EPOCH_RESTORE_FAILED cpu=%s resource=%s",
                          cpu_restored ? "ok" : "failed",
@@ -925,29 +1014,78 @@ void AutonomousEngine::tick() {
             baseline_intelligence_.baselineReady() &&
             !baseline_intelligence_.observing() && !controller_.hasPendingOutcome() &&
             !resource_controller_.hasPendingOutcome()) {
+            const char* resource_gate_reason = mutationPermitBlockReason(
+                ecosystem_plan, config_, next, sample.confidence,
+                MutationPermit::Scope::Resource);
             const MutationPermit resource_permit = mutation_authority_.authorize(
                 ecosystem_plan, config_, next, sample.confidence,
                 MutationPermit::Scope::Resource);
+            appendDecisionTraceEvent(trace_context, {
+                "scope_gate_checked", "resource_coarse",
+                resource_permit.valid() ? "ALLOW" : "DENY",
+                resource_permit.valid()
+                    ? "coarse_scope_passed_target_capability_still_required"
+                    : resource_gate_reason,
+                true, resource_permit.valid()});
             resource_mutation = resource_controller_.apply(
-                next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit);
+                next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit,
+                &trace_context);
+            trace_context.resource_mutation = resource_mutation;
+            trace_context.resource_mutation_known = true;
+            appendDecisionTraceEvent(trace_context, {
+                "mutation_controller_returned", "resource",
+                mutationResultName(resource_mutation),
+                (resource_mutation == MutationResult::Failed ||
+                 resource_mutation == MutationResult::RolledBack)
+                    ? resourceMutationFailureStageName(resource_controller_.lastFailureStage())
+                    : mutationTraceOutcomeReason(resource_mutation),
+                false, false,
+                resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
+                actuatorStatusName(resource_controller_.lastActuatorStatus()).data()});
             if (resource_mutation == MutationResult::Verified) {
                 if (baseline_intelligence_.beginObservation()) {
                     observation_context_ = decisionContext();
+                    appendDecisionTraceEvent(trace_context, {
+                        "observation_window_started", "resource", "STARTED",
+                        "verified_mutation_has_measurement_window"});
                     logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
                             BaselineIntelligence::kObservationSamples);
                 } else {
                     // Same fail-closed rule as CPU: never leave a verified
                     // resource write without an observation epoch.
+                    appendDecisionTraceEvent(trace_context, {
+                        "observation_window_failed", "resource", "FAILED",
+                        "verified_mutation_could_not_open_observation_window"});
                     const bool rolled =
                         resource_controller_.rollbackLastMutation() ||
                         resource_controller_.restoreAll();
                     resource_mutation = rolled ? MutationResult::RolledBack
                                                : MutationResult::Failed;
+                    trace_context.resource_mutation = resource_mutation;
+                    appendDecisionTraceEvent(trace_context, {
+                        "rollback_completed", "resource", mutationResultName(resource_mutation),
+                        rolled ? "observation_window_failure_rollback_succeeded"
+                               : "observation_window_failure_rollback_failed",
+                        false, false,
+                        resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
+                        actuatorStatusName(resource_controller_.lastActuatorStatus()).data()});
                     logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED resource "
                              "action=ROLLBACK result=%s",
                              rolled ? "verified" : "failed");
                 }
             }
+        } else {
+            const char* held_reason = !baseline_intelligence_.baselineReady()
+                ? "baseline_capture_not_ready"
+                : baseline_intelligence_.observing()
+                    ? "baseline_outcome_observation_active"
+                    : resource_mutation_cooldown
+                        ? "mutation_cooldown_active"
+                        : mutation == MutationResult::Verified
+                            ? "cpu_mutation_already_verified_this_cycle"
+                            : "pending_outcome_blocks_new_resource_candidate";
+            appendDecisionTraceEvent(trace_context, {
+                "mutation_held", "resource", "HELD", held_reason});
         }
         if (resource_mutation != MutationResult::Skipped) {
             logInfo("RESOURCE_AUTONOMOUS result=%s",
@@ -975,7 +1113,7 @@ void AutonomousEngine::tick() {
             sample_count_, previous, next, decision, sample.confidence,
             context, ecosystem_plan, hold, config_.mutationMode(),
             config_.mutationArmed(), config_.allowCpuGovernor(),
-            mutation, resource_mutation);
+            cpu_mutation_for_trace, resource_mutation);
 
         // STEP 11: Periodic detailed logging (reduced frequency for storage efficiency)
         const bool periodic = (sample_count_ % kPeriodicLogSamples) == 0;

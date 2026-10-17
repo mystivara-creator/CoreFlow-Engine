@@ -3,7 +3,7 @@
 const PATH={base:"/data/adb/coreflow",config:"/data/adb/coreflow/config.ini",logs:"/data/adb/coreflow/logs",pid:"/data/adb/coreflow/coreflowd.pid",report:"/data/adb/coreflow/install_report.txt",safe:"/data/adb/coreflow/SAFE_MODE",disable:"/data/adb/coreflow/DISABLE",module:"/data/adb/modules/coreflow_autonomous",trace:"/data/adb/coreflow/decision_trace.jsonl",status:"/data/adb/coreflow/status.json"};
 const $=id=>document.getElementById(id);const els={};
 ["modeBadge","daemonStatus","lastRefresh","runtimeState","thermal","memory","load","caps","logBox","configBox","logPath","footerInfo","btnRefresh","modeHeadline","modeDescription","stateDot","chipArmed","chipCpuGov","chipInterval","eventList","thermalNote","memoryNote","thermalBar","memoryBar","loadBar","stateBar","confidenceNote","loadNote","cpuFreq","cpuFreqNote","traceSearch","traceFilter","traceSummary","traceList","requestedMode","effectiveArmed","effectiveCpu","safetyMarkers","safeModeBadge","reportBox","capabilityList","logSearch","logLines","errorsOnly","logSummary","terminalOutput","lastCommand","connectionLabel","connectionSub","allowCpuGov","observeCurrent","observeCard","adaptiveCard","cpuFreq","cpuFreqNote","traceSearch","traceFilter","traceSummary","traceList","historyStatus","histThermal","histMemory","histLoad","histCpu","sparkThermal","sparkMemory","sparkLoad","sparkCpu","btnClearHistory","safetyOverall","auditRequested","auditArmed","auditCpu","auditSafe","auditDisable","auditRestart","auditDaemon","safetyAuditNote"] .forEach(k=>els[k]=$(k));
-let state={config:null,configRaw:"",log:"",logPath:"",report:"",daemon:"unknown",safe:false,disabled:false,busy:false,view:"live",statusTimer:null,statusBusy:false,statusFails:0,lastOutput:"",liveMetrics:{},traceEvents:[],history:[]};
+let state={config:null,configRaw:"",log:"",logPath:"",report:"",daemon:"unknown",safe:false,disabled:false,busy:false,view:"live",statusTimer:null,statusBusy:false,statusFails:0,traceTimer:null,traceBusy:false,lastOutput:"",liveMetrics:{},traceEvents:[],history:[]};
 const diagCommands={
  identity:{label:"device identity",cmd:"printf 'MODEL='; getprop ro.product.model; printf 'DEVICE='; getprop ro.product.device; printf 'ANDROID='; getprop ro.build.version.release; printf 'API='; getprop ro.build.version.sdk; printf 'KERNEL='; uname -r; printf 'ABI='; getprop ro.product.cpu.abi"},
  uptime:{label:"uptime & load",cmd:"printf '%s\\n' '--- uptime ---'; cat /proc/uptime; printf '%s\\n' '--- loadavg ---'; cat /proc/loadavg"},
@@ -20,7 +20,7 @@ function iniParse(s){const out={};String(s||"").split(/\r?\n/).forEach(line=>{li
 function truth(v){return /^(1|true|yes|on)$/i.test(String(v||""))}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function setText(id,v){const x=$(id);if(x)x.textContent=v}
-function showView(view){if(!$("view-"+view))return;state.view=view;document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+view));document.querySelectorAll(".nav-item").forEach(b=>b.classList.toggle("active",b.dataset.view===view));const titles={live:"Live engine",overview:"Overview",control:"Mode & policy",diagnostics:"Diagnostics",trace:"Decision trace",terminal:"Shell console",about:"Project & AI"};setText("pageTitle",titles[view]||"CoreFlow");$('sidebar').classList.remove('open');if(view==="diagnostics")renderLog();if(view==="trace")renderTrace();if(view==="live")startLive();else stopLive();}
+function showView(view){if(!$('view-'+view))return;state.view=view;document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+view));document.querySelectorAll(".nav-item").forEach(b=>b.classList.toggle("active",b.dataset.view===view));const titles={live:"Live engine",overview:"Overview",control:"Mode & policy",diagnostics:"Diagnostics",trace:"Decision trace",terminal:"Shell console",about:"Project & AI"};setText("pageTitle",titles[view]||"CoreFlow");$('sidebar').classList.remove('open');if(view==="diagnostics")renderLog();if(view==="trace"){renderTrace();startTrace()}else stopTrace();if(view==="live")startLive();else stopLive();}
 function installNav(){document.querySelectorAll("[data-view]").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));document.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.goto)));$('menuToggle').addEventListener('click',()=>$('sidebar').classList.toggle('open'));}
 function pickLogFile(){return execShell("if [ -r "+PATH.logs+"/coreflowd.log ]; then echo coreflowd.log; elif ls "+PATH.logs+"/*.log >/dev/null 2>&1; then ls -1 "+PATH.logs+"/*.log | tail -1 | xargs -n1 basename; else echo; fi").then(r=>{const name=(r.stdout||"").trim().split(/\r?\n/)[0]||"";return name&&/^[A-Za-z0-9_.-]+$/.test(name)?PATH.logs+"/"+name:""})}
 function fromLog(text){const lines=String(text||"").split(/\r?\n/);const x={state:null,thermal:null,memory:null,load:null,caps:[],device:null};for(let i=lines.length-1;i>=0;i--){const l=lines[i];if(!x.state){const m=l.match(/\b(IDLE|NORMAL|WARMING|ELEVATED|PRESSURE|THERMAL_GUARD|THERMAL GUARD)\b/i);if(m)x.state=m[1]}if(!x.thermal){let m=l.match(/(\d+(?:\.\d+)?)\s*°?C\b/i)||l.match(/thermal[^\d]*(\d{4,6})/i);if(m){let v=Number(m[1]);x.thermal=(v>200&&String(m[1]).length>=4?(v/1000).toFixed(1):String(m[1]))+" °C"}}if(!x.memory){const m=l.match(/mem(?:ory)?[^\d]*(\d+(?:\.\d+)?)\s*%/i)||l.match(/(?:mem_available_ratio|available_ratio)[=: ]+(\d+(?:\.\d+)?)/i);if(m){let v=Number(m[1]);if(v<=1)v*=100;x.memory=v.toFixed(1)+"% free"}}if(!x.load){const m=l.match(/\bload(?:1)?[=: ]+(\d+(?:\.\d+)?)/i);if(m)x.load=m[1]}if(/CAPS\s+/.test(l)&&x.caps.length<4)x.caps.unshift(l.replace(/^.*CAPS\s+/,"CAPS ").trim());if(!x.device&&/DEVICE\s+/.test(l))x.device=l.replace(/^.*DEVICE\s+/,"DEVICE ").trim();if(x.state&&x.thermal&&x.memory&&x.load&&x.caps.length>=2)break}return x}
@@ -86,7 +86,10 @@ function classifyTrace(line){const l=line.toLowerCase();if(/error|fatal|failed|f
 function parseStructuredTrace(raw){
  const out=[];
  String(raw||"").split(/\r?\n/).filter(Boolean).forEach(line=>{
-  try{const event=JSON.parse(line);if(event&&event.schema==="coreflow.decision.v1")out.push(event)}catch(_){}
+  try{
+   const event=JSON.parse(line);
+   if(event&&(event.schema==="coreflow.decision.v1"||event.schema==="coreflow.event.v2"))out.push(event);
+  }catch(_){}
  });
  return out;
 }
@@ -96,27 +99,66 @@ function renderStructuredTrace(events,host){
  const rows=events.slice().reverse().filter(e=>{
   const blob=JSON.stringify(e).toLowerCase();
   if(!blob.includes(search))return false;
-  if(filter==="decision")return !!e.decision;
-  if(filter==="mutation")return /VERIFIED|FAILED|ROLLED_BACK|APPLIED/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation));
-  if(filter==="safety")return e.reason==="SAFETY_HOLD"||String(e.safety_hold||"").toLowerCase()!=="none";
-  if(filter==="error")return /FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation))||e.reason==="MUTATION_FAILED";
+  const isEvent=e.schema==="coreflow.event.v2";
+  const result=String(e.result||"").toUpperCase();
+  if(filter==="decision")return isEvent?(e.event==="policy_evaluated"||e.event==="scope_gate_checked"||e.event==="target_permit_checked"||e.event==="cycle_completed"):!!e.decision;
+  if(filter==="mutation")return isEvent?(/mutation|rollback|restore|scope_gate|observation_window|permit|actuator|journal|prewrite_read/.test(String(e.event||""))):/VERIFIED|FAILED|ROLLED_BACK|APPLIED/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation));
+  if(filter==="safety")return e.reason==="SAFETY_HOLD"||e.decision_reason==="SAFETY_HOLD"||String(e.safety_hold||"").toLowerCase()!=="none"||/safety|rollback|hold/.test(String(e.event||"")+" "+String(e.reason||""));
+  if(filter==="error")return isEvent?(/FAILED|ROLLED_BACK|DENY|REJECTED|INVALID|UNAVAILABLE|UNSUPPORTED/.test(result)||/failure|failed/.test(String(e.reason||""))):/FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation))||e.reason==="MUTATION_FAILED";
   return true;
  });
  host.replaceChildren();
- setText("traceSummary",rows.length+" structured event(s) shown · "+events.length+" loaded from C++ journal");
- if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent=events.length?"No structured events match this filter.":"No structured journal events yet. This can mean the updated daemon has not written its first cycle, or the journal is not readable.";host.appendChild(d);return}
+ setText("traceSummary",rows.length+" structured record(s) shown · "+events.length+" loaded from C++ journal");
+ if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent=events.length?"No structured records match this filter.":"No structured journal events yet. This can mean the daemon has not written its first cycle, or the journal is not readable.";host.appendChild(d);return}
  rows.slice(0,200).forEach(e=>{
-  const row=document.createElement("div");row.className="trace-row "+(e.reason==="SAFETY_HOLD"?"safety":/FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation))?"error":"");
+  const isEvent=e.schema==="coreflow.event.v2";
+  const failed=isEvent?/FAILED|ROLLED_BACK|REJECTED|INVALID|UNAVAILABLE|UNSUPPORTED/.test(String(e.result||"")):/FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation));
+  const safety=e.reason==="SAFETY_HOLD"||e.decision_reason==="SAFETY_HOLD"||String(e.safety_hold||"").toLowerCase()!=="none";
+  const row=document.createElement("div");row.className="trace-row "+(safety?"safety":failed?"error":"");
   const dot=document.createElement("span");dot.className="trace-dot";
   const body=document.createElement("div");
-  const title=document.createElement("b");title.textContent=`Cycle ${e.cycle ?? "?"} · ${e.decision||"Unknown decision"} · ${e.state||"Unknown state"}`;
-  const p=document.createElement("p");const tag=document.createElement("span");tag.className="trace-tag";tag.textContent=e.reason||"EVALUATED";p.appendChild(tag);p.appendChild(document.createTextNode(" "+(e.timestamp||"timestamp unavailable")));
-  const detail=document.createElement("p");detail.textContent=`confidence ${Number.isFinite(Number(e.confidence))?Number(e.confidence).toFixed(2):"unknown"} · workload ${e.workload||"unknown"} · eligible ${typeof e.mutation_eligible==="boolean"?(e.mutation_eligible?"yes":"no"):"unknown"} · candidates ${e.candidate_count??"unknown"}`;
-  const result=document.createElement("p");result.textContent=`CPU: ${e.cpu_mutation||"unknown"} · Resource: ${e.resource_mutation||"unknown"} · hold: ${e.safety_hold||"unknown"} · mode: ${e.mode||"unknown"} · armed: ${typeof e.mutation_armed==="boolean"?(e.mutation_armed?"yes":"no"):"unknown"}`;
+  const title=document.createElement("b");
+  title.textContent=isEvent
+   ? `Cycle ${e.cycle??"?"} · ${e.event||"unknown_event"} · ${e.scope||"engine"}`
+   : `Cycle ${e.cycle??"?"} · ${e.decision||"Unknown decision"} · ${e.state||"Unknown state"}`;
+  const p=document.createElement("p");const tag=document.createElement("span");tag.className="trace-tag";tag.textContent=isEvent?(e.result||"UNKNOWN"):(e.reason||"EVALUATED");p.appendChild(tag);p.appendChild(document.createTextNode(" "+(e.timestamp||"timestamp unavailable")+(isEvent?" · seq "+(e.event_seq??"?"):"")));
+  const detail=document.createElement("p");
+  if(isEvent){
+   const session=String(e.session_id||"unknown");
+   detail.textContent=`session ${session} · state ${e.state||"unknown"} · decision ${e.decision||"unknown"} · workload ${e.workload||"unknown"} · policy eligible ${typeof e.mutation_eligible==="boolean"?(e.mutation_eligible?"yes":"no"):"unknown"}`;
+  }else{
+   detail.textContent=`confidence ${Number.isFinite(Number(e.confidence))?Number(e.confidence).toFixed(2):"unknown"} · workload ${e.workload||"unknown"} · eligible ${typeof e.mutation_eligible==="boolean"?(e.mutation_eligible?"yes":"no"):"unknown"} · candidates ${e.candidate_count??"unknown"}`;
+  }
+  const result=document.createElement("p");
+  if(isEvent){
+   let permit="no permit check in this event";
+   if(typeof e.permit_valid==="boolean"){
+    const allowed=e.permit_valid?"valid":"denied/invalid";
+    if(e.event==="scope_gate_checked")permit=`coarse scope ${e.permit_valid?"allowed":"denied"}`;
+    else if(e.event==="target_permit_checked"||e.event==="target_permit_revalidated"||String(e.event||"").startsWith("actuator_apply_"))permit=`target-bound permit ${allowed}`;
+    else permit=`permit ${allowed}`;
+   }
+   result.textContent=`CPU: ${e.cpu_mutation||"unknown"} · Resource: ${e.resource_mutation||"unknown"} · ${permit} · mode ${e.mode||"unknown"} · armed ${typeof e.mutation_armed==="boolean"?(e.mutation_armed?"yes":"no"):"unknown"}`;
+  }else{
+   result.textContent=`CPU: ${e.cpu_mutation||"unknown"} · Resource: ${e.resource_mutation||"unknown"} · hold: ${e.safety_hold||"unknown"} · mode: ${e.mode||"unknown"} · armed: ${typeof e.mutation_armed==="boolean"?(e.mutation_armed?"yes":"no"):"unknown"}`;
+  }
   const plan=document.createElement("p");plan.textContent=`Policy plan: ${e.plan_action||"not recorded"} · intervention ${e.intervention??"not recorded"} · CPU governor permission ${typeof e.allow_cpu_governor==="boolean"?(e.allow_cpu_governor?"enabled":"disabled"):"unknown"}`;
-  const cause=document.createElement("p");cause.className="trace-cause";cause.textContent=`Policy explanation: ${e.plan_reason||"not emitted by this daemon version"}`;
-  const effect=document.createElement("p");effect.className="trace-effect";effect.textContent=`Observed outcome: ${e.cpu_mutation==="VERIFIED"||e.resource_mutation==="VERIFIED"?"at least one mutation reported VERIFIED":e.cpu_mutation==="FAILED"||e.resource_mutation==="FAILED"?"mutation reported FAILED":e.cpu_mutation==="ROLLED_BACK"||e.resource_mutation==="ROLLED_BACK"?"mutation reported ROLLED_BACK":e.cpu_mutation==="APPLIED"||e.resource_mutation==="APPLIED"?"mutation applied; verification not represented as complete":e.reason==="OBSERVE_OR_NOT_ARMED"?"execution gated by mode or arm state":e.reason==="POLICY_BLOCKED"?"policy plan is not mutation-eligible":e.reason==="SAFETY_HOLD"?"safety hold takes precedence": "no verified mutation recorded in this cycle"}. This is daemon-reported status, not an independent kernel measurement.`;
-  body.append(title,p,detail,result,plan,cause,effect);row.append(dot,body);host.appendChild(row);
+  const cause=document.createElement("p");cause.className="trace-cause";cause.textContent=`Cause / diagnostic: ${e.reason||e.plan_reason||"not supplied by the daemon"}`;
+  const extra=document.createElement("p");extra.className="trace-effect";
+  if(isEvent){
+   const operation=e.operation_id?` · operation ${e.operation_id}`:"";
+   const target=e.target?` · target ${e.target}`:"";
+   const requested=e.requested?` · requested ${e.requested}`:"";
+   const current=e.current_value?` · current ${e.current_value}`:"";
+   const baseline=e.baseline_value?` · baseline ${e.baseline_value}`:"";
+   const writes=e.writes_attempted!==null&&e.writes_attempted!==undefined
+    ?` · writes attempted/verified ${e.writes_attempted}/${e.writes_verified??"unknown"}`:"";
+   const dropped=Number(e.trace_dropped_before)>0?` · journal records previously dropped ${Number(e.trace_dropped_before)}`:"";
+   extra.textContent=`Failure stage: ${e.failure_stage||"not reported"} · actuator status: ${e.actuator_status||"not reported"} · decision summary: ${e.decision_reason||"not recorded"}${operation}${target}${requested}${current}${baseline}${writes}${dropped}`;
+  }else{
+   extra.textContent=`Observed outcome: ${e.cpu_mutation==="VERIFIED"||e.resource_mutation==="VERIFIED"?"at least one mutation reported VERIFIED":e.cpu_mutation==="FAILED"||e.resource_mutation==="FAILED"?"mutation reported FAILED":e.cpu_mutation==="ROLLED_BACK"||e.resource_mutation==="ROLLED_BACK"?"mutation reported ROLLED_BACK":e.cpu_mutation==="APPLIED"||e.resource_mutation==="APPLIED"?"mutation applied; verification not represented as complete":e.reason==="OBSERVE_OR_NOT_ARMED"?"execution gated by mode or arm state":e.reason==="POLICY_BLOCKED"?"policy plan is not mutation-eligible":e.reason==="SAFETY_HOLD"?"safety hold takes precedence":"no verified mutation recorded in this cycle"}. This is daemon-reported status, not an independent kernel measurement.`;
+  }
+  body.append(title,p,detail,result,plan,cause,extra);row.append(dot,body);host.appendChild(row);
  });
 }
 function renderTrace(){const host=$("traceList");if(!host)return;if(Array.isArray(state.traceEvents)&&state.traceEvents.length){renderStructuredTrace(state.traceEvents,host);return}const search=($("traceSearch")?.value||"").toLowerCase();const filter=$("traceFilter")?.value||"all";const all=String(state.log||"").split(/\r?\n/).filter(Boolean).slice(-500).reverse();const rows=all.map(line=>({line,type:classifyTrace(line)})).filter(x=>(filter==="all"||(filter==="decision"&&x.type==="decision")||(filter==="mutation"&&/mutation|applied|apply|write|verify|rollback|restore/i.test(x.line))||(filter==="safety"&&x.type==="safety")||(filter==="error"&&x.type==="error"))&&x.line.toLowerCase().includes(search));host.replaceChildren();setText("traceSummary",rows.length+" event(s) shown · based on "+all.length+" recent log lines");if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent="No matching recorded events. The trace will not synthesize decisions missing from the runtime log.";host.appendChild(d);return}rows.slice(0,200).forEach(x=>{const row=document.createElement("div");row.className="trace-row "+(x.type==="error"?"error":x.type==="safety"?"safety":"");const dot=document.createElement("span");dot.className="trace-dot";const body=document.createElement("div");const b=document.createElement("b");b.textContent=x.line;const p=document.createElement("p");const tm=x.line.match(/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d/);const tag=document.createElement("span");tag.className="trace-tag";tag.textContent=x.type.toUpperCase();p.appendChild(tag);p.appendChild(document.createTextNode(tm?tm[0]:"Recorded runtime log"));body.append(b,p);row.append(dot,body);host.appendChild(row)})}
@@ -246,6 +288,10 @@ function pollLive(){
 function scheduleLive(){clearTimeout(state.statusTimer);state.statusTimer=null;if(state.view!=="live")return;const wait=state.statusFails>2?10000:3000;state.statusTimer=setTimeout(pollLive,wait)}
 function startLive(){stopLive();pollLive()}
 function stopLive(){clearTimeout(state.statusTimer);state.statusTimer=null}
-function init(){installNav();document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.view==='live')startLive();else stopLive()});$('btnRefresh').addEventListener('click',refresh);$('btnCheckBridge').addEventListener('click',()=>refresh());$('btnRefreshLog').addEventListener('click',refresh);$('btnRefreshReport').addEventListener('click',refresh);$('btnRefreshTrace').addEventListener('click',refresh);$('btnClearHistory').addEventListener('click',()=>{state.history=[];renderHistory();toast('Session telemetry history cleared')});$('traceSearch').addEventListener('input',renderTrace);$('traceFilter').addEventListener('change',renderTrace);$('logSearch').addEventListener('input',renderLog);$('logLines').addEventListener('change',renderLog);$('errorsOnly').addEventListener('change',renderLog);$('btnCopyLog').addEventListener('click',()=>copyText(state.log));$('btnCopyConfig').addEventListener('click',()=>copyText(state.configRaw));$('btnReadReport').addEventListener('click',()=>showView('diagnostics'));$('btnCopyReport').addEventListener('click',()=>copyText(buildDiagnosticReport()+'\n\n--- ORIGINAL INSTALL REPORT ---\n'+(state.report||'Install report unavailable.')));$('btnCopyTerminal').addEventListener('click',()=>copyText(state.lastOutput||$('terminalOutput').textContent));$('btnClearTerminal').addEventListener('click',()=>{state.lastOutput='';setText('terminalOutput','Console output cleared.');setText('lastCommand','select a diagnostic command')});document.querySelectorAll('[data-command]').forEach(b=>b.addEventListener('click',()=>runDiagnostic(b.dataset.command)));$('btnSetObserve').addEventListener('click',setObserve);$('btnRestoreObserve').addEventListener('click',setObserve);$('btnSetAdaptive').addEventListener('click',setAdaptive);$('btnRefreshLog').addEventListener('click',refreshRuntime);document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));refresh();startLive();}
+function pollTrace(){if(state.traceBusy||state.view!=="trace"||document.visibilityState==="hidden")return;state.traceBusy=true;execShell('tail -n 400 '+PATH.trace+' 2>/dev/null').then(r=>{state.traceEvents=r.errno===0?parseStructuredTrace(r.stdout||""):[];renderTrace()}).catch(()=>{state.traceEvents=[];renderTrace()}).finally(()=>{state.traceBusy=false;scheduleTrace()})}
+function scheduleTrace(){clearTimeout(state.traceTimer);state.traceTimer=null;if(state.view!=="trace"||document.visibilityState==="hidden")return;state.traceTimer=setTimeout(pollTrace,2500)}
+function startTrace(){stopTrace();pollTrace()}
+function stopTrace(){clearTimeout(state.traceTimer);state.traceTimer=null}
+function init(){installNav();document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.view==='live')startLive();else stopLive();if(document.visibilityState==='visible'&&state.view==='trace')startTrace();else stopTrace()});$('btnRefresh').addEventListener('click',refresh);$('btnCheckBridge').addEventListener('click',()=>refresh());$('btnRefreshLog').addEventListener('click',refresh);$('btnRefreshReport').addEventListener('click',refresh);$('btnRefreshTrace').addEventListener('click',refresh);$('btnClearHistory').addEventListener('click',()=>{state.history=[];renderHistory();toast('Session telemetry history cleared')});$('traceSearch').addEventListener('input',renderTrace);$('traceFilter').addEventListener('change',renderTrace);$('logSearch').addEventListener('input',renderLog);$('logLines').addEventListener('change',renderLog);$('errorsOnly').addEventListener('change',renderLog);$('btnCopyLog').addEventListener('click',()=>copyText(state.log));$('btnCopyConfig').addEventListener('click',()=>copyText(state.configRaw));$('btnReadReport').addEventListener('click',()=>showView('diagnostics'));$('btnCopyReport').addEventListener('click',()=>copyText(buildDiagnosticReport()+'\n\n--- ORIGINAL INSTALL REPORT ---\n'+(state.report||'Install report unavailable.')));$('btnCopyTerminal').addEventListener('click',()=>copyText(state.lastOutput||$('terminalOutput').textContent));$('btnClearTerminal').addEventListener('click',()=>{state.lastOutput='';setText('terminalOutput','Console output cleared.');setText('lastCommand','select a diagnostic command')});document.querySelectorAll('[data-command]').forEach(b=>b.addEventListener('click',()=>runDiagnostic(b.dataset.command)));$('btnSetObserve').addEventListener('click',setObserve);$('btnRestoreObserve').addEventListener('click',setObserve);$('btnSetAdaptive').addEventListener('click',setAdaptive);$('btnRefreshLog').addEventListener('click',refreshRuntime);document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));refresh();startLive();}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();

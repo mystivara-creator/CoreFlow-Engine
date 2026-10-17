@@ -1,5 +1,6 @@
 #include "coreflow/mutation.hpp"
 #include "coreflow/context.hpp"
+#include "coreflow/decision_trace.hpp"
 #include "coreflow/outcome.hpp"
 #include "coreflow/policy.hpp"
 
@@ -469,15 +470,28 @@ MutationJournal::Entries MutationController::journalEntriesWith(const std::strin
 
 MutationResult MutationController::applyPlan(
     const std::vector<MutationPlanEntry>& plan,
-    const MutationPermit& permit
+    const MutationPermit& permit,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     if (plan.empty() || !actuator_ready_) return MutationResult::Skipped;
 
     // A durable journal is mandatory for autonomous mutation. Without it, a
     // daemon crash could leave a changed governor with no recovery record.
-    if (journal_ == nullptr) return MutationResult::Failed;
+    if (journal_ == nullptr) {
+        if (trace_context != nullptr) {
+            appendDecisionTraceEvent(*trace_context, {
+                "mutation_preflight_failed", "cpu_freq", "FAILED",
+                "mutation_journal_unavailable"});
+        }
+        return MutationResult::Failed;
+    }
 
     if (!cpufreq_actuator_.capability().mutationSafe()) {
+        if (trace_context != nullptr) {
+            appendDecisionTraceEvent(*trace_context, {
+                "mutation_preflight_failed", "cpu_freq", "FAILED",
+                "cpu_actuator_capability_not_mutation_safe"});
+        }
         return MutationResult::Failed;
     }
 
@@ -492,11 +506,33 @@ MutationResult MutationController::applyPlan(
     mutation.requested = entry.target;
 
     if (!permit.validFor(mutation)) {
+        if (trace_context != nullptr) {
+            DecisionTraceEvent event{"target_permit_revalidated", "cpu_freq",
+                                     "DENIED", "permit_does_not_match_exact_cpu_target"};
+            event.permit_known = true;
+            event.permit_valid = false;
+            event.target = entry.path.c_str();
+            event.requested = entry.target.c_str();
+            event.baseline_value = entry.baseline.c_str();
+            appendDecisionTraceEvent(*trace_context, event);
+        }
         return MutationResult::Skipped;
     }
 
     std::string previous_value;
-    if (!readLiveGovernor(entry.path, previous_value)) return MutationResult::Failed;
+    const bool prewrite_read_ok = readLiveGovernor(entry.path, previous_value);
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"prewrite_read_completed", "cpu_freq",
+                                 prewrite_read_ok ? "READ" : "FAILED",
+                                 prewrite_read_ok ? "live_cpu_governor_read"
+                                                  : "live_cpu_governor_read_failed"};
+        event.target = entry.path.c_str();
+        event.requested = entry.target.c_str();
+        event.current_value = prewrite_read_ok ? previous_value.c_str() : nullptr;
+        event.baseline_value = entry.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!prewrite_read_ok) return MutationResult::Failed;
     const bool was_dirty_before = dirty_governors_.find(entry.path) != dirty_governors_.end();
     const bool from_retained = std::any_of(retained_entries_.begin(), retained_entries_.end(),
         [&entry](const RetainedStateEntry& retained) {
@@ -508,12 +544,54 @@ MutationResult MutationController::applyPlan(
     // (plus the candidate about to change).
     const bool journal_was_committed = journal_committed_;
     const MutationJournal::Entries journal_entries = journalEntriesWith(entry.path);
-    if (journal_entries.empty() || journal_ == nullptr || !journal_->commit(journal_entries)) {
-        return MutationResult::Failed;
+    const bool journal_entries_ready = !journal_entries.empty();
+    const bool journal_commit_ok = journal_entries_ready && journal_ != nullptr &&
+                                   journal_->commit(journal_entries);
+    if (trace_context != nullptr) {
+        const char* journal_reason = journal_commit_ok
+            ? "factory_snapshot_committed_before_actuator_write"
+            : journal_entries_ready ? "journal_commit_failed_no_actuator_write"
+                                    : "journal_snapshot_empty_no_actuator_write";
+        DecisionTraceEvent event{"mutation_journal_commit", "cpu_freq",
+                                 journal_commit_ok ? "COMMITTED" : "FAILED",
+                                 journal_reason};
+        event.target = entry.path.c_str();
+        event.requested = entry.target.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = entry.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
     }
+    if (!journal_commit_ok) return MutationResult::Failed;
     journal_committed_ = true;
 
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"actuator_apply_started", "cpu_freq", "STARTED",
+                                 "target_bound_permit_and_prewrite_journal_confirmed"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.target = entry.path.c_str();
+        event.requested = entry.target.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = entry.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
     const ActuatorResult result = cpufreq_actuator_.apply(mutation, permit);
+    if (trace_context != nullptr) {
+        const std::string_view status = actuatorStatusName(result.status);
+        DecisionTraceEvent event{"actuator_apply_completed", "cpu_freq", status.data(),
+                                 "actuator_return_reports_write_and_readback_counts"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.actuator_status = status.data();
+        event.target = entry.path.c_str();
+        event.requested = entry.target.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = entry.baseline.c_str();
+        event.write_counts_known = true;
+        event.writes_attempted = result.writes_attempted;
+        event.writes_verified = result.writes_verified;
+        appendDecisionTraceEvent(*trace_context, event);
+    }
 
     // A write may have landed even when verification failed. Track the
     // touched policy individually; only an explicit RolledBack clears it.
@@ -823,7 +901,8 @@ MutationResult MutationController::apply(
     const DeviceProfile& profile,
     const EngineConfig& config,
     const PolicyPlan& policy,
-    const MutationPermit& permit
+    const MutationPermit& permit,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     ++decision_cycle_;
 
@@ -879,12 +958,35 @@ MutationResult MutationController::apply(
     const MutationAuthority authority;
     const MutationPermit bound = authority.authorize(
         policy, config, state, sample.confidence, cap, plan_entries.front().path);
-    if (!bound.validFor(ActuatorMutation{cap.id, plan_entries.front().path,
-                                         plan_entries.front().target})) {
-        return MutationResult::Skipped;
+    const MutationPlanEntry& entry = plan_entries.front();
+    const ActuatorMutation concrete{cap.id, entry.path, entry.target};
+    const bool bound_valid = bound.validFor(concrete);
+    if (trace_context != nullptr) {
+        const char* permit_reason = nullptr;
+        if (bound_valid) {
+            permit_reason = "target_bound_permit_issued";
+        } else if (!cap.mutationSafe()) {
+            permit_reason = "cpu_actuator_capability_not_mutation_safe";
+        } else if (entry.path.empty()) {
+            permit_reason = "cpu_target_path_empty";
+        } else {
+            permit_reason = mutationPermitBlockReason(
+                policy, config, state, sample.confidence,
+                MutationPermit::Scope::CpuFreq);
+            if (permit_reason == nullptr) permit_reason = "target_bound_permit_invalid";
+        }
+        DecisionTraceEvent event{"target_permit_checked", "cpu_freq",
+                                 bound_valid ? "ISSUED" : "DENIED", permit_reason};
+        event.permit_known = true;
+        event.permit_valid = bound_valid;
+        event.target = entry.path.c_str();
+        event.requested = entry.target.c_str();
+        event.baseline_value = entry.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
     }
+    if (!bound_valid) return MutationResult::Skipped;
 
-    return applyPlan(plan_entries, bound);
+    return applyPlan(plan_entries, bound, trace_context);
 }
 
 MutationResult MutationController::relaxToBaseline() noexcept {

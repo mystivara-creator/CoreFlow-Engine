@@ -15,7 +15,7 @@ const web = path.join(root, "module/webroot");
 class El {
   constructor(tag, id) {
     this.tag = tag; this.id = id || ""; this.children = []; this._text = ""; this.className = "";
-    this.dataset = {}; this.style = {}; this.value = ""; this.checked = false; this.disabled = false;
+    this.dataset = {}; this.style = {}; this.value = ""; this.checked = false; this.disabled = false; this.handlers = {};
     const self = this;
     this.classList = {
       add: (c) => { if (!self.className.split(" ").includes(c)) self.className += " " + c; },
@@ -28,7 +28,9 @@ class El {
   appendChild(c) { this.children.push(c); return c; }
   append(...cs) { cs.forEach((c) => this.children.push(typeof c === "string" ? Object.assign(new El("#text"), { _text: c }) : c)); }
   replaceChildren(...cs) { this.children = []; this._text = ""; this.append(...cs); }
-  addEventListener() {} removeEventListener() {} remove() {} setAttribute() {} querySelector() { return null; }
+  addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); }
+  dispatch(type) { (this.handlers[type] || []).forEach((fn) => fn({ target: this })); }
+  removeEventListener() {} remove() {} setAttribute() {} querySelector() { return null; }
   querySelectorAll() { return []; } showModal() {} close() {} select() {}
 }
 const registry = {};
@@ -36,6 +38,7 @@ const getEl = (id) => (registry[id] = registry[id] || new El("div", id));
 
 let currentStatusFile = "ready.json";
 let statusReads = 0;
+let traceReads = 0;
 const nowOf = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).updated_epoch + 2;
 
 const ksu = {
@@ -46,15 +49,27 @@ const ksu = {
       if (currentStatusFile === "__bridge_fail__") { code = 1; err = "su: permission denied"; }
       else if (currentStatusFile === "__missing__") { out = "NOW=1760000002\n"; code = 1; }
       else out = "NOW=" + nowOf(currentStatusFile) + "\n" + fs.readFileSync(path.join(dir, currentStatusFile), "utf8");
+    } else if (cmd.includes("decision_trace.jsonl")) {
+      traceReads++;
+      const tracePath = path.join(dir, "decision_trace.jsonl");
+      out = fs.existsSync(tracePath) ? fs.readFileSync(tracePath, "utf8") : "";
     }
     setImmediate(() => window[cb](code, out, err));
   },
 };
 
+const liveNav = new El("button", "liveNav"); liveNav.dataset.view = "live"; liveNav.className = "nav-item";
+const traceNav = new El("button", "traceNav"); traceNav.dataset.view = "trace"; traceNav.className = "nav-item";
+getEl("view-live"); getEl("view-trace");
 const document = {
   readyState: "complete", visibilityState: "visible",
   getElementById: getEl, createElement: (t) => new El(t),
-  querySelectorAll: () => [], querySelector: () => null,
+  createTextNode: (value) => Object.assign(new El("#text"), { _text: String(value) }),
+  querySelectorAll: (selector) => {
+    if (selector === "[data-view]" || selector === ".nav-item") return [liveNav, traceNav];
+    if (selector === ".view") return [getEl("view-live"), getEl("view-trace")];
+    return [];
+  }, querySelector: () => null,
   handlers: {}, addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); },
   body: new El("body"),
 };
@@ -83,6 +98,29 @@ const text = (id) => getEl(id).textContent;
   check(getEl("liveBrain").children.length >= 6, "brain rows rendered");
   check(getEl("liveHands").children.length >= 2, "hands rows rendered");
   check(getEl("liveEyes").textContent.includes("41.5"), "temperature visible in eyes");
+
+  getEl("traceSearch").dispatch("input");
+  check(text("traceSummary").includes("structured record(s) shown"), "WebUI parses the C++ event journal");
+  check(text("traceList").includes("scope_gate_checked"), "trace UI renders a real scope-gate event");
+  check(text("traceList").includes("cpu_governor_opt_in_disabled"), "trace UI exposes the causal gate reason");
+  check(text("traceList").includes("coarse scope denied"), "trace UI distinguishes a denied coarse gate from a target permit");
+  check(text("traceList").includes("/sys/test/tunable"), "trace UI displays the concrete actuator target");
+  check(text("traceList").includes("writes attempted/verified 1/1"), "trace UI displays actuator write/readback counts");
+  check(text("traceList").includes("target-bound permit valid"), "trace UI labels target-bound permit separately from coarse gate");
+
+  traceNav.dispatch("click");
+  await wait(250);
+  const initialTraceReads = traceReads;
+  fs.appendFileSync(path.join(dir, "decision_trace.jsonl"), "\n" + JSON.stringify({
+    schema: "coreflow.event.v2", session_id: "host-test-1", event_seq: 3,
+    cycle: 8, event: "trace_live_poll_marker", scope: "engine", result: "INFO",
+    reason: "new event appended while the trace page is open"
+  }) + "\n");
+  await wait(2850);
+  check(traceReads > initialTraceReads, "active trace view polls the event journal without manual refresh");
+  check(text("traceList").includes("trace_live_poll_marker"), "new daemon event appears in the open timeline");
+  liveNav.dispatch("click");
+  await wait(250);
 
   currentStatusFile = "hostile.json";
   await wait(3300);
