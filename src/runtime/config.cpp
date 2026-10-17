@@ -29,10 +29,14 @@ bool EngineConfig::load(const std::string& path) noexcept {
         std::ifstream file(path);
         if (!file) return false;
 
-        // A malformed mutation_mode must fail safe regardless of the order of
-        // the remaining keys, so it is recorded and enforced after parsing.
+        // Parse into a candidate so failed reads cannot partially mutate
+        // the active configuration.
+        EngineConfig candidate = *this;
+
+        // An invalid mutation_mode must fail safe regardless of key order.
         bool invalid_mode = false;
         std::string line;
+
         while (std::getline(file, line)) {
             line = trim(line);
             if (line.empty() || line[0] == '#' || line[0] == ';') continue;
@@ -44,58 +48,72 @@ bool EngineConfig::load(const std::string& path) noexcept {
             const std::string value = trim(line.substr(eq + 1));
 
             if (key == "monitor_interval") {
-                try { setMonitorIntervalSeconds(std::stoi(value)); } catch (...) {}
+                try {
+                    candidate.setMonitorIntervalSeconds(std::stoi(value));
+                } catch (...) {
+                    // Preserve the existing behavior: ignore invalid values.
+                }
             } else if (key == "min_confidence") {
                 try {
                     std::size_t parsed = 0;
                     const double confidence = std::stod(value, &parsed);
                     if (parsed == value.size() && std::isfinite(confidence)) {
-                        setMinConfidence(confidence);
+                        candidate.setMinConfidence(confidence);
                     }
-                } catch (...) {}
+                } catch (...) {
+                    // Preserve the existing behavior: ignore invalid values.
+                }
             } else if (key == "mutation_mode") {
-                // Unknown values, including the removed experimental "trial" mode,
-                // disable mutation for this load (see invalid_mode below).
-                if (value == "adaptive") mutation_mode_ = MutationMode::Adaptive;
-                else if (value == "disabled" || value == "observe") mutation_mode_ = MutationMode::Disabled;
-                else {
+                if (value == "adaptive") {
+                    candidate.mutation_mode_ = MutationMode::Adaptive;
+                } else if (value == "disabled" || value == "observe") {
+                    candidate.mutation_mode_ = MutationMode::Disabled;
+                } else {
                     invalid_mode = true;
-                    mutation_mode_ = MutationMode::Disabled;
+                    candidate.mutation_mode_ = MutationMode::Disabled;
                 }
             } else if (key == "allow_cpu_governor") {
-                allow_cpu_governor_ = parseBool(value, false);
+                candidate.allow_cpu_governor_ = parseBool(value, false);
             } else if (key == "runtime_refresh") {
-                runtime_refresh_enabled_ = parseBool(value, runtime_refresh_enabled_);
+                candidate.runtime_refresh_enabled_ =
+                    parseBool(value, candidate.runtime_refresh_enabled_);
             } else if (key == "mutation_armed") {
-                mutation_armed_ = parseBool(value, false);
+                candidate.mutation_armed_ = parseBool(value, false);
             } else if (key == "grant_memory") {
-                grant_memory_ = parseBool(value, true);
+                candidate.grant_memory_ = parseBool(value, true);
             } else if (key == "grant_block_queue") {
-                grant_block_queue_ = parseBool(value, true);
+                candidate.grant_block_queue_ = parseBool(value, true);
             } else if (key == "grant_scheduler") {
-                grant_scheduler_ = parseBool(value, true);
+                candidate.grant_scheduler_ = parseBool(value, true);
             } else if (key == "grant_gpu") {
-                grant_gpu_ = parseBool(value, true);
+                candidate.grant_gpu_ = parseBool(value, true);
             } else if (key == "grant_cgroup") {
-                grant_cgroup_ = parseBool(value, true);
+                candidate.grant_cgroup_ = parseBool(value, true);
             } else if (key == "grant_cpufreq") {
-                grant_cpufreq_ = parseBool(value, true);
+                candidate.grant_cpufreq_ = parseBool(value, true);
             } else if (key == "grant_kernel") {
-                grant_kernel_ = parseBool(value, true);
+                candidate.grant_kernel_ = parseBool(value, true);
             }
         }
+
+        // getline may stop because of an I/O error, not just EOF.
+        if (file.bad()) return false;
+
         if (invalid_mode) {
-            mutation_mode_ = MutationMode::Disabled;
-            mutation_armed_ = false;
-            allow_cpu_governor_ = false;
-            grant_memory_ = false;
-            grant_block_queue_ = false;
-            grant_scheduler_ = false;
-            grant_gpu_ = false;
-            grant_cgroup_ = false;
-            grant_cpufreq_ = false;
-            grant_kernel_ = false;
+            candidate.mutation_mode_ = MutationMode::Disabled;
+            candidate.mutation_armed_ = false;
+            candidate.allow_cpu_governor_ = false;
+            candidate.grant_memory_ = false;
+            candidate.grant_block_queue_ = false;
+            candidate.grant_scheduler_ = false;
+            candidate.grant_gpu_ = false;
+            candidate.grant_cgroup_ = false;
+            candidate.grant_cpufreq_ = false;
+            candidate.grant_kernel_ = false;
         }
+
+        // Commit only after the entire file has been read successfully.
+        *this = candidate;
         return true;
     } catch (...) {
         return false;
