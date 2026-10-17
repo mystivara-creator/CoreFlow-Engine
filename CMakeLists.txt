@@ -11,9 +11,7 @@ set(COREFLOW_ONNX_ROOT "" CACHE PATH
 option(CORE_FLOW_BUILD_TESTS "Build host deterministic tests" OFF)
 
 add_library(coreflow_compile_options INTERFACE)
-
 target_compile_features(coreflow_compile_options INTERFACE cxx_std_20)
-
 target_compile_options(coreflow_compile_options
     INTERFACE
         -Wall
@@ -23,25 +21,20 @@ target_compile_options(coreflow_compile_options
         -Wsign-conversion
         -Wshadow
         -Wformat=2
-        -Wundef
-)
+        -Wundef)
 
-# Platform-independent logic shared by Android and host tests. Sources follow
-# the engine's three-role model:
-#   observe/     eyes      — environment sensing, discovery, capability registry
-#   understand/  reasoning — context, effect model, decision agent, thermal, baseline
-#   balance/     brain     — policy, safety hold, consultation, resource model
-#   mutation/    hands     — actuators and mutation controllers (permit required)
-#   conscience/  memory    — journal, retained state, decision trace
-#   runtime/     lifecycle — configuration, paths, signals, status snapshot, entry
-#   autonomous/  loop      — autonomous tick orchestration
-# Nothing under observe/ may decide mutation policy; it asks balance/.
-# Safety-contract compatibility: resource_mutation.cpp is registered in cmake/CoreFlowSources.cmake.
+# Sources are discovered, not listed. See cmake/CoreFlowSources.cmake for the
+# platform rule. Layout follows the engine's role model:
+#   observe/     eyes      environment sensing, discovery, capability registry
+#   understand/  reasoning context, effect model, decision agent, thermal, baseline
+#   balance/     brain     policy, safety hold, consultation, resource model
+#   mutation/    hands     actuators and mutation controllers (permit required)
+#   conscience/  memory    journal, retained state, decision trace, fatal guard
+#   runtime/     lifecycle configuration, paths, status snapshot, daemon entry
+#   autonomous/  loop      autonomous tick orchestration
 include("${PROJECT_SOURCE_DIR}/cmake/CoreFlowSources.cmake")
 
-
 if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
-
     message(STATUS "Configuring CoreFlow Autonomous Engine for Android")
     message(STATUS "CoreFlow version: ${PROJECT_VERSION}")
     message(STATUS "Android ABI: ${ANDROID_ABI}")
@@ -67,41 +60,32 @@ if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
 
     add_library(coreflow_onnxruntime SHARED IMPORTED GLOBAL)
     set_target_properties(coreflow_onnxruntime PROPERTIES
-    IMPORTED_LOCATION "${COREFLOW_ONNX_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
-    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
-    )
+        IMPORTED_LOCATION "${COREFLOW_ONNX_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}"
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${COREFLOW_ONNX_INCLUDE_DIR}")
 
     add_executable(coreflowd
         ${COREFLOW_CORE_SOURCES}
-        ${COREFLOW_ANDROID_SOURCES}
-    )
+        ${COREFLOW_ANDROID_SOURCES})
 
     target_include_directories(coreflowd PRIVATE "${PROJECT_SOURCE_DIR}/include")
-
     target_link_libraries(coreflowd
         PRIVATE
             coreflow_compile_options
-            coreflow_onnxruntime
-    )
-
+            coreflow_onnxruntime)
     target_compile_definitions(coreflowd PRIVATE CORE_FLOW_ANDROID=1)
-
     target_compile_options(coreflowd
         PRIVATE
             -O2
             -fstack-protector-strong
             -ffunction-sections
             -fdata-sections
-            -Werror
-    )
-
+            -Werror)
     target_link_options(coreflowd
         PRIVATE
             -Wl,-z,relro
             -Wl,-z,now
-            -Wl,--gc-sections
-    )
+            -Wl,--gc-sections)
 
     find_library(ANDROID_LOG_LIBRARY log REQUIRED)
     target_link_libraries(coreflowd PRIVATE ${ANDROID_LOG_LIBRARY})
@@ -110,7 +94,6 @@ if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
     message(STATUS "ONNX Runtime root: ${COREFLOW_ONNX_ROOT}")
 
 else()
-
     message(STATUS "Host configure: Android daemon target skipped.")
 
     if(CORE_FLOW_BUILD_TESTS)
@@ -122,52 +105,28 @@ else()
         target_compile_definitions(coreflow_core PRIVATE COREFLOW_HOST_TEST_FIXTURES=1)
         target_compile_options(coreflow_core PRIVATE -Werror)
 
-        add_executable(coreflow_tests tests/mutation_tests.cpp)
-        target_link_libraries(coreflow_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_tests PRIVATE -Werror)
+        # Every tests/*_tests.cpp is one executable and one CTest entry, named
+        # after its file. Each test file carries its own main().
+        file(GLOB COREFLOW_TEST_SOURCES CONFIGURE_DEPENDS
+             "${PROJECT_SOURCE_DIR}/tests/*_tests.cpp")
+        foreach(_test_src IN LISTS COREFLOW_TEST_SOURCES)
+            get_filename_component(_stem "${_test_src}" NAME_WE)
+            set(_target "coreflow_${_stem}")
+            add_executable(${_target} "${_test_src}")
+            target_link_libraries(${_target} PRIVATE coreflow_core)
+            target_compile_definitions(${_target}
+                PRIVATE
+                    COREFLOW_HOST_TEST_FIXTURES=1
+                    COREFLOW_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+            target_compile_options(${_target} PRIVATE -Werror)
+            add_test(NAME ${_target} COMMAND ${_target})
+        endforeach()
 
-        add_executable(coreflow_architecture_tests tests/architecture_tests.cpp)
-        target_link_libraries(coreflow_architecture_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_architecture_tests PRIVATE -Werror)
-
-        add_executable(coreflow_resource_tests tests/resource_tests.cpp)
-        target_link_libraries(coreflow_resource_tests PRIVATE coreflow_core)
-        target_compile_definitions(coreflow_resource_tests
-            PRIVATE COREFLOW_HOST_TEST_FIXTURES=1)
-        target_compile_options(coreflow_resource_tests PRIVATE -Werror)
-
-        add_test(NAME coreflow_mutation_safety COMMAND coreflow_tests)
-        add_test(NAME coreflow_architecture_foundation COMMAND coreflow_architecture_tests)
-        add_executable(coreflow_capability_expansion_tests tests/high_capability_tests.cpp)
-        target_link_libraries(coreflow_capability_expansion_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_capability_expansion_tests PRIVATE -Werror)
-        add_test(NAME coreflow_high_capability_expansion COMMAND coreflow_capability_expansion_tests)
-        add_test(NAME coreflow_resource_autonomy COMMAND coreflow_resource_tests)
-        add_executable(coreflow_consultation_tests tests/consultation_tests.cpp)
-        target_link_libraries(coreflow_consultation_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_consultation_tests PRIVATE -Werror)
-        add_test(NAME coreflow_consultation_brain COMMAND coreflow_consultation_tests)
-        add_executable(coreflow_release_hardening_tests tests/release_hardening_tests.cpp)
-        target_link_libraries(coreflow_release_hardening_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_release_hardening_tests PRIVATE -Werror)
-        target_compile_definitions(coreflow_release_hardening_tests
-            PRIVATE COREFLOW_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\")
-
-        add_test(NAME coreflow_release_hardening COMMAND coreflow_release_hardening_tests)
-        add_executable(coreflow_logic_fix_tests tests/logic_fix_tests.cpp
-            src/understand/thermal_predictor.cpp)
-        target_link_libraries(coreflow_logic_fix_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_logic_fix_tests PRIVATE -Werror)
-        add_test(NAME coreflow_logic_fixes COMMAND coreflow_logic_fix_tests)
-        add_executable(coreflow_capability_driven_tests tests/capability_driven_tests.cpp)
-        target_link_libraries(coreflow_capability_driven_tests PRIVATE coreflow_core)
-        target_compile_options(coreflow_capability_driven_tests PRIVATE -Werror)
-        add_test(NAME coreflow_capability_driven COMMAND coreflow_capability_driven_tests)
         add_test(NAME coreflow_safety_foundation_contract
             COMMAND bash "${PROJECT_SOURCE_DIR}/tools/verify_safety_foundation.sh")
         add_test(NAME coreflow_source_release_contract
-            COMMAND "${CMAKE_COMMAND}" -E env COREFLOW_ALLOW_BUILD_DIR=1 COREFLOW_ALLOW_IGNORED_ORT_CACHE=1 bash
+            COMMAND "${CMAKE_COMMAND}" -E env COREFLOW_ALLOW_BUILD_DIR=1
+                    COREFLOW_ALLOW_IGNORED_ORT_CACHE=1 bash
                     "${PROJECT_SOURCE_DIR}/tools/verify_source_release.sh")
     endif()
-
 endif()

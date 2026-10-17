@@ -78,7 +78,14 @@ grep -q 'allow_cpu_governor=no' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'MutationPermit' "$ROOT/include/coreflow/actuator.hpp"
 grep -q 'ResourceMutationController' "$ROOT/include/coreflow/resource_mutation.hpp"
 grep -q 'ResourceActuator' "$ROOT/include/coreflow/resource_actuator.hpp"
-grep -q 'resource_mutation.cpp' "$ROOT/CMakeLists.txt"
+# Sources are discovered by glob (cmake/CoreFlowSources.cmake), not listed by name.
+# The safety contract therefore checks that discovery covers src/ and that the
+# mutation controller is not excluded to the device-only set.
+grep -q 'file(GLOB_RECURSE _candidates CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/\*.cpp")' "$ROOT/cmake/CoreFlowSources.cmake"
+test -f "$ROOT/src/mutation/resource_mutation.cpp"
+if grep -q '@coreflow-platform: android' "$ROOT/src/mutation/resource_mutation.cpp"; then
+  echo 'resource_mutation.cpp must not be device-only' >&2; exit 1
+fi
 grep -q 'config.mutationArmed()' "$ROOT/src/mutation/mutation.cpp"
 grep -q 'journalEntriesWith' "$ROOT/src/mutation/mutation.cpp"
 grep -q 'result.writes_attempted != 0' "$ROOT/src/mutation/mutation.cpp"
@@ -109,7 +116,8 @@ grep -q 'thermalGuardShouldEnter' "$ROOT/src/autonomous/autonomous.cpp"
 grep -q 'thermalGuardShouldHold' "$ROOT/src/autonomous/autonomous.cpp"
 grep -q 'kHottestOnlyConfirmSamples' "$ROOT/include/coreflow/thermal_guard.hpp"
 grep -q 'isPlausibleThermalMilli' "$ROOT/include/coreflow/thermal_limits.hpp"
-grep -q 'coreflow_release_hardening' "$ROOT/CMakeLists.txt"
+grep -q 'file(GLOB COREFLOW_TEST_SOURCES CONFIGURE_DEPENDS' "$ROOT/CMakeLists.txt"
+test -f "$ROOT/tests/release_hardening_tests.cpp"
 # The pure feature/guard sources must stay free of Android/ONNX dependencies so
 # they remain host-testable.
 for f in src/understand/thermal_features.cpp src/understand/thermal_guard.cpp include/coreflow/thermal_features.hpp include/coreflow/thermal_guard.hpp include/coreflow/thermal_limits.hpp; do

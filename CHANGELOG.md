@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — Dynamic source packaging and property policy
+
+### Changed
+- Source and test discovery is dynamic. `cmake/CoreFlowSources.cmake` globs `src/**/*.cpp`. The platform of each file is set by an `@coreflow-platform` tag, or inferred from Android platform headers. `CMakeLists.txt` globs `tests/*_tests.cpp` and creates one executable and one CTest entry per file. Adding a module or a test no longer needs a CMake edit (ADR 0002).
+- Test executable names follow their files: `coreflow_mutation_tests`, `coreflow_high_capability_tests`, and so on.
+- `observer.cpp`, `decision_trace.cpp`, and `thermal_predictor.cpp` are now platform-neutral and belong to `coreflow_core`. They compile on the host.
+- `tools/verify_safety_foundation.sh` checks structure (glob coverage, the test glob, and that `resource_mutation.cpp` is not device-only) instead of names written in CMake.
+
+### Added
+- ADR 0002 (dynamic source packaging) and ADR 0003 (system property mutation policy, Proposed). ADR 0003 defines evidence-based eligibility, boot-time overlays, and bootloop rollback tied to the existing boot-attempt counter. It does not allow runtime writes to `ro.*` properties.
+
+### Validation
+- The host build was run with an equivalent script because `cmake` was not available. All eight tests passed. A new source and test added with no CMake edit were built and passed.
+- Real CMake configure and Android ARM64 build are not yet run and must be the first CI step.
+
 ## Unreleased — Mount-derived capability discovery
 
 ### Changed

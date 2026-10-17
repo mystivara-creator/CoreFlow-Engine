@@ -31,3 +31,11 @@ What was decided.
 
 Benefits, trade-offs, and follow-up work.
 ```
+
+## Index
+
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-scheduler-grant-gate.md) | Scheduler grant gate | Proposed |
+| [0002](0002-dynamic-source-packaging.md) | Dynamic source packaging | Accepted |
+| [0003](0003-system-property-mutation-policy.md) | System property mutation policy | Proposed |

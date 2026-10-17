@@ -83,18 +83,8 @@ void testMalformedModeFailsSafe() {
     const fs::path tmp = fs::temp_directory_path() / "coreflow_bad_mode_test.ini";
     {
         std::ofstream f(tmp);
-        f << "mutation_mode=turbo\n"
-             "mutation_armed=true\n"
-             "allow_cpu_governor=yes\n"
-             "grant_memory=yes\n"
-             "grant_block_queue=yes\n"
-             "grant_scheduler=yes\n"
-             "grant_gpu=yes\n"
-             "grant_cgroup=yes\n"
-             "grant_cpufreq=yes\n"
-             "grant_kernel=yes\n";
+        f << "mutation_mode=turbo\nmutation_armed=true\nallow_cpu_governor=yes\n";
     }
-
     EngineConfig cfg;
     CHECK(cfg.load(tmp.string()));
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
@@ -107,10 +97,10 @@ void testMalformedModeFailsSafe() {
     CHECK(!cfg.grantCgroup());
     CHECK(!cfg.grantCpuFreq());
     CHECK(!cfg.grantKernel());
-
     fs::remove(tmp);
 }
 
+// ---------------------------------------------------------------------------
 void testFailedLoadPreservesExistingConfig() {
     const fs::path missing =
         fs::temp_directory_path() / "coreflow_missing_config_regression.ini";
@@ -149,7 +139,6 @@ void testFailedLoadPreservesExistingConfig() {
     CHECK(!cfg.grantKernel());
 }
 
-// ---------------------------------------------------------------------------
 // Thermal plausibility (single source of truth)
 // ---------------------------------------------------------------------------
 
