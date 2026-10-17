@@ -32,8 +32,8 @@ bool isMutableDomain(ResourceDomain domain) noexcept {
 
 bool fallbackPolicyAuthorized(ResourceDomain domain, const std::string& name,
                               const std::string& path) noexcept {
-    // Capability-driven: the same rule discovery applies. Only fatal surfaces
-    // (actuator gate) and non-tunable/governor-owned nodes are refused.
+    // Capability-driven: this is the path/semantic gate; the actuator adds an
+    // independent opened-filesystem check immediately before every write.
     if (!ResourceActuator::mutationTargetAllowed(path)) return false;
     return classifySurface(domain, name, path) == SurfaceClass::Admissible;
 }
@@ -66,7 +66,13 @@ void ResourceMutationController::setExperienceMemory(
 }
 
 bool ResourceMutationController::recoverIfNeeded() noexcept {
-    if (journal_ == nullptr) return true;
+    // Without a journal we cannot prove that a previous process left no
+    // in-flight mutation. Failing closed here prevents baseline capture from
+    // silently adopting an unknown post-crash value as the factory baseline.
+    if (journal_ == nullptr) {
+        last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
+        return false;
+    }
     MutationJournal::Entries entries;
     const MutationJournal::LoadState state = journal_->load(entries);
     switch (state) {

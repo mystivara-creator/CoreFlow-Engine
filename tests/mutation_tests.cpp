@@ -491,9 +491,74 @@ void test_file_journal_roundtrip_and_truncation_detection() {
     CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
     CHECK(loaded == values);
 
-    // Truncate the file: the missing "end" marker must be detected.
+    // A pre-created hard link at the historical fixed temp name must never be
+    // opened with O_TRUNC or damage the unrelated inode.
+    {
+        const fs::path sentinel = box.root / "journal_temp_sentinel";
+        const fs::path old_temp_name = box.journal_file + ".tmp";
+        std::ofstream(sentinel, std::ios::binary | std::ios::trunc) << "keep-me";
+        std::error_code link_error;
+        fs::create_hard_link(sentinel, old_temp_name, link_error);
+        if (!link_error) {
+            CHECK(journal.commit(values));
+            std::ifstream sentinel_input(sentinel, std::ios::binary);
+            const std::string sentinel_contents((std::istreambuf_iterator<char>(sentinel_input)),
+                                                std::istreambuf_iterator<char>());
+            CHECK(sentinel_contents == "keep-me");
+            std::error_code cleanup_error;
+            fs::remove(old_temp_name, cleanup_error);
+        }
+    }
+
+    // V2 includes a checksum: same-length payload corruption must fail closed.
+    {
+        std::ifstream input(box.journal_file, std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(input)),
+                                   std::istreambuf_iterator<char>());
+        std::string corrupted = contents;
+        const std::size_t value_offset = corrupted.find("powersave");
+        CHECK(value_offset != std::string::npos);
+        if (value_offset != std::string::npos) {
+            corrupted.replace(value_offset, std::string("powersave").size(), "powerxxve");
+            std::ofstream output(box.journal_file, std::ios::binary | std::ios::trunc);
+            output.write(corrupted.data(), static_cast<std::streamsize>(corrupted.size()));
+        }
+    }
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    // A v1 journal may survive an upgrade. Continue to support it for recovery.
+    std::ofstream(box.journal_file, std::ios::trunc)
+        << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\n"
+        << "/sys/b/scaling_governor\tconservative\nend\n";
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
+    CHECK(loaded == values);
+
+    // Truncate the legacy file: the missing "end" marker must be detected.
     std::ofstream(box.journal_file, std::ios::trunc)
         << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\n";
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+
+    // Embedded NUL bytes cannot enter a journal and become truncated C paths.
+    CHECK(!journal.commit({{std::string("/sys/a\0evil", 11U), "powersave"}}));
+
+    // A symlink or oversized journal is untrusted and must fail closed.
+    const fs::path journal_target = box.root / "journal_target";
+    std::ofstream(journal_target, std::ios::trunc)
+        << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\nend\n";
+    CHECK(journal.clear());
+    std::error_code symlink_error;
+    fs::create_symlink(journal_target, box.journal_file, symlink_error);
+    if (!symlink_error) {
+        CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+        CHECK(journal.clear());
+    }
+
+    {
+        std::ofstream oversized(box.journal_file, std::ios::binary | std::ios::trunc);
+        const std::string data(1024U * 1024U + 1U, 'x');
+        oversized.write(data.data(), static_cast<std::streamsize>(data.size()));
+    }
     CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
 
     CHECK(journal.clear());

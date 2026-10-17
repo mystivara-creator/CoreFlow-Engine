@@ -379,6 +379,16 @@ void test_corrupt_journal_blocks_mutation() {
     CHECK(!controller.mutated());
 }
 
+void test_recovery_requires_a_journal() {
+    ResourceMutationController controller;
+    const DeviceProfile profile;
+
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::JournalUnavailable);
+    CHECK(!controller.mutated());
+}
+
 void test_journal_clear_failure_blocks_recovery() {
     const fs::path root =
         fs::temp_directory_path() / "coreflow_journal_clear_failure_test";
@@ -1495,6 +1505,7 @@ int main() {
     test_file_journal_commit_reports_directory_sync_failure();
     test_file_journal_rejects_ambiguous_records();
     test_corrupt_journal_blocks_mutation();
+    test_recovery_requires_a_journal();
     test_journal_clear_failure_blocks_recovery();
     test_recovery_actuator_failure_is_diagnosed();
     test_missing_recovery_path_keeps_journal();

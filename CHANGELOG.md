@@ -1,58 +1,23 @@
 # Changelog
 
-## Unreleased — Dynamic source packaging and property policy
+## v2.3.0 — Production Hardening Candidate
 
-### Changed
-- Source and test discovery is dynamic. `cmake/CoreFlowSources.cmake` globs `src/**/*.cpp`. The platform of each file is set by an `@coreflow-platform` tag, or inferred from Android platform headers. `CMakeLists.txt` globs `tests/*_tests.cpp` and creates one executable and one CTest entry per file. Adding a module or a test no longer needs a CMake edit (ADR 0002).
-- Test executable names follow their files: `coreflow_mutation_tests`, `coreflow_high_capability_tests`, and so on.
-- `observer.cpp`, `decision_trace.cpp`, and `thermal_predictor.cpp` are now platform-neutral and belong to `coreflow_core`. They compile on the host.
-- `tools/verify_safety_foundation.sh` checks structure (glob coverage, the test glob, and that `resource_mutation.cpp` is not device-only) instead of names written in CMake.
+### Safety and recovery
+- Mutation journal writes use a checksummed v2 format. The loader remains backward-compatible with v1 journals so a pending journal created by an earlier version can still be recovered after an upgrade.
+- Journal operations are bounded (256 entries, 4096 bytes per field, 1 MiB per file), use a unique exclusive temporary to prevent hard-link truncation, reject embedded NULs and duplicate paths, refuse symlink/non-regular journal files, and fail closed on truncation or checksum mismatch.
+- Resource actuator writes now operate through a no-follow descriptor that is checked with `fstat` before the write, rather than re-opening a path through a stream after the earlier path check. The final write gate also requires procfs, sysfs, or cgroup filesystem semantics so a journal path cannot redirect recovery into an ordinary data file. The live value is still read back and verified.
+- Resource baseline capture refuses to proceed if recovery cannot be checked because the mutation journal is not configured.
+- Observe-only/disarmed defaults are unchanged.
 
-### Added
-- ADR 0002 (dynamic source packaging) and ADR 0003 (system property mutation policy, Proposed). ADR 0003 defines evidence-based eligibility, boot-time overlays, and bootloop rollback tied to the existing boot-attempt counter. It does not allow runtime writes to `ro.*` properties.
-
-### Validation
-- The host build was run with an equivalent script because `cmake` was not available. All eight tests passed. A new source and test added with no CMake edit were built and passed.
-- Real CMake configure and Android ARM64 build are not yet run and must be the first CI step.
-
-## Unreleased — Mount-derived capability discovery
-
-### Changed
-- Tunable roots are read from the kernel mount table (`/proc/mounts`), not from a list of paths in source. Procfs mounts contribute their sysctl tree, sysfs mounts their attribute tree, and cgroup mounts their controller files. A root exists only if the kernel mounted it.
-- The tunable walk is breadth-first, bounded by depth (`kSysfsDepth`, `kSysctlDepth`, `kCgroupDepth`), by a visit budget (`kMaxVisits`), and by filesystem boundary. Symlinks are never followed. A truncated walk is reported in the profile (`tunables_truncated`).
-- Admission is by evidence: a writable node is a candidate only if its subsystem is recognised from its location, or the vendor's own configuration declares it. Writable nodes that match neither are counted as `tunables_unclaimed` and not admitted.
-- `TunableDiscovery` is the single authority for writable kernel surfaces. Inventory probes for classes (thermal, power, cpufreq, devfreq, block queues) and pressure files remain.
-- Availability flags (`uclamp_available`, `cpuset_available`, `scheduler_controls_available`) are derived from discovered, readable capabilities. cgroup v2 is derived from the mount table.
-
-### Removed
-- Hard-coded tunable tables (`vm.*`, `kernel.sched_*`, cpu, cgroup, gpu, runtime) and their duplicate probes in discovery.
-- The `vm_swappiness`, `uclamp_min`, `uclamp_max` and `cpuset_effective_cpus` profile fields, and the baseline fallbacks that named `vm.swappiness` and block-queue leaves. Baselines come from the same capability matrix as every other candidate.
-- Binder, ion, dma_heap and lmkd marker probes (observe-only inventory, not used by policy).
-
-### Fixed
-- Tunable walk followed symlinks through `stat()`, which could duplicate nodes or loop through `/sys/bus/*/devices`.
-- The comment on `UserGrants` said grants default to none. The code and `default.conf` default them to opt-out (`yes`). The comment now matches the code.
-
-### Tests
-- `coreflow_capability_driven` adds: tunable roots come from the mount table; unrecognised writable nodes are not admitted; symlinks do not duplicate nodes.
-- Resource fixtures build capabilities the way discovery does, instead of the removed profile fields.
-
-### Documentation
-- Restored `docs/` to the source package. `tools/verify_source_release.sh` passes, including the WebUI status and render checks.
-- `docs/CAPABILITY_DRIVEN.md` now describes mount-derived roots and the unclaimed admission rule. `docs/ANDROID_ECOSYSTEM_MAP.md` no longer refers to the removed `expandEcosystemSurface`.
-
-### Known remaining hard-coded policy (deliberately not changed in this release)
-- `observer.cpp` ranks and excludes thermal zones by type name. Replacement evidence (trip points bound to cooling devices) needs validation on device logs.
-- `ecosystem_knowledge.cpp` is a name-keyed risk catalog that gates ObserveOnly, FrameworkOwned and Quarantined surfaces. Removing it without replacement would weaken safety.
-- `fatal_surface.cpp` is a path-prefix denylist. It is kept as the only hard-coded safety rule.
-- `high_capability.cpp` matches name tokens for observation-only status.
+### Release and packaging
+- Version metadata is aligned to `2.3.0` / `v2.3.0`, `versionCode=2300`, including CMake, runtime, module metadata, updater feed, README, and build-status documentation.
+- CMake discovers source and `*_tests.cpp` files dynamically. Source platform membership is explicit when tagged and otherwise inferred from platform headers; each test source gets a matching test target.
+- Tunable discovery uses mounted kernel interface roots and bounded traversal, avoids following discovered symlinks, and leaves unclaimed writable nodes out of mutation candidacy. Discovery remains evidence, not authorization.
+- ADR 0002 records dynamic packaging; ADR 0003 remains Proposed and keeps system-property mutation out of this release; ADR 0004 records journal v2 compatibility and bounds.
 
 ### Validation
-- Host suite (8 binaries) passes. Safety foundation contract passes.
-- Key suites pass under AddressSanitizer and UBSan.
-- `tools/verify_source_release.sh` fails on the source package because `docs/BUILD_STATUS.md` is not in the archive.
-- Android ARM64 build and device validation have not been run.
-
+- The v2.3.0 candidate must pass its own host tests, safety/source-release contracts, ASan/UBSan and Android ARM64 production workflow before publication.
+- The v2.2.5 CI results are not carried forward as evidence for the new journal/actuator code. Physical-device installation, long-run and recovery tests remain to be completed by the operator.
 
 ## v2.2.5 — Evidence-Based Resource Reasoning & Release Validation
 

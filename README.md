@@ -1,8 +1,8 @@
-# CoreFlow Autonomous Engine v2.2.5
+# CoreFlow Autonomous Engine v2.3.0
 
 ## How to read this source package
 
-## Current Release — v2.2.5
+## Release Candidate — v2.3.0
 
 **Identity:** Observe. Understand. Balance. Adapt.
 
@@ -12,8 +12,8 @@ CoreFlow Autonomous is a capability-driven native C++ engine for Android. It dis
 
 | Property | Value |
 |---|---|
-| Version | `v2.2.5` |
-| Module version code | `2250` |
+| Version | `v2.3.0` |
+| Module version code | `2300` |
 | ABI | `arm64-v8a` |
 | Minimum Android API | `34` |
 | Default mode | Observe-only |
@@ -39,7 +39,7 @@ Observe-only is the default. Do not enable Adaptive mode until the target device
 
 ### Validation status
 
-The v2.2.5 candidate passed the GitHub Actions host test, Android 14+ ARM64 production build, and ASan/UBSan jobs. These results validate the tested build pipeline; they do not replace device-level installation, soak, and recovery testing.
+The previous v2.2.5 commit passed host tests, Android 14+ ARM64 production build, and ASan/UBSan in GitHub Actions. Version 2.3.0 adds journal and actuator hardening; its updated source must pass CI before release. Device-level installation, soak, and recovery tests remain operator validation.
 
 ### Release package
 
