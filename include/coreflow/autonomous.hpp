@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <string>
 
 #include "coreflow/baseline_intelligence.hpp"
@@ -22,6 +23,12 @@
 #include "coreflow/types.hpp"
 #include "coreflow/thermal_predictor.hpp"
 #include "coreflow/thermal_guard.hpp"
+#include "coreflow/frame_telemetry.hpp"
+#include "coreflow/foreground_tracker.hpp"
+#include "coreflow/gpu_busy_source.hpp"
+#include "coreflow/interactivity_boost.hpp"
+#include "coreflow/interactivity_model.hpp"
+#include "coreflow/interactivity_policy.hpp"
 
 namespace coreflow {
 
@@ -89,6 +96,18 @@ private:
     ThermalPredictor thermal_predictor_;
     std::uint64_t mutation_cooldown_until_sample_{0};
     ThermalGuardState thermal_guard_state_{};
+
+    // v2.4.0 interactivity pipeline (observe by default; the boost path obeys
+    // interactivity_mode plus the same global armed/adaptive authority gates).
+    understand::InteractivityModel interactivity_model_;
+    observe::GpuBusySource gpu_busy_source_;
+    observe::ForegroundTracker foreground_tracker_;
+    observe::FrameTelemetrySource frame_telemetry_;
+    InteractivityPolicy interactivity_policy_;
+    InteractivityBoostController boost_controller_;
+    std::unique_ptr<FileMutationJournal> interactivity_journal_;
+    bool interactivity_sources_ready_{false};
+    understand::InteractionState last_interactivity_state_{understand::InteractionState::Idle};
 
     EngineStatus last_status_;
     std::uint64_t status_verified_{0};

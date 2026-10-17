@@ -516,8 +516,8 @@ MutationResult ResourceMutationController::applyCandidate(
     }
 
     ActuatorMutation mutation;
-    // Resource writes never use the CpuFreq actuator domain: that domain is the
-    // governor authority and needs allow_cpu_governor.
+    // Resource writes never use the CpuFreq actuator domain; CPUFreq governor
+    // writes are handled by the dedicated governor controller.
     mutation.id = {ActuatorDomain::Io, 0};
     switch (candidate.domain) {
         case ResourceDomain::Memory: mutation.id.domain = ActuatorDomain::Vm; break;

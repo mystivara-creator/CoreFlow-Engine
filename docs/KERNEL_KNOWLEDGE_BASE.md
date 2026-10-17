@@ -12,8 +12,8 @@ This is a compact, version-aware reference map for maintainers, not a runtime fe
 
 ## Current policy in this source tree
 
-- `mutation_mode=observe`, `mutation_armed=false`, `allow_cpu_governor=no` remain the installed defaults.
-- Superseded by `CAPABILITY_DRIVEN.md`: the central `ResourceActuator` admits every kernel tunable except the universal fatal classes. CPUFreq governor writes remain off by default (`allow_cpu_governor=no`).
+- `mutation_mode=observe`, `mutation_armed=false`, `legacy `allow_cpu_governor` is ignored` remain the installed defaults.
+- Superseded by `CAPABILITY_DRIVEN.md`: the central `ResourceActuator` admits every kernel tunable except the universal fatal classes. CPUFreq governor writes remain off by default (`legacy `allow_cpu_governor` is ignored`).
 - New writes to block queue nodes—`scheduler`, `nr_requests`, and `read_ahead_kb` under `/sys/block/.../queue/` and equivalent `/sys/devices/.../block/.../queue/` paths—are quarantined even if writable or proposed by a fallback candidate.
 - Restores from a previously committed resource journal remain allowed so recovery from an older run can complete. A restore failure must remain visible and must never clear an unresolved journal.
 - CPU governor mutation is a separate authority path controlled by `allow_cpu_governor`; it is not authorized by this resource policy.

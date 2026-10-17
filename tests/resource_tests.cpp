@@ -176,10 +176,9 @@ MutationResult applyResourcePolicy(
         permit);
 }
 
-// Safety property: with mutation armed and adaptive, but without the user's
-// grant, an otherwise eligible headroom candidate must leave the kernel untouched.
-// The brain defers, the hands never run, and the ledger says why.
-void test_no_write_without_user_grant() {
+// Legacy namespace grant flags must not block an otherwise eligible mutation.
+// The global Adaptive/armed gates and fatal-surface checks remain authoritative.
+void test_legacy_namespace_flags_do_not_block_mutation() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_no_grant_test";
     fs::remove_all(root);
     fs::create_directories(root);
@@ -200,7 +199,7 @@ void test_no_write_without_user_grant() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
-    // Grants are opt-out; this user explicitly opts every namespace out.
+    // Legacy flags are set false to prove they no longer gate mutation.
     config.setGrantMemory(false);
     config.setGrantBlockQueue(false);
     config.setGrantScheduler(false);
@@ -217,12 +216,12 @@ void test_no_write_without_user_grant() {
         controller, RuntimeState::Elevated, sample, profile, config,
         InterventionLevel::Low);
 
-    CHECK(result != MutationResult::Verified);
-    CHECK(readFile(swappiness) == "60");
-    CHECK(!controller.mutated());
+    CHECK(result == MutationResult::Verified);
+    CHECK(readFile(swappiness) != "60");
+    CHECK(controller.mutated());
     const auto& ledger = controller.consultationLedger();
-    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] >= 1U);
-    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] == 0U);
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] == 0U);
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] >= 1U);
 }
 
 void test_journal_commit_failure_is_diagnosed() {
@@ -1281,8 +1280,8 @@ void test_legacy_bracketed_journal_value_is_normalized() {
     fs::remove(path);
 }
 
-// The CPU governor permit must not be issued without the separate opt-in.
-void test_cpu_permit_requires_governor_opt_in() {
+// CPUFreq permits use the global Adaptive/armed gate; no separate opt-in exists.
+void test_cpu_permit_uses_global_adaptive_gate() {
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -1297,8 +1296,8 @@ void test_cpu_permit_requires_governor_opt_in() {
     config.setAllowCpuGovernor(false);
 
     const MutationAuthority authority;
-    CHECK(!authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
-                               MutationPermit::Scope::CpuFreq)
+    CHECK(authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
+                              MutationPermit::Scope::CpuFreq)
               .validFor(MutationPermit::Scope::CpuFreq));
 
     config.setAllowCpuGovernor(true);
@@ -1509,7 +1508,7 @@ int main() {
     test_journal_clear_failure_blocks_recovery();
     test_recovery_actuator_failure_is_diagnosed();
     test_missing_recovery_path_keeps_journal();
-    test_no_write_without_user_grant();
+    test_legacy_namespace_flags_do_not_block_mutation();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();
     test_restore_all_keeps_journal_when_dirty_path_disappears();
@@ -1523,7 +1522,7 @@ int main() {
     test_selector_scheduler_restore_writes_bare_token();
     test_restore_enforces_mutation_surface_guard();
     test_legacy_bracketed_journal_value_is_normalized();
-    test_cpu_permit_requires_governor_opt_in();
+    test_cpu_permit_uses_global_adaptive_gate();
     test_thermal_guard_allows_stabilizing_write_and_restores();
     test_pressure_defers_without_memory_evidence();
     test_stabilizing_plan_rejects_non_stabilizing_candidates();

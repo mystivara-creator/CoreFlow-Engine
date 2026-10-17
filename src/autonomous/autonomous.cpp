@@ -5,11 +5,18 @@
 #include "coreflow/thermal_predictor.hpp"
 #include "coreflow/decision_trace.hpp"
 #include "coreflow/decision_agent.hpp"
+#include "coreflow/frame_telemetry.hpp"
+#include "coreflow/foreground_tracker.hpp"
+#include "coreflow/gpu_busy_source.hpp"
+#include "coreflow/interactivity_boost.hpp"
+#include "coreflow/interactivity_model.hpp"
+#include "coreflow/interactivity_policy.hpp"
 
 #include <android/log.h>
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <memory>
 #include <unistd.h>
 #include <cstdarg>
 #include <cmath>
@@ -563,6 +570,83 @@ void AutonomousEngine::tick() {
         }
 
         const Decision decision = policy_.decide(sample, next);
+
+        // STEP 4c (v2.4.0): interactivity pipeline. Sensing and understanding
+        // run every tick; adaptation stays behind the same authority, journal
+        // and read-back discipline as every other write, and is suppressed by
+        // the safety hold and the thermal guard.
+        if (!interactivity_sources_ready_) {
+            gpu_busy_source_.discoverDefaultRoots();
+            foreground_tracker_.setProcsPath("/dev/cpuctl/top-app/cgroup.procs");
+            interactivity_journal_ = std::make_unique<FileMutationJournal>(
+                "/data/adb/coreflow/interactivity.journal");
+            boost_controller_.setJournal(interactivity_journal_.get());
+            boost_controller_.setGpuMinFreqPath(
+                "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq");
+            boost_controller_.setTopAppUclampPath("/dev/cpuctl/top-app/uclamp.min");
+            boost_controller_.discoverReadaheadPaths();
+            interactivity_sources_ready_ = true;
+        }
+        understand::InteractivityThresholds ia_thresholds;
+        ia_thresholds.launch_window_ms =
+            static_cast<std::uint64_t>(config_.launchWindowMs());
+        ia_thresholds.jank_miss_rate = config_.jankMissRate();
+        interactivity_model_.setThresholds(ia_thresholds);
+
+        const std::uint64_t ia_now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        const bool ia_jank_recent =
+            last_interactivity_state_ == understand::InteractionState::Stuttering;
+        for (const std::uint64_t ia_duration_ns :
+             frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
+            interactivity_model_.ingestFrame(ia_duration_ns, 16'666'667ULL);
+        }
+        std::string ia_foreground_package;
+        if (foreground_tracker_.poll(ia_foreground_package)) {
+            interactivity_model_.onForegroundChanged(ia_now_ms);
+            logInfo("INTERACTIVITY foreground_change pkg=%s",
+                    ia_foreground_package.empty() ? "unknown"
+                                                  : ia_foreground_package.c_str());
+        }
+        understand::InteractivitySample ia_sample;
+        ia_sample.now_ms = ia_now_ms;
+        ia_sample.gpu_busy_available =
+            gpu_busy_source_.poll(ia_sample.gpu_busy_ratio);
+        ia_sample.io_full_avg10 = sample.psi_io_full_avg10;
+        ia_sample.memory_some_avg10 = sample.psi_memory_some_avg10;
+        ia_sample.thermal_guard = next == RuntimeState::ThermalGuard;
+        const understand::InteractivitySnapshot ia_snap =
+            interactivity_model_.evaluate(ia_sample);
+        if (ia_snap.state != last_interactivity_state_) {
+            logInfo("INTERACTIVITY_STATE %s -> %s gpu_busy=%.2f io_full=%.3f",
+                    understand::interactionStateName(last_interactivity_state_),
+                    understand::interactionStateName(ia_snap.state),
+                    ia_snap.gpu_busy_ratio, ia_snap.io_full_avg10);
+            last_interactivity_state_ = ia_snap.state;
+        }
+
+        boost_controller_.expire(ia_now_ms);
+        if (next == RuntimeState::ThermalGuard || hold != HoldReason::None) {
+            boost_controller_.restoreAll();
+        } else if (boost_controller_.authorized(config_)) {
+            InteractivityPolicy::BoostConfig ia_boost_config;
+            ia_boost_config.boost_window_ms =
+                static_cast<std::uint64_t>(config_.boostWindowMs());
+            ia_boost_config.uclamp_launch = config_.boostUclampLaunch();
+            ia_boost_config.uclamp_jank = config_.boostUclampJank();
+            ia_boost_config.readahead_kb = config_.boostReadaheadKb();
+            ia_boost_config.gpu_steps = config_.boostGpuSteps();
+            interactivity_policy_.setConfig(ia_boost_config);
+            const std::size_t ia_boosted = boost_controller_.apply(
+                interactivity_policy_.evaluate(ia_snap, ia_now_ms),
+                config_, ia_now_ms);
+            if (ia_boosted > 0U) {
+                logInfo("INTERACTIVITY_BOOST applied=%zu state=%s",
+                        ia_boosted, understand::interactionStateName(ia_snap.state));
+            }
+        }
 
         // v1.9 foundation: classify context and build a plan without granting
         // an actuator permit. MutationController remains the only owner of the

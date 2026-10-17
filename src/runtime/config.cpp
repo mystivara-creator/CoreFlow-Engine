@@ -22,6 +22,17 @@ bool parseBool(const std::string& value, bool fallback) {
     return fallback;
 }
 
+int parseInt(const std::string& value, int fallback) noexcept {
+    try {
+        std::size_t parsed = 0;
+        const int result = std::stoi(value, &parsed);
+        if (parsed == value.size()) return result;
+    } catch (...) {
+        // Fall through to the fallback.
+    }
+    return fallback;
+}
+
 } // namespace
 
 bool EngineConfig::load(const std::string& path) noexcept {
@@ -35,6 +46,7 @@ bool EngineConfig::load(const std::string& path) noexcept {
 
         // An invalid mutation_mode must fail safe regardless of key order.
         bool invalid_mode = false;
+        bool invalid_interactivity_mode = false;
         std::string line;
 
         while (std::getline(file, line)) {
@@ -72,27 +84,34 @@ bool EngineConfig::load(const std::string& path) noexcept {
                     invalid_mode = true;
                     candidate.mutation_mode_ = MutationMode::Disabled;
                 }
-            } else if (key == "allow_cpu_governor") {
-                candidate.allow_cpu_governor_ = parseBool(value, false);
             } else if (key == "runtime_refresh") {
                 candidate.runtime_refresh_enabled_ =
                     parseBool(value, candidate.runtime_refresh_enabled_);
             } else if (key == "mutation_armed") {
                 candidate.mutation_armed_ = parseBool(value, false);
-            } else if (key == "grant_memory") {
-                candidate.grant_memory_ = parseBool(value, true);
-            } else if (key == "grant_block_queue") {
-                candidate.grant_block_queue_ = parseBool(value, true);
-            } else if (key == "grant_scheduler") {
-                candidate.grant_scheduler_ = parseBool(value, true);
-            } else if (key == "grant_gpu") {
-                candidate.grant_gpu_ = parseBool(value, true);
-            } else if (key == "grant_cgroup") {
-                candidate.grant_cgroup_ = parseBool(value, true);
-            } else if (key == "grant_cpufreq") {
-                candidate.grant_cpufreq_ = parseBool(value, true);
-            } else if (key == "grant_kernel") {
-                candidate.grant_kernel_ = parseBool(value, true);
+            } else if (key == "interactivity_mode") {
+                if (value == "adaptive") {
+                    candidate.interactivity_mode_ = InteractivityMode::Adaptive;
+                } else if (value == "observe") {
+                    candidate.interactivity_mode_ = InteractivityMode::Observe;
+                } else {
+                    invalid_interactivity_mode = true;
+                    candidate.interactivity_mode_ = InteractivityMode::Observe;
+                }
+            } else if (key == "launch_window_ms") {
+                candidate.setLaunchWindowMs(parseInt(value, candidate.launch_window_ms_));
+            } else if (key == "jank_miss_rate") {
+                try { std::size_t parsed = 0; const double rate = std::stod(value, &parsed); if (parsed == value.size() && std::isfinite(rate)) candidate.setJankMissRate(rate); } catch (...) {}
+            } else if (key == "boost_readahead_kb") {
+                candidate.setBoostReadaheadKb(parseInt(value, static_cast<int>(candidate.boost_readahead_kb_)));
+            } else if (key == "boost_uclamp_launch") {
+                candidate.setBoostUclampLaunch(parseInt(value, static_cast<int>(candidate.boost_uclamp_launch_)));
+            } else if (key == "boost_uclamp_jank") {
+                candidate.setBoostUclampJank(parseInt(value, static_cast<int>(candidate.boost_uclamp_jank_)));
+            } else if (key == "boost_gpu_steps") {
+                candidate.setBoostGpuSteps(parseInt(value, candidate.boost_gpu_steps_));
+            } else if (key == "boost_window_ms") {
+                candidate.setBoostWindowMs(parseInt(value, candidate.boost_window_ms_));
             }
         }
 
@@ -102,14 +121,12 @@ bool EngineConfig::load(const std::string& path) noexcept {
         if (invalid_mode) {
             candidate.mutation_mode_ = MutationMode::Disabled;
             candidate.mutation_armed_ = false;
-            candidate.allow_cpu_governor_ = false;
-            candidate.grant_memory_ = false;
-            candidate.grant_block_queue_ = false;
-            candidate.grant_scheduler_ = false;
-            candidate.grant_gpu_ = false;
-            candidate.grant_cgroup_ = false;
-            candidate.grant_cpufreq_ = false;
-            candidate.grant_kernel_ = false;
+            candidate.interactivity_mode_ = InteractivityMode::Observe;
+        }
+        if (invalid_interactivity_mode) {
+            // An invalid boost mode disables interactivity mutation without
+            // unexpectedly changing unrelated resource-mutation policy.
+            candidate.interactivity_mode_ = InteractivityMode::Observe;
         }
 
         // Commit only after the entire file has been read successfully.
@@ -130,6 +147,38 @@ void EngineConfig::setMinConfidence(double confidence) noexcept {
         return;
     }
     min_confidence_ = std::clamp(confidence, 0.50, 1.0);
+}
+
+void EngineConfig::setLaunchWindowMs(int ms) noexcept {
+    launch_window_ms_ = std::max(ms, 1);
+}
+
+void EngineConfig::setJankMissRate(double rate) noexcept {
+    if (!std::isfinite(rate)) {
+        jank_miss_rate_ = 0.05;
+        return;
+    }
+    jank_miss_rate_ = std::clamp(rate, 0.01, 0.90);
+}
+
+void EngineConfig::setBoostReadaheadKb(long kb) noexcept {
+    boost_readahead_kb_ = std::max(kb, 0L);
+}
+
+void EngineConfig::setBoostUclampLaunch(long value) noexcept {
+    boost_uclamp_launch_ = std::clamp(value, 0L, 100L);
+}
+
+void EngineConfig::setBoostUclampJank(long value) noexcept {
+    boost_uclamp_jank_ = std::clamp(value, 0L, 100L);
+}
+
+void EngineConfig::setBoostGpuSteps(int steps) noexcept {
+    boost_gpu_steps_ = std::max(steps, 0);
+}
+
+void EngineConfig::setBoostWindowMs(int ms) noexcept {
+    boost_window_ms_ = std::clamp(ms, 500, 15000);
 }
 
 const char* mutationModeName(MutationMode mode) noexcept {

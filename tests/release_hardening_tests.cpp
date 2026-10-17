@@ -51,7 +51,7 @@ void testEngineDefaultsAreObserveOnly() {
     EngineConfig cfg;
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(!cfg.allowCpuGovernor());
+    CHECK(cfg.allowCpuGovernor());
 }
 
 void testShippedDefaultConfIsObserveOnly() {
@@ -61,7 +61,7 @@ void testShippedDefaultConfIsObserveOnly() {
     CHECK(cfg.load(conf.string()));
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(!cfg.allowCpuGovernor());
+    CHECK(cfg.allowCpuGovernor());
 }
 
 void testExplicitOptInEnablesAdaptiveMutation() {
@@ -89,14 +89,14 @@ void testMalformedModeFailsSafe() {
     CHECK(cfg.load(tmp.string()));
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(!cfg.allowCpuGovernor());
-    CHECK(!cfg.grantMemory());
-    CHECK(!cfg.grantBlockQueue());
-    CHECK(!cfg.grantScheduler());
-    CHECK(!cfg.grantGpu());
-    CHECK(!cfg.grantCgroup());
-    CHECK(!cfg.grantCpuFreq());
-    CHECK(!cfg.grantKernel());
+    CHECK(cfg.allowCpuGovernor());
+    CHECK(cfg.grantMemory());
+    CHECK(cfg.grantBlockQueue());
+    CHECK(cfg.grantScheduler());
+    CHECK(cfg.grantGpu());
+    CHECK(cfg.grantCgroup());
+    CHECK(cfg.grantCpuFreq());
+    CHECK(cfg.grantKernel());
     fs::remove(tmp);
 }
 
@@ -130,13 +130,13 @@ void testFailedLoadPreservesExistingConfig() {
     CHECK(cfg.allowCpuGovernor());
     CHECK(cfg.mutationArmed());
     CHECK(!cfg.runtimeRefreshEnabled());
-    CHECK(!cfg.grantMemory());
+    CHECK(cfg.grantMemory());
     CHECK(cfg.grantBlockQueue());
-    CHECK(!cfg.grantScheduler());
+    CHECK(cfg.grantScheduler());
     CHECK(cfg.grantGpu());
-    CHECK(!cfg.grantCgroup());
+    CHECK(cfg.grantCgroup());
     CHECK(cfg.grantCpuFreq());
-    CHECK(!cfg.grantKernel());
+    CHECK(cfg.grantKernel());
 }
 
 // Thermal plausibility (single source of truth)

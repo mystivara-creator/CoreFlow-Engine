@@ -1,4 +1,28 @@
+## v2.4.0 — Full capability authority
+
+- Removed separate `allow_cpu_governor` authorization; CPUFreq uses the global Adaptive + armed authority.
+- Legacy `grant_*` namespace flags are accepted as unknown/legacy configuration keys but no longer restrict supported namespaces.
+- Interactivity boosts no longer honor per-namespace grant flags and apply all eligible intents in a policy batch rather than one intent per tick.
+- Expanded launch-window, readahead, and GPU-step configuration ranges; kernel-advertised capability and fatal-surface policy remain authoritative.
+- Kept observe-only release defaults, global arming, thermal protection, fatal-surface exclusions, durable journaling, read-back verification, and rollback.
+
 # Changelog
+
+## v2.4.0 — Render Signals and Interactivity Pipeline
+
+### Render and launch observation
+- Integrated the bounded `frame_latency` parser, deterministic `launch_detector`, and `render_collector` from the render-engine update. The collector reports unavailable pressure as unavailable rather than treating it as zero.
+- Added host tests for render collection, signal parsing, and frame-analyzer integration. ADR 0005 documents the proposed render/launch/frame-pacing domains. The render collector is present but is not yet wired into the autonomous loop.
+
+### Bounded interactivity adaptation
+- Added foreground-change, GPU-busy, and SurfaceFlinger frame telemetry sources plus a deterministic interactivity state model and policy.
+- Interactivity remains observe-only by default. Boosts require `interactivity_mode=adaptive`, `mutation_mode=adaptive`, and `mutation_armed=true`; thermal guard and safety holds suppress boosts.
+- Added bounded, expiring boost intents with journal-before-write, read-back verification, restoration paths, with per-namespace flags now retained only for backward-compatible parsing.
+- Configuration clamps launch windows, jank threshold, uclamp values, GPU steps, readahead, and boost duration.
+
+### Validation
+- Host build and deterministic test suite: see the merge validation results for this source package.
+- Android ARM64 build and target-device behavior have not been certified by this host run.
 
 ## v2.3.0 — Production Hardening Candidate
 
@@ -33,7 +57,7 @@
 
 - Default mode remains `mutation_mode=observe`.
 - Mutation remains disarmed by default (`mutation_armed=false`).
-- CPU governor changes remain disabled unless explicitly permitted (`allow_cpu_governor=no`).
+- Superseded: CPUFreq now follows the global Adaptive/armed authority; the legacy flag is ignored.
 - Discovery does not grant mutation authority. Policy authorization, capability checks, bounded writes, journaling, read-back verification, safety holds, and rollback remain required.
 - Fatal and protected surfaces remain outside the normal mutation path.
 
@@ -157,7 +181,7 @@ and opens the dead bands that blocked useful Low/Moderate resource mutation.
 
 ### Still hard (unchanged on purpose)
 - Default remains observe-only until Adaptive + armed.
-- CPU governor still requires `allow_cpu_governor=yes`.
+- Superseded: no separate CPU governor opt-in is required.
 - ThermalGuard / Pressure: only `stabilizing_only` resource writes; never CPU governor.
 - Journal before write, read-back verify, regression restore, one write per epoch.
 
@@ -224,7 +248,7 @@ the tuning priors were written for, so the engine was idle exactly when needed.
   (shared storage is writable by any app). Only an explicit Volume Down press does;
   timeout means observe, as the on-screen text states.
 - **CPU governor permit**: `MutationAuthority` now refuses the CPUFreq permit unless
-  `allow_cpu_governor=yes`, matching the controller-side check.
+  the global Adaptive/armed gate, matching the controller-side authority.
 - **Resource apply result**: a `NoChange` outcome is reported as `Skipped`, not
   `Verified`. The journal is no longer dropped while another resource is still changed.
 - **WebUI shell interpolation**: `mutation_mode` is quoted in the config-write script.

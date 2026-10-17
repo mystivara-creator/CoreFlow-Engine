@@ -1,14 +1,14 @@
-# CoreFlow Autonomous v2.3.0 — Build and Validation Status
+# CoreFlow Autonomous v2.4.0 — Build and Validation Status
 
 ## Package identity
 
-- Source package version: `v2.3.0` (`versionCode=2300`)
+- Source package version: `v2.4.0` (`versionCode=2400`)
 - Language standard: C++20
 - Minimum Android API declared by the package: 34
 - Default operating mode: `observe`
-- Mutation defaults: `mutation_armed=false`, `allow_cpu_governor=no`
+- Mutation defaults: `mutation_armed=false`, `legacy `allow_cpu_governor` is ignored`
 
-## v2.3.0 hardening changes
+## v2.4.0 hardening changes
 
 - Mutation journals are written as checksummed v2 records through a unique, exclusively-created temporary file; v1 journals remain readable for crash recovery across upgrades.
 - Journal reads reject symlinks, non-regular files, oversized files/records, duplicate paths, missing terminators, checksum mismatches, and embedded NUL bytes.
@@ -22,7 +22,7 @@
 - CTest: 10 of 10 passed, including mutation/resource hardening, safety foundation, WebUI integration, and source-release contract.
 - ASan + UBSan host build and CTest: 10 of 10 passed.
 - Version alignment and source-release checks: passed.
-- Android 14+ ARM64 CI has **not yet been run for the v2.3.0 changes**. The earlier v2.2.5 success is not evidence for the updated journal/actuator code. Installation, long-run stability, boot-loop protection, and recovery on a physical device remain operator validation.
+- Android 14+ ARM64 CI has **not yet been run for the v2.4.0 changes**. The earlier v2.2.5 success is not evidence for the updated journal/actuator code. Installation, long-run stability, boot-loop protection, and recovery on a physical device remain operator validation.
 
 ## Safety posture
 

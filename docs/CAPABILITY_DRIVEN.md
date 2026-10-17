@@ -18,7 +18,7 @@ Before any write, the resource must pass all relevant checks:
 - the pre-write state is journaled;
 - read-back verification confirms the intended state, with rollback available on failure.
 
-CPUFreq governor control is a separate opt-in authority path. Block-queue controls are not globally excluded merely because they are block-queue controls; each candidate still needs capability evidence, a suitable value, policy approval, and all safety gates. Unknown semantics remain observe-only.
+CPUFreq governor control follows the global Adaptive/armed authority; the legacy `allow_cpu_governor` key is ignored. Block-queue controls are not globally excluded merely because they are block-queue controls; each candidate still needs capability evidence, a suitable value, policy approval, and all safety gates. Unknown semantics remain observe-only.
 
 ## Important limitation
 

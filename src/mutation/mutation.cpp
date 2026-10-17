@@ -925,7 +925,7 @@ MutationResult MutationController::apply(
     // Authority loss and thermal stress restore the factory baseline. A CPU
     // governor is never kept under a stabilizing (stressed) plan.
     if (config.mutationMode() != MutationMode::Adaptive ||
-        !config.mutationArmed() || !config.allowCpuGovernor() ||
+        !config.mutationArmed() ||
         state == RuntimeState::ThermalGuard || policy.stabilizing_only) {
         return relaxToBaseline();
     }

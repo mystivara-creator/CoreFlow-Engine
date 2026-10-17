@@ -174,11 +174,6 @@ const char* mutationPermitBlockReason(const PolicyPlan& plan,
     if (state == RuntimeState::Idle && plan.action == PolicyAction::Candidate) {
         return "idle_state_blocks_candidate";
     }
-    // The CPU governor is a second, separate opt-in. Enforce it here so the
-    // permit itself cannot be issued without it.
-    if (scope == MutationPermit::Scope::CpuFreq && !config.allowCpuGovernor()) {
-        return "cpu_governor_opt_in_disabled";
-    }
     return nullptr;
 }
 

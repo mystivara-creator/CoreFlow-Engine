@@ -264,7 +264,7 @@
       ["Exposed interfaces", interfaces, v.cpuset ? "cpuset available" : "cpuset not detected"],
       ["Capabilities", v.discoveredResources + " discovered · " + v.mutationReadyResources + " policy-ready", "writability alone does not grant authorization"],
       ["Expanded domains", v.expandedDomains.filter(function (x) { return x.evidence !== "unavailable"; }).length + " / 15 detected · " + v.expandedDomains.filter(function (x) { return x.evidence === "observable"; }).length + " observable", "discovery is observation-only; domain status never grants mutation authority"],
-      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "capability-driven", v.blockQueueMutationsQuarantined ? "new queue writes are blocked" : "every non-fatal queue / iosched tunable (opt-out: grant_block_queue=no)"]
+      ["Block I/O mutation", v.blockQueueMutationsQuarantined ? "QUARANTINED" : "capability-driven", v.blockQueueMutationsQuarantined ? "new queue writes are blocked" : "every discovered non-fatal queue / iosched tunable; legacy grant flags are ignored"]
     ];
   }
 

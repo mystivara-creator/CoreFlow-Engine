@@ -104,7 +104,6 @@ grep -q 'ActuatorManager' "$ROOT/include/coreflow/control.hpp"
 grep -q 'DecisionOutcome' "$ROOT/include/coreflow/outcome.hpp"
 # Release default is observe-only; kernel mutation requires explicit opt-in.
 grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q '^allow_cpu_governor=no$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q "v${VERSION}" "$ROOT/README.md"
 grep -q "v${VERSION}" "$ROOT/docs/BUILD_STATUS.md"

@@ -18,7 +18,7 @@ Use this checklist before attributing a runtime problem to CoreFlow. Collect evi
 
 ## 3. Diagnose policy without writing
 
-- Keep `mutation_mode=observe`, `mutation_armed=false`, and `allow_cpu_governor=no` while investigating.
+- Keep `mutation_mode=observe`, `mutation_armed=false`, and `legacy `allow_cpu_governor` is ignored` while investigating.
 - Read the decision trace from observation through context, candidate ranking, consultation, policy, and final authorization.
 - Distinguish a rejected candidate from a missing capability, unavailable telemetry, low confidence, or an active safety hold.
 - Do not remove fatal-surface guards or broaden a path-prefix exception to make a candidate appear eligible.

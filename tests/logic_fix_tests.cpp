@@ -140,13 +140,14 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
               MutationPermit::Scope::Resource) == nullptr);
 
         plan.stabilizing_only = false;
+        // CPUFreq uses the global adaptive/armed authority; the legacy
+        // allow_cpu_governor switch no longer creates a second permission gate.
         config.setAllowCpuGovernor(false);
-        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
-              MutationPermit::Scope::CpuFreq)) == "cpu_governor_opt_in_disabled");
-        CHECK(!authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq) == nullptr);
+        CHECK(authority.authorize(plan, config, RuntimeState::Normal, 0.9,
               MutationPermit::Scope::CpuFreq).valid());
 
-        config.setAllowCpuGovernor(true);
         config.setMutationArmed(false);
         CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
               MutationPermit::Scope::Resource)) == "adaptive_mode_or_arming_required");

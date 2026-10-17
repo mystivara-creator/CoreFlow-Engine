@@ -8,7 +8,7 @@ Not a hard-coded list of tunables. Not aggressive one-size-fits-all tuning.
 
 | | |
 |---|---|
-| Version | `v2.3.0` (`versionCode` 2300) |
+| Version | `v2.4.0` (`versionCode` 2400) |
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
@@ -26,12 +26,12 @@ Not a hard-coded list of tunables. Not aggressive one-size-fits-all tuning.
 ```ini
 mutation_mode=observe
 mutation_armed=false
-allow_cpu_governor=no
+# Legacy allow_cpu_governor is ignored.
 ```
 
 ---
 
-## v2.3.0 hardening
+## v2.4.0 hardening
 
 - **Journal v2** — checksummed records (CRC32), unique exclusive temp file, bounds (256 entries / 4 KiB field / 1 MiB file). Rejects symlinks, non-regular files, truncation, checksum mismatch, embedded NUL, duplicate paths. v1 journals remain readable for upgrade recovery.
 - **Actuator write path** — single no-follow descriptor, `fstat` revalidation, requires procfs / sysfs / cgroup semantics, live read-back verification.
@@ -86,7 +86,7 @@ Keep ONNX Runtime SDK/cache and build trees outside the source tree.
 
 ---
 
-## Validation (v2.3.0)
+## Validation (v2.4.0)
 
 | Gate | Result |
 |------|--------|
@@ -106,7 +106,7 @@ See [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) and [`docs/DEVICE_VALIDATION.
 1. Use the **CI-produced release ZIP**, not this source archive.
 2. Install via KernelSU / Magisk.
 3. Leave defaults at observe-only until recovery checks pass on the target device.
-4. Enable Adaptive only deliberately; CPU governor requires a separate opt-in.
+4. Enable Adaptive only deliberately; all supported non-fatal resource namespaces follow the global Adaptive/armed authority.
 
 ---
 

@@ -70,11 +70,9 @@ fi
 
 # Release defaults are observe-only: no governor writes and no arming until opt-in.
 grep -q 'mutation_armed_{false}' "$ROOT/include/coreflow/config.hpp"
-grep -q 'allow_cpu_governor_{false}' "$ROOT/include/coreflow/config.hpp"
 grep -q 'MutationMode mutation_mode_{MutationMode::Disabled}' "$ROOT/include/coreflow/config.hpp"
 grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'mutation_armed=false' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'allow_cpu_governor=no' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'MutationPermit' "$ROOT/include/coreflow/actuator.hpp"
 grep -q 'ResourceMutationController' "$ROOT/include/coreflow/resource_mutation.hpp"
 grep -q 'ResourceActuator' "$ROOT/include/coreflow/resource_actuator.hpp"
