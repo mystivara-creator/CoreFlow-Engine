@@ -1,13 +1,14 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#070b12"><meta name="color-scheme" content="dark"><title>CoreFlow Autonomous · Command Center</title><link rel="stylesheet" href="style.css">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#08090d"><meta name="color-scheme" content="dark"><title>CoreFlow Autonomous · Runtime Command Center</title><link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#mainContent">Skip to content</a>
 <div class="shell">
  <aside class="sidebar" id="sidebar">
   <div class="brand"><div class="brand-mark">CF<span>•</span></div><div><b>CoreFlow</b><small>AUTONOMOUS ENGINE</small></div></div>
-  <div class="side-caption">COMMAND CENTER</div>
+  <div class="side-caption">ENGINE WORKSPACE</div>
   <nav id="mainNav" aria-label="Primary navigation">
    <button class="nav-item active" data-view="live"><i>◉</i> Live engine <span class="nav-pip"></span></button>
    <button class="nav-item" data-view="overview"><i>◈</i> Overview</button>
@@ -19,8 +20,8 @@
   </nav>
   <div class="sidebar-bottom"><div class="live-dot"></div><div><b id="connectionLabel">Bridge not checked</b><small id="connectionSub">KSU WebUI bridge</small></div><button id="btnCheckBridge" class="icon-btn" aria-label="Check bridge">↻</button></div>
  </aside>
- <main class="main">
-  <header class="topbar"><button id="menuToggle" class="icon-btn menu-toggle" aria-label="Toggle navigation">☰</button><div><div class="eyebrow">SYSTEM INTELLIGENCE / ANDROID</div><h1 id="pageTitle">Live engine</h1></div><div class="top-actions"><span class="version-chip">v2.2.0</span><button id="btnRefresh" class="btn primary">↻ <span>Refresh data</span></button></div></header>
+ <main class="main" id="mainContent">
+  <header class="topbar"><button id="menuToggle" class="icon-btn menu-toggle" aria-label="Toggle navigation" aria-controls="sidebar">☰</button><div><div class="eyebrow">SYSTEM INTELLIGENCE / ANDROID</div><h1 id="pageTitle">Live engine</h1></div><div class="top-actions"><span class="version-chip">LOCAL DEVICE</span><button id="btnRefresh" class="btn primary">↻ <span>Refresh data</span></button></div></header>
   <div class="content">
    <section class="view active" id="view-live">
     <div class="page-intro"><span class="eyebrow cyan">LIVE · STRAIGHT FROM THE C++ ENGINE</span><h2>Eyes, brain, hands.</h2><p>What the engine measures, how it judges it, and what it has changed. This page only reads the engine's own status; it cannot move a kernel setting.</p></div>
@@ -73,14 +74,14 @@ Choose a command above to run a predefined read-only inspection.
 No free-form root command input is available in this console.</pre></div><div class="notice compact-notice"><span class="notice-icon">i</span><div><b>Why not an unrestricted shell?</b><p>A WebUI page can be exposed to injected scripts or unexpected content. Keeping commands allowlisted reduces the blast radius while still providing useful device diagnostics.</p></div></div></div>
    </section>
    <section class="view" id="view-about">
-    <div class="about-hero"><div class="avatar-large" id="avatarFallback"><img src="https://avatars.githubusercontent.com/u/265683726?v=4" alt="Mystivara GitHub avatar" loading="lazy"></div><div class="about-profile"><span class="eyebrow cyan">PROJECT AUTHOR</span><h2>Mystivara</h2><p>Independent developer exploring autonomous, capability-driven Android runtime intelligence.</p><div class="profile-actions"><a class="btn primary" href="https://github.com/mystivara-creator" target="_blank" rel="noopener">GitHub profile ↗</a><a class="btn subtle" href="https://github.com/mystivara-creator/CoreFlow-Engine/tree/Autonomous-Engine" target="_blank" rel="noopener">Source repository ↗</a></div></div></div>
+    <div class="about-hero"><div class="avatar-large" id="avatarFallback"><img src="https://avatars.githubusercontent.com/u/265683726?v=4" alt="Mystivara GitHub avatar" loading="lazy"></div><div class="about-profile"><span class="eyebrow cyan">PROJECT AUTHOR</span><h2>Mystivara</h2><p>Independent developer exploring autonomous, capability-driven Android runtime intelligence.</p><div class="profile-actions"><a class="btn primary" href="https://github.com/mystivara-creator" target="_blank" rel="noopener">GitHub profile ↗</a><a class="btn subtle" href="https://github.com/mystivara-creator/CoreFlow-Engine/tree/Autonomous-Engine" target="_blank" rel="noopener">Source repository ↗</a></div><ul class="about-traits" aria-label="Project principles"><li>CAPABILITY-DRIVEN</li><li>EVIDENCE-LED</li><li>REVERSIBLE BY DESIGN</li></ul></div></div>
     <div class="page-intro slim-intro"><span class="eyebrow">ENGINE PHILOSOPHY</span><h2>Observe first. Mutate only with evidence.</h2><p>CoreFlow discovers what the device exposes, measures context, ranks semantically understood candidates, checks policy authority, applies bounded changes, verifies the result and restores the baseline when needed.</p></div>
     <div class="principle-grid"><article><span>01</span><h3>Capability-driven</h3><p>No universal tuning assumptions. A control must be discovered and understood.</p></article><article><span>02</span><h3>Evidence over guesses</h3><p>Fresh telemetry and confidence gates inform decisions; experience stays advisory.</p></article><article><span>03</span><h3>Reversible by design</h3><p>Journal, read-back verification, rollback and safety holds remain in the decision chain.</p></article></div>
     <div class="panel ai-panel"><div class="panel-head"><div><span class="eyebrow cyan">DEVELOPMENT ACKNOWLEDGEMENTS</span><h3>Human-led. AI-assisted.</h3><p class="panel-subtitle">Mystivara remains the project author and final decision-maker. AI tools assist with selected parts of exploration, reasoning and implementation.</p></div></div><div class="ai-grid"><a class="ai-card" href="https://gemini.google.com/" target="_blank" rel="noopener"><span class="ai-orb gemini">✦</span><b>Gemini</b><small>Exploration & technical perspectives</small><span class="external">↗</span></a><a class="ai-card" href="https://chatgpt.com/" target="_blank" rel="noopener"><span class="ai-orb chatgpt">✳</span><b>ChatGPT</b><small>Planning, debugging & documentation</small><span class="external">↗</span></a><a class="ai-card" href="https://grok.com/" target="_blank" rel="noopener"><span class="ai-orb grok">𝕏</span><b>Grok AI</b><small>Alternative viewpoints & ideation</small><span class="external">↗</span></a><a class="ai-card" href="https://claude.ai/" target="_blank" rel="noopener"><span class="ai-orb claude">✳</span><b>Claude</b><small>Reasoning & writing assistance</small><span class="external">↗</span></a><a class="ai-card" href="https://github.com/features/copilot" target="_blank" rel="noopener"><span class="ai-orb copilot">⌘</span><b>GitHub Copilot</b><small>In-editor coding assistance</small><span class="external">↗</span></a></div><p class="micro-note">Acknowledgement describes tools used during development; it does not imply endorsement, partnership or identical participation in every release. All suggestions are reviewed by the maintainer.</p></div>
-    <div class="footer-card"><span class="brand-mark small-mark">CF<span>•</span></span><div><b>CoreFlow Autonomous · v2.2.0</b><small>Built around safety, measured outcomes and device-aware decisions.</small></div><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md" target="_blank" rel="noopener">Security policy ↗</a></div>
+    <div class="footer-card"><span class="brand-mark small-mark">CF<span>•</span></span><div><b>CoreFlow Autonomous · Runtime Intelligence</b><small>Observe. Understand. Balance. Adapt. Human-led, evidence-driven, and device-aware.</small></div><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md" target="_blank" rel="noopener">Security policy ↗</a></div>
    </section>
   </div>
-  <footer class="app-footer"><span>COREFLOW AUTONOMOUS</span><span id="footerInfo">Local device diagnostics · KSU WebUI bridge</span><span>HUMAN-LED / AI-ASSISTED</span></footer>
+  <footer class="app-footer"><span>COREFLOW AUTONOMOUS</span><span id="footerInfo">Local device diagnostics · KSU WebUI bridge</span><span>OBSERVE · UNDERSTAND · BALANCE · ADAPT</span></footer>
  </main>
 </div>
 <div id="toastRegion" class="toast-region" aria-live="polite"></div>
