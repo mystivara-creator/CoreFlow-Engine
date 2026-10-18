@@ -2,6 +2,7 @@
 #include "coreflow/consultation.hpp"
 #include "coreflow/tunable_discovery.hpp"
 #include "coreflow/vendor_knowledge.hpp"
+#include "coreflow/kernel_roots.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -110,24 +111,6 @@ std::vector<std::string> splitWords(const std::string& input) {
     return result;
 }
 
-TunableCapability discoverNumeric(const std::string& path) {
-    TunableCapability cap;
-    cap.path = path;
-    cap.readable = access(path.c_str(), R_OK) == 0;
-    cap.writable = access(path.c_str(), W_OK) == 0;
-    cap.numeric = readSigned(path, cap.value);
-    return cap;
-}
-
-TextCapability discoverText(const std::string& path) {
-    TextCapability cap;
-    cap.path = path;
-    cap.readable = access(path.c_str(), R_OK) == 0;
-    cap.writable = access(path.c_str(), W_OK) == 0;
-    if (cap.readable) readText(path, cap.value);
-    return cap;
-}
-
 } // namespace
 
 DeviceProfile EnvironmentDiscovery::discover() const {
@@ -136,14 +119,16 @@ DeviceProfile EnvironmentDiscovery::discover() const {
     profile.sys_available = directoryExists("/sys");
 
     discoverEnvironment(profile);
-
     discoverCpuPolicies(profile);
     discoverThermalZones(profile);
     discoverCharging(profile);
     discoverIo(profile);
-    discoverSystemControls(profile);
     discoverGpu(profile);
     finalizeCapabilities(profile);
+    // The tunable walk is the single authority for writable kernel surfaces.
+    discoverTunables(profile);
+    deriveEnvironmentAvailability(profile);
+    profile.capabilities.environment = profile.environment;
     profile.expanded_domains = HighCapabilityExpansion::assess(profile.capabilities);
     return profile;
 }
@@ -178,31 +163,9 @@ void EnvironmentDiscovery::discoverEnvironment(DeviceProfile& profile) const {
     }
     profile.android_release = profile.environment.release;
 
-    const bool cgroup2 = access("/sys/fs/cgroup/cgroup.controllers", R_OK) == 0;
-    profile.environment.cgroup_v2 = cgroup2;
-    profile.environment.cpuset_available =
-        access("/sys/fs/cgroup/cpuset.cpus.effective", R_OK) == 0 ||
-        access("/sys/fs/cgroup/cpuset.cpus", R_OK) == 0;
-    // Android exposes per-process-group uclamp under /dev/cpuctl (and sometimes
-    // under /sys/fs/cgroup). Root cpu.uclamp.* is often absent on modern AOSP.
-    const bool uclamp_root =
-        access("/sys/fs/cgroup/cpu.uclamp.min", R_OK) == 0 ||
-        access("/sys/fs/cgroup/cpu.uclamp.max", R_OK) == 0;
-    const bool uclamp_cpuctl =
-        access("/dev/cpuctl/top-app/cpu.uclamp.min", R_OK) == 0 ||
-        access("/dev/cpuctl/top-app/cpu.uclamp.max", R_OK) == 0 ||
-        access("/dev/cpuctl/foreground/cpu.uclamp.min", R_OK) == 0 ||
-        access("/dev/cpuctl/foreground/cpu.uclamp.max", R_OK) == 0 ||
-        access("/dev/cpuctl/background/cpu.uclamp.min", R_OK) == 0 ||
-        access("/dev/cpuctl/background/cpu.uclamp.max", R_OK) == 0 ||
-        access("/dev/cpuctl/system-background/cpu.uclamp.min", R_OK) == 0 ||
-        access("/sys/fs/cgroup/top-app/cpu.uclamp.min", R_OK) == 0 ||
-        access("/sys/fs/cgroup/foreground/cpu.uclamp.min", R_OK) == 0;
-    profile.environment.uclamp_available = uclamp_root || uclamp_cpuctl;
-    profile.environment.scheduler_controls_available =
-        access("/proc/sys/kernel/sched_latency_ns", R_OK) == 0 ||
-        access("/sys/kernel/debug/sched_features", R_OK) == 0;
-    profile.environment.devfreq_available = directoryExists("/sys/class/devfreq");
+    // cgroup v2 is whatever the kernel mounted as cgroup2, not a guessed path.
+    profile.environment.cgroup_v2 =
+        hasFilesystemType(readKernelMounts(""), "cgroup2");
 }
 
 void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
@@ -220,8 +183,20 @@ void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
 
         readText(policy.path + "/related_cpus", policy.related_cpus);
         policy.readable = readText(policy.path + "/scaling_governor", policy.governor);
-        policy.governor_writable = access((policy.path + "/scaling_governor").c_str(), W_OK) == 0;
-        policy.scaling_max_writable = access((policy.path + "/scaling_max_freq").c_str(), W_OK) == 0;
+        // Same writability rule as ResourceActuator / TunableDiscovery: lstat
+        // (no symlink follow) + kernel write-mode bit. Root always passes
+        // access(W_OK) via CAP_DAC_OVERRIDE on read-only sysfs nodes.
+        {
+            const std::string gov = policy.path + "/scaling_governor";
+            const std::string maxf = policy.path + "/scaling_max_freq";
+            struct stat st {};
+            policy.governor_writable =
+                ::lstat(gov.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+                (st.st_mode & 0222) != 0 && ::access(gov.c_str(), W_OK) == 0;
+            policy.scaling_max_writable =
+                ::lstat(maxf.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+                (st.st_mode & 0222) != 0 && ::access(maxf.c_str(), W_OK) == 0;
+        }
 
         readUnsigned(policy.path + "/cpuinfo_min_freq", policy.hardware_min_frequency);
         readUnsigned(policy.path + "/cpuinfo_max_freq", policy.hardware_max_frequency);
@@ -370,31 +345,11 @@ void EnvironmentDiscovery::discoverIo(DeviceProfile& profile) const {
               [](const IoDevice& a, const IoDevice& b) { return a.name < b.name; });
 }
 
-void EnvironmentDiscovery::discoverSystemControls(DeviceProfile& profile) const {
-    profile.vm_swappiness = discoverNumeric("/proc/sys/vm/swappiness");
-    // Prefer the classic root cgroup node when present; otherwise sample the
-    // Android top-app group so the profile still reflects live uclamp state.
-    profile.uclamp_min = discoverNumeric("/sys/fs/cgroup/cpu.uclamp.min");
-    if (!profile.uclamp_min.readable) {
-        profile.uclamp_min = discoverNumeric("/dev/cpuctl/top-app/cpu.uclamp.min");
-    }
-    if (!profile.uclamp_min.readable) {
-        profile.uclamp_min = discoverNumeric("/sys/fs/cgroup/top-app/cpu.uclamp.min");
-    }
-    profile.uclamp_max = discoverNumeric("/sys/fs/cgroup/cpu.uclamp.max");
-    if (!profile.uclamp_max.readable) {
-        profile.uclamp_max = discoverNumeric("/dev/cpuctl/top-app/cpu.uclamp.max");
-    }
-    if (!profile.uclamp_max.readable) {
-        profile.uclamp_max = discoverNumeric("/sys/fs/cgroup/top-app/cpu.uclamp.max");
-    }
-    profile.cpuset_effective_cpus = discoverText("/sys/fs/cgroup/cpuset.cpus.effective");
-}
-
 void EnvironmentDiscovery::discoverGpu(DeviceProfile& profile) const {
     constexpr const char* base = "/sys/class/devfreq";
     DIR* dir = opendir(base);
     if (!dir) return;
+    profile.environment.devfreq_available = true;
 
     while (dirent* entry = readdir(dir)) {
         const std::string name(entry->d_name);
@@ -411,306 +366,44 @@ void EnvironmentDiscovery::discoverGpu(DeviceProfile& profile) const {
 }
 
 void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
+    // Inventory entries only. Tunable nodes come from discoverTunables(), so
+    // no parameter is listed here by name or by path.
     auto& matrix = profile.capabilities;
-    matrix.environment = profile.environment;
 
     addCapability(matrix, ResourceDomain::CpuFreq, "policies",
                   "/sys/devices/system/cpu/cpufreq",
                   !profile.cpu_policies.empty(), !profile.cpu_policies.empty(), false);
 
-    addCapability(matrix, ResourceDomain::UClamp, "cpu.uclamp.min",
-                  profile.uclamp_min.path, profile.uclamp_min.readable || profile.uclamp_min.writable,
-                  profile.uclamp_min.readable, profile.uclamp_min.writable);
-    addCapability(matrix, ResourceDomain::UClamp, "cpu.uclamp.max",
-                  profile.uclamp_max.path, profile.uclamp_max.readable || profile.uclamp_max.writable,
-                  profile.uclamp_max.readable, profile.uclamp_max.writable);
-    addCapability(matrix, ResourceDomain::CpuSet, "cpus.effective",
-                  profile.cpuset_effective_cpus.path,
-                  profile.cpuset_effective_cpus.readable || profile.cpuset_effective_cpus.writable,
-                  profile.cpuset_effective_cpus.readable, profile.cpuset_effective_cpus.writable);
-
-    // Capability-driven VM surface: scan /proc/sys/vm for whatever this kernel
-    // exposes. No fixed parameter name list — the device defines the inventory.
-    if (DIR* vm_dir = opendir("/proc/sys/vm")) {
-        while (dirent* entry = readdir(vm_dir)) {
-            const std::string leaf(entry->d_name);
-            if (leaf == "." || leaf == "..") continue;
-            // Skip directories; only leaf sysctl nodes.
-            const std::string full = std::string("/proc/sys/vm/") + leaf;
-            struct stat st {};
-            if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
-            const bool readable = access(full.c_str(), R_OK) == 0;
-            const bool writable = access(full.c_str(), W_OK) == 0;
-            if (!readable && !writable) continue;
-            addCapability(matrix, ResourceDomain::Memory,
-                          std::string("vm.") + leaf, full,
-                          true, readable, writable);
-        }
-        closedir(vm_dir);
-    }
-
-    // Scheduler sysctls remain inventory (observation). Mutation of CFS knobs
-    // needs a dedicated structural model before policy admits them.
-    struct SchedTunable { const char* name; const char* path; };
-    constexpr SchedTunable sched_tunables[] = {
-        {"kernel.sched_latency_ns", "/proc/sys/kernel/sched_latency_ns"},
-        {"kernel.sched_min_granularity_ns", "/proc/sys/kernel/sched_min_granularity_ns"},
-        {"kernel.sched_wakeup_granularity_ns", "/proc/sys/kernel/sched_wakeup_granularity_ns"},
-    };
-    for (const auto& item : sched_tunables) {
-        const bool readable = access(item.path, R_OK) == 0;
-        const bool writable = access(item.path, W_OK) == 0;
-        addCapability(matrix, ResourceDomain::Scheduler,
-                      item.name, item.path, readable || writable, readable, writable);
-    }
-
-    addCapability(matrix, ResourceDomain::CGroup, "cgroup.controllers",
-                  "/sys/fs/cgroup/cgroup.controllers", profile.environment.cgroup_v2,
-                  profile.environment.cgroup_v2, false);
     addCapability(matrix, ResourceDomain::Thermal, "thermal-zones",
-                  "/sys/class/thermal", !profile.thermal_zones.empty(), !profile.thermal_zones.empty(), false);
+                  "/sys/class/thermal", !profile.thermal_zones.empty(),
+                  !profile.thermal_zones.empty(), false);
     addCapability(matrix, ResourceDomain::Charging, "battery",
                   profile.charging.battery_path, profile.charging.battery_available,
                   profile.charging.status_readable || profile.charging.telemetry_readable, false);
-    for (const auto& device : profile.io_devices) {
-        const std::string base = device.path;
-        addCapability(matrix, ResourceDomain::Io, device.name + ":read_ahead_kb",
-                      base + "/queue/read_ahead_kb",
-                      device.read_ahead_readable || device.read_ahead_writable,
-                      device.read_ahead_readable, device.read_ahead_writable);
-        addCapability(matrix, ResourceDomain::Io, device.name + ":nr_requests",
-                      base + "/queue/nr_requests",
-                      device.nr_requests_readable || device.nr_requests_writable,
-                      device.nr_requests_readable, device.nr_requests_writable);
-        addCapability(matrix, ResourceDomain::Io, device.name + ":scheduler",
-                      base + "/queue/scheduler",
-                      device.scheduler_readable || device.scheduler_writable,
-                      device.scheduler_readable, device.scheduler_writable);
-    }
     addCapability(matrix, ResourceDomain::Io, "block-queues", "/sys/block",
                   !profile.io_devices.empty(), !profile.io_devices.empty(), false);
     addCapability(matrix, ResourceDomain::Power, "power-supply", "/sys/class/power_supply",
                   profile.charging.battery_available, profile.charging.status_readable, false);
 
-    addCapability(matrix, ResourceDomain::AndroidRuntime, "android-properties", "system-properties",
-                  !profile.environment.release.empty() || !profile.environment.sdk_level.empty(), true, false);
-
-    // Wide Android ecosystem inventory (observe/export only).
-    expandEcosystemSurface(profile);
-
-    // Capability-driven tunable surface: learn what the vendor configures,
-    // walk every kernel tunable filesystem, and attach advertised options and
-    // vendor values. Only universally fatal surfaces are excluded.
-    VendorKnowledge vendor;
-    (void)vendor.harvest();
-    const TunableDiscoveryStats stats = TunableDiscovery{}.discover(matrix, vendor);
-    profile.vendor_files_parsed = vendor.filesParsed();
-    profile.vendor_knobs = vendor.knobs().size();
-    profile.tunables_walked = stats.walked;
-    profile.tunables_added = stats.added;
-    profile.tunables_fatal_skipped = stats.fatal_skipped;
-}
-
-void EnvironmentDiscovery::expandEcosystemSurface(DeviceProfile& profile) const {
-    auto& matrix = profile.capabilities;
-
-    // Probe helper: existence/read/write evidence only — never policy authorization.
-    auto probe = [&](ResourceDomain domain, const char* name, const char* path) {
-        const bool readable = access(path, R_OK) == 0;
-        const bool writable = access(path, W_OK) == 0;
-        const bool exists = readable || writable || (access(path, F_OK) == 0);
-        if (!exists) return;
-        addCapability(matrix, domain, name, path, true, readable, writable);
-    };
-
-    // --- Memory / VM surface (beyond the authorized allow-list) ---
-    static constexpr const char* kVm[][2] = {
-        {"vm.page-cluster", "/proc/sys/vm/page-cluster"},
-        {"vm.overcommit_memory", "/proc/sys/vm/overcommit_memory"},
-        {"vm.overcommit_ratio", "/proc/sys/vm/overcommit_ratio"},
-        {"vm.swappiness", "/proc/sys/vm/swappiness"},
-        {"vm.dirty_ratio", "/proc/sys/vm/dirty_ratio"},
-        {"vm.dirty_background_ratio", "/proc/sys/vm/dirty_background_ratio"},
-        {"vm.vfs_cache_pressure", "/proc/sys/vm/vfs_cache_pressure"},
-        {"vm.min_free_kbytes", "/proc/sys/vm/min_free_kbytes"},
-        {"vm.watermark_scale_factor", "/proc/sys/vm/watermark_scale_factor"},
-        {"vm.stat_refresh", "/proc/sys/vm/stat_refresh"},
-        {"vm.compact_memory", "/proc/sys/vm/compact_memory"},
-        {"vm.drop_caches", "/proc/sys/vm/drop_caches"},
-        {"vm.laptop_mode", "/proc/sys/vm/laptop_mode"},
-        {"vm.zone_reclaim_mode", "/proc/sys/vm/zone_reclaim_mode"},
-        {"vm.extfrag_threshold", "/proc/sys/vm/extfrag_threshold"},
-    };
-    for (const auto& item : kVm)
-        probe(ResourceDomain::Memory, item[0], item[1]);
-
-    // --- Scheduler / kernel ---
-    static constexpr const char* kSched[][2] = {
-        {"kernel.sched_latency_ns", "/proc/sys/kernel/sched_latency_ns"},
-        {"kernel.sched_min_granularity_ns", "/proc/sys/kernel/sched_min_granularity_ns"},
-        {"kernel.sched_wakeup_granularity_ns", "/proc/sys/kernel/sched_wakeup_granularity_ns"},
-        {"kernel.sched_child_runs_first", "/proc/sys/kernel/sched_child_runs_first"},
-        {"kernel.sched_tunable_scaling", "/proc/sys/kernel/sched_tunable_scaling"},
-        {"kernel.sched_rt_period_us", "/proc/sys/kernel/sched_rt_period_us"},
-        {"kernel.sched_rt_runtime_us", "/proc/sys/kernel/sched_rt_runtime_us"},
-        {"kernel.sched_autogroup_enabled", "/proc/sys/kernel/sched_autogroup_enabled"},
-        {"kernel.sched_schedstats", "/proc/sys/kernel/sched_schedstats"},
-        {"kernel.timer_migration", "/proc/sys/kernel/timer_migration"},
-        {"kernel.numa_balancing", "/proc/sys/kernel/numa_balancing"},
-        {"kernel.pid_max", "/proc/sys/kernel/pid_max"},
-        {"kernel.threads-max", "/proc/sys/kernel/threads-max"},
-        {"kernel.randomize_va_space", "/proc/sys/kernel/randomize_va_space"},
-        {"kernel.sched_features", "/sys/kernel/debug/sched_features"},
-        {"kernel.cpu_boost", "/proc/sys/kernel/sched_boost"},
-    };
-    for (const auto& item : kSched)
-        probe(ResourceDomain::Scheduler, item[0], item[1]);
-
-    // --- CPU frequency / energy ---
-    static constexpr const char* kCpu[][2] = {
-        {"cpufreq.root", "/sys/devices/system/cpu/cpufreq"},
-        {"cpu.present", "/sys/devices/system/cpu/present"},
-        {"cpu.possible", "/sys/devices/system/cpu/possible"},
-        {"cpu.online", "/sys/devices/system/cpu/online"},
-        {"cpu.isolated", "/sys/devices/system/cpu/isolated"},
-        {"cpu.offline", "/sys/devices/system/cpu/offline"},
-        {"powercap", "/sys/class/powercap"},
-        {"cpu.idle", "/sys/devices/system/cpu/cpuidle"},
-    };
-    for (const auto& item : kCpu)
-        probe(ResourceDomain::CpuFreq, item[0], item[1]);
-
-    // --- Cgroup v2 android surface ---
-    static constexpr const char* kCgroup[][2] = {
-        {"cgroup.controllers", "/sys/fs/cgroup/cgroup.controllers"},
-        {"cgroup.subtree_control", "/sys/fs/cgroup/cgroup.subtree_control"},
-        {"cpu.stat", "/sys/fs/cgroup/cpu.stat"},
-        {"cpu.weight", "/sys/fs/cgroup/cpu.weight"},
-        {"cpu.idle", "/sys/fs/cgroup/cpu.idle"},
-        {"cpu.uclamp.min", "/sys/fs/cgroup/cpu.uclamp.min"},
-        {"cpu.uclamp.max", "/sys/fs/cgroup/cpu.uclamp.max"},
-        {"memory.current", "/sys/fs/cgroup/memory.current"},
-        {"memory.stat", "/sys/fs/cgroup/memory.stat"},
-        {"memory.pressure", "/sys/fs/cgroup/memory.pressure"},
-        {"memory.high", "/sys/fs/cgroup/memory.high"},
-        {"memory.max", "/sys/fs/cgroup/memory.max"},
-        {"io.stat", "/sys/fs/cgroup/io.stat"},
-        {"io.pressure", "/sys/fs/cgroup/io.pressure"},
-        {"cpuset.cpus", "/sys/fs/cgroup/cpuset.cpus"},
-        {"cpuset.cpus.effective", "/sys/fs/cgroup/cpuset.cpus.effective"},
-        {"cpuset.mems", "/sys/fs/cgroup/cpuset.mems"},
-        {"apps", "/sys/fs/cgroup/apps"},
-        {"system", "/sys/fs/cgroup/system"},
-        {"uid_0", "/sys/fs/cgroup/uid_0"},
-    };
-    for (const auto& item : kCgroup)
-        probe(ResourceDomain::CGroup, item[0], item[1]);
-
-    // --- GPU / graphics (vendor paths; observe only) ---
-    static constexpr const char* kGpu[][2] = {
-        {"kgsl-3d0", "/sys/class/kgsl/kgsl-3d0"},
-        {"kgsl-3d0.gpuclk", "/sys/class/kgsl/kgsl-3d0/gpuclk"},
-        {"kgsl-3d0.max_gpuclk", "/sys/class/kgsl/kgsl-3d0/max_gpuclk"},
-        {"kgsl-3d0.gpu_busy", "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage"},
-        {"mali0", "/sys/class/misc/mali0"},
-        {"mali.devfreq", "/sys/class/devfreq/gpufreq"},
-        {"graphics.devfreq", "/sys/class/devfreq"},
-    };
-    for (const auto& item : kGpu)
-        probe(ResourceDomain::Gpu, item[0], item[1]);
-
-    // Walk /sys/class/devfreq for SoC interconnect / GPU / DDR clocks.
-    if (DIR* dir = opendir("/sys/class/devfreq")) {
+    // Pressure-stall inventory: every file the kernel publishes under /proc/pressure.
+    if (DIR* dir = opendir("/proc/pressure")) {
         while (dirent* entry = readdir(dir)) {
             const std::string name(entry->d_name);
-            if (name.empty() || name[0] == '.') continue;
-            const std::string base = std::string("/sys/class/devfreq/") + name;
-            probe(ResourceDomain::Gpu, ("devfreq." + name).c_str(), base.c_str());
-            probe(ResourceDomain::Gpu, ("devfreq." + name + ".governor").c_str(),
-                  (base + "/governor").c_str());
-            probe(ResourceDomain::Gpu, ("devfreq." + name + ".cur_freq").c_str(),
-                  (base + "/cur_freq").c_str());
-        }
-        closedir(dir);
-        profile.environment.devfreq_available = true;
-    }
-
-    // --- Thermal cooling ---
-    if (DIR* dir = opendir("/sys/class/thermal")) {
-        while (dirent* entry = readdir(dir)) {
-            const std::string name(entry->d_name);
-            if (name.rfind("cooling_device", 0) != 0) continue;
-            const std::string base = std::string("/sys/class/thermal/") + name;
-            probe(ResourceDomain::Thermal, name.c_str(), base.c_str());
-            probe(ResourceDomain::Thermal, (name + ".type").c_str(), (base + "/type").c_str());
-            probe(ResourceDomain::Thermal, (name + ".cur_state").c_str(),
-                  (base + "/cur_state").c_str());
+            if (name == "." || name == "..") continue;
+            const std::string path = "/proc/pressure/" + name;
+            const bool readable = access(path.c_str(), R_OK) == 0;
+            addCapability(matrix, ResourceDomain::AndroidRuntime, "psi." + name, path,
+                          readable, readable, false);
         }
         closedir(dir);
     }
 
-    // --- Power supplies (battery, USB, wireless, dc) ---
-    if (DIR* dir = opendir("/sys/class/power_supply")) {
-        while (dirent* entry = readdir(dir)) {
-            const std::string name(entry->d_name);
-            if (name.empty() || name[0] == '.') continue;
-            const std::string base = std::string("/sys/class/power_supply/") + name;
-            probe(ResourceDomain::Power, ("ps." + name).c_str(), base.c_str());
-            probe(ResourceDomain::Power, ("ps." + name + ".type").c_str(),
-                  (base + "/type").c_str());
-            probe(ResourceDomain::Power, ("ps." + name + ".status").c_str(),
-                  (base + "/status").c_str());
-            probe(ResourceDomain::Power, ("ps." + name + ".capacity").c_str(),
-                  (base + "/capacity").c_str());
-            probe(ResourceDomain::Power, ("ps." + name + ".current_now").c_str(),
-                  (base + "/current_now").c_str());
-            probe(ResourceDomain::Power, ("ps." + name + ".voltage_now").c_str(),
-                  (base + "/voltage_now").c_str());
-        }
-        closedir(dir);
-    }
+    addCapability(matrix, ResourceDomain::AndroidRuntime, "android-properties",
+                  "system-properties",
+                  !profile.environment.release.empty() || !profile.environment.sdk_level.empty(),
+                  true, false);
 
-    // --- Block / zram / dm (inventory; queue mutation stays quarantined) ---
-    if (DIR* dir = opendir("/sys/block")) {
-        while (dirent* entry = readdir(dir)) {
-            const std::string name(entry->d_name);
-            if (name.empty() || name[0] == '.') continue;
-            // Focus on interesting Android volumes; skip huge noise of loop* if many.
-            if (name.rfind("loop", 0) == 0) continue;
-            const std::string base = std::string("/sys/block/") + name;
-            probe(ResourceDomain::Io, ("block." + name).c_str(), base.c_str());
-            probe(ResourceDomain::Io, ("block." + name + ".scheduler").c_str(),
-                  (base + "/queue/scheduler").c_str());
-            probe(ResourceDomain::Io, ("block." + name + ".rotational").c_str(),
-                  (base + "/queue/rotational").c_str());
-            probe(ResourceDomain::Io, ("block." + name + ".nr_requests").c_str(),
-                  (base + "/queue/nr_requests").c_str());
-        }
-        closedir(dir);
-    }
-
-    // --- Android runtime / framework surface markers ---
-    static constexpr const char* kRuntime[][2] = {
-        {"lmkd", "/sys/module/lowmemorykiller"},
-        {"lmkd.params", "/sys/module/lowmemorykiller/parameters"},
-        {"psi", "/proc/pressure"},
-        {"psi.memory", "/proc/pressure/memory"},
-        {"psi.cpu", "/proc/pressure/cpu"},
-        {"psi.io", "/proc/pressure/io"},
-        {"meminfo", "/proc/meminfo"},
-        {"stat", "/proc/stat"},
-        {"loadavg", "/proc/loadavg"},
-        {"diskstats", "/proc/diskstats"},
-        {"binder", "/dev/binder"},
-        {"hwbinder", "/dev/hwbinder"},
-        {"vndbinder", "/dev/vndbinder"},
-        {"ion", "/dev/ion"},
-        {"dma_heap", "/dev/dma_heap"},
-    };
-    for (const auto& item : kRuntime)
-        probe(ResourceDomain::AndroidRuntime, item[0], item[1]);
-
-    // Build fingerprint-style inventory markers (always present as metadata).
+    // Build identity markers (observe-only evidence for vendor-specific policy).
     addCapability(matrix, ResourceDomain::AndroidRuntime, "build.fingerprint",
                   profile.environment.fingerprint.empty() ? "prop:ro.build.fingerprint"
                                                           : profile.environment.fingerprint,
@@ -723,6 +416,33 @@ void EnvironmentDiscovery::expandEcosystemSurface(DeviceProfile& profile) const 
                   profile.environment.treble_enabled.empty() ? "prop:ro.treble.enabled"
                                                              : profile.environment.treble_enabled,
                   !profile.environment.treble_enabled.empty(), true, false);
+}
+
+void EnvironmentDiscovery::discoverTunables(DeviceProfile& profile) const {
+    VendorKnowledge vendor;
+    (void)vendor.harvest();
+    const TunableDiscoveryStats stats = TunableDiscovery{}.discover(profile.capabilities, vendor);
+    profile.vendor_files_parsed = vendor.filesParsed();
+    profile.vendor_knobs = vendor.knobs().size();
+    profile.tunables_walked = stats.walked;
+    profile.tunables_added = stats.added;
+    profile.tunables_fatal_skipped = stats.fatal_skipped;
+    profile.tunables_unclaimed = stats.unclaimed;
+    profile.tunables_truncated = stats.truncated;
+}
+
+void EnvironmentDiscovery::deriveEnvironmentAvailability(DeviceProfile& profile) const {
+    // Availability is a fact about discovered, readable capabilities. It is not
+    // inferred from a named path.
+    auto anyReadable = [&profile](ResourceDomain domain) {
+        for (const auto& cap : profile.capabilities.resources) {
+            if (cap.domain == domain && cap.exists && cap.readable) return true;
+        }
+        return false;
+    };
+    profile.environment.uclamp_available = anyReadable(ResourceDomain::UClamp);
+    profile.environment.cpuset_available = anyReadable(ResourceDomain::CpuSet);
+    profile.environment.scheduler_controls_available = anyReadable(ResourceDomain::Scheduler);
 }
 
 } // namespace coreflow

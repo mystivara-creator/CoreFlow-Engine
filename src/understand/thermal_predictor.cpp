@@ -103,10 +103,66 @@ public:
                 Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
 
             // Validate expected input/output shape for the v1.2 18-feature model.
-            if (session_->GetInputCount() < 1 || session_->GetOutputCount() < 1) {
+            // The inference path uses exactly one input and one output.
+            // Reject incompatible models before marking the session ready.
+            if (session_->GetInputCount() != 1U ||
+                session_->GetOutputCount() != 1U) {
                 reset();
                 return false;
             }
+
+            Ort::AllocatorWithDefaultOptions allocator;
+            const auto input_name =
+                session_->GetInputNameAllocated(0, allocator);
+            const auto output_name =
+                session_->GetOutputNameAllocated(0, allocator);
+
+            if (input_name.get() == nullptr ||
+                output_name.get() == nullptr ||
+                std::string(input_name.get()) != "float_input" ||
+                std::string(output_name.get()) != "variable") {
+                reset();
+                return false;
+            }
+
+            const auto input_info =
+                session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+            const auto output_info =
+                session_->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+
+            if (input_info.GetElementType() !=
+                    ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                output_info.GetElementType() !=
+                    ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+                reset();
+                return false;
+            }
+
+            const auto input_shape = input_info.GetShape();
+            const auto output_shape = output_info.GetShape();
+
+            // Batch dimension may be fixed at 1 or dynamic (-1).
+            const auto valid_batch_dimension = [](int64_t dim) noexcept {
+                return dim == 1 || dim == -1;
+            };
+
+            // Feature vector must be exactly 18 float32 values.
+            if (input_shape.size() != 2U ||
+                !valid_batch_dimension(input_shape[0]) ||
+                input_shape[1] !=
+                    static_cast<int64_t>(kThermalFeatureCount)) {
+                reset();
+                return false;
+            }
+
+            // This predictor expects one scalar temperature output.
+            if (output_shape.size() != 2U ||
+                !valid_batch_dimension(output_shape[0]) ||
+                output_shape[1] != 1) {
+                reset();
+                return false;
+            }
+
             ready_ = true;
             return true;
         } catch (...) {
@@ -142,6 +198,10 @@ public:
                 output_names, 1);
 
             if (outputs.empty() || !outputs[0].IsTensor()) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+
+            if (outputs[0].GetTensorTypeAndShapeInfo().GetElementCount() != 1U) {
                 return std::numeric_limits<double>::quiet_NaN();
             }
 

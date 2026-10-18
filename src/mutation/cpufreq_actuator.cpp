@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace coreflow {
@@ -375,7 +376,16 @@ bool CpuFreqActuator::writeVerified(
         const std::string pathString(path);
         const std::string valueString(value);
 
-        if (access(pathString.c_str(), W_OK) != 0)
+        // Match ResourceActuator: do not follow a final-component symlink, and
+        // require the kernel write-mode bit. Root passes access(W_OK) on
+        // read-only sysfs nodes via CAP_DAC_OVERRIDE; the mode bit is the real
+        // signal that the node accepts writes.
+        struct stat st {};
+        if (::lstat(pathString.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+            return false;
+        if ((st.st_mode & 0222) == 0)
+            return false;
+        if (::access(pathString.c_str(), W_OK) != 0)
             return false;
 
         std::string current;

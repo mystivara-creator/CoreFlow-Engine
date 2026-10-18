@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "coreflow/environment.hpp"
 #include "coreflow/vendor_knowledge.hpp"
@@ -11,29 +12,40 @@ namespace coreflow {
 
 // Generic, capability-driven tunable discovery.
 //
-// Walks the kernel's tunable filesystems (procfs sysctls, cpufreq and governor
-// tunables, core_ctl, block queues and I/O schedulers, devfreq, GPU drivers,
-// cpu/uclamp cgroups, cpuset, schedtune) plus every path the vendor's own
-// configuration writes. Each regular file that the kernel marks writable is
-// recorded with:
-//   - its domain (derived from where it lives, not from its name)
-//   - kernel-advertised options (selector lines / sibling available_* lists)
-//   - vendor-declared values (VendorKnowledge)
-// Admissibility is decided by classifySurface(), whose only hard rule is the
-// universal FatalSurfaceGuard. No parameter names are listed anywhere.
+// Roots are not written into this module. They come from the kernel's own
+// mount table (see kernel_roots.hpp): every procfs mount contributes its sysctl
+// tree, every sysfs mount its attribute tree, and every cgroup mount its
+// controller files. Each tree is walked breadth-first, bounded by depth, visit
+// budget and filesystem boundary, and never through symlinks.
+//
+// A regular file becomes a candidate only when all of these hold:
+//   - the kernel marks it writable (mode bits, not root's access() answer);
+//   - it is not a universally fatal surface (fatal_surface.hpp);
+//   - its subsystem is recognised from where it lives, OR the vendor's own
+//     configuration declares it. An unrecognised, undeclared node is counted as
+//     unclaimed and is never admitted.
+//
+// Admissibility beyond that is decided by classifySurface(). No parameter names
+// are listed anywhere in this module.
 struct TunableDiscoveryStats {
-    std::size_t walked{0};
-    std::size_t added{0};
-    std::size_t vendor_paths{0};
-    std::size_t fatal_skipped{0};
+    std::size_t walked{0};         // writable-candidate files examined
+    std::size_t added{0};          // candidates admitted into the matrix
+    std::size_t vendor_paths{0};   // vendor-declared nodes admitted
+    std::size_t fatal_skipped{0};  // refused by the universal fatal guard
+    std::size_t unclaimed{0};      // writable, unrecognised, undeclared: not admitted
+    bool truncated{false};         // visit budget reached before the walk finished
 };
 
 class TunableDiscovery {
 public:
     static constexpr std::size_t kMaxTunables = 4096;
+    static constexpr std::size_t kMaxVisits = 40000;
+    static constexpr std::size_t kSysfsDepth = 8;
+    static constexpr std::size_t kSysctlDepth = 4;
+    static constexpr std::size_t kCgroupDepth = 1;
 
-    // root_prefix lets host tests mount a fixture tree (e.g. "/tmp/x"); on the
-    // device it is empty.
+    // root_prefix lets host tests mount a fixture tree: the mount table is read
+    // from <root_prefix>/proc/mounts. On the device it is empty.
     explicit TunableDiscovery(std::string root_prefix = {}) : prefix_(std::move(root_prefix)) {}
 
     TunableDiscoveryStats discover(EnvironmentCapabilityMatrix& matrix,
@@ -52,9 +64,10 @@ public:
 private:
     std::string_view strip(std::string_view path) const noexcept;
     bool addTunable(EnvironmentCapabilityMatrix& matrix, const std::string& path,
-                    TunableDiscoveryStats& stats) const noexcept;
-    void walk(EnvironmentCapabilityMatrix& matrix, const std::string& dir, std::size_t depth,
-              TunableDiscoveryStats& stats, bool (*accept_dir)(std::string_view)) const noexcept;
+                    const VendorKnowledge& vendor, TunableDiscoveryStats& stats) const noexcept;
+    void walkTree(EnvironmentCapabilityMatrix& matrix, const VendorKnowledge& vendor,
+                  const std::string& root, std::size_t max_depth,
+                  bool (*accept_dir)(std::string_view), TunableDiscoveryStats& stats) const noexcept;
 
     std::string prefix_;
 };

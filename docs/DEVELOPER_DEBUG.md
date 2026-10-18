@@ -1,134 +1,52 @@
-# CoreFlow — Developer Debug Checklist
+# Developer Debug Checklist
 
-Untuk **developer engine**, bukan pengguna modul biasa.  
-Tujuan: menguji Observe → Understand → Balance → Adapt secara penuh dan terarah.
+Use this checklist before attributing a runtime problem to CoreFlow. Collect evidence first and keep the engine in Observe mode while diagnosing.
 
-Baca juga `docs/SOURCE_MAP.md`.
+## 1. Establish the environment
 
----
+- Record device model, product/device identifiers, SoC, Android API, kernel release, ABI, and module version.
+- Confirm the daemon's actual PID and whether it is running; do not infer health solely from a stale PID file.
+- Inspect `install_report.txt`, the daemon log, current `status.json`, and recent decision-trace entries.
+- Check `SAFE_MODE`, `DISABLE`, and other runtime guard markers before restarting or changing configuration.
 
-## 0. Instrumen wajib
+## 2. Validate telemetry and discovery
 
-| Sumber | Path / perintah |
-|--------|------------------|
-| Log | `logcat -s CoreFlowAutonomous:V` |
-| Status UI | Live engine (baca `status.json`) |
-| Status file | `/data/adb/coreflow/status.json` |
-| Config | `/data/adb/coreflow/config.ini` |
-| Journal CPU | `/data/adb/coreflow/mutation_journal.txt` |
-| Journal resource | (path resource journal di log/status) |
-| Experience | `/data/adb/coreflow/experience.db` |
-| Decision trace | `/data/adb/coreflow/decision_trace.jsonl` |
-| Kill switch | `/data/adb/coreflow/DISABLE` |
-| Safe mode | `/data/adb/coreflow/SAFE_MODE` |
+- Confirm status timestamps are fresh and that missing/invalid sensors are shown as unavailable rather than as zero or a plausible temperature.
+- Compare discovered capability counts with policy-ready counts; they are intentionally different.
+- For an unexpected resource, inspect the discovered path, access mode, subsystem evidence, source of its candidate value, and policy/consultation reason.
+- Treat a truncated filesystem walk as an incomplete inventory.
 
----
+## 3. Diagnose policy without writing
 
-## 1. Observe — inventory benar?
+- Keep `mutation_mode=observe`, `mutation_armed=false`, and `legacy `allow_cpu_governor` is ignored` while investigating.
+- Read the decision trace from observation through context, candidate ranking, consultation, policy, and final authorization.
+- Distinguish a rejected candidate from a missing capability, unavailable telemetry, low confidence, or an active safety hold.
+- Do not remove fatal-surface guards or broaden a path-prefix exception to make a candidate appear eligible.
 
-**Config:** mode bebas; mutasi boleh off.
+## 4. Test and package hygiene
 
-- [ ] Daemon jalan, `status.json` terisi tiap cycle  
-- [ ] `uClamp` = yes jika `/dev/cpuctl/*/cpu.uclamp.*` ada  
-- [ ] `cgroup v2` / `devfreq` sesuai perangkat  
-- [ ] `discovered` dan `policy-ready` masuk akal (policy-ready ⊂ discovered)  
-- [ ] VM nodes muncul dari **scan** `/proc/sys/vm`, bukan dari daftar statis di kepala  
+- Build host tests in an external directory and run `ctest --output-on-failure`.
+- Run `tools/verify_safety_foundation.sh` and `tools/verify_source_release.sh` through the configured CTest contract.
+- Keep build products and extracted ONNX Runtime SDK/cache outside the source package and repository.
+- Verify CMake, module, runtime, and update-feed versions agree before making a release archive.
 
-**Gagal di sini → jangan lanjut adaptive.** Perbaiki `src/observe/`.
+## 5. Device validation gate
 
----
+A successful host test is necessary but not sufficient. Before enabling Adaptive mode, verify the Android ARM64 link, installation/uninstallation, service lifecycle, crash recovery, journal restoration, read-back behavior, thermal holds, and the exact kernel interfaces on the target device. Make one bounded change at a time and preserve a recovery path. If evidence is ambiguous, remain in Observe mode.
 
-## 2. Understand — konteks & skor?
 
-**Config:** masih boleh observe-only / belum armed.
+## Decision trace: cause and effect
 
-- [ ] `workload` berubah wajar (Idle / Interactive / CpuBound / …)  
-- [ ] `confidence` tidak selalu 0 atau selalu 1  
-- [ ] Decision agent mengisi summary (ReActLite / reason string)  
-- [ ] Thermal trend + prediksi muncul saat suhu bergerak  
-- [ ] Di UI: Context Open vs blocked selaras headroom  
+`decision_trace.jsonl` is a bounded, best-effort diagnostic journal written by an asynchronous writer with a bounded queue, so the control loop does not synchronously perform trace-file I/O. Queue or I/O failures may drop diagnostic events; sequence gaps and the `trace_dropped_before` field expose known losses. New records use `coreflow.event.v2` and include `session_id`, `cycle`, and monotonic-within-session `event_seq` to correlate records across a decision cycle. Older `coreflow.decision.v1` records remain readable. The journal records policy evaluation, coarse scope-gate outcomes, target-bound permit checks, pre-write reads, mutation-journal commits, actuator start/completion (including actuator-reported write and verification counts), controller return values, observation-window outcomes, safety restore outcomes, and cycle completion. It does not claim that every low-level syscall is a separate event.
 
-**Gagal →** `src/understand/` (context, effect_model, thermal).
+Each event repeats the cycle context needed for inspection: runtime state, decision, confidence, workload, mutation eligibility, candidate count, safety hold, mode/arming state, CPU-governor opt-in, policy action, intervention level, and policy explanation. Operation-level records also include `operation_id`, target, requested/current/baseline values when known, actuator status, and write/verification counts reported by the actuator. In v2, `reason` explains that event and `decision_reason` summarizes the cycle only once both controller outcomes are known; mutation fields remain `null` while a controller outcome is still in flight. In v1, `plan_reason` explains the policy plan while `reason` is the normalized cycle outcome category.
 
----
+Interpret outcomes carefully:
 
-## 3. Balance — gate & hold?
+- `OBSERVE_OR_NOT_ARMED`: the mode or arm gate prevents mutation; this is not evidence that a candidate was evaluated as beneficial.
+- `POLICY_BLOCKED`: the current plan is not mutation-eligible; inspect `plan_reason`, state, confidence, and candidate count.
+- `NO_VERIFIED_MUTATION`: the cycle has no verified mutation result. It does not uniquely identify why no write occurred.
+- `MUTATION_VERIFIED`: the mutation path reported verification; this is daemon-reported read-back status, not a performance-benefit claim.
+- `MUTATION_ROLLED_BACK` / `MUTATION_FAILED`: inspect mutation journal and runtime logs for the resource-level cause and recovery result.
 
-- [ ] ThermalGuard enter/exit tidak bounce (histeresis)  
-- [ ] SAFE_MODE / DISABLE mematikan mutasi dan memicu restore  
-- [ ] Satu epoch: tidak ada dua mutasi resource bersamaan  
-- [ ] `skip_reason` / hold reason terbaca di status (bukan diam tanpa sebab)  
-
-**Gagal →** `src/balance/` + bagian hold di `autonomous.cpp`.
-
----
-
-## 4. Adapt resource — jalur penuh (debug developer)
-
-**Config disarankan untuk debug resource:**
-```ini
-mutation_mode=adaptive
-mutation_armed=true
-allow_cpu_governor=no
-```
-
-- [ ] Authority **Permit** resource saat context terbuka  
-- [ ] Ada kandidat dari EffectModel (path + requested value)  
-- [ ] Journal **commit sebelum** write  
-- [ ] Read-back verify sukses  
-- [ ] Observation window jalan → outcome (beneficial / neutral / regression)  
-- [ ] Restore / rollback membersihkan ke baseline  
-- [ ] Experience mencatat outcome untuk scope perangkat ini  
-
-Ulangi untuk beberapa kandidat (VM class dan IO fisik jika ada).
-
-**Gagal verify/restore → hentikan adaptive.** Perbaiki `src/mutation/` + `src/conscience/`.
-
----
-
-## 5. Adapt CPU — terpisah
-
-Hanya setelah langkah 4 bersih.
-
-```ini
-allow_cpu_governor=yes
-```
-
-- [ ] Tanpa flag ini, CPU path tidak menulis  
-- [ ] Dengan flag: governor experiment ter-journal dan restoreable  
-- [ ] Tidak mengganggu resource journal (jurnal terpisah)  
-
----
-
-## 6. Tes nurani (wajib sebelum klaim “full engine OK”)
-
-- [ ] Sentuh `DISABLE` saat ada mutasi aktif → restore, tidak nulis lagi  
-- [ ] `SAFE_MODE` → perilaku sama / lebih ketat  
-- [ ] Restart daemon dengan journal pending → recovery, bukan state kotor  
-- [ ] Thermal tinggi → ReduceIntervention / tidak ada mutasi agresif  
-
----
-
-## 7. Hypotesis debug (satu per sesi)
-
-Contoh yang baik:
-- “uClamp tidak terdeteksi” → hanya `src/observe/discovery.cpp`  
-- “kandidat tidak pernah eligible” → `effect_model` + context gates  
-- “mutasi jalan tapi tidak restore” → journal / actuator restore  
-- “UI bilang holding selamanya” → outcome window + cooldown di `autonomous.cpp`  
-
-Jangan ubah config + kode + thermal threshold dalam satu percobaan.
-
----
-
-## Definisi sukses debug (developer)
-
-Engine boleh disebut siap evaluasi penuh jika:
-
-1. Inventory capability-driven benar di perangkat nyata  
-2. Minimal satu resource epoch: propose → journal → write → verify → observe → outcome → restore  
-3. Safety path (DISABLE / thermal / SAFE_MODE) membosankan-andalan  
-4. CPU path terbukti terpisah dan opt-in  
-
-Bukan: “banyak yang berubah di sysfs”.  
-Melainkan: **setiap perubahan dijelaskan, diukur, dan bisa dikembalikan.**
+The `scope_gate_checked` event reports the coarse scope check only. The later `target_permit_checked` event records whether the controller issued a permit bound to the concrete capability/target; neither event bypasses the actuator's own safety validation. A controller result of `VERIFIED` means the controller reported a successful write/read-back path; the counts in `actuator_apply_completed` describe that actuator return and are not independent kernel telemetry or a performance-benefit claim. Resource failures include the controller failure stage and actuator status when available; CPU errors include the concrete target, pre-write state, actuator status, and write/verification counts, while some CPU recovery-stage detail may still require correlating the daemon log. Trace writing is deliberately non-fatal and best-effort: a filesystem error must not block the control loop or grant mutation authority. Missing trace entries mean observability is incomplete, not that no decision happened. WebUI labels derived from this trace must never claim independent confirmation of a system effect.

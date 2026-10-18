@@ -1,5 +1,6 @@
 #include "coreflow/resource_mutation.hpp"
 #include "coreflow/context.hpp"
+#include "coreflow/decision_trace.hpp"
 #include "coreflow/tunable_discovery.hpp"
 
 #include <algorithm>
@@ -32,8 +33,8 @@ bool isMutableDomain(ResourceDomain domain) noexcept {
 
 bool fallbackPolicyAuthorized(ResourceDomain domain, const std::string& name,
                               const std::string& path) noexcept {
-    // Capability-driven: the same rule discovery applies. Only fatal surfaces
-    // (actuator gate) and non-tunable/governor-owned nodes are refused.
+    // Capability-driven: this is the path/semantic gate; the actuator adds an
+    // independent opened-filesystem check immediately before every write.
     if (!ResourceActuator::mutationTargetAllowed(path)) return false;
     return classifySurface(domain, name, path) == SurfaceClass::Admissible;
 }
@@ -66,7 +67,13 @@ void ResourceMutationController::setExperienceMemory(
 }
 
 bool ResourceMutationController::recoverIfNeeded() noexcept {
-    if (journal_ == nullptr) return true;
+    // Without a journal we cannot prove that a previous process left no
+    // in-flight mutation. Failing closed here prevents baseline capture from
+    // silently adopting an unknown post-crash value as the factory baseline.
+    if (journal_ == nullptr) {
+        last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
+        return false;
+    }
     MutationJournal::Entries entries;
     const MutationJournal::LoadState state = journal_->load(entries);
     switch (state) {
@@ -93,11 +100,15 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
 
         // Preserve the first failure status while still attempting the
         // remaining entries, so one failed resource cannot be masked.
-        if (restored || !entry_restored) {
-            last_actuator_status_ = result.status;
-        }
+        // Only overwrite last_actuator_status_ on success while every prior
+        // entry succeeded, or on the first failure encountered.
         if (!entry_restored) {
+            if (restored) {
+                last_actuator_status_ = result.status;
+            }
             restored = false;
+        } else if (restored) {
+            last_actuator_status_ = result.status;
         }
     }
     if (!restored) {
@@ -146,34 +157,6 @@ bool ResourceMutationController::captureBaseline(
         if (value.empty()) continue;
 
         baseline_[cap.path] = {cap.domain, cap.name, cap.path, value, true};
-    }
-
-    auto captureField = [this](ResourceDomain domain, const std::string& name,
-                               const std::string& path, bool readable,
-                               bool writable) {
-        if (path.empty() || !readable || !writable ||
-            !ResourceActuator::mutationTargetAllowed(path) ||
-            !fallbackPolicyAuthorized(domain, name, path)) return;
-        if (baseline_.count(path)) return;
-        std::string value;
-        if (!ResourceActuator::read(path, value)) return;
-        baseline_[path] = {domain, name, path,
-                           ResourceActuator::comparableValue(value), true};
-    };
-
-    captureField(ResourceDomain::Memory, "vm.swappiness",
-                 profile.vm_swappiness.path, profile.vm_swappiness.readable,
-                 profile.vm_swappiness.writable);
-    for (const auto& device : profile.io_devices) {
-        captureField(ResourceDomain::Io, device.name + ":read_ahead_kb",
-                     device.path + "/queue/read_ahead_kb",
-                     device.read_ahead_readable, device.read_ahead_writable);
-        captureField(ResourceDomain::Io, device.name + ":nr_requests",
-                     device.path + "/queue/nr_requests",
-                     device.nr_requests_readable, device.nr_requests_writable);
-        captureField(ResourceDomain::Io, device.name + ":scheduler",
-                     device.path + "/queue/scheduler",
-                     device.scheduler_readable, device.scheduler_writable);
     }
 
     if (baseline_.empty()) return false;
@@ -512,10 +495,19 @@ MutationResult ResourceMutationController::applyCandidate(
     RuntimeState state,
     double confidence,
     const EngineConfig& config,
-    const PolicyPlan& policy
+    const PolicyPlan& policy,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     if (journal_ == nullptr) {
         last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
+        if (trace_context != nullptr) {
+            DecisionTraceEvent event{"mutation_preflight_failed", "resource", "FAILED",
+                                     "mutation_journal_unavailable"};
+            event.target = candidate.path.c_str();
+            event.requested = candidate.requested.c_str();
+            event.baseline_value = candidate.baseline.c_str();
+            appendDecisionTraceEvent(*trace_context, event);
+        }
         return MutationResult::Failed;
     }
     if (!policy.allows(candidate.domain, candidate.name)) return MutationResult::Skipped;
@@ -524,8 +516,8 @@ MutationResult ResourceMutationController::applyCandidate(
     }
 
     ActuatorMutation mutation;
-    // Resource writes never use the CpuFreq actuator domain: that domain is the
-    // governor authority and needs allow_cpu_governor.
+    // Resource writes never use the CpuFreq actuator domain; CPUFreq governor
+    // writes are handled by the dedicated governor controller.
     mutation.id = {ActuatorDomain::Io, 0};
     switch (candidate.domain) {
         case ResourceDomain::Memory: mutation.id.domain = ActuatorDomain::Vm; break;
@@ -543,10 +535,44 @@ MutationResult ResourceMutationController::applyCandidate(
     const MutationAuthority authority;
     const MutationPermit permit = authority.authorize(
         policy, config, state, confidence, capability, mutation.target);
-    if (!permit.validFor(mutation)) return MutationResult::Skipped;
+    const bool permit_valid = permit.validFor(mutation);
+    if (trace_context != nullptr) {
+        const char* permit_reason = nullptr;
+        if (permit_valid) {
+            permit_reason = "target_bound_permit_issued";
+        } else if (!capability.mutationSafe()) {
+            permit_reason = "resource_actuator_capability_not_mutation_safe";
+        } else {
+            permit_reason = mutationPermitBlockReason(
+                policy, config, state, confidence, MutationPermit::Scope::Resource);
+            if (permit_reason == nullptr) permit_reason = "target_bound_permit_invalid";
+        }
+        DecisionTraceEvent event{"target_permit_checked", "resource",
+                                 permit_valid ? "ISSUED" : "DENIED", permit_reason};
+        event.permit_known = true;
+        event.permit_valid = permit_valid;
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!permit_valid) return MutationResult::Skipped;
 
     std::string previous_value;
-    if (!ResourceActuator::readComparable(candidate.path, previous_value)) {
+    const bool prewrite_read_ok = ResourceActuator::readComparable(
+        candidate.path, previous_value);
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"prewrite_read_completed", "resource",
+                                 prewrite_read_ok ? "READ" : "FAILED",
+                                 prewrite_read_ok ? "live_resource_value_read"
+                                                  : "live_resource_value_read_failed"};
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = prewrite_read_ok ? previous_value.c_str() : nullptr;
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!prewrite_read_ok) {
         last_failure_stage_ = ResourceMutationFailureStage::BaselineRead;
         return MutationResult::Failed;
     }
@@ -565,14 +591,57 @@ MutationResult ResourceMutationController::applyCandidate(
             entries.emplace_back(candidate.path, it->second.value);
         }
     }
-    if (entries.empty() || !journal_->commit(entries)) {
+    const bool journal_entries_ready = !entries.empty();
+    const bool journal_commit_ok = journal_entries_ready && journal_->commit(entries);
+    if (trace_context != nullptr) {
+        const char* journal_reason = journal_commit_ok
+            ? "factory_snapshot_committed_before_actuator_write"
+            : journal_entries_ready ? "journal_commit_failed_no_actuator_write"
+                                    : "journal_snapshot_empty_no_actuator_write";
+        DecisionTraceEvent event{"mutation_journal_commit", "resource",
+                                 journal_commit_ok ? "COMMITTED" : "FAILED",
+                                 journal_reason};
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
+    if (!journal_commit_ok) {
         last_failure_stage_ = ResourceMutationFailureStage::JournalCommit;
         return MutationResult::Failed;
     }
     journal_committed_ = true;
 
+    if (trace_context != nullptr) {
+        DecisionTraceEvent event{"actuator_apply_started", "resource", "STARTED",
+                                 "target_bound_permit_and_prewrite_journal_confirmed"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        appendDecisionTraceEvent(*trace_context, event);
+    }
     const ActuatorResult result = actuator_.apply(mutation, permit);
     last_actuator_status_ = result.status;
+    if (trace_context != nullptr) {
+        const std::string_view status = actuatorStatusName(result.status);
+        DecisionTraceEvent event{"actuator_apply_completed", "resource", status.data(),
+                                 "actuator_return_reports_write_and_readback_counts"};
+        event.permit_known = true;
+        event.permit_valid = permit.validFor(mutation);
+        event.actuator_status = status.data();
+        event.target = candidate.path.c_str();
+        event.requested = candidate.requested.c_str();
+        event.current_value = previous_value.c_str();
+        event.baseline_value = candidate.baseline.c_str();
+        event.write_counts_known = true;
+        event.writes_attempted = result.writes_attempted;
+        event.writes_verified = result.writes_verified;
+        appendDecisionTraceEvent(*trace_context, event);
+    }
     if (result.status == ActuatorStatus::ReadFailed) {
         last_failure_stage_ = ResourceMutationFailureStage::ActuatorRead;
     } else if (result.status == ActuatorStatus::SafetyRejected) {
@@ -649,7 +718,8 @@ MutationResult ResourceMutationController::apply(
     const DeviceProfile& profile,
     const EngineConfig& config,
     const PolicyPlan& policy,
-    const MutationPermit& permit
+    const MutationPermit& permit,
+    const DecisionTraceContext* trace_context
 ) noexcept {
     ++cycle_;
     last_failure_stage_ = ResourceMutationFailureStage::None;
@@ -705,7 +775,7 @@ MutationResult ResourceMutationController::apply(
 
     const bool was_clean = !mutated_;
     const MutationResult applied = applyCandidate(
-        candidate, state, sample.confidence, config, policy);
+        candidate, state, sample.confidence, config, policy, trace_context);
     if (applied == MutationResult::Verified) {
         stabilizing_epoch_ = was_clean ? policy.stabilizing_only
                                        : (stabilizing_epoch_ && policy.stabilizing_only);
@@ -756,8 +826,11 @@ bool ResourceMutationController::restoreAll() noexcept {
     bool ok = true;
     for (const auto& path : dirty_resources_) {
         const auto item = baseline_.find(path);
+        std::error_code path_error;
+        const bool path_exists = std::filesystem::exists(path, path_error);
         if (item == baseline_.end() || !item->second.valid ||
-            !std::filesystem::exists(path)) {
+            path_error || !path_exists) {
+            ok = false;
             continue;
         }
         const ActuatorResult result =
@@ -798,37 +871,61 @@ bool ResourceMutationController::restoreAll() noexcept {
 }
 
 bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
+    last_retained_state_failure_stage_ = RetainedStateFailureStage::None;
+
     if (!pending_outcome_ || retained_store_ == nullptr ||
-        last_mutation_path_.empty() || last_mutation_target_.empty()) return false;
+        last_mutation_path_.empty() || last_mutation_target_.empty()) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::Precondition;
+        return false;
+    }
+
     const auto baseline = baseline_.find(last_mutation_path_);
     if (baseline == baseline_.end() || !baseline->second.valid ||
-        baseline->second.value == last_mutation_target_) return false;
+        baseline->second.value == last_mutation_target_) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::BaselineInvalid;
+        return false;
+    }
+
     std::string live;
-    if (!ResourceActuator::readComparable(last_mutation_path_, live) ||
-        live != last_mutation_target_) return false;
+    if (!ResourceActuator::readComparable(last_mutation_path_, live)) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveReadFailed;
+        return false;
+    }
+    if (live != last_mutation_target_) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveTargetMismatch;
+        return false;
+    }
 
     RetainedStateEntry entry;
-    entry.scope = retainedScopeFor(profile);
-    entry.path = last_mutation_path_;
-    entry.baseline = baseline->second.value;
-    entry.target = last_mutation_target_;
     RetainedStateStore::Entries updated_entries;
     try {
+        entry.scope = retainedScopeFor(profile);
+        entry.path = last_mutation_path_;
+        entry.baseline = baseline->second.value;
+        entry.target = last_mutation_target_;
+
         updated_entries = retained_entries_;
         updated_entries.erase(std::remove_if(updated_entries.begin(), updated_entries.end(),
             [&entry](const RetainedStateEntry& current) { return current.path == entry.path; }),
             updated_entries.end());
         updated_entries.push_back(entry);
     } catch (...) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::AllocationFailed;
         return false;
     }
+
     if (!retained_store_->upsert(entry)) {
         // A rename may have succeeded even if the final directory sync failed.
         // Best-effort restore the last known-good ledger so an unaccepted
         // candidate cannot become a retained preference after restart.
-        (void)retained_store_->commit(retained_entries_);
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::StoreUpsertFailed;
+        if (!retained_store_->commit(retained_entries_)) {
+            last_retained_state_failure_stage_ =
+                RetainedStateFailureStage::RecoveryCommitFailed;
+        }
         return false;
     }
+
     retained_entries_.swap(updated_entries);
     pending_outcome_ = false;
     last_applied_resources_.clear();
@@ -840,6 +937,7 @@ bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile
     last_candidate_from_retained_ = false;
     return true;
 }
+
 
 bool ResourceMutationController::rollbackLastMutation() noexcept {
     if (!pending_outcome_ || last_mutation_path_.empty() || last_previous_value_.empty()) {

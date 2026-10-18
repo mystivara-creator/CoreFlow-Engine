@@ -21,7 +21,7 @@ Config minimum:
 ```
 mutation_mode=adaptive
 mutation_armed=true
-allow_cpu_governor=no
+# Legacy allow_cpu_governor is ignored.
 ```
 
 - [ ] `status.json` → `"mode":"adaptive"`, `"armed":true`
@@ -35,7 +35,7 @@ allow_cpu_governor=no
 
 - [ ] ThermalGuard / Pressure only allows stabilizing resource writes
 - [ ] Kill switch `DISABLE` and `SAFE_MODE` stop mutation and restore
-- [ ] CPU governor remains off unless `allow_cpu_governor=yes`
+- [ ] CPUFreq follows the global Adaptive/armed gate; legacy `allow_cpu_governor` is ignored
 
 ## 4. Multi-device notes (fill per device)
 

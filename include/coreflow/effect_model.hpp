@@ -24,13 +24,15 @@ namespace coreflow {
 //   4. Bounded exploration    a +/-12.5% step from the factory value for plain
 //                             integers (never for 0/1 toggles, never sign flips)
 //
-// Stressed contexts (thermal/memory) accept only stabilizing candidates:
-// vendor efficiency-profile values, a step down an ordered hardware scale, or
-// a lower utilization clamp. Everything else is explored only with headroom,
-// and BaselineIntelligence measures each outcome; experience then steers later
-// choices. With no other evidence, a step down is tried before a step up (the
-// lower resource commitment is the conservative probe). The only hard
-// restriction lives in FatalSurfaceGuard.
+// Stressed contexts (thermal/memory) accept only evidence-aligned
+// stabilizing candidates. Thermal stress can use vendor efficiency values, a
+// step down an advertised hardware scale, or a lower utilization clamp.
+// Memory-only pressure requires a vendor-declared efficiency value for a Memory
+// resource; generic numeric changes such as a swappiness step are not presumed
+// beneficial. Other exploration waits for headroom, and BaselineIntelligence
+// measures outcomes so experience can steer later choices. The semantic catalog
+// also suppresses ObserveOnly / FrameworkOwned nodes and defers quarantined
+// surfaces while stressed; final mutation authority remains elsewhere.
 
 enum class EffectDirection : std::uint8_t {
     None = 0,

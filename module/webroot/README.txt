@@ -24,7 +24,7 @@ Safety / runtime behavior
 - WebUI never writes kernel tunables directly.
 - Observe keeps diagnostics and refresh-discovery interaction available without arming mutation.
 - Adaptive writes mutation_mode=adaptive and mutation_armed=true only after explicit confirmation.
-  CPU governor changes require separate opt-in (allow_cpu_governor=yes).
+  CPUFreq and all supported resource namespaces follow the global Adaptive/armed gate; legacy per-namespace grant flags are ignored.
 - The engine still owns capability discovery, policy authorization, mutation journaling,
   verification, rollback, thermal guards and safety holds.
 - A present SAFE_MODE or DISABLE marker blocks enabling Adaptive from the UI.

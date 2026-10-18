@@ -12,7 +12,7 @@ CoreFlow runs as a privileged Android module and can interact with kernel-facing
 6. Restore the baseline when leaving the protected state or shutting down.
 7. Skip unknown or unsupported controls.
 
-The release default is observe-only: no kernel control is written. An operator can opt in to adaptive mutation of CPU governors and the explicitly allow-listed VM/I/O resources discovered with writable, verifiable interfaces by setting `mutation_mode=adaptive`, `mutation_armed=true` and `allow_cpu_governor=yes`. Charging, uClamp, cpusets, graphics, ART and other system controls remain capability/telemetry surfaces until their semantics can be proven for the target device. Adaptive mode does not bypass capability, policy, journal, bounded-write, verification, rollback, or safety-hold gates. A malformed mutation mode fails safe to observe-only.
+The release default is observe-only: no kernel control is written. An operator can opt in to adaptive mutation across all supported, discovered non-fatal resource namespaces by setting `mutation_mode=adaptive` and `mutation_armed=true`. Legacy `allow_cpu_governor` and `grant_*` flags no longer restrict CPUFreq, uClamp, cpusets, graphics, memory, scheduler, or I/O domains; capability discovery and fatal-surface policy still reject unsupported or dangerous nodes. Adaptive mode does not bypass capability, policy, journal, bounded-write, verification, rollback, or safety-hold gates. A malformed mutation mode fails safe to observe-only.
 
 ## SELinux
 

@@ -10,37 +10,115 @@
 
 namespace coreflow::observer_metrics {
 
+inline bool parsePsiPercentage(const std::string& text,
+                               double& result) {
+    if (text.empty()) return false;
+
+    std::size_t i = 0U;
+    while (i < text.size() &&
+           text[i] >= '0' && text[i] <= '9') {
+        ++i;
+    }
+
+    if (i == 0U) return false;
+
+    if (i < text.size() && text[i] == '.') {
+        ++i;
+        const std::size_t fraction_begin = i;
+
+        while (i < text.size() &&
+               text[i] >= '0' && text[i] <= '9') {
+            ++i;
+        }
+
+        if (i == fraction_begin) return false;
+    }
+
+    if (i != text.size()) return false;
+
+    char* end = nullptr;
+    errno = 0;
+    const double value = std::strtod(text.c_str(), &end);
+
+    if (end != text.c_str() + text.size() ||
+        errno == ERANGE ||
+        !std::isfinite(value) ||
+        value < 0.0 || value > 100.0) {
+        return false;
+    }
+
+    result = value;
+    return true;
+}
+
 inline bool parsePsiLine(const std::string& line,
                          double& some_avg10,
                          double& full_avg10) {
-    const bool is_some = line.rfind("some ", 0) == 0;
-    const bool is_full = line.rfind("full ", 0) == 0;
-
+    // Keep the production path allocation-light. Regex is used only as a
+    // grammar oracle in tests, never in the runtime sampling path.
+    const auto is_space = [](char c) noexcept {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    };
+    const bool is_some = line.rfind("some", 0) == 0;
+    const bool is_full = line.rfind("full", 0) == 0;
     if (!is_some && !is_full) return false;
 
-    const auto pos = line.find("avg10=");
-    if (pos == std::string::npos) return false;
-
-    const char* begin = line.c_str() + pos + 6;
-    char* end = nullptr;
-    errno = 0;
-    const double value = std::strtod(begin, &end);
-
-    if (end == begin || errno == ERANGE || !std::isfinite(value))
+    constexpr std::size_t prefix_size = 4U;
+    if (line.size() <= prefix_size || !is_space(line[prefix_size]))
         return false;
 
-    // The numeric token must end at whitespace or the end of the line.
-    if (*end != '\0' && *end != ' ' && *end != '\t' &&
-        *end != '\r' && *end != '\n')
-        return false;
+    bool found_avg10 = false;
+    bool found_avg60 = false;
+    bool found_avg300 = false;
+    bool found_total = false;
+    double parsed_value = 0.0;
+    std::size_t cursor = prefix_size;
 
-    if (value < 0.0 || value > 100.0) return false;
+    while (cursor < line.size()) {
+        while (cursor < line.size() && is_space(line[cursor])) ++cursor;
+        if (cursor == line.size()) break;
+
+        const std::size_t token_begin = cursor;
+        while (cursor < line.size() && !is_space(line[cursor])) ++cursor;
+        const std::string token = line.substr(token_begin, cursor - token_begin);
+        const auto equals = token.find('=');
+        if (equals == std::string::npos || equals == 0U ||
+            equals + 1U >= token.size()) return false;
+
+        const std::string key = token.substr(0U, equals);
+        const std::string value_text = token.substr(equals + 1U);
+        if (key == "avg10") {
+            if (found_avg10) return false;
+            found_avg10 = true;
+
+            if (!parsePsiPercentage(value_text, parsed_value))
+                return false;
+        } else if (key == "avg60" || key == "avg300") {
+            bool& found = key == "avg60" ? found_avg60 : found_avg300;
+            if (found) return false;
+            found = true;
+            double value = 0.0;
+            if (!parsePsiPercentage(value_text, value))
+                return false;
+        } else if (key == "total") {
+            if (found_total) return false;
+            found_total = true;
+            for (const char c : value_text) {
+                if (c < '0' || c > '9') return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // A kernel PSI record is valid only when all four standard fields exist.
+    if (!found_avg10 || !found_avg60 || !found_avg300 || !found_total)
+        return false;
 
     if (is_some)
-        some_avg10 = value;
+        some_avg10 = parsed_value;
     else
-        full_avg10 = value;
-
+        full_avg10 = parsed_value;
     return true;
 }
 

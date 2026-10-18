@@ -11,7 +11,7 @@
 #      capability probe. Nothing is written to kernel controls here.
 #   4. Mode decision: volume-key interactive prompt (Up=observe, Down=adaptive).
 #      Timeout and missing keys fall back to observe-only. Adaptive writes
-#      mutation_mode=adaptive + mutation_armed=true; CPU governor is a second prompt.
+#      mutation_mode=adaptive + mutation_armed=true for all supported non-fatal namespaces.
 #   5. Report: $STATE_DIR/install_report.txt, for support requests.
 #
 # The thermal model is universal: one artifact, one pinned digest, one input
@@ -169,7 +169,6 @@ ui_print "     > Thermal model      : universal, digest pinned OK"
 
 [ -s "$DEFAULT_CONF" ] || abort "default.conf is missing or empty."
 grep -qx 'mutation_mode=observe' "$DEFAULT_CONF" \
-    && grep -qx 'allow_cpu_governor=no' "$DEFAULT_CONF" \
     && grep -qx 'mutation_armed=false' "$DEFAULT_CONF" \
     || abort "default.conf must ship observe-only defaults. This package is not release-safe."
 ui_print "     > Default config     : observe-only OK"
@@ -197,11 +196,6 @@ ui_print " "
 #   Volume Up   = Observe only (recommended / safe default)
 #   Volume Down = Adaptive (mutations allowed after reboot)
 #   Timeout 12s = Observe only
-#
-# If adaptive is chosen, a second prompt:
-#   Volume Up   = Resource-only (VM/I/O) — recommended
-#   Volume Down = Resource + CPU governor
-#   Timeout 10s = Resource-only
 #
 # Existing config.ini:
 #   Volume Up   = Keep existing config
@@ -240,11 +234,7 @@ volume_choice() {
 }
 
 write_config_for_mode() {
-    # Args: $1=observe|adaptive  $2=yes|no (allow_cpu_governor)
-    #       $3=yes|no (grant VM memory + block-queue tuning)
     _w_mode="$1"
-    _w_cpu="$2"
-    _w_grant="${3:-no}"
     TMP_CONF="$CONFIG.tmp"
     cp "$DEFAULT_CONF" "$TMP_CONF" || abort "Could not stage configuration in $STATE_DIR."
     if [ "$_w_mode" = "adaptive" ]; then
@@ -252,38 +242,15 @@ write_config_for_mode() {
             -e 's/^mutation_armed=false$/mutation_armed=true/' \
             "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
             || abort "Could not write adaptive configuration."
-        if [ "$_w_cpu" = "yes" ]; then
-            sed -e 's/^allow_cpu_governor=no$/allow_cpu_governor=yes/' \
-                "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
-                || abort "Could not enable cpu governor flag."
-        fi
-        if [ "$_w_grant" = "yes" ]; then
-            sed -e 's/^grant_memory=no$/grant_memory=yes/' \
-                -e 's/^grant_block_queue=no$/grant_block_queue=yes/' \
-                "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
-                || abort "Could not write grant configuration."
-            grep -qx 'grant_memory=yes' "$TMP_CONF" \
-                && grep -qx 'grant_block_queue=yes' "$TMP_CONF" \
-                || abort "Grant configuration did not verify; aborting."
-        fi
         grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
             && grep -qx 'mutation_armed=true' "$TMP_CONF" \
             || abort "Adaptive configuration did not verify; aborting."
-        if [ "$_w_cpu" = "yes" ]; then
-            grep -qx 'allow_cpu_governor=yes' "$TMP_CONF" \
-                || abort "CPU governor flag did not verify; aborting."
-        else
-            grep -qx 'allow_cpu_governor=no' "$TMP_CONF" \
-                || abort "CPU governor flag did not verify; aborting."
-        fi
     else
-        # Explicit observe triplet
         grep -qx 'mutation_mode=observe' "$TMP_CONF" \
             && grep -qx 'mutation_armed=false' "$TMP_CONF" \
             || abort "Observe configuration did not verify; aborting."
     fi
     mv "$TMP_CONF" "$CONFIG" || abort "Could not install config.ini."
-    chmod 0600 "$CONFIG" 2>/dev/null
 }
 
 MODE="observe"
@@ -368,46 +335,11 @@ else
         ui_print "     > selected: $MODE"
         ui_print " "
 
-        CPU_GOV_CHOICE="no"
         if [ "$MODE" = "adaptive" ]; then
             ui_print " [>] Adaptive scope"
-            ui_print " "
-            ui_print "     Volume Up   = Resource only (VM / I/O) — recommended"
-            ui_print "     Volume Down = Resource + CPU governor"
-            ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = Resource only"
-            ui_print " "
-            _cpu="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
-            case "$_cpu" in
-                down)
-                    CPU_GOV_CHOICE="yes"
-                    MODE_REASON="$MODE_REASON; cpu_governor=yes"
-                    ui_print "     > scope: resource + CPU governor"
-                    ;;
-                *)
-                    CPU_GOV_CHOICE="no"
-                    MODE_REASON="$MODE_REASON; cpu_governor=no"
-                    ui_print "     > scope: resource only"
-                    ;;
-            esac
-            ui_print " "
-            ui_print " [>] Grants (kernel control namespaces)"
-            ui_print " "
-            ui_print "     Volume Up   = No grants (recommended)"
-            ui_print "     Volume Down = Grant VM memory + block-queue tuning"
-            ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = No grants"
-            ui_print " "
-            _grant="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
-            case "$_grant" in
-                down)
-                    GRANT_CHOICE="yes"
-                    MODE_REASON="$MODE_REASON; grants=memory+block_queue"
-                    ui_print "     > grants: memory + block queue"
-                    ;;
-                *)
-                    GRANT_CHOICE="no"
-                    ui_print "     > grants: none"
-                    ;;
-            esac
+            ui_print "     > all supported non-fatal namespaces enabled"
+            ui_print "     > CPUFreq / GPU / scheduler / memory / I/O follow global Adaptive authority"
+            ui_print "     > fatal-surface exclusions, thermal guard, journal and rollback remain active"
             ui_print " "
             ui_print "     ! ADAPTIVE will run after reboot."
             ui_print "     ! Mutations are journaled and restorable."
@@ -426,8 +358,8 @@ ui_print " "
 
 # ---- 5. Configuration and state ------------------------------------------
 if [ "$REWRITE_CONFIG" -eq 1 ]; then
-    write_config_for_mode "$MODE" "$CPU_GOV_CHOICE" "$GRANT_CHOICE"
-    ui_print " [>] Configuration: config.ini written (mode=$MODE cpu_gov=$CPU_GOV_CHOICE grants=$GRANT_CHOICE)"
+    write_config_for_mode "$MODE"
+    ui_print " [>] Configuration: config.ini written (mode=$MODE; supported non-fatal namespaces follow global authority)"
 else
     ui_print " [>] Configuration: existing config.ini kept unchanged"
 fi

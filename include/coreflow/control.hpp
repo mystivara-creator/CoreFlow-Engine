@@ -72,6 +72,15 @@ struct EpochRestoreInputs {
 // only if it is a stabilizing resource write and the current plan still permits one.
 bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept;
 
+// Returns the first gate that denies coarse mutation authorization, or nullptr
+// when the coarse scope gate would pass. MutationAuthority uses this same helper
+// so diagnostic reasons cannot drift from the actual authorization checks.
+const char* mutationPermitBlockReason(const PolicyPlan& plan,
+                                      const EngineConfig& config,
+                                      RuntimeState state,
+                                      double confidence,
+                                      MutationPermit::Scope scope) noexcept;
+
 class MutationAuthority final {
 public:
     MutationPermit authorize(const PolicyPlan& plan,

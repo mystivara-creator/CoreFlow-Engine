@@ -1,15 +1,39 @@
 #include "coreflow/resource_actuator.hpp"
 #include "coreflow/fatal_surface.hpp"
 
+#include <cerrno>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 namespace coreflow {
 namespace {
+
+bool kernelTunableFilesystem(int fd) noexcept {
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+    // Host tests emulate sysfs/procfs nodes with ordinary temporary files.
+    (void)fd;
+    return true;
+#else
+    struct statfs fs {};
+    if (::fstatfs(fd, &fs) != 0) return false;
+    const auto type = static_cast<unsigned long>(fs.f_type);
+    // The observer walks mounted procfs (/proc/sys), sysfs, and cgroup
+    // control trees. Restrict the final write gate to those kernel interfaces;
+    // a syntactically valid journal must not grant authority over /data files.
+    constexpr unsigned long kProcfsMagic = 0x00009FA0UL;
+    constexpr unsigned long kSysfsMagic = 0x62656572UL;
+    constexpr unsigned long kCgroupMagic = 0x0027E0EBUL;
+    constexpr unsigned long kCgroup2Magic = 0x63677270UL;
+    return type == kProcfsMagic || type == kSysfsMagic ||
+           type == kCgroupMagic || type == kCgroup2Magic;
+#endif
+}
 
 std::string trimmed(std::string_view raw) {
     std::size_t first = 0;
@@ -26,13 +50,42 @@ std::string trimmed(std::string_view raw) {
 }
 
 bool writeAndVerify(std::string_view path, std::string_view requested) noexcept {
+    if (path.empty() || requested.empty() || requested.size() > 4096U) return false;
     try {
-        std::ofstream file(std::string(path), std::ios::out | std::ios::trunc);
-        if (!file) return false;
-        file << requested;
-        file.flush();
-        if (!file.good()) return false;
-        file.close();
+        const std::string target(path);
+        const int fd = ::open(target.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) return false;
+
+        struct stat st {};
+        const bool target_is_writable_regular_file =
+            ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+            (st.st_mode & 0222) != 0 && kernelTunableFilesystem(fd);
+        if (!target_is_writable_regular_file) {
+            (void)::close(fd);
+            return false;
+        }
+
+        // Host fixtures emulate sysfs attributes with ordinary files, which
+        // retain old trailing bytes unless truncated. This test-only behavior
+        // occurs only after descriptor validation; production kernel pseudo-files
+        // are written as a single attribute write without ftruncate.
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+        if (::ftruncate(fd, 0) != 0) {
+            (void)::close(fd);
+            return false;
+        }
+#endif
+        // Keep the privileged write on the descriptor that was checked. Do not
+        // reopen the pathname through an ofstream after the earlier path check:
+        // the final component could otherwise be replaced by a symlink in the gap.
+        ssize_t written = -1;
+        do {
+            written = ::write(fd, requested.data(), requested.size());
+        } while (written < 0 && errno == EINTR);
+        const bool write_ok = written >= 0 &&
+            static_cast<std::size_t>(written) == requested.size();
+        const bool close_ok = ::close(fd) == 0;
+        if (!write_ok || !close_ok) return false;
 
         std::string observed;
         if (!ResourceActuator::readComparable(path, observed)) return false;
@@ -80,15 +133,25 @@ bool ResourceActuator::writable(std::string_view path) noexcept {
     // Root passes access(W_OK) on read-only sysfs/procfs nodes because of
     // CAP_DAC_OVERRIDE; the kernel exposes real writability via the mode bits.
     struct stat st {};
-    if (::stat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    return (st.st_mode & 0222) != 0;
+    // Do not follow a final-component symlink: privileged mutation must target
+    // the discovered kernel node itself, not an arbitrary file redirected to
+    // by a stale or substituted path.
+    if (::lstat(target.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+        (st.st_mode & 0222) == 0) return false;
+    const int fd = ::open(target.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat opened {};
+    const bool valid = ::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode) &&
+                       (opened.st_mode & 0222) != 0 && kernelTunableFilesystem(fd);
+    (void)::close(fd);
+    return valid;
 }
 
 bool ResourceActuator::mutationTargetAllowed(std::string_view path) noexcept {
-    // Capability-driven: there is no per-parameter allow-list. Any kernel
-    // tunable is admissible unless it belongs to a universally fatal class
-    // (see FatalSurfaceGuard). The CPU governor node is owned by the separate
-    // MutationController authority and is never written by this actuator.
+    // Capability-driven path-level gate: no per-parameter allow-list. The
+    // final filesystem/descriptor gate independently requires a procfs, sysfs,
+    // or cgroup control node. The CPU governor remains separately owned by the
+    // MutationController authority.
     if (isFatalSurface(path)) return false;
     const auto slash = path.rfind('/');
     const std::string_view leaf = slash == std::string_view::npos ? path : path.substr(slash + 1);
@@ -165,6 +228,15 @@ ActuatorResult ResourceActuator::restore(std::string_view path,
     const std::string target = comparableValue(baseline);
     if (path.empty() || target.empty()) {
         result.status = ActuatorStatus::Invalid;
+        return result;
+    }
+
+    // Recovery is a write path too. A syntactically valid journal must never
+    // bypass the same surface guard used by normal mutations; otherwise a
+    // stale or tampered journal could write a fatal control or the separately
+    // owned CPU governor. Validate before reading or writing the target.
+    if (!mutationTargetAllowed(path)) {
+        result.status = ActuatorStatus::SafetyRejected;
         return result;
     }
 
