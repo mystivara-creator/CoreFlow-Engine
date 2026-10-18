@@ -40,6 +40,7 @@ class ForegroundTracker final {
 public:
     void setProcsPath(std::string path) { procs_path_ = std::move(path); }
     void setProcRoot(std::string path) { proc_root_ = std::move(path); }
+    [[nodiscard]] const std::string& procsPath() const noexcept { return procs_path_; }
     // Returns true once per detected foreground change; fills the resolved
     // package name when /proc/<pid>/cmdline is readable.
     [[nodiscard]] bool poll(std::string& package_out) noexcept;

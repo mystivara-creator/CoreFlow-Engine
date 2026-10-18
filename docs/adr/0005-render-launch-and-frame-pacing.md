@@ -1,11 +1,13 @@
 # ADR 0005: Render, app launch, and frame pacing domains
 
-- Status: Accepted in part. Frame telemetry and the interactivity boost actuators
-  (GPU minimum frequency, top-app uclamp, read-ahead) are implemented and wired into
-  the autonomous loop behind the interactivity_mode and global arm gates. The launch
-  window detector and the render collector are implemented and tested but are NOT
-  called by the loop. The loop uses ForegroundTracker and InteractivityModel for
-  foreground changes. These two modules are candidates for removal.
+- Status: Partially implemented. Frame telemetry and the interactivity boost actuators
+  (GPU minimum frequency, top-app uclamp, read-ahead) are wired into the autonomous
+  loop behind the interactivity_mode and global arm gates. The launch detector and
+  render collector are now called by the loop when a discovered foreground cgroup
+  path is available. Their process-count/PSI signal is corroborative; ForegroundTracker
+  remains the PID-change signal. Runtime behavior and target-device impact still need
+  Android ARM64 validation. Boost target paths are selected from discovered writable
+  capabilities, not fixed vendor paths.
 - Date: 2026-10-18
 
 ## Context

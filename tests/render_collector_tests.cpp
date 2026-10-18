@@ -66,6 +66,16 @@ int testMissingPressureIsUnavailableNotFatal() {
     return 0;
 }
 
+int testOversizedMembershipFailsClosed() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_render_collector_oversized";
+    fs::remove_all(root);
+    writeText(root / "procs", std::string((1U << 20U) + 1U, '1'));
+    coreflow::observe::LaunchObservation obs;
+    CHECK(!readLaunchObservation((root / "procs").string(), (root / "absent").string(), 8U, obs));
+    fs::remove_all(root);
+    return 0;
+}
+
 int testMissingMembershipFailsClosed() {
     coreflow::observe::LaunchObservation obs;
     CHECK(!readLaunchObservation("/nonexistent/coreflow/procs", "/nonexistent/io", 1U, obs));
@@ -80,6 +90,7 @@ int main() {
     failures += testCountIsBounded() != 0;
     failures += testReadsMembershipAndPressure() != 0;
     failures += testMissingPressureIsUnavailableNotFatal() != 0;
+    failures += testOversizedMembershipFailsClosed() != 0;
     failures += testMissingMembershipFailsClosed() != 0;
     if (failures != 0) {
         std::fprintf(stderr, "CoreFlow render collector tests: FAIL (%d)\n", failures);

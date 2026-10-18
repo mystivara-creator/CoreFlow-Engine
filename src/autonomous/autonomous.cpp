@@ -11,12 +11,15 @@
 #include "coreflow/interactivity_boost.hpp"
 #include "coreflow/interactivity_model.hpp"
 #include "coreflow/interactivity_policy.hpp"
+#include "coreflow/launch_detector.hpp"
+#include "coreflow/render_collector.hpp"
 
 #include <android/log.h>
 #include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <memory>
+#include <limits>
 #include <unistd.h>
 #include <cstdarg>
 #include <cmath>
@@ -24,6 +27,7 @@
 #include <thread>
 #include <utility>
 #include <filesystem>
+#include <fstream>
 
 #include "coreflow/signal_state.hpp"
 #include "coreflow/runtime_paths.hpp"
@@ -36,6 +40,42 @@ namespace {
 // ============================================================================
 
 const RuntimePaths kPaths = RuntimePaths::defaults();
+
+// Resolve interactivity targets from the current capability matrix. A path is
+// eligible only when discovery says it exists and is writable; the actuator
+// still performs its own authorization, safety, journal, and read-back checks.
+struct InteractivityPaths final {
+    std::string gpu_min_freq;
+    std::string uclamp_min;
+    std::string foreground_procs;
+};
+
+InteractivityPaths discoverInteractivityPaths(
+    const EnvironmentCapabilityMatrix& matrix) {
+    InteractivityPaths result;
+    for (const auto& resource : matrix.resources) {
+        if (!resource.exists || !resource.writable || resource.path.empty()) continue;
+        const std::filesystem::path path(resource.path);
+        const std::string filename = path.filename().string();
+        if (result.gpu_min_freq.empty() && resource.domain == ResourceDomain::Gpu &&
+            filename == "min_freq") {
+            result.gpu_min_freq = resource.path;
+        }
+        if (result.uclamp_min.empty() && resource.domain == ResourceDomain::UClamp &&
+            (filename == "uclamp.min" || filename == "cpu.uclamp.min")) {
+            result.uclamp_min = resource.path;
+        }
+    }
+    // cgroup.procs is a read-only observation file, so it need not be admitted
+    // as a writable tunable. Derive it from the discovered uclamp controller.
+    if (!result.uclamp_min.empty()) {
+        const auto sibling = std::filesystem::path(result.uclamp_min).parent_path() /
+                             "cgroup.procs";
+        std::ifstream probe(sibling);
+        if (probe) result.foreground_procs = sibling.string();
+    }
+    return result;
+}
 
 // Log tag shared with main.cpp so both daemon entry and engine log together.
 constexpr const char* kLogTag = "CoreFlowAutonomous";
@@ -577,13 +617,16 @@ void AutonomousEngine::tick() {
         // the safety hold and the thermal guard.
         if (!interactivity_sources_ready_) {
             gpu_busy_source_.discoverDefaultRoots();
-            foreground_tracker_.setProcsPath("/dev/cpuctl/top-app/cgroup.procs");
+            const InteractivityPaths paths =
+                discoverInteractivityPaths(snapshot_.profile.capabilities);
+            // Empty means discovery did not find a safe observation path; do
+            // not silently fall back to a vendor-specific default.
+            foreground_tracker_.setProcsPath(paths.foreground_procs);
             interactivity_journal_ = std::make_unique<FileMutationJournal>(
                 "/data/adb/coreflow/interactivity.journal");
             boost_controller_.setJournal(interactivity_journal_.get());
-            boost_controller_.setGpuMinFreqPath(
-                "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq");
-            boost_controller_.setTopAppUclampPath("/dev/cpuctl/top-app/uclamp.min");
+            boost_controller_.setGpuMinFreqPath(paths.gpu_min_freq);
+            boost_controller_.setTopAppUclampPath(paths.uclamp_min);
             boost_controller_.discoverReadaheadPaths();
             // A previous run may have died while a boost was active. Adopt its
             // journal so the next pass restores the true baseline.
@@ -605,6 +648,28 @@ void AutonomousEngine::tick() {
         for (const std::uint64_t ia_duration_ns :
              frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
             interactivity_model_.ingestFrame(ia_duration_ns, 16'666'667ULL);
+        }
+        // The launch detector and render collector are now part of the live
+        // loop. Their signal is corroborative: ForegroundTracker remains the
+        // PID-change signal, while process-count growth plus PSI can extend a
+        // bounded launch window. Missing observation files fail closed.
+        const std::string launch_procs_path = foreground_tracker_.procsPath();
+        observe::LaunchObservation launch_observation;
+        constexpr std::uint64_t kNsPerMs = 1'000'000ULL;
+        const bool timestamp_convertible =
+            ia_now_ms <= std::numeric_limits<std::uint64_t>::max() / kNsPerMs;
+        const std::uint64_t ia_now_ns = timestamp_convertible
+            ? ia_now_ms * kNsPerMs : 0U;
+        if (timestamp_convertible && !launch_procs_path.empty() &&
+            observe::readLaunchObservation(launch_procs_path, "/proc/pressure/io",
+                                           ia_now_ns, launch_observation)) {
+            const observe::LaunchPhase previous_phase = launch_detector_.phase();
+            const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);
+            if (previous_phase == observe::LaunchPhase::Idle &&
+                phase == observe::LaunchPhase::LaunchWindow) {
+                interactivity_model_.onForegroundChanged(ia_now_ms);
+                logInfo("INTERACTIVITY launch_window source=process_count_psi");
+            }
         }
         std::string ia_foreground_package;
         if (foreground_tracker_.poll(ia_foreground_package)) {
