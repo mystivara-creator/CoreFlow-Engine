@@ -215,15 +215,27 @@ jobs:
           set -euo pipefail
           bash tools/verify_source_release.sh
 
+      - name: Vendor WebUI dependencies (Material 3 + Lit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/vendor_webui_deps.sh
+
       - name: Verify WebUI payload
         shell: bash
         run: |
           set -euo pipefail
-          test -s module/webroot/index.html
-          test -s module/webroot/style.css
-          test -s module/webroot/app.js
-          node --check module/webroot/app.js
-          grep -Fq 'data-view="terminal"' module/webroot/index.html
+          for f in index.html style.css app.js control_logic.js engine_status.js; do
+            test -s "module/webroot/$f"
+          done
+          for f in app.js control_logic.js engine_status.js; do
+            node --check "module/webroot/$f"
+          done
+          test -s module/webroot/vendor/material/all.js
+          test -s module/webroot/vendor/npm/lit/index.js
+          node tools/test_webui_control.js
+          grep -Fq 'data-page="journal"' module/webroot/index.html
+          grep -Fq 'data-page="about"' module/webroot/index.html
           grep -Fq 'mystivara-creator/CoreFlow-Engine/tree/Autonomous-Engine' module/webroot/index.html
 
       - name: Fetch ONNX Runtime Android
@@ -388,6 +400,8 @@ jobs:
           test -s module/webroot/index.html
           test -s module/webroot/app.js
           test -s module/webroot/style.css
+          test -s module/webroot/control_logic.js
+          test -s module/webroot/vendor/material/all.js
           cp -R module/webroot "${MODULE_DIR}/webroot"
 
           chmod 0755 \

@@ -1,161 +1,318 @@
 #!/usr/bin/env node
 "use strict";
-// Smoke test: runs the real app.js against a fake DOM and a fake KernelSU bridge that
-// returns real C++-written status files. Proves the Live view polls, parses and renders
-// end to end. Usage: node tools/test_webui_render.js <fixture-dir>
+// End-to-end smoke test for the CoreFlow Control WebUI. It loads the real index.html ids and
+// attributes into a minimal DOM, runs the real app.js, and answers its KernelSU bridge calls with
+// real C++-written status (ready.json from tests/status_dump.cpp) and a simulated device.
+// Usage: node tools/test_webui_render.js <fixture-dir>
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
 const root = path.resolve(__dirname, "..");
 const dir = process.argv[2];
-if (!dir) { console.error("usage: test_webui_render.js <fixture-dir>"); process.exit(2); }
+if (!dir) {
+  console.error("usage: test_webui_render.js <fixture-dir>");
+  process.exit(2);
+}
 const web = path.join(root, "module/webroot");
 
+let checks = 0;
+let failures = 0;
+function check(cond, label) {
+  checks++;
+  if (!cond) {
+    failures++;
+    console.error("FAIL: " + label);
+  }
+}
+
+// ---- minimal DOM built from the real index.html ----
+const missingIds = new Set();
+const registry = {};
+const docNodes = [];
+const createdNodes = [];
+
 class El {
-  constructor(tag, id) {
-    this.tag = tag; this.id = id || ""; this.children = []; this._text = ""; this.className = "";
-    this.dataset = {}; this.style = {}; this.value = ""; this.checked = false; this.disabled = false; this.handlers = {};
-    const self = this;
-    this.classList = {
-      add: (c) => { if (!self.className.split(" ").includes(c)) self.className += " " + c; },
-      remove: (c) => { self.className = self.className.split(" ").filter((x) => x !== c).join(" "); },
-      toggle: () => {}, contains: (c) => self.className.split(" ").includes(c),
-    };
+  constructor(tag, inDocument) {
+    this.tag = String(tag).toLowerCase();
+    this.attrs = {};
+    this.children = [];
+    this._text = "";
+    this.value = "";
+    this.style = {};
+    this.scrollTop = 0;
+    this.handlers = {};
+    this.open = false;
+    this.returnValue = "";
+    (inDocument ? docNodes : createdNodes).push(this);
+  }
+  getAttribute(n) { return Object.prototype.hasOwnProperty.call(this.attrs, n) ? this.attrs[n] : null; }
+  setAttribute(n, v) { this.attrs[n] = String(v); }
+  hasAttribute(n) { return Object.prototype.hasOwnProperty.call(this.attrs, n); }
+  toggleAttribute(n, force) {
+    const on = force === undefined ? !this.hasAttribute(n) : !!force;
+    if (on) this.attrs[n] = ""; else delete this.attrs[n];
+    return on;
+  }
+  get className() { return this.attrs.class || ""; }
+  set className(v) { this.attrs.class = String(v); }
+  get hidden() { return this.hasAttribute("hidden"); }
+  set hidden(v) { this.toggleAttribute("hidden", v); }
+  get selected() { return this.hasAttribute("selected"); }
+  set selected(v) { this.toggleAttribute("selected", v); }
+  get disabled() { return this.hasAttribute("disabled"); }
+  set disabled(v) { this.toggleAttribute("disabled", v); }
+  get firstChild() { return this.children[0] || null; }
+  get textContent() {
+    return this._text + this.children.map((c) => (c instanceof El ? c.textContent : c.text)).join("");
   }
   set textContent(v) { this._text = String(v); this.children = []; }
-  get textContent() { return this._text + this.children.map((c) => c.textContent).join(""); }
   appendChild(c) { this.children.push(c); return c; }
-  append(...cs) { cs.forEach((c) => this.children.push(typeof c === "string" ? Object.assign(new El("#text"), { _text: c }) : c)); }
-  replaceChildren(...cs) { this.children = []; this._text = ""; this.append(...cs); }
+  append(...nodes) { nodes.forEach((n) => this.children.push(n instanceof El ? n : { text: String(n) })); }
+  removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; }
+  remove() {}
   addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); }
-  dispatch(type) { (this.handlers[type] || []).forEach((fn) => fn({ target: this })); }
-  removeEventListener() {} remove() {} setAttribute() {} querySelector() { return null; }
-  querySelectorAll() { return []; } showModal() {} close() {} select() {}
+  removeEventListener(type, fn) { this.handlers[type] = (this.handlers[type] || []).filter((f) => f !== fn); }
+  dispatch(type) { (this.handlers[type] || []).slice().forEach((fn) => fn({ target: this })); }
+  click() { this.dispatch("click"); }
+  showModal() { this.open = true; }
+  close(value) {
+    this.open = false;
+    this.returnValue = value === undefined ? "" : String(value);
+    this.dispatch("close");
+  }
+  select() {}
 }
-const registry = {};
-const getEl = (id) => (registry[id] = registry[id] || new El("div", id));
 
-let currentStatusFile = "ready.json";
-let statusReads = 0;
-let traceReads = 0;
-const nowOf = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).updated_epoch + 2;
+function selectorTest(sel) {
+  let m = /^([a-zA-Z][\w-]*)?\.([\w-]+)$/.exec(sel);
+  if (m) return (el) => (!m[1] || el.tag === m[1]) && el.className.split(/\s+/).includes(m[2]);
+  m = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(sel);
+  if (m) return (el) => el.hasAttribute(m[1]) && (m[2] === undefined || el.getAttribute(m[1]) === m[2]);
+  throw new Error("test DOM does not support selector " + sel);
+}
 
-const ksu = {
-  exec(cmd, cb) {
-    let out = "", code = 0, err = "";
-    if (cmd.includes("status.json")) {
-      statusReads++;
-      if (currentStatusFile === "__bridge_fail__") { code = 1; err = "su: permission denied"; }
-      else if (currentStatusFile === "__missing__") { out = "NOW=1760000002\n"; code = 1; }
-      else out = "NOW=" + nowOf(currentStatusFile) + "\n" + fs.readFileSync(path.join(dir, currentStatusFile), "utf8");
-    } else if (cmd.includes("decision_trace.jsonl")) {
-      traceReads++;
-      const tracePath = path.join(dir, "decision_trace.jsonl");
-      out = fs.existsSync(tracePath) ? fs.readFileSync(tracePath, "utf8") : "";
-    }
-    setImmediate(() => window[cb](code, out, err));
-  },
+function loadDom(html) {
+  const stripped = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script[\s\S]*?<\/script>/g, "")
+    .replace(/<style[\s\S]*?<\/style>/g, "");
+  const tagRe = /<([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s=>\/]+(?:="[^"]*")?)*)\s*\/?>/g;
+  const attrRe = /([^\s=]+)(?:="([^"]*)")?/g;
+  let m;
+  while ((m = tagRe.exec(stripped))) {
+    const node = new El(m[1], true);
+    let a;
+    attrRe.lastIndex = 0;
+    while ((a = attrRe.exec(m[2] || ""))) node.setAttribute(a[1], a[2] === undefined ? "" : a[2]);
+    if (node.getAttribute("id")) registry[node.getAttribute("id")] = node;
+  }
+}
+const indexHtml = fs.readFileSync(path.join(web, "index.html"), "utf8");
+loadDom(indexHtml);
+
+// ---- simulated device and KernelSU bridge ----
+const readyJson = fs.readFileSync(path.join(dir, "ready.json"), "utf8");
+const readyObj = JSON.parse(readyJson);
+const device = {
+  pids: "4242", supervisor: "4200", supAlive: "1", safe: "0", disable: "0", pending: "0", boot: "0",
+  config: [
+    "# CoreFlow config (test device)",
+    "mutation_mode=observe",
+    "mutation_armed=false",
+    "monitor_interval=5",
+    "min_confidence=0.6",
+    "allow_cpu_governor=yes",
+    "grant_memory=true",
+    "boost_window_ms=3000",
+    ""
+  ].join("\n"),
+  trace: [
+    JSON.stringify({ event: "actuator_apply_completed", result: "OK", reason: "verified", timestamp: "t1", state: "Normal", decision: "Apply", safety_hold: "NONE" }),
+    JSON.stringify({ event: "scope_gate_checked", result: "DENY", reason: "cpu_governor_opt_in_disabled", timestamp: "t2", safety_hold: "NONE" }),
+    JSON.stringify({ event: "thermal_guard", result: "HOLD", reason: "hot", timestamp: "t3", safety_hold: "THERMAL" })
+  ].join("\n"),
+  log: "2026-10-19 10:00:00 CoreFlowAutonomous started\n2026-10-19 10:00:03 WARN thermal headroom low\n"
 };
+const commands = [];
 
-const liveNav = new El("button", "liveNav"); liveNav.dataset.view = "live"; liveNav.className = "nav-item";
-const traceNav = new El("button", "traceNav"); traceNav.dataset.view = "trace"; traceNav.className = "nav-item";
-getEl("view-live"); getEl("view-trace");
+function reply(cb, errno, stdout, stderr) {
+  setImmediate(() => window[cb](errno, stdout, stderr || ""));
+}
+
+function bridgeExec(cmd, cb) {
+  commands.push(cmd);
+  if (cmd.includes("@@PROBE")) {
+    const now = readyObj.updated_epoch + 2;
+    const probe = [
+      "@@PROBE",
+      "PIDS=" + device.pids,
+      "SUP=" + device.supervisor,
+      "SUP_ALIVE=" + device.supAlive,
+      "SAFE=" + device.safe,
+      "DISABLE=" + device.disable,
+      "PENDING=" + device.pending,
+      "BOOT=" + device.boot,
+      "@@STATUS",
+      "NOW=" + now,
+      readyJson,
+      "@@END"
+    ].join("\n");
+    return reply(cb, 0, probe + "\n");
+  }
+  if (cmd.includes("CONFIG_COMMIT_OK")) {
+    const m = /printf %s '([\s\S]*?)' > "\$TMP"/.exec(cmd);
+    if (m) device.config = m[1].split("'\\''").join("'");
+    if (cmd.includes("rm -f \"$DIR/DISABLE\"")) device.disable = "0";
+    if (cmd.includes("touch \"$DIR/DISABLE\"")) device.disable = "1";
+    device.pending = "1";
+    return reply(cb, 0, "CONFIG_COMMIT_OK\n");
+  }
+  if (cmd.startsWith("cat ") && cmd.includes("config.ini")) return reply(cb, 0, device.config);
+  if (cmd.includes("decision_trace.jsonl")) return reply(cb, 0, device.trace + "\n");
+  if (cmd.includes("coreflowd.log")) return reply(cb, 0, device.log);
+  if (cmd.includes("webui_restart_request")) return reply(cb, 0, "RESTART_OK\n");
+  if (cmd.includes("nohup")) return reply(cb, 0, "START_REQUESTED\n");
+  if (cmd.includes("kill -USR1")) return reply(cb, 0, "REFRESH_SIGNAL_SENT\n");
+  if (cmd.includes("kill -TERM")) return reply(cb, 0, "STOP_OK\n");
+  return reply(cb, 1, "", "unexpected command in test");
+}
+
+const ksu = { exec: bridgeExec };
 const document = {
-  readyState: "complete", visibilityState: "visible",
-  getElementById: getEl, createElement: (t) => new El(t),
-  createTextNode: (value) => Object.assign(new El("#text"), { _text: String(value) }),
-  querySelectorAll: (selector) => {
-    if (selector === "[data-view]" || selector === ".nav-item") return [liveNav, traceNav];
-    if (selector === ".view") return [getEl("view-live"), getEl("view-trace")];
-    return [];
-  }, querySelector: () => null,
-  handlers: {}, addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); },
-  body: new El("body"),
+  readyState: "complete",
+  visibilityState: "visible",
+  getElementById(id) {
+    if (registry[id]) return registry[id];
+    missingIds.add(id);
+    return new El("div", false);
+  },
+  createElement: (tag) => new El(tag, false),
+  querySelectorAll(sel) {
+    const test = selectorTest(sel);
+    return docNodes.filter(test);
+  },
+  addEventListener() {},
+  body: new El("body", false),
+  execCommand: () => true
 };
-const window = { document, ksu, CoreFlowStatus: undefined };
-const sandbox = { window, document, ksu, navigator: {}, atob, btoa, console, setTimeout, clearTimeout, Promise, Date, Math, JSON };
+
+const window = { document, customElements: undefined };
+const sandbox = {
+  window, document, ksu, navigator: {}, console, setTimeout, clearTimeout, setImmediate,
+  Promise, Date, Math, JSON, String, Number, Object, Array, RegExp, Error
+};
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(web, "engine_status.js"), "utf8").replace("typeof window !== \"undefined\" ? window : this", "window"), sandbox);
-vm.runInContext(fs.readFileSync(path.join(web, "app.js"), "utf8"), sandbox);
+["engine_status.js", "control_logic.js", "app.js"].forEach((f) => {
+  vm.runInContext(fs.readFileSync(path.join(web, f), "utf8"), sandbox, { filename: f });
+});
 
-let checks = 0, failures = 0;
-const check = (c, l) => { checks++; if (!c) { failures++; console.error("FAIL: " + l); } };
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const text = (id) => getEl(id).textContent;
+const tick = (ms) => new Promise((r) => setTimeout(r, ms || 15));
+const S = window.CoreFlowStatus;
+const txt = (id) => registry[id].textContent;
+const navTo = (page) => document.querySelectorAll("[data-page-link=\"" + page + "\"]")[0].click();
 
 (async () => {
-  await wait(250);
-  check(statusReads >= 1, "Live view polls status.json on load");
-  check(text("liveTitle") === "Ready to act", "banner shows the engine's own verdict: " + text("liveTitle"));
-  check(getEl("liveBanner").className.includes("tone-ok"), "banner tone ok");
-  check(text("liveVersion") === "v2.1.0" && text("liveSample") === "#120", "meta row filled");
-  check(getEl("livePipeline").children.length === 4, "pipeline rendered 4 stages");
-  check(getEl("liveEyes").children.length >= 6, "eyes rows rendered");
-  check(getEl("liveDevice").children.length >= 6, "device & ecosystem rows rendered");
-  check(getEl("liveDevice").textContent.includes("QUARANTINED"), "block queue safety policy is visible");
-  check(getEl("liveBrain").children.length >= 6, "brain rows rendered");
-  check(getEl("liveHands").children.length >= 2, "hands rows rendered");
-  check(getEl("liveEyes").textContent.includes("41.5"), "temperature visible in eyes");
+  // The vendor notice is checked 2.5 s after start-up, so wait for that check.
+  await tick(2600);
 
-  getEl("traceSearch").dispatch("input");
-  check(text("traceSummary").includes("structured record(s) shown"), "WebUI parses the C++ event journal");
-  check(text("traceList").includes("scope_gate_checked"), "trace UI renders a real scope-gate event");
-  check(text("traceList").includes("cpu_governor_opt_in_disabled"), "trace UI exposes the causal gate reason");
-  check(text("traceList").includes("coarse scope denied"), "trace UI distinguishes a denied coarse gate from a target permit");
-  check(text("traceList").includes("/sys/test/tunable"), "trace UI displays the concrete actuator target");
-  check(text("traceList").includes("writes attempted/verified 1/1"), "trace UI displays actuator write/readback counts");
-  check(text("traceList").includes("target-bound permit valid"), "trace UI labels target-bound permit separately from coarse gate");
+  // Engine: the hero is the daemon's own state, rendered from the C++ status file.
+  const expected = S.summary(S.parse("NOW=" + (readyObj.updated_epoch + 2) + "\n" + readyJson));
+  check(txt("heroTitle") === expected.title, "hero title is the engine summary: " + txt("heroTitle"));
+  check(txt("heroCode") === (expected.code || "—"), "hero code matches the summary code");
+  check(registry.headerChip.textContent === "ONLINE", "header shows ONLINE when the probe finds pids");
+  check(txt("metaPid") === "4242", "pid comes from the live probe");
+  check(registry.pipeline.children.length === 4, "pipeline renders the four decision stages");
+  check(registry.eyesRows.children.length > 0 && registry.handsRows.children.length > 0, "eyes and hands render rows");
+  check(registry.safetyRows.children.length === 4, "safety markers render from the probe");
+  check(registry.btnStart.disabled === true && registry.btnStop.disabled === false, "online: Start off, Stop on");
+  check(registry.bridgeNotice.hidden === true, "bridge notice hidden while the bridge answers");
+  check(registry.vendorNotice.hidden === false, "vendor notice shown when Material is not loaded");
 
-  traceNav.dispatch("click");
-  await wait(250);
-  const initialTraceReads = traceReads;
-  fs.appendFileSync(path.join(dir, "decision_trace.jsonl"), "\n" + JSON.stringify({
-    schema: "coreflow.event.v2", session_id: "host-test-1", event_seq: 3,
-    cycle: 8, event: "trace_live_poll_marker", scope: "engine", result: "INFO",
-    reason: "new event appended while the trace page is open"
-  }) + "\n");
-  await wait(2850);
-  check(traceReads > initialTraceReads, "active trace view polls the event journal without manual refresh");
-  check(text("traceList").includes("trace_live_poll_marker"), "new daemon event appears in the open timeline");
-  liveNav.dispatch("click");
-  await wait(250);
+  // Re-discover sends SIGUSR1 and writes no tunable.
+  registry.btnRefresh.click();
+  await tick();
+  check(commands.some((c) => c.includes("kill -USR1")), "Re-discover sends SIGUSR1");
 
-  currentStatusFile = "hostile.json";
-  await wait(3300);
-  const hands = getEl("liveHands").textContent;
-  check(hands.includes("<b>1</b>"), "hostile value shown literally as text");
-  check(getEl("liveBrain").children.length >= 6, "hostile status still renders");
-  check(text("liveEyes").includes("n/a"), "NaN renders as n/a");
+  // Stop asks first. Cancelling sends no signal.
+  const dialog = registry.confirmDialog;
+  registry.btnStop.click();
+  await tick();
+  check(dialog.open === true && txt("dialogTitle") === "Stop coreflowd?", "Stop opens its confirmation");
+  const stopsBefore = commands.filter((c) => c.includes("kill -TERM")).length;
+  registry.dialogCancel.click();
+  await tick();
+  check(commands.filter((c) => c.includes("kill -TERM")).length === stopsBefore, "cancelled Stop sends no signal");
 
-  currentStatusFile = "__missing__";
-  await wait(3300);
-  check(text("liveTitle") === "No live data", "missing status.json explained: " + text("liveTitle"));
-  check(/not found/i.test(text("liveDetail")), "missing status.json reason shown");
-  check(getEl("livePipeline").children.length === 0, "no stale pipeline left behind");
+  // Confirmed Restart uses the supervisor's restart marker.
+  registry.btnRestart.click();
+  await tick();
+  registry.dialogConfirm.click();
+  await tick(40);
+  check(commands.some((c) => c.includes("webui_restart_request")), "confirmed Restart writes the supervisor restart marker");
 
-  currentStatusFile = "__bridge_fail__";
-  await wait(3300);
-  check(text("liveTitle") === "No live data", "bridge failure is shown, not silent: " + text("liveTitle"));
-  check(/permission denied/.test(text("liveDetail")), "bridge error text reaches the user");
+  // Policy: values come from config.ini, a valid save writes it, legacy lines survive.
+  navTo("policy");
+  await tick(40);
+  check(registry.runtimeFields.children.length === 2, "policy builds the runtime numeric fields");
+  const boostWrap = registry.interactivityFields.children.find((w) =>
+    (w.children[0].getAttribute("label") || "").startsWith("Boost window"));
+  check(boostWrap && boostWrap.children[0].value === "3000", "policy reads boost_window_ms from config.ini");
+  boostWrap.children[0].value = "4000";
+  registry.btnSavePolicy.click();
+  await tick(60);
+  check(device.config.indexOf("boost_window_ms=4000") >= 0, "the saved value reaches config.ini");
+  check(device.config.indexOf("allow_cpu_governor=yes") >= 0 && device.config.indexOf("grant_memory=true") >= 0,
+    "legacy grant lines survive a save");
+  check(registry.pendingNotice.hidden === false, "pending-restart banner appears after a save");
 
-  currentStatusFile = "observe.json";
-  await wait(3300);
-  check(text("liveTitle") === "Observe mode", "observe verdict: " + text("liveTitle"));
+  // Adaptive is refused while SAFE_MODE is present: the probe must report it first.
+  device.safe = "1";
+  navTo("engine");
+  await tick(40);
+  navTo("policy");
+  await tick(40);
+  const writesBefore = commands.filter((c) => c.includes("CONFIG_COMMIT_OK")).length;
+  document.querySelectorAll("[data-mode=\"adaptive\"]")[0].click();
+  registry.btnSavePolicy.click();
+  await tick(40);
+  check(commands.filter((c) => c.includes("CONFIG_COMMIT_OK")).length === writesBefore,
+    "SAFE_MODE blocks an Adaptive save before any write");
+  check(dialog.open === false, "a blocked save does not open a confirmation");
+  device.safe = "0";
 
-  // A hidden page must not keep polling the root shell (battery, bridge load).
-  document.visibilityState = "hidden";
-  const before = statusReads;
-  currentStatusFile = "ready.json";
-  await wait(3600);
-  check(statusReads === before, "no polling while the page is hidden");
-  document.visibilityState = "visible";
-  (document.handlers.visibilitychange || []).forEach((fn) => fn());
-  await wait(400);
-  check(statusReads > before, "polling resumes when the page is visible again");
-  check(text("liveTitle") === "Ready to act", "view recovers after being hidden");
+  // Journal: records are classified, the filter narrows them, the log filter matches.
+  navTo("journal");
+  await tick(40);
+  check(registry.traceList.children.length === 3, "journal lists the three decision records");
+  document.querySelectorAll("[data-jfilter=\"errors\"]")[0].click();
+  await tick();
+  check(registry.traceList.children.length === 2, "blocks & errors filter keeps the DENY and HOLD records");
+  document.querySelectorAll("[data-jview=\"log\"]")[0].click();
+  await tick();
+  registry.logSearch.value = "thermal";
+  registry.logSearch.dispatch("input");
+  check(registry.logBox.textContent.indexOf("thermal") >= 0 && registry.logBox.textContent.indexOf("started") < 0,
+    "log filter keeps only matching lines");
 
-  console.log("CoreFlow WebUI render smoke: " + (checks - failures) + "/" + checks + " checks passed");
+  // Missing bridge: the page reports it and does not pretend to act.
+  sandbox.ksu = undefined;
+  navTo("engine");
+  await tick(40);
+  check(registry.bridgeNotice.hidden === false, "a missing KernelSU bridge is reported");
+  check(registry.btnStart.disabled === true && registry.btnStop.disabled === true, "no action is offered without the bridge");
+
+  // Static invariants: the UI never builds markup from device data.
+  const appSource = fs.readFileSync(path.join(web, "app.js"), "utf8");
+  const logicSource = fs.readFileSync(path.join(web, "control_logic.js"), "utf8");
+  check(!/innerHTML|insertAdjacentHTML|outerHTML|document\.write|\beval\(/.test(appSource + logicSource),
+    "app.js and control_logic.js never use HTML injection");
+  check(missingIds.size === 0, "every id used by app.js exists in index.html: " + Array.from(missingIds).join(", "));
+
+  console.log("CoreFlow WebUI render contract: " + (checks - failures) + "/" + checks + " checks passed");
   process.exit(failures ? 1 : 0);
-})().catch((e) => { console.error("FAIL: render threw: " + (e && e.stack || e)); process.exit(1); });
+})().catch((e) => {
+  console.error("FAIL: render test crashed: " + ((e && e.stack) || e));
+  process.exit(1);
+});

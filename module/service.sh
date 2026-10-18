@@ -10,6 +10,7 @@ PID_FILE="$STATE_DIR/coreflowd.pid"
 BOOT_COUNTER="$STATE_DIR/boot_attempts"
 SAFE_MODE_MARKER="$STATE_DIR/SAFE_MODE"
 LOG_FILE="$LOG_DIR/coreflowd.log"
+RESTART_REQUEST="$STATE_DIR/webui_restart_request"
 
 # Exit codes from coreflowd that must NOT trigger a restart:
 #   0 clean stop, 2 init failure, 3 another instance holds the lock, 4 lock error.
@@ -81,6 +82,15 @@ supervise() {
         if [ "$STOPPING" -eq 1 ]; then
             log "coreflowd stopped rc=$rc"
             break
+        fi
+
+        # WebUI "Restart" writes this marker, then terminates the child. Relaunch at once
+        # and do not count it toward the crash limit. A stop request never reaches here
+        # because STOPPING is set by SIGTERM to the supervisor itself.
+        if [ -f "$RESTART_REQUEST" ]; then
+            rm -f "$RESTART_REQUEST" 2>/dev/null
+            log "restart requested from WebUI rc=$rc; relaunching coreflowd"
+            continue
         fi
 
         case "$rc" in

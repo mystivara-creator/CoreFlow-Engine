@@ -37,6 +37,12 @@ tools/test_webui_status.sh
 tools/test_webui_status.js
 tools/test_webui_render.js
 module/webroot/engine_status.js
+module/webroot/control_logic.js
+module/webroot/app.js
+module/webroot/index.html
+module/webroot/style.css
+tools/test_webui_control.js
+tools/vendor_webui_deps.sh
 README.md
 CHANGELOG.md
 docs/BUILD_STATUS.md

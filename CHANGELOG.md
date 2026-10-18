@@ -8,6 +8,16 @@
 
 # Changelog
 
+## Unreleased — WebUI redesign: Material 3 Expressive daemon control
+
+- Rebuilt the KernelSU WebUI on Material 3 Expressive (material-esm/material web components, vendored at build time for offline use).
+- The WebUI now controls the daemon: Start, Stop, Restart (under the supervisor) and Re-discover (SIGUSR1). Previously it was read-only except for mode switches.
+- Policy page covers every runtime key the daemon parses: mutation mode, runtime discovery, sampling, confidence, and interactivity boosts. Out-of-range values are rejected in the form. A saved change is marked pending until restart.
+- Journal page merges the decision trace and daemon log, with change and block/error filters.
+- Removed the shell console, the separate Overview page, and the diagnostic command palette. Legacy grant_* toggles are no longer offered.
+- `service.sh` honours a WebUI restart request: it relaunches coreflowd without counting a crash.
+- Project & AI page is unchanged.
+
 ## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
 
 ### Security and correctness

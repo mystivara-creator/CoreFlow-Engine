@@ -1,297 +1,627 @@
-/* CoreFlow Autonomous Console: curated diagnostics, atomic config changes, no arbitrary shell. */
-(function(){"use strict";
-const PATH={base:"/data/adb/coreflow",config:"/data/adb/coreflow/config.ini",logs:"/data/adb/coreflow/logs",pid:"/data/adb/coreflow/coreflowd.pid",report:"/data/adb/coreflow/install_report.txt",safe:"/data/adb/coreflow/SAFE_MODE",disable:"/data/adb/coreflow/DISABLE",module:"/data/adb/modules/coreflow_autonomous",trace:"/data/adb/coreflow/decision_trace.jsonl",status:"/data/adb/coreflow/status.json"};
-const $=id=>document.getElementById(id);const els={};
-["modeBadge","daemonStatus","lastRefresh","runtimeState","thermal","memory","load","caps","logBox","configBox","logPath","footerInfo","btnRefresh","modeHeadline","modeDescription","stateDot","chipArmed","chipCpuGov","chipInterval","eventList","thermalNote","memoryNote","thermalBar","memoryBar","loadBar","stateBar","confidenceNote","loadNote","cpuFreq","cpuFreqNote","traceSearch","traceFilter","traceSummary","traceList","requestedMode","effectiveArmed","effectiveCpu","safetyMarkers","safeModeBadge","reportBox","capabilityList","logSearch","logLines","errorsOnly","logSummary","terminalOutput","lastCommand","connectionLabel","connectionSub","observeCurrent","observeCard","adaptiveCard","cpuFreq","cpuFreqNote","traceSearch","traceFilter","traceSummary","traceList","historyStatus","histThermal","histMemory","histLoad","histCpu","sparkThermal","sparkMemory","sparkLoad","sparkCpu","btnClearHistory","safetyOverall","auditRequested","auditArmed","auditCpu","auditSafe","auditDisable","auditRestart","auditDaemon","safetyAuditNote"] .forEach(k=>els[k]=$(k));
-let state={config:null,configRaw:"",log:"",logPath:"",report:"",daemon:"unknown",safe:false,disabled:false,busy:false,view:"live",statusTimer:null,statusBusy:false,statusFails:0,traceTimer:null,traceBusy:false,lastOutput:"",liveMetrics:{},traceEvents:[],history:[]};
-const diagCommands={
- identity:{label:"device identity",cmd:"printf 'MODEL='; getprop ro.product.model; printf 'DEVICE='; getprop ro.product.device; printf 'ANDROID='; getprop ro.build.version.release; printf 'API='; getprop ro.build.version.sdk; printf 'KERNEL='; uname -r; printf 'ABI='; getprop ro.product.cpu.abi"},
- uptime:{label:"uptime & load",cmd:"printf '%s\\n' '--- uptime ---'; cat /proc/uptime; printf '%s\\n' '--- loadavg ---'; cat /proc/loadavg"},
- memory:{label:"memory snapshot",cmd:"printf '%s\\n' '--- meminfo ---'; head -n 18 /proc/meminfo; printf '%s\\n' '--- vmstat ---'; head -n 25 /proc/vmstat"},
- battery:{label:"battery status",cmd:"for f in /sys/class/power_supply/*/type /sys/class/power_supply/*/capacity /sys/class/power_supply/*/status /sys/class/power_supply/*/temp /sys/class/power_supply/*/voltage_now /sys/class/power_supply/*/current_now; do [ -r \"$f\" ] && { echo \"--- $f\"; cat \"$f\"; }; done"},
- thermal:{label:"thermal sensors",cmd:"n=0; for f in /sys/class/thermal/thermal_zone*/temp; do [ -r \"$f\" ] || continue; n=$((n+1)); echo \"--- $f\"; cat \"$f\"; z=${f%/temp}; [ -r \"$z/type\" ] && cat \"$z/type\"; done; [ \"$n\" -gt 0 ] || echo 'No readable thermal zone found.'"},
- process:{label:"CoreFlow process",cmd:"echo '--- pid file ---'; if [ -r /data/adb/coreflow/coreflowd.pid ]; then p=$(cat /data/adb/coreflow/coreflowd.pid); echo \"pid=$p\"; kill -0 \"$p\" 2>/dev/null && echo alive || echo not-alive; else echo 'PID file missing'; fi; echo '--- matching process ---'; ps -A 2>/dev/null | grep '[c]oreflowd' || true; echo '--- safety files ---'; for f in /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE; do [ -e \"$f\" ] && echo \"present: $f\" || echo \"absent: $f\"; done"},
- storage:{label:"storage capability",cmd:"n=0; for f in /sys/block/*/queue/read_ahead_kb /sys/block/*/queue/scheduler /sys/block/*/queue/nr_requests; do [ -r \"$f\" ] || continue; n=$((n+1)); echo \"--- $f\"; head -c 240 \"$f\"; echo; done; [ \"$n\" -gt 0 ] || echo 'No readable block queue nodes found.'"},
- safety:{label:"safety markers",cmd:"for f in /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/coreflow/coreflowd.lock /data/adb/coreflow/mutation_journal.txt /data/adb/coreflow/resource_mutation_journal.txt; do if [ -e \"$f\" ]; then echo \"PRESENT $f\"; [ -f \"$f\" ] && { ls -l \"$f\"; }; else echo \"ABSENT  $f\"; fi; done; echo '--- boot guard ---'; [ -r /data/adb/coreflow/boot_attempts ] && cat /data/adb/coreflow/boot_attempts || echo unavailable"}
-};
-function execShell(command){return new Promise(resolve=>{let done=false;const finish=(errno,stdout,stderr)=>{if(done)return;done=true;clearTimeout(timer);resolve({errno:Number(errno)||0,stdout:stdout==null?"":String(stdout),stderr:stderr==null?"":String(stderr)});};let timer=setTimeout(()=>finish(1,"","WebUI execution timed out"),15000);try{if(typeof ksu!=="undefined"&&typeof ksu.exec==="function"){const cb="cf_cb_"+Date.now()+"_"+Math.floor(Math.random()*1e6);window[cb]=(e,o,s)=>{try{delete window[cb]}catch(_){}finish(e,o,s)};try{ksu.exec(command,cb)}catch(e){try{ksu.exec(command,"{}",cb)}catch(e2){finish(1,"",String(e2||e))}}return;}finish(1,"","No KernelSU WebUI exec bridge. Open through a compatible KSU WebUI host.");}catch(e){finish(1,"",String(e))}})}
-function toast(msg,error=false){const n=document.createElement("div");n.className="toast"+(error?" error":"");n.textContent=msg;$('toastRegion').appendChild(n);setTimeout(()=>n.remove(),3800)}
-function iniParse(s){const out={};String(s||"").split(/\r?\n/).forEach(line=>{line=line.trim();if(!line||line[0]==="#"||line[0]===";")return;const i=line.indexOf("=");if(i>0)out[line.slice(0,i).trim()]=line.slice(i+1).trim()});return out}
-function truth(v){return /^(1|true|yes|on)$/i.test(String(v||""))}
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function setText(id,v){const x=$(id);if(x)x.textContent=v}
-function showView(view){if(!$('view-'+view))return;state.view=view;document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+view));document.querySelectorAll(".nav-item").forEach(b=>b.classList.toggle("active",b.dataset.view===view));const titles={live:"Live engine",overview:"Overview",control:"Mode & policy",diagnostics:"Diagnostics",trace:"Decision trace",terminal:"Shell console",about:"Project & AI"};setText("pageTitle",titles[view]||"CoreFlow");$('sidebar').classList.remove('open');if(view==="diagnostics")renderLog();if(view==="trace"){renderTrace();startTrace()}else stopTrace();if(view==="live")startLive();else stopLive();}
-function installNav(){document.querySelectorAll("[data-view]").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));document.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.goto)));$('menuToggle').addEventListener('click',()=>$('sidebar').classList.toggle('open'));}
-function pickLogFile(){return execShell("if [ -r "+PATH.logs+"/coreflowd.log ]; then echo coreflowd.log; elif ls "+PATH.logs+"/*.log >/dev/null 2>&1; then ls -1 "+PATH.logs+"/*.log | tail -1 | xargs -n1 basename; else echo; fi").then(r=>{const name=(r.stdout||"").trim().split(/\r?\n/)[0]||"";return name&&/^[A-Za-z0-9_.-]+$/.test(name)?PATH.logs+"/"+name:""})}
-function fromLog(text){const lines=String(text||"").split(/\r?\n/);const x={state:null,thermal:null,memory:null,load:null,caps:[],device:null};for(let i=lines.length-1;i>=0;i--){const l=lines[i];if(!x.state){const m=l.match(/\b(IDLE|NORMAL|WARMING|ELEVATED|PRESSURE|THERMAL_GUARD|THERMAL GUARD)\b/i);if(m)x.state=m[1]}if(!x.thermal){let m=l.match(/(\d+(?:\.\d+)?)\s*°?C\b/i)||l.match(/thermal[^\d]*(\d{4,6})/i);if(m){let v=Number(m[1]);x.thermal=(v>200&&String(m[1]).length>=4?(v/1000).toFixed(1):String(m[1]))+" °C"}}if(!x.memory){const m=l.match(/mem(?:ory)?[^\d]*(\d+(?:\.\d+)?)\s*%/i)||l.match(/(?:mem_available_ratio|available_ratio)[=: ]+(\d+(?:\.\d+)?)/i);if(m){let v=Number(m[1]);if(v<=1)v*=100;x.memory=v.toFixed(1)+"% free"}}if(!x.load){const m=l.match(/\bload(?:1)?[=: ]+(\d+(?:\.\d+)?)/i);if(m)x.load=m[1]}if(/CAPS\s+/.test(l)&&x.caps.length<4)x.caps.unshift(l.replace(/^.*CAPS\s+/,"CAPS ").trim());if(!x.device&&/DEVICE\s+/.test(l))x.device=l.replace(/^.*DEVICE\s+/,"DEVICE ").trim();if(x.state&&x.thermal&&x.memory&&x.load&&x.caps.length>=2)break}return x}
-function updateMetric(id,noteId,barId,val,note,pct){setText(id,val||"Unavailable");setText(noteId,note);const bar=$(barId);if(bar)bar.style.width=(pct==null?0:Math.max(0,Math.min(100,pct)))+"%"}
-function parseLiveMetrics(text){const out={};String(text||"").split(/\r?\n/).forEach(line=>{const i=line.indexOf("=");if(i>0)out[line.slice(0,i).trim()]=line.slice(i+1).trim()});return out}
-function liveMetricCommand(){return atob("c2V0ICtlCnByaW50ZiAnU0FNUExFX1RJTUU9JXNcbicgIiQoZGF0ZSAnKyVZLSVtLSVkICVIOiVNOiVTICV6JyAyPi9kZXYvbnVsbCkiCnByaW50ZiAnTE9BRD0nOyBhd2sgJ3twcmludCAkMX0nIC9wcm9jL2xvYWRhdmcgMj4vZGV2L251bGwKYXdrICcvTWVtVG90YWw6LyB7dD0kMn0gL01lbUF2YWlsYWJsZTovIHthPSQyfSBFTkQge2lmKHQ+MCAmJiBhPj0wKSBwcmludGYgIk1FTU9SWT0lZCwlZCwlZFxuIix0LGEsMTAwKmEvdDsgZWxzZSBwcmludCAiTUVNT1JZPXVuYXZhaWxhYmxlIn0nIC9wcm9jL21lbWluZm8gMj4vZGV2L251bGwKbj0wOyBiZXN0PScnOyBiZXN0dHlwZT0nJwpmb3IgZiBpbiAvc3lzL2NsYXNzL3RoZXJtYWwvdGhlcm1hbF96b25lKi90ZW1wOyBkbyBbIC1yICIkZiIgXSB8fCBjb250aW51ZTsgdj0kKGNhdCAiJGYiIDI+L2Rldi9udWxsKTsgY2FzZSAiJHYiIGluICcnfCpbITAtOS1dKikgY29udGludWU7OyBlc2FjOyBjYXNlICIkdiIgaW4gLSopIGNvbnRpbnVlOzsgZXNhYzsgaWYgWyAiJHYiIC1ndCAwIF0gMj4vZGV2L251bGw7IHRoZW4gbj0kKChuKzEpKTsgaWYgWyAteiAiJGJlc3QiIF0gfHwgWyAiJHYiIC1ndCAiJGJlc3QiIF07IHRoZW4gYmVzdD0kdjsgej0ke2YlL3RlbXB9OyBiZXN0dHlwZT0kKGNhdCAiJHovdHlwZSIgMj4vZGV2L251bGwpOyBmaTsgZmk7IGRvbmUKaWYgWyAtbiAiJGJlc3QiIF07IHRoZW4gcHJpbnRmICdUSEVSTUFMX1JBVz0lc1xuVEhFUk1BTF9UWVBFPSVzXG5USEVSTUFMX1pPTkVTPSVzXG4nICIkYmVzdCIgIiRiZXN0dHlwZSIgIiRuIjsgZWxzZSBwcmludGYgJ1RIRVJNQUxfUkFXPXVuYXZhaWxhYmxlXG5USEVSTUFMX1pPTkVTPTBcbic7IGZpCmNwdT0nJzsgZm9yIGYgaW4gL3N5cy9kZXZpY2VzL3N5c3RlbS9jcHUvY3B1ZnJlcS9wb2xpY3kqL3NjYWxpbmdfY3VyX2ZyZXE7IGRvIFsgLXIgIiRmIiBdIHx8IGNvbnRpbnVlOyB2PSQoY2F0ICIkZiIgMj4vZGV2L251bGwpOyBjYXNlICIkdiIgaW4gJyd8KlshMC05XSopIGNvbnRpbnVlOzsgZXNhYzsgY3B1PSIkY3B1ICR7ZiUvc2NhbGluZ19jdXJfZnJlcX06JHYiOyBkb25lCmlmIFsgLW4gIiRjcHUiIF07IHRoZW4gcHJpbnRmICdDUFVfRlJFUT0lc1xuJyAiJHtjcHUjIH0iOyBlbHNlIHByaW50ZiAnQ1BVX0ZSRVE9dW5hdmFpbGFibGVcbic7IGZp")}function applyLiveMetrics(result){const m=parseLiveMetrics(result&&result.stdout||"");state.liveMetrics=m;const failed=!result||result.errno!==0;
- if(failed){updateMetric("thermal","thermalNote","thermalBar","Unavailable","Direct sensor read failed",null);updateMetric("memory","memoryNote","memoryBar","Unavailable","Direct /proc/meminfo read failed",null);updateMetric("load","loadNote","loadBar","Unavailable","Direct /proc/loadavg read failed",null);setText("cpuFreq","Unavailable");setText("cpuFreqNote","Direct cpufreq read failed");return}
- if(m.THERMAL_RAW&&m.THERMAL_RAW!=="unavailable"){let t=Number(m.THERMAL_RAW);if(t>=1000)t/=1000;const valid=Number.isFinite(t)&&t>=-20&&t<=200;updateMetric("thermal","thermalNote","thermalBar",valid?t.toFixed(1)+" °C":"Unavailable",valid?((m.THERMAL_TYPE||"Thermal zone")+" · direct read · "+(m.THERMAL_ZONES||"0")+" readable zones"):"Invalid sensor scale",null)}else updateMetric("thermal","thermalNote","thermalBar","Unavailable","No readable thermal zone",null);
- if(m.MEMORY&&m.MEMORY!=="unavailable"){const a=m.MEMORY.split(",").map(Number),total=a[0],avail=a[1],pct=a[2];if(total>0&&avail>=0&&pct>=0&&pct<=100)updateMetric("memory","memoryNote","memoryBar",pct.toFixed(1)+"% available",(avail/1024).toFixed(0)+" MiB available / "+(total/1024).toFixed(0)+" MiB",100-pct);else updateMetric("memory","memoryNote","memoryBar","Unavailable","Invalid memory sample",null)}else updateMetric("memory","memoryNote","memoryBar","Unavailable","Direct memory read unavailable",null);
- const load=Number(m.LOAD);updateMetric("load","loadNote","loadBar",m.LOAD&&Number.isFinite(load)?load.toFixed(2):"Unavailable","Direct /proc/loadavg · "+(m.SAMPLE_TIME||"sample time unavailable"),null);
- if(m.CPU_FREQ&&m.CPU_FREQ!=="unavailable"){const entries=m.CPU_FREQ.trim().split(/\s+/).map(part=>{const i=part.lastIndexOf(":");return i>0?{policy:part.slice(0,i).split("/").pop(),khz:Number(part.slice(i+1))}:null}).filter(x=>x&&Number.isFinite(x.khz)&&x.khz>0);if(entries.length){const vals=entries.map(x=>x.khz/1000);setText("cpuFreq",vals.length===1?vals[0].toFixed(0)+" MHz":Math.min(...vals).toFixed(0)+"–"+Math.max(...vals).toFixed(0)+" MHz");setText("cpuFreqNote",entries.length+" readable cpufreq policies · direct read")}else{setText("cpuFreq","Unavailable");setText("cpuFreqNote","No valid cpufreq sample")}}else{setText("cpuFreq","Unavailable");setText("cpuFreqNote","No readable cpufreq policy")}
-}
-function capabilityRows(report){
- const text=String(report||"");
- const kv=iniParse(text);
- const rows=[];
- const device=[kv.device_model,kv.soc_family,kv.soc_model].filter(Boolean).join(" · ");
- if(device)rows.push(["Device profile",device,"Reported","install report"]);
- if(kv.android)rows.push(["Android / API",kv.android,"Reported","install report"]);
- if(kv.kernel)rows.push(["Kernel",kv.kernel,"Reported","install report"]);
- if(kv.version)rows.push(["CoreFlow version",kv.version,"Reported","install report"]);
- if(kv.date)rows.push(["Probe report time",kv.date,"Timestamp","install report"]);
- const line=text.split(/\r?\n/).find(x=>/^\s*probe\s+/.test(x))||"";
- const p={};
- line.replace(/^\s*probe\s+/,"").replace(/([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)/g,(_,k,v)=>{p[k]=v;return ""});
- const definitions=[
-  ["thermal_read","Thermal zones readable","zones","count"],
-  ["cpu_read","CPU policies readable","policies","count"],
-  ["cpu_write","CPU policies reported writable","policies","count"],
-  ["block","Block queue nodes readable","nodes","count"],
-  ["battery","Battery telemetry","","flag"],
-  ["swappiness","VM swappiness readable","","flag"]
- ];
- definitions.forEach(([key,label,unit,kind])=>{
-  if(!(key in p))return;
-  const v=p[key];
-  let status="Reported";
-  if(kind==="count"){
-   const n=Number(v);
-   status=Number.isFinite(n)?(n>0?(key==="cpu_write"?"Reported writable":"Available"):(key==="cpu_write"?"None reported writable":"Unavailable")):"Unknown";
-  }else if(/^(yes|true|1)$/i.test(v))status="Available";
-  else if(/^(no|false|0)$/i.test(v))status="Unavailable";
-  rows.push([label,unit?`${v} ${unit}`:v,status,"install report / probe"]);
- });
- if(kv.model_digest)rows.push(["Model digest",String(kv.model_digest).slice(0,16)+"…","Reported","install report"]);
- return rows;
-}
-function renderCapabilityMatrix(){
- const host=$("capabilityList");if(!host)return;
- const rows=capabilityRows(state.report);
- host.replaceChildren();
- if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent="No structured capability data found in the install report. Refresh the report or inspect diagnostics.";host.appendChild(d);return}
- const wrap=document.createElement("div");wrap.className="cap-table-wrap";
- const table=document.createElement("table");table.className="capability-table";
- const thead=document.createElement("thead");thead.innerHTML="<tr><th>RESOURCE</th><th>VALUE</th><th>STATUS</th><th>SOURCE</th></tr>";table.appendChild(thead);
- const tbody=document.createElement("tbody");
- rows.forEach(r=>{const tr=document.createElement("tr");r.forEach((v,i)=>{const td=document.createElement("td");if(i===2){const b=document.createElement("span");b.className="cap-status "+(/available|writable|timestamp/i.test(v)?"available":/unavailable|none/i.test(v)?"limited":"unknown");b.textContent=v;td.appendChild(b)}else td.textContent=v;tr.appendChild(td)});tbody.appendChild(tr)});
- table.appendChild(tbody);wrap.appendChild(table);host.appendChild(wrap);
- const note=document.createElement("p");note.className="source-note";note.textContent="Capability values are from the install report/probe, not a live write test. “Reported writable” is informational and does not authorize mutation.";host.appendChild(note);
-}
-function classifyTrace(line){const l=line.toLowerCase();if(/error|fatal|failed|failure|exception|warn/.test(l))return "error";if(/safe_mode|disable|safety_hold|rollback|restore|boot.loop|journal/.test(l))return "safety";if(/mutation|applied|apply|write|verify|verified|decision|policy|skip|reject|adaptive|observe|confidence|effect.model/.test(l))return "decision";return "event"}
+/* CoreFlow Control: a control surface for the coreflowd C++ daemon.
+ *
+ * - Every action runs one fixed command from control_logic.js through the KernelSU exec bridge.
+ * - The daemon is the only authority over kernel writes. The UI edits config.ini, touches the
+ *   documented marker files, sends SIGTERM/SIGUSR1, and asks service.sh to (re)start coreflowd.
+ * - Rendering uses textContent only. status.json and the journal come from the kernel and the
+ *   daemon, so they are treated as data, never as markup.
+ */
+(function () {
+  "use strict";
 
-function parseStructuredTrace(raw){
- const out=[];
- String(raw||"").split(/\r?\n/).filter(Boolean).forEach(line=>{
-  try{
-   const event=JSON.parse(line);
-   if(event&&(event.schema==="coreflow.decision.v1"||event.schema==="coreflow.event.v2"))out.push(event);
-  }catch(_){}
- });
- return out;
-}
-function renderStructuredTrace(events,host){
- const search=($("traceSearch")?.value||"").toLowerCase();
- const filter=$("traceFilter")?.value||"all";
- const rows=events.slice().reverse().filter(e=>{
-  const blob=JSON.stringify(e).toLowerCase();
-  if(!blob.includes(search))return false;
-  const isEvent=e.schema==="coreflow.event.v2";
-  const result=String(e.result||"").toUpperCase();
-  if(filter==="decision")return isEvent?(e.event==="policy_evaluated"||e.event==="scope_gate_checked"||e.event==="target_permit_checked"||e.event==="cycle_completed"):!!e.decision;
-  if(filter==="mutation")return isEvent?(/mutation|rollback|restore|scope_gate|observation_window|permit|actuator|journal|prewrite_read/.test(String(e.event||""))):/VERIFIED|FAILED|ROLLED_BACK|APPLIED/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation));
-  if(filter==="safety")return e.reason==="SAFETY_HOLD"||e.decision_reason==="SAFETY_HOLD"||String(e.safety_hold||"").toLowerCase()!=="none"||/safety|rollback|hold/.test(String(e.event||"")+" "+String(e.reason||""));
-  if(filter==="error")return isEvent?(/FAILED|ROLLED_BACK|DENY|REJECTED|INVALID|UNAVAILABLE|UNSUPPORTED/.test(result)||/failure|failed/.test(String(e.reason||""))):/FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation))||e.reason==="MUTATION_FAILED";
-  return true;
- });
- host.replaceChildren();
- setText("traceSummary",rows.length+" structured record(s) shown · "+events.length+" loaded from C++ journal");
- if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent=events.length?"No structured records match this filter.":"No structured journal events yet. This can mean the daemon has not written its first cycle, or the journal is not readable.";host.appendChild(d);return}
- rows.slice(0,200).forEach(e=>{
-  const isEvent=e.schema==="coreflow.event.v2";
-  const failed=isEvent?/FAILED|ROLLED_BACK|REJECTED|INVALID|UNAVAILABLE|UNSUPPORTED/.test(String(e.result||"")):/FAILED|ROLLED_BACK/.test(String(e.cpu_mutation)+" "+String(e.resource_mutation));
-  const safety=e.reason==="SAFETY_HOLD"||e.decision_reason==="SAFETY_HOLD"||String(e.safety_hold||"").toLowerCase()!=="none";
-  const row=document.createElement("div");row.className="trace-row "+(safety?"safety":failed?"error":"");
-  const dot=document.createElement("span");dot.className="trace-dot";
-  const body=document.createElement("div");
-  const title=document.createElement("b");
-  title.textContent=isEvent
-   ? `Cycle ${e.cycle??"?"} · ${e.event||"unknown_event"} · ${e.scope||"engine"}`
-   : `Cycle ${e.cycle??"?"} · ${e.decision||"Unknown decision"} · ${e.state||"Unknown state"}`;
-  const p=document.createElement("p");const tag=document.createElement("span");tag.className="trace-tag";tag.textContent=isEvent?(e.result||"UNKNOWN"):(e.reason||"EVALUATED");p.appendChild(tag);p.appendChild(document.createTextNode(" "+(e.timestamp||"timestamp unavailable")+(isEvent?" · seq "+(e.event_seq??"?"):"")));
-  const detail=document.createElement("p");
-  if(isEvent){
-   const session=String(e.session_id||"unknown");
-   detail.textContent=`session ${session} · state ${e.state||"unknown"} · decision ${e.decision||"unknown"} · workload ${e.workload||"unknown"} · policy eligible ${typeof e.mutation_eligible==="boolean"?(e.mutation_eligible?"yes":"no"):"unknown"}`;
-  }else{
-   detail.textContent=`confidence ${Number.isFinite(Number(e.confidence))?Number(e.confidence).toFixed(2):"unknown"} · workload ${e.workload||"unknown"} · eligible ${typeof e.mutation_eligible==="boolean"?(e.mutation_eligible?"yes":"no"):"unknown"} · candidates ${e.candidate_count??"unknown"}`;
+  var S = window.CoreFlowStatus;
+  var C = window.CoreFlowControl;
+
+  var TITLES = { engine: "Engine", policy: "Policy", journal: "Journal", about: "Project & AI" };
+
+  var state = {
+    page: "engine",
+    bridge: null,          // null = not probed yet, true = responding, false = no KernelSU bridge
+    probe: null,
+    status: null,
+    statusFails: 0,
+    pollTimer: null,
+    pollBusy: false,
+    busy: false,
+    configLoaded: false,
+    configRaw: "",
+    config: {},
+    form: null,
+    numInputs: {},
+    journalView: "decisions",
+    traceFilter: "all",
+    trace: [],
+    logText: ""
+  };
+
+  var MESSAGES = {
+    START_REQUESTED: "Start requested. The supervisor is launching coreflowd.",
+    ALREADY_RUNNING: "coreflowd is already running.",
+    STOP_OK: "Engine stopped.",
+    STOP_TIMEOUT: "Stop timed out. The daemon is still running.",
+    RESTART_OK: "Engine restarted with the saved configuration.",
+    RESTART_TIMEOUT: "Restart timed out. Check the Journal for the daemon log.",
+    REFRESH_SIGNAL_SENT: "Re-discovery requested. Results appear in the Journal.",
+    NOT_RUNNING: "coreflowd is not running, so there is nothing to signal.",
+    CONFIG_COMMIT_OK: "Configuration saved."
+  };
+
+  var DIALOGS = {
+    stop: {
+      title: "Stop coreflowd?",
+      message: "The daemon restores any change it made before it exits. The supervisor stops too, so the engine stays off until you start it again or reboot.",
+      detail: "SIGTERM -> supervisor and coreflowd",
+      label: "Stop engine"
+    },
+    restart: {
+      title: "Restart coreflowd?",
+      message: "Loads the saved configuration. The daemon recovers its mutation journal on start, the same as after a reboot.",
+      detail: "relaunch under the supervisor",
+      label: "Restart"
+    },
+    arm: {
+      title: "Enable Adaptive mode?",
+      message: "The engine may apply verified changes across supported non-fatal namespaces. Thermal guards, fatal-surface exclusions, the journal and rollback stay active. Takes effect after restart.",
+      detail: "mutation_mode=adaptive\nmutation_armed=true",
+      label: "Enable Adaptive"
+    },
+    resume: {
+      title: "Resume Adaptive mode?",
+      message: "This removes the DISABLE kill switch and arms Adaptive. Continue only if you intend to resume. SAFE_MODE is never bypassed.",
+      detail: "remove DISABLE\nmutation_mode=adaptive\nmutation_armed=true",
+      label: "Resume Adaptive"
+    },
+    observe: {
+      title: "Return to Observe?",
+      message: "Writes mutation_mode=observe and creates the DISABLE kill switch, so a running Adaptive daemon enters its safety hold and restores state.",
+      detail: "mutation_mode=observe\nmutation_armed=false\ncreate DISABLE",
+      label: "Switch to Observe"
+    }
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- bridge & small helpers ----
+
+  function execShell(command, timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(errno, stdout, stderr) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({
+          errno: Number(errno) || 0,
+          stdout: stdout == null ? "" : String(stdout),
+          stderr: stderr == null ? "" : String(stderr)
+        });
+      }
+      var timer = setTimeout(function () { finish(1, "", "WebUI execution timed out"); }, timeoutMs || 15000);
+      try {
+        if (typeof ksu === "undefined" || typeof ksu.exec !== "function") {
+          finish(1, "", "No KernelSU WebUI exec bridge.");
+          return;
+        }
+        var cb = "cf_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+        window[cb] = function (e, o, s) {
+          try { delete window[cb]; } catch (_) { /* ignore */ }
+          finish(e, o, s);
+        };
+        try {
+          ksu.exec(command, cb);
+        } catch (e) {
+          try { ksu.exec(command, "{}", cb); } catch (e2) { finish(1, "", String(e2 || e)); }
+        }
+      } catch (e) {
+        finish(1, "", String(e));
+      }
+    });
   }
-  const result=document.createElement("p");
-  if(isEvent){
-   let permit="no permit check in this event";
-   if(typeof e.permit_valid==="boolean"){
-    const allowed=e.permit_valid?"valid":"denied/invalid";
-    if(e.event==="scope_gate_checked")permit=`coarse scope ${e.permit_valid?"allowed":"denied"}`;
-    else if(e.event==="target_permit_checked"||e.event==="target_permit_revalidated"||String(e.event||"").startsWith("actuator_apply_"))permit=`target-bound permit ${allowed}`;
-    else permit=`permit ${allowed}`;
-   }
-   result.textContent=`CPU: ${e.cpu_mutation||"unknown"} · Resource: ${e.resource_mutation||"unknown"} · ${permit} · mode ${e.mode||"unknown"} · armed ${typeof e.mutation_armed==="boolean"?(e.mutation_armed?"yes":"no"):"unknown"}`;
-  }else{
-   result.textContent=`CPU: ${e.cpu_mutation||"unknown"} · Resource: ${e.resource_mutation||"unknown"} · hold: ${e.safety_hold||"unknown"} · mode: ${e.mode||"unknown"} · armed: ${typeof e.mutation_armed==="boolean"?(e.mutation_armed?"yes":"no"):"unknown"}`;
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = String(text);
+    return n;
   }
-  const plan=document.createElement("p");plan.textContent=`Policy plan: ${e.plan_action||"not recorded"} · intervention ${e.intervention??"not recorded"} · CPUFreq authority follows global Adaptive/armed gates`;
-  const cause=document.createElement("p");cause.className="trace-cause";cause.textContent=`Cause / diagnostic: ${e.reason||e.plan_reason||"not supplied by the daemon"}`;
-  const extra=document.createElement("p");extra.className="trace-effect";
-  if(isEvent){
-   const operation=e.operation_id?` · operation ${e.operation_id}`:"";
-   const target=e.target?` · target ${e.target}`:"";
-   const requested=e.requested?` · requested ${e.requested}`:"";
-   const current=e.current_value?` · current ${e.current_value}`:"";
-   const baseline=e.baseline_value?` · baseline ${e.baseline_value}`:"";
-   const writes=e.writes_attempted!==null&&e.writes_attempted!==undefined
-    ?` · writes attempted/verified ${e.writes_attempted}/${e.writes_verified??"unknown"}`:"";
-   const dropped=Number(e.trace_dropped_before)>0?` · journal records previously dropped ${Number(e.trace_dropped_before)}`:"";
-   extra.textContent=`Failure stage: ${e.failure_stage||"not reported"} · actuator status: ${e.actuator_status||"not reported"} · decision summary: ${e.decision_reason||"not recorded"}${operation}${target}${requested}${current}${baseline}${writes}${dropped}`;
-  }else{
-   extra.textContent=`Observed outcome: ${e.cpu_mutation==="VERIFIED"||e.resource_mutation==="VERIFIED"?"at least one mutation reported VERIFIED":e.cpu_mutation==="FAILED"||e.resource_mutation==="FAILED"?"mutation reported FAILED":e.cpu_mutation==="ROLLED_BACK"||e.resource_mutation==="ROLLED_BACK"?"mutation reported ROLLED_BACK":e.cpu_mutation==="APPLIED"||e.resource_mutation==="APPLIED"?"mutation applied; verification not represented as complete":e.reason==="OBSERVE_OR_NOT_ARMED"?"execution gated by mode or arm state":e.reason==="POLICY_BLOCKED"?"policy plan is not mutation-eligible":e.reason==="SAFETY_HOLD"?"safety hold takes precedence":"no verified mutation recorded in this cycle"}. This is daemon-reported status, not an independent kernel measurement.`;
+
+  function setText(id, value) {
+    var n = $(id);
+    if (n) n.textContent = value;
   }
-  body.append(title,p,detail,result,plan,cause,extra);row.append(dot,body);host.appendChild(row);
- });
-}
-function renderTrace(){const host=$("traceList");if(!host)return;if(Array.isArray(state.traceEvents)&&state.traceEvents.length){renderStructuredTrace(state.traceEvents,host);return}const search=($("traceSearch")?.value||"").toLowerCase();const filter=$("traceFilter")?.value||"all";const all=String(state.log||"").split(/\r?\n/).filter(Boolean).slice(-500).reverse();const rows=all.map(line=>({line,type:classifyTrace(line)})).filter(x=>(filter==="all"||(filter==="decision"&&x.type==="decision")||(filter==="mutation"&&/mutation|applied|apply|write|verify|rollback|restore/i.test(x.line))||(filter==="safety"&&x.type==="safety")||(filter==="error"&&x.type==="error"))&&x.line.toLowerCase().includes(search));host.replaceChildren();setText("traceSummary",rows.length+" event(s) shown · based on "+all.length+" recent log lines");if(!rows.length){const d=document.createElement("div");d.className="empty-state";d.textContent="No matching recorded events. The trace will not synthesize decisions missing from the runtime log.";host.appendChild(d);return}rows.slice(0,200).forEach(x=>{const row=document.createElement("div");row.className="trace-row "+(x.type==="error"?"error":x.type==="safety"?"safety":"");const dot=document.createElement("span");dot.className="trace-dot";const body=document.createElement("div");const b=document.createElement("b");b.textContent=x.line;const p=document.createElement("p");const tm=x.line.match(/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d/);const tag=document.createElement("span");tag.className="trace-tag";tag.textContent=x.type.toUpperCase();p.appendChild(tag);p.appendChild(document.createTextNode(tm?tm[0]:"Recorded runtime log"));body.append(b,p);row.append(dot,body);host.appendChild(row)})}
 
-function renderEvents(text){const lines=String(text||"").trim().split(/\r?\n/).filter(Boolean).slice(-6).reverse();const host=$('eventList');host.replaceChildren();if(!lines.length){const d=document.createElement('div');d.className='empty-state';d.textContent='No events in selected log.';host.appendChild(d);return}lines.forEach(line=>{const row=document.createElement('div');const low=line.toLowerCase();row.className='event-item'+(/error|fail|fatal/.test(low)?' error':/warn|thermal_guard|safety_hold/.test(low)?' warning':'');const bullet=document.createElement('span');bullet.className='event-bullet';const body=document.createElement('div');const b=document.createElement('b');b.textContent=line.length>190?line.slice(0,187)+'…':line;const sm=document.createElement('small');const tm=line.match(/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d/);sm.textContent=tm?tm[0]:'CoreFlow event';body.append(b,sm);row.append(bullet,body);host.appendChild(row)})}
-function renderCapabilities(parsed,report){const all=[];if(parsed.device)all.push(['Device profile',parsed.device]);parsed.caps.forEach((v,i)=>all.push(['Capability '+(i+1),v]));if(report){report.split(/\r?\n/).filter(l=>/^probe\s|^device_model=|^soc_model=|^soc_family=|^android=|^kernel=/.test(l)).slice(0,8).forEach(l=>all.push([l.split(/[ =]/)[0],l]))}const host=$('capabilityList');host.replaceChildren();if(!all.length){const d=document.createElement('div');d.className='empty-state';d.textContent='No capability lines found. Run refresh or check install_report.txt.';host.appendChild(d);return}all.slice(0,12).forEach(([k,v])=>{const row=document.createElement('div');row.className='cap-item';const a=document.createElement('span'),b=document.createElement('b');a.textContent=k;b.textContent=v;row.append(a,b);host.appendChild(row)})}
-function renderLog(){const search=($('logSearch').value||'').toLowerCase();const n=Number($('logLines').value)||80;let lines=state.log.split(/\r?\n/).filter(Boolean).slice(-n);if($('errorsOnly').checked)lines=lines.filter(x=>/error|fail|fatal|warn|safety_hold|thermal_guard/i.test(x));if(search)lines=lines.filter(x=>x.toLowerCase().includes(search));const out=lines.join('\n')||'(No matching lines)';setText('logBox',out);setText('logSummary',lines.length+' line(s) shown · '+(state.log.split(/\r?\n/).filter(Boolean).length)+' loaded');}
-function updateConfigUI(){const c=state.config||{};const mode=(c.mutation_mode||'observe').toLowerCase();const armed=truth(c.mutation_armed);const cpu=true;const active=mode==='adaptive'&&armed&&!state.safe&&!state.disabled;setText('modeHeadline',state.safe?'SAFE MODE — mutations blocked':state.disabled?'DISABLE safety hold active':state.restartPending?'Configuration saved · restart required':active?'Adaptive policy configured':'Observe mode configured');setText('modeDescription',state.safe?'Engine should hold Observe until SAFE_MODE is cleared through recovery.':state.disabled?'Mutation hold active. Adaptive requires an explicit resume confirmation.':state.restartPending?'Configuration changed; restart/reboot required for daemon to load the new mode.':active?'Eligible changes remain behind capability and policy gates.':'Diagnostics and discovery remain available; no mutation is armed.');$('stateDot').className='status-dot'+(state.safe||state.disabled?' unknown':active?' adaptive':'');setText('chipArmed','armed: '+(c.mutation_armed||'false'));setText('chipCpuGov','CPU governor: follows Adaptive');setText('chipInterval','interval: '+(c.monitor_interval||'5')+'s');setText('requestedMode',mode.toUpperCase());setText('effectiveArmed',active?'YES':'NO');setText('effectiveCpu',active&&cpu?'YES':'NO');setText('safetyMarkers',(state.safe?'SAFE_MODE ':'')+(state.disabled?'DISABLE ':'')||'None detected');setText('safeModeBadge',state.safe?'SAFE_MODE ACTIVE':state.disabled?'DISABLE MARKER':'SAFETY CHECKED');$('safeModeBadge').style.color=state.safe||state.disabled?'var(--red)':'var(--green)';setText('observeCurrent',!active?'CURRENT MODE':'AVAILABLE');$('observeCard').classList.toggle('current-mode',!active);$('adaptiveCard').classList.toggle('current-mode',active);$('btnSetObserve').textContent=!active?'Observe is active':'Switch to Observe';$('btnSetAdaptive').textContent=active?'Adaptive is active':(state.disabled?'Review & resume Adaptive':'Review & enable Adaptive');$('btnSetAdaptive').disabled=state.safe;setText('footerInfo',(active?'Adaptive armed':'Observe-only')+' · KSU WebUI bridge');}
+  function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
 
-function finiteNumber(v){const n=Number(v);return Number.isFinite(n)?n:null}
-function sampleHistory(){
- const m=state.liveMetrics||{},now=new Date();
- const thermal=(m.THERMAL_RAW&&m.THERMAL_RAW!=="unavailable")?Number(m.THERMAL_RAW):null;
- const t=thermal!==null?(thermal>=1000?thermal/1000:thermal):null;
- const mem=(m.MEMORY&&m.MEMORY!=="unavailable")?m.MEMORY.split(",").map(Number):null;
- const load=(m.LOAD&&m.LOAD!=="unavailable")?finiteNumber(m.LOAD):null;
- let cpu=null;
- if(m.CPU_FREQ&&m.CPU_FREQ!=="unavailable"){
-  const vals=m.CPU_FREQ.trim().split(/\s+/).map(x=>Number(x.slice(x.lastIndexOf(":")+1))).filter(x=>Number.isFinite(x)&&x>0);
-  if(vals.length)cpu={min:Math.min(...vals)/1000,max:Math.max(...vals)/1000};
- }
- const sample={time:now.toISOString(),label:now.toLocaleTimeString(),thermal:t,memory:mem&&mem.length>=3&&mem[0]>0?mem[2]:null,load,cpu};
- // Keep gaps as null and bound memory usage; don't interpolate missing values.
- state.history.push(sample);if(state.history.length>60)state.history=state.history.slice(-60);
- renderHistory();
-}
-function sparkline(id,key,project){
- const svg=$(id);if(!svg)return;svg.replaceChildren();
- const values=state.history.map(s=>project?project(s[key]):s[key]);
- const valid=values.map((v,i)=>({v,i})).filter(x=>Number.isFinite(x.v));
- const base=document.createElementNS("http://www.w3.org/2000/svg","line");base.setAttribute("x1","4");base.setAttribute("x2","296");base.setAttribute("y1","48");base.setAttribute("y2","48");svg.appendChild(base);
- if(valid.length<2){const p=document.createElementNS("http://www.w3.org/2000/svg","polyline");p.setAttribute("class","empty-history");p.setAttribute("points",valid.length?`${valid[0].i*292/Math.max(1,values.length-1)+4},27 ${valid[0].i*292/Math.max(1,values.length-1)+4},27`:"4,27 296,27");svg.appendChild(p);return}
- const nums=valid.map(x=>x.v),min=Math.min(...nums),max=Math.max(...nums),range=max-min||1;
- const pts=valid.map(x=>`${(x.i/Math.max(1,values.length-1))*292+4},${46-((x.v-min)/range)*36}`).join(" ");
- const line=document.createElementNS("http://www.w3.org/2000/svg","polyline");line.setAttribute("points",pts);svg.appendChild(line);
-}
-function renderHistory(){
- const h=state.history;setText("historyStatus",h.length+" sample(s) · latest "+(h.length?h[h.length-1].label:"—"));
- const last=h[h.length-1]||{};
- setText("histThermal",Number.isFinite(last.thermal)?last.thermal.toFixed(1)+" °C":"Unavailable");
- setText("histMemory",Number.isFinite(last.memory)?last.memory.toFixed(1)+"% available":"Unavailable");
- setText("histLoad",Number.isFinite(last.load)?last.load.toFixed(2):"Unavailable");
- setText("histCpu",last.cpu?Math.round(last.cpu.min)+"–"+Math.round(last.cpu.max)+" MHz":"Unavailable");
- sparkline("sparkThermal","thermal");sparkline("sparkMemory","memory");sparkline("sparkLoad","load");sparkline("sparkCpu","cpu",v=>v&&((v.min+v.max)/2));
-}
-function renderSafetyAudit(){
- const c=state.config||{},mode=(c.mutation_mode||"observe").toLowerCase(),armed=truth(c.mutation_armed),cpu=true,daemon=(state.daemon||"").toLowerCase();
- const alive=daemon.includes("running"),adaptiveRequested=mode==="adaptive"&&armed;
- const known=!!state.configRaw&&!!state.daemon;
- const blocked=state.safe||state.disabled;
- setText("auditRequested",mode.toUpperCase());
- setText("auditArmed",armed?"YES":"NO");
- setText("auditCpu",cpu?"YES":"NO");
- setText("auditSafe",state.safe?"PRESENT":"ABSENT");
- setText("auditDisable",state.disabled?"PRESENT":"ABSENT");
- setText("auditRestart",state.restartPending?"PENDING":"NO");
- setText("auditDaemon",alive?"RUNNING":state.daemon||"UNKNOWN");
- const status=!known?"UNKNOWN":(blocked||!alive)?"REVIEW":(!adaptiveRequested&&mode==="observe"&&!armed&&!cpu)?"OBSERVE-ONLY":adaptiveRequested&&!blocked&&alive?"ADAPTIVE REQUESTED":"REVIEW";
- const pill=$("safetyOverall");if(pill){pill.textContent=status;pill.className="cap-status "+(status==="OBSERVE-ONLY"?"available":status==="UNKNOWN"?"unknown":"limited")}
- setText("safetyAuditNote",state.restartPending?"Configuration changes are pending restart; the running daemon may still use its previous configuration.":blocked?"A safety marker is present. Treat mutation as blocked and inspect engine logs.":!alive?"Daemon is not confirmed running. Effective runtime mode is unknown.":adaptiveRequested?"Adaptive is requested by configuration; this UI cannot independently prove all engine-side gates or mutations.":"Current config requests Observe-only. Marker absence alone is not proof of safety enforcement.");
-}
-function buildDiagnosticReport(){
- const m=state.liveMetrics||{},c=state.config||{},now=new Date().toISOString();
- return [
-  "CoreFlow Autonomous — Diagnostic Report v2",
-  "generated_at="+now,
-  "engine_version="+((state.report.match(/^version=(.+)$/m)||[])[1]||"unknown"),
-  "device="+((state.report.match(/^device_model=(.+)$/m)||[])[1]||"unknown"),
-  "android="+((state.report.match(/^android=(.+)$/m)||[])[1]||"unknown"),
-  "kernel="+((state.report.match(/^kernel=(.+)$/m)||[])[1]||"unknown"),
-  "daemon_status="+(state.daemon||"unknown"),
-  "config_mode="+(c.mutation_mode||"unknown"),
-  "mutation_armed="+(c.mutation_armed||"unknown"),
-  "allow_cpu_governor=ignored (legacy compatibility)",
-  "safe_mode_marker="+(state.safe?"present":"absent"),
-  "disable_marker="+(state.disabled?"present":"absent"),
-  "restart_pending="+(state.restartPending?"yes":"no"),
-  "telemetry_sample_time="+(m.SAMPLE_TIME||"unavailable"),
-  "thermal_raw="+(m.THERMAL_RAW||"unavailable"),
-  "thermal_type="+(m.THERMAL_TYPE||"unavailable"),
-  "memory_raw="+(m.MEMORY||"unavailable"),
-  "load_1m="+(m.LOAD||"unavailable"),
-  "cpu_freq_raw="+(m.CPU_FREQ||"unavailable"),
-  "capability_report_time="+((state.report.match(/^date=(.+)$/m)||[])[1]||"unknown"),
-  "capability_probe="+((state.report.match(/^probe\s+(.+)$/m)||[])[1]||"unavailable"),
-  "structured_trace_events="+state.traceEvents.length,
-  "history_samples_in_session="+state.history.length,
-  "recent_log_lines="+String(state.log||"").split(/\r?\n/).filter(Boolean).length,
-  "",
-  "Note: this report separates current UI-read values from install-time probe data. Marker absence does not prove engine safety. Sensitive device identifiers should be reviewed before sharing."
- ].join("\n");
-}
-function refresh(){if(state.busy)return;state.busy=true;setText('daemonStatus','Refreshing…');Promise.all([execShell('cat '+PATH.config+' 2>/dev/null'),execShell('if [ -r '+PATH.pid+' ]; then p=$(cat '+PATH.pid+' 2>/dev/null); if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "running pid=$p"; else echo "stale pid file"; fi; else pgrep -f coreflowd >/dev/null 2>&1 && echo "running (pgrep)" || echo "not running"; fi'),pickLogFile(),execShell('[ -f '+PATH.safe+' ] && echo present || echo absent'),execShell('[ -f '+PATH.disable+' ] && echo present || echo absent'),execShell('cat '+PATH.report+' 2>/dev/null'),execShell('[ -f '+PATH.base+'/webui_config_pending ] && echo present || echo absent'),execShell(liveMetricCommand()),execShell('tail -n 200 '+PATH.trace+' 2>/dev/null')]).then(async r=>{state.configRaw=r[0].stdout||'';state.config=iniParse(state.configRaw);state.daemon=(r[1].stdout||r[1].stderr||'unknown').trim();state.logPath=r[2]||'';state.safe=(r[3].stdout||'').trim()==='present';state.disabled=(r[4].stdout||'').trim()==='present';state.report=r[5].stdout||'';state.restartPending=(r[6].stdout||'').trim()==='present';state.traceEvents=parseStructuredTrace(r[8]?.stdout||'');if(state.logPath){const lr=await execShell('tail -n 500 '+state.logPath+' 2>/dev/null');state.log=lr.stdout||lr.stderr||'(Log is empty)'}else state.log='(No log file found in /data/adb/coreflow/logs)';setText('daemonStatus',state.daemon);setText('lastRefresh',new Date().toLocaleTimeString());const p=fromLog(state.log);setText('runtimeState',state.daemon.toLowerCase().includes('running')?'Daemon alive':'Unknown');applyLiveMetrics(r[7]);sampleHistory();renderSafetyAudit();setText('caps',[p.device,...p.caps].filter(Boolean).join('\n')||'No CAPS/DEVICE lines in recent log.');setText('logPath',state.logPath||PATH.logs);setText('configBox',state.configRaw.trim()||'(config.ini missing)');setText('reportBox',state.report.trim()||'(Install report unavailable)');renderEvents(state.log);renderCapabilityMatrix();updateConfigUI();renderSafetyAudit();renderLog();renderTrace();setText("reportBox",buildDiagnosticReport()+"\n\n--- ORIGINAL INSTALL REPORT ---\n"+(state.report||"Install report unavailable."));const bridgeReads=r.filter(x=>x&&typeof x==='object'&&Object.prototype.hasOwnProperty.call(x,'errno'));const bridgeOk=bridgeReads.length>0&&bridgeReads.every(x=>x.errno===0);setText('connectionLabel',bridgeOk?'Bridge connected':'Bridge partially available');setText('connectionSub',bridgeOk?'KSU WebUI execution ready':'Some reads failed — inspect diagnostics');}).catch(e=>toast('Refresh failed: '+e,true)).finally(()=>{state.busy=false})}
-function quote(s){return "'"+String(s).replace(/'/g,"'\\''")+"'"}
-function writeConfig(updates,options={}){if(!state.configRaw||!state.config||!state.config.mutation_mode){toast('Cannot change mode: config.ini was not read successfully or has no mutation_mode.',true);return Promise.resolve(false)}const clearDisable=!!options.clearDisable;if(state.safe){toast('SAFE_MODE is active. Adaptive remains blocked until the normal recovery procedure resolves it.',true);return Promise.resolve(false)}if(state.disabled&&updates.mutation_mode==='adaptive'&&!clearDisable){toast('DISABLE safety hold is active. Explicitly confirm resume to remove the operator kill switch.',true);return Promise.resolve(false)}const allowed=new Set(['mutation_mode','mutation_armed']);if(Object.keys(updates).some(k=>!allowed.has(k)))return Promise.resolve(false);let rows=state.configRaw.replace(/\r/g,'').split('\n');for(const [key,value] of Object.entries(updates)){let found=false;rows=rows.map(line=>{if(line.trim().startsWith(key+'=')){found=true;return key+'='+value}return line});if(!found)rows.push(key+'='+value)}const newRaw=rows.join('\n').replace(/\n*$/,'')+'\n';const mode=iniParse(newRaw);if(mode.mutation_mode==='adaptive'&&(!truth(mode.mutation_armed))){toast('Refusing invalid adaptive config without mutation_armed=true.',true);return Promise.resolve(false)}if(mode.mutation_mode!=='adaptive'&&truth(mode.mutation_armed)){toast('Refusing config that arms mutation outside adaptive mode.',true);return Promise.resolve(false)}const script='set -eu; CFG='+quote(PATH.config)+'; DIR='+quote(PATH.base)+'; TMP="$CFG.webui.tmp.$$"; [ -d "$DIR" ] || exit 21; umask 077; printf %s '+quote(newRaw)+' > "$TMP"; chmod 0600 "$TMP"; [ -s "$TMP" ]; grep -qx '+quote('mutation_mode='+mode.mutation_mode)+' "$TMP"; grep -qx '+quote('mutation_armed='+mode.mutation_armed)+' "$TMP"; if [ '+quote(mode.mutation_mode)+' = observe ]; then touch "$DIR/DISABLE"; fi; mv "$TMP" "$CFG"; chmod 0600 "$CFG"; if [ '+quote(mode.mutation_mode)+' = adaptive ] && [ "'+(clearDisable?'yes':'no')+'" = yes ]; then rm -f "$DIR/DISABLE"; fi; touch "$DIR/webui_config_pending"; chmod 0600 "$DIR/webui_config_pending"; echo CONFIG_COMMIT_OK';return execShell(script).then(r=>{if(r.errno!==0||!r.stdout.includes('CONFIG_COMMIT_OK')){toast('Config write rejected: '+(r.stderr||r.stdout||'unknown error'),true);return false}state.configRaw=newRaw;state.config=iniParse(newRaw);setText('configBox',newRaw.trim());updateConfigUI();toast(mode.mutation_mode==='observe'?'Observe saved; runtime DISABLE safety hold requested. Reboot to start cleanly in Observe.':'Configuration saved. Restart/reboot may be required before the daemon applies the selected mode.');return true})}
-function openConfirm(title,message,detail,confirmLabel){return new Promise(resolve=>{const d=$('confirmDialog');setText('dialogTitle',title);setText('dialogMessage',message);setText('dialogDetail',detail);setText('dialogConfirm',confirmLabel||'Confirm');const btn=$('dialogConfirm');const handler=e=>{if(e.submitter&&e.submitter.value==='confirm'){e.preventDefault();d.close('confirm')} };d.querySelector('form').addEventListener('submit',handler,{once:true});d.addEventListener('close',()=>resolve(d.returnValue==='confirm'),{once:true});d.showModal()})}
-async function setObserve(){const ok=await openConfirm('Return to Observe mode?','This saves Observe and creates CoreFlow’s DISABLE kill-switch so a running Adaptive daemon enters its own safety-hold/restore path. The WebUI does not write kernel tunables. A later Adaptive opt-in must explicitly remove that marker.','mutation_mode=observe\nmutation_armed=false\ncreate /data/adb/coreflow/DISABLE','Switch to Observe');if(!ok)return;const done=await writeConfig({mutation_mode:'observe',mutation_armed:'false'});if(done)refresh()}
-async function setAdaptive(){if(state.safe){toast('Adaptive is blocked by SAFE_MODE until the normal recovery procedure resolves it.',true);return}const ok=await openConfirm(state.disabled?'Resume Adaptive mode?':'Enable Adaptive mode?',state.disabled?'This removes the operator DISABLE kill-switch and arms Adaptive. Do not proceed unless you intentionally want to resume; SAFE_MODE remains non-bypassable.':'You are authorizing full supported adaptive mutation across discovered non-fatal resource namespaces. Thermal safety, fatal-surface exclusions, journal, verification and rollback remain active.','mutation_mode=adaptive\nmutation_armed=true\n\nAll supported non-fatal namespaces enabled; fatal surfaces and thermal safety remain enforced.','Arm Adaptive');if(!ok)return;const done=await writeConfig({mutation_mode:'adaptive',mutation_armed:'true'},{clearDisable:true});if(done)refresh()}
-function runDiagnostic(name){const item=diagCommands[name];if(!item)return;setText('lastCommand',item.label);setText('terminalOutput','Running '+item.label+'…');state.lastOutput='';execShell(item.cmd).then(r=>{const out=(r.stdout||'').trim();const err=(r.stderr||'').trim();state.lastOutput=[out,err?'[stderr]\n'+err:''].filter(Boolean).join('\n\n')||'(No output)';setText('terminalOutput',(r.errno?'[exit '+r.errno+']\n':'[read-only diagnostic]\n')+state.lastOutput);if(r.errno)toast('Diagnostic finished with an error.',true)}).catch(e=>setText('terminalOutput','Diagnostic failed: '+String(e)))}
-function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(()=>toast('Copied to clipboard')).catch(()=>fallbackCopy(text))}else fallbackCopy(text)}function fallbackCopy(text){const a=document.createElement('textarea');a.value=text;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();try{document.execCommand('copy');toast('Copied')}catch(e){toast('Copy unavailable in this WebView.',true)}a.remove()}
-function refreshRuntime(){const cmd="p=$(pidof coreflowd 2>/dev/null); [ -n \"$p\" ] || { echo 'coreflowd PID not found'; exit 2; }; ok=0; for one in $p; do case \"$one\" in ''|*[!0-9]*) continue;; esac; if kill -USR1 \"$one\" 2>/dev/null; then ok=1; fi; done; [ \"$ok\" -eq 1 ] && echo REFRESH_SIGNAL_SENT || { echo 'Could not signal coreflowd'; exit 1; }";return execShell(cmd).then(r=>{if(r.errno===0&&r.stdout.includes('REFRESH_SIGNAL_SENT'))toast('Runtime discovery refresh signal sent to coreflowd. Check logs for completion.');else toast(r.stderr||r.stdout||'Refresh signal failed.',true)})}
+  function toast(message, isError) {
+    var n = el("div", "toast" + (isError ? " error" : ""), message);
+    n.setAttribute("role", "status");
+    $("toastRegion").appendChild(n);
+    setTimeout(function () { n.remove(); }, 4200);
+  }
 
-/* ---- Live engine view: reads status.json written by the C++ daemon. Read-only. ---- */
-function liveEl(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n}
-function renderKv(id,rows){const host=$(id);if(!host)return;host.replaceChildren();rows.forEach(r=>{const row=liveEl("div","kv-row");row.append(liveEl("dt",null,r[0]),liveEl("dd",null,String(r[1])));if(r[2])row.appendChild(liveEl("small",null,String(r[2])));host.appendChild(row)})}
-function renderLive(p){
- const S=window.CoreFlowStatus;if(!S)return;
- const sum=S.summary(p);
- const banner=$("liveBanner");if(banner)banner.className="live-banner tone-"+sum.tone;
- setText("liveTitle",sum.title);setText("liveDetail",sum.detail);
- const dot=$("liveDot");if(dot)dot.className="live-dot-lg tone-"+sum.tone;
- const pipe=$("livePipeline");
- if(!p.ok){["liveEyes","liveDevice","liveBrain","liveHands"].forEach(id=>{const h=$(id);if(h)h.replaceChildren()});if(pipe)pipe.replaceChildren();["liveVersion","liveSample","liveAge","livePid"].forEach(id=>setText(id,"—"));return}
- const d=p.data;
- setText("liveVersion","v"+d.version);setText("liveSample","#"+d.sample);setText("liveAge",p.age+"s ago");setText("livePid",d.pid?String(d.pid):"—");
- if(pipe){pipe.replaceChildren();S.pipeline(d).forEach((st,i)=>{const c=liveEl("div","stage tone-"+st.tone);c.append(liveEl("span","stage-label",(i+1)+" · "+st.label),liveEl("b",null,st.state),liveEl("small",null,st.note));pipe.appendChild(c)})}
- renderKv("liveEyes",S.eyesRows(d));renderKv("liveDevice",S.deviceRows(d));renderKv("liveBrain",S.brainRows(d));renderKv("liveHands",S.handsRows(d));
-}
-function pollLive(){
- if(state.statusBusy||state.view!=="live"||document.visibilityState==="hidden")return;
- state.statusBusy=true;
- execShell("printf 'NOW=%s\\n' \"$(date +%s)\"; cat "+PATH.status+" 2>/dev/null").then(r=>{
-  if(r.errno!==0&&!(r.stdout||"").includes("NOW=")){state.statusFails++;renderLive({ok:false,error:"Cannot read the engine status: "+(r.stderr||"bridge unavailable")});return}
-  state.statusFails=0;renderLive(window.CoreFlowStatus.parse(r.stdout));
- }).catch(e=>{state.statusFails++;renderLive({ok:false,error:String(e)})}).finally(()=>{state.statusBusy=false;scheduleLive()});
-}
-function scheduleLive(){clearTimeout(state.statusTimer);state.statusTimer=null;if(state.view!=="live")return;const wait=state.statusFails>2?10000:3000;state.statusTimer=setTimeout(pollLive,wait)}
-function startLive(){stopLive();pollLive()}
-function stopLive(){clearTimeout(state.statusTimer);state.statusTimer=null}
-function pollTrace(){if(state.traceBusy||state.view!=="trace"||document.visibilityState==="hidden")return;state.traceBusy=true;execShell('tail -n 400 '+PATH.trace+' 2>/dev/null').then(r=>{state.traceEvents=r.errno===0?parseStructuredTrace(r.stdout||""):[];renderTrace()}).catch(()=>{state.traceEvents=[];renderTrace()}).finally(()=>{state.traceBusy=false;scheduleTrace()})}
-function scheduleTrace(){clearTimeout(state.traceTimer);state.traceTimer=null;if(state.view!=="trace"||document.visibilityState==="hidden")return;state.traceTimer=setTimeout(pollTrace,2500)}
-function startTrace(){stopTrace();pollTrace()}
-function stopTrace(){clearTimeout(state.traceTimer);state.traceTimer=null}
-function init(){installNav();document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.view==='live')startLive();else stopLive();if(document.visibilityState==='visible'&&state.view==='trace')startTrace();else stopTrace()});$('btnRefresh').addEventListener('click',refresh);$('btnCheckBridge').addEventListener('click',()=>refresh());$('btnRefreshLog').addEventListener('click',refresh);$('btnRefreshReport').addEventListener('click',refresh);$('btnRefreshTrace').addEventListener('click',refresh);$('btnClearHistory').addEventListener('click',()=>{state.history=[];renderHistory();toast('Session telemetry history cleared')});$('traceSearch').addEventListener('input',renderTrace);$('traceFilter').addEventListener('change',renderTrace);$('logSearch').addEventListener('input',renderLog);$('logLines').addEventListener('change',renderLog);$('errorsOnly').addEventListener('change',renderLog);$('btnCopyLog').addEventListener('click',()=>copyText(state.log));$('btnCopyConfig').addEventListener('click',()=>copyText(state.configRaw));$('btnReadReport').addEventListener('click',()=>showView('diagnostics'));$('btnCopyReport').addEventListener('click',()=>copyText(buildDiagnosticReport()+'\n\n--- ORIGINAL INSTALL REPORT ---\n'+(state.report||'Install report unavailable.')));$('btnCopyTerminal').addEventListener('click',()=>copyText(state.lastOutput||$('terminalOutput').textContent));$('btnClearTerminal').addEventListener('click',()=>{state.lastOutput='';setText('terminalOutput','Console output cleared.');setText('lastCommand','select a diagnostic command')});document.querySelectorAll('[data-command]').forEach(b=>b.addEventListener('click',()=>runDiagnostic(b.dataset.command)));$('btnSetObserve').addEventListener('click',setObserve);$('btnRestoreObserve').addEventListener('click',setObserve);$('btnSetAdaptive').addEventListener('click',setAdaptive);$('btnRefreshLog').addEventListener('click',refreshRuntime);document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));refresh();startLive();}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+  function friendly(stdout, stderr) {
+    var last = String(stdout || "").trim().split(/\r?\n/).pop() || "";
+    return MESSAGES[last] || last || String(stderr || "").trim();
+  }
+
+  function rangeText(f) {
+    return f.max != null ? "between " + f.min + " and " + f.max : "at least " + f.min;
+  }
+
+  // ---- confirmation dialog (Promise<boolean>) ----
+
+  function confirmDialog(key) {
+    var spec = DIALOGS[key];
+    return new Promise(function (resolve) {
+      var d = $("confirmDialog");
+      setText("dialogTitle", spec.title);
+      setText("dialogMessage", spec.message);
+      setText("dialogDetail", spec.detail);
+      setText("dialogConfirm", spec.label);
+      var onClose = function () {
+        d.removeEventListener("close", onClose);
+        resolve(d.returnValue === "confirm");
+      };
+      d.addEventListener("close", onClose);
+      d.showModal();
+    });
+  }
+
+  // ---- navigation & polling ----
+
+  function showPage(name) {
+    var sections = document.querySelectorAll("section.page");
+    var exists = Array.prototype.some.call(sections, function (s) { return s.getAttribute("data-page") === name; });
+    if (!TITLES[name] || !exists) return;
+    state.page = name;
+    Array.prototype.forEach.call(sections, function (s) {
+      s.hidden = s.getAttribute("data-page") !== name;
+    });
+    document.querySelectorAll("[data-page-link]").forEach(function (b) {
+      b.toggleAttribute("selected", b.getAttribute("data-page-link") === name);
+    });
+    setText("pageTitle", TITLES[name]);
+    $("main").scrollTop = 0;
+    if (name === "engine") {
+      pollEngine();
+    } else {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+    if (name === "policy") loadPolicy();
+    if (name === "journal") loadJournal();
+  }
+
+  function scheduleEngine() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+    if (state.page !== "engine" || document.visibilityState === "hidden") return;
+    state.pollTimer = setTimeout(pollEngine, state.statusFails > 2 ? 10000 : 3000);
+  }
+
+  function pollEngine() {
+    if (state.pollBusy) return;
+    state.pollBusy = true;
+    return execShell(C.snapshotCmd(), 15000).then(function (r) {
+      state.bridge = !/No KernelSU WebUI exec bridge/.test(r.stderr);
+      var parts = C.splitSnapshot(r.stdout);
+      state.probe = parts.probe ? C.parseProbe(parts.probe) : null;
+      state.status = parts.status ? S.parse(parts.status) : { ok: false, error: r.stderr || "The bridge returned no data." };
+      state.statusFails = r.errno === 0 ? 0 : state.statusFails + 1;
+      renderEngine();
+      renderPolicyBanners();
+    }).catch(function (e) {
+      state.statusFails += 1;
+      state.status = { ok: false, error: String(e) };
+      renderEngine();
+    }).finally(function () {
+      state.pollBusy = false;
+      scheduleEngine();
+    });
+  }
+
+  // ---- Live engine view: renders only what the daemon wrote and the probe observed ----
+
+  function renderEngine() {
+    var p = state.status;
+    var probe = state.probe;
+    var online = !!(probe && probe.running);
+    var sum = p ? S.summary(p) : { tone: "info", title: "Reading daemon state", detail: "Waiting for the first probe.", code: "" };
+
+    var hero = $("heroCard");
+    hero.setAttribute("data-tone", sum.tone);
+    setText("heroCode", sum.code || "—");
+    setText("heroTitle", sum.title);
+    setText("heroDetail", sum.detail);
+
+    var chip = $("headerChip");
+    if (state.bridge === false) {
+      chip.setAttribute("data-tone", "bad");
+      chip.textContent = "NO BRIDGE";
+    } else if (!probe) {
+      chip.setAttribute("data-tone", "info");
+      chip.textContent = "CHECKING";
+    } else {
+      var tone = !online ? "bad" : sum.tone === "bad" ? "bad" : sum.tone === "warn" ? "warn" : "ok";
+      chip.setAttribute("data-tone", tone);
+      chip.textContent = online ? "ONLINE" : "OFFLINE";
+    }
+    setText("headerSub", "coreflowd" + (online ? " · pid " + probe.pids.join(" ") : probe ? " · not running" : " · connecting"));
+
+    var ok = !!(p && p.ok);
+    setText("metaPid", online ? probe.pids.join(", ") : "—");
+    setText("metaVersion", ok && p.data.version ? p.data.version : "—");
+    setText("metaUpdated", ok ? (p.age === 0 ? "just now" : p.age + " s ago") : "—");
+
+    var pipe = $("pipeline");
+    clear(pipe);
+    if (ok) {
+      S.pipeline(p.data).forEach(function (stage, i) {
+        var row = el("div", "stage");
+        row.setAttribute("data-tone", stage.tone);
+        var body = el("div");
+        body.appendChild(el("b", "", stage.label));
+        body.appendChild(el("p", "", stage.note));
+        row.append(el("span", "stage-index", String(i + 1)), body, el("span", "state", stage.state));
+        pipe.appendChild(row);
+      });
+    } else {
+      pipe.appendChild(el("p", "empty", "The pipeline appears once the daemon writes its first status."));
+    }
+
+    fillRows("eyesRows", ok ? S.eyesRows(p.data) : []);
+    fillRows("brainRows", ok ? S.brainRows(p.data) : []);
+    fillRows("handsRows", ok ? S.handsRows(p.data) : []);
+    fillRows("deviceRows", ok ? S.deviceRows(p.data) : []);
+    fillRows("safetyRows", probe ? [
+      ["SAFE_MODE", probe.safe ? "present" : "absent", probe.safe ? "Adaptive is blocked" : ""],
+      ["DISABLE kill switch", probe.disable ? "present" : "absent", probe.disable ? "mutation held" : ""],
+      ["Config waiting for restart", probe.pending ? "yes" : "no", ""],
+      ["Boot attempts", probe.bootAttempts || "0", "unconfirmed boots"]
+    ] : []);
+
+    var blocked = state.bridge === false;
+    $("bridgeNotice").hidden = !blocked;
+    var idle = !state.busy && !blocked;
+    $("btnStart").disabled = !idle || online;
+    $("btnStop").disabled = !idle || !online;
+    $("btnRestart").disabled = !idle;
+    $("btnRefresh").disabled = !idle || !online;
+
+    setText("engineFooter", ok && p.stale
+      ? "The daemon has not written status recently. It may be stalled."
+      : "Polls every 3 s while this page is visible. The daemon writes status.json; the UI only reads it.");
+  }
+
+  function fillRows(id, rows) {
+    var host = $(id);
+    clear(host);
+    if (!rows || !rows.length) {
+      host.appendChild(el("div", "empty", "No data yet."));
+      return;
+    }
+    rows.forEach(function (r) {
+      var row = el("div");
+      row.append(el("dt", "", r[0]), el("dd", "", r[1]));
+      if (r[2]) row.appendChild(el("small", "", r[2]));
+      host.appendChild(row);
+    });
+  }
+
+  // ---- engine actions ----
+
+  function runAction(cmd, opts) {
+    if (state.busy || state.bridge === false) return;
+    var go = function () {
+      state.busy = true;
+      renderEngine();
+      return execShell(cmd, 70000).then(function (r) {
+        var ok = r.errno === 0;
+        var text = friendly(r.stdout, r.stderr);
+        toast(ok ? (opts.ok || text || "Done.") : (text || "Action failed."), !ok);
+      }).finally(function () {
+        state.busy = false;
+        pollEngine();
+      });
+    };
+    if (opts.confirm) {
+      return confirmDialog(opts.confirm).then(function (yes) { if (yes) return go(); });
+    }
+    return go();
+  }
+
+  // ---- policy ----
+
+  function buildPolicyFields() {
+    [["runtimeFields", "runtime"], ["interactivityFields", "interactivity"]].forEach(function (pair) {
+      var host = $(pair[0]);
+      clear(host);
+      C.NUMERIC.filter(function (f) { return f.group === pair[1]; }).forEach(function (f) {
+        var wrap = el("div", "field");
+        var input = document.createElement("md-text-field");
+        input.setAttribute("label", f.label + (f.unit ? " (" + f.unit + ")" : ""));
+        input.setAttribute("color", "outlined");
+        input.setAttribute("inputmode", f.kind === "int" ? "numeric" : "decimal");
+        input.setAttribute("aria-label", f.label);
+        var help = el("p", "field-help", f.help + " Range: " + rangeText(f) + ".");
+        var err = el("p", "field-error", "");
+        wrap.append(input, help, err);
+        host.appendChild(wrap);
+        state.numInputs[f.key] = { input: input, err: err, wrap: wrap };
+      });
+    });
+  }
+
+  function markGroup(selector, attr, value) {
+    document.querySelectorAll(selector).forEach(function (b) {
+      b.toggleAttribute("selected", b.getAttribute(attr) === value);
+    });
+  }
+
+  function setSwitch(id, on) {
+    var sw = $(id);
+    sw.selected = !!on;
+    sw.toggleAttribute("selected", !!on);
+  }
+
+  function applyFormToUi() {
+    var f = state.form;
+    if (!f) return;
+    markGroup("[data-mode]", "data-mode", f.mutation_mode);
+    markGroup("[data-interactivity]", "data-interactivity", f.interactivity_mode);
+    setSwitch("fRuntimeRefresh", f.runtime_refresh);
+    C.NUMERIC.forEach(function (n) {
+      var slot = state.numInputs[n.key];
+      if (slot) {
+        slot.input.value = String(f[n.key]);
+        slot.err.textContent = "";
+      }
+    });
+    renderAuthority();
+  }
+
+  function readFormFromUi() {
+    var f = {
+      mutation_mode: state.form.mutation_mode,
+      interactivity_mode: state.form.interactivity_mode,
+      runtime_refresh: !!$("fRuntimeRefresh").selected
+    };
+    Object.keys(state.numInputs).forEach(function (k) {
+      f[k] = state.numInputs[k].input.value;
+    });
+    return f;
+  }
+
+  function showFieldErrors(errors) {
+    Object.keys(state.numInputs).forEach(function (k) {
+      var slot = state.numInputs[k];
+      slot.err.textContent = errors[k] || "";
+    });
+  }
+
+  function renderAuthority() {
+    var mode = state.form ? state.form.mutation_mode : "observe";
+    var probe = state.probe || {};
+    var adaptive = mode === "adaptive";
+    setText("authorityTitle", adaptive ? "Adaptive" : "Observe");
+    setText("authorityNote", adaptive
+      ? "The engine may apply verified changes. Each change is journaled, read back, and rolled back on regression."
+      : "Observe is read-only. The engine watches and reasons but changes nothing.");
+    setText("authorityGates", "SAFE_MODE: " + (probe.safe ? "present" : "absent")
+      + " · DISABLE: " + (probe.disable ? "present" : "absent")
+      + " · mutation_armed follows the mode");
+  }
+
+  function renderPolicyBanners() {
+    var probe = state.probe || {};
+    $("pendingNotice").hidden = !probe.pending;
+  }
+
+  function loadPolicy() {
+    return execShell(C.readConfigCmd(), 8000).then(function (r) {
+      state.configLoaded = r.errno === 0 && r.stdout.trim() !== "";
+      state.configRaw = r.errno === 0 ? r.stdout : "";
+      state.config = C.parseIni(state.configRaw);
+      state.form = C.formFromConfig(state.config);
+      applyFormToUi();
+      setText("policyPath", C.PATHS.config + (state.configLoaded ? "" : " · not readable"));
+      if (!state.configLoaded) {
+        toast("config.ini is missing or unreadable. Start the module once so the default is created.", true);
+      }
+    });
+  }
+
+  function savePolicy() {
+    if (state.busy) return;
+    if (!state.configLoaded || !state.form) {
+      toast("The configuration is not loaded yet. Reload first.", true);
+      return;
+    }
+    var v = C.validate(readFormFromUi());
+    showFieldErrors(v.errors);
+    if (!v.ok) {
+      toast("Fix the highlighted fields before saving.", true);
+      return;
+    }
+    var probe = state.probe || {};
+    var g = C.gate(v.values, {
+      currentMode: state.config.mutation_mode === "adaptive" ? "adaptive" : "observe",
+      safe: !!probe.safe,
+      disable: !!probe.disable
+    });
+    if (!g.ok) {
+      toast(g.reason, true);
+      return;
+    }
+    var go = function () {
+      var newRaw = C.applyValues(state.configRaw, v.values);
+      state.busy = true;
+      return execShell(C.writeConfigCmd(newRaw, v.values, { clearDisable: g.clearDisable }), 15000).then(function (r) {
+        if (r.errno === 0 && r.stdout.indexOf("CONFIG_COMMIT_OK") >= 0) {
+          state.configRaw = newRaw;
+          state.config = C.parseIni(newRaw);
+          state.form = C.formFromConfig(state.config);
+          applyFormToUi();
+          toast("Saved. Restart the engine to apply it.");
+        } else {
+          toast("Save rejected: " + (r.stderr || r.stdout || "unknown error").trim(), true);
+        }
+      }).finally(function () {
+        state.busy = false;
+        pollEngine();
+      });
+    };
+    if (g.confirm) {
+      return confirmDialog(g.confirm).then(function (yes) { if (yes) return go(); });
+    }
+    return go();
+  }
+
+  // ---- journal ----
+
+  function loadJournal() {
+    return Promise.all([execShell(C.readTraceCmd(), 10000), execShell(C.readLogCmd(), 10000)]).then(function (res) {
+      state.trace = res[0].errno === 0 ? C.parseTrace(res[0].stdout, 400) : [];
+      state.logText = res[1].errno === 0 && res[1].stdout
+        ? res[1].stdout
+        : "(No daemon log yet at " + C.PATHS.log + ")";
+      renderJournal();
+    });
+  }
+
+  function renderJournal() {
+    var isDecisions = state.journalView === "decisions";
+    $("jDecisions").hidden = !isDecisions;
+    $("jLog").hidden = isDecisions;
+    document.querySelectorAll("[data-jview]").forEach(function (b) {
+      b.toggleAttribute("selected", b.getAttribute("data-jview") === state.journalView);
+    });
+    document.querySelectorAll("[data-jfilter]").forEach(function (b) {
+      b.toggleAttribute("selected", b.getAttribute("data-jfilter") === state.traceFilter);
+    });
+
+    var rows = C.filterTrace(state.trace, state.traceFilter);
+    var host = $("traceList");
+    clear(host);
+    setText("traceSummary", rows.length + " of " + state.trace.length + " recent decision records, newest first.");
+    if (!rows.length) {
+      host.appendChild(el("div", "empty", "No matching decisions. The journal lists only records the daemon wrote."));
+    }
+    rows.slice(0, 200).forEach(function (r) {
+      var item = el("article", "trace-item");
+      item.setAttribute("data-kind", r.kind);
+      var title = (r.event || "event") + (r.result ? " · " + r.result : "");
+      var meta = [r.time, r.scope, r.state, r.decision, r.reason].filter(Boolean).join(" · ");
+      item.append(el("span", "trace-kind", r.kind.toUpperCase()), el("b", "", title), el("small", "", meta));
+      host.appendChild(item);
+    });
+
+    var q = String($("logSearch").value || "").toLowerCase();
+    var lines = state.logText.split(/\r?\n/).filter(Boolean);
+    if (q) lines = lines.filter(function (l) { return l.toLowerCase().indexOf(q) >= 0; });
+    $("logBox").textContent = lines.slice(-400).join("\n") || "(no matching lines)";
+  }
+
+  function copyText(text) {
+    var done = function () { toast("Copied."); };
+    var fallback = function () {
+      var a = document.createElement("textarea");
+      a.value = text;
+      a.style.position = "fixed";
+      a.style.opacity = "0";
+      document.body.appendChild(a);
+      a.select();
+      try { document.execCommand("copy"); done(); } catch (e) { toast("Copy is unavailable in this WebView.", true); }
+      a.remove();
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  // ---- startup ----
+
+  function checkVendor() {
+    var ready = !!(window.customElements && customElements.get("md-button") && customElements.get("md-switch"));
+    $("vendorNotice").hidden = ready;
+  }
+
+  function init() {
+    document.querySelectorAll("[data-page-link]").forEach(function (b) {
+      b.addEventListener("click", function () { showPage(b.getAttribute("data-page-link")); });
+    });
+
+    $("btnStart").addEventListener("click", function () {
+      runAction(C.startCmd(), { ok: "Start requested." });
+    });
+    $("btnStop").addEventListener("click", function () {
+      runAction(C.stopCmd(), { confirm: "stop" });
+    });
+    $("btnRestart").addEventListener("click", function () {
+      runAction(C.restartCmd(), { confirm: "restart" });
+    });
+    $("btnRestartPending").addEventListener("click", function () {
+      runAction(C.restartCmd(), { confirm: "restart" });
+    });
+    $("btnRefresh").addEventListener("click", function () {
+      runAction(C.refreshCmd(), { ok: "Re-discovery requested." });
+    });
+
+    buildPolicyFields();
+    document.querySelectorAll("[data-mode]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (!state.form) return;
+        state.form.mutation_mode = b.getAttribute("data-mode");
+        applyFormToUi();
+      });
+    });
+    document.querySelectorAll("[data-interactivity]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (!state.form) return;
+        state.form.interactivity_mode = b.getAttribute("data-interactivity");
+        applyFormToUi();
+      });
+    });
+    $("btnSavePolicy").addEventListener("click", savePolicy);
+    $("btnReloadPolicy").addEventListener("click", loadPolicy);
+
+    document.querySelectorAll("[data-jview]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        state.journalView = b.getAttribute("data-jview");
+        renderJournal();
+      });
+    });
+    document.querySelectorAll("[data-jfilter]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        state.traceFilter = b.getAttribute("data-jfilter");
+        renderJournal();
+      });
+    });
+    $("logSearch").addEventListener("input", renderJournal);
+    $("btnRefreshJournal").addEventListener("click", loadJournal);
+    $("btnCopyJournal").addEventListener("click", function () {
+      copyText(state.journalView === "log" ? state.logText : $("traceList").textContent);
+    });
+
+    $("dialogCancel").addEventListener("click", function () { $("confirmDialog").close("cancel"); });
+    $("dialogConfirm").addEventListener("click", function () { $("confirmDialog").close("confirm"); });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && state.page === "engine") pollEngine();
+      if (document.visibilityState === "hidden") {
+        clearTimeout(state.pollTimer);
+        state.pollTimer = null;
+      }
+    });
+
+    setTimeout(checkVendor, 2500);
+    showPage("engine");
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();
