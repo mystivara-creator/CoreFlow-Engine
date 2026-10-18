@@ -200,6 +200,8 @@ class FakeRetainedStateStore final : public RetainedStateStore {
 public:
     bool fail_commit{false};
     bool corrupt{false};
+    int commit_calls{0};
+    int fail_commit_call{0};
     Entries stored;
 
     LoadState load(Entries& out) noexcept override {
@@ -207,12 +209,18 @@ public:
         if (corrupt) return LoadState::Corrupt;
         return stored.empty() ? LoadState::Absent : LoadState::Valid;
     }
+
     bool commit(const Entries& entries) noexcept override {
-        if (fail_commit) return false;
+        ++commit_calls;
+        if (fail_commit ||
+            (fail_commit_call > 0 && commit_calls == fail_commit_call)) {
+            return false;
+        }
         stored = entries;
         corrupt = false;
         return true;
     }
+
     bool clear() noexcept override {
         if (fail_commit) return false;
         stored.clear();
@@ -902,6 +910,53 @@ void test_external_override_is_preserved_during_candidate_rollback() {
     CHECK(retained.stored.empty());
 }
 
+void test_retained_commit_failure_keeps_outcome_pending() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    retained.fail_commit_call = 1;
+
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.hasPendingOutcome());
+    CHECK(!mc.retainLastMutation(profile));
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.lastRetainedStateFailureStage() ==
+          RetainedStateFailureStage::StoreUpsertFailed);
+    CHECK(retained.stored.empty());
+    CHECK(retained.commit_calls == 2);
+}
+
+
+void test_retained_recovery_commit_failure_is_reported() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    retained.fail_commit = true;
+
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.hasPendingOutcome());
+    CHECK(!mc.retainLastMutation(profile));
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.lastRetainedStateFailureStage() ==
+          RetainedStateFailureStage::RecoveryCommitFailed);
+    CHECK(retained.stored.empty());
+    CHECK(retained.commit_calls == 2);
+}
+
 void test_corrupt_retained_state_fails_closed() {
     Sandbox box;
     FakeJournal journal;
@@ -1380,6 +1435,9 @@ int main() {
         {"beneficial_mutation_retained_without_time_expiry", test_beneficial_mutation_is_retained_without_time_expiry},
         {"rollback_latest_candidate_preserves_retained_value", test_rollback_only_latest_candidate_and_preserve_retained_value},
         {"external_override_preserved", test_external_override_is_preserved_during_candidate_rollback},
+        {"retained_commit_failure_keeps_outcome_pending", test_retained_commit_failure_keeps_outcome_pending},
+        {"retained_recovery_commit_failure_is_reported",
+         test_retained_recovery_commit_failure_is_reported},
         {"corrupt_retained_state_fail_closed", test_corrupt_retained_state_fails_closed},
         {"retained_cpu_state_recovery_baseline", test_retained_cpu_state_restores_saved_baseline_after_restart},
         {"retained_state_store_roundtrip_and_corruption", test_retained_state_store_round_trip_and_corruption},

@@ -81,6 +81,9 @@ public:
 
     bool restoreAll() noexcept;
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    RetainedStateFailureStage lastRetainedStateFailureStage() const noexcept {
+        return last_retained_state_failure_stage_;
+    }
     bool rollbackLastMutation() noexcept;
     bool hasPendingOutcome() const noexcept { return pending_outcome_; }
 
@@ -190,6 +193,9 @@ private:
     bool restore_failed_{false};
     bool stabilizing_epoch_{false};
     bool pending_outcome_{false};
+    RetainedStateFailureStage last_retained_state_failure_stage_{
+        RetainedStateFailureStage::None
+    };
     ResourceMutationFailureStage last_failure_stage_{ResourceMutationFailureStage::None};
     ActuatorStatus last_actuator_status_{ActuatorStatus::Invalid};
     std::string last_mutation_path_;

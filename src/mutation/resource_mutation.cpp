@@ -871,37 +871,61 @@ bool ResourceMutationController::restoreAll() noexcept {
 }
 
 bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
+    last_retained_state_failure_stage_ = RetainedStateFailureStage::None;
+
     if (!pending_outcome_ || retained_store_ == nullptr ||
-        last_mutation_path_.empty() || last_mutation_target_.empty()) return false;
+        last_mutation_path_.empty() || last_mutation_target_.empty()) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::Precondition;
+        return false;
+    }
+
     const auto baseline = baseline_.find(last_mutation_path_);
     if (baseline == baseline_.end() || !baseline->second.valid ||
-        baseline->second.value == last_mutation_target_) return false;
+        baseline->second.value == last_mutation_target_) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::BaselineInvalid;
+        return false;
+    }
+
     std::string live;
-    if (!ResourceActuator::readComparable(last_mutation_path_, live) ||
-        live != last_mutation_target_) return false;
+    if (!ResourceActuator::readComparable(last_mutation_path_, live)) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveReadFailed;
+        return false;
+    }
+    if (live != last_mutation_target_) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveTargetMismatch;
+        return false;
+    }
 
     RetainedStateEntry entry;
-    entry.scope = retainedScopeFor(profile);
-    entry.path = last_mutation_path_;
-    entry.baseline = baseline->second.value;
-    entry.target = last_mutation_target_;
     RetainedStateStore::Entries updated_entries;
     try {
+        entry.scope = retainedScopeFor(profile);
+        entry.path = last_mutation_path_;
+        entry.baseline = baseline->second.value;
+        entry.target = last_mutation_target_;
+
         updated_entries = retained_entries_;
         updated_entries.erase(std::remove_if(updated_entries.begin(), updated_entries.end(),
             [&entry](const RetainedStateEntry& current) { return current.path == entry.path; }),
             updated_entries.end());
         updated_entries.push_back(entry);
     } catch (...) {
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::AllocationFailed;
         return false;
     }
+
     if (!retained_store_->upsert(entry)) {
         // A rename may have succeeded even if the final directory sync failed.
         // Best-effort restore the last known-good ledger so an unaccepted
         // candidate cannot become a retained preference after restart.
-        (void)retained_store_->commit(retained_entries_);
+        last_retained_state_failure_stage_ = RetainedStateFailureStage::StoreUpsertFailed;
+        if (!retained_store_->commit(retained_entries_)) {
+            last_retained_state_failure_stage_ =
+                RetainedStateFailureStage::RecoveryCommitFailed;
+        }
         return false;
     }
+
     retained_entries_.swap(updated_entries);
     pending_outcome_ = false;
     last_applied_resources_.clear();
@@ -913,6 +937,7 @@ bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile
     last_candidate_from_retained_ = false;
     return true;
 }
+
 
 bool ResourceMutationController::rollbackLastMutation() noexcept {
     if (!pending_outcome_ || last_mutation_path_.empty() || last_previous_value_.empty()) {

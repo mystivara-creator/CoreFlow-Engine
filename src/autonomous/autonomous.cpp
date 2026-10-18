@@ -898,6 +898,21 @@ void AutonomousEngine::tick() {
                                 snapshot_.profile);
                         }
                         if ((cpu_pending || resource_pending) && !retained) {
+                            const bool cpu_retention_failed = cpu_pending;
+                            const RetainedStateFailureStage retention_stage =
+                                cpu_retention_failed
+                                    ? controller_.lastRetainedStateFailureStage()
+                                    : resource_controller_.lastRetainedStateFailureStage();
+                            const char* retention_stage_name =
+                                retainedStateFailureStageName(retention_stage);
+                            appendDecisionTraceEvent(trace_context, {
+                                "retained_state_commit_failed",
+                                cpu_retention_failed ? "cpu_freq" : "resource",
+                                "FAILED",
+                                retention_stage_name,
+                                false, false,
+                                retention_stage_name});
+
                             // Never leave a candidate active as "beneficial" if
                             // its durable retained record could not be committed.
                             bool rolled_back = true;

@@ -69,6 +69,9 @@ public:
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    RetainedStateFailureStage lastRetainedStateFailureStage() const noexcept {
+        return last_retained_state_failure_stage_;
+    }
     // Roll back only the candidate under evaluation, preserving earlier retained settings.
     bool rollbackLastMutation() noexcept;
     void rejectLastMutation() noexcept;
@@ -145,6 +148,9 @@ private:
     bool restore_failed_{false};     // last restore incomplete: block new mutations
     bool recovery_pending_{false};    // a previous run's journal must be recovered
     bool pending_outcome_{false};
+    RetainedStateFailureStage last_retained_state_failure_stage_{
+        RetainedStateFailureStage::None
+    };
     std::string last_mutation_path_;
     std::string last_mutation_target_;
     std::string last_previous_value_;
