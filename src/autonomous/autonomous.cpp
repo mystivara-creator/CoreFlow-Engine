@@ -53,21 +53,44 @@ struct InteractivityPaths final {
 InteractivityPaths discoverInteractivityPaths(
     const EnvironmentCapabilityMatrix& matrix) {
     InteractivityPaths result;
+    // Prefer actual foreground cgroups, not paths that merely contain words
+    // like "perf". Candidates must be fully discovered and policy-authorized;
+    // the mutation authority/actuator gates still apply at write time.
+    auto pathScore = [](const std::string& p) -> int {
+        if (p.find("/system-background/") != std::string::npos) return -50;
+        if (p.find("/background/") != std::string::npos) return -30;
+        if (p.find("/top-app/") != std::string::npos) return 50;
+        if (p.find("/foreground/") != std::string::npos) return 30;
+        return 0;
+    };
+    int best_gpu = -1000;
+    int best_uclamp = -1000;
     for (const auto& resource : matrix.resources) {
-        if (!resource.exists || !resource.writable || resource.path.empty()) continue;
+        if (!resource.exists || !resource.readable || !resource.writable ||
+            !resource.permission_granted || !resource.policy_authorized ||
+            !resource.runtime_verified || !resource.mutation_ready ||
+            resource.path.empty()) continue;
         const std::filesystem::path path(resource.path);
         const std::string filename = path.filename().string();
-        if (result.gpu_min_freq.empty() && resource.domain == ResourceDomain::Gpu &&
-            filename == "min_freq") {
-            result.gpu_min_freq = resource.path;
+        const int score = pathScore(resource.path);
+        if (resource.domain == ResourceDomain::Gpu && filename == "min_freq") {
+            if (score > best_gpu) {
+                best_gpu = score;
+                result.gpu_min_freq = resource.path;
+            }
         }
-        if (result.uclamp_min.empty() && resource.domain == ResourceDomain::UClamp &&
+        if (resource.domain == ResourceDomain::UClamp &&
             (filename == "uclamp.min" || filename == "cpu.uclamp.min")) {
-            result.uclamp_min = resource.path;
+            // An interactivity boost must never be aimed at a background group
+            // just because it is the only writable clamp discovered.
+            if (score < 0) continue;
+            if (score > best_uclamp) {
+                best_uclamp = score;
+                result.uclamp_min = resource.path;
+            }
         }
     }
-    // cgroup.procs is a read-only observation file, so it need not be admitted
-    // as a writable tunable. Derive it from the discovered uclamp controller.
+    // cgroup.procs is observation-only; derive from the chosen uclamp parent.
     if (!result.uclamp_min.empty()) {
         const auto sibling = std::filesystem::path(result.uclamp_min).parent_path() /
                              "cgroup.procs";
@@ -627,7 +650,26 @@ void AutonomousEngine::tick() {
             boost_controller_.setJournal(interactivity_journal_.get());
             boost_controller_.setGpuMinFreqPath(paths.gpu_min_freq);
             boost_controller_.setTopAppUclampPath(paths.uclamp_min);
-            boost_controller_.discoverReadaheadPaths();
+            // Prefer fully admitted read-ahead nodes from capability discovery.
+            // Accept both /sys/block/<device>/... and discovered /sys/devices/
+            // .../block/<device>/... paths; avoid a brittle device-name blacklist.
+            {
+                std::size_t added = 0;
+                for (const auto& resource : snapshot_.profile.capabilities.resources) {
+                    if (resource.domain != ResourceDomain::Io ||
+                        !resource.exists || !resource.readable || !resource.writable ||
+                        !resource.permission_granted || !resource.policy_authorized ||
+                        !resource.runtime_verified || !resource.mutation_ready) continue;
+                    if (resource.path.find("/queue/read_ahead_kb") == std::string::npos) continue;
+                    const bool sys_block = resource.path.find("/sys/block/") != std::string::npos;
+                    const bool device_block = resource.path.find("/sys/devices/") != std::string::npos &&
+                                              resource.path.find("/block/") != std::string::npos;
+                    if (!sys_block && !device_block) continue;
+                    boost_controller_.addReadaheadPath(resource.path);
+                    ++added;
+                }
+                if (added == 0) boost_controller_.discoverReadaheadPaths();
+            }
             // A previous run may have died while a boost was active. Adopt its
             // journal so the next pass restores the true baseline.
             (void)boost_controller_.recoverFromJournal();

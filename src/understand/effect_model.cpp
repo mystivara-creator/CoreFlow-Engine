@@ -1,11 +1,14 @@
 #include "coreflow/effect_model.hpp"
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/fatal_surface.hpp"
+#include "coreflow/pressure_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
+#include <string_view>
 
 namespace coreflow {
 namespace {
@@ -87,14 +90,21 @@ Situation classify(const EffectContext& ctx) noexcept {
                  ctx.thermal_c >= 48.0);
     s.memory = ctx.state == RuntimeState::Pressure || ctx.mem_available_ratio < 0.15 ||
                ctx.memory_stall_detected;
-    s.elevated = ctx.state == RuntimeState::Elevated ||
-                 (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
-                 ctx.load1 >= 1.50;
+    s.io_pressure =
+        (ctx.psi_available &&
+         ctx.psi_io >= pressure_limits::kIoPsiSomeAvg10Enter) ||
+        (ctx.io_latency_available &&
+         ctx.io_avg_latency_ms >= pressure_limits::kIoLatencyEnterMs);
+    const bool cpu_or_load_elevated =
+        (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
+        ctx.load1 >= 1.50;
+    // AdaptivePolicy can enter Elevated due to I/O alone. Do not interpret that
+    // state as a general CPU-load signal unless CPU/load telemetry agrees.
+    s.elevated = cpu_or_load_elevated ||
+                 (ctx.state == RuntimeState::Elevated && !s.io_pressure);
     s.calm_explore = (ctx.state == RuntimeState::Normal) &&
                      ctx.intervention >= InterventionLevel::Low &&
                      ctx.sample_confidence >= 0.75;
-    s.io_pressure = (ctx.psi_available && ctx.psi_io >= 0.08) ||
-                    (ctx.io_latency_available && ctx.io_avg_latency_ms >= 25.0);
     s.throttling = ctx.throttling_detected;
 
     double sev = 0.0;
@@ -169,6 +179,51 @@ bool isUtilizationClamp(const ResourceCapability& cap) noexcept {
             cap.path.find("schedtune.boost") != std::string::npos);
 }
 
+bool endsWith(std::string_view value, std::string_view suffix) noexcept {
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// Match a real queue selector, not any unrelated tunable whose name happens
+// to contain "scheduler". Device topology is not inferred from a device name:
+// the discovery matrix, security authority and actuator verify the target.
+bool isBlockQueueScheduler(const ResourceCapability& cap) noexcept {
+    return cap.domain == ResourceDomain::Io &&
+           endsWith(cap.path, "/queue/scheduler");
+}
+
+bool isCpuSetCpusLeaf(const ResourceCapability& cap) noexcept {
+    if (cap.domain != ResourceDomain::CpuSet) return false;
+    const std::string_view path(cap.path);
+    const auto slash = path.rfind('/');
+    const std::string_view leaf = slash == std::string_view::npos
+                                      ? path : path.substr(slash + 1U);
+    return leaf == "cpus" || leaf == "cpuset.cpus";
+}
+
+bool isPreferredForegroundPath(const std::string& path) noexcept {
+    // Match path components rather than broad substrings such as "perf" which
+    // can occur in unrelated vendor paths and are not evidence of foreground.
+    return path.find("/top-app/") != std::string::npos ||
+           path.find("/foreground/") != std::string::npos;
+}
+
+bool isBackgroundPath(const std::string& path) noexcept {
+    return path.find("/system-background/") != std::string::npos ||
+           path.find("/background/") != std::string::npos;
+}
+
+bool isConventionalIoSchedulerToken(std::string_view token) noexcept {
+    // A small ranking prior only; these tokens are not declared universally
+    // safe or optimal. The kernel-advertised option list remains authoritative.
+    return token == "none" || token == "mq-deadline" || token == "kyber";
+}
+
+bool hasPositiveExperience(const EffectContext& ctx) noexcept {
+    return ctx.has_experience && ctx.experience_confidence >= 0.60 &&
+           ctx.experience_score >= 0.60;
+}
+
 } // namespace
 
 std::vector<EffectScore> EffectModel::proposals(
@@ -185,10 +240,18 @@ std::vector<EffectScore> EffectModel::proposals(
             isFatalSurface(capability.path)) {
             return out;
         }
+        // cpuset.mems and partition/control files have different migration and
+        // ownership semantics. This generic tuner only proposes CPU placement;
+        // other cpuset controls need their own semantic actuator/model.
+        if (capability.domain == ResourceDomain::CpuSet &&
+            !isCpuSetCpusLeaf(capability)) {
+            return out;
+        }
         const std::string base_text = trim(baseline_value);
         if (base_text.empty() || ctx.intervention == InterventionLevel::ObserveOnly) return out;
 
         const Situation situation = classify(ctx);
+        const bool block_scheduler = isBlockQueueScheduler(capability);
 
         // Apply the embedded semantic catalog before deriving values. It is a
         // risk prior, not mutation authority: the controller still enforces the
@@ -213,7 +276,8 @@ std::vector<EffectScore> EffectModel::proposals(
                     break;
             }
         }
-        if (!situation.stressed() && !situation.elevated && !situation.calm_explore) return out;
+        if (!situation.stressed() && !situation.elevated && !situation.calm_explore &&
+            !(block_scheduler && situation.io_pressure)) return out;
 
         const double base_confidence = clamp01(ctx.sample_confidence * 0.92);
         long long base_num = 0;
@@ -223,6 +287,18 @@ std::vector<EffectScore> EffectModel::proposals(
                         EffectDirection direction, bool stabilizing, const char* reason) {
             if (requested.empty() || requested == base_text) return;
             if (isFatalValue(base_text, requested)) return;
+            bool evidence_stabilizing = stabilizing;
+            if (block_scheduler && situation.stressed()) {
+                // Scheduler changes are relevant to an I/O bottleneck, not a
+                // generic remedy for thermal/memory stress. During stress,
+                // require matching I/O pressure plus vendor efficiency evidence
+                // or a strong candidate-specific measured prior. Mere token
+                // availability never makes a scheduler choice stabilizing.
+                if (!situation.io_pressure) return;
+                const bool vendor_evidence = source == CandidateSource::VendorEfficiency;
+                if (!vendor_evidence && !hasPositiveExperience(ctx)) return;
+                evidence_stabilizing = true;
+            }
             // Domain membership alone is not evidence that a change will
             // stabilize the device. Under memory-only pressure, allow only a
             // vendor-declared efficiency value on a Memory resource; generic
@@ -235,17 +311,17 @@ std::vector<EffectScore> EffectModel::proposals(
                  source != CandidateSource::VendorEfficiency)) {
                 return;
             }
-            if (situation.stressed() && !stabilizing) return;
+            if (situation.stressed() && !evidence_stabilizing) return;
             for (const auto& existing : out) {
                 if (existing.requested == requested) return;
             }
-            const double benefit = outcomeBenefit(situation, stabilizing, source, ctx);
-            const double risk = outcomeRisk(situation, stabilizing, source, ctx, direction);
+            const double benefit = outcomeBenefit(situation, evidence_stabilizing, source, ctx);
+            const double risk = outcomeRisk(situation, evidence_stabilizing, source, ctx, direction);
             EffectScore score;
             score.requested = requested;
             score.source = source;
             score.direction = direction;
-            score.stabilizing = stabilizing;
+            score.stabilizing = evidence_stabilizing;
             score.confidence = clamp01(base_confidence +
                                        (source == CandidateSource::VendorEfficiency ||
                                                 source == CandidateSource::VendorPerformance ||
@@ -319,15 +395,31 @@ std::vector<EffectScore> EffectModel::proposals(
                 }
             } else if (!capability.ordered_scale) {
                 for (const auto& option : capability.options) {
+                    const std::string token = trim(option);
+                    if (token.empty() || token == base_text) continue;
                     const bool vendor_low_power = [&] {
                         for (const auto& v : capability.vendor_values) {
-                            if (v.value == option && v.profile == VendorProfile::Efficiency) return true;
+                            if (trim(v.value) == token &&
+                                v.profile == VendorProfile::Efficiency) return true;
                         }
                         return false;
                     }();
-                    emit(option, CandidateSource::KernelOption, EffectDirection::Select,
-                         vendor_low_power,
-                         "kernel-advertised option");
+                    const bool clamp_down = isUtilizationClamp(capability) &&
+                                            (situation.thermal || situation.throttling);
+                    // Every scheduler alternative must be kernel-advertised.
+                    // No name is treated as universally safe. Common tokens get
+                    // only a small context-specific ranking prior below; other
+                    // options (including vendor schedulers) remain eligible.
+                    const char* option_reason = "kernel-advertised option";
+                    if (block_scheduler) {
+                        option_reason = situation.stressed()
+                            ? "I/O scheduler candidate with matching pressure and evidence"
+                            : "kernel-advertised I/O scheduler option";
+                    } else if (clamp_down) {
+                        option_reason = "lower utilization clamp option";
+                    }
+                    emit(token, CandidateSource::KernelOption, EffectDirection::Select,
+                         vendor_low_power || clamp_down, option_reason);
                 }
             }
         }
@@ -356,22 +448,38 @@ std::vector<EffectScore> EffectModel::proposals(
             long long div = 1;
             for (int i = 0; i < decimals; ++i) div *= 10;
             const bool negative = v < 0;
-            const long long a = negative ? -v : v;
-            std::string frac = std::to_string(a % div);
+            // Avoid negating LLONG_MIN, which is undefined behavior.
+            const unsigned long long magnitude = negative
+                ? static_cast<unsigned long long>(-(v + 1LL)) + 1ULL
+                : static_cast<unsigned long long>(v);
+            const auto unsigned_div = static_cast<unsigned long long>(div);
+            std::string frac = std::to_string(magnitude % unsigned_div);
             while (static_cast<int>(frac.size()) < decimals) frac.insert(0, "0");
-            return std::string(negative ? "-" : "") + std::to_string(a / div) + "." + frac;
+            return std::string(negative ? "-" : "") +
+                   std::to_string(magnitude / unsigned_div) + "." + frac;
         };
         if (numeric && capability.options.empty()) {
-            const long long magnitude = scaled < 0 ? -scaled : scaled;
+            const unsigned long long magnitude = scaled < 0
+                ? static_cast<unsigned long long>(-(scaled + 1LL)) + 1ULL
+                : static_cast<unsigned long long>(scaled);
             // 0/1 are feature toggles: only vendor-declared values may flip them.
             // A fixed-point 0.00 / 1.00 is a real quantity, not a toggle.
-            if (magnitude >= 2 || (decimals > 0 && magnitude > 0)) {
-                const long long step = std::max<long long>(1, magnitude / 8);
+            if (magnitude >= 2ULL || (decimals > 0 && magnitude > 0ULL)) {
+                const long long signed_magnitude = magnitude >
+                    static_cast<unsigned long long>(std::numeric_limits<long long>::max())
+                        ? std::numeric_limits<long long>::max()
+                        : static_cast<long long>(magnitude);
+                const long long step = std::max<long long>(1, signed_magnitude / 8);
+                const long long min = std::numeric_limits<long long>::min();
+                const long long max = std::numeric_limits<long long>::max();
                 const long long lower_bound = scaled > 0 ? std::max<long long>(1, scaled / 2)
-                                                           : scaled * 2;
-                const long long upper_bound = scaled > 0 ? scaled * 2 : scaled / 2;
-                const long long down = std::max(lower_bound, scaled - step);
-                const long long up = std::min(upper_bound, scaled + step);
+                    : (scaled < min / 2 ? min : scaled * 2);
+                const long long upper_bound = scaled > 0
+                    ? (scaled > max / 2 ? max : scaled * 2) : scaled / 2;
+                const long long raw_down = scaled < min + step ? min : scaled - step;
+                const long long raw_up = scaled > max - step ? max : scaled + step;
+                const long long down = std::max(lower_bound, raw_down);
+                const long long up = std::min(upper_bound, raw_up);
                 const bool clamp = isUtilizationClamp(capability) &&
                                     (situation.thermal || situation.throttling);
                 if (down != scaled) {
@@ -402,6 +510,14 @@ EffectScore EffectModel::evaluate(
     try {
         for (auto& score : proposals(capability, baseline_value, ctx)) {
             score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
+            if (score.domain == ResourceDomain::Io &&
+                endsWith(score.path, "/queue/scheduler") &&
+                ((ctx.psi_available && ctx.psi_io >= pressure_limits::kIoPsiSomeAvg10Enter) ||
+                 (ctx.io_latency_available && ctx.io_avg_latency_ms >= pressure_limits::kIoLatencyEnterMs)) &&
+                isConventionalIoSchedulerToken(score.requested)) {
+                score.utility += 0.015; // weak prior, never a safety/risk override
+            }
+            if (score.stabilizing) score.utility += 0.01;
             if (!best.eligible || score.utility > best.utility) best = std::move(score);
         }
     } catch (...) {
@@ -429,6 +545,18 @@ std::vector<EffectScore> EffectModel::rank(
         std::vector<EffectScore> local = proposals(cap, baseline->second, ctx);
         for (auto& score : local) {
             score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
+            // Foreground placement is a small tie-breaker, not a claim that the
+            // write is less risky. The preference remains a small utility prior.
+            if (isPreferredForegroundPath(score.path)) score.utility += 0.015;
+            if (isBackgroundPath(score.path)) score.utility -= 0.015;
+            if (score.domain == ResourceDomain::Io &&
+                endsWith(score.path, "/queue/scheduler") &&
+                ((ctx.psi_available && ctx.psi_io >= pressure_limits::kIoPsiSomeAvg10Enter) ||
+                 (ctx.io_latency_available && ctx.io_avg_latency_ms >= pressure_limits::kIoLatencyEnterMs)) &&
+                isConventionalIoSchedulerToken(score.requested)) {
+                score.utility += 0.015;
+            }
+            if (score.stabilizing) score.utility += 0.01;
         }
         std::stable_sort(local.begin(), local.end(),
                          [](const EffectScore& a, const EffectScore& b) { return a.utility > b.utility; });

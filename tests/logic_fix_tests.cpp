@@ -165,6 +165,21 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
     CHECK(policy.evaluate(base(56000, 1.0, 0.4, 0.05), RuntimeState::Normal) ==
           RuntimeState::ThermalGuard);
 
+    // I/O pressure is a first-class workload signal so an I/O-only bottleneck
+    // can reach the runtime's soft-adaptation path instead of staying Idle.
+    {
+        RuntimeSample io = base(40000, 0.10, 0.05, 0.50);
+        io.io_latency_available = true;
+        io.io_avg_latency_ms = 30.0;
+        CHECK(policy.evaluate(io, RuntimeState::Normal) == RuntimeState::Elevated);
+        io.io_avg_latency_ms = 10.0;
+        io.psi_available = true;
+        io.psi_io_some_avg10 = 0.10;
+        CHECK(policy.evaluate(io, RuntimeState::Normal) == RuntimeState::Elevated);
+        io.psi_io_some_avg10 = 0.02;
+        CHECK(policy.evaluate(io, RuntimeState::Normal) == RuntimeState::Idle);
+    }
+
     // Idle requires low measured CPU too, not only a lagging load1.
     CHECK(policy.evaluate(base(40000, 0.10, 0.50, 0.5), RuntimeState::Normal) !=
           RuntimeState::Idle);
