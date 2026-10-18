@@ -1,4 +1,5 @@
 #include "coreflow/policy.hpp"
+#include "coreflow/pressure_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -49,7 +50,16 @@ RuntimeState AdaptivePolicy::evaluate(
     const bool load_busy = !sample.cpu_utilization_available &&
                            sample.load1 >= kElevatedLoad;
 
-    if (cpu_busy || load_busy)
+    // I/O pressure is a first-class workload signal. Without this branch a
+    // device can show sustained PSI/latency but remain Normal/Idle, which makes
+    // the block-scheduler proposal unreachable through runtime control.
+    const bool io_busy =
+        (sample.psi_available &&
+         sample.psi_io_some_avg10 >= pressure_limits::kIoPsiSomeAvg10Enter) ||
+        (sample.io_latency_available &&
+         sample.io_avg_latency_ms >= pressure_limits::kIoLatencyEnterMs);
+
+    if (cpu_busy || load_busy || io_busy)
         return RuntimeState::Elevated;
 
     // load1 is a 1-minute average and lags real activity. Idle triggers deep

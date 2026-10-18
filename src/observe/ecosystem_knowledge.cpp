@@ -157,12 +157,13 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      "source.android.com/docs/core/perf/lmkd"},
 
     // ---- Block I/O (kernel queue-sysfs) ----
-    // Scheduler stays quarantined (token/vendor variance). read_ahead_kb and
-    // nr_requests are BoundedTune on real devices; virtual devices remain
-    // rejected by the actuator allow-list.
+    // Scheduler selection is capability-driven BoundedTune. Only tokens exposed
+    // by the target kernel are proposed. Security authority, pressure evidence,
+    // baseline/journal and actuator verification remain mandatory; no scheduler
+    // name is universally safe and layered devices are not blanket-denied by name.
     {"block.queue.scheduler", "/sys/block", ResourceDomain::Io,
-     KnowledgeLayer::LinuxKernel, KnowledgeRisk::Quarantined, true,
-     "I/O scheduler selection; Android storage stacks need topology proof.",
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Kernel-advertised I/O scheduler selector; benefit is device/workload dependent.",
      "docs.kernel.org/block/queue-sysfs.html"},
     {"block.queue.read_ahead_kb", "/sys/block", ResourceDomain::Io,
      KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,

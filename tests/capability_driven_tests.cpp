@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sys/stat.h>
 
 namespace fs = std::filesystem;
@@ -142,7 +143,7 @@ void testGenericDiscovery() {
     writeFile(root / "sys/devices/system/cpu/cpufreq/policy0/scaling_governor", "schedutil");
     writeFile(root / "sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us", "500");
     writeFile(root / "sys/devices/system/cpu/cpu1/online", "1");         // fatal
-    writeFile(root / "sys/block/sda/queue/scheduler", "[mq-deadline] kyber none");
+    writeFile(root / "sys/block/sda/queue/scheduler", "[mq-deadline] kyber none bfq");
     writeFile(root / "sys/block/sda/queue/write_cache", "write back");   // fatal
     writeFile(root / "sys/block/sda/queue/iosched/fifo_batch", "16");
     writeFile(root / "sys/class/devfreq/gpu/governor", "msm-adreno-tz");
@@ -195,7 +196,7 @@ void testGenericDiscovery() {
     CHECK(rate && rate->domain == ResourceDomain::Scheduler && rate->mutation_ready);
 
     const auto* iosched = findCap(matrix, r + "/sys/block/sda/queue/scheduler");
-    CHECK(iosched && iosched->domain == ResourceDomain::Io && iosched->options.size() == 3U &&
+    CHECK(iosched && iosched->domain == ResourceDomain::Io && iosched->options.size() == 4U &&
           !iosched->ordered_scale && iosched->name == "sda:scheduler");
     const auto* fifo = findCap(matrix, r + "/sys/block/sda/queue/iosched/fifo_batch");
     CHECK(fifo && fifo->name == "sda:iosched.fifo_batch");
@@ -245,8 +246,27 @@ void testGenericDiscovery() {
     // Thermal: the vendor's low-power cpuset is the stabilizing choice.
     const EffectScore cs = model.evaluate(*cpus, "0-3", hot);
     CHECK(cs.eligible && cs.requested == "0-1" && cs.source == CandidateSource::VendorEfficiency);
-    // Thermal: no evidence that a scheduler token reduces load → nothing.
+    // Thermal stress alone is not an I/O scheduler signal; advertised names
+    // must not be treated as universally stabilizing.
     CHECK(!model.evaluate(*iosched, "mq-deadline", hot).eligible);
+    EffectContext thermal_and_io = hot;
+    thermal_and_io.psi_available = true;
+    thermal_and_io.psi_io = 0.12;
+    CHECK(model.proposals(*iosched, "mq-deadline", thermal_and_io).empty());
+    // A strong, candidate-specific positive outcome prior can justify a
+    // scheduler trial during matched I/O pressure; it never bypasses authority.
+    thermal_and_io.has_experience = true;
+    thermal_and_io.experience_confidence = 0.80;
+    thermal_and_io.experience_score = 0.82;
+    CHECK(!model.proposals(*iosched, "mq-deadline", thermal_and_io).empty());
+
+    // CPU placement values are evidence-derived. Never synthesize or tune the
+    // separate memory-node set through the generic CPU-set actuator.
+    ResourceCapability cpuset_mems = *cpus;
+    cpuset_mems.name = "background:cpuset.mems";
+    cpuset_mems.path = r + "/dev/cpuset/background/mems";
+    cpuset_mems.options = {"0"};
+    CHECK(model.proposals(cpuset_mems, "0", hot).empty());
 
     EffectContext busy;
     busy.state = RuntimeState::Elevated;
@@ -262,7 +282,43 @@ void testGenericDiscovery() {
     CHECK(v.eligible && v.requested == "4" && v.source == CandidateSource::VendorDefault);
     // Headroom: kernel-advertised tokens are candidates.
     const EffectScore t = model.evaluate(*iosched, "mq-deadline", busy);
-    CHECK(t.eligible && (t.requested == "kyber" || t.requested == "none"));
+    CHECK(t.eligible && (t.requested == "kyber" || t.requested == "none" ||
+                         t.requested == "bfq"));
+    // Non-whitelisted/vendor scheduler names stay eligible when the kernel
+    // advertises them; common-token ranking is only a weak prior under I/O PSI.
+    EffectContext io_busy = busy;
+    io_busy.psi_available = true;
+    io_busy.psi_io = 0.15;
+    const auto scheduler_proposals = model.proposals(*iosched, "mq-deadline", io_busy);
+    bool saw_bfq = false;
+    for (const auto& proposal : scheduler_proposals) {
+        if (proposal.requested == "bfq") saw_bfq = true;
+    }
+    CHECK(saw_bfq);
+    EffectContext io_only = io_busy;
+    io_only.state = RuntimeState::Elevated;
+    io_only.cpu_utilization = 0.10;
+    io_only.load1 = 0.10;
+    io_only.mem_available_ratio = 0.50;
+    CHECK(!model.proposals(*iosched, "mq-deadline", io_only).empty());
+    CHECK(model.proposals(*custom, "7", io_only).empty());
+    // Layered/mapper paths are not categorically blocked by name. They remain
+    // candidates only when discovery, policy, grants, journaling and the
+    // actuator accept the exact live node.
+    ResourceCapability mapped_scheduler = *iosched;
+    mapped_scheduler.path = "/sys/block/dm-0/queue/scheduler";
+    mapped_scheduler.name = "dm-0:scheduler";
+    CHECK(model.evaluate(mapped_scheduler, "mq-deadline", busy).eligible);
+
+    // Bounded numeric exploration must not overflow at signed integer limits.
+    ResourceCapability edge_numeric = *custom;
+    edge_numeric.name = "vendor.edge_numeric";
+    edge_numeric.path = "/proc/sys/kernel/vendor_edge_numeric";
+    edge_numeric.options.clear();
+    edge_numeric.vendor_values.clear();
+    const auto edge_candidates = model.proposals(
+        edge_numeric, std::to_string(std::numeric_limits<long long>::min()), busy);
+    CHECK(edge_candidates.size() <= 2U);
     // Opaque multi-field value without vendor data is never synthesized.
     ResourceCapability opaque = *cpus;
     opaque.vendor_values.clear();
