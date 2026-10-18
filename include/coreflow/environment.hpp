@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,7 +31,26 @@ enum class ResourceDomain {
 // excluded domains are inventory/telemetry (thermal zones, charging, power
 // supply, cgroup structure, Android runtime markers); their write surfaces are
 // fatal classes anyway (see fatal_surface.hpp).
-bool isTunableResourceDomain(ResourceDomain domain) noexcept;
+inline bool isTunableResourceDomain(ResourceDomain domain) noexcept {
+    switch (domain) {
+        case ResourceDomain::CpuFreq:
+        case ResourceDomain::UClamp:
+        case ResourceDomain::CpuSet:
+        case ResourceDomain::Scheduler:
+        case ResourceDomain::Memory:
+        case ResourceDomain::Io:
+        case ResourceDomain::Gpu:
+        case ResourceDomain::Vendor:
+            return true;
+        case ResourceDomain::Thermal:
+        case ResourceDomain::Charging:
+        case ResourceDomain::Power:
+        case ResourceDomain::CGroup:
+        case ResourceDomain::AndroidRuntime:
+            return false;
+    }
+    return false;
+}
 
 struct ResourceCapability {
     ResourceDomain domain{ResourceDomain::AndroidRuntime};
@@ -92,11 +112,48 @@ struct EnvironmentCapabilityMatrix {
     AndroidEnvironment environment;
     std::vector<ResourceCapability> resources;
 
-    std::size_t count(ResourceDomain domain) const noexcept;
-    std::size_t mutationReadyCount() const noexcept;
-    bool has(ResourceDomain domain, const std::string& name) const noexcept;
+    inline std::size_t count(ResourceDomain domain) const noexcept {
+        std::size_t result = 0;
+        for (const auto& resource : resources) {
+            if (resource.domain == domain) ++result;
+        }
+        return result;
+    }
+
+    inline std::size_t mutationReadyCount() const noexcept {
+        std::size_t result = 0;
+        for (const auto& resource : resources) {
+            if (resource.mutation_ready) ++result;
+        }
+        return result;
+    }
+
+    inline bool has(
+        ResourceDomain domain, const std::string& name) const noexcept {
+        for (const auto& resource : resources) {
+            if (resource.domain == domain && resource.name == name) return true;
+        }
+        return false;
+    }
 };
 
-const char* resourceDomainName(ResourceDomain domain) noexcept;
+inline const char* resourceDomainName(ResourceDomain domain) noexcept {
+    switch (domain) {
+        case ResourceDomain::CpuFreq: return "CPUFREQ";
+        case ResourceDomain::UClamp: return "UCLAMP";
+        case ResourceDomain::CpuSet: return "CPUSET";
+        case ResourceDomain::Scheduler: return "SCHEDULER";
+        case ResourceDomain::Memory: return "MEMORY";
+        case ResourceDomain::Io: return "IO";
+        case ResourceDomain::Gpu: return "GPU";
+        case ResourceDomain::Thermal: return "THERMAL";
+        case ResourceDomain::Charging: return "CHARGING";
+        case ResourceDomain::Power: return "POWER";
+        case ResourceDomain::CGroup: return "CGROUP";
+        case ResourceDomain::AndroidRuntime: return "ANDROID_RUNTIME";
+        case ResourceDomain::Vendor: return "VENDOR";
+    }
+    return "UNKNOWN";
+}
 
 } // namespace coreflow

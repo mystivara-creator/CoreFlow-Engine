@@ -1,142 +1,19 @@
-# CoreFlow — Source Map
+# Source Map
 
-Baca file ini dulu sebelum membuka folder `src/` atau `include/`.
+This map describes the current source layout. It is intentionally organized by responsibility, not by individual tunable.
 
-Engine disusun mengikuti empat fungsi:
+- `src/observe/`: mount-derived discovery, capability registry, tunable inventory, kernel roots, and vendor/ecosystem evidence.
+- `src/understand/`: runtime context, effect estimates, thermal features/guards/prediction, experience, and baseline intelligence.
+- `src/balance/`: policy, resource state, consultation, control planning, and safety holds.
+- `src/mutation/`: generic resource mutation, CPUFreq actuator, write verification, and rollback paths.
+- `src/conscience/`: mutation journal, retained state, fatal-surface guard, and decision trace.
+- `src/runtime/`: configuration, daemon entry, status snapshots, lifecycle and runtime integration.
+- `src/autonomous/`: periodic orchestration that connects observation, reasoning, policy, and authorized actuation.
+- `include/coreflow/`: public/internal interfaces and shared data contracts.
+- `module/`: KernelSU module scripts, default configuration, ONNX model, and mobile WebUI.
+- `tests/`: deterministic host regression tests and source-contract checks.
+- `tools/`: build and validation scripts; generated build products do not belong in the source package.
 
-**Observe → Understand → Balance → Adapt**  
-(+ **Conscience** untuk journal/restore, **Runtime** untuk daemon)
+## Authority flow
 
-Bukan daftar parameter. Bukan kumpulan file acak.
-
----
-
-## Peta cepat
-
-```text
-Android / Kernel
-       │
-       ▼
-┌────────────── OBSERVE ──────────────┐
-│  Apa yang perangkat ini expose?     │
-│  discovery · observer · environment │
-└──────────────────┬──────────────────┘
-                   ▼
-┌────────────── UNDERSTAND ───────────┐
-│  Apa artinya untuk stabilitas?      │
-│  context · effect_model · thermal   │
-│  experience · decision_agent        │
-└──────────────────┬──────────────────┘
-                   ▼
-┌────────────── BALANCE ──────────────┐
-│  Apakah boleh intervensi sekarang?  │
-│  policy · control · safety_hold     │
-└──────────────────┬──────────────────┘
-                   ▼
-┌────────────── ADAPT ────────────────┐
-│  Ubah sedikit → ukur → lanjut/undo  │
-│  mutation · actuators · baseline    │
-└──────────────────┬──────────────────┘
-                   ▼
-┌────────────── CONSCIENCE ───────────┐
-│  Journal, retained state, trace     │
-└─────────────────────────────────────┘
-```
-
----
-
-## `src/` (implementasi)
-
-Layout mengikuti tiga peran: **mata** (observe), **otak** (understand + balance), **tangan** (mutation). Lihat `CMakeLists.txt` untuk daftar kompilasi.
-
-### `src/observe/` — mata (melihat, tidak memutuskan)
-| File | Fungsi |
-|------|--------|
-| `discovery.cpp` | Inventaris capability perangkat (VM sysctl, block, scheduler, build prop). Bertanya ke `balance/consultation` untuk kelas surface; **tidak** menentukan izin mutasi sendiri. |
-| `capability_registry.cpp` | Registri fakta capability yang sudah ditemukan. |
-| `observer.cpp` | Sampel runtime tiap tick (thermal, mem, load, IO). |
-| `environment.cpp` | Tipe & matriks capability lingkungan. |
-| `ecosystem_knowledge.cpp` | Katalog pengetahuan lunak (risiko/kelas), bukan allow-list. |
-| `high_capability.cpp` | Domain perluasan, observe-only. |
-
-### `src/understand/` — penalaran
-| File | Fungsi |
-|------|--------|
-| `context.cpp` | Workload + headroom + boleh mutasi / hanya stabilizing. |
-| `effect_model.cpp` | Skor benefit/risk/confidence; prior = bonus; knob tanpa prior ditolak (observe-only). |
-| `decision_agent.cpp` | Alur observe → hypothesize → review → propose. |
-| `experience.cpp` | Memori outcome terverifikasi per scope perangkat. |
-| `baseline_intelligence.cpp` | Jendela sebelum/sesudah untuk klasifikasi outcome. |
-| `thermal_features.cpp`, `thermal_guard.cpp`, `thermal_predictor.cpp` | Fitur, guard hysteresis, prediktor (ONNX/heuristic). |
-
-### `src/balance/` — otak (memutuskan izin)
-| File | Fungsi |
-|------|--------|
-| `policy.cpp` | State machine (Idle/Normal/…/ThermalGuard) + keputusan kasar. |
-| `control.cpp` | PolicyEngine plan + MutationAuthority (permit akhir). |
-| `consultation.cpp` | Konsultasi per kandidat: Allow / Defer / Deny dengan alasan. Urutan: larangan → kemampuan → semantik → stres → kebutuhan → benefit > risk → izin pengguna. |
-| `resource_model.cpp` | State resource yang diizinkan policy. |
-| `safety_hold.cpp` | Kill switch / SAFE_MODE. |
-
-### `src/mutation/` — tangan (hanya dengan permit)
-| File | Fungsi |
-|------|--------|
-| `resource_mutation.cpp` | Epoch mutasi resource (VM/IO/scheduler). |
-| `mutation.cpp` | Epoch mutasi CPUFreq (opt-in terpisah). |
-| `resource_actuator.cpp` / `cpufreq_actuator.cpp` | Write + read-back verify. |
-
-### `src/conscience/` — ingatan
-| File | Fungsi |
-|------|--------|
-| `mutation_journal.cpp` | Snapshot pabrik; commit sebelum write. |
-| `retained_state.cpp` | State tahan reboot untuk recovery. |
-| `decision_trace.cpp` | Jejak keputusan (debug). |
-
-### `src/autonomous/` — loop
-| File | Fungsi |
-|------|--------|
-| `autonomous.cpp` | Tick loop: satukan semua lapisan. |
-
-### `src/runtime/` — daemon
-| File | Fungsi |
-|------|--------|
-| `main.cpp` | Entry process. |
-| `config.cpp` | Config / mode / armed / izin pengguna (`grant_*`). |
-| `runtime_paths.cpp` | Lokasi file state dan status. |
-| `status_snapshot.cpp` | Tulis `status.json` untuk UI. |
-| `signal_state.cpp` | Sinyal stop/refresh. |
-
----
-
-## `include/coreflow/` (kontrak API)
-
-Header = kontrak publik antar-lapisan. Nama file mengikuti modul di atas.
-
-Yang sering membingungkan:
-| Header | Artinya |
-|--------|---------|
-| `types.hpp` | Tipe runtime bersama (sample, state, enum). |
-| `environment.hpp` | Domain & capability matrix. |
-| `control.hpp` | PolicyPlan + MutationAuthority. |
-| `controller.hpp` | Alias tipis ke `MutationController` (kompatibilitas). |
-| `actuator.hpp` | Antarmuka aktuator generik. |
-| `thermal_limits.hpp` | Hanya konstanta plausibility suhu (header-only). |
-
----
-
-## Yang bukan tanggung jawab file mana
-
-- **Discovery tidak menulis kernel.**
-- **EffectModel tidak mengizinkan write.**
-- **Policy tidak memilih path sembarangan** — hanya kapan intervensi masuk akal.
-- **Actuator tidak memilih nilai** — hanya menulis nilai yang sudah diizinkan + verify.
-- **Tidak ada daftar `vm.swappiness` sebagai syarat mutasi** — kelas permukaan + deny-list + skor.
-
----
-
-## Cara baca untuk evaluasi
-
-1. Baca peta ini.  
-2. Ikuti satu tick di `src/autonomous/autonomous.cpp`.  
-3. Loncat ke lapisan yang dipanggil (observe → understand → balance → adapt).  
-4. Untuk izin write: `discovery` (class) → `effect_model` (skor) → `control` (authority) → `resource_actuator` (write).  
+Environment observation produces evidence. Reasoning can rank candidate effects but cannot authorize a write. Balance/policy and the mutation-permit/safety foundation remain the authority boundary. Mutation code must reject missing or stale authorization and preserve journal, verification, and rollback behavior.

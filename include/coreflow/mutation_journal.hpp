@@ -4,6 +4,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+namespace coreflow::testing {
+void failNextJournalDirectorySync(bool fail) noexcept;
+}
+#endif
+
 namespace coreflow {
 
 /**
@@ -32,9 +38,10 @@ public:
 };
 
 /**
- * File-backed journal. Writes are atomic: temp file -> fsync -> rename ->
- * fsync(directory). Entries are validated on load; any malformed content is
- * reported as Corrupt so mutation stays blocked until an operator intervenes.
+ * File-backed journal. New writes use bounded, checksummed v2 records; the
+ * loader still accepts strict v1 records for recovery across upgrades. Writes
+ * are atomic: temp file -> fsync -> rename -> fsync(directory). A malformed,
+ * oversized, symlinked, or checksum-invalid record is Corrupt, never Absent.
  */
 class FileMutationJournal final : public MutationJournal {
 public:

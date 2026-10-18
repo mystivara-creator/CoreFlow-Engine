@@ -1,3 +1,4 @@
+#include "coreflow/mutation_journal.hpp"
 #include "coreflow/effect_model.hpp"
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/resource_actuator.hpp"
@@ -23,6 +24,65 @@ std::string readFile(const fs::path& p) {
     std::string s;
     std::getline(f, s);
     return s;
+}
+
+// Mirrors what discovery produces for a writable, policy-admitted tunable.
+void addSwappinessCapability(DeviceProfile& profile, const std::string& path) {
+    ResourceCapability cap;
+    cap.domain = ResourceDomain::Memory;
+    cap.name = "vm.swappiness";
+    cap.path = path;
+    cap.exists = true;
+    cap.readable = true;
+    cap.writable = true;
+    cap.permission_granted = true;
+    cap.runtime_verified = true;
+    cap.policy_authorized = true;
+    cap.mutation_ready = true;
+    profile.capabilities.resources.push_back(std::move(cap));
+}
+
+// Block-queue nodes as discovery admits them: one capability per queue node,
+// named like the walker names it, with mutation readiness from its own flags.
+void addBlockQueueCapability(DeviceProfile& profile, const IoDevice& device,
+                             const std::string& leaf, bool readable, bool writable) {
+    if (!readable && !writable) return;
+    ResourceCapability cap;
+    cap.domain = ResourceDomain::Io;
+    cap.name = device.name + ":" + leaf;
+    cap.path = device.path + "/queue/" + leaf;
+    cap.exists = true;
+    cap.readable = readable;
+    cap.writable = writable;
+    cap.permission_granted = writable;
+    cap.runtime_verified = readable;
+    cap.policy_authorized = true;
+    cap.mutation_ready = readable && writable;
+    profile.capabilities.resources.push_back(std::move(cap));
+}
+
+void addBlockQueueCapabilities(DeviceProfile& profile, const IoDevice& device) {
+    addBlockQueueCapability(profile, device, "read_ahead_kb",
+                            device.read_ahead_readable, device.read_ahead_writable);
+    addBlockQueueCapability(profile, device, "nr_requests",
+                            device.nr_requests_readable, device.nr_requests_writable);
+    addBlockQueueCapability(profile, device, "scheduler",
+                            device.scheduler_readable, device.scheduler_writable);
+    // Discovery attaches kernel-advertised options after admission; do the same.
+    TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
+}
+
+// Mirrors the grants that the shipped default.conf states explicitly. Discovery
+// alone never authorises a write, so every mutation fixture grants its domains.
+void grantAllDomains(EngineConfig& config) {
+    config.setAllowCpuGovernor(true);
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
+    config.setGrantGpu(true);
+    config.setGrantCgroup(true);
+    config.setGrantCpuFreq(true);
+    config.setGrantKernel(true);
 }
 
 void writeFile(const fs::path& p, const std::string& s) {
@@ -129,10 +189,12 @@ MutationResult applyResourcePolicy(
         permit);
 }
 
-// Safety property: with mutation armed and adaptive, but without the user's
-// grant, a device under real pressure must still leave the kernel untouched.
-// The brain defers, the hands never run, and the ledger says why.
-void test_no_write_without_user_grant() {
+// Legacy namespace grant flags must not block an otherwise eligible mutation.
+// The global Adaptive/armed gates and fatal-surface checks remain authoritative.
+// Default-deny per domain: a capability the operator has not granted is never
+// written, even under stress and with the global gates open. A grant that is
+// present for the domain allows the same write (positive case in other tests).
+void test_namespace_grant_is_required_for_mutation() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_no_grant_test";
     fs::remove_all(root);
     fs::create_directories(root);
@@ -140,14 +202,12 @@ void test_no_write_without_user_grant() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -155,14 +215,8 @@ void test_no_write_without_user_grant() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
-    // Grants are opt-out; this user explicitly opts every namespace out.
+    // Every domain except the memory grant is left at its default-deny value.
     config.setGrantMemory(false);
-    config.setGrantBlockQueue(false);
-    config.setGrantScheduler(false);
-    config.setGrantGpu(false);
-    config.setGrantCgroup(false);
-    config.setGrantCpuFreq(false);
-    config.setGrantKernel(false);
 
     Journal journal;
     ResourceMutationController controller;
@@ -178,6 +232,7 @@ void test_no_write_without_user_grant() {
     const auto& ledger = controller.consultationLedger();
     CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] >= 1U);
     CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] == 0U);
+    fs::remove_all(root);
 }
 
 void test_journal_commit_failure_is_diagnosed() {
@@ -190,14 +245,12 @@ void test_journal_commit_failure_is_diagnosed() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -205,6 +258,7 @@ void test_journal_commit_failure_is_diagnosed() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     config.setGrantMemory(true);
 
     Journal journal;
@@ -228,6 +282,98 @@ void test_journal_commit_failure_is_diagnosed() {
     fs::remove_all(root);
 }
 
+void test_file_journal_clear_reports_directory_sync_failure() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_journal_fsync_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    FileMutationJournal journal(journal_path.string());
+    const MutationJournal::Entries entries{{(root / "resource").string(), "60"}};
+
+    CHECK(journal.commit(entries));
+    CHECK(fs::exists(journal_path));
+
+    coreflow::testing::failNextJournalDirectorySync(true);
+    const bool cleared = journal.clear();
+
+    CHECK(!cleared);
+    CHECK(!fs::exists(journal_path));
+    MutationJournal::Entries loaded;
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Absent);
+    CHECK(loaded.empty());
+
+    fs::remove_all(root);
+}
+
+void test_file_journal_commit_reports_directory_sync_failure() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_journal_commit_fsync_failure_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    FileMutationJournal journal(journal_path.string());
+    const MutationJournal::Entries entries{
+        {(root / "resource").string(), "60"}
+    };
+
+    coreflow::testing::failNextJournalDirectorySync(true);
+    CHECK(!journal.commit(entries));
+
+    // Rename may already have succeeded before directory fsync fails.
+    CHECK(fs::exists(journal_path));
+
+    MutationJournal::Entries loaded;
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
+    CHECK(loaded == entries);
+
+    CHECK(journal.clear());
+    fs::remove_all(root);
+}
+
+void test_file_journal_rejects_ambiguous_records() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_file_journal_ambiguous_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path journal_path = root / "journal";
+    const std::string resource = (root / "resource").string();
+    FileMutationJournal journal(journal_path.string());
+    MutationJournal::Entries loaded;
+
+    const MutationJournal::Entries duplicate_entries{
+        {resource, "60"},
+        {resource, "70"}
+    };
+
+    CHECK(!journal.commit(duplicate_entries));
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Absent);
+    CHECK(loaded.empty());
+
+    const auto writeRaw = [&](const std::string& content) {
+        std::ofstream file(
+            journal_path, std::ios::binary | std::ios::trunc);
+        file << content;
+        file.close();
+        CHECK(static_cast<bool>(file));
+    };
+
+    const std::string header = "coreflow-mutation-journal v1\n";
+
+    writeRaw(header + resource + "\t60\nend\nunexpected-data\n");
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    writeRaw(header + resource + "\t60\n" +
+             resource + "\t70\nend\n");
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    fs::remove_all(root);
+}
 
 void test_corrupt_journal_blocks_mutation() {
     Journal journal;
@@ -244,6 +390,16 @@ void test_corrupt_journal_blocks_mutation() {
     CHECK(!controller.mutated());
 }
 
+void test_recovery_requires_a_journal() {
+    ResourceMutationController controller;
+    const DeviceProfile profile;
+
+    CHECK(!controller.captureBaseline(profile));
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::JournalUnavailable);
+    CHECK(!controller.mutated());
+}
+
 void test_journal_clear_failure_blocks_recovery() {
     const fs::path root =
         fs::temp_directory_path() / "coreflow_journal_clear_failure_test";
@@ -254,9 +410,7 @@ void test_journal_clear_failure_blocks_recovery() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     Journal journal;
     journal.entries.emplace_back(swappiness.string(), "60");
@@ -351,14 +505,12 @@ void test_swappiness_adaptive_path() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -366,6 +518,7 @@ void test_swappiness_adaptive_path() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -399,14 +552,12 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.2;
     sample.cpu_utilization_available = true;
@@ -414,6 +565,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -454,6 +606,55 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     fs::remove_all(root);
 }
 
+void test_restore_all_keeps_journal_when_dirty_path_disappears() {
+    const fs::path root =
+        fs::temp_directory_path() / "coreflow_restore_missing_dirty_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path swappiness = root / "swappiness";
+    writeFile(swappiness, "60");
+
+    DeviceProfile profile;
+    addSwappinessCapability(profile, swappiness.string());
+
+    RuntimeSample sample;
+    sample.mem_total_kb = 1000;
+    sample.mem_available_kb = 100;
+    sample.mem_available_ratio = 0.50;
+    sample.confidence = 1.0;
+    sample.cpu_utilization = 0.2;
+    sample.cpu_utilization_available = true;
+
+    EngineConfig config;
+    config.setMutationMode(MutationMode::Adaptive);
+    config.setMutationArmed(true);
+    grantAllDomains(config);
+    config.setGrantMemory(true);
+
+    Journal journal;
+    ResourceMutationController controller;
+    controller.setJournal(&journal);
+
+    CHECK(controller.captureBaseline(profile));
+    CHECK(applyResourcePolicy(
+        controller, RuntimeState::Elevated, sample, profile, config,
+        InterventionLevel::Low) == MutationResult::Verified);
+    CHECK(controller.mutated());
+    CHECK(journal.pending);
+
+    // Simulasikan node resource menghilang setelah mutasi.
+    fs::remove(swappiness);
+
+    CHECK(!controller.restoreAll());
+    CHECK(controller.mutated());
+    CHECK(journal.pending);
+    CHECK(controller.lastFailureStage() ==
+          ResourceMutationFailureStage::Rollback);
+
+    fs::remove_all(root);
+}
+
 void test_resource_restore_only_owned_paths() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_owned_test";
     fs::remove_all(root);
@@ -464,9 +665,7 @@ void test_resource_restore_only_owned_paths() {
     writeFile(readAhead, "128");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
     // The block device stays in the profile so restore isolation is exercised,
     // but read_ahead is not writable here: block-queue writes are quarantined,
     // and this test is about owning only the swappiness write it performed.
@@ -476,11 +675,12 @@ void test_resource_restore_only_owned_paths() {
     device.read_ahead_readable = true;
     device.read_ahead_writable = false;
     profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
     sample.mem_available_kb = 100;
-    sample.mem_available_ratio = 0.10;
+    sample.mem_available_ratio = 0.50;
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.8;
     sample.cpu_utilization_available = true;
@@ -489,6 +689,7 @@ void test_resource_restore_only_owned_paths() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -530,9 +731,7 @@ void test_policy_block_without_mutation_is_skipped() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -545,6 +744,7 @@ void test_policy_block_without_mutation_is_skipped() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -631,6 +831,7 @@ void test_intervention_level_boundaries() {
         device.scheduler_writable = scheduler;
 
         profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
         RuntimeSample sample;
         sample.mem_total_kb = 1000;
@@ -647,6 +848,7 @@ void test_intervention_level_boundaries() {
         EngineConfig config;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        grantAllDomains(config);
         // The user has granted these namespaces; a device need alone never does.
         config.setGrantMemory(true);
         config.setGrantBlockQueue(true);
@@ -730,9 +932,7 @@ void test_disarmed_policy_performs_no_write() {
     writeFile(swappiness, "60");
 
     DeviceProfile profile;
-    profile.vm_swappiness.path = swappiness.string();
-    profile.vm_swappiness.readable = true;
-    profile.vm_swappiness.writable = true;
+    addSwappinessCapability(profile, swappiness.string());
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -824,21 +1024,22 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     context.intervention = InterventionLevel::Low;
 
     const auto ranked = model.rank(matrix, baselines, context, 4);
-    CHECK(!ranked.empty());
-    bool swappiness_ranked = false;
-    for (const auto& score : ranked) {
-        if (score.path == known.path) {
-            swappiness_ranked = true;
-            CHECK(score.domain == ResourceDomain::Memory);
-            CHECK(score.utility > 0.0);
-            CHECK(score.requested == "53" || score.requested == "67");
-            CHECK(score.source == CandidateSource::BoundedStep);
-        }
-    }
-    CHECK(swappiness_ranked);
+    // A memory-pressure label is not enough to justify arbitrary numeric steps.
+    CHECK(ranked.empty());
+    const EffectScore pressured_swappiness = model.evaluate(known, "60", context);
+    CHECK(!pressured_swappiness.eligible);
+    CHECK(pressured_swappiness.requested.empty());
 
-    // Capability-driven: a node with no name-table entry is still a candidate.
-    const EffectScore unknown_score = model.evaluate(unknown, "100", context);
+    // Unknown numeric nodes remain capability-driven, but exploration waits for
+    // headroom rather than guessing that a direction relieves memory pressure.
+    const EffectScore pressured_unknown = model.evaluate(unknown, "100", context);
+    CHECK(!pressured_unknown.eligible);
+    CHECK(pressured_unknown.requested.empty());
+
+    EffectContext headroom = context;
+    headroom.state = RuntimeState::Elevated;
+    headroom.mem_available_ratio = 0.50;
+    const EffectScore unknown_score = model.evaluate(unknown, "100", headroom);
     CHECK(unknown_score.eligible);
     CHECK(unknown_score.requested == "88" || unknown_score.requested == "112");
 
@@ -847,6 +1048,12 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     const EffectScore denied = model.evaluate(notAuthorized, "60", context);
     CHECK(!denied.eligible);
     CHECK(denied.requested.empty());
+
+    // Catalog risk levels are inputs to proposal eligibility, not just UI text.
+    ResourceCapability observeOnly = known;
+    observeOnly.name = "vm.overcommit_memory";
+    observeOnly.path = "/proc/sys/vm/overcommit_memory";
+    CHECK(!model.evaluate(observeOnly, "2", headroom).eligible);
 
     // Catalog lookup must distinguish dynamic per-device queue nodes.
     const auto* scheduler = lookupEcosystemKnowledgeByPath(
@@ -858,6 +1065,50 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(scheduler != nullptr && std::string(scheduler->key) == "block.queue.scheduler");
     CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
     CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
+
+
+    // Regression: physical block queue tunables remain explorable with
+    // headroom, but are not presumed to stabilize memory pressure.
+    ResourceCapability readAheadCap = known;
+    readAheadCap.domain = ResourceDomain::Io;
+    readAheadCap.name = "sda:read_ahead_kb";
+    readAheadCap.path = "/sys/block/sda/queue/read_ahead_kb";
+
+    ResourceCapability requestsCap = known;
+    requestsCap.domain = ResourceDomain::Io;
+    requestsCap.name = "sda:nr_requests";
+    requestsCap.path = "/sys/block/sda/queue/nr_requests";
+
+    const EffectScore readAheadHeadroom =
+        model.evaluate(readAheadCap, "128", headroom);
+    CHECK(readAheadHeadroom.eligible);
+    CHECK(readAheadHeadroom.requested == "112" ||
+          readAheadHeadroom.requested == "144");
+
+    const EffectScore requestsHeadroom =
+        model.evaluate(requestsCap, "128", headroom);
+    CHECK(requestsHeadroom.eligible);
+    CHECK(requestsHeadroom.requested == "112" ||
+          requestsHeadroom.requested == "144");
+
+    const EffectScore readAheadPressure =
+        model.evaluate(readAheadCap, "128", context);
+    CHECK(!readAheadPressure.eligible);
+    CHECK(readAheadPressure.requested.empty());
+
+    const EffectScore requestsPressure =
+        model.evaluate(requestsCap, "128", context);
+    CHECK(!requestsPressure.eligible);
+    CHECK(requestsPressure.requested.empty());
+
+    // The canonical path must take precedence over a misleading capability
+    // name. A scheduler path must not inherit read_ahead_kb's BoundedTune risk.
+    ResourceCapability pathWins = readAheadCap;
+    pathWins.name = "block.queue.read_ahead_kb";
+    pathWins.path = "/sys/block/sda/queue/scheduler";
+    const EffectScore schedulerPressure =
+        model.evaluate(pathWins, "[mq-deadline] kyber none", context);
+    CHECK(!schedulerPressure.eligible);
 
     // Fatal surfaces are never candidates, even if marked mutation_ready.
     ResourceCapability fatal = known;
@@ -871,7 +1122,7 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     vendor.path = "/proc/sys/vm/vendor_knob";
     vendor.vendor_values.push_back(VendorValue{"40", VendorProfile::Efficiency, "test.rc"});
     const EffectScore vendor_score = model.evaluate(vendor, "100", context);
-    CHECK(vendor_score.eligible);
+    CHECK(vendor_score.eligible && vendor_score.stabilizing);
     CHECK(vendor_score.requested == "40");
     CHECK(vendor_score.source == CandidateSource::VendorEfficiency);
 }
@@ -913,6 +1164,7 @@ void test_block_queue_mutation_targets_are_admitted_for_physical() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -959,6 +1211,7 @@ void test_selector_scheduler_restore_writes_bare_token() {
     device.scheduler_readable = true;
     device.scheduler_writable = true;
     profile.io_devices.push_back(device);
+    addBlockQueueCapabilities(profile, device);
 
     RuntimeSample sample;
     sample.mem_total_kb = 1000;
@@ -972,6 +1225,7 @@ void test_selector_scheduler_restore_writes_bare_token() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -998,6 +1252,42 @@ void test_selector_scheduler_restore_writes_bare_token() {
 
 // A journal written by an earlier build may hold the bracketed line. Recovery
 // and restore must normalize it instead of writing an unacceptable value.
+void test_restore_enforces_mutation_surface_guard() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "coreflow_restore_surface_guard";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    const fs::path fatal = root / "drop_caches";
+    writeFile(fatal, "0");
+    ResourceActuator actuator;
+    const ActuatorResult fatal_result = actuator.restore(fatal.string(), "3");
+    CHECK(fatal_result.status == ActuatorStatus::SafetyRejected);
+    CHECK(readFile(fatal) == "0");
+
+    // CPU governor writes belong exclusively to CpuFreqActuator, including
+    // during crash recovery from a resource journal.
+    const fs::path governor = root / "scaling_governor";
+    writeFile(governor, "schedutil");
+    const ActuatorResult governor_result = actuator.restore(governor.string(), "performance");
+    CHECK(governor_result.status == ActuatorStatus::SafetyRejected);
+    CHECK(readFile(governor) == "schedutil");
+
+    const fs::path ordinary = root / "ordinary_tunable";
+    const fs::path symlink = root / "redirected_tunable";
+    writeFile(ordinary, "10");
+    std::error_code symlink_error;
+    fs::create_symlink(ordinary, symlink, symlink_error);
+    if (!symlink_error) {
+        CHECK(!ResourceActuator::writable(symlink.string()));
+        const ActuatorResult symlink_result = actuator.restore(symlink.string(), "20");
+        CHECK(symlink_result.status == ActuatorStatus::SafetyRejected);
+        CHECK(readFile(ordinary) == "10");
+    }
+
+    fs::remove_all(root);
+}
+
 void test_legacy_bracketed_journal_value_is_normalized() {
     const fs::path path = fs::temp_directory_path() / "coreflow_legacy_journal_sched";
     writeFile(path, "none");
@@ -1010,8 +1300,8 @@ void test_legacy_bracketed_journal_value_is_normalized() {
     fs::remove(path);
 }
 
-// The CPU governor permit must not be issued without the separate opt-in.
-void test_cpu_permit_requires_governor_opt_in() {
+// CPUFreq permits use the global Adaptive/armed gate; no separate opt-in exists.
+void test_cpu_permit_uses_global_adaptive_gate() {
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -1019,6 +1309,7 @@ void test_cpu_permit_requires_governor_opt_in() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -1026,8 +1317,8 @@ void test_cpu_permit_requires_governor_opt_in() {
     config.setAllowCpuGovernor(false);
 
     const MutationAuthority authority;
-    CHECK(!authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
-                               MutationPermit::Scope::CpuFreq)
+    CHECK(authority.authorize(plan, config, RuntimeState::Elevated, 1.0,
+                              MutationPermit::Scope::CpuFreq)
               .validFor(MutationPermit::Scope::CpuFreq));
 
     config.setAllowCpuGovernor(true);
@@ -1071,9 +1362,7 @@ struct Fixture {
             profile.capabilities.resources.push_back(cap);
             TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
         }
-        profile.vm_swappiness.path = swappiness.string();
-        profile.vm_swappiness.readable = true;
-        profile.vm_swappiness.writable = true;
+        addSwappinessCapability(profile, swappiness.string());
         sample.mem_total_kb = 1000;
         sample.mem_available_kb = 500;
         sample.mem_available_ratio = 0.50;
@@ -1084,6 +1373,7 @@ struct Fixture {
         sample.thermal_millidegrees = 30000;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        grantAllDomains(config);
         // The user has granted these namespaces; a device need alone never does.
         config.setGrantMemory(true);
         config.setGrantBlockQueue(true);
@@ -1136,21 +1426,21 @@ void test_thermal_guard_allows_stabilizing_write_and_restores() {
     CHECK(!f.journal.pending);
 }
 
-void test_pressure_allows_stabilizing_write() {
+void test_pressure_defers_without_memory_evidence() {
     stab::Fixture f("coreflow_stab_pressure");
     f.sample.mem_available_ratio = 0.08;
     f.sample.mem_available_kb = 80;
     CHECK(f.controller.captureBaseline(f.profile));
 
     CHECK(f.run(RuntimeState::Pressure, stab::Fixture::stabilizingPlan()) ==
-          MutationResult::Verified);
-    // Memory pressure: the pressured domain itself is explored (measured and
-    // rolled back if it does not help); the GPU scale is not a memory response.
-    CHECK(readFile(f.swappiness) == "53");
-    CHECK(readFile(f.gpu_max) == "600");
-    CHECK(f.controller.stabilizingEpoch());
-    CHECK(f.controller.restoreAll());
+          MutationResult::Skipped);
+    // Neither swappiness nor an unrelated GPU scale has memory-specific
+    // stabilizing evidence, so pressure triggers a hold instead of exploration.
     CHECK(readFile(f.swappiness) == "60");
+    CHECK(readFile(f.gpu_max) == "600");
+    CHECK(!f.controller.stabilizingEpoch());
+    CHECK(!f.controller.mutated());
+    CHECK(!f.journal.pending);
 }
 
 void test_stabilizing_plan_rejects_non_stabilizing_candidates() {
@@ -1217,6 +1507,7 @@ void test_resource_actuator_rejects_scope_only_permit() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     config.setGrantMemory(true);
 
     const MutationAuthority authority;
@@ -1232,13 +1523,18 @@ void test_resource_actuator_rejects_scope_only_permit() {
 int main() {
     test_resource_actuator_rejects_scope_only_permit();
     test_journal_commit_failure_is_diagnosed();
+    test_file_journal_clear_reports_directory_sync_failure();
+    test_file_journal_commit_reports_directory_sync_failure();
+    test_file_journal_rejects_ambiguous_records();
     test_corrupt_journal_blocks_mutation();
+    test_recovery_requires_a_journal();
     test_journal_clear_failure_blocks_recovery();
     test_recovery_actuator_failure_is_diagnosed();
     test_missing_recovery_path_keeps_journal();
-    test_no_write_without_user_grant();
+    test_namespace_grant_is_required_for_mutation();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();
+    test_restore_all_keeps_journal_when_dirty_path_disappears();
     test_resource_restore_only_owned_paths();
     test_policy_block_without_mutation_is_skipped();
     test_intervention_level_boundaries();
@@ -1247,10 +1543,11 @@ int main() {
     test_block_queue_mutation_targets_are_admitted_for_physical();
     test_selector_value_comparable_form();
     test_selector_scheduler_restore_writes_bare_token();
+    test_restore_enforces_mutation_surface_guard();
     test_legacy_bracketed_journal_value_is_normalized();
-    test_cpu_permit_requires_governor_opt_in();
+    test_cpu_permit_uses_global_adaptive_gate();
     test_thermal_guard_allows_stabilizing_write_and_restores();
-    test_pressure_allows_stabilizing_write();
+    test_pressure_defers_without_memory_evidence();
     test_stabilizing_plan_rejects_non_stabilizing_candidates();
     test_safety_state_without_stabilizing_plan_never_writes();
     test_regressed_candidate_is_suppressed();

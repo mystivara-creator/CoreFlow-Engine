@@ -1,4 +1,4 @@
-#include "coreflow/decision_trace_reason.hpp"
+#include "coreflow/decision_trace.hpp"
 // Regression tests for the Autonomous-Engine logic review fixes.
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/policy.hpp"
@@ -99,6 +99,60 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
             MutationResult::RolledBack, MutationResult::Skipped)) == "MUTATION_ROLLED_BACK");
     }
 
+    // The diagnostic gate reason and actual coarse authorization use the same
+    // predicate, so WebUI explanations cannot silently diverge from the gate.
+    {
+        EngineConfig config;
+        config.setMutationMode(MutationMode::Adaptive);
+        config.setMutationArmed(true);
+        config.setAllowCpuGovernor(true);
+        PolicyPlan plan;
+        plan.action = PolicyAction::Candidate;
+        plan.mutation_eligible = true;
+        MutationAuthority authority;
+
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq) == nullptr);
+        CHECK(authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+
+        CHECK(std::string(mutationPermitBlockReason(
+              plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::quiet_NaN(),
+              MutationPermit::Scope::CpuFreq)) == "confidence_not_finite");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::quiet_NaN(),
+              MutationPermit::Scope::CpuFreq).valid());
+        CHECK(std::string(mutationPermitBlockReason(
+              plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::infinity(),
+              MutationPermit::Scope::Resource)) == "confidence_not_finite");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal,
+              std::numeric_limits<double>::infinity(),
+              MutationPermit::Scope::Resource).valid());
+
+        plan.stabilizing_only = true;
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq)) == "stabilizing_plan_disallows_cpu");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::Resource) == nullptr);
+
+        plan.stabilizing_only = false;
+        // CPUFreq uses the global adaptive/armed authority; the legacy
+        // allow_cpu_governor switch no longer creates a second permission gate.
+        config.setAllowCpuGovernor(false);
+        CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq) == nullptr);
+        CHECK(authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+
+        config.setMutationArmed(false);
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::Resource)) == "adaptive_mode_or_arming_required");
+    }
+
     AdaptivePolicy policy;
 
     // Memory pressure must win over Warming (48 C <= t < 55 C).
@@ -138,6 +192,21 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         CHECK(bi.outcome() != BaselineIntelligence::Outcome::Regression);
         // A fresh window is required before the next candidate.
         CHECK(!bi.baselineReady());
+    }
+
+    // A zero available-memory baseline is valid telemetry. A subsequent
+    // positive ratio is a real recovery signal, not an undefined ratio.
+    {
+        BaselineIntelligence bi;
+        for (std::size_t i = 0; i < BaselineIntelligence::kBaselineSamples; ++i)
+            (void)bi.captureBaseline(base(40000, 0.5, 0.2, 0.0));
+        CHECK(bi.baselineReady());
+        CHECK(bi.beginObservation());
+        bool done = false;
+        for (std::size_t i = 0; i < BaselineIntelligence::kObservationSamples; ++i)
+            done = bi.observe(base(40000, 0.5, 0.2, 0.1));
+        CHECK(done);
+        CHECK(bi.result().memory_score > 0.5);
     }
 
     // Stability floor: flat baseline + one 1 C quantization step is not a collapse.

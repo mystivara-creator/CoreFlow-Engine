@@ -19,6 +19,8 @@
 
 namespace coreflow {
 
+struct DecisionTraceContext;
+
 // Autonomous tuning for *discovered* VM/I/O/Scheduler resources.
 // Candidate generation is capability-driven via EffectModel — not a fixed
 // allow-list of resource names. Discovery decides what exists and is writable;
@@ -79,6 +81,9 @@ public:
 
     bool restoreAll() noexcept;
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    RetainedStateFailureStage lastRetainedStateFailureStage() const noexcept {
+        return last_retained_state_failure_stage_;
+    }
     bool rollbackLastMutation() noexcept;
     bool hasPendingOutcome() const noexcept { return pending_outcome_; }
 
@@ -87,7 +92,8 @@ public:
                          const DeviceProfile& profile,
                          const EngineConfig& config,
                          const PolicyPlan& policy,
-                         const MutationPermit& permit) noexcept;
+                         const MutationPermit& permit,
+                         const DecisionTraceContext* trace_context = nullptr) noexcept;
 
     // Convenience overload used by tests — builds a permissive plan.
     MutationResult apply(const RuntimeState state,
@@ -161,7 +167,8 @@ private:
                                   RuntimeState state,
                                   double confidence,
                                   const EngineConfig& config,
-                                  const PolicyPlan& policy) noexcept;
+                                  const PolicyPlan& policy,
+                                  const DecisionTraceContext* trace_context) noexcept;
     MutationJournal::Entries factorySnapshot() const;
     bool verifySchedulerToken(const std::string& path,
                               const std::string& token,
@@ -186,6 +193,9 @@ private:
     bool restore_failed_{false};
     bool stabilizing_epoch_{false};
     bool pending_outcome_{false};
+    RetainedStateFailureStage last_retained_state_failure_stage_{
+        RetainedStateFailureStage::None
+    };
     ResourceMutationFailureStage last_failure_stage_{ResourceMutationFailureStage::None};
     ActuatorStatus last_actuator_status_{ActuatorStatus::Invalid};
     std::string last_mutation_path_;

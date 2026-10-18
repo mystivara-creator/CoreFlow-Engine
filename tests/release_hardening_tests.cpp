@@ -61,7 +61,7 @@ void testShippedDefaultConfIsObserveOnly() {
     CHECK(cfg.load(conf.string()));
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(!cfg.allowCpuGovernor());
+    CHECK(cfg.allowCpuGovernor());   // shipped default.conf grants it explicitly
 }
 
 void testExplicitOptInEnablesAdaptiveMutation() {
@@ -75,7 +75,7 @@ void testExplicitOptInEnablesAdaptiveMutation() {
     CHECK(cfg.load(tmp.string()));
     CHECK(cfg.mutationMode() == MutationMode::Adaptive);
     CHECK(cfg.mutationArmed());
-    CHECK(cfg.allowCpuGovernor());
+    CHECK(cfg.allowCpuGovernor());   // allow_cpu_governor=yes is read from the file
     fs::remove(tmp);
 }
 
@@ -90,10 +90,56 @@ void testMalformedModeFailsSafe() {
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
     CHECK(!cfg.allowCpuGovernor());
+    CHECK(!cfg.grantMemory());
+    CHECK(!cfg.grantBlockQueue());
+    CHECK(!cfg.grantScheduler());
+    CHECK(!cfg.grantGpu());
+    CHECK(!cfg.grantCgroup());
+    CHECK(!cfg.grantCpuFreq());
+    CHECK(!cfg.grantKernel());
     fs::remove(tmp);
 }
 
 // ---------------------------------------------------------------------------
+void testFailedLoadPreservesExistingConfig() {
+    const fs::path missing =
+        fs::temp_directory_path() / "coreflow_missing_config_regression.ini";
+    std::error_code ec;
+    fs::remove(missing, ec);
+
+    EngineConfig cfg;
+    cfg.setMonitorIntervalSeconds(17);
+    cfg.setMinConfidence(0.83);
+    cfg.setMutationMode(MutationMode::Adaptive);
+    cfg.setAllowCpuGovernor(true);
+    cfg.setMutationArmed(true);
+    cfg.setRuntimeRefreshEnabled(false);
+    cfg.setGrantMemory(false);
+    cfg.setGrantBlockQueue(true);
+    cfg.setGrantScheduler(false);
+    cfg.setGrantGpu(true);
+    cfg.setGrantCgroup(false);
+    cfg.setGrantCpuFreq(true);
+    cfg.setGrantKernel(false);
+
+    CHECK(!cfg.load(missing.string()));
+
+    CHECK(cfg.monitorIntervalSeconds() == 17);
+    CHECK(near(cfg.minConfidence(), 0.83));
+    CHECK(cfg.mutationMode() == MutationMode::Adaptive);
+    CHECK(cfg.allowCpuGovernor());
+    CHECK(cfg.mutationArmed());
+    CHECK(!cfg.runtimeRefreshEnabled());
+    // Grants preserved exactly as set before the failed load (real setters).
+    CHECK(!cfg.grantMemory());
+    CHECK(cfg.grantBlockQueue());
+    CHECK(!cfg.grantScheduler());
+    CHECK(cfg.grantGpu());
+    CHECK(!cfg.grantCgroup());
+    CHECK(cfg.grantCpuFreq());
+    CHECK(!cfg.grantKernel());
+}
+
 // Thermal plausibility (single source of truth)
 // ---------------------------------------------------------------------------
 
@@ -629,6 +675,7 @@ int main() {
     testShippedDefaultConfIsObserveOnly();
     testExplicitOptInEnablesAdaptiveMutation();
     testMalformedModeFailsSafe();
+    testFailedLoadPreservesExistingConfig();
     testThermalPlausibilityBounds();
     testFeatureVectorMapsEveryIndexInFrozenOrder();
     testMissingTelemetryIsNeverEncodedAsZero();

@@ -154,7 +154,13 @@ void BaselineIntelligence::rebuildBaseline() noexcept {
 double BaselineIntelligence::lowerIsBetter(
     double baseline,
     double candidate) noexcept {
-    if (!finite(baseline) || !finite(candidate) || baseline <= 0.0) {
+    if (!finite(baseline) || !finite(candidate)) {
+        return 0.5;
+    }
+    // Relative change needs a positive baseline. A non-positive baseline
+    // (e.g. zero load) cannot form a ratio; treat as neutral rather than
+    // inventing an improvement or regression.
+    if (baseline <= 0.0) {
         return 0.5;
     }
 
@@ -165,8 +171,14 @@ double BaselineIntelligence::lowerIsBetter(
 double BaselineIntelligence::higherIsBetter(
     double baseline,
     double candidate) noexcept {
-    if (!finite(baseline) || !finite(candidate) || baseline <= 0.0) {
+    if (!finite(baseline) || !finite(candidate)) {
         return 0.5;
+    }
+    // Memory available ratio can legitimately be 0.0 (fully used). A relative
+    // ratio is undefined then; score a clear absolute recovery modestly and
+    // stay neutral otherwise so a zero baseline cannot force Beneficial.
+    if (baseline <= 0.0) {
+        return (candidate > 0.0) ? 0.60 : 0.5;
     }
 
     const double relativeChange = (candidate - baseline) / baseline;

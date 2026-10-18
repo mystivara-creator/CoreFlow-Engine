@@ -120,21 +120,6 @@ struct IoDevice {
     bool scheduler_writable{false};
 };
 
-struct TunableCapability {
-    std::string path;
-    bool readable{false};
-    bool writable{false};
-    bool numeric{false};
-    long long value{0};
-};
-
-struct TextCapability {
-    std::string path;
-    bool readable{false};
-    bool writable{false};
-    std::string value;
-};
-
 struct ChargingCapability {
     std::string battery_path;
     bool battery_available{false};
@@ -170,11 +155,6 @@ struct DeviceProfile {
     std::vector<ThermalZone> thermal_zones;
     std::vector<IoDevice> io_devices;
 
-    TunableCapability vm_swappiness;
-    TunableCapability uclamp_min;
-    TunableCapability uclamp_max;
-    TextCapability cpuset_effective_cpus;
-
     bool proc_available{false};
     bool sys_available{false};
     ChargingCapability charging;
@@ -188,6 +168,8 @@ struct DeviceProfile {
     std::size_t tunables_walked{0};
     std::size_t tunables_added{0};
     std::size_t tunables_fatal_skipped{0};
+    std::size_t tunables_unclaimed{0};
+    bool tunables_truncated{false};
 };
 
 struct RuntimeSample {

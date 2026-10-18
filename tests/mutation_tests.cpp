@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -199,6 +200,8 @@ class FakeRetainedStateStore final : public RetainedStateStore {
 public:
     bool fail_commit{false};
     bool corrupt{false};
+    int commit_calls{0};
+    int fail_commit_call{0};
     Entries stored;
 
     LoadState load(Entries& out) noexcept override {
@@ -206,12 +209,18 @@ public:
         if (corrupt) return LoadState::Corrupt;
         return stored.empty() ? LoadState::Absent : LoadState::Valid;
     }
+
     bool commit(const Entries& entries) noexcept override {
-        if (fail_commit) return false;
+        ++commit_calls;
+        if (fail_commit ||
+            (fail_commit_call > 0 && commit_calls == fail_commit_call)) {
+            return false;
+        }
         stored = entries;
         corrupt = false;
         return true;
     }
+
     bool clear() noexcept override {
         if (fail_commit) return false;
         stored.clear();
@@ -353,6 +362,89 @@ void test_crash_recovery_restores_factory_before_capture() {
     CHECK(readLine(box.governor_file) == "powersave");
 }
 
+void test_recovery_clear_failure_keeps_journal_and_blocks_mutation() {
+    Sandbox box;
+    FakeJournal journal;
+
+    {
+        MutationController original;
+        original.setJournal(&journal);
+        const DeviceProfile profile = box.profile();
+
+        CHECK(original.captureBaseline(profile));
+        CHECK(original.apply(
+            RuntimeState::Normal,
+            sample(0.5, 30.0),
+            profile,
+            adaptiveConfig()) == MutationResult::Verified);
+
+        CHECK(journal.has_pending);
+        CHECK(readLine(box.governor_file) == "schedutil");
+    }
+
+    // Simulate a restart where recovery restores the factory value,
+    // but journal cleanup fails.
+    journal.fail_clear = true;
+
+    MutationController restarted;
+    restarted.setJournal(&journal);
+    const DeviceProfile profile = box.profile("schedutil");
+
+    CHECK(!restarted.captureBaseline(profile));
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+
+    // A subsequent attempt must not treat the failed recovery as complete.
+    CHECK(restarted.apply(
+        RuntimeState::Normal,
+        sample(0.5, 30.0),
+        profile,
+        adaptiveConfig()) == MutationResult::Failed);
+
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
+void test_recovery_missing_policy_keeps_journal() {
+    Sandbox box;
+    FakeJournal journal;
+
+    {
+        MutationController original;
+        original.setJournal(&journal);
+
+        const DeviceProfile profile = box.profile();
+        CHECK(original.captureBaseline(profile));
+
+        CHECK(original.apply(
+            RuntimeState::Normal,
+            sample(0.5, 30.0),
+            profile,
+            adaptiveConfig()) == MutationResult::Verified);
+
+        CHECK(journal.has_pending);
+    }
+
+    // The journal references the original governor path, but discovery
+    // currently provides no CPU policies.
+    MutationController restarted;
+    restarted.setJournal(&journal);
+
+    DeviceProfile incomplete = box.profile("schedutil");
+    incomplete.cpu_policies.clear();
+
+    CHECK(!restarted.captureBaseline(incomplete));
+    CHECK(journal.has_pending);
+    CHECK(readLine(box.governor_file) == "schedutil");
+
+    // Rediscovery makes the original policy available again.
+    const DeviceProfile rediscovered = box.profile("schedutil");
+
+    CHECK(restarted.captureBaseline(rediscovered));
+    CHECK(!journal.has_pending);
+    CHECK(readLine(box.governor_file) == "powersave");
+}
+
 void test_failed_journal_commit_prevents_any_write() {
     Sandbox box;
     FakeJournal journal;
@@ -407,9 +499,74 @@ void test_file_journal_roundtrip_and_truncation_detection() {
     CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
     CHECK(loaded == values);
 
-    // Truncate the file: the missing "end" marker must be detected.
+    // A pre-created hard link at the historical fixed temp name must never be
+    // opened with O_TRUNC or damage the unrelated inode.
+    {
+        const fs::path sentinel = box.root / "journal_temp_sentinel";
+        const fs::path old_temp_name = box.journal_file + ".tmp";
+        std::ofstream(sentinel, std::ios::binary | std::ios::trunc) << "keep-me";
+        std::error_code link_error;
+        fs::create_hard_link(sentinel, old_temp_name, link_error);
+        if (!link_error) {
+            CHECK(journal.commit(values));
+            std::ifstream sentinel_input(sentinel, std::ios::binary);
+            const std::string sentinel_contents((std::istreambuf_iterator<char>(sentinel_input)),
+                                                std::istreambuf_iterator<char>());
+            CHECK(sentinel_contents == "keep-me");
+            std::error_code cleanup_error;
+            fs::remove(old_temp_name, cleanup_error);
+        }
+    }
+
+    // V2 includes a checksum: same-length payload corruption must fail closed.
+    {
+        std::ifstream input(box.journal_file, std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(input)),
+                                   std::istreambuf_iterator<char>());
+        std::string corrupted = contents;
+        const std::size_t value_offset = corrupted.find("powersave");
+        CHECK(value_offset != std::string::npos);
+        if (value_offset != std::string::npos) {
+            corrupted.replace(value_offset, std::string("powersave").size(), "powerxxve");
+            std::ofstream output(box.journal_file, std::ios::binary | std::ios::trunc);
+            output.write(corrupted.data(), static_cast<std::streamsize>(corrupted.size()));
+        }
+    }
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+    CHECK(loaded.empty());
+
+    // A v1 journal may survive an upgrade. Continue to support it for recovery.
+    std::ofstream(box.journal_file, std::ios::trunc)
+        << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\n"
+        << "/sys/b/scaling_governor\tconservative\nend\n";
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
+    CHECK(loaded == values);
+
+    // Truncate the legacy file: the missing "end" marker must be detected.
     std::ofstream(box.journal_file, std::ios::trunc)
         << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\n";
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+
+    // Embedded NUL bytes cannot enter a journal and become truncated C paths.
+    CHECK(!journal.commit({{std::string("/sys/a\0evil", 11U), "powersave"}}));
+
+    // A symlink or oversized journal is untrusted and must fail closed.
+    const fs::path journal_target = box.root / "journal_target";
+    std::ofstream(journal_target, std::ios::trunc)
+        << "coreflow-mutation-journal v1\n/sys/a/scaling_governor\tpowersave\nend\n";
+    CHECK(journal.clear());
+    std::error_code symlink_error;
+    fs::create_symlink(journal_target, box.journal_file, symlink_error);
+    if (!symlink_error) {
+        CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
+        CHECK(journal.clear());
+    }
+
+    {
+        std::ofstream oversized(box.journal_file, std::ios::binary | std::ios::trunc);
+        const std::string data(1024U * 1024U + 1U, 'x');
+        oversized.write(data.data(), static_cast<std::streamsize>(data.size()));
+    }
     CHECK(journal.load(loaded) == MutationJournal::LoadState::Corrupt);
 
     CHECK(journal.clear());
@@ -519,14 +676,50 @@ void test_thermal_thresholds_are_consistent() {
     CHECK(policy.evaluate(hot, RuntimeState::Normal) == RuntimeState::ThermalGuard);
 }
 
+void test_min_confidence_rejects_non_finite_and_malformed_values() {
+    EngineConfig direct;
+    direct.setMinConfidence(0.80);
+    CHECK(direct.minConfidence() == 0.80);
+
+    direct.setMinConfidence(std::numeric_limits<double>::quiet_NaN());
+    CHECK(direct.minConfidence() == 0.60);
+
+    direct.setMinConfidence(std::numeric_limits<double>::infinity());
+    CHECK(direct.minConfidence() == 0.60);
+
+    const fs::path config_dir = createTempDirectory("coreflow_confidence_");
+    CHECK(!config_dir.empty());
+    if (config_dir.empty()) return;
+
+    const std::string path = (config_dir / "config.ini").string();
+    EngineConfig loaded;
+    writeLine(path, "min_confidence=0.8xyz");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.60);
+
+    writeLine(path, "min_confidence=0.8");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    writeLine(path, "min_confidence=nan");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    writeLine(path, "min_confidence=inf");
+    CHECK(loaded.load(path));
+    CHECK(loaded.minConfidence() == 0.80);
+
+    std::error_code cleanup_ec;
+    fs::remove_all(config_dir, cleanup_ec);
+}
+
 void test_release_defaults_are_observe_only_until_explicit_opt_in() {
     EngineConfig cfg;
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(!cfg.allowCpuGovernor());
+    CHECK(!cfg.allowCpuGovernor()); // default-deny: governor writes need allow_cpu_governor=yes
 
-    // Opting into the adaptive mode alone must not grant CPU governor writes
-    // or arming; each gate is an independent explicit decision.
+    // Adaptive mode still does not arm mutations; the global arm gate remains.
     cfg.setMutationMode(MutationMode::Adaptive);
     CHECK(cfg.mutationMode() == MutationMode::Adaptive);
     CHECK(!cfg.mutationArmed());
@@ -715,6 +908,53 @@ void test_external_override_is_preserved_during_candidate_rollback() {
     CHECK(!mc.mutated());
     CHECK(!journal.has_pending);
     CHECK(retained.stored.empty());
+}
+
+void test_retained_commit_failure_keeps_outcome_pending() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    retained.fail_commit_call = 1;
+
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.hasPendingOutcome());
+    CHECK(!mc.retainLastMutation(profile));
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.lastRetainedStateFailureStage() ==
+          RetainedStateFailureStage::StoreUpsertFailed);
+    CHECK(retained.stored.empty());
+    CHECK(retained.commit_calls == 2);
+}
+
+
+void test_retained_recovery_commit_failure_is_reported() {
+    Sandbox box;
+    FakeJournal journal;
+    FakeRetainedStateStore retained;
+    retained.fail_commit = true;
+
+    MutationController mc;
+    mc.setJournal(&journal);
+    mc.setRetainedStateStore(&retained);
+    const DeviceProfile profile = box.profile();
+
+    CHECK(mc.captureBaseline(profile));
+    CHECK(mc.apply(RuntimeState::Normal, sample(0.5, 30.0), profile,
+                   adaptiveConfig()) == MutationResult::Verified);
+    CHECK(mc.hasPendingOutcome());
+    CHECK(!mc.retainLastMutation(profile));
+    CHECK(mc.hasPendingOutcome());
+    CHECK(mc.lastRetainedStateFailureStage() ==
+          RetainedStateFailureStage::RecoveryCommitFailed);
+    CHECK(retained.stored.empty());
+    CHECK(retained.commit_calls == 2);
 }
 
 void test_corrupt_retained_state_fails_closed() {
@@ -1175,11 +1415,13 @@ int main() {
         {"rejected_candidate_cooldown", test_rejected_candidate_is_not_reselected_during_cooldown},
         {"refresh_cannot_rebaseline_mutated", test_refresh_cannot_rebaseline_a_mutated_system},
         {"crash_recovery_before_capture", test_crash_recovery_restores_factory_before_capture},
+        {"recovery_clear_failure_keeps_journal", test_recovery_clear_failure_keeps_journal_and_blocks_mutation},
         {"failed_commit_prevents_write", test_failed_journal_commit_prevents_any_write},
         {"corrupt_journal_blocks_mutation", test_corrupt_journal_blocks_mutation},
         {"unavailable_journal_value_fails_closed", test_journal_with_unavailable_value_fails_closed},
         {"journal_roundtrip_and_truncation", test_file_journal_roundtrip_and_truncation_detection},
         {"disabled_mode_hard_gate", test_disabled_mode_is_a_hard_no_mutation_gate},
+        {"min_confidence_rejects_non_finite_and_malformed", test_min_confidence_rejects_non_finite_and_malformed_values},
         {"release_defaults_observe_only", test_release_defaults_are_observe_only_until_explicit_opt_in},
         {"mutation_requires_durable_journal", test_mutation_requires_durable_journal},
         {"empty_governor_advertisement_fails_closed", test_empty_governor_advertisement_fails_closed},
@@ -1193,6 +1435,9 @@ int main() {
         {"beneficial_mutation_retained_without_time_expiry", test_beneficial_mutation_is_retained_without_time_expiry},
         {"rollback_latest_candidate_preserves_retained_value", test_rollback_only_latest_candidate_and_preserve_retained_value},
         {"external_override_preserved", test_external_override_is_preserved_during_candidate_rollback},
+        {"retained_commit_failure_keeps_outcome_pending", test_retained_commit_failure_keeps_outcome_pending},
+        {"retained_recovery_commit_failure_is_reported",
+         test_retained_recovery_commit_failure_is_reported},
         {"corrupt_retained_state_fail_closed", test_corrupt_retained_state_fails_closed},
         {"retained_cpu_state_recovery_baseline", test_retained_cpu_state_restores_saved_baseline_after_restart},
         {"retained_state_store_roundtrip_and_corruption", test_retained_state_store_round_trip_and_corruption},
@@ -1209,7 +1454,9 @@ int main() {
          test_capability_bound_permit_rejects_scope_and_mismatches},
         {"cpufreq_actuator_rejects_scope_only_permit",
          test_cpufreq_actuator_rejects_scope_only_permit},
-    };
+        {"recovery_missing_policy_keeps_journal",
+         test_recovery_missing_policy_keeps_journal},
+};
 
     for (const Case& c : cases) {
         const int before = g_failures;

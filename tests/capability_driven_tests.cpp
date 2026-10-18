@@ -153,6 +153,12 @@ void testGenericDiscovery() {
     writeFile(root / "dev/cpuctl/top-app/cgroup.procs", "1", 0644);      // fatal
     writeFile(root / "dev/cpuset/background/cpus", "0-3");
     writeFile(root / "vendor_only/custom_knob", "7");                    // vendor-declared only
+    // The kernel mount table is the only source of tunable roots.
+    writeFile(root / "proc/mounts",
+              "none " + r + "/proc proc rw 0 0\n"
+              "none " + r + "/sys sysfs rw 0 0\n"
+              "none " + r + "/dev/cpuctl cgroup rw 0 0\n"
+              "none " + r + "/dev/cpuset cgroup rw 0 0\n");
 
     VendorKnowledge vendor;
     const std::string rc =
@@ -269,12 +275,69 @@ void testGenericDiscovery() {
     fs::remove_all(root);
 }
 
+
+// Roots are the mount table, not a list in the source. Without a sysfs mount,
+// nothing under sys/ is searched even though the node exists and is writable.
+// Without a cgroup mount, the uclamp group is not searched either.
+void testRootsComeFromMountTable() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_capdrv_mounts";
+    fs::remove_all(root);
+    const std::string r = root.string();
+
+    writeFile(root / "proc/sys/vm/swappiness", "60");
+    writeFile(root / "sys/block/sda/queue/read_ahead_kb", "128");
+    writeFile(root / "dev/cpuctl/top-app/cpu.uclamp.min", "10");
+    writeFile(root / "proc/mounts", "none " + r + "/proc proc rw 0 0\n");
+
+    EnvironmentCapabilityMatrix matrix;
+    VendorKnowledge vendor;
+    const TunableDiscoveryStats stats = TunableDiscovery(r).discover(matrix, vendor);
+    CHECK(findCap(matrix, r + "/proc/sys/vm/swappiness") != nullptr);
+    CHECK(findCap(matrix, r + "/sys/block/sda/queue/read_ahead_kb") == nullptr);
+    CHECK(findCap(matrix, r + "/dev/cpuctl/top-app/cpu.uclamp.min") == nullptr);
+    CHECK(stats.added == 1U);
+    fs::remove_all(root);
+}
+
+// A writable node in a recognised tree is admitted only when its subsystem is
+// recognised or the vendor declares it. Unknown writable nodes are counted as
+// unclaimed. Symlinks are never followed, so a bus link cannot duplicate a node.
+void testUnclaimedAndSymlinks() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_capdrv_unclaimed";
+    fs::remove_all(root);
+    const std::string r = root.string();
+
+    writeFile(root / "sys/class/net/wlan0/tx_queue_len", "1000");  // unrecognised
+    writeFile(root / "sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq", "1804800");
+    fs::create_directories(root / "sys/bus/cpu/devices");
+    fs::create_directory_symlink(root / "sys/devices/system/cpu/cpufreq/policy0",
+                                 root / "sys/bus/cpu/devices/policy0");
+    writeFile(root / "proc/mounts",
+              "none " + r + "/sys sysfs rw 0 0\n");
+
+    EnvironmentCapabilityMatrix matrix;
+    VendorKnowledge vendor;
+    const TunableDiscoveryStats stats = TunableDiscovery(r).discover(matrix, vendor);
+    CHECK(findCap(matrix, r + "/sys/class/net/wlan0/tx_queue_len") == nullptr);
+    CHECK(stats.unclaimed >= 1U);
+    const auto* maxf = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
+    CHECK(maxf != nullptr && maxf->domain == ResourceDomain::CpuFreq);
+    std::size_t copies = 0;
+    for (const auto& c : matrix.resources) {
+        if (c.path.find("/sys/bus/") != std::string::npos) ++copies;
+    }
+    CHECK(copies == 0U);
+    fs::remove_all(root);
+}
+
 } // namespace
 
 int main() {
     testVendorParsers();
     testFatalGuard();
     testGenericDiscovery();
+    testRootsComeFromMountTable();
+    testUnclaimedAndSymlinks();
     if (failures == 0) std::cout << "CoreFlow capability-driven contract: PASS\n";
     return failures == 0 ? 0 : 1;
 }

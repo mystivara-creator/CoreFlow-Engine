@@ -1,5 +1,7 @@
 #include "coreflow/control.hpp"
 
+#include <cmath>
+
 namespace coreflow {
 
 PolicyPlan PolicyEngine::evaluate(
@@ -139,6 +141,42 @@ PolicyPlan PolicyEngine::evaluate(
     return plan;
 }
 
+const char* mutationPermitBlockReason(const PolicyPlan& plan,
+                                      const EngineConfig& config,
+                                      RuntimeState state,
+                                      double confidence,
+                                      MutationPermit::Scope scope) noexcept {
+    if (!plan.mutation_eligible || plan.action != PolicyAction::Candidate) {
+        return "policy_not_candidate";
+    }
+    // A stabilizing plan authorizes small load-reducing resource writes only.
+    // It can never authorize the CPU governor.
+    if (plan.stabilizing_only && scope != MutationPermit::Scope::Resource) {
+        return "stabilizing_plan_disallows_cpu";
+    }
+    // Thermal/memory safety states may start only a stabilizing resource write.
+    // Any other plan is hold/recovery-only and receives no permit.
+    if ((state == RuntimeState::ThermalGuard || state == RuntimeState::Pressure) &&
+        !plan.stabilizing_only) {
+        return "stress_state_requires_stabilizing_plan";
+    }
+    if (config.mutationMode() != MutationMode::Adaptive || !config.mutationArmed()) {
+        return "adaptive_mode_or_arming_required";
+    }
+    if (!std::isfinite(confidence)) {
+        return "confidence_not_finite";
+    }
+    if (confidence < config.minConfidence()) {
+        return "confidence_below_minimum";
+    }
+    // Idle is blocked for proactive candidates. Recovery does not require a
+    // mutation permit and is performed by the controller's restore path.
+    if (state == RuntimeState::Idle && plan.action == PolicyAction::Candidate) {
+        return "idle_state_blocks_candidate";
+    }
+    return nullptr;
+}
+
 MutationPermit MutationAuthority::authorize(
     const PolicyPlan& plan,
     const EngineConfig& config,
@@ -146,39 +184,11 @@ MutationPermit MutationAuthority::authorize(
     double confidence,
     MutationPermit::Scope scope
 ) const noexcept {
-    if (!plan.mutation_eligible || plan.action != PolicyAction::Candidate) {
-        return MutationPermit(false, scope);
-    }
-    // A stabilizing plan authorizes small load-reducing resource writes only.
-    // It can never authorize the CPU governor.
-    if (plan.stabilizing_only && scope != MutationPermit::Scope::Resource) {
-        return MutationPermit(false, scope);
-    }
-    // Thermal/memory safety states may start only a stabilizing resource write.
-    // Any other plan is hold/recovery-only and receives no permit.
-    if ((state == RuntimeState::ThermalGuard || state == RuntimeState::Pressure) &&
-        !plan.stabilizing_only) {
-        return MutationPermit(false, scope);
-    }
-    if (config.mutationMode() != MutationMode::Adaptive || !config.mutationArmed()) {
-        return MutationPermit(false, scope);
-    }
-    if (confidence < config.minConfidence()) {
-        return MutationPermit(false, scope);
-    }
-    // Idle is blocked for proactive candidates. Recovery does not require a
-    // mutation permit and is performed by the controller's restore path.
-    if (state == RuntimeState::Idle && plan.action == PolicyAction::Candidate) {
-        return MutationPermit(false, scope);
-    }
-    // The CPU governor is a second, separate opt-in. Enforce it here so the
-    // permit itself cannot be issued without it.
-    if (scope == MutationPermit::Scope::CpuFreq && !config.allowCpuGovernor()) {
+    if (mutationPermitBlockReason(plan, config, state, confidence, scope) != nullptr) {
         return MutationPermit(false, scope);
     }
     return MutationPermit(true, scope);
 }
-
 
 MutationPermit MutationAuthority::authorize(
     const PolicyPlan& plan,
@@ -218,8 +228,17 @@ bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept {
 }
 
 bool ActuatorManager::registerActuator(IActuator& actuator) noexcept {
-    if (find(actuator.id()) != nullptr) return false;
-    actuators_.push_back(&actuator);
+    if (find(actuator.id()) != nullptr) {
+        return false;
+    }
+
+    try {
+        actuators_.push_back(&actuator);
+    } catch (...) {
+        // Registration failure must not terminate the daemon.
+        return false;
+    }
+
     return true;
 }
 

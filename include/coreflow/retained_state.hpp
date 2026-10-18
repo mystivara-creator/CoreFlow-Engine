@@ -6,6 +6,33 @@
 
 namespace coreflow {
 
+enum class RetainedStateFailureStage : unsigned char {
+    None = 0,
+    Precondition,
+    BaselineInvalid,
+    LiveReadFailed,
+    LiveTargetMismatch,
+    AllocationFailed,
+    StoreUpsertFailed,
+    RecoveryCommitFailed
+};
+
+inline const char* retainedStateFailureStageName(
+    RetainedStateFailureStage stage
+) noexcept {
+    switch (stage) {
+        case RetainedStateFailureStage::None: return "NONE";
+        case RetainedStateFailureStage::Precondition: return "PRECONDITION_FAILED";
+        case RetainedStateFailureStage::BaselineInvalid: return "BASELINE_INVALID";
+        case RetainedStateFailureStage::LiveReadFailed: return "LIVE_READ_FAILED";
+        case RetainedStateFailureStage::LiveTargetMismatch: return "LIVE_TARGET_MISMATCH";
+        case RetainedStateFailureStage::AllocationFailed: return "ALLOCATION_FAILED";
+        case RetainedStateFailureStage::StoreUpsertFailed: return "STORE_UPSERT_FAILED";
+        case RetainedStateFailureStage::RecoveryCommitFailed: return "RECOVERY_COMMIT_FAILED";
+    }
+    return "UNKNOWN";
+}
+
 struct DeviceProfile;
 
 /** A previously measured-good setting and the value CoreFlow must restore. */

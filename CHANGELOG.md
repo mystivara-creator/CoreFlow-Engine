@@ -1,4 +1,104 @@
+## v2.4.0 — Full capability authority
+
+- Removed separate `allow_cpu_governor` authorization; CPUFreq uses the global Adaptive + armed authority.
+- Legacy `grant_*` namespace flags are accepted as unknown/legacy configuration keys but no longer restrict supported namespaces.
+- Interactivity boosts no longer honor per-namespace grant flags and apply all eligible intents in a policy batch rather than one intent per tick.
+- Expanded launch-window, readahead, and GPU-step configuration ranges; kernel-advertised capability and fatal-surface policy remain authoritative.
+- Kept observe-only release defaults, global arming, thermal protection, fatal-surface exclusions, durable journaling, read-back verification, and rollback.
+
 # Changelog
+
+## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
+
+### Security and correctness
+- Per-domain grants are real and default-deny. `grant_<domain>` and `allow_cpu_governor` are parsed from config. Previously every grant was constant `true`. Boost writes (GPU, uclamp, read-ahead) now have grant gates. Capability alone cannot write (ADR 0006).
+- A successful boost restore was treated as a failure, so boosts never left the journal and their paths stayed blocked after the first use. Fixed by accepting `RolledBack` for restores, following `mutation.cpp`.
+- Journal commit, clear, and restore results are no longer discarded. Failures set `recovery_required_`, and new boosts are refused until a commit succeeds.
+- A boost is never re-read as its own baseline. Crash recovery adopts journal entries on start. A corrupt journal blocks boosts and is not overwritten.
+- The deadline arithmetic for the launch window saturates instead of wrapping.
+- `ftruncate` in the decision trace is checked. A failed truncate counts as a failed batch.
+- `FrameTelemetrySource` no longer uses `popen`. It runs `dumpsys` through a bounded runner: no shell, absolute path, 500 ms timeout, 256 KiB output cap, child killed on either limit. The poll rate is capped at 5 Hz.
+- Telemetry rows are parsed strictly: exactly three fields, each checked for overflow. The earlier parser accepted overflow and extra fields.
+- Devfreq load parsing is strict. `12garbage` and `8.5@abc` are rejected. This changes behaviour for inputs that were accepted before.
+
+### Tests
+- 21 host test binaries pass in the normal build, and 21 pass under ASan and UBSan with `-fno-sanitize-recover`.
+- New: `bounded_process`, `interactivity_boost` (fault injection for journal, restore, and recovery), `interactivity_deadline`, `strict_parse` (integers, devfreq grammar, telemetry rows), and `authorization_gate`.
+- `psi_parser_regex` silences one GCC false positive (`-Wmaybe-uninitialized` in libstdc++ `<regex>`) under sanitizers. The reason is recorded in the file.
+
+### Not done
+- Android ARM64 build and device validation.
+- `launch_detector` and `render_collector` are not wired into the loop (see ADR 0005).
+- Boost paths in `autonomous.cpp` are still literal (`/dev/cpuctl/top-app/uclamp.min`, the GPU devfreq node, and the journal path). They should come from discovery.
+- Peer-thread ownership and PID identity checks (handoff P2) are not implemented.
+- Trailing whitespace in `autonomous.cpp` predates this release and is not changed here.
+
+## v2.4.0 — Render Signals and Interactivity Pipeline
+
+### Render and launch observation
+- Integrated the bounded `frame_latency` parser, deterministic `launch_detector`, and `render_collector` from the render-engine update. The collector reports unavailable pressure as unavailable rather than treating it as zero.
+- Added host tests for render collection, signal parsing, and frame-analyzer integration. ADR 0005 documents the proposed render/launch/frame-pacing domains. The render collector is present but is not yet wired into the autonomous loop.
+
+### Bounded interactivity adaptation
+- Added foreground-change, GPU-busy, and SurfaceFlinger frame telemetry sources plus a deterministic interactivity state model and policy.
+- Interactivity remains observe-only by default. Boosts require `interactivity_mode=adaptive`, `mutation_mode=adaptive`, and `mutation_armed=true`; thermal guard and safety holds suppress boosts.
+- Added bounded, expiring boost intents with journal-before-write, read-back verification, restoration paths, with per-namespace flags now retained only for backward-compatible parsing.
+- Configuration clamps launch windows, jank threshold, uclamp values, GPU steps, readahead, and boost duration.
+
+### Validation
+- Host build and deterministic test suite: see the merge validation results for this source package.
+- Android ARM64 build and target-device behavior have not been certified by this host run.
+
+## v2.3.0 — Production Hardening Candidate
+
+### Safety and recovery
+- Mutation journal writes use a checksummed v2 format. The loader remains backward-compatible with v1 journals so a pending journal created by an earlier version can still be recovered after an upgrade.
+- Journal operations are bounded (256 entries, 4096 bytes per field, 1 MiB per file), use a unique exclusive temporary to prevent hard-link truncation, reject embedded NULs and duplicate paths, refuse symlink/non-regular journal files, and fail closed on truncation or checksum mismatch.
+- Resource actuator writes now operate through a no-follow descriptor that is checked with `fstat` before the write, rather than re-opening a path through a stream after the earlier path check. The final write gate also requires procfs, sysfs, or cgroup filesystem semantics so a journal path cannot redirect recovery into an ordinary data file. The live value is still read back and verified.
+- Resource baseline capture refuses to proceed if recovery cannot be checked because the mutation journal is not configured.
+- Observe-only/disarmed defaults are unchanged.
+
+### Release and packaging
+- Version metadata is aligned to `2.3.0` / `v2.3.0`, `versionCode=2300`, including CMake, runtime, module metadata, updater feed, README, and build-status documentation.
+- CMake discovers source and `*_tests.cpp` files dynamically. Source platform membership is explicit when tagged and otherwise inferred from platform headers; each test source gets a matching test target.
+- Tunable discovery uses mounted kernel interface roots and bounded traversal, avoids following discovered symlinks, and leaves unclaimed writable nodes out of mutation candidacy. Discovery remains evidence, not authorization.
+- ADR 0002 records dynamic packaging; ADR 0003 remains Proposed and keeps system-property mutation out of this release; ADR 0004 records journal v2 compatibility and bounds.
+
+### Validation
+- The v2.3.0 candidate must pass its own host tests, safety/source-release contracts, ASan/UBSan and Android ARM64 production workflow before publication.
+- The v2.2.5 CI results are not carried forward as evidence for the new journal/actuator code. Physical-device installation, long-run and recovery tests remain to be completed by the operator.
+
+## v2.2.5 — Evidence-Based Resource Reasoning & Release Validation
+
+### Changed
+
+- Refined EffectModel eligibility to use semantic evidence, runtime context, and risk rather than assuming that a writable interface implies benefit.
+- Memory-pressure handling no longer assumes arbitrary numeric tunables, such as swappiness, will stabilize memory. Stabilizing candidates require relevant domain and vendor evidence.
+- Utilization-clamp candidates are considered stabilizing only in relevant thermal or throttling contexts.
+- Physical block-queue controls (`read_ahead_kb` and `nr_requests`) remain eligible for evaluation when device capability, policy, and runtime evidence permit them. They are not globally disabled; stress and safety gates remain.
+- Aligned release version metadata across CMake, runtime configuration, module metadata, updater metadata, README, and packaged default configuration.
+
+### Safety
+
+- Default mode remains `mutation_mode=observe`.
+- Mutation remains disarmed by default (`mutation_armed=false`).
+- Superseded: CPUFreq now follows the global Adaptive/armed authority; the legacy flag is ignored.
+- Discovery does not grant mutation authority. Policy authorization, capability checks, bounded writes, journaling, read-back verification, safety holds, and rollback remain required.
+- Fatal and protected surfaces remain outside the normal mutation path.
+
+### Validation
+
+- Host deterministic tests: passed in GitHub Actions.
+- Android 14+ ARM64 production build and package validation: passed in GitHub Actions.
+- ASan + UBSan: passed in GitHub Actions.
+
+### Scope and limitations
+
+- CI success does not certify behavior on every Android device.
+- KernelSU/Magisk installation, device-specific behavior, sustained observation, and recovery testing should be validated on the target device before enabling Adaptive mode.
+- Publish the public release only with the verified CI-produced ZIP and matching release metadata.
+
+---
 
 ## v2.2.0 — Final development snapshot (not yet device-certified)
 
@@ -106,7 +206,7 @@ and opens the dead bands that blocked useful Low/Moderate resource mutation.
 
 ### Still hard (unchanged on purpose)
 - Default remains observe-only until Adaptive + armed.
-- CPU governor still requires `allow_cpu_governor=yes`.
+- Superseded: no separate CPU governor opt-in is required.
 - ThermalGuard / Pressure: only `stabilizing_only` resource writes; never CPU governor.
 - Journal before write, read-back verify, regression restore, one write per epoch.
 
@@ -173,7 +273,7 @@ the tuning priors were written for, so the engine was idle exactly when needed.
   (shared storage is writable by any app). Only an explicit Volume Down press does;
   timeout means observe, as the on-screen text states.
 - **CPU governor permit**: `MutationAuthority` now refuses the CPUFreq permit unless
-  `allow_cpu_governor=yes`, matching the controller-side check.
+  the global Adaptive/armed gate, matching the controller-side authority.
 - **Resource apply result**: a `NoChange` outcome is reported as `Skipped`, not
   `Verified`. The journal is no longer dropped while another resource is still changed.
 - **WebUI shell interpolation**: `mutation_mode` is quoted in the config-write script.

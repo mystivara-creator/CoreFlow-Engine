@@ -32,7 +32,7 @@ The source archive already recorded a release host CMake/Ninja build with strict
 
 ### Observe-only phase
 
-Keep the shipped default unchanged: `mutation_mode=observe`, `mutation_armed=false`, `allow_cpu_governor=no`. For each of your seven observe modes, record:
+Keep the shipped default unchanged: `mutation_mode=observe`, `mutation_armed=false`, and the legacy `allow_cpu_governor` setting is ignored.. For each of your seven observe modes, record:
 
 - boot/start/stop stability and daemon restart count;
 - sensor availability, confidence, stale-sample rejection, thermal/memory/load trends;
