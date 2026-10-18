@@ -1,3 +1,9 @@
+// libstdc++ <regex> instantiates std::function internals that GCC 13 reports as
+// -Wmaybe-uninitialized under -O1 with sanitizers. The diagnostic is inside the
+// standard library, not in this test, so it is silenced for this file only.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 #include "coreflow/observer_metrics.hpp"
 
 #include <cstdio>

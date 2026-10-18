@@ -8,6 +8,31 @@
 
 # Changelog
 
+## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
+
+### Security and correctness
+- Per-domain grants are real and default-deny. `grant_<domain>` and `allow_cpu_governor` are parsed from config. Previously every grant was constant `true`. Boost writes (GPU, uclamp, read-ahead) now have grant gates. Capability alone cannot write (ADR 0006).
+- A successful boost restore was treated as a failure, so boosts never left the journal and their paths stayed blocked after the first use. Fixed by accepting `RolledBack` for restores, following `mutation.cpp`.
+- Journal commit, clear, and restore results are no longer discarded. Failures set `recovery_required_`, and new boosts are refused until a commit succeeds.
+- A boost is never re-read as its own baseline. Crash recovery adopts journal entries on start. A corrupt journal blocks boosts and is not overwritten.
+- The deadline arithmetic for the launch window saturates instead of wrapping.
+- `ftruncate` in the decision trace is checked. A failed truncate counts as a failed batch.
+- `FrameTelemetrySource` no longer uses `popen`. It runs `dumpsys` through a bounded runner: no shell, absolute path, 500 ms timeout, 256 KiB output cap, child killed on either limit. The poll rate is capped at 5 Hz.
+- Telemetry rows are parsed strictly: exactly three fields, each checked for overflow. The earlier parser accepted overflow and extra fields.
+- Devfreq load parsing is strict. `12garbage` and `8.5@abc` are rejected. This changes behaviour for inputs that were accepted before.
+
+### Tests
+- 21 host test binaries pass in the normal build, and 21 pass under ASan and UBSan with `-fno-sanitize-recover`.
+- New: `bounded_process`, `interactivity_boost` (fault injection for journal, restore, and recovery), `interactivity_deadline`, `strict_parse` (integers, devfreq grammar, telemetry rows), and `authorization_gate`.
+- `psi_parser_regex` silences one GCC false positive (`-Wmaybe-uninitialized` in libstdc++ `<regex>`) under sanitizers. The reason is recorded in the file.
+
+### Not done
+- Android ARM64 build and device validation.
+- `launch_detector` and `render_collector` are not wired into the loop (see ADR 0005).
+- Boost paths in `autonomous.cpp` are still literal (`/dev/cpuctl/top-app/uclamp.min`, the GPU devfreq node, and the journal path). They should come from discovery.
+- Peer-thread ownership and PID identity checks (handoff P2) are not implemented.
+- Trailing whitespace in `autonomous.cpp` predates this release and is not changed here.
+
 ## v2.4.0 — Render Signals and Interactivity Pipeline
 
 ### Render and launch observation

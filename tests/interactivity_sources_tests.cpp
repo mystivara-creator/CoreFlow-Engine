@@ -19,7 +19,8 @@ int main() {
     // devfreq load parsing
     CHECK(parseDevfreqLoadPercent("12@1000000") == 12.0);
     CHECK(parseDevfreqLoadPercent("0@0") == 0.0);
-    CHECK(parseDevfreqLoadPercent(" 8.5@abc") == 8.5);
+    CHECK(parseDevfreqLoadPercent(" 8.5@1000 ") == 8.5);
+    CHECK(parseDevfreqLoadPercent(" 8.5@abc") < 0.0);  // invalid frequency rejects the reading
     CHECK(parseDevfreqLoadPercent("150") < 0.0);
     CHECK(parseDevfreqLoadPercent("abc") < 0.0);
     CHECK(parseDevfreqLoadPercent("") < 0.0);

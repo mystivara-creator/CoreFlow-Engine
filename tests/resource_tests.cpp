@@ -72,6 +72,19 @@ void addBlockQueueCapabilities(DeviceProfile& profile, const IoDevice& device) {
     TunableDiscovery{}.enrich(profile.capabilities, VendorKnowledge{});
 }
 
+// Mirrors the grants that the shipped default.conf states explicitly. Discovery
+// alone never authorises a write, so every mutation fixture grants its domains.
+void grantAllDomains(EngineConfig& config) {
+    config.setAllowCpuGovernor(true);
+    config.setGrantMemory(true);
+    config.setGrantBlockQueue(true);
+    config.setGrantScheduler(true);
+    config.setGrantGpu(true);
+    config.setGrantCgroup(true);
+    config.setGrantCpuFreq(true);
+    config.setGrantKernel(true);
+}
+
 void writeFile(const fs::path& p, const std::string& s) {
     std::ofstream f(p, std::ios::trunc);
     f << s << '\n';
@@ -178,7 +191,10 @@ MutationResult applyResourcePolicy(
 
 // Legacy namespace grant flags must not block an otherwise eligible mutation.
 // The global Adaptive/armed gates and fatal-surface checks remain authoritative.
-void test_legacy_namespace_flags_do_not_block_mutation() {
+// Default-deny per domain: a capability the operator has not granted is never
+// written, even under stress and with the global gates open. A grant that is
+// present for the domain allows the same write (positive case in other tests).
+void test_namespace_grant_is_required_for_mutation() {
     const fs::path root = fs::temp_directory_path() / "coreflow_resource_no_grant_test";
     fs::remove_all(root);
     fs::create_directories(root);
@@ -199,14 +215,8 @@ void test_legacy_namespace_flags_do_not_block_mutation() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
-    // Legacy flags are set false to prove they no longer gate mutation.
+    // Every domain except the memory grant is left at its default-deny value.
     config.setGrantMemory(false);
-    config.setGrantBlockQueue(false);
-    config.setGrantScheduler(false);
-    config.setGrantGpu(false);
-    config.setGrantCgroup(false);
-    config.setGrantCpuFreq(false);
-    config.setGrantKernel(false);
 
     Journal journal;
     ResourceMutationController controller;
@@ -216,12 +226,13 @@ void test_legacy_namespace_flags_do_not_block_mutation() {
         controller, RuntimeState::Elevated, sample, profile, config,
         InterventionLevel::Low);
 
-    CHECK(result == MutationResult::Verified);
-    CHECK(readFile(swappiness) != "60");
-    CHECK(controller.mutated());
+    CHECK(result != MutationResult::Verified);
+    CHECK(readFile(swappiness) == "60");
+    CHECK(!controller.mutated());
     const auto& ledger = controller.consultationLedger();
-    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] == 0U);
-    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] >= 1U);
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::AwaitingUserGrant)] >= 1U);
+    CHECK(ledger.by_reason[static_cast<std::size_t>(ConsultReason::Allowed)] == 0U);
+    fs::remove_all(root);
 }
 
 void test_journal_commit_failure_is_diagnosed() {
@@ -247,6 +258,7 @@ void test_journal_commit_failure_is_diagnosed() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     config.setGrantMemory(true);
 
     Journal journal;
@@ -506,6 +518,7 @@ void test_swappiness_adaptive_path() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -552,6 +565,7 @@ void test_retained_resource_state_survives_restart_and_revalidates() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -615,6 +629,7 @@ void test_restore_all_keeps_journal_when_dirty_path_disappears() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     config.setGrantMemory(true);
 
     Journal journal;
@@ -674,6 +689,7 @@ void test_resource_restore_only_owned_paths() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -728,6 +744,7 @@ void test_policy_block_without_mutation_is_skipped() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -831,6 +848,7 @@ void test_intervention_level_boundaries() {
         EngineConfig config;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        grantAllDomains(config);
         // The user has granted these namespaces; a device need alone never does.
         config.setGrantMemory(true);
         config.setGrantBlockQueue(true);
@@ -1146,6 +1164,7 @@ void test_block_queue_mutation_targets_are_admitted_for_physical() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;
     plan.mutation_eligible = true;
@@ -1206,6 +1225,7 @@ void test_selector_scheduler_restore_writes_bare_token() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -1289,6 +1309,7 @@ void test_cpu_permit_uses_global_adaptive_gate() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     // The user has granted these namespaces; a device need alone never does.
     config.setGrantMemory(true);
     config.setGrantBlockQueue(true);
@@ -1352,6 +1373,7 @@ struct Fixture {
         sample.thermal_millidegrees = 30000;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        grantAllDomains(config);
         // The user has granted these namespaces; a device need alone never does.
         config.setGrantMemory(true);
         config.setGrantBlockQueue(true);
@@ -1485,6 +1507,7 @@ void test_resource_actuator_rejects_scope_only_permit() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    grantAllDomains(config);
     config.setGrantMemory(true);
 
     const MutationAuthority authority;
@@ -1508,7 +1531,7 @@ int main() {
     test_journal_clear_failure_blocks_recovery();
     test_recovery_actuator_failure_is_diagnosed();
     test_missing_recovery_path_keeps_journal();
-    test_legacy_namespace_flags_do_not_block_mutation();
+    test_namespace_grant_is_required_for_mutation();
     test_swappiness_adaptive_path();
     test_retained_resource_state_survives_restart_and_revalidates();
     test_restore_all_keeps_journal_when_dirty_path_disappears();

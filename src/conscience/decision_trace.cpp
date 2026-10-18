@@ -278,7 +278,10 @@ private:
             if (!write_ok && start_offset >= 0) {
                 // The sidecar lock serializes this append. Remove a partial batch
                 // on ordinary write failure so it cannot corrupt following JSONL.
-                (void)::ftruncate(fd, start_offset);
+                // If the partial batch cannot be removed, the file may end in a
+                // torn line. Record the batch as failed; readers must tolerate a
+                // truncated trailing line, which is why the drop counter is updated.
+                if (::ftruncate(fd, start_offset) != 0) write_ok = false;
             }
             const int close_status = ::close(fd);
             write_ok = write_ok && close_status == 0;

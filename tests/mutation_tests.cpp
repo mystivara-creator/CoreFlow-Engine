@@ -709,13 +709,13 @@ void test_release_defaults_are_observe_only_until_explicit_opt_in() {
     EngineConfig cfg;
     CHECK(cfg.mutationMode() == MutationMode::Disabled);
     CHECK(!cfg.mutationArmed());
-    CHECK(cfg.allowCpuGovernor()); // Legacy switch no longer gates CPUFreq.
+    CHECK(!cfg.allowCpuGovernor()); // default-deny: governor writes need allow_cpu_governor=yes
 
     // Adaptive mode still does not arm mutations; the global arm gate remains.
     cfg.setMutationMode(MutationMode::Adaptive);
     CHECK(cfg.mutationMode() == MutationMode::Adaptive);
     CHECK(!cfg.mutationArmed());
-    CHECK(cfg.allowCpuGovernor());
+    CHECK(!cfg.allowCpuGovernor());
 }
 
 void test_experimental_trial_mode_is_not_enabled_by_config() {

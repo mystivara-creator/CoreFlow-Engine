@@ -87,6 +87,22 @@ bool EngineConfig::load(const std::string& path) noexcept {
             } else if (key == "runtime_refresh") {
                 candidate.runtime_refresh_enabled_ =
                     parseBool(value, candidate.runtime_refresh_enabled_);
+            } else if (key == "allow_cpu_governor") {
+                candidate.allow_cpu_governor_ = parseBool(value, false);
+            } else if (key == "grant_memory") {
+                candidate.grants_.memory = parseBool(value, false);
+            } else if (key == "grant_block_queue") {
+                candidate.grants_.block_queue = parseBool(value, false);
+            } else if (key == "grant_scheduler") {
+                candidate.grants_.scheduler = parseBool(value, false);
+            } else if (key == "grant_gpu") {
+                candidate.grants_.gpu = parseBool(value, false);
+            } else if (key == "grant_cgroup") {
+                candidate.grants_.cgroup = parseBool(value, false);
+            } else if (key == "grant_cpufreq") {
+                candidate.grants_.cpufreq = parseBool(value, false);
+            } else if (key == "grant_kernel") {
+                candidate.grants_.kernel = parseBool(value, false);
             } else if (key == "mutation_armed") {
                 candidate.mutation_armed_ = parseBool(value, false);
             } else if (key == "interactivity_mode") {
@@ -122,6 +138,9 @@ bool EngineConfig::load(const std::string& path) noexcept {
             candidate.mutation_mode_ = MutationMode::Disabled;
             candidate.mutation_armed_ = false;
             candidate.interactivity_mode_ = InteractivityMode::Observe;
+            // Fail safe: a rejected mode also withdraws every grant.
+            candidate.allow_cpu_governor_ = false;
+            candidate.grants_ = GrantFlags{};
         }
         if (invalid_interactivity_mode) {
             // An invalid boost mode disables interactivity mutation without

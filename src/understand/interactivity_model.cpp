@@ -1,5 +1,7 @@
 #include "coreflow/interactivity_model.hpp"
 
+#include <limits>
+
 namespace coreflow::understand {
 
 const char* interactionStateName(InteractionState state) noexcept {
@@ -18,8 +20,12 @@ void InteractivityModel::ingestFrame(std::uint64_t duration_ns,
 }
 
 void InteractivityModel::onForegroundChanged(std::uint64_t now_ms) noexcept {
+    // Saturating add: a timestamp near UINT64_MAX must not wrap to a small
+    // deadline, which would close the launch window at once.
+    const std::uint64_t window = thresholds_.launch_window_ms;
+    constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
     launch_active_ = true;
-    launch_deadline_ms_ = now_ms + thresholds_.launch_window_ms;
+    launch_deadline_ms_ = (window > kMax - now_ms) ? kMax : now_ms + window;
 }
 
 InteractivitySnapshot InteractivityModel::evaluate(

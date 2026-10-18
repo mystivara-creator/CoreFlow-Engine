@@ -585,6 +585,9 @@ void AutonomousEngine::tick() {
                 "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq");
             boost_controller_.setTopAppUclampPath("/dev/cpuctl/top-app/uclamp.min");
             boost_controller_.discoverReadaheadPaths();
+            // A previous run may have died while a boost was active. Adopt its
+            // journal so the next pass restores the true baseline.
+            (void)boost_controller_.recoverFromJournal();
             interactivity_sources_ready_ = true;
         }
         understand::InteractivityThresholds ia_thresholds;

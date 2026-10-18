@@ -30,20 +30,19 @@ public:
     int monitorIntervalSeconds() const noexcept { return monitor_interval_seconds_; }
     double minConfidence() const noexcept { return min_confidence_; }
     MutationMode mutationMode() const noexcept { return mutation_mode_; }
-    // Legacy compatibility: CPUFreq follows the global adaptive authority.
-    bool allowCpuGovernor() const noexcept { return true; }
+    // Default-deny. Each domain is writable only when the config grants it
+    // explicitly (allow_cpu_governor=yes, grant_<domain>=yes). A missing key
+    // grants nothing. Capability discovery alone never authorises a write.
+    bool allowCpuGovernor() const noexcept { return allow_cpu_governor_; }
     bool mutationArmed() const noexcept { return mutation_armed_; }
     bool runtimeRefreshEnabled() const noexcept { return runtime_refresh_enabled_; }
-    // Legacy compatibility: namespace grant flags are ignored. Effective access
-    // is determined by capability discovery, the global adaptive/armed gates,
-    // and fatal-surface policy.
-    bool grantMemory() const noexcept { return true; }
-    bool grantBlockQueue() const noexcept { return true; }
-    bool grantScheduler() const noexcept { return true; }
-    bool grantGpu() const noexcept { return true; }
-    bool grantCgroup() const noexcept { return true; }
-    bool grantCpuFreq() const noexcept { return true; }
-    bool grantKernel() const noexcept { return true; }
+    bool grantMemory() const noexcept { return grants_.memory; }
+    bool grantBlockQueue() const noexcept { return grants_.block_queue; }
+    bool grantScheduler() const noexcept { return grants_.scheduler; }
+    bool grantGpu() const noexcept { return grants_.gpu; }
+    bool grantCgroup() const noexcept { return grants_.cgroup; }
+    bool grantCpuFreq() const noexcept { return grants_.cpufreq; }
+    bool grantKernel() const noexcept { return grants_.kernel; }
     InteractivityMode interactivityMode() const noexcept { return interactivity_mode_; }
     int launchWindowMs() const noexcept { return launch_window_ms_; }
     double jankMissRate() const noexcept { return jank_miss_rate_; }
@@ -56,16 +55,16 @@ public:
     void setMonitorIntervalSeconds(int seconds) noexcept;
     void setMinConfidence(double confidence) noexcept;
     void setMutationMode(MutationMode mode) noexcept { mutation_mode_ = mode; }
-    void setAllowCpuGovernor(bool /*enabled*/) noexcept {} // Legacy no-op.
+    void setAllowCpuGovernor(bool enabled) noexcept { allow_cpu_governor_ = enabled; }
     void setMutationArmed(bool enabled) noexcept { mutation_armed_ = enabled; }
     void setRuntimeRefreshEnabled(bool enabled) noexcept { runtime_refresh_enabled_ = enabled; }
-    void setGrantMemory(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantBlockQueue(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantScheduler(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantGpu(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantCgroup(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantCpuFreq(bool /*enabled*/) noexcept {} // Legacy no-op.
-    void setGrantKernel(bool /*enabled*/) noexcept {} // Legacy no-op.
+    void setGrantMemory(bool enabled) noexcept { grants_.memory = enabled; }
+    void setGrantBlockQueue(bool enabled) noexcept { grants_.block_queue = enabled; }
+    void setGrantScheduler(bool enabled) noexcept { grants_.scheduler = enabled; }
+    void setGrantGpu(bool enabled) noexcept { grants_.gpu = enabled; }
+    void setGrantCgroup(bool enabled) noexcept { grants_.cgroup = enabled; }
+    void setGrantCpuFreq(bool enabled) noexcept { grants_.cpufreq = enabled; }
+    void setGrantKernel(bool enabled) noexcept { grants_.kernel = enabled; }
     void setInteractivityMode(InteractivityMode mode) noexcept { interactivity_mode_ = mode; }
     void setLaunchWindowMs(int ms) noexcept;
     void setJankMissRate(double rate) noexcept;
@@ -85,6 +84,17 @@ private:
     MutationMode mutation_mode_{MutationMode::Disabled};
     bool runtime_refresh_enabled_{true};
     bool mutation_armed_{false};
+    bool allow_cpu_governor_{false};
+    struct GrantFlags {
+        bool memory{false};
+        bool block_queue{false};
+        bool scheduler{false};
+        bool gpu{false};
+        bool cgroup{false};
+        bool cpufreq{false};
+        bool kernel{false};
+    };
+    GrantFlags grants_{};
     InteractivityMode interactivity_mode_{InteractivityMode::Observe};
     int launch_window_ms_{2500};
     double jank_miss_rate_{0.05};

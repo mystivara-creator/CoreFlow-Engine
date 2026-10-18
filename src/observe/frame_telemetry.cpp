@@ -2,11 +2,20 @@
 
 #include "coreflow/frame_telemetry.hpp"
 
-#include <array>
-#include <cstdio>
-#include <string>
+#include "coreflow/bounded_process.hpp"
+
+#include <cstddef>
 
 namespace coreflow::observe {
+namespace {
+
+// The collector is bounded in time and output. A hung dumpsys can delay one
+// poll by at most kDumpTimeoutMs, and it can never block the control loop
+// indefinitely.
+constexpr std::uint32_t kDumpTimeoutMs = 500U;
+constexpr std::size_t kDumpMaxBytes = 256U * 1024U;
+
+} // namespace
 
 std::vector<std::uint64_t> FrameTelemetrySource::poll(std::uint64_t now_ms,
                                                       bool jank_recent) noexcept {
@@ -14,17 +23,13 @@ std::vector<std::uint64_t> FrameTelemetrySource::poll(std::uint64_t now_ms,
     const unsigned hz = jank_recent ? active_hz_ : idle_hz_;
     next_poll_ms_ = now_ms + 1000U / (hz == 0U ? 1U : hz);
 
-    FILE* pipe = ::popen("dumpsys SurfaceFlinger --latency 2>/dev/null", "r");
-    if (pipe == nullptr) return {};
-    std::string dump;
-    dump.reserve(16384);
-    std::array<char, 1024> buffer{};
-    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-        dump.append(buffer.data());
-        if (dump.size() >= 262144U) break;
+    // Direct exec, no shell: the argument list is fixed and nothing is interpreted.
+    const process::BoundedResult result = process::runBounded(
+        {"/system/bin/dumpsys", "SurfaceFlinger", "--latency"}, kDumpTimeoutMs, kDumpMaxBytes);
+    if (!result.started || result.timed_out || result.truncated || result.exit_status != 0) {
+        return {};  // unavailable telemetry yields no samples, never a stale one
     }
-    ::pclose(pipe);
-    return parseLatencyDurations(dump);
+    return parseLatencyDurations(result.output);
 }
 
 } // namespace coreflow::observe

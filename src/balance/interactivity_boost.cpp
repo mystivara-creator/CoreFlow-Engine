@@ -1,73 +1,45 @@
 #include "coreflow/interactivity_boost.hpp"
+#include "coreflow/integer_parse.hpp"
 
 #include <dirent.h>
 #include <algorithm>
+#include <iterator>
+#include <limits>
 #include <string_view>
 #include <vector>
 
 namespace coreflow {
+
+using integer_parse::bumpedFrequency;
+using integer_parse::parseUint64;
+
 namespace {
 
-[[nodiscard]] bool parseUint64(std::string_view raw, std::uint64_t& out) noexcept {
-    while (!raw.empty() &&
-           (raw.front() == ' ' || raw.front() == '\t' ||
-            raw.front() == '\n' || raw.front() == '\r')) {
-        raw.remove_prefix(1);
+[[nodiscard]] std::uint64_t deadlineFrom(std::uint64_t now_ms,
+                                         std::uint64_t window_ms) noexcept {
+    if (window_ms > std::numeric_limits<std::uint64_t>::max() - now_ms) {
+        return std::numeric_limits<std::uint64_t>::max();  // saturate, never wrap
     }
-    while (!raw.empty() &&
-           (raw.back() == ' ' || raw.back() == '\t' ||
-            raw.back() == '\n' || raw.back() == '\r')) {
-        raw.remove_suffix(1);
-    }
-    if (raw.empty()) return false;
-    std::uint64_t value = 0;
-    for (const char c : raw) {
-        if (c < '0' || c > '9') return false;
-        value = value * 10U + static_cast<std::uint64_t>(c - '0');
-    }
-    out = value;
-    return true;
+    return now_ms + window_ms;
 }
 
-// The frequency `steps` above `current` in a space-separated
-// available_frequencies list. Fails when no higher step exists.
-[[nodiscard]] bool bumpedFrequency(std::string_view available,
-                                   std::uint64_t current, int steps,
-                                   std::string& requested) noexcept {
-    std::vector<std::uint64_t> frequencies;
-    std::size_t i = 0;
-    while (i < available.size()) {
-        while (i < available.size() &&
-               (available[i] == ' ' || available[i] == '\t' || available[i] == '\n')) {
-            ++i;
-        }
-        std::uint64_t value = 0;
-        bool any = false;
-        while (i < available.size() && available[i] >= '0' && available[i] <= '9') {
-            value = value * 10U + static_cast<std::uint64_t>(available[i] - '0');
-            any = true;
-            ++i;
-        }
-        if (any) frequencies.push_back(value);
-        while (i < available.size() && available[i] != ' ' &&
-               available[i] != '\t' && available[i] != '\n') {
-            ++i;
-        }
+// A restore that brought the baseline back. ResourceActuator::restore reports
+// RolledBack on success, and mutation.cpp accepts that status for restores, so
+// this controller must accept it too. Using succeeded() alone would treat every
+// successful restore as a failure, and the boost would never leave the journal.
+[[nodiscard]] bool restoreSucceeded(const ActuatorResult& result) noexcept {
+    return result.succeeded() || result.status == ActuatorStatus::RolledBack;
+}
+
+// Each boost writes a domain that has its own operator grant. A capability that
+// is present but not granted is never written.
+[[nodiscard]] bool grantedFor(BoostKind kind, const EngineConfig& config) noexcept {
+    switch (kind) {
+        case BoostKind::GpuMinFreqStep: return config.grantGpu();
+        case BoostKind::TopAppUclampMin: return config.grantCgroup();  // uclamp lives in the cpu controller
+        case BoostKind::IoReadaheadKb: return config.grantBlockQueue();
     }
-    if (frequencies.empty()) return false;
-    std::sort(frequencies.begin(), frequencies.end());
-    std::uint64_t chosen = current;
-    int taken = 0;
-    for (const std::uint64_t frequency : frequencies) {
-        if (frequency > chosen) {
-            chosen = frequency;
-            ++taken;
-            if (taken >= steps) break;
-        }
-    }
-    if (taken == 0) return false;
-    requested = std::to_string(chosen);
-    return true;
+    return false;
 }
 
 [[nodiscard]] ActuatorDomain domainFor(BoostKind kind) noexcept {
@@ -102,49 +74,79 @@ void InteractivityBoostController::discoverReadaheadPaths() noexcept {
 }
 
 bool InteractivityBoostController::commitJournal() noexcept {
-    if (journal_ == nullptr) return false;
+    if (journal_ == nullptr || journal_untrusted_) {
+        recovery_required_ = true;
+        return false;  // a corrupt journal is never overwritten
+    }
     MutationJournal::Entries entries;
     entries.reserve(active_.size());
     for (const auto& item : active_) {
-        entries.emplace_back(item.first, item.second.baseline);
+        if (!item.second.restored) entries.emplace_back(item.first, item.second.baseline);
     }
-    if (entries.empty()) return journal_->clear();
-    return journal_->commit(entries);
+    const bool committed = entries.empty() ? journal_->clear() : journal_->commit(entries);
+    recovery_required_ = !committed;
+    return committed;
+}
+
+std::size_t InteractivityBoostController::recoverFromJournal() noexcept {
+    if (journal_ == nullptr) {
+        recovery_required_ = true;
+        return 0;
+    }
+    MutationJournal::Entries pending;
+    switch (journal_->load(pending)) {
+        case MutationJournal::LoadState::Absent:
+            return 0;
+        case MutationJournal::LoadState::Corrupt:
+            journal_untrusted_ = true;
+            recovery_required_ = true;
+            return 0;
+        case MutationJournal::LoadState::Pending:
+            break;
+    }
+    std::size_t adopted = 0;
+    for (const auto& entry : pending) {
+        if (active_.find(entry.first) != active_.end()) continue;
+        ActiveBoost boost;
+        boost.baseline = entry.second;
+        boost.deadline_ms = 0U;  // already due: the next expire() restores it
+        active_.emplace(entry.first, std::move(boost));
+        ++adopted;
+    }
+    return adopted;
+}
+
+bool InteractivityBoostController::settle() noexcept {
+    if (!commitJournal()) return false;
+    for (auto it = active_.begin(); it != active_.end();) {
+        it = it->second.restored ? active_.erase(it) : std::next(it);
+    }
+    return true;
 }
 
 void InteractivityBoostController::expire(std::uint64_t now_ms) noexcept {
-    bool changed = false;
-    for (auto it = active_.begin(); it != active_.end();) {
-        if (now_ms < it->second.deadline_ms) {
-            ++it;
-            continue;
-        }
-
-        // Keep the baseline and journal entry until restore is verified. A
-        // transient sysfs failure must not discard the only recovery record.
-        const ActuatorResult result = actuator_.restore(it->first, it->second.baseline);
-        if (result.succeeded()) {
-            it = active_.erase(it);
-            changed = true;
-        } else {
-            ++it;
+    bool restored_now = false;
+    for (auto& item : active_) {
+        ActiveBoost& boost = item.second;
+        if (boost.restored || now_ms < boost.deadline_ms) continue;
+        // A failed restore keeps the entry. It stays journaled and blocks its
+        // path until a later pass restores it.
+        if (restoreSucceeded(actuator_.restore(item.first, boost.baseline))) {
+            boost.restored = true;
+            restored_now = true;
         }
     }
-    if (changed) (void)commitJournal();
+    if (restored_now || recovery_required_) (void)settle();
 }
 
 void InteractivityBoostController::restoreAll() noexcept {
-    for (auto it = active_.begin(); it != active_.end();) {
-        const ActuatorResult result = actuator_.restore(it->first, it->second.baseline);
-        if (result.succeeded()) {
-            it = active_.erase(it);
-        } else {
-            // Preserve failed restores in active_ and in the durable journal
-            // so the next tick/recovery pass can retry them.
-            ++it;
+    for (auto& item : active_) {
+        if (item.second.restored) continue;
+        if (restoreSucceeded(actuator_.restore(item.first, item.second.baseline))) {
+            item.second.restored = true;
         }
     }
-    (void)commitJournal(); // clears only when every restore succeeded
+    (void)settle();  // entries whose restore failed remain journaled
 }
 
 bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
@@ -203,27 +205,23 @@ std::size_t InteractivityBoostController::apply(
     const std::vector<BoostIntent>& intents, const EngineConfig& config,
     std::uint64_t now_ms) noexcept {
     expire(now_ms);
-    if (!authorized(config) || journal_ == nullptr) return 0;
+    if (!authorized(config) || journal_ == nullptr || recovery_required_) return 0;
 
     std::size_t applied = 0;
     for (const auto& intent : intents) {
         if (intent.window_ms == 0U) continue;
+        if (!grantedFor(intent.kind, config)) continue;
         std::string path, requested;
         if (!resolveTarget(intent, path, requested)) continue;
 
-        const auto existing = active_.find(path);
-        if (existing != active_.end() &&
-            existing->second.deadline_ms - now_ms > intent.window_ms / 2U) {
-            continue; // anti-churn: a fresh boost is not renewed
-        }
+        // One boost per path. A path that is still boosted, or whose restore is
+        // pending, is never touched: its current value is the boosted one, and
+        // taking it as a new baseline would lose the original.
+        if (active_.find(path) != active_.end()) continue;
+
         std::string baseline;
         if (!ResourceActuator::readComparable(path, baseline)) continue;
         if (baseline == requested) continue;
-
-        MutationJournal::Entries previous;
-        for (const auto& item : active_) {
-            previous.emplace_back(item.first, item.second.baseline);
-        }
 
         const ActuatorId id{domainFor(intent.kind), next_instance_++};
         const ActuatorCapability capability = actuator_.capability(id, path);
@@ -235,29 +233,23 @@ std::size_t InteractivityBoostController::apply(
         const ActuatorMutation mutation{id, path, requested};
         if (!permit.validFor(mutation)) continue;
 
-        // The journal (including the new baseline) must be durable before the
-        // write; a commit failure fails closed without touching the device.
+        // The journal, with the new baseline, must be durable before the write.
+        // If it cannot be committed, no write happens and the batch stops.
         active_.emplace(path, ActiveBoost{id, baseline, requested,
-                                          now_ms + intent.window_ms});
+                                          deadlineFrom(now_ms, intent.window_ms)});
         if (!commitJournal()) {
             active_.erase(path);
-            continue;
+            return applied;
         }
+
         const ActuatorResult result = actuator_.apply(mutation, permit);
         if (!result.succeeded()) {
-            const ActuatorResult rollback = actuator_.restore(path, baseline);
-            if (rollback.succeeded()) {
+            // Roll back. If the rollback fails, the entry stays pending and
+            // journaled, and its path is blocked until recovery restores it.
+            if (restoreSucceeded(actuator_.restore(path, baseline))) {
                 active_.erase(path);
-                if (previous.empty()) {
-                    (void)journal_->clear();
-                } else {
-                    (void)journal_->commit(previous);
-                }
-            } else {
-                // Rollback failed: retain the baseline and durable journal
-                // entry so a later expiry/recovery pass can retry it.
-                (void)commitJournal();
             }
+            (void)settle();
             continue;
         }
         ++applied;

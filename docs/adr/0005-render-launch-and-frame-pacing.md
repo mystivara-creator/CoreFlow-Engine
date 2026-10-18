@@ -1,6 +1,11 @@
 # ADR 0005: Render, app launch, and frame pacing domains
 
-- Status: Proposed (producers implemented; actuators not yet)
+- Status: Accepted in part. Frame telemetry and the interactivity boost actuators
+  (GPU minimum frequency, top-app uclamp, read-ahead) are implemented and wired into
+  the autonomous loop behind the interactivity_mode and global arm gates. The launch
+  window detector and the render collector are implemented and tested but are NOT
+  called by the loop. The loop uses ForegroundTracker and InteractivityModel for
+  foreground changes. These two modules are candidates for removal.
 - Date: 2026-10-18
 
 ## Context
@@ -68,5 +73,8 @@ account of what the daemon can and cannot control.
 - The decision to actuate on frame misses depends on the frame analyzer's bounds
   (`kMaxFrameIntervalNs`), which were set for steady rendering. Those bounds need
   review for variable-refresh displays.
-- The new producers are not yet wired into the autonomous loop. Wiring is the next
-  step, and it is gated on the device-validation plan above.
+- Frame telemetry runs one bounded child process per poll (no shell, 500 ms timeout,
+  256 KiB output cap). The poll rate is capped at 5 Hz. The cap is a starting point and
+  must be measured on device.
+- `launch_detector` and `render_collector` are not wired. Either consolidate them with
+  ForegroundTracker or delete them. Do not describe them as active.

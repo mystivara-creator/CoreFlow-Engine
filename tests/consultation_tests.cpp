@@ -10,7 +10,7 @@ int failures = 0;
 
 using namespace coreflow;
 
-// Grants are opt-out: a default UserGrants permits every namespace, so tests
+// Grants are default-deny: a default UserGrants permits no namespace, so tests
 // that need "no grant" build an explicitly opted-out set.
 UserGrants noGrants() {
     UserGrants g;
@@ -177,9 +177,10 @@ void testGrantsArePerNamespace() {
     CHECK(!memoryOnly.allows(ControlNamespace::BuildProp));
     CHECK(!noGrants().allows(ControlNamespace::VmSysctl));
     // Opt-out default: every tunable namespace is permitted.
-    CHECK(UserGrants{}.allows(ControlNamespace::VmSysctl));
-    CHECK(UserGrants{}.allows(ControlNamespace::Gpu));
-    CHECK(UserGrants{}.allows(ControlNamespace::Cgroup));
+    // Default-deny: no namespace is permitted without an explicit grant.
+    CHECK(!UserGrants{}.allows(ControlNamespace::VmSysctl));
+    CHECK(!UserGrants{}.allows(ControlNamespace::Gpu));
+    CHECK(!UserGrants{}.allows(ControlNamespace::Cgroup));
     CHECK(!UserGrants{}.allows(ControlNamespace::CpuFreq));  // governor authority
     CHECK(!UserGrants{}.allows(ControlNamespace::BuildProp));
 

@@ -94,19 +94,17 @@ struct ControlFact {
     bool benefit_justified{false};
 };
 
-// Per-namespace user grants. CoreFlow is capability-driven, so grants are
-// opt-OUT: every namespace is permitted by default once Adaptive mode is armed
-// (grant_<name>=yes in default.conf), and a user may exclude a namespace with
-// grant_<name>=no. Mutation itself stays disarmed until mutation_armed=true, so
-// a device need alone never writes a value.
+// Per-namespace user grants. Default-deny: a namespace is writable only when the
+// config grants it (grant_<name>=yes). Capability discovery alone never grants a
+// write. Mutation also requires mutation_mode=adaptive and mutation_armed=true.
 struct UserGrants {
-    bool memory{true};        // ControlNamespace::VmSysctl
-    bool block_queue{true};   // ControlNamespace::BlockQueue
-    bool scheduler{true};     // ControlNamespace::Scheduler
-    bool gpu{true};           // ControlNamespace::Gpu
-    bool cgroup{true};        // ControlNamespace::Cgroup
-    bool cpufreq{true};       // ControlNamespace::CpuFreqTunable
-    bool kernel{true};        // ControlNamespace::KernelTunable
+    bool memory{false};       // ControlNamespace::VmSysctl
+    bool block_queue{false};  // ControlNamespace::BlockQueue
+    bool scheduler{false};    // ControlNamespace::Scheduler
+    bool gpu{false};          // ControlNamespace::Gpu
+    bool cgroup{false};       // ControlNamespace::Cgroup
+    bool cpufreq{false};      // ControlNamespace::CpuFreqTunable
+    bool kernel{false};       // ControlNamespace::KernelTunable
 
     bool allows(ControlNamespace ns) const noexcept;
 };
