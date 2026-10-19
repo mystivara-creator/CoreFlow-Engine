@@ -1,200 +1,74 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#10141d">
-  <meta name="color-scheme" content="dark light">
-  <meta name="description" content="CoreFlow Autonomous runtime intelligence and daemon control panel.">
-  <title>CoreFlow · Runtime Intelligence</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#10131a"><title>CoreFlow · Runtime Intelligence</title>
+<link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./material-fallback.css">
+<script>
+window.CoreFlowUI=window.CoreFlowUI||{};window.CoreFlowUI.materialState="fallback";
+</script>
+<script type="module">
+try {
+ await Promise.all([
+  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/buttons/button.js"),
+  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/switch/switch.js"),
+  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/card/card.js")
+ ]);
+ document.documentElement.dataset.material="cdn";window.CoreFlowUI.materialState="cdn";
+ document.dispatchEvent(new Event("coreflow:material-ready"));
+} catch(e) {
+ document.documentElement.dataset.material="fallback";window.CoreFlowUI.materialState="fallback";
+ document.dispatchEvent(new Event("coreflow:material-fallback"));
+}
+</script>
+<script defer src="./control_logic.js"></script><script defer src="./engine_status.js"></script><script defer src="./app.js"></script>
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to content</a>
-<div class="app-shell">
-  <header class="topbar">
-    <div class="brand-lockup">
-      <div class="brand-mark" aria-hidden="true"><span>CF</span><i></i></div>
-      <div class="brand-copy">
-        <div class="brand-kicker">MYSTIVARA / SYSTEM INTELLIGENCE</div>
-        <h1 id="pageTitle">Engine</h1>
-        <p id="headerSub">coreflowd · connecting to runtime</p>
-      </div>
-    </div>
-    <span id="headerChip" class="status-pill" data-tone="info">CHECKING</span>
-  </header>
+<div class="shell">
+<aside class="rail"><a class="brand" href="#overview"><span class="logo">C<span>F</span></span><span><b>CoreFlow</b><small>Runtime intelligence</small></span></a>
+<p class="caption">WORKSPACE</p><nav class="nav">
+<button class="nav-item active" data-page="overview">◫ <span>Overview</span></button>
+<button class="nav-item" data-page="resources">⌘ <span>Resource explorer</span><i id="nav-resource-count">—</i></button>
+<button class="nav-item" data-page="decisions">⌁ <span>Decision center</span></button>
+<button class="nav-item" data-page="policy">⚙ <span>Policy & modes</span></button>
+<button class="nav-item" data-page="journal">▤ <span>Journal</span></button>
+<button class="nav-item" data-page="system">▦ <span>System profile</span></button></nav>
+<div class="spacer"></div><div class="rail-status"><small>● RUNTIME CHANNEL</small><b id="sidebar-daemon-state">Connecting…</b><span id="sidebar-last-seen">Waiting for daemon status</span></div>
+<div class="motto">✳ <span>Observe. Understand.<br>Balance. Adapt.</span></div></aside>
+<main><header class="topbar"><div class="mobile-brand"><span class="logo">C<span>F</span></span><b>CoreFlow</b></div><div class="crumb">CoreFlow <span>/</span> <b id="current-section">Overview</b></div><div class="top-actions"><span class="connection" id="connection-chip"><i id="connection-dot"></i><span id="connection-label">Connecting</span></span><button class="circle" id="theme-toggle" aria-label="Toggle theme">◐</button><span class="avatar">M</span></div></header>
+<div class="content">
+<section class="page active" id="page-overview"><div class="page-head"><div><small class="eyebrow">RUNTIME / LIVE OBSERVATION</small><h1>System overview<span>.</span></h1><p>A live view of what CoreFlow can observe, understand, and safely act on.</p></div><div class="actions"><button class="btn tonal" id="btn-rediscover">↻ Re-discover</button><button class="btn primary" id="btn-refresh">Refresh status</button></div></div>
+<div class="hero-grid"><article class="hero"><div class="hero-top"><small>ENGINE STATE</small><span id="engine-state-pill" class="pill">UNKNOWN</span></div><div class="orbit">CF</div><h2 id="engine-state-title">Waiting for CoreFlow</h2><p id="engine-state-description">Status appears when the runtime bridge responds.</p>
+<div class="actions engine-actions"><button class="btn tonal" id="btn-start-engine">▶ Start</button><button class="btn tonal" id="btn-stop-engine">■ Stop</button><button class="btn tonal" id="btn-restart-engine">↻ Restart</button></div><div class="hero-meta"><span id="engine-mode-label">Mode: unknown</span><span id="engine-version-label">Version: —</span></div></article>
+<article class="card safety"><div class="card-title"><div><small class="eyebrow">SAFETY POSTURE</small><h3>Mutation authority</h3></div><span class="shield">⛨</span></div><div class="safety-main"><span id="mutation-state" class="pill">UNKNOWN</span><b id="mutation-summary">Awaiting policy evidence</b></div><p id="mutation-detail">Discovery alone never grants permission to write a kernel resource.</p><small id="safety-gates">Safety gates: not reported</small></article></div>
+<div class="section-head"><div><h2>Live signals</h2><p>Missing telemetry stays unknown; values are never fabricated.</p></div><small>● LIVE SNAPSHOT</small></div>
+<div class="metrics">
+<article class="metric"><div class="metric-label">Thermal <span>♨</span></div><strong><span id="metric-thermal">—</span><small>°C</small></strong><p id="thermal-caption">No sensor sample</p><div class="track"><i id="thermal-track"></i></div></article>
+<article class="metric"><div class="metric-label">CPU activity <span>⌁</span></div><strong><span id="metric-cpu">—</span><small>%</small></strong><p id="cpu-caption">No activity sample</p><div class="track"><i id="cpu-track"></i></div></article>
+<article class="metric"><div class="metric-label">Memory available <span>▥</span></div><strong><span id="metric-memory">—</span><small>%</small></strong><p id="memory-caption">No memory sample</p><div class="track"><i id="memory-track"></i></div></article>
+<article class="metric"><div class="metric-label">Battery <span>ϟ</span></div><strong><span id="metric-battery">—</span><small>%</small></strong><p id="battery-caption">No battery sample</p><div class="track"><i id="battery-track"></i></div></article></div>
+<div class="two-col"><article class="card"><div class="card-title"><div><small class="eyebrow">CAPABILITY DISCOVERY</small><h3>Kernel resource map</h3></div><button class="link-btn" data-goto="resources">Explore ↗</button></div><div class="resource-summary"><div><strong id="discovered-total">—</strong><small>discovered resources</small></div><div class="bars"><label>Readable <i><b id="bar-readable"></b></i><strong id="readable-total">—</strong></label><label>Writable evidence <i><b id="bar-writable"></b></i><strong id="writable-total">—</strong></label><label>Mutation authorized <i><b id="bar-authorized"></b></i><strong id="authorized-total">—</strong></label></div></div><div class="notice">ⓘ <span>Discovered, readable, writable, authorized, and verified are separate states.</span></div></article>
+<article class="card"><div class="card-title"><div><small class="eyebrow">DECISION PIPELINE</small><h3>Latest activity</h3></div><button class="link-btn" data-goto="decisions">Open trace ↗</button></div><div id="overview-timeline" class="timeline"><div class="empty">Waiting for runtime data.</div></div></article></div></section>
 
-  <div id="bridgeNotice" class="notice notice-bad" hidden>
-    <span class="notice-symbol" aria-hidden="true">!</span>
-    <div><b>KernelSU bridge unavailable</b><p>Open this page in a KernelSU-compatible WebUI host. Runtime controls stay disabled until the bridge responds.</p></div>
-  </div>
+<section class="page" id="page-resources"><div class="page-head"><div><small class="eyebrow">OBSERVABILITY / DISCOVERY</small><h1>Resource explorer<span>.</span></h1><p>Inspect dynamically discovered interfaces without assuming a fixed kernel layout.</p></div><div class="actions"><button class="btn tonal" id="btn-resources-refresh">↻ Refresh</button><button class="btn primary" id="btn-resources-discover">Re-discover</button></div></div>
+<article class="card"><div class="stats"><div><strong id="resource-count-all">—</strong><small>Discovered</small></div><div><strong id="resource-count-readable">—</strong><small>Readable</small></div><div><strong id="resource-count-writable">—</strong><small>Writable evidence</small></div><div><strong id="resource-count-authorized">—</strong><small>Authorized</small></div></div><div class="notice">⛨ <span><b>Read-only explorer.</b> This screen visualizes discovery and policy evidence; it does not write kernel values.</span></div></article>
+<article class="card table-card"><div class="table-head"><div><h3>Discovered resources</h3><p id="resource-table-caption">Waiting for resource inventory.</p></div><div class="filters"><input id="resource-search" placeholder="Search name or path…" aria-label="Search resources"><select id="resource-domain" aria-label="Filter domain"><option value="">All domains</option><option>CPU</option><option>Memory</option><option>Scheduler</option><option>Io</option><option>GPU</option><option>Thermal</option><option>Battery</option><option>UClamp</option><option>CpuSet</option><option>Vendor</option><option>Unknown</option></select><select id="resource-state" aria-label="Filter state"><option value="">All states</option><option value="readable">Readable</option><option value="writable">Writable evidence</option><option value="authorized">Authorized</option><option value="verified">Verified</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Resource</th><th>Domain</th><th>Discovered</th><th>Readable</th><th>Writable</th><th>Authority</th><th>Verified</th></tr></thead><tbody id="resource-table-body"><tr><td colspan="7" class="empty">No inventory received yet.</td></tr></tbody></table></div><div class="table-bottom"><span id="resource-visible-count">0 resources</span><span>Unknown is not treated as false or true.</span></div></article></section>
 
-  <main id="main" tabindex="-1">
-    <!-- ENGINE: dense, structured runtime telemetry; no long concatenated status strings. -->
-    <section class="page" data-page="engine" id="page-engine">
-      <article class="engine-hero panel" id="heroCard" data-tone="info">
-        <div class="hero-heading">
-          <div>
-            <span class="eyebrow">RUNTIME OVERVIEW</span>
-            <h2 id="heroTitle">Reading daemon state</h2>
-          </div>
-          <span id="heroCode" class="code-chip">INITIALIZING</span>
-        </div>
-        <p id="heroDetail" class="hero-description">Waiting for the first daemon status snapshot.</p>
-        <div class="hero-facts">
-          <div><span>PROCESS ID</span><b id="metaPid">—</b></div>
-          <div><span>ENGINE VERSION</span><b id="metaVersion">—</b></div>
-          <div><span>STATUS AGE</span><b id="metaUpdated">—</b></div>
-        </div>
-      </article>
+<section class="page" id="page-decisions"><div class="page-head"><div><small class="eyebrow">POLICY / EXPLAINABILITY</small><h1>Decision center<span>.</span></h1><p>Follow evidence, confidence, policy authority, and verification as separate stages.</p></div><button class="btn tonal" id="btn-decision-refresh">↻ Refresh trace</button></div>
+<div class="card pipeline"><div><small>01</small><b>Observe</b><span>Signals & resources</span></div><i>→</i><div><small>02</small><b>Understand</b><span>Capability & context</span></div><i>→</i><div><small>03</small><b>Balance</b><span>Policy & confidence</span></div><i>→</i><div><small>04</small><b>Adapt</b><span>Authorized only</span></div></div>
+<div class="two-col"><article class="card"><small class="eyebrow">LATEST DECISION</small><h3>Decision snapshot</h3><div id="decision-snapshot" class="detail-list"><div class="detail-row"><span>Decision</span><b>Not reported</b></div></div></article><article class="card"><small class="eyebrow">CONSULTATION</small><h3>Evidence ledger</h3><div id="consultation-ledger" class="empty">No consultation evidence reported.</div></article></div>
+<article class="card"><div class="card-title"><div><small class="eyebrow">DECISION TRACE</small><h3>Event timeline</h3></div><small id="decision-trace-count">0 events</small></div><div id="decision-timeline" class="timeline"><div class="empty">No decision events received.</div></div></article></section>
 
-      <div class="action-toolbar" role="group" aria-label="Daemon controls">
-        <button class="button button-primary" id="btnStart" type="button"><span aria-hidden="true">▶</span> Start</button>
-        <button class="button button-secondary" id="btnRestart" type="button"><span aria-hidden="true">↻</span> Restart</button>
-        <button class="button button-danger-outline" id="btnStop" type="button"><span aria-hidden="true">■</span> Stop</button>
-        <button class="button button-quiet" id="btnRefresh" type="button"><span aria-hidden="true">⌁</span> Re-discover</button>
-      </div>
+<section class="page" id="page-policy"><div class="page-head"><div><small class="eyebrow">CONTROL PLANE / POLICY</small><h1>Policy & modes<span>.</span></h1><p>Explicit mode selection; Adaptive never bypasses runtime safety gates.</p></div></div><div class="two-col">
+<article class="card"><div class="card-title"><div><small class="eyebrow">RUNTIME MODE</small><h3>Operating posture</h3></div><span id="policy-mode-pill" class="pill">UNKNOWN</span></div><div class="mode-options"><button class="mode-option selected" data-mode="observe"><span>◉</span><div><b>Observe</b><small>Discover and explain. No mutation requested.</small></div><i></i></button><button class="mode-option" data-mode="adaptive"><span>⌁</span><div><b>Adaptive</b><small>Request adaptive policy; per-resource authorization still applies.</small></div><i></i></button></div><div class="notice warning">⚠ <span>Adaptive is not blanket write permission. Capability checks, policy authority, journal, read-back verification and rollback remain mandatory.</span></div><div class="form-actions"><button class="btn primary" id="btn-apply-mode">Apply mode</button><small id="mode-apply-status">No changes requested.</small></div></article>
+<article class="card"><small class="eyebrow">RUNTIME CONFIG</small><h3>Reported safety gates</h3><div id="policy-details" class="detail-list"><div class="detail-row"><span>Mutation mode</span><b>Unknown</b></div></div><div class="notice">ⓘ <span>Use existing fixed command builders and validated config writer. No free-form shell is exposed.</span></div></article></div></section>
 
-      <section class="section-block" aria-labelledby="telemetryTitle">
-        <div class="section-heading"><div><span class="eyebrow">LIVE SIGNALS</span><h2 id="telemetryTitle">Device telemetry</h2></div><span class="section-note">Reported by coreflowd</span></div>
-        <div class="metric-grid">
-          <article class="metric-card metric-temperature"><div class="metric-head"><span class="metric-icon" aria-hidden="true">°</span><span>THERMAL</span></div><strong id="metricTemp">—</strong><small id="metricTempNote">Current / hottest sensor</small><div class="metric-track"><i id="metricTempBar"></i></div></article>
-          <article class="metric-card"><div class="metric-head"><span class="metric-icon" aria-hidden="true">CPU</span><span>PROCESSOR</span></div><strong id="metricCpu">—</strong><small id="metricCpuNote">Utilization</small><div class="metric-track"><i id="metricCpuBar"></i></div></article>
-          <article class="metric-card"><div class="metric-head"><span class="metric-icon" aria-hidden="true">RAM</span><span>MEMORY</span></div><strong id="metricMemory">—</strong><small id="metricMemoryNote">Available memory ratio</small><div class="metric-track"><i id="metricMemoryBar"></i></div></article>
-          <article class="metric-card"><div class="metric-head"><span class="metric-icon" aria-hidden="true">BAT</span><span>BATTERY</span></div><strong id="metricBattery">—</strong><small id="metricBatteryNote">Charge state</small><div class="metric-track"><i id="metricBatteryBar"></i></div></article>
-          <article class="metric-card metric-confidence"><div class="metric-head"><span class="metric-icon" aria-hidden="true">Σ</span><span>CONFIDENCE</span></div><strong id="metricConfidence">—</strong><small id="metricConfidenceNote">Decision telemetry quality</small><div class="metric-track"><i id="metricConfidenceBar"></i></div></article>
-        </div>
-      </section>
+<section class="page" id="page-journal"><div class="page-head"><div><small class="eyebrow">AUDIT / EVENT HISTORY</small><h1>Journal<span>.</span></h1><p>A human-readable trace of runtime events and safety outcomes.</p></div><button class="btn tonal" id="btn-journal-refresh">↻ Refresh journal</button></div><article class="card"><div class="table-head"><div><h3>Runtime journal</h3><p>Entries are displayed as reported by the runtime.</p></div><input id="journal-search" placeholder="Filter journal…" aria-label="Filter journal"></div><div id="journal-list" class="journal-list"><div class="empty">No journal entries received.</div></div></article></section>
 
-      <section class="panel section-block" aria-labelledby="pipelineTitle">
-        <div class="section-heading"><div><span class="eyebrow">DECISION TRACE</span><h2 id="pipelineTitle">Decision pipeline</h2></div><span class="section-note">Where a candidate is filtered</span></div>
-        <div id="pipeline" class="pipeline-grid"></div>
-      </section>
-
-      <section class="section-block" aria-labelledby="decisionTitle">
-        <div class="section-heading"><div><span class="eyebrow">CURRENT CYCLE</span><h2 id="decisionTitle">Decision analysis</h2></div></div>
-        <div class="analysis-grid">
-          <article class="panel analysis-card"><div class="card-heading"><span class="card-icon" aria-hidden="true">01</span><div><h3>Baseline & outcome</h3><p>Measurement progress before the next decision</p></div></div>
-            <div class="progress-block"><div class="progress-title"><span>Factory baseline</span><b id="baselineMeta">—</b></div><div class="progress-track"><i id="baselineProgress"></i></div></div>
-            <div class="progress-block"><div class="progress-title"><span>Outcome observation</span><b id="observationMeta">—</b></div><div class="progress-track"><i id="observationProgress"></i></div></div>
-            <dl class="compact-facts"><div><dt>Engine state</dt><dd id="stateMeta">—</dd></div><div><dt>Workload</dt><dd id="workloadMeta">—</dd></div><div><dt>Cooldown</dt><dd id="cooldownMeta">—</dd></div></dl>
-          </article>
-          <article class="panel analysis-card"><div class="card-heading"><span class="card-icon" aria-hidden="true">02</span><div><h3>Authority & hold</h3><p>Current permission boundary</p></div></div>
-            <div class="authority-state"><span id="modeBadge" class="state-badge">OBSERVE</span><span id="safetyBadge" class="state-badge state-badge-muted">NO HOLD</span></div>
-            <dl class="compact-facts"><div><dt>Skip / wait reason</dt><dd id="skipMeta">—</dd></div><div><dt>Safety hold</dt><dd id="holdMeta">—</dd></div><div><dt>Decision agent</dt><dd id="agentMeta">—</dd></div><div><dt>Plan</dt><dd id="planMeta">—</dd></div></dl>
-          </article>
-        </div>
-      </section>
-
-      <section class="panel section-block" aria-labelledby="consultTitle">
-        <div class="section-heading"><div><span class="eyebrow">READ-ONLY TELEMETRY</span><h2 id="consultTitle">Consultation ledger</h2><p class="section-description">Cumulative consultation outcomes since daemon start. These are observations, not write commands.</p></div><span id="consultTotal" class="total-chip">—</span></div>
-        <div id="consultReasonGrid" class="ledger-grid"></div>
-        <div class="subsection-heading"><h3>Last namespace reasons</h3><span>By resource domain</span></div>
-        <div id="namespaceList" class="namespace-list"></div>
-      </section>
-
-      <section class="section-block" aria-labelledby="capabilityTitle">
-        <div class="section-heading"><div><span class="eyebrow">DISCOVERY SURFACE</span><h2 id="capabilityTitle">Capability matrix</h2></div><span class="section-note">Presence ≠ permission</span></div>
-        <div id="capabilityGrid" class="capability-grid"></div>
-        <div id="domainGrid" class="domain-grid"></div>
-      </section>
-
-      <section class="section-block details-section" aria-labelledby="detailsTitle">
-        <div class="section-heading"><div><span class="eyebrow">RUNTIME DETAIL</span><h2 id="detailsTitle">Inspect engine data</h2></div><span class="section-note">Expand a category</span></div>
-        <details class="detail-panel"><summary><span><b>Eyes</b><small>Sensor and workload inputs</small></span><span class="detail-count">TELEMETRY</span></summary><dl class="rows" id="eyesRows"></dl></details>
-        <details class="detail-panel"><summary><span><b>Brain</b><small>Policy, state and reasoning output</small></span><span class="detail-count">DECISION</span></summary><dl class="rows" id="brainRows"></dl></details>
-        <details class="detail-panel"><summary><span><b>Hands</b><small>Verified changes and rollback outcomes</small></span><span class="detail-count">ACTUATORS</span></summary><dl class="rows" id="handsRows"></dl></details>
-        <details class="detail-panel"><summary><span><b>Device profile</b><small>OS, kernel and discovered interfaces</small></span><span class="detail-count">DEVICE</span></summary><dl class="rows" id="deviceRows"></dl></details>
-        <details class="detail-panel"><summary><span><b>Safety markers</b><small>Kill switch, SAFE_MODE and restart state</small></span><span class="detail-count">SAFETY</span></summary><dl class="rows" id="safetyRows"></dl></details>
-      </section>
-      <p class="page-footnote" id="engineFooter">The UI reads daemon status; it does not write kernel tunables.</p>
-    </section>
-
-    <!-- POLICY -->
-    <section class="page" data-page="policy" id="page-policy" hidden>
-      <div class="page-lead"><span class="eyebrow">CONTROL PLANE / 01</span><h2>Policy & authority</h2><p>Set the conditions under which the engine may reason or request an adaptation. Runtime writes remain controlled by coreflowd.</p></div>
-      <div class="notice notice-warn" id="pendingNotice" hidden><span class="notice-symbol" aria-hidden="true">↻</span><div class="notice-body"><b>Configuration saved, restart pending</b><p>The daemon reads config.ini at start. Restart it to load these values.</p></div><button class="button button-primary button-small" id="btnRestartPending" type="button">Restart now</button></div>
-      <article class="panel policy-authority" id="authorityCard">
-        <div class="section-heading"><div><span class="eyebrow">MUTATION AUTHORITY</span><h2 id="authorityTitle">Observe</h2></div><span id="policyModeIcon" class="authority-symbol" aria-hidden="true">◎</span></div>
-        <p id="authorityNote" class="section-description">Observe is read-only. The engine watches and reasons but changes nothing.</p>
-        <div class="segmented-control" role="group" aria-label="Mutation mode"><button type="button" data-mode="observe" selected>Observe</button><button type="button" data-mode="adaptive">Adaptive</button></div>
-        <p class="policy-gates" id="authorityGates"></p>
-        <div class="policy-warning"><b>Adaptive is deliberately gated</b><p>SAFE_MODE blocks Adaptive. Enabling or resuming Adaptive requires explicit confirmation. The engine still performs capability checks, bounded writes, read-back verification and rollback.</p></div>
-      </article>
-      <article class="panel">
-        <div class="section-heading"><div><span class="eyebrow">RUNTIME SAMPLING</span><h2>Runtime parameters</h2></div></div>
-        <label class="toggle-row" for="fRuntimeRefresh"><span><b>Refresh discovered capabilities</b><small>Allow the daemon to re-scan the exposed runtime interfaces when requested.</small></span><input id="fRuntimeRefresh" type="checkbox"><i aria-hidden="true"></i></label>
-        <div class="field-grid" id="runtimeFields"></div>
-      </article>
-      <article class="panel">
-        <div class="section-heading"><div><span class="eyebrow">INTERACTIVITY</span><h2>Launch & jank policy</h2></div></div>
-        <p class="section-description">Interactivity boosts remain subject to the global mutation authority above.</p>
-        <div class="segmented-control" role="group" aria-label="Interactivity mode"><button type="button" data-interactivity="observe" selected>Observe</button><button type="button" data-interactivity="adaptive">Adaptive</button></div>
-        <div class="field-grid" id="interactivityFields"></div>
-      </article>
-      <div class="save-toolbar"><span id="policyPath" class="path-note"></span><div><button class="button button-quiet" id="btnReloadPolicy" type="button">Reload</button><button class="button button-primary" id="btnSavePolicy" type="button">Save configuration</button></div></div>
-    </section>
-
-    <!-- JOURNAL -->
-    <section class="page" data-page="journal" id="page-journal" hidden>
-      <div class="page-lead"><span class="eyebrow">EVIDENCE / 02</span><h2>Decision journal</h2><p>Review decision records and daemon logs. Newest events are shown first; device-originated text is rendered as plain data.</p></div>
-      <div class="segmented-control" role="group" aria-label="Journal view"><button type="button" data-jview="decisions" selected>Decision records</button><button type="button" data-jview="log">Daemon log</button></div>
-      <section id="jDecisions" class="journal-section">
-        <div class="filter-row" role="group" aria-label="Decision filter"><button class="filter-chip" type="button" data-jfilter="all" selected>All events</button><button class="filter-chip" type="button" data-jfilter="changes">Changes</button><button class="filter-chip" type="button" data-jfilter="errors">Blocks & errors</button></div>
-        <p class="journal-summary" id="traceSummary"></p><div id="traceList" class="trace-list"></div>
-      </section>
-      <section id="jLog" hidden><article class="panel log-panel"><label class="search-field"><span aria-hidden="true">⌕</span><input id="logSearch" type="search" placeholder="Filter log lines" aria-label="Filter daemon log lines"></label><pre id="logBox" class="log-box">Loading log…</pre></article></section>
-      <div class="save-toolbar"><span class="path-note">Read-only journal view</span><div><button class="button button-quiet" id="btnCopyJournal" type="button">Copy view</button><button class="button button-primary" id="btnRefreshJournal" type="button">Refresh</button></div></div>
-    </section>
-
-    <!-- PROJECT & AI -->
-    <section class="page" data-page="about" id="page-about" hidden>
-      <section class="project-hero panel">
-        <div class="project-brand"><div class="project-monogram" aria-hidden="true">M<span>·</span></div><div><span class="eyebrow">PROJECT AUTHOR</span><h2>Mystivara</h2><p>Independent developer · Android runtime intelligence</p></div></div>
-        <p class="project-summary">CoreFlow Autonomous explores a capability-driven way to observe, understand and balance Android runtime behaviour. It is built around evidence, constrained authority and reversible change—not universal tweak presets.</p>
-        <div class="project-links"><a class="button button-primary" href="https://github.com/mystivara-creator" target="_blank" rel="noopener noreferrer">GitHub profile <span aria-hidden="true">↗</span></a><a class="button button-secondary" href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer">Source repository <span aria-hidden="true">↗</span></a></div>
-        <div class="project-stats"><div><b>CAPABILITY</b><span>Discover first</span></div><div><b>EVIDENCE</b><span>Measure outcomes</span></div><div><b>REVERSIBILITY</b><span>Verify & recover</span></div></div>
-      </section>
-      <section class="section-block">
-        <div class="section-heading"><div><span class="eyebrow">DESIGN PRINCIPLES</span><h2>Observe. Understand. Balance. Adapt.</h2></div></div>
-        <div class="principle-list">
-          <article class="principle-card"><span>01</span><div><h3>Observe before acting</h3><p>Collect device context and establish a baseline before considering adaptation.</p></div></article>
-          <article class="principle-card"><span>02</span><div><h3>Prefer evidence to assumptions</h3><p>Confidence, semantic meaning and measured outcomes guide whether a candidate is justified.</p></div></article>
-          <article class="principle-card"><span>03</span><div><h3>Keep authority explicit</h3><p>Capability discovery does not grant permission. Policy, safety gates and bounded actuators remain authoritative.</p></div></article>
-          <article class="principle-card"><span>04</span><div><h3>Recover when evidence degrades</h3><p>Verification, mutation journaling, safety holds and rollback are part of the adaptation path.</p></div></article>
-        </div>
-      </section>
-      <section class="panel ai-section">
-        <div class="section-heading"><div><span class="eyebrow">DEVELOPMENT ACKNOWLEDGEMENTS</span><h2>Human-led. AI-assisted.</h2><p class="section-description">AI tools may assist with research, alternatives, reasoning, debugging discussion and writing. The maintainer remains responsible for design choices, code review and release decisions.</p></div></div>
-        <div class="ai-grid">
-          <a class="ai-card" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-chatgpt">✳</span><span class="ai-copy"><b>ChatGPT</b><small>Planning, debugging & documentation</small></span><span class="external" aria-hidden="true">↗</span></a>
-          <a class="ai-card" href="https://gemini.google.com/" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-gemini">✦</span><span class="ai-copy"><b>Gemini</b><small>Exploration & technical perspectives</small></span><span class="external" aria-hidden="true">↗</span></a>
-          <a class="ai-card" href="https://www.perplexity.ai/" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-perplexity">P</span><span class="ai-copy"><b>Perplexity</b><small>Search-led research & source discovery</small></span><span class="external" aria-hidden="true">↗</span></a>
-          <a class="ai-card" href="https://grok.com/" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-grok">𝕏</span><span class="ai-copy"><b>Grok</b><small>Alternative viewpoints & ideation</small></span><span class="external" aria-hidden="true">↗</span></a>
-          <a class="ai-card" href="https://claude.ai/" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-claude">✳</span><span class="ai-copy"><b>Claude</b><small>Reasoning & writing assistance</small></span><span class="external" aria-hidden="true">↗</span></a>
-          <a class="ai-card" href="https://github.com/features/copilot" target="_blank" rel="noopener noreferrer"><span class="ai-icon ai-copilot">⌘</span><span class="ai-copy"><b>GitHub Copilot</b><small>In-editor coding assistance</small></span><span class="external" aria-hidden="true">↗</span></a>
-        </div>
-        <p class="micro-note">Acknowledgement of tools used during development does not imply endorsement, partnership or identical participation in every release. AI suggestions are reviewed by the maintainer.</p>
-      </section>
-      <footer class="project-footer"><span class="footer-mark">CF</span><div><b>CoreFlow Autonomous</b><small>Observe. Understand. Balance. Adapt.</small></div><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md" target="_blank" rel="noopener noreferrer">Security policy ↗</a></footer>
-    </section>
-  </main>
-
-  <nav class="bottom-nav" aria-label="Primary navigation">
-    <button type="button" data-page-link="engine" selected><span class="nav-icon" aria-hidden="true">◈</span><span>Engine</span></button>
-    <button type="button" data-page-link="policy"><span class="nav-icon" aria-hidden="true">⚙</span><span>Policy</span></button>
-    <button type="button" data-page-link="journal"><span class="nav-icon" aria-hidden="true">▤</span><span>Journal</span></button>
-    <button type="button" data-page-link="about"><span class="nav-icon" aria-hidden="true">✧</span><span>Project &amp; AI</span></button>
-  </nav>
-</div>
-
-<dialog id="confirmDialog" class="confirm-dialog" aria-labelledby="dialogTitle">
-  <span class="eyebrow">CONFIRM ACTION</span><h2 id="dialogTitle" class="dialog-title"></h2><p id="dialogMessage" class="dialog-message"></p><pre id="dialogDetail" class="dialog-detail"></pre>
-  <div class="dialog-actions"><button class="button button-quiet" id="dialogCancel" type="button">Cancel</button><button class="button button-primary" id="dialogConfirm" type="button">Confirm</button></div>
-</dialog>
-<div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="false"></div>
-<script src="engine_status.js"></script>
-<script src="control_logic.js"></script>
-<script src="app.js"></script>
-</body>
-</html>
+<section class="page" id="page-system"><div class="page-head"><div><small class="eyebrow">DEVICE / ENVIRONMENT</small><h1>System profile<span>.</span></h1><p>Runtime-discovered platform information and interface availability.</p></div><button class="btn tonal" id="btn-system-refresh">↻ Refresh profile</button></div>
+<div class="metrics profile"><article class="metric"><small>PLATFORM</small><b id="system-device">Unknown device</b><p>Device model and code</p></article><article class="metric"><small>ANDROID</small><b id="system-android">Unknown</b><p>Version and API level</p></article><article class="metric"><small>KERNEL</small><b id="system-kernel">Unknown</b><p>Kernel release</p></article><article class="metric"><small>SoC</small><b id="system-soc">Unknown</b><p>Detected chipset family</p></article></div>
+<article class="card"><small class="eyebrow">CAPABILITY MATRIX</small><h3>Observed interface domains</h3><div id="system-capabilities" class="capability-grid"><div class="empty">Capability matrix not reported.</div></div></article><article class="card"><small class="eyebrow">RUNTIME DETAILS</small><h3>Environment snapshot</h3><div id="system-details" class="detail-list"><div class="detail-row"><span>Runtime version</span><b>Unknown</b></div></div></article></section>
+</div><footer><span>✳ CoreFlow Autonomous</span><span>Observe. Understand. Balance. Adapt.</span><small id="footer-material-status">Local-compatible UI</small></footer></main></div>
+<nav class="mobile-nav"><button class="active" data-page="overview">◫<small>Home</small></button><button data-page="resources">⌘<small>Resources</small></button><button data-page="decisions">⌁<small>Decisions</small></button><button data-page="policy">⚙<small>Policy</small></button><button data-page="journal">▤<small>Journal</small></button></nav>
+<div class="toast" id="toast" role="status" aria-live="polite"></div><dialog id="confirm-dialog"><span class="shield">⛨</span><h2 id="dialog-title">Confirm action</h2><p id="dialog-copy">Continue?</p><div class="dialog-actions"><button class="btn tonal" id="dialog-cancel">Cancel</button><button class="btn primary" id="dialog-confirm">Confirm</button></div></dialog>
+</body></html>

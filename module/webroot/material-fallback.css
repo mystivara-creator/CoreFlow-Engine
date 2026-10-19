@@ -1,0 +1,3 @@
+/* Local fallback styles: custom elements are optional, never required by the core UI. */
+md-button,md-switch,md-card{font:inherit}
+html[data-material="cdn"] .btn{letter-spacing:.02px}
