@@ -90,7 +90,7 @@ int main() {
     CHECK(held.stabilizing_only);
     CHECK(held.intervention == InterventionLevel::Low);
 
-    // Untrustworthy telemetry under stress remains a hard hold.
+    // Untrustworthy telemetry under the explicit ThermalGuard remains a hold.
     RuntimeSample unsure = sample;
     unsure.confidence = 0.20;
     const SystemContext unsure_hot =
@@ -100,6 +100,33 @@ int main() {
     CHECK(unsure_plan.action == PolicyAction::ReduceIntervention);
     CHECK(!unsure_plan.mutation_eligible);
     CHECK(!unsure_plan.stabilizing_only);
+
+    // Ordinary context warnings do not veto the entire adaptive engine. The
+    // exact target still must pass grants, baseline, effect evidence and the
+    // final mutation authority before a write can occur.
+    SystemContext advisory_context;
+    advisory_context.state = RuntimeState::Normal;
+    advisory_context.workload = WorkloadClass::Interactive;
+    advisory_context.confidence = 0.90;
+    advisory_context.mutation_allowed_by_context = false;
+    advisory_context.stabilizing_allowed_by_context = false;
+    const PolicyPlan advisory_plan = policy.evaluate(advisory_context, resources);
+    CHECK(advisory_plan.action == PolicyAction::Candidate);
+    CHECK(advisory_plan.mutation_eligible);
+    CHECK(!advisory_plan.candidates.empty());
+
+    // A structurally readable/writable resource can be evaluated even before
+    // the model's permission flag is synchronized; controller authorization is
+    // still mandatory at the exact-target write boundary.
+    EnvironmentCapabilityMatrix unsynchronized_matrix = matrix;
+    unsynchronized_matrix.resources[0].runtime_verified = true;
+    unsynchronized_matrix.resources[0].policy_authorized = false;
+    ResourceStateModel unsynchronized;
+    unsynchronized.reset(unsynchronized_matrix);
+    const PolicyPlan unsynchronized_plan = policy.evaluate(context, unsynchronized);
+    CHECK(unsynchronized_plan.action == PolicyAction::Candidate);
+    CHECK(unsynchronized_plan.mutation_eligible);
+    CHECK(!unsynchronized_plan.candidates.empty());
 
 
     // Commit 5: adaptive intervention policy coverage.
@@ -157,8 +184,20 @@ int main() {
         const PolicyPlan blocked_plan =
             policy.evaluate(blocked_context, resources);
 
-        CHECK(blocked_plan.intervention == InterventionLevel::ObserveOnly);
-        CHECK(!blocked_plan.mutation_eligible);
+        CHECK(blocked_plan.action == PolicyAction::Candidate);
+        CHECK(blocked_plan.mutation_eligible);
+        CHECK(!blocked_plan.candidates.empty());
+        // Low confidence is rejected by MutationAuthority, not used as a
+        // policy-wide reason to erase the candidate plan.
+        const EngineConfig config;
+        CHECK(mutationPermitBlockReason(blocked_plan, config, RuntimeState::Normal,
+                                        blocked_context.confidence,
+                                        MutationPermit::Scope::Resource) ==
+              std::string("adaptive_mode_or_arming_required") ||
+              mutationPermitBlockReason(blocked_plan, config, RuntimeState::Normal,
+                                        blocked_context.confidence,
+                                        MutationPermit::Scope::Resource) ==
+              std::string("confidence_below_minimum"));
     }
 
 

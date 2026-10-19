@@ -129,9 +129,11 @@ Consultation consult(const ControlFact& fact, RuntimeState state,
     if (isStressedState(state) && !fact.stabilizing) {
         return makeResult(ConsultVerdict::Defer, ConsultReason::StressedNonStabilizing, need);
     }
-    if (!need) {
-        return makeResult(ConsultVerdict::Defer, ConsultReason::NoNeed, need);
-    }
+    // Runtime-state demand is advisory, not a second global policy veto.
+    // The proposal already carries candidate-specific semantic and benefit
+    // evidence. Preserve "NoNeed" in the consultation ledger as a warning while
+    // allowing that individually justified candidate to continue through the
+    // explicit grant and mutation-authority checks.
     if (!fact.benefit_justified) {
         return makeResult(ConsultVerdict::Defer, ConsultReason::NoBenefitEvidence, need);
     }
@@ -140,7 +142,9 @@ Consultation consult(const ControlFact& fact, RuntimeState state,
     if (!grants.allows(fact.ns)) {
         return makeResult(ConsultVerdict::Defer, ConsultReason::AwaitingUserGrant, need);
     }
-    return makeResult(ConsultVerdict::Allow, ConsultReason::Allowed, need);
+    return makeResult(ConsultVerdict::Allow,
+                      need ? ConsultReason::Allowed : ConsultReason::NoNeed,
+                      need);
 }
 
 void ConsultationLedger::record(ControlNamespace ns, const Consultation& result) noexcept {

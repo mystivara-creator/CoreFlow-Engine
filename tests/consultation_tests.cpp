@@ -68,13 +68,14 @@ void testNoGrantDefersEvenWhenSafeAndNeeded() {
     CHECK(c.need_present);
 }
 
-void testNoNeedDefersEvenWithGrant() {
-    // Permission alone is not a reason to write. Idle, Normal and Warming show
-    // no demand, so nothing is changed.
-    const RuntimeState calm[] = {RuntimeState::Idle, RuntimeState::Normal, RuntimeState::Warming};
+void testNoNeedIsAdvisoryForEvidenceBackedCandidate() {
+    // Runtime-state demand is a warning, not a veto. The caller has already
+    // produced a semantic, benefit-justified candidate; Idle still cannot
+    // create a plan in PolicyEngine, while consultation does not veto it here.
+    const RuntimeState calm[] = {RuntimeState::Normal, RuntimeState::Warming};
     for (RuntimeState s : calm) {
         const auto c = consult(passingVmFact(), s, grantAll());
-        expect(c, ConsultVerdict::Defer, ConsultReason::NoNeed, "no need");
+        expect(c, ConsultVerdict::Allow, ConsultReason::NoNeed, "no need advisory");
         CHECK(!c.need_present);
     }
 }
@@ -255,7 +256,7 @@ void testLedgerRecordsOutcomes() {
 int main() {
     testAllowWhenEverythingPasses();
     testNoGrantDefersEvenWhenSafeAndNeeded();
-    testNoNeedDefersEvenWithGrant();
+    testNoNeedIsAdvisoryForEvidenceBackedCandidate();
     testElevatedNeedsControl();
     testStressedAcceptsOnlyStabilizing();
     testNotObservableDefers();

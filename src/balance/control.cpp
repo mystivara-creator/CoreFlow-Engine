@@ -10,132 +10,82 @@ PolicyPlan PolicyEngine::evaluate(
 ) const noexcept {
     PolicyPlan plan;
 
-    if (!context.mutation_allowed_by_context) {
-        if (context.stabilizing_allowed_by_context) {
-            PolicyPlan stabilizing;
-            stabilizing.action = PolicyAction::Candidate;
-            stabilizing.intervention = InterventionLevel::Low;
-            stabilizing.mutation_eligible = true;
-            stabilizing.stabilizing_only = true;
-            stabilizing.reason =
-                "stressed context: small load-reducing writes only";
-            for (const auto& state : resources.all()) {
-                if (!state.mutation_permitted) continue;
-                if (!state.readable || !state.writable || !state.runtime_verified) continue;
-                // Every tunable domain may contribute a stabilizing candidate;
-                // EffectModel decides which value (if any) is load-reducing.
-                if (!isTunableResourceDomain(state.domain)) continue;
-                PolicyCandidate c;
-                c.domain = state.domain;
-                c.resource = state.name;
-                c.confidence = context.confidence;
-                c.risk = 0.30;
-                c.action = PolicyAction::Candidate;
-                stabilizing.candidates.push_back(std::move(c));
-            }
-            if (!stabilizing.candidates.empty()) return stabilizing;
-        }
+    // Policy is advisory for ordinary operating conditions. It may report
+    // missing headroom, workload uncertainty, or a recommendation to use a low
+    // intervention level, but those warnings must not globally veto Adaptive.
+    // Idle has no autonomous demand. ThermalGuard remains the explicit runtime
+    // safety context; it may only expose stabilizing candidates when telemetry
+    // is trustworthy enough to support them.
+    if (context.state == RuntimeState::Idle) {
+        plan.action = PolicyAction::Hold;
+        plan.intervention = InterventionLevel::ObserveOnly;
+        plan.mutation_eligible = false;
+        plan.reason = "idle/unknown — no spontaneous mutation";
+        return plan;
+    }
 
-        plan.action = (context.state == RuntimeState::ThermalGuard ||
-                       context.state == RuntimeState::Pressure)
+    const bool stress_state =
+        context.state == RuntimeState::ThermalGuard ||
+        context.state == RuntimeState::Pressure;
+    if (stress_state && !context.stabilizing_allowed_by_context) {
+        plan.action = context.state == RuntimeState::ThermalGuard
                           ? PolicyAction::ReduceIntervention
                           : PolicyAction::Hold;
         plan.intervention = InterventionLevel::ObserveOnly;
         plan.mutation_eligible = false;
-        plan.reason = "context safety constraints block intervention";
+        plan.reason = context.state == RuntimeState::ThermalGuard
+                          ? "thermal safety context lacks reliable stabilization evidence"
+                          : "pressure context lacks reliable stabilization evidence";
         return plan;
     }
 
-    // v2.1.0 autonomous policy — capability-driven candidates below.
-    switch (context.state) {
-        case RuntimeState::ThermalGuard:
-        case RuntimeState::Pressure:
-            plan.action = PolicyAction::ReduceIntervention;
-            plan.intervention = InterventionLevel::ObserveOnly;
-            plan.mutation_eligible = false;
-            plan.reason = "safety state without stabilizing candidates; recover or observe";
-            return plan;
-
-        case RuntimeState::Warming:
-        case RuntimeState::Elevated:
-            plan.action = PolicyAction::Candidate;
-            plan.intervention = InterventionLevel::Low;
-            plan.mutation_eligible = true;
-            plan.reason = "elevated/warming context allows low autonomous tune";
-            break;
-
-        case RuntimeState::Normal:
-            // Balance: CpuBound no longer demands 0.85 confidence — that gate
-            // made Moderate almost unreachable on real telemetry. 0.72 still
-            // requires clear signal; Low remains available for active workloads.
-            if (context.workload == WorkloadClass::CpuBound &&
-                context.confidence >= 0.72 &&
-                context.thermal_headroom &&
-                context.memory_headroom &&
-                context.power_headroom) {
-                plan.action = PolicyAction::Candidate;
-                plan.intervention = InterventionLevel::Moderate;
-                plan.mutation_eligible = true;
-                plan.reason = "cpu-bound with headroom";
-            } else if (context.workload == WorkloadClass::Interactive ||
-                       context.workload == WorkloadClass::Sustained ||
-                       context.workload == WorkloadClass::IoBound ||
-                       context.workload == WorkloadClass::GpuBound ||
-                       context.workload == WorkloadClass::MemoryBound) {
-                plan.action = PolicyAction::Candidate;
-                plan.intervention = InterventionLevel::Low;
-                plan.mutation_eligible = true;
-                plan.reason = "active workload allows low autonomous tune";
-            } else if (context.confidence >= 0.65 &&
-                       context.thermal_headroom &&
-                       context.memory_headroom &&
-                       context.power_headroom) {
-                // Mild Normal activity: still allow cautious Low so Balance/Adapt
-                // is not dead when workload classification is weak.
-                plan.action = PolicyAction::Candidate;
-                plan.intervention = InterventionLevel::Low;
-                plan.mutation_eligible = true;
-                plan.reason = "normal activity with headroom — low autonomous tune";
-            } else {
-                plan.action = PolicyAction::Hold;
-                plan.intervention = InterventionLevel::ObserveOnly;
-                plan.mutation_eligible = false;
-                plan.reason = "normal state without actionable workload signal";
-            }
-            break;
-
-        case RuntimeState::Idle:
-        default:
-            plan.action = PolicyAction::Hold;
-            plan.intervention = InterventionLevel::ObserveOnly;
-            plan.mutation_eligible = false;
-            plan.reason = "idle/unknown — no spontaneous mutation";
-            break;
+    plan.action = PolicyAction::Candidate;
+    plan.intervention = InterventionLevel::Low;
+    plan.mutation_eligible = true;
+    plan.stabilizing_only = stress_state;
+    if (context.state == RuntimeState::ThermalGuard) {
+        plan.reason = "thermal guard: stabilizing candidates only";
+    } else if (context.state == RuntimeState::Pressure) {
+        plan.reason = "pressure warning: stabilizing candidates only";
+    } else if (!context.mutation_allowed_by_context) {
+        plan.reason = "advisory: context headroom/confidence warning; evaluate bounded candidates";
+    } else if (context.state == RuntimeState::Warming ||
+               context.state == RuntimeState::Elevated) {
+        plan.reason = "warming/elevated context allows low autonomous tune";
+    } else if (context.state == RuntimeState::Normal &&
+               context.workload == WorkloadClass::CpuBound &&
+               context.confidence >= 0.72 &&
+               context.thermal_headroom &&
+               context.memory_headroom &&
+               context.power_headroom) {
+        plan.intervention = InterventionLevel::Moderate;
+        plan.reason = "cpu-bound with headroom";
+    } else {
+        plan.reason = "adaptive context: low autonomous tune";
     }
 
-    if (!plan.mutation_eligible) {
-        return plan;
-    }
-
-    // Capability-driven candidates from the resource model.
+    // Build a structural candidate inventory, not an authorization decision.
+    // The mutation controller independently checks grants, exact target safety,
+    // baseline, effect evidence, bounded writes, journal, read-back and rollback.
+    // A candidate missing mutation_permitted in this model must not cause every
+    // otherwise viable resource to disappear before that per-target pipeline.
     for (const auto& state : resources.all()) {
-        if (!state.mutation_permitted) continue;
         if (!state.readable || !state.writable || !state.runtime_verified) continue;
         if (!isTunableResourceDomain(state.domain)) continue;
-        PolicyCandidate c;
-        c.domain = state.domain;
-        c.resource = state.name;
-        c.confidence = context.confidence;
-        c.risk = 0.40;
-        c.action = PolicyAction::Candidate;
-        plan.candidates.push_back(std::move(c));
+        PolicyCandidate candidate;
+        candidate.domain = state.domain;
+        candidate.resource = state.name;
+        candidate.confidence = context.confidence;
+        candidate.risk = stress_state ? 0.30 : 0.40;
+        candidate.action = PolicyAction::Candidate;
+        plan.candidates.push_back(std::move(candidate));
     }
 
-    if (plan.candidates.empty() && plan.mutation_eligible) {
+    if (plan.candidates.empty()) {
         plan.action = PolicyAction::Hold;
         plan.intervention = InterventionLevel::ObserveOnly;
         plan.mutation_eligible = false;
-        plan.reason = plan.reason + " (no policy-approved candidates)";
+        plan.reason += " (no structurally usable tunables discovered)";
     }
 
     return plan;
