@@ -1,10 +1,6 @@
-/* CoreFlow Control: a control surface for the coreflowd C++ daemon.
- *
- * - Every action runs one fixed command from control_logic.js through the KernelSU exec bridge.
- * - The daemon is the only authority over kernel writes. The UI edits config.ini, touches the
- *   documented marker files, sends SIGTERM/SIGUSR1, and asks service.sh to (re)start coreflowd.
- * - Rendering uses textContent only. status.json and the journal come from the kernel and the
- *   daemon, so they are treated as data, never as markup.
+/* CoreFlow Pulse WebUI: lightweight native HTML/CSS presentation for the coreflowd daemon.
+ * Controls use fixed command builders; the daemon remains the sole authority for kernel writes.
+ * Runtime status, logs and journal values are always rendered as text, never as HTML.
  */
 (function () {
   "use strict";
@@ -222,13 +218,122 @@
     });
   }
 
-  // ---- Live engine view: renders only what the daemon wrote and the probe observed ----
+  // ---- Structured runtime dashboard ----
+
+  function pct(v) { return v == null ? "n/a" : Math.round(v * 100) + "%"; }
+  function metric(id, noteId, barId, value, note, ratio) {
+    setText(id, value);
+    setText(noteId, note || "No telemetry reported");
+    var bar = $(barId);
+    if (bar) bar.style.width = ratio == null ? "0%" : Math.max(0, Math.min(100, ratio)) + "%";
+  }
+  function fillRows(id, rows) {
+    var host = $(id);
+    clear(host);
+    if (!rows || !rows.length) {
+      host.appendChild(el("div", "empty", "No data reported by this daemon build."));
+      return;
+    }
+    rows.forEach(function (r) {
+      var row = el("div");
+      row.append(el("dt", "", r[0]), el("dd", "", r[1] == null || r[1] === "" ? "—" : r[1]));
+      if (r[2]) row.appendChild(el("small", "", r[2]));
+      host.appendChild(row);
+    });
+  }
+  function progress(id, value, target) {
+    var pctValue = target > 0 ? Math.round(Math.min(1, value / target) * 100) : 0;
+    var node = $(id);
+    if (node) node.style.width = pctValue + "%";
+  }
+  function toneForFlag(flag) { return flag ? "warn" : "ok"; }
+
+  function renderConsultation(d) {
+    var reasons = d && d.brain && d.brain.consultation ? d.brain.consultation.reasons : {};
+    var namespaces = d && d.brain && d.brain.consultation ? d.brain.consultation.namespaces : {};
+    var reasonKeys = ["NO_WRITE_ACTUATOR", "OUT_OF_SCOPE", "SURFACE_DENIED", "NOT_OBSERVABLE",
+      "NO_ROLLBACK_BASELINE", "NO_SEMANTIC_PRIOR", "STRESSED_NON_STABILIZING", "NO_NEED",
+      "NO_BENEFIT_EVIDENCE", "AWAITING_USER_GRANT", "ALLOWED"];
+    var reasonHost = $("consultReasonGrid");
+    clear(reasonHost);
+    var total = 0;
+    reasonKeys.forEach(function (key) {
+      var count = Object.prototype.hasOwnProperty.call(reasons || {}, key) ? Number(reasons[key]) || 0 : 0;
+      total += count;
+      var card = el("div", "ledger-item" + (key === "ALLOWED" ? " allowed" : ""));
+      card.append(el("span", "", key.replace(/_/g, " ")));
+      card.append(el("b", "", String(count)));
+      reasonHost.appendChild(card);
+    });
+    setText("consultTotal", total + " total");
+
+    var nsHost = $("namespaceList");
+    clear(nsHost);
+    var keys = Object.keys(namespaces || {});
+    if (!keys.length) {
+      nsHost.appendChild(el("div", "empty", "Namespace consultation has not been supplied by this daemon build."));
+      return;
+    }
+    keys.forEach(function (key) {
+      var item = namespaces[key] || {};
+      var row = el("div", "namespace-row");
+      var label = el("div", "namespace-name", key.replace(/_/g, " "));
+      var value = el("div", "namespace-reason");
+      value.appendChild(el("b", "", item.reason || "NO RECENT REASON"));
+      value.appendChild(el("small", "", item.need ? "Need present in current consultation" : "No need marker reported"));
+      row.append(label, value);
+      nsHost.appendChild(row);
+    });
+  }
+
+  function renderCapabilities(d) {
+    var host = $("capabilityGrid");
+    var domainHost = $("domainGrid");
+    clear(host); clear(domainHost);
+    var v = d && d.device;
+    if (!v || !v.present) {
+      host.appendChild(el("div", "empty", "Capability matrix is not available in this status snapshot."));
+      return;
+    }
+    var domains = v.expandedDomains || [];
+    var detected = domains.filter(function (x) { return x.evidence !== "unavailable"; }).length;
+    var observable = domains.filter(function (x) { return x.evidence === "observable"; }).length;
+    var authorized = domains.filter(function (x) { return x.mutationAuthorized; }).length;
+    [
+      ["Discovered resources", v.discoveredResources, "Interfaces found by discovery"],
+      ["Policy-ready", v.mutationReadyResources, "Do not imply authorization"],
+      ["Expanded domains", detected + " / " + domains.length, "Detected or observable"],
+      ["Observable domains", observable, "Telemetry available"],
+      ["Authorized domains", authorized, "Explicit permission reported"],
+      ["Kernel interfaces", (v.procAvailable ? "proc ✓" : "proc —") + " · " + (v.sysAvailable ? "sys ✓" : "sys —"), "Runtime availability"]
+    ].forEach(function (a) {
+      var card = el("article", "capability-card");
+      card.append(el("span", "", a[0]), el("b", "", String(a[1])), el("small", "", a[2]));
+      host.appendChild(card);
+    });
+    if (!domains.length) {
+      domainHost.appendChild(el("div", "empty", "No expanded-domain inventory was reported."));
+      return;
+    }
+    domains.forEach(function (x) {
+      var card = el("article", "domain-card");
+      var head = el("div");
+      head.append(el("b", "", "Domain " + x.id), el("span", "", x.evidence));
+      card.appendChild(head);
+      card.appendChild(el("p", "", x.matched + " matched · " + x.readable + " readable · mutation " + (x.mutationAuthorized ? "authorized" : "not authorized")));
+      domainHost.appendChild(card);
+    });
+  }
 
   function renderEngine() {
     var p = state.status;
     var probe = state.probe;
     var online = !!(probe && probe.running);
-    var sum = p ? S.summary(p) : { tone: "info", title: "Reading daemon state", detail: "Waiting for the first probe.", code: "" };
+    var ok = !!(p && p.ok);
+    var d = ok ? p.data : null;
+    var b = d ? d.brain : null;
+    var e = d ? d.eyes : null;
+    var sum = p ? S.summary(p) : { tone: "info", title: "Reading daemon state", detail: "Waiting for the first probe.", code: "INITIALIZING" };
 
     var hero = $("heroCard");
     hero.setAttribute("data-tone", sum.tone);
@@ -238,49 +343,74 @@
 
     var chip = $("headerChip");
     if (state.bridge === false) {
-      chip.setAttribute("data-tone", "bad");
-      chip.textContent = "NO BRIDGE";
+      chip.setAttribute("data-tone", "bad"); chip.textContent = "NO BRIDGE";
     } else if (!probe) {
-      chip.setAttribute("data-tone", "info");
-      chip.textContent = "CHECKING";
+      chip.setAttribute("data-tone", "info"); chip.textContent = "CHECKING";
     } else {
-      var tone = !online ? "bad" : sum.tone === "bad" ? "bad" : sum.tone === "warn" ? "warn" : "ok";
-      chip.setAttribute("data-tone", tone);
+      chip.setAttribute("data-tone", !online ? "bad" : sum.tone === "bad" ? "bad" : sum.tone === "warn" ? "warn" : "ok");
       chip.textContent = online ? "ONLINE" : "OFFLINE";
     }
     setText("headerSub", "coreflowd" + (online ? " · pid " + probe.pids.join(" ") : probe ? " · not running" : " · connecting"));
-
-    var ok = !!(p && p.ok);
     setText("metaPid", online ? probe.pids.join(", ") : "—");
-    setText("metaVersion", ok && p.data.version ? p.data.version : "—");
-    setText("metaUpdated", ok ? (p.age === 0 ? "just now" : p.age + " s ago") : "—");
+    setText("metaVersion", ok && d.version ? d.version : "—");
+    setText("metaUpdated", ok ? (p.age === 0 ? "just now" : p.age + "s ago") : "—");
 
-    var pipe = $("pipeline");
-    clear(pipe);
+    if (e) {
+      var tempText = e.thermal == null ? "n/a" : e.thermal.toFixed(1) + "°C";
+      var tempNote = e.hottest != null ? "Hottest sensor " + e.hottest.toFixed(1) + "°C" : (e.thermalTrend || "Thermal probe");
+      metric("metricTemp", "metricTempNote", "metricTempBar", tempText, tempNote, e.thermal == null ? null : e.thermal / 65 * 100);
+      metric("metricCpu", "metricCpuNote", "metricCpuBar", pct(e.cpu), e.load == null ? "CPU utilization" : "1m load " + e.load.toFixed(2), e.cpu == null ? null : e.cpu * 100);
+      metric("metricMemory", "metricMemoryNote", "metricMemoryBar", pct(e.mem), e.memTrend || "Available memory", e.mem == null ? null : e.mem * 100);
+      metric("metricBattery", "metricBatteryNote", "metricBatteryBar", e.battery == null ? "n/a" : e.battery + "%", e.charging ? "Charging" : "Not charging", e.battery);
+      metric("metricConfidence", "metricConfidenceNote", "metricConfidenceBar", pct(e.confidence), e.confidence != null && e.confidence < 0.7 ? "Below 70% confidence gate" : "Decision telemetry quality", e.confidence == null ? null : e.confidence * 100);
+    } else {
+      [["metricTemp","metricTempNote","metricTempBar"],["metricCpu","metricCpuNote","metricCpuBar"],["metricMemory","metricMemoryNote","metricMemoryBar"],["metricBattery","metricBatteryNote","metricBatteryBar"],["metricConfidence","metricConfidenceNote","metricConfidenceBar"]].forEach(function (a) { metric(a[0], a[1], a[2], "—", "Waiting for telemetry", null); });
+    }
+
+    var pipe = $("pipeline"); clear(pipe);
     if (ok) {
-      S.pipeline(p.data).forEach(function (stage, i) {
-        var row = el("div", "stage");
-        row.setAttribute("data-tone", stage.tone);
-        var body = el("div");
-        body.appendChild(el("b", "", stage.label));
-        body.appendChild(el("p", "", stage.note));
+      S.pipeline(d).forEach(function (stage, i) {
+        var row = el("div", "stage"); row.setAttribute("data-tone", stage.tone);
+        var body = el("div"); body.append(el("b", "", stage.label), el("p", "", stage.note));
         row.append(el("span", "stage-index", String(i + 1)), body, el("span", "state", stage.state));
         pipe.appendChild(row);
       });
-    } else {
-      pipe.appendChild(el("p", "empty", "The pipeline appears once the daemon writes its first status."));
-    }
+    } else pipe.appendChild(el("p", "empty", "The decision pipeline appears after the daemon writes its first status snapshot."));
 
-    fillRows("eyesRows", ok ? S.eyesRows(p.data) : []);
-    fillRows("brainRows", ok ? S.brainRows(p.data) : []);
-    fillRows("handsRows", ok ? S.handsRows(p.data) : []);
-    fillRows("deviceRows", ok ? S.deviceRows(p.data) : []);
+    fillRows("eyesRows", ok ? S.eyesRows(d) : []);
+    fillRows("brainRows", ok ? S.brainRows(d).filter(function (r) { return r[0] !== "Consultation ledger" && r[0] !== "Last namespace reasons"; }) : []);
+    fillRows("handsRows", ok ? S.handsRows(d) : []);
+    fillRows("deviceRows", ok ? S.deviceRows(d) : []);
     fillRows("safetyRows", probe ? [
-      ["SAFE_MODE", probe.safe ? "present" : "absent", probe.safe ? "Adaptive is blocked" : ""],
-      ["DISABLE kill switch", probe.disable ? "present" : "absent", probe.disable ? "mutation held" : ""],
-      ["Config waiting for restart", probe.pending ? "yes" : "no", ""],
-      ["Boot attempts", probe.bootAttempts || "0", "unconfirmed boots"]
+      ["SAFE_MODE", probe.safe ? "PRESENT" : "absent", probe.safe ? "Adaptive is blocked" : ""],
+      ["DISABLE kill switch", probe.disable ? "PRESENT" : "absent", probe.disable ? "mutation held" : ""],
+      ["Config restart pending", probe.pending ? "yes" : "no", "config.ini is loaded at daemon start"],
+      ["Boot attempts", probe.bootAttempts || "0", "unconfirmed starts"]
     ] : []);
+
+    if (b) {
+      var baselineTarget = b.baselineTarget || 0;
+      var observationTarget = b.observationTarget || 0;
+      setText("baselineMeta", b.baselineReady ? "Ready" : (b.baselineSamples + " / " + (baselineTarget || "—")));
+      setText("observationMeta", b.observing ? (b.observationSamples + " / " + (observationTarget || 5) + " samples") : "Idle");
+      progress("baselineProgress", b.baselineReady ? 1 : b.baselineSamples, b.baselineReady ? 1 : baselineTarget);
+      progress("observationProgress", b.observing ? b.observationSamples : 0, b.observing ? (observationTarget || 5) : 1);
+      setText("stateMeta", b.state || "—"); setText("workloadMeta", b.workload || "—");
+      setText("cooldownMeta", b.cooldown ? b.cooldown + " samples" : "None");
+      setText("skipMeta", b.skipReason || "None"); setText("holdMeta", b.holdActive ? (b.hold || "Active") : "None");
+      setText("agentMeta", (b.agentMode || "ScoringOnly") + (b.agentReason ? " · " + b.agentReason : ""));
+      setText("planMeta", (b.planAction || "—") + (b.intervention ? " · level " + b.intervention : "") + (b.planReason ? " · " + b.planReason : ""));
+      var modeBadge = $("modeBadge"); modeBadge.textContent = (b.mode || "observe").toUpperCase() + (b.armed ? " · ARMED" : "");
+      modeBadge.setAttribute("data-tone", b.mode === "adaptive" && b.armed ? "warn" : "info");
+      var safetyBadge = $("safetyBadge"); safetyBadge.textContent = b.holdActive ? "SAFETY HOLD" : "NO HOLD";
+      safetyBadge.setAttribute("data-tone", b.holdActive ? "warn" : "ok");
+    } else {
+      ["baselineMeta","observationMeta","stateMeta","workloadMeta","cooldownMeta","skipMeta","holdMeta","agentMeta","planMeta"].forEach(function (id) { setText(id, "Waiting for status"); });
+      progress("baselineProgress", 0, 1); progress("observationProgress", 0, 1);
+      setText("modeBadge", "UNKNOWN"); setText("safetyBadge", "UNKNOWN");
+    }
+    renderConsultation(d);
+    renderCapabilities(d);
 
     var blocked = state.bridge === false;
     $("bridgeNotice").hidden = !blocked;
@@ -289,25 +419,9 @@
     $("btnStop").disabled = !idle || !online;
     $("btnRestart").disabled = !idle;
     $("btnRefresh").disabled = !idle || !online;
-
     setText("engineFooter", ok && p.stale
-      ? "The daemon has not written status recently. It may be stalled."
-      : "Polls every 3 s while this page is visible. The daemon writes status.json; the UI only reads it.");
-  }
-
-  function fillRows(id, rows) {
-    var host = $(id);
-    clear(host);
-    if (!rows || !rows.length) {
-      host.appendChild(el("div", "empty", "No data yet."));
-      return;
-    }
-    rows.forEach(function (r) {
-      var row = el("div");
-      row.append(el("dt", "", r[0]), el("dd", "", r[1]));
-      if (r[2]) row.appendChild(el("small", "", r[2]));
-      host.appendChild(row);
-    });
+      ? "The daemon has not written status recently. It may be stalled; check the Journal before enabling Adaptive."
+      : "Refreshes every 3 seconds while visible. This page reads status.json and sends fixed daemon-control requests; it does not write kernel tunables.");
   }
 
   // ---- engine actions ----
@@ -340,14 +454,19 @@
       clear(host);
       C.NUMERIC.filter(function (f) { return f.group === pair[1]; }).forEach(function (f) {
         var wrap = el("div", "field");
-        var input = document.createElement("md-text-field");
-        input.setAttribute("label", f.label + (f.unit ? " (" + f.unit + ")" : ""));
-        input.setAttribute("color", "outlined");
+        var input = document.createElement("input");
+        input.setAttribute("id", "field_" + f.key);
+        input.setAttribute("name", f.key);
+        input.setAttribute("type", "number");
         input.setAttribute("inputmode", f.kind === "int" ? "numeric" : "decimal");
-        input.setAttribute("aria-label", f.label);
+        input.setAttribute("step", f.kind === "int" ? "1" : "any");
+        input.setAttribute("min", String(f.min));
+        if (f.max != null) input.setAttribute("max", String(f.max));
+        var label = el("label", "", f.label + (f.unit ? " (" + f.unit + ")" : ""));
+        label.setAttribute("for", "field_" + f.key);
         var help = el("p", "field-help", f.help + " Range: " + rangeText(f) + ".");
         var err = el("p", "field-error", "");
-        wrap.append(input, help, err);
+        wrap.append(label, input, help, err);
         host.appendChild(wrap);
         state.numInputs[f.key] = { input: input, err: err, wrap: wrap };
       });
@@ -362,8 +481,8 @@
 
   function setSwitch(id, on) {
     var sw = $(id);
-    sw.selected = !!on;
-    sw.toggleAttribute("selected", !!on);
+    sw.checked = !!on;
+    sw.toggleAttribute("checked", !!on);
   }
 
   function applyFormToUi() {
@@ -386,7 +505,7 @@
     var f = {
       mutation_mode: state.form.mutation_mode,
       interactivity_mode: state.form.interactivity_mode,
-      runtime_refresh: !!$("fRuntimeRefresh").selected
+      runtime_refresh: !!$("fRuntimeRefresh").checked
     };
     Object.keys(state.numInputs).forEach(function (k) {
       f[k] = state.numInputs[k].input.value;
@@ -545,10 +664,6 @@
 
   // ---- startup ----
 
-  function checkVendor() {
-    var ready = !!(window.customElements && customElements.get("md-button") && customElements.get("md-switch"));
-    $("vendorNotice").hidden = ready;
-  }
 
   function init() {
     document.querySelectorAll("[data-page-link]").forEach(function (b) {
@@ -618,7 +733,6 @@
       }
     });
 
-    setTimeout(checkVendor, 2500);
     showPage("engine");
   }
 

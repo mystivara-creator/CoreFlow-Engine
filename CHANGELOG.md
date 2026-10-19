@@ -8,15 +8,13 @@
 
 # Changelog
 
-## Unreleased — WebUI redesign: Material 3 Expressive daemon control
+## Unreleased — WebUI redesign: CoreFlow Pulse
 
-- Rebuilt the KernelSU WebUI on Material 3 Expressive (material-esm/material web components, vendored at build time for offline use).
-- The WebUI now controls the daemon: Start, Stop, Restart (under the supervisor) and Re-discover (SIGUSR1). Previously it was read-only except for mode switches.
-- Policy page covers every runtime key the daemon parses: mutation mode, runtime discovery, sampling, confidence, and interactivity boosts. Out-of-range values are rejected in the form. A saved change is marked pending until restart.
-- Journal page merges the decision trace and daemon log, with change and block/error filters.
-- Removed the shell console, the separate Overview page, and the diagnostic command palette. Legacy grant_* toggles are no longer offered.
-- `service.sh` honours a WebUI restart request: it relaunches coreflowd without counting a crash.
-- Project & AI page is unchanged.
+- Rebuilt the webroot layout around a structured runtime dashboard: device telemetry, four-stage decision pipeline, baseline/outcome progress, authority and safety state, consultation reason cards, namespace reasons, capability matrix, and expandable detailed telemetry.
+- Rebuilt Policy, Journal, and Project & AI layouts with responsive native controls; restored the full Project & AI profile/acknowledgement page and added Perplexity.
+- Replaced Material web components and the Lit runtime with native HTML/CSS/JavaScript. The page uses system fonts, has no browser runtime vendor step, and makes no external font, CDN, image, or script requests.
+- Preserved the fixed control-command builders, config validation, Adaptive safety confirmation, SAFE_MODE gate, DISABLE kill switch, daemon-supervisor lifecycle commands, and text-only rendering of daemon data.
+- Updated render-contract tests and CI packaging to verify the native WebUI and exclude the previous vendored component runtime from the module payload.
 
 ## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
 

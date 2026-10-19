@@ -42,7 +42,6 @@ module/webroot/app.js
 module/webroot/index.html
 module/webroot/style.css
 tools/test_webui_control.js
-tools/vendor_webui_deps.sh
 README.md
 CHANGELOG.md
 docs/BUILD_STATUS.md

@@ -1,81 +1,54 @@
-CoreFlow Control: WebUI for the coreflowd C++ daemon
-====================================================
+CoreFlow Pulse WebUI
+====================
 
-Placement: module/webroot/   (packaged as webroot/ in the module ZIP)
-Host:      KernelSU WebUI or a compatible host with the ksu.exec bridge.
-Design:    Material 3 Expressive (material-esm/material web components, Lit runtime).
+Placement: module/webroot/ (packaged as webroot/ in the installable module ZIP)
+Host:      KernelSU WebUI or a compatible host with the ksu.exec bridge
+Design:    native HTML, CSS and JavaScript; no web component runtime or CDN
 
-This page controls the daemon. It is not a read-only monitor. Each action maps to a fixed
-command built in control_logic.js and runs through the KernelSU bridge. The daemon remains the
-only authority over kernel writes.
+Intent
+------
+This is a compact, information-dense control and diagnostics surface for coreflowd. It uses
+system fonts and native browser controls; it performs no font, image, package or script downloads
+when opened. All dashboard rendering is text-only and does not create markup from daemon data.
 
 Pages
 -----
-- Engine: start, stop, restart and re-discover the daemon. Shows the four-stage decision pipeline
-  (context, policy, authority, actuators), the eyes/brain/hands detail, device identity and the
-  safety markers. All of it comes from the daemon's status.json and a process probe.
-- Policy: the mutation authority (Observe or Adaptive), runtime discovery, and every numeric
-  key the daemon parses for sampling and interactivity boosts. Saving writes config.ini and marks
-  a restart as pending. The daemon reads config.ini only at start, so the banner offers a restart.
-- Journal: the decision trace (coreflow.event.v2 records, newest first, filterable by changes or
-  blocks and errors) and the daemon log, with a text filter.
-- Project & AI: author, project philosophy and AI acknowledgements (unchanged content).
+- Engine: daemon state, PID/version/status age, device telemetry, decision pipeline, baseline and
+  outcome progress, policy/safety state, consultation reason counts, last namespace reasons,
+  capability evidence and detailed Eyes/Brain/Hands/device/safety panels.
+- Policy: Observe/Adaptive authority, runtime refresh, numeric runtime parameters and interactivity
+  settings. Save edits config.ini only and announces when a daemon restart is required.
+- Journal: structured decision trace with event filters plus searchable daemon log.
+- Project & AI: Mystivara profile links, project principles and development-tool acknowledgements,
+  including ChatGPT, Gemini, Perplexity, Grok, Claude and GitHub Copilot.
 
-What each control does
-----------------------
-- Start:     runs module service.sh, which launches coreflowd under its supervisor.
-- Stop:      SIGTERM to the supervisor and coreflowd. The daemon restores any change it made.
-             The engine stays off until you start it again or reboot.
-- Restart:   with a live supervisor, writes webui_restart_request and sends SIGTERM to the child.
-             The supervisor relaunches it without counting a crash. Without a supervisor, it stops
-             and then starts.
-- Re-discover: SIGUSR1. The daemon re-runs capability discovery. It changes no tunable.
+Control safety
+--------------
+Every daemon action uses a fixed command builder in control_logic.js. No free-form shell input is
+accepted. The UI writes config.ini and the documented restart/kill-switch markers and sends only
+fixed lifecycle signals; it does not write kernel tunables. coreflowd remains the authority for
+capability checks, policy, bounded writes, verification and rollback.
 
-Safety behaviour (unchanged from the previous UI)
--------------------------------------------------
-- Observe writes mutation_mode=observe, mutation_armed=false and creates the DISABLE kill switch.
-- Adaptive writes mutation_mode=adaptive and mutation_armed=true, after an explicit confirmation.
-  If DISABLE is present, Adaptive requires an explicit "resume". The UI removes DISABLE only then.
-- SAFE_MODE blocks Adaptive. Only the normal recovery procedure clears it.
-- mutation_armed is derived from the mode and is never a separate toggle.
-- Legacy grant_* and allow_cpu_governor lines are preserved untouched. The daemon ignores them,
-  as documented in CHANGELOG v2.4.0, so the UI does not offer them.
-- Values outside the daemon's ranges are rejected in the form, not silently clamped.
-- Rendering uses textContent only. status.json, the journal and the log come from the kernel and
-  the daemon, so they are treated as data. control_logic.js never receives free-form input.
+- Start: launches coreflowd through the module service supervisor.
+- Stop: requests supervisor and daemon termination; the daemon restores changes before exit.
+- Restart: asks the supervisor to relaunch with saved configuration.
+- Re-discover: signals SIGUSR1; it requests another capability scan without writing tunables.
+- Observe: sets mutation_mode=observe, mutation_armed=false and creates DISABLE.
+- Adaptive: requires explicit confirmation; SAFE_MODE always blocks Adaptive. If DISABLE exists,
+  resuming requires separate explicit confirmation.
 
-Files
------
-- index.html         shell, pages, import map, Project & AI
-- style.css          Material 3 Expressive colour roles, shapes and layout
-- app.js             UI behaviour (classic script; no DOM access in control_logic.js)
-- control_logic.js   pure logic: fixed command builders, validation, gates, config.ini editing
-- engine_status.js   status.json contract shared with the C++ writer (tools/test_webui_status.sh)
-- vendor/            generated by tools/vendor_webui_deps.sh (Material components, Lit). Not committed.
-
-Build and offline packaging
----------------------------
-The module must work without a network on the device, so the Material components and the Lit
-runtime are vendored at build time:
-
-    bash tools/vendor_webui_deps.sh          # MATERIAL_REF=<commit> pins the components
-    bash tools/test_webui_status.sh          # contract, control and render tests
-
-build.yml runs both steps. Without vendor/, the page still opens and works, but the controls are
-unstyled and a warning is shown.
+Performance and packaging
+-------------------------
+The WebUI has no third-party browser dependencies, external font requests, CDN or build-time
+vendor step. Only the following static files are packaged:
+  index.html, style.css, app.js, control_logic.js, engine_status.js
 
 Tests
 -----
-- tools/test_webui_status.js: engine_status.js against real C++ status output.
-- tools/test_webui_control.js: validation bounds, safety gates, config.ini editing, and the shell
-  commands executed against a sandbox directory.
-- tools/test_webui_render.js: the real index.html and app.js with a simulated device and bridge.
-  It fails if app.js uses an id that index.html does not define.
+- tools/test_webui_status.js validates engine_status.js against real status output.
+- tools/test_webui_control.js checks validation, safety gates, config editing and command builders.
+- tools/test_webui_render.js exercises the actual page and app against a simulated bridge/device.
+- tools/test_webui_status.sh runs the WebUI contract suite using the host compiler and Node.js.
 
-AI-assisted development acknowledgement
----------------------------------------
-CoreFlow is authored and directed by Mystivara. Gemini, ChatGPT, Grok AI, Claude and GitHub
-Copilot are acknowledged as development assistants used for selected tasks such as exploring
-alternatives, planning, reasoning, debugging discussion, code completion and documentation.
-Their participation varies by task and release; this is not an endorsement or official partnership.
-The maintainer reviews and validates changes before release.
+Project acknowledgements are not claims of endorsement, partnership or identical participation in
+every release. The maintainer owns the final implementation and release decisions.

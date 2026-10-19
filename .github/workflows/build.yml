@@ -215,12 +215,6 @@ jobs:
           set -euo pipefail
           bash tools/verify_source_release.sh
 
-      - name: Vendor WebUI dependencies (Material 3 + Lit)
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash tools/vendor_webui_deps.sh
-
       - name: Verify WebUI payload
         shell: bash
         run: |
@@ -231,12 +225,11 @@ jobs:
           for f in app.js control_logic.js engine_status.js; do
             node --check "module/webroot/$f"
           done
-          test -s module/webroot/vendor/material/all.js
-          test -s module/webroot/vendor/npm/lit/index.js
           node tools/test_webui_control.js
           grep -Fq 'data-page="journal"' module/webroot/index.html
           grep -Fq 'data-page="about"' module/webroot/index.html
-          grep -Fq 'mystivara-creator/CoreFlow-Engine/tree/Autonomous-Engine' module/webroot/index.html
+          grep -Fq 'https://www.perplexity.ai/' module/webroot/index.html
+          grep -Fq 'CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md' module/webroot/index.html
 
       - name: Fetch ONNX Runtime Android
         shell: bash
@@ -401,8 +394,10 @@ jobs:
           test -s module/webroot/app.js
           test -s module/webroot/style.css
           test -s module/webroot/control_logic.js
-          test -s module/webroot/vendor/material/all.js
+          # Native WebUI; no generated browser libraries or network downloads are required.
           cp -R module/webroot "${MODULE_DIR}/webroot"
+          # Exclude stale ignored vendor output from older source checkouts.
+          rm -rf "${MODULE_DIR}/webroot/vendor"
 
           chmod 0755 \
             "${MODULE_DIR}/system/bin/coreflowd" \

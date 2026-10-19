@@ -228,7 +228,11 @@ const navTo = (page) => document.querySelectorAll("[data-page-link=\"" + page + 
   check(registry.safetyRows.children.length === 4, "safety markers render from the probe");
   check(registry.btnStart.disabled === true && registry.btnStop.disabled === false, "online: Start off, Stop on");
   check(registry.bridgeNotice.hidden === true, "bridge notice hidden while the bridge answers");
-  check(registry.vendorNotice.hidden === false, "vendor notice shown when Material is not loaded");
+  check(!/material\/all\.js|<importmap|<md-(button|switch|text-field)/i.test(indexHtml),
+    "WebUI has no vendored component runtime or custom-element dependency");
+  check(indexHtml.includes('href="https://www.perplexity.ai/"'), "Project & AI includes Perplexity");
+  check(indexHtml.includes('data-page-link="about"') && indexHtml.includes('>Project &amp; AI</span>'),
+    "Project & AI remains reachable in the bottom navigation");
 
   // Re-discover sends SIGUSR1 and writes no tunable.
   registry.btnRefresh.click();
@@ -257,9 +261,9 @@ const navTo = (page) => document.querySelectorAll("[data-page-link=\"" + page + 
   await tick(40);
   check(registry.runtimeFields.children.length === 2, "policy builds the runtime numeric fields");
   const boostWrap = registry.interactivityFields.children.find((w) =>
-    (w.children[0].getAttribute("label") || "").startsWith("Boost window"));
-  check(boostWrap && boostWrap.children[0].value === "3000", "policy reads boost_window_ms from config.ini");
-  boostWrap.children[0].value = "4000";
+    (w.children[0].textContent || "").startsWith("Boost window"));
+  check(boostWrap && boostWrap.children[1].value === "3000", "policy reads boost_window_ms from config.ini");
+  boostWrap.children[1].value = "4000";
   registry.btnSavePolicy.click();
   await tick(60);
   check(device.config.indexOf("boost_window_ms=4000") >= 0, "the saved value reaches config.ini");

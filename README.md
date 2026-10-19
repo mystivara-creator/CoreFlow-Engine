@@ -62,7 +62,7 @@ Headers under `include/coreflow/`. Sources discovered dynamically (`cmake/CoreFl
 - VM sysctl, block-queue, CPUFreq, devfreq, uclamp, and related surfaces when capability + policy allow
 - ONNX thermal prediction in the packaged ARM64 build
 - Persistent experience memory scoped to device/kernel identity
-- KernelSU WebUI (Material 3 Expressive) that controls the daemon: start, stop, restart, re-discover, the full runtime policy, and the decision journal. Kernel writes stay with the engine; the UI edits config and sends signals only.
+- Lightweight native KernelSU WebUI for daemon start/stop/restart/re-discovery, runtime policy, decision journal, detailed telemetry/capability evidence, and Project & AI acknowledgements (including Perplexity). No external fonts, CDN, or vendored browser runtime; kernel writes stay with coreflowd.
 
 Details: [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 

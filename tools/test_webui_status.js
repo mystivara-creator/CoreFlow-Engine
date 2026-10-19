@@ -93,8 +93,8 @@ check(S.eyesRows(p.data).some((r) => r[0] === "Temperature" && r[1] === "n/a"), 
 check(p.data.brain.planReason.includes("<img"), "hostile text preserved as data (rendered via textContent only)");
 check(S.handsRows(p.data).some((r) => r[1] === "<b>1</b>"), "hostile value kept as plain string");
 const appSrc = fs.readFileSync(path.join(root, "module/webroot/app.js"), "utf8");
-const liveBlock = appSrc.slice(appSrc.indexOf("Live engine view"), appSrc.indexOf("function init()"));
-check(liveBlock.length > 500, "live block located in app.js");
+const liveBlock = appSrc.slice(appSrc.indexOf("Structured runtime dashboard"), appSrc.indexOf("function init()"));
+check(liveBlock.length > 500, "structured render block located in app.js");
 check(!/innerHTML|insertAdjacentHTML|outerHTML|document\.write|eval\(/.test(liveBlock), "live rendering never uses HTML injection");
 
 // ---- stopped / stale / idle ----
