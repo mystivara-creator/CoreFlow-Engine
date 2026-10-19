@@ -1,3 +1,4 @@
+#include "coreflow/kernel_roots.hpp"
 #include "coreflow/observer.hpp"
 #include "coreflow/observer_metrics.hpp"
 #include "coreflow/thermal_limits.hpp"
@@ -122,7 +123,7 @@ bool parseProcessStat(const std::string& path, std::string& name,
 } // namespace
 
 void RuntimeObserver::readMemory(RuntimeSample& sample) const {
-    std::ifstream file("/proc/meminfo");
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "meminfo"));
     if (!file) return;
 
     std::string key;
@@ -141,7 +142,7 @@ void RuntimeObserver::readMemory(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readLoad(RuntimeSample& sample) const {
-    std::ifstream file("/proc/loadavg");
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "loadavg"));
     double value = 0.0;
     if (file && (file >> value) && std::isfinite(value) && value >= 0.0) {
         sample.load1 = value;
@@ -150,7 +151,7 @@ void RuntimeObserver::readLoad(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {
-    std::ifstream file("/proc/stat");
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "stat"));
     if (!file) return;
 
     std::string cpu;
@@ -263,8 +264,9 @@ void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& pr
 }
 
 void RuntimeObserver::readCharging(RuntimeSample& sample) const {
-    constexpr const char* base = "/sys/class/power_supply";
-    DIR* dir = opendir(base);
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
+    if (base.empty()) return;
+    DIR* dir = opendir(base.c_str());
     if (!dir) return;
 
     bool status_found = false;
@@ -272,7 +274,7 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
     while (dirent* entry = readdir(dir)) {
         const std::string name(entry->d_name);
         if (name == "." || name == "..") continue;
-        const std::string path = std::string(base) + "/" + name;
+        const std::string path = base + "/" + name;
 
         std::ifstream type_file(path + "/type");
         std::string type;
@@ -311,7 +313,7 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
 
 
 void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
-    std::ifstream file("/proc/diskstats");
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "diskstats"));
     if (!file) return;
 
     observer_metrics::DiskCounterMap current;
@@ -345,9 +347,8 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
             continue;
         }
 
-        const std::string block_path = "/sys/block/" + name;
-        if (::access(block_path.c_str(), F_OK) != 0) continue;
-
+        // /proc/diskstats is itself the kernel's dynamic block-device inventory.
+        // Do not reconstruct a second, hard-coded sysfs path to validate it.
         const std::string key =
             std::to_string(major) + ":" +
             std::to_string(minor) + ":" + name;
@@ -374,7 +375,9 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
     // Process scanning is intentionally throttled: it is a profiling signal,
     // not a hot-path actuator. Every sixth sample is ~30s at the default cadence.
     if ((sample_counter_ % 6U) != 0U) return;
-    DIR* dir = opendir("/proc");
+    const std::string proc_root = kernelFilesystemPath(KernelFsKind::Procfs);
+    if (proc_root.empty()) return;
+    DIR* dir = opendir(proc_root.c_str());
     if (!dir) return;
     const long ticks_per_second = sysconf(_SC_CLK_TCK);
     std::unordered_map<int, std::uint64_t> current_ticks;
@@ -390,7 +393,7 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
         std::string name;
         std::uint64_t ticks = 0;
         std::uint64_t memory_kb = 0;
-        if (!parseProcessStat(std::string("/proc/") + text + "/stat", name, ticks, memory_kb)) continue;
+        if (!parseProcessStat(proc_root + "/" + text + "/stat", name, ticks, memory_kb)) continue;
         ++count;
         current_ticks[pid] = ticks;
         const auto old = previous_process_ticks_.find(pid);
@@ -445,9 +448,9 @@ void RuntimeObserver::readPsi(RuntimeSample& sample) const {
     };
 
     bool any = false;
-    any |= readResource("/proc/pressure/cpu", sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
-    any |= readResource("/proc/pressure/memory", sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
-    any |= readResource("/proc/pressure/io", sample.psi_io_some_avg10, sample.psi_io_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/cpu").c_str(), sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/memory").c_str(), sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/io").c_str(), sample.psi_io_some_avg10, sample.psi_io_full_avg10);
     if (!any) return;
 
     sample.psi_available = true;
@@ -492,7 +495,7 @@ RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
     previous_sample_time_ = now;
     have_sample_time_ = true;
 
-    std::ifstream uptime("/proc/uptime");
+    std::ifstream uptime(kernelFilesystemPath(KernelFsKind::Procfs, "uptime"));
     double seconds = 0.0;
     if (uptime && (uptime >> seconds) && seconds >= 0.0)
         sample.uptime_seconds = static_cast<std::uint64_t>(seconds);

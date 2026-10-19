@@ -31,6 +31,7 @@
 
 #include "coreflow/signal_state.hpp"
 #include "coreflow/runtime_paths.hpp"
+#include "coreflow/kernel_roots.hpp"
 
 namespace coreflow {
 namespace {
@@ -656,24 +657,20 @@ void AutonomousEngine::tick() {
             boost_controller_.setGpuMinFreqPath(paths.gpu_min_freq);
             boost_controller_.setTopAppUclampPath(paths.uclamp_min);
             // Prefer fully admitted read-ahead nodes from capability discovery.
-            // Accept both /sys/block/<device>/... and discovered /sys/devices/
-            // .../block/<device>/... paths; avoid a brittle device-name blacklist.
+            // Accept any dynamically discovered block-queue path, independent
+            // of sysfs alias and device name; avoid synthesizing fallback paths.
             {
-                std::size_t added = 0;
                 for (const auto& resource : snapshot_.profile.capabilities.resources) {
                     if (resource.domain != ResourceDomain::Io ||
                         !resource.exists || !resource.readable || !resource.writable ||
                         !resource.permission_granted || !resource.policy_authorized ||
                         !resource.runtime_verified || !resource.mutation_ready) continue;
                     if (resource.path.find("/queue/read_ahead_kb") == std::string::npos) continue;
-                    const bool sys_block = resource.path.find("/sys/block/") != std::string::npos;
-                    const bool device_block = resource.path.find("/sys/devices/") != std::string::npos &&
-                                              resource.path.find("/block/") != std::string::npos;
-                    if (!sys_block && !device_block) continue;
+                    if (resource.path.find("/block/") == std::string::npos) continue;
                     boost_controller_.addReadaheadPath(resource.path);
-                    ++added;
                 }
-                if (added == 0) boost_controller_.discoverReadaheadPaths();
+                // No fallback path synthesis: if generic discovery did not
+                // admit a target, the boost remains unavailable this cycle.
             }
             // A previous run may have died while a boost was active. Adopt its
             // journal so the next pass restores the true baseline.
@@ -708,7 +705,10 @@ void AutonomousEngine::tick() {
         const std::uint64_t ia_now_ns = timestamp_convertible
             ? ia_now_ms * kNsPerMs : 0U;
         if (timestamp_convertible && !launch_procs_path.empty() &&
-            observe::readLaunchObservation(launch_procs_path, "/proc/pressure/io",
+            observe::readLaunchObservation(
+                launch_procs_path,
+                coreflow::kernelFilesystemPath(
+                    coreflow::KernelFsKind::Procfs, "pressure/io"),
                                            ia_now_ns, launch_observation)) {
             const observe::LaunchPhase previous_phase = launch_detector_.phase();
             const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);

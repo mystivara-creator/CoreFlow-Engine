@@ -21,9 +21,9 @@ namespace coreflow {
 // A regular file becomes a candidate only when all of these hold:
 //   - the kernel marks it writable (mode bits, not root's access() answer);
 //   - it is not a universally fatal surface (fatal_surface.hpp);
-//   - its subsystem is recognised from where it lives, OR the vendor's own
-//     configuration declares it. An unrecognised, undeclared node is counted as
-//     unclaimed and is never admitted.
+//   - known subsystems receive a semantic domain from path structure; unknown
+//     writable kernel nodes are retained in the generic Vendor domain rather
+//     than discarded because they are absent from a catalog.
 //
 // Admissibility beyond that is decided by classifySurface(). No parameter names
 // are listed anywhere in this module.
@@ -32,21 +32,21 @@ struct TunableDiscoveryStats {
     std::size_t added{0};           // candidates admitted into the matrix
     std::size_t vendor_paths{0};    // vendor-declared nodes admitted
     std::size_t fatal_skipped{0};   // refused by the universal fatal guard
-    std::size_t unclaimed{0};       // writable, unrecognised, undeclared: not admitted
+    std::size_t unclaimed{0};       // generic writable kernel nodes with no semantic prior
     std::size_t visited_entries{0}; // shared budget across every mount and vendor node
     bool truncated{false};          // a traversal/input cap was reached; inventory may be incomplete
 };
 
 class TunableDiscovery {
 public:
-    static constexpr std::size_t kMaxTunables = 4096;
+    static constexpr std::size_t kMaxTunables = 16384;
     static constexpr std::size_t kMaxVisits = 40000;
     static constexpr std::size_t kMaxDirectoryEntries = 4096;
     static constexpr std::size_t kMaxFirstLineBytes = 4096;
     static constexpr std::size_t kMaxOptionListBytes = 64U * 1024U;
-    static constexpr std::size_t kSysfsDepth = 8;
-    static constexpr std::size_t kSysctlDepth = 4;
-    static constexpr std::size_t kCgroupDepth = 1;
+    static constexpr std::size_t kSysfsDepth = 16;
+    static constexpr std::size_t kSysctlDepth = 8;
+    static constexpr std::size_t kCgroupDepth = 8;
 
     // root_prefix lets host tests mount a fixture tree: the mount table is read
     // from <root_prefix>/proc/mounts. On the device it is empty.

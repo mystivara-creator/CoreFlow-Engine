@@ -1077,6 +1077,9 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(scheduler != nullptr && std::string(scheduler->key) == "block.queue.scheduler");
     CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
     CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
+    const auto* customQueue = lookupEcosystemKnowledgeByPath(
+        "/sys/devices/platform/storage/block/sdz/queue/custom_latency_knob");
+    CHECK(customQueue != nullptr && std::string(customQueue->key) == "block.queue.attribute");
     // Dynamic capability names carry the discovered device prefix; resolve only
     // reviewed block-queue leaves to their stable semantic keys.
     const auto* namedReadAhead = lookupEcosystemKnowledgeByKey("sda:read_ahead_kb");
@@ -1085,7 +1088,12 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(namedReadAhead != nullptr && std::string(namedReadAhead->key) == "block.queue.read_ahead_kb");
     CHECK(namedRequests != nullptr && std::string(namedRequests->key) == "block.queue.nr_requests");
     CHECK(namedScheduler != nullptr && std::string(namedScheduler->key) == "block.queue.scheduler");
-    CHECK(lookupEcosystemKnowledgeByKey("unreviewed:custom_knob") == nullptr);
+    const auto* namedCustomQueue = lookupEcosystemKnowledgeByKey("sdz:custom_latency_knob");
+    CHECK(namedCustomQueue != nullptr &&
+          std::string(namedCustomQueue->key) == "block.queue.attribute");
+    const auto* unreviewedQueue = lookupEcosystemKnowledgeByKey("unreviewed:custom_knob");
+    CHECK(unreviewedQueue != nullptr &&
+          std::string(unreviewedQueue->key) == "block.queue.attribute");
 
     // Regression: physical block queue tunables remain explorable with
     // headroom, but are not presumed to stabilize memory pressure.

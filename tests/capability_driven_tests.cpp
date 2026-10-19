@@ -146,6 +146,10 @@ void testGenericDiscovery() {
     writeFile(root / "sys/block/sda/queue/scheduler", "[mq-deadline] kyber none bfq");
     writeFile(root / "sys/block/sda/queue/write_cache", "write back");   // fatal
     writeFile(root / "sys/block/sda/queue/iosched/fifo_batch", "16");
+    // Real sysfs device-model path: /sys/block entries are commonly symlinks,
+    // so discovery must also classify the canonical /sys/devices/.../block tree.
+    writeFile(root / "sys/devices/platform/storage/block/mmcblk0/queue/iosched/fifo_batch", "24");
+    writeFile(root / "sys/devices/platform/storage/block/mmcblk0/queue/extra_queue_knob", "8");
     writeFile(root / "sys/class/devfreq/gpu/governor", "msm-adreno-tz");
     writeFile(root / "sys/class/devfreq/gpu/available_governors", "msm-adreno-tz performance powersave", 0444);
     writeFile(root / "sys/class/devfreq/gpu/max_freq", "900000000");
@@ -170,6 +174,10 @@ void testGenericDiscovery() {
 
     EnvironmentCapabilityMatrix matrix;
     const TunableDiscovery discovery(r);
+    CHECK(discovery.nameFor(r + "/proc/sys/vm/swappiness") ==
+          "vm.swappiness");
+    CHECK(discovery.nameFor("/alternate/proc/sys/kernel/sched_latency_ns") ==
+          "kernel.sched_latency_ns");
     const TunableDiscoveryStats stats = discovery.discover(matrix, vendor);
     CHECK(stats.added >= 10U);
     CHECK(stats.fatal_skipped >= 4U);
@@ -201,6 +209,14 @@ void testGenericDiscovery() {
           !iosched->ordered_scale && iosched->name == "sda:scheduler");
     const auto* fifo = findCap(matrix, r + "/sys/block/sda/queue/iosched/fifo_batch");
     CHECK(fifo && fifo->name == "sda:iosched.fifo_batch");
+    const auto* canonical_fifo = findCap(
+        matrix, r + "/sys/devices/platform/storage/block/mmcblk0/queue/iosched/fifo_batch");
+    CHECK(canonical_fifo && canonical_fifo->domain == ResourceDomain::Io &&
+          canonical_fifo->name == "mmcblk0:iosched.fifo_batch" && canonical_fifo->mutation_ready);
+    const auto* unknown_queue_knob = findCap(
+        matrix, r + "/sys/devices/platform/storage/block/mmcblk0/queue/extra_queue_knob");
+    CHECK(unknown_queue_knob && unknown_queue_knob->domain == ResourceDomain::Io &&
+          unknown_queue_knob->name == "mmcblk0:extra_queue_knob" && unknown_queue_knob->mutation_ready);
 
     const auto* gpu_gov = findCap(matrix, r + "/sys/class/devfreq/gpu/governor");
     CHECK(gpu_gov && gpu_gov->domain == ResourceDomain::Gpu && gpu_gov->options.size() == 3U);
@@ -365,8 +381,8 @@ void testRootsComeFromMountTable() {
 }
 
 // A writable node in a recognised tree is admitted only when its subsystem is
-// recognised or the vendor declares it. Unknown writable nodes are counted as
-// unclaimed. Symlinks are never followed, so a bus link cannot duplicate a node.
+// recognised or the vendor declares it. Unknown writable nodes remain present
+// in the generic domain and are counted as unclaimed. Symlinks are never followed.
 void testDiscoveryCapacityReportsTruncation() {
     EnvironmentCapabilityMatrix saturated;
     saturated.resources.resize(TunableDiscovery::kMaxTunables);
@@ -384,8 +400,7 @@ void testDiscoveryInputAndDirectoryBounds() {
 
     // An overlong scalar cannot be silently truncated into a plausible value.
     writeFile(root / "sys/class/devfreq/gpu/odd_attr", std::string(5000U, '7'));
-    // A wide, unclaimed directory exercises the per-directory memory/work cap
-    // without admitting hundreds of meaningless resources into the matrix.
+    // A wide, unclaimed directory exercises the per-directory memory/work cap.
     for (std::size_t i = 0; i < TunableDiscovery::kMaxVisits / 9U + 1U; ++i) {
         const std::string leaf = "entry" + std::to_string(i);
         writeFile(root / "sys/unmapped" / leaf, "1");
@@ -418,7 +433,8 @@ void testUnclaimedAndSymlinks() {
     EnvironmentCapabilityMatrix matrix;
     VendorKnowledge vendor;
     const TunableDiscoveryStats stats = TunableDiscovery(r).discover(matrix, vendor);
-    CHECK(findCap(matrix, r + "/sys/class/net/wlan0/tx_queue_len") == nullptr);
+    const auto* unknown = findCap(matrix, r + "/sys/class/net/wlan0/tx_queue_len");
+    CHECK(unknown && unknown->domain == ResourceDomain::Vendor && unknown->mutation_ready);
     CHECK(stats.unclaimed >= 1U);
     const auto* maxf = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
     CHECK(maxf != nullptr && maxf->domain == ResourceDomain::CpuFreq);

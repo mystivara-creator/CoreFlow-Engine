@@ -62,8 +62,8 @@ namespace coreflow::observe {
 class GpuBusySource final {
 public:
     void addRoot(std::string path) { roots_.push_back(std::move(path)); }
-    // Well-known roots: /sys/class/kgsl/kgsl-3d0/devfreq plus every
-    // /sys/class/devfreq/* entry whose name suggests a GPU device.
+    // Dynamically resolves the sysfs mount and searches the canonical device
+    // model for readable GPU/devfreq load sources. No vendor alias is assumed.
     void discoverDefaultRoots() noexcept;
     [[nodiscard]] bool poll(double& ratio_out) noexcept; // ratio in [0,1]
     [[nodiscard]] const std::string& activeRoot() const noexcept { return active_root_; }

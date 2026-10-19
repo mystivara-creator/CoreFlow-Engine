@@ -95,25 +95,11 @@ std::vector<std::string> listDir(const std::string& dir, std::size_t max_entries
     return out;
 }
 
-// Directory names that are kernel device-model plumbing rather than tunables.
-// These describe the device model, not a parameter, so they are not a tuning list.
+// Discovery traverses every directory on the mounted kernel filesystem. Symlinks,
+// non-regular files, nested filesystem boundaries, and resource/work budgets are
+// handled by walkTree; names alone never cause a subtree to be skipped.
 bool acceptAllDirs(std::string_view) { return true; }
 
-bool acceptSysfsDir(std::string_view name) {
-    return name != "stats" && name != "power" && name != "subsystem" && name != "device" &&
-           name != "driver" && name != "holders" && name != "slaves" && name != "firmware_node";
-}
-
-bool acceptCgroupGroup(std::string_view name) {
-    return !startsWith(name, "cgroup.") && !startsWith(name, "uid_") && !startsWith(name, "pid_");
-}
-
-// A node is vendor-declared when the vendor's own init/power configuration
-// writes it. This is the only way an unrecognised subsystem is admitted.
-bool vendorDeclares(const VendorKnowledge& vendor, const std::string& path) noexcept {
-    return vendor.find(VendorKnowledge::canonicalPath(path)) != nullptr ||
-           vendor.find(path) != nullptr;
-}
 
 } // namespace
 
@@ -137,51 +123,73 @@ std::string_view TunableDiscovery::strip(std::string_view path) const noexcept {
 ResourceDomain TunableDiscovery::domainFor(std::string_view p) const noexcept {
     p = strip(p);
     const std::string_view leaf = leafOf(p);
-    if (startsWith(p, "/proc/sys/vm/")) return ResourceDomain::Memory;
-    if (startsWith(p, "/proc/sys/walt/")) return ResourceDomain::Scheduler;
-    if (startsWith(p, "/proc/sys/kernel/"))
-        return startsWith(leaf, "sched") ? ResourceDomain::Scheduler : ResourceDomain::Vendor;
-    if (startsWith(p, "/sys/devices/system/cpu/cpufreq/policy") ||
-        (startsWith(p, "/sys/devices/system/cpu/cpu") && containsText(p, "/cpufreq/"))) {
-        // policyN/<node> is cpufreq; policyN/<governor>/<node> is a governor
-        // (scheduler-side) tunable.
-        const std::string_view rest = p.substr(p.find("/cpufreq/") + 9U);
-        const auto first = rest.find('/');
-        const std::string_view after = first == std::string_view::npos ? rest : rest.substr(first + 1U);
-        return after.find('/') == std::string_view::npos ? ResourceDomain::CpuFreq
-                                                         : ResourceDomain::Scheduler;
-    }
-    if (startsWith(p, "/sys/devices/system/cpu/") && containsText(p, "/core_ctl/"))
+
+    // Classify by resource topology and attribute semantics rather than requiring
+    // a particular mountpoint. Paths may be rooted under alternate procfs/sysfs
+    // mounts or fixture prefixes.
+    const auto hasSegment = [p](std::string_view segment) noexcept {
+        return containsText(p, segment);
+    };
+    if (hasSegment("/sys/vm/") || hasSegment("/vm/") ||
+        leaf == "swappiness" || leaf == "overcommit_memory" ||
+        leaf == "dirty_ratio" || leaf == "dirty_background_ratio")
+        return ResourceDomain::Memory;
+    if (hasSegment("/walt/") || hasSegment("/core_ctl/"))
         return ResourceDomain::Scheduler;
-    if (startsWith(p, "/sys/block/")) return ResourceDomain::Io;
-    if (startsWith(p, "/sys/class/devfreq/") || startsWith(p, "/sys/class/kgsl/") ||
-        startsWith(p, "/sys/class/misc/mali") || startsWith(p, "/sys/kernel/gpu/") ||
-        containsText(p, "kgsl") || containsText(p, "mali") || containsText(p, "/devfreq/"))
+    if (hasSegment("/kernel/") && startsWith(leaf, "sched"))
+        return ResourceDomain::Scheduler;
+
+    if (hasSegment("/cpufreq/")) {
+        // A direct attribute under policyN or cpuN/cpufreq is a frequency
+        // control; deeper governor-specific attributes are scheduler controls.
+        const auto marker = p.find("/cpufreq/");
+        const std::string_view rest = p.substr(marker + 9U);
+        const auto slash = rest.find('/');
+        const std::string_view after = slash == std::string_view::npos
+            ? rest : rest.substr(slash + 1U);
+        return after.find('/') == std::string_view::npos
+            ? ResourceDomain::CpuFreq : ResourceDomain::Scheduler;
+    }
+    if (hasSegment("/block/") && hasSegment("/queue/"))
+        return ResourceDomain::Io;
+    if (hasSegment("/devfreq/") || hasSegment("/kgsl/") ||
+        hasSegment("/mali/") || containsText(leaf, "gpu") ||
+        containsText(leaf, "gpuclk"))
         return ResourceDomain::Gpu;
-    if (startsWith(p, "/dev/cpuctl/") || startsWith(p, "/dev/stune/") ||
-        (startsWith(p, "/sys/fs/cgroup/") && startsWith(leaf, "cpu.")))
+    if (hasSegment("/cpuctl/") || hasSegment("/stune/") ||
+        (hasSegment("/cgroup/") && startsWith(leaf, "cpu.")))
         return ResourceDomain::UClamp;
-    if (startsWith(p, "/dev/cpuset/") ||
-        (startsWith(p, "/sys/fs/cgroup/") && startsWith(leaf, "cpuset.")))
+    if (hasSegment("/cpuset/") ||
+        (hasSegment("/cgroup/") && startsWith(leaf, "cpuset.")))
         return ResourceDomain::CpuSet;
     return ResourceDomain::Vendor;
 }
 
 std::string TunableDiscovery::nameFor(std::string_view raw) const {
     const std::string_view p = strip(raw);
-    if (startsWith(p, "/proc/sys/")) {
-        std::string name(p.substr(10));
+    // Identify the sysctl subtree structurally so paths under an
+    // alternate fixture or mount prefix retain stable resource names.
+    const auto sysctl = p.find("/proc/sys/");
+    if (sysctl != std::string_view::npos) {
+        std::string name(p.substr(sysctl + 10U));
         std::replace(name.begin(), name.end(), '/', '.');
         return name;  // vm.swappiness, kernel.sched_x, walt.y
     }
-    if (startsWith(p, "/sys/block/")) {
-        const std::string_view rest = p.substr(11);
+    // Produce stable per-device identities from either a /sys/block alias or
+    // the real /sys/devices/.../block/<device>/queue/... hierarchy. The device
+    // name is discovered from the path; no particular block name is assumed.
+    std::string_view rest;
+    const auto block = p.find("/block/");
+    if (block != std::string_view::npos && containsText(p, "/queue/"))
+        rest = p.substr(block + 7U);
+    if (!rest.empty()) {
         const auto slash = rest.find('/');
         if (slash != std::string_view::npos) {
+            const std::string_view device = rest.substr(0, slash);
             std::string tail(rest.substr(slash + 1U));
             if (startsWith(tail, "queue/")) tail.erase(0, 6);
             std::replace(tail.begin(), tail.end(), '/', '.');
-            return std::string(rest.substr(0, slash)) + ":" + tail;  // sda:read_ahead_kb
+            return std::string(device) + ":" + tail;
         }
     }
     return std::string(p);
@@ -203,12 +211,14 @@ bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std
         if (!kernelWritable(path)) return false;
 
         const ResourceDomain domain = domainFor(path);
-        // Admission: a subsystem the kernel exposes, or a node the vendor declares.
-        // Anything else that is writable is recorded as unclaimed and not admitted.
-        if (domain == ResourceDomain::Vendor && !vendorDeclares(vendor, path)) {
-            ++stats.unclaimed;
-            return false;
-        }
+        // Unknown writable kernel surfaces are not discarded merely because
+        // their subsystem or name is absent from a catalog. They enter the
+        // generic Vendor domain and still pass the fatal-surface and value
+        // validation path before any mutation can occur.
+        const bool unclaimed = domain == ResourceDomain::Vendor &&
+                               vendor.find(VendorKnowledge::canonicalPath(path)) == nullptr &&
+                               vendor.find(path) == nullptr;
+        if (unclaimed) ++stats.unclaimed;
 
         std::string value;
         if (!readFirstLine(path, value)) return false;  // write-only or empty
@@ -315,10 +325,10 @@ TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& ma
                              acceptAllDirs, stats);
                     break;
                 case KernelFsKind::Sysfs:
-                    walkTree(matrix, vendor, mount.mountpoint, kSysfsDepth, acceptSysfsDir, stats);
+                    walkTree(matrix, vendor, mount.mountpoint, kSysfsDepth, acceptAllDirs, stats);
                     break;
                 case KernelFsKind::Cgroup:
-                    walkTree(matrix, vendor, mount.mountpoint, kCgroupDepth, acceptCgroupGroup,
+                    walkTree(matrix, vendor, mount.mountpoint, kCgroupDepth, acceptAllDirs,
                              stats);
                     break;
                 case KernelFsKind::Other:

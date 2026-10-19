@@ -26,9 +26,9 @@ constexpr std::array<MatchRule, 15> kRules{{
     {ExpandedDomain::FilesystemIo, {"read_ahead_kb", "nr_requests", "io.stat", nullptr, nullptr, nullptr}},
     {ExpandedDomain::Writeback, {"writeback", "dirty", "wb_", "nr_dirty", "nr_writeback"}},
     {ExpandedDomain::TaskProfiles, {"task_profiles", "task_profiles.json", "cgroup.controllers", "cpuctl", nullptr}},
-    {ExpandedDomain::PowerState, {"powercap", "/sys/power", "power_state", "autosuspend", "energy_uj"}},
-    {ExpandedDomain::NetworkTelemetry, {"/sys/class/net", "/proc/net", "netdev", "tcp", "network", nullptr}},
-    {ExpandedDomain::BatteryEnergy, {"/sys/class/power_supply", "ps.", "battery", "current_now", "voltage_now"}},
+    {ExpandedDomain::PowerState, {"powercap", "power_state", "autosuspend", "energy_uj", "wakeup"}},
+    {ExpandedDomain::NetworkTelemetry, {"netdev", "tcp", "network", "rx_bytes", "tx_bytes", nullptr}},
+    {ExpandedDomain::BatteryEnergy, {"ps.", "battery", "current_now", "voltage_now", "power_supply"}},
 }};
 
 std::string lower(std::string value) {

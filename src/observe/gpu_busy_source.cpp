@@ -3,25 +3,76 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <array>
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "coreflow/kernel_roots.hpp"
 
 namespace coreflow::observe {
 
 void GpuBusySource::discoverDefaultRoots() noexcept {
     roots_.clear();
-    roots_.emplace_back("/sys/class/kgsl/kgsl-3d0/devfreq");
-    if (DIR* dir = ::opendir("/sys/class/devfreq")) {
-        while (dirent* entry = ::readdir(dir)) {
-            const std::string name = entry->d_name;
+
+    // Resolve the sysfs mount from the live mount table instead of assuming
+    // that sysfs is mounted at /sys. Search the canonical device model rather
+    // than enumerating vendor-specific class aliases (KGSL, Mali, etc.).
+    const auto mounts = readKernelMounts("");
+    std::vector<std::string> sysfs_roots;
+    for (const auto& mount : mounts) {
+        if (mount.kind == KernelFsKind::Sysfs) sysfs_roots.push_back(mount.mountpoint);
+    }
+
+    constexpr std::size_t kMaxDirectories = 12000U;
+    constexpr std::size_t kMaxDepth = 24U;
+    std::size_t visited = 0U;
+    const auto containsGpuIdentity = [](const std::string& path) noexcept {
+        const auto contains = [&path](const char* token) {
+            return path.find(token) != std::string::npos;
+        };
+        return contains("gpu") || contains("GPU") || contains("kgsl") ||
+               contains("KGSL") || contains("mali") || contains("Mali") ||
+               contains("devfreq");
+    };
+
+    const auto walk = [&](const auto& self, const std::string& path,
+                          std::size_t depth) -> void {
+        if (depth > kMaxDepth || visited >= kMaxDirectories) return;
+        ++visited;
+
+        // A load node is accepted only under a path that carries a GPU/devfreq
+        // identity. Reading remains in poll(), and no mutation is performed.
+        if (containsGpuIdentity(path)) {
+            const std::string load_path = path + "/load";
+            if (::access(load_path.c_str(), R_OK) == 0) roots_.push_back(path);
+        }
+
+        DIR* dir = ::opendir(path.c_str());
+        if (!dir) return;
+        while (visited < kMaxDirectories) {
+            dirent* entry = ::readdir(dir);
+            if (!entry) break;
+            const std::string name(entry->d_name);
             if (name == "." || name == "..") continue;
-            if (name.find("gpu") != std::string::npos ||
-                name.find("kgsl") != std::string::npos ||
-                name.find("mali") != std::string::npos) {
-                roots_.emplace_back("/sys/class/devfreq/" + name);
-            }
+            const std::string child = path + "/" + name;
+            struct stat info {};
+            if (::lstat(child.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) continue;
+            self(self, child, depth + 1U);
         }
         ::closedir(dir);
+    };
+
+    for (const auto& root : sysfs_roots) {
+        // /devices is the canonical device model in sysfs. The mountpoint is
+        // discovered; no absolute /sys/devices or vendor-specific path is used.
+        const std::string devices = root + "/devices";
+        walk(walk, devices, 0U);
     }
+
+    std::sort(roots_.begin(), roots_.end());
+    roots_.erase(std::unique(roots_.begin(), roots_.end()), roots_.end());
 }
 
 bool GpuBusySource::poll(double& ratio_out) noexcept {

@@ -1,7 +1,6 @@
 #include "coreflow/interactivity_boost.hpp"
 #include "coreflow/integer_parse.hpp"
 
-#include <dirent.h>
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -58,19 +57,6 @@ bool InteractivityBoostController::authorized(
     return config.interactivityMode() == InteractivityMode::Adaptive &&
            config.mutationMode() == MutationMode::Adaptive &&
            config.mutationArmed();
-}
-
-void InteractivityBoostController::discoverReadaheadPaths() noexcept {
-    if (DIR* dir = ::opendir("/sys/block")) {
-        while (dirent* entry = ::readdir(dir)) {
-            const std::string name = entry->d_name;
-            if (name == "." || name == "..") continue;
-            const std::string path =
-                "/sys/block/" + name + "/queue/read_ahead_kb";
-            if (ResourceActuator::writable(path)) readahead_paths_.push_back(path);
-        }
-        ::closedir(dir);
-    }
 }
 
 bool InteractivityBoostController::commitJournal() noexcept {

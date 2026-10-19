@@ -32,6 +32,10 @@ std::vector<KernelMount> parseMountTable(const std::string& text);
 // discovery fails closed instead of falling back to guessed paths.
 std::vector<KernelMount> readKernelMounts(const std::string& prefix);
 
+// Resolve a path relative to the currently mounted procfs/sysfs root.
+// Empty result means the filesystem root could not be discovered.
+std::string kernelFilesystemPath(KernelFsKind kind, const std::string& relative = {});
+
 bool hasFilesystemType(const std::vector<KernelMount>& mounts,
                        const std::string& fstype) noexcept;
 

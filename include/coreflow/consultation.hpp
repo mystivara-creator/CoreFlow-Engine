@@ -25,7 +25,7 @@ namespace coreflow {
 
 enum class ControlNamespace : std::uint8_t {
     VmSysctl = 0,   // /proc/sys/vm/*
-    BlockQueue,     // /sys/block/<physical>/queue/*
+    BlockQueue,     // dynamically discovered kernel block queue resources
     Scheduler,      // scheduler sysctls / governor tunables / core_ctl / walt
     Gpu,            // devfreq, kgsl, mali and other GPU/bus clock domains
     Cgroup,         // uclamp, cpu.shares/weight, cpuset, schedtune

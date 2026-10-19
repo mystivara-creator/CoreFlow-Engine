@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <fstream>
+#include <map>
+#include <string_view>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -122,11 +124,13 @@ DeviceProfile EnvironmentDiscovery::discover() const {
     discoverCpuPolicies(profile);
     discoverThermalZones(profile);
     discoverCharging(profile);
-    discoverIo(profile);
     discoverGpu(profile);
-    finalizeCapabilities(profile);
-    // The tunable walk is the single authority for writable kernel surfaces.
+    // Dynamic kernel inventory is built before compatibility summaries so
+    // subsystem summaries consume discovered capabilities instead of probing
+    // guessed per-device paths themselves.
     discoverTunables(profile);
+    discoverIo(profile);
+    finalizeCapabilities(profile);
     deriveEnvironmentAvailability(profile);
     profile.capabilities.environment = profile.environment;
     profile.expanded_domains = HighCapabilityExpansion::assess(profile.capabilities);
@@ -169,8 +173,9 @@ void EnvironmentDiscovery::discoverEnvironment(DeviceProfile& profile) const {
 }
 
 void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
-    constexpr const char* base = "/sys/devices/system/cpu/cpufreq";
-    DIR* dir = opendir(base);
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "devices/system/cpu/cpufreq");
+    if (base.empty()) return;
+    DIR* dir = opendir(base.c_str());
     if (!dir) return;
 
     while (dirent* entry = readdir(dir)) {
@@ -179,7 +184,7 @@ void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
 
         CpuPolicy policy;
         policy.id = std::atoi(name.c_str() + 6);
-        policy.path = std::string(base) + "/" + name;
+        policy.path = base + "/" + name;
 
         readText(policy.path + "/related_cpus", policy.related_cpus);
         policy.readable = readText(policy.path + "/scaling_governor", policy.governor);
@@ -221,8 +226,9 @@ void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
 }
 
 void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
-    constexpr const char* base = "/sys/class/thermal";
-    DIR* dir = opendir(base);
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/thermal");
+    if (base.empty()) return;
+    DIR* dir = opendir(base.c_str());
     if (!dir) return;
 
     while (dirent* entry = readdir(dir)) {
@@ -230,7 +236,7 @@ void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
         if (name.rfind("thermal_zone", 0) != 0) continue;
 
         ThermalZone zone;
-        zone.path = std::string(base) + "/" + name;
+        zone.path = base + "/" + name;
         readText(zone.path + "/type", zone.type);
 
         // Inventory every zone. Sentinel values (-273000, 0, large negatives)
@@ -253,15 +259,16 @@ void EnvironmentDiscovery::discoverThermalZones(DeviceProfile& profile) const {
 }
 
 void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
-    constexpr const char* base = "/sys/class/power_supply";
-    DIR* dir = opendir(base);
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
+    if (base.empty()) return;
+    DIR* dir = opendir(base.c_str());
     if (!dir) return;
 
     while (dirent* entry = readdir(dir)) {
         const std::string name(entry->d_name);
         if (name == "." || name == "..") continue;
 
-        const std::string path = std::string(base) + "/" + name;
+        const std::string path = base + "/" + name;
         std::string type;
         if (!readText(path + "/type", type) || type != "Battery") continue;
 
@@ -308,53 +315,70 @@ void EnvironmentDiscovery::discoverCharging(DeviceProfile& profile) const {
 }
 
 void EnvironmentDiscovery::discoverIo(DeviceProfile& profile) const {
-    constexpr const char* base = "/sys/block";
-    DIR* dir = opendir(base);
-    if (!dir) return;
+    // IoDevice is a compatibility summary for older policy/telemetry consumers.
+    // The source of truth is the generic tunable inventory. Never construct a
+    // device path from a guessed block root; sysfs aliases are commonly symlinks,
+    // while the canonical device-model path may live under /sys/devices/...
+    std::map<std::string, IoDevice> devices;
+    for (const auto& cap : profile.capabilities.resources) {
+        if (cap.domain != ResourceDomain::Io || cap.path.empty()) continue;
+        const auto queue = cap.path.find("/queue/");
+        if (queue == std::string::npos) continue;
 
-    while (dirent* entry = readdir(dir)) {
-        const std::string name(entry->d_name);
-        if (name == "." || name == "..") continue;
+        std::string name;
+        const auto block = cap.path.find("/block/");
+        if (block != std::string::npos) {
+            const std::size_t begin = block + 7U;
+            const auto slash = cap.path.find('/', begin);
+            if (slash != std::string::npos) name = cap.path.substr(begin, slash - begin);
+        }
+        if (name.empty()) continue;
 
-        const std::string queue = std::string(base) + "/" + name + "/queue/read_ahead_kb";
-        IoDevice device;
-        device.path = std::string(base) + "/" + name;
+        IoDevice& device = devices[name];
         device.name = name;
-        device.read_ahead_readable = access(queue.c_str(), R_OK) == 0;
-        device.read_ahead_writable = access(queue.c_str(), W_OK) == 0;
-        readUnsigned(queue, device.read_ahead_kb);
-
-        const std::string requests = std::string(base) + "/" + name + "/queue/nr_requests";
-        device.nr_requests_readable = access(requests.c_str(), R_OK) == 0;
-        device.nr_requests_writable = access(requests.c_str(), W_OK) == 0;
-        readUnsigned(requests, device.nr_requests);
-
-        const std::string scheduler = std::string(base) + "/" + name + "/queue/scheduler";
-        device.scheduler_readable = access(scheduler.c_str(), R_OK) == 0;
-        device.scheduler_writable = access(scheduler.c_str(), W_OK) == 0;
-        if (device.scheduler_readable) readText(scheduler, device.scheduler);
-
-        if (device.read_ahead_readable || device.read_ahead_writable ||
-            device.nr_requests_readable || device.nr_requests_writable ||
-            device.scheduler_readable || device.scheduler_writable)
-            profile.io_devices.push_back(std::move(device));
+        device.path = cap.path.substr(0, queue);
+        const std::string_view leaf(cap.path.data() + queue + 7U,
+                                    cap.path.size() - queue - 7U);
+        // Preserve every discovered queue tunable, not only the three legacy
+        // fields consumed by older policy code. The capability registry remains
+        // authoritative; this is a compatibility projection for I/O consumers.
+        IoQueueAttribute attribute;
+        attribute.name = std::string(leaf);
+        attribute.path = cap.path;
+        attribute.readable = cap.readable;
+        attribute.writable = cap.writable;
+        readText(cap.path, attribute.value);
+        device.queue_attributes.push_back(std::move(attribute));
+        if (leaf == "read_ahead_kb") {
+            device.read_ahead_readable = cap.readable;
+            device.read_ahead_writable = cap.writable;
+            readUnsigned(cap.path, device.read_ahead_kb);
+        } else if (leaf == "nr_requests") {
+            device.nr_requests_readable = cap.readable;
+            device.nr_requests_writable = cap.writable;
+            readUnsigned(cap.path, device.nr_requests);
+        } else if (leaf == "scheduler") {
+            device.scheduler_readable = cap.readable;
+            device.scheduler_writable = cap.writable;
+            if (device.scheduler_readable) readText(cap.path, device.scheduler);
+        }
     }
-    closedir(dir);
-
-    std::sort(profile.io_devices.begin(), profile.io_devices.end(),
-              [](const IoDevice& a, const IoDevice& b) { return a.name < b.name; });
+    profile.io_devices.clear();
+    profile.io_devices.reserve(devices.size());
+    for (auto& item : devices) profile.io_devices.push_back(std::move(item.second));
 }
 
 void EnvironmentDiscovery::discoverGpu(DeviceProfile& profile) const {
-    constexpr const char* base = "/sys/class/devfreq";
-    DIR* dir = opendir(base);
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/devfreq");
+    if (base.empty()) return;
+    DIR* dir = opendir(base.c_str());
     if (!dir) return;
     profile.environment.devfreq_available = true;
 
     while (dirent* entry = readdir(dir)) {
         const std::string name(entry->d_name);
         if (name == "." || name == "..") continue;
-        const std::string path = std::string(base) + "/" + name;
+        const std::string path = base + "/" + name;
         const std::string governor = path + "/governor";
         const std::string cur = path + "/cur_freq";
         const bool exists = access(path.c_str(), F_OK) == 0;
@@ -370,32 +394,41 @@ void EnvironmentDiscovery::finalizeCapabilities(DeviceProfile& profile) const {
     // no parameter is listed here by name or by path.
     auto& matrix = profile.capabilities;
 
-    addCapability(matrix, ResourceDomain::CpuFreq, "policies",
-                  "/sys/devices/system/cpu/cpufreq",
-                  !profile.cpu_policies.empty(), !profile.cpu_policies.empty(), false);
+    const std::string cpufreq_root =
+        kernelFilesystemPath(KernelFsKind::Sysfs, "devices/system/cpu/cpufreq");
+    addCapability(matrix, ResourceDomain::CpuFreq, "policies", cpufreq_root,
+                  !cpufreq_root.empty() && !profile.cpu_policies.empty(),
+                  !cpufreq_root.empty() && !profile.cpu_policies.empty(), false);
 
-    addCapability(matrix, ResourceDomain::Thermal, "thermal-zones",
-                  "/sys/class/thermal", !profile.thermal_zones.empty(),
-                  !profile.thermal_zones.empty(), false);
+    const std::string thermal_root =
+        kernelFilesystemPath(KernelFsKind::Sysfs, "class/thermal");
+    addCapability(matrix, ResourceDomain::Thermal, "thermal-zones", thermal_root,
+                  !thermal_root.empty() && !profile.thermal_zones.empty(),
+                  !thermal_root.empty() && !profile.thermal_zones.empty(), false);
     addCapability(matrix, ResourceDomain::Charging, "battery",
                   profile.charging.battery_path, profile.charging.battery_available,
                   profile.charging.status_readable || profile.charging.telemetry_readable, false);
-    addCapability(matrix, ResourceDomain::Io, "block-queues", "/sys/block",
-                  !profile.io_devices.empty(), !profile.io_devices.empty(), false);
-    addCapability(matrix, ResourceDomain::Power, "power-supply", "/sys/class/power_supply",
-                  profile.charging.battery_available, profile.charging.status_readable, false);
+    const std::string power_root =
+        kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
+    addCapability(matrix, ResourceDomain::Power, "power-supply", power_root,
+                  !power_root.empty() && profile.charging.battery_available,
+                  !power_root.empty() && profile.charging.status_readable, false);
 
     // Pressure-stall inventory: every file the kernel publishes under /proc/pressure.
-    if (DIR* dir = opendir("/proc/pressure")) {
+    const std::string psi_root =
+        kernelFilesystemPath(KernelFsKind::Procfs, "pressure");
+    if (!psi_root.empty()) {
+        if (DIR* dir = opendir(psi_root.c_str())) {
         while (dirent* entry = readdir(dir)) {
             const std::string name(entry->d_name);
             if (name == "." || name == "..") continue;
-            const std::string path = "/proc/pressure/" + name;
+            const std::string path = psi_root + "/" + name;
             const bool readable = access(path.c_str(), R_OK) == 0;
             addCapability(matrix, ResourceDomain::AndroidRuntime, "psi." + name, path,
                           readable, readable, false);
         }
         closedir(dir);
+        }
     }
 
     addCapability(matrix, ResourceDomain::AndroidRuntime, "android-properties",

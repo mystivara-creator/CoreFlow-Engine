@@ -64,6 +64,44 @@ std::vector<KernelMount> readKernelMounts(const std::string& prefix) {
     return parseMountTable(all.str());
 }
 
+
+std::string kernelFilesystemPath(KernelFsKind kind, const std::string& relative) {
+    // Mount topology is stable during normal operation. Cache the bootstrap
+    // table so per-sample observers do not repeatedly parse /proc/mounts.
+    static const std::vector<KernelMount> mounts = readKernelMounts("");
+
+    // Accept only a relative path composed of ordinary path components.
+    if (!relative.empty()) {
+        if (relative.front() == '/' || relative.back() == '/') return {};
+        std::istringstream parts(relative);
+        std::string component;
+        while (std::getline(parts, component, '/')) {
+            if (component.empty() || component == "." || component == "..")
+                return {};
+        }
+    }
+
+    // Prefer conventional primary mountpoints when multiple instances of the
+    // same filesystem type exist; otherwise use the first discovered mount.
+    const char* preferred = nullptr;
+    if (kind == KernelFsKind::Procfs) preferred = "/proc";
+    else if (kind == KernelFsKind::Sysfs) preferred = "/sys";
+
+    const KernelMount* selected = nullptr;
+    for (const auto& mount : mounts) {
+        if (mount.kind != kind) continue;
+        if (!selected) selected = &mount;
+        if (preferred && mount.mountpoint == preferred) {
+            selected = &mount;
+            break;
+        }
+    }
+
+    if (!selected) return {};
+    if (relative.empty()) return selected->mountpoint;
+    return selected->mountpoint + "/" + relative;
+}
+
 bool hasFilesystemType(const std::vector<KernelMount>& mounts,
                        const std::string& fstype) noexcept {
     for (const auto& mount : mounts) {

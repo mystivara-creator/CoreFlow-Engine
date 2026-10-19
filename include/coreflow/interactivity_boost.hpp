@@ -30,8 +30,7 @@ public:
     void addReadaheadPath(std::string path) {
         readahead_paths_.push_back(std::move(path));
     }
-    // Adds every /sys/block/<dev>/queue/read_ahead_kb that is writable.
-    void discoverReadaheadPaths() noexcept;
+    // Receives dynamically discovered read-ahead resources; never synthesizes paths.
 
     // Adopts the entries a previous run left in the journal, so each one is
     // restored by the next expire() pass. Returns the number adopted. A corrupt

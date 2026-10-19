@@ -162,17 +162,24 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
     // by the target kernel are proposed. Security authority, pressure evidence,
     // baseline/journal and actuator verification remain mandatory; no scheduler
     // name is universally safe and layered devices are not blanket-denied by name.
-    {"block.queue.scheduler", "/sys/block", ResourceDomain::Io,
+    {"block.queue.scheduler", "dynamic:block-queue", ResourceDomain::Io,
      KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
      "Kernel-advertised I/O scheduler selector; benefit is device/workload dependent.",
      "docs.kernel.org/block/queue-sysfs.html"},
-    {"block.queue.read_ahead_kb", "/sys/block", ResourceDomain::Io,
+    {"block.queue.read_ahead_kb", "dynamic:block-queue", ResourceDomain::Io,
      KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
      "Read-ahead window; bounded on physical block devices only.",
      "docs.kernel.org/block/queue-sysfs.html"},
-    {"block.queue.nr_requests", "/sys/block", ResourceDomain::Io,
+    {"block.queue.nr_requests", "dynamic:block-queue", ResourceDomain::Io,
      KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
      "Request queue depth; bounded on physical block devices only.",
+     "docs.kernel.org/block/queue-sysfs.html"},
+    // Generic queue attribute semantics ensure newly discovered attributes remain
+    // visible to the reasoning layer without pretending every attribute is a
+    // reviewed actuator. Unknown leaves remain observe-only until classified.
+    {"block.queue.attribute", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::ObserveOnly, false,
+     "Dynamically discovered block queue attribute; semantics require classification.",
      "docs.kernel.org/block/queue-sysfs.html"},
 
     // ---- GPU / devfreq (vendor) ----
@@ -216,10 +223,11 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
     const std::string& path) noexcept {
     if (path.empty()) return nullptr;
 
-    // Queue controls are per-device nodes; classify by their stable suffix,
-    // not by the shared /sys/block root (which made all three entries collide).
-    if (path.compare(0, 11, "/sys/block/") == 0 ||
-        path.compare(0, 13, "/sys/devices/") == 0) {
+    // Queue resources are located by their structural path segments, not by
+    // a specific sysfs mount alias or device name. The catalog entries use a
+    // symbolic path marker and never participate in literal path-prefix lookup.
+    if (path.find("/block/") != std::string::npos &&
+        path.find("/queue/") != std::string::npos) {
         const auto hasSuffix = [&path](const char* suffix) noexcept {
             const std::size_t n = std::strlen(suffix);
             return path.size() >= n && path.compare(path.size() - n, n, suffix) == 0;
@@ -230,6 +238,7 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
             return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
         if (hasSuffix("/queue/nr_requests"))
             return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+        return lookupEcosystemKnowledgeByKey("block.queue.attribute");
     }
 
     // Prefer the most-specific matching catalog path. Several entries may
@@ -239,7 +248,7 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
     for (const auto& e : kCatalog) {
         if (path == e.path) return &e;
         const std::size_t n = std::strlen(e.path);
-        if (n > 1 && n >= bestLength && path.size() > n &&
+        if (e.path[0] == '/' && n > 1 && n >= bestLength && path.size() > n &&
             path.compare(0, n, e.path) == 0 && path[n] == '/') {
             best = &e;
             bestLength = n;
@@ -270,6 +279,7 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByKey(
             return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
         if (leaf == "nr_requests")
             return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+        return lookupEcosystemKnowledgeByKey("block.queue.attribute");
     }
     return nullptr;
 }

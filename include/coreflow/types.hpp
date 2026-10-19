@@ -106,6 +106,14 @@ struct ThermalReading {
     ThermalReadingStatus status{ThermalReadingStatus::Unreadable};
 };
 
+struct IoQueueAttribute {
+    std::string name;
+    std::string path;
+    std::string value;
+    bool readable{false};
+    bool writable{false};
+};
+
 struct IoDevice {
     std::string path;
     std::string name;
@@ -118,6 +126,9 @@ struct IoDevice {
     std::string scheduler;
     bool scheduler_readable{false};
     bool scheduler_writable{false};
+    // Complete discovered queue-tunable inventory; legacy fields above remain
+    // compatibility projections for existing consumers.
+    std::vector<IoQueueAttribute> queue_attributes;
 };
 
 struct ChargingCapability {
