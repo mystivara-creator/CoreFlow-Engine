@@ -1,8 +1,8 @@
 ## v2.4.0 — Full capability authority
 
 - Removed separate `allow_cpu_governor` authorization; CPUFreq uses the global Adaptive + armed authority.
-- Legacy `grant_*` namespace flags are accepted as unknown/legacy configuration keys but no longer restrict supported namespaces.
-- Interactivity boosts no longer honor per-namespace grant flags and apply all eligible intents in a policy batch rather than one intent per tick.
+- Per-domain `grant_*` flags remain explicit default-deny consultation gates. A grant never bypasses Adaptive/arming, candidate evidence, exact-target authorization, journaling, read-back verification, or rollback.
+- Interactivity boosts honor the corresponding `grant_gpu`, `grant_cgroup`, and `grant_block_queue` consultation gates, and apply eligible intents in a policy batch rather than one intent per tick.
 - Expanded launch-window, readahead, and GPU-step configuration ranges; kernel-advertised capability and fatal-surface policy remain authoritative.
 - Kept observe-only release defaults, global arming, thermal protection, fatal-surface exclusions, durable journaling, read-back verification, and rollback.
 
@@ -19,7 +19,7 @@
 ## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
 
 ### Security and correctness
-- Per-domain grants are real and default-deny. `grant_<domain>` and `allow_cpu_governor` are parsed from config. Previously every grant was constant `true`. Boost writes (GPU, uclamp, read-ahead) now have grant gates. Capability alone cannot write (ADR 0006).
+- Per-domain grants are real and default-deny. `grant_<domain>` keys authorize resource domains and eligible interactivity boosts; the legacy `allow_cpu_governor` key remains parseable for compatibility/diagnostics but is not authority for CPUFreq governor changes. Capability alone cannot write (ADR 0006).
 - A successful boost restore was treated as a failure, so boosts never left the journal and their paths stayed blocked after the first use. Fixed by accepting `RolledBack` for restores, following `mutation.cpp`.
 - Journal commit, clear, and restore results are no longer discarded. Failures set `recovery_required_`, and new boosts are refused until a commit succeeds.
 - A boost is never re-read as its own baseline. Crash recovery adopts journal entries on start. A corrupt journal blocks boosts and is not overwritten.
@@ -36,8 +36,8 @@
 
 ### Not done
 - Android ARM64 build and device validation.
-- `launch_detector` and `render_collector` are not wired into the loop (see ADR 0005).
-- Boost paths in `autonomous.cpp` are still literal (`/dev/cpuctl/top-app/uclamp.min`, the GPU devfreq node, and the journal path). They should come from discovery.
+- At the time of this initial hardening snapshot, `launch_detector` and `render_collector` were not yet wired into the loop; this status was superseded by the later v2.4.0 Render Signals integration noted below.
+- Historical gap at the initial hardening snapshot: boost targets still relied on literal paths. The current source routes the boost target selection through discovered writable capabilities, but the journal path remains a configured runtime path rather than a discovered kernel capability.
 - Peer-thread ownership and PID identity checks (handoff P2) are not implemented.
 - Trailing whitespace in `autonomous.cpp` predates this release and is not changed here.
 
@@ -45,12 +45,12 @@
 
 ### Render and launch observation
 - Integrated the bounded `frame_latency` parser, deterministic `launch_detector`, and `render_collector` from the render-engine update. The collector reports unavailable pressure as unavailable rather than treating it as zero.
-- Added host tests for render collection, signal parsing, and frame-analyzer integration. ADR 0005 documents the proposed render/launch/frame-pacing domains. The render collector is present but is not yet wired into the autonomous loop.
+- Added host tests for render collection, signal parsing, and frame-analyzer integration. ADR 0005 documents the render/launch/frame-pacing domains. Status was superseded by subsequent v2.4.0 integration: launch detection and bounded launch observation are called from the live loop when supported capabilities are discovered; GPU-busy mapping and device-outcome validation remain incomplete.
 
 ### Bounded interactivity adaptation
 - Added foreground-change, GPU-busy, and SurfaceFlinger frame telemetry sources plus a deterministic interactivity state model and policy.
 - Interactivity remains observe-only by default. Boosts require `interactivity_mode=adaptive`, `mutation_mode=adaptive`, and `mutation_armed=true`; thermal guard and safety holds suppress boosts.
-- Added bounded, expiring boost intents with journal-before-write, read-back verification, restoration paths, with per-namespace flags now retained only for backward-compatible parsing.
+- Added bounded, expiring boost intents with journal-before-write, read-back verification and restoration paths. The boost target domains honor their corresponding explicit `grant_gpu`, `grant_cgroup`, or `grant_block_queue` gate.
 - Configuration clamps launch windows, jank threshold, uclamp values, GPU steps, readahead, and boost duration.
 
 ### Validation

@@ -684,6 +684,7 @@ void test_resource_restore_only_owned_paths() {
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.8;
     sample.cpu_utilization_available = true;
+    sample.load_available = true;
     sample.load1 = 2.0;
 
     EngineConfig config;
@@ -840,6 +841,7 @@ void test_intervention_level_boundaries() {
         sample.confidence = 1.0;
         sample.cpu_utilization = 0.80;
         sample.cpu_utilization_available = true;
+        sample.load_available = true;
         sample.load1 = 2.0;
         sample.io_activity_available = true;
         sample.io_read_kb_per_sec = 2048.0;
@@ -1030,8 +1032,8 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(!pressured_swappiness.eligible);
     CHECK(pressured_swappiness.requested.empty());
 
-    // Unknown numeric nodes remain capability-driven, but exploration waits for
-    // headroom rather than guessing that a direction relieves memory pressure.
+    // A writable/readable unknown scalar is not enough to infer its range or
+    // effect. Headroom alone must not cause a guessed +/- numeric mutation.
     const EffectScore pressured_unknown = model.evaluate(unknown, "100", context);
     CHECK(!pressured_unknown.eligible);
     CHECK(pressured_unknown.requested.empty());
@@ -1040,8 +1042,18 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     headroom.state = RuntimeState::Elevated;
     headroom.mem_available_ratio = 0.50;
     const EffectScore unknown_score = model.evaluate(unknown, "100", headroom);
-    CHECK(unknown_score.eligible);
-    CHECK(unknown_score.requested == "88" || unknown_score.requested == "112");
+    CHECK(!unknown_score.eligible);
+    CHECK(unknown_score.requested.empty());
+
+    // A newly discovered scalar may still be tuned when the kernel supplies an
+    // explicit ordered range. Candidate values must come from that live range.
+    ResourceCapability unknown_with_range = unknown;
+    unknown_with_range.options = {"80", "100", "120"};
+    unknown_with_range.ordered_scale = true;
+    const EffectScore advertised_score =
+        model.evaluate(unknown_with_range, "100", headroom);
+    CHECK(advertised_score.eligible);
+    CHECK(advertised_score.requested == "80" || advertised_score.requested == "120");
 
     ResourceCapability notAuthorized = known;
     notAuthorized.policy_authorized = false;
@@ -1065,7 +1077,15 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     CHECK(scheduler != nullptr && std::string(scheduler->key) == "block.queue.scheduler");
     CHECK(readAhead != nullptr && std::string(readAhead->key) == "block.queue.read_ahead_kb");
     CHECK(requests != nullptr && std::string(requests->key) == "block.queue.nr_requests");
-
+    // Dynamic capability names carry the discovered device prefix; resolve only
+    // reviewed block-queue leaves to their stable semantic keys.
+    const auto* namedReadAhead = lookupEcosystemKnowledgeByKey("sda:read_ahead_kb");
+    const auto* namedRequests = lookupEcosystemKnowledgeByKey("nvme0n1:nr_requests");
+    const auto* namedScheduler = lookupEcosystemKnowledgeByKey("dm-0:scheduler");
+    CHECK(namedReadAhead != nullptr && std::string(namedReadAhead->key) == "block.queue.read_ahead_kb");
+    CHECK(namedRequests != nullptr && std::string(namedRequests->key) == "block.queue.nr_requests");
+    CHECK(namedScheduler != nullptr && std::string(namedScheduler->key) == "block.queue.scheduler");
+    CHECK(lookupEcosystemKnowledgeByKey("unreviewed:custom_knob") == nullptr);
 
     // Regression: physical block queue tunables remain explorable with
     // headroom, but are not presumed to stabilize memory pressure.
@@ -1220,6 +1240,7 @@ void test_selector_scheduler_restore_writes_bare_token() {
     sample.confidence = 1.0;
     sample.cpu_utilization = 0.80;
     sample.cpu_utilization_available = true;
+    sample.load_available = true;
     sample.load1 = 2.0;
 
     EngineConfig config;

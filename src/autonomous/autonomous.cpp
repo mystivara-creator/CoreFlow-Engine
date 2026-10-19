@@ -478,9 +478,10 @@ bool AutonomousEngine::validateSample(const RuntimeSample& sample) const {
         }
     }
 
-    if (!std::isfinite(sample.load1) ||
-        sample.load1 < 0.0 ||
-        sample.load1 > kLoadAverageMax) {
+    if (sample.load_available &&
+        (!std::isfinite(sample.load1) ||
+         sample.load1 < 0.0 ||
+         sample.load1 > kLoadAverageMax)) {
         logWarn("Load average invalid: %.3f", sample.load1);
         return false;
     }
@@ -521,7 +522,11 @@ void AutonomousEngine::updateTrends(RuntimeSample& sample) const {
             kMemoryDeadband);
     }
     
-    sample.load_trend = calculateTrend(oldest.load1, sample.load1, kLoadDeadband);
+    if (sample.load_available && oldest.load_available) {
+        sample.load_trend = calculateTrend(oldest.load1, sample.load1, kLoadDeadband);
+    } else {
+        sample.load_trend = Trend::Unknown;
+    }
 }
 
 double AutonomousEngine::calculateConfidence(const RuntimeSample& sample) const {
@@ -1469,6 +1474,7 @@ void AutonomousEngine::publishStatus(
         s.cpu_available = sample.cpu_utilization_available;
         s.cpu_utilization = sample.cpu_utilization;
         s.load1 = sample.load1;
+        s.load_available = sample.load_available;
         s.load_trend = trendName(sample.load_trend);
         s.io_available = sample.io_activity_available;
         s.io_read_kbs = sample.io_read_kb_per_sec;

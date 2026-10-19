@@ -1,3 +1,7 @@
+> **Historical report for v2.2.0.** Its block-queue quarantine and WebUI descriptions are
+> not the active v2.4.0 policy. See `docs/BUILD_STATUS.md` and `docs/CAPABILITY_DRIVEN.md`
+> for the current source contract and audit validation status.
+
 # CoreFlow Engineering QC Report — v2.2.0 final development snapshot
 
 ## Scope

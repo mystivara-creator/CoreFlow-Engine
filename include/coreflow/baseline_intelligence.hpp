@@ -52,10 +52,14 @@ public:
         std::size_t baseline_samples{0};
         std::size_t observation_samples{0};
         bool thermal_available{false};
+        bool load_available{false};
         bool cpu_available{false};
         bool memory_available{false};
         bool psi_available{false};
         bool io_latency_available{false};
+        // Number of independent telemetry dimensions present on both sides of
+        // the comparison. Fewer than two cannot support an outcome classification.
+        std::size_t comparable_metrics{0};
         bool context_compatible{true};
         bool valid{false};
     };
@@ -128,9 +132,11 @@ private:
     struct BaselinePoint {
         bool thermal{false};
         double thermal_c{0.0};
+        bool load_available{false};
         double load{0.0};
         bool cpu_available{false};
         double cpu{0.0};
+        bool memory_available{false};
         double memory{0.0};
         bool charging_telemetry{false};
         bool charging{false};
@@ -157,7 +163,8 @@ private:
     static double stabilityScore(const MetricAggregate& baseline,
                                  const MetricAggregate& candidate) noexcept;
     static double calculateStabilityScore(const Aggregate& baseline,
-                                          const Aggregate& candidate) noexcept;
+                                          const Aggregate& candidate,
+                                          bool contextCompatible) noexcept;
     static double calculateConfidence(const Aggregate& baseline,
                                       const Aggregate& candidate,
                                       bool contextCompatible) noexcept;

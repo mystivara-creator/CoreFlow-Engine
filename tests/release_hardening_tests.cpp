@@ -162,6 +162,7 @@ RuntimeSample completeSample(std::uint64_t uptime, long thermal_milli) {
     RuntimeSample s;
     s.cpu_utilization = 0.25;
     s.cpu_utilization_available = true;
+    s.load_available = true;
     s.load1 = 1.5;
     s.mem_available_ratio = 0.4;
     s.uptime_seconds = uptime;
@@ -524,6 +525,7 @@ void testStatusJsonIsStrictAndHostile() {
     s.thermal_available = true;
     s.thermal_c = std::numeric_limits<double>::quiet_NaN();
     s.hottest_c = std::numeric_limits<double>::infinity();
+    s.load_available = true;
     s.load1 = -std::numeric_limits<double>::infinity();
     s.mem_available_ratio = 0.4217;
     s.plan_reason = std::string("quote\" back\\slash\nnewline\ttab\x01ctl </script> \xc3\xa9");

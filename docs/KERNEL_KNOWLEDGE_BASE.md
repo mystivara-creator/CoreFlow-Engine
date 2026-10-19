@@ -1,5 +1,13 @@
 # CoreFlow Kernel Knowledge Base and Evidence Policy
 
+> **Historical reference, not the active policy contract.** The quarantine and CPUFreq
+> authorization rules in this document describe an older v2.2-era snapshot. For the
+> current v2.4 source, use `CAPABILITY_DRIVEN.md`: physical block-queue candidates are
+> assessed per target behind capability, grant, semantic, actuator, journal, read-back,
+> and rollback gates; CPUFreq governor writes use global Adaptive + armed authority.
+> The legacy `allow_cpu_governor` key is not a separate authority.
+
+
 This is a compact, version-aware reference map for maintainers, not a runtime feed of copied kernel source. CoreFlow must not download or apply tunables by scraping documentation while the phone is running.
 
 ## Evidence layers
@@ -10,7 +18,7 @@ This is a compact, version-aware reference map for maintainers, not a runtime fe
 4. **Proven action:** a valid `MutationPermit`, committed baseline journal, bounded write and successful read-back.
 5. **Measured outcome:** a subsequent observation window reports beneficial/neutral/regressed/unknown. A verified write is not itself proof of performance improvement.
 
-## Current policy in this source tree
+## Historical policy snapshot (superseded; do not apply to v2.4.0)
 
 - `mutation_mode=observe`, `mutation_armed=false`, `legacy `allow_cpu_governor` is ignored` remain the installed defaults.
 - Superseded by `CAPABILITY_DRIVEN.md`: the central `ResourceActuator` admits every kernel tunable except the universal fatal classes. CPUFreq governor writes remain off by default (`legacy `allow_cpu_governor` is ignored`).

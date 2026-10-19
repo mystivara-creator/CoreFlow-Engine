@@ -179,6 +179,7 @@ struct RuntimeSample {
 
     std::uint64_t uptime_seconds{0};
     double load1{0.0};
+    bool load_available{false};
     double cpu_utilization{0.0};
     bool cpu_utilization_available{false};
 

@@ -39,13 +39,31 @@ std::string_view dirOf(std::string_view path) noexcept {
 
 bool readFirstLine(const std::string& path, std::string& out) noexcept {
     try {
-        std::ifstream file(path);
+        std::ifstream file(path, std::ios::binary);
         if (!file) return false;
-        std::getline(file, out);
+        out.clear();
+        out.reserve(TunableDiscovery::kMaxFirstLineBytes);
+        char ch = '\0';
+        while (file.get(ch)) {
+            if (ch == '\n') break;
+            // Kernel text attributes are text, not arbitrary byte streams. A
+            // NUL or an overlong value is incomplete evidence and must not be
+            // silently truncated into a different actuator value.
+            if (ch == '\0' || out.size() >= TunableDiscovery::kMaxFirstLineBytes) {
+                out.clear();
+                return false;
+            }
+            out.push_back(ch);
+        }
+        if (file.bad()) {
+            out.clear();
+            return false;
+        }
         while (!out.empty() && (out.back() == '\r' || out.back() == ' ' || out.back() == '\t'))
             out.pop_back();
         return !out.empty();
     } catch (...) {
+        out.clear();
         return false;
     }
 }
@@ -58,14 +76,20 @@ std::vector<std::string> words(const std::string& text) {
     return out;
 }
 
-std::vector<std::string> listDir(const std::string& dir) {
+std::vector<std::string> listDir(const std::string& dir, std::size_t max_entries,
+                                 bool& truncated) {
     std::vector<std::string> out;
+    out.reserve(std::min(max_entries, TunableDiscovery::kMaxDirectoryEntries));
     std::unique_ptr<DIR, int (*)(DIR*)> d(::opendir(dir.c_str()), ::closedir);
     if (!d) return out;
     while (const dirent* e = ::readdir(d.get())) {
-        const std::string name = e->d_name;
+        const std::string_view name(e->d_name);
         if (name == "." || name == "..") continue;
-        out.push_back(name);
+        if (out.size() >= max_entries) {
+            truncated = true;
+            break;
+        }
+        out.emplace_back(name);
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -167,7 +191,10 @@ bool TunableDiscovery::addTunable(EnvironmentCapabilityMatrix& matrix, const std
                                   const VendorKnowledge& vendor,
                                   TunableDiscoveryStats& stats) const noexcept {
     try {
-        if (matrix.resources.size() >= kMaxTunables) return false;
+        if (matrix.resources.size() >= kMaxTunables) {
+            stats.truncated = true;
+            return false;
+        }
         ++stats.walked;
         if (isFatalSurface(path)) {
             ++stats.fatal_skipped;
@@ -224,18 +251,24 @@ void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const Vendo
 
         std::deque<std::pair<std::string, std::size_t>> queue;
         queue.emplace_back(root, 0U);
-        std::size_t visits = 0;
 
         while (!queue.empty()) {
+            // One budget is shared by every mount walk in this discovery run.
+            if (stats.visited_entries >= kMaxVisits ||
+                matrix.resources.size() >= kMaxTunables) {
+                stats.truncated = true;
+                return;
+            }
             const std::string dir = queue.front().first;
             const std::size_t depth = queue.front().second;
             queue.pop_front();
 
-            for (const auto& name : listDir(dir)) {
-                if (++visits > kMaxVisits) {
-                    stats.truncated = true;
-                    return;
-                }
+            const std::size_t remaining = kMaxVisits - stats.visited_entries;
+            const std::size_t dir_budget = std::min(remaining, TunableDiscovery::kMaxDirectoryEntries);
+            bool dir_truncated = false;
+            const auto entries = listDir(dir, dir_budget, dir_truncated);
+            for (const auto& name : entries) {
+                ++stats.visited_entries;
                 const std::string full = dir + "/" + name;
                 struct stat st {};
                 if (::lstat(full.c_str(), &st) != 0) continue;
@@ -249,9 +282,18 @@ void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const Vendo
                 }
                 if (!S_ISREG(st.st_mode)) continue;
                 (void)addTunable(matrix, full, vendor, stats);
+                if (matrix.resources.size() >= kMaxTunables) {
+                    stats.truncated = true;
+                    return;
+                }
+            }
+            if (dir_truncated) {
+                stats.truncated = true;
+                return;
             }
         }
     } catch (...) {
+        stats.truncated = true;
     }
 }
 
@@ -259,9 +301,14 @@ TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& ma
                                                  const VendorKnowledge& vendor) const noexcept {
     TunableDiscoveryStats stats;
     try {
+        if (matrix.resources.size() >= kMaxTunables) {
+            stats.truncated = true;
+            return stats;
+        }
         // The kernel mount table is the inventory of tunable filesystems. Nothing
         // here names a directory: a root exists only if the kernel mounted it.
         for (const KernelMount& mount : readKernelMounts(prefix_)) {
+            if (stats.truncated) break;
             switch (mount.kind) {
                 case KernelFsKind::Procfs:
                     walkTree(matrix, vendor, mount.mountpoint + "/sys", kSysctlDepth,
@@ -282,11 +329,19 @@ TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& ma
         // Every node the vendor itself configures, wherever it lives. These are
         // declared by the device's own configuration, so they are admitted here.
         for (const auto& knob : vendor.knobs()) {
+            if (stats.visited_entries >= kMaxVisits ||
+                matrix.resources.size() >= kMaxTunables) {
+                stats.truncated = true;
+                break;
+            }
+            ++stats.visited_entries;
             if (addTunable(matrix, knob.path, vendor, stats)) ++stats.vendor_paths;
+            if (stats.truncated) break;
         }
 
         enrich(matrix, vendor);
     } catch (...) {
+        stats.truncated = true;
     }
     return stats;
 }
@@ -328,19 +383,26 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
             // whose own name is a frequency/clock pair with a frequency list.
             const bool scale_like = containsText(leaf, "freq") || containsText(leaf, "clk");
             if (!governor_like && !scale_like) continue;
-            for (const auto& sibling : listDir(dir)) {
+            bool siblings_truncated = false;
+            const auto siblings = listDir(dir, TunableDiscovery::kMaxDirectoryEntries, siblings_truncated);
+            if (siblings_truncated) continue;  // incomplete option inventories are not evidence
+            for (const auto& sibling : siblings) {
                 if (!containsText(sibling, "available") || sibling == leaf) continue;
                 const bool match_governor = governor_like && (containsText(sibling, "governor") ||
                                                               containsText(sibling, "polic"));
                 const bool match_scale = scale_like && (containsText(sibling, "freq") ||
                                                         containsText(sibling, "clk"));
                 if (!match_governor && !match_scale) continue;
-                std::string list;
+                std::string list(TunableDiscovery::kMaxOptionListBytes + 1U, '\0');
                 {
                     std::ifstream file(dir + "/" + sibling);
-                    std::ostringstream all;
-                    all << file.rdbuf();
-                    list = all.str();
+                    if (!file) continue;
+                    file.read(list.data(), static_cast<std::streamsize>(list.size()));
+                    const std::streamsize count = file.gcount();
+                    if (count < 0 || static_cast<std::size_t>(count) > TunableDiscovery::kMaxOptionListBytes) {
+                        continue;  // oversized options cannot be trusted as a complete list
+                    }
+                    list.resize(static_cast<std::size_t>(count));
                 }
                 auto opts = words(list);
                 if (opts.empty()) continue;

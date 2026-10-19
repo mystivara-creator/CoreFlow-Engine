@@ -21,8 +21,9 @@ namespace coreflow {
 //   2. Kernel advertisement   tokens from a "[a] b c" selector line or a
 //                             sibling available_* list
 //   3. Ordered hardware scale one step along an advertised frequency/level list
-//   4. Bounded exploration    a +/-12.5% step from the factory value for plain
-//                             integers (never for 0/1 toggles, never sign flips)
+//   4. Bounded exploration    a +/-12.5% step only for catalogued bounded numeric
+//                             semantics (and the documented uclamp range); unknown
+//                             scalars require advertised values or measured evidence.
 //
 // Stressed contexts (thermal/memory) accept only evidence-aligned
 // stabilizing candidates. Thermal stress can use vendor efficiency values, a
@@ -76,6 +77,8 @@ struct EffectContext {
     RuntimeState state{RuntimeState::Idle};
     double thermal_c{0.0};
     bool thermal_available{false};
+    bool memory_available{false};
+    bool charging_telemetry_available{false};
     double mem_available_ratio{1.0};
     double cpu_utilization{0.0};
     bool cpu_utilization_available{false};

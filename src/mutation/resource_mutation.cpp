@@ -260,10 +260,15 @@ bool ResourceMutationController::selectCandidate(
                         ? static_cast<double>(sample.thermal_millidegrees) / 1000.0
                         : 0.0;
     ctx.thermal_available = sample.thermal_available;
+    ctx.memory_available = sample.mem_total_kb > 0U;
+    ctx.charging_telemetry_available = sample.charging_telemetry_available &&
+                                       sample.battery_level_percent >= 0;
     ctx.mem_available_ratio = sample.mem_available_ratio;
     ctx.cpu_utilization = sample.cpu_utilization;
     ctx.cpu_utilization_available = sample.cpu_utilization_available;
-    ctx.load1 = sample.load1;
+    // EffectModel uses a negative sentinel for an unavailable load average so
+    // its elevated-load prior cannot mistake the observer's default zero for data.
+    ctx.load1 = sample.load_available ? sample.load1 : -1.0;
     ctx.io_activity_available = sample.io_activity_available;
     ctx.io_read_kb_per_sec = sample.io_read_kb_per_sec;
     ctx.io_write_kb_per_sec = sample.io_write_kb_per_sec;

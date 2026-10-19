@@ -19,7 +19,7 @@ may **observe**. Mutation still requires explicit `policy_authorized` + journal.
 | OBSERVE_ONLY | Read / inventory |
 | BOUNDED_TUNE | Eligible for CoreFlow allow-list after review |
 | VENDOR_VOLATILE | Path exists but OEM may redefine semantics |
-| QUARANTINED | No production writes (block queue, drop_caches, …) |
+| QUARANTINED | No production writes to explicitly protected/fatal surfaces (for example, `drop_caches`); block-queue controls are evaluated per target under the current v2.4 gates. |
 | FRAMEWORK_OWNED | Do not fight AMS / lmkd / PowerManager |
 
 ## Primary references

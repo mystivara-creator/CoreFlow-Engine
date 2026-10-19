@@ -40,9 +40,16 @@ bool EngineConfig::load(const std::string& path) noexcept {
         std::ifstream file(path);
         if (!file) return false;
 
-        // Parse into a candidate so failed reads cannot partially mutate
-        // the active configuration.
+        // Preserve non-authority tuning when partial snippets are loaded, but
+        // clear every authority-bearing setting first. Omitted grants or arming
+        // must never leak from a previously loaded configuration. Commit only
+        // after the file has been read and validated.
         EngineConfig candidate = *this;
+        candidate.mutation_mode_ = MutationMode::Disabled;
+        candidate.mutation_armed_ = false;
+        candidate.allow_cpu_governor_ = false;
+        candidate.grants_ = GrantFlags{};
+        candidate.interactivity_mode_ = InteractivityMode::Observe;
 
         // An invalid mutation_mode must fail safe regardless of key order.
         bool invalid_mode = false;

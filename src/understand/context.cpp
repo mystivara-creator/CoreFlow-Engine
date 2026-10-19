@@ -16,27 +16,24 @@ SystemContext ContextEngine::evaluate(
     // 52°C still leaves margin; 50°C was so tight that Warming devices almost
     // never saw mutation_allowed_by_context on real SoCs.
     context.thermal_headroom =
-        !sample.thermal_available ||
-        sample.thermal_millidegrees < 52000;
+        sample.thermal_available && sample.thermal_millidegrees < 52000;
 
     // Balance: Pressure enters at 0.10. Requiring 0.18 left a wide dead band
     // where the device was neither "stressed enough" for stabilizing nor
     // "safe enough" for proactive tuning. 0.14 keeps a real safety margin.
     context.memory_headroom =
-        sample.mem_total_kb == 0 ||
-        (sample.mem_available_ratio >= 0.14 &&
-         !(sample.memory_stall_detected && sample.memory_stall_score >= 0.25));
+        sample.mem_total_kb > 0U && sample.mem_available_ratio >= 0.14 &&
+        !(sample.memory_stall_detected && sample.memory_stall_score >= 0.25);
 
     // I/O headroom: high PSI-io or sustained high latency counts as pressure.
     context.io_headroom =
-        !sample.io_activity_available ||
+        sample.io_activity_available &&
         ((sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) < 102400.0 &&
          !(sample.psi_available && sample.psi_io_some_avg10 >= 0.15) &&
          !(sample.io_latency_available && sample.io_avg_latency_ms >= 40.0));
 
     context.power_headroom =
-        !sample.charging_telemetry_available ||
-        sample.battery_level_percent < 0 ||
+        sample.charging_telemetry_available && sample.battery_level_percent >= 0 &&
         sample.battery_level_percent >= 20;
 
     context.battery_headroom = context.power_headroom;
@@ -45,7 +42,8 @@ SystemContext ContextEngine::evaluate(
 
     if (state == RuntimeState::ThermalGuard) {
         context.workload = WorkloadClass::ThermalLimited;
-    } else if (!context.power_headroom || !context.battery_headroom) {
+    } else if (sample.charging_telemetry_available &&
+               sample.battery_level_percent >= 0 && sample.battery_level_percent < 20) {
         context.workload = WorkloadClass::PowerConstrained;
     } else if (state == RuntimeState::Pressure) {
         context.workload = WorkloadClass::MemoryBound;
@@ -53,15 +51,19 @@ SystemContext ContextEngine::evaluate(
                (sample.io_read_kb_per_sec + sample.io_write_kb_per_sec) >= 4096.0 &&
                (!sample.cpu_utilization_available || sample.cpu_utilization < 0.65)) {
         context.workload = WorkloadClass::IoBound;
-    } else if (sample.mem_available_ratio > 0.0 && sample.mem_available_ratio < 0.20) {
+    } else if (sample.mem_total_kb > 0U && sample.mem_available_ratio > 0.0 &&
+               sample.mem_available_ratio < 0.20) {
         context.workload = WorkloadClass::MemoryBound;
-    } else if (sample.load1 < 0.20 &&
-               (!sample.cpu_utilization_available || sample.cpu_utilization < 0.15)) {
+    } else if ((sample.load_available && sample.load1 < 0.20 &&
+                (!sample.cpu_utilization_available || sample.cpu_utilization < 0.15)) ||
+               (!sample.load_available && sample.cpu_utilization_available &&
+                sample.cpu_utilization < 0.15)) {
         context.workload = WorkloadClass::Idle;
     } else if (sample.cpu_utilization_available && sample.cpu_utilization >= 0.72) {
         // Balance: 0.80 was rarely sustained on mobile; 0.72 still means clear load.
         context.workload = WorkloadClass::CpuBound;
-    } else if (sample.thermal_trend == Trend::Rising && sample.cpu_utilization >= 0.60) {
+    } else if (sample.thermal_trend == Trend::Rising &&
+               sample.cpu_utilization_available && sample.cpu_utilization >= 0.60) {
         context.workload = WorkloadClass::Sustained;
     } else {
         context.workload = WorkloadClass::Interactive;
@@ -80,10 +82,26 @@ SystemContext ContextEngine::evaluate(
     // Balance: 0.70 blocked too many real-device samples whose telemetry is
     // usable but not perfect. 0.60 still rejects noisy/unknown sensors.
     const bool confident = context.confidence >= 0.60;
-    const bool stressed =
-        safety_state || !context.thermal_headroom || !context.memory_headroom ||
-        sample.throttling_detected ||
-        (sample.psi_available && sample.psi_cpu_some_avg10 >= 0.20);
+    const bool measured_thermal_stress = sample.thermal_available &&
+                                         sample.thermal_millidegrees >= 52000;
+    const bool measured_memory_stress = sample.mem_total_kb > 0U &&
+        (sample.mem_available_ratio < 0.14 ||
+         (sample.memory_stall_detected && sample.memory_stall_score >= 0.25));
+    const bool measured_pressure = sample.throttling_detected ||
+        (sample.psi_available &&
+         (sample.psi_cpu_some_avg10 >= 0.20 ||
+          sample.psi_memory_some_avg10 >= 0.15 ||
+          sample.psi_io_some_avg10 >= 0.15));
+    // A state label or a missing sensor is not, by itself, reliable evidence
+    // for a stabilizing write. Require at least one valid measured stress signal;
+    // the policy can still consider ordinary candidates with a graded risk penalty.
+    const bool state_has_trusted_sensor =
+        (state == RuntimeState::ThermalGuard && sample.thermal_available) ||
+        (state == RuntimeState::Pressure &&
+         (sample.mem_total_kb > 0U || sample.psi_available ||
+          sample.memory_stall_detected));
+    const bool stressed = measured_thermal_stress || measured_memory_stress ||
+                          measured_pressure || state_has_trusted_sensor;
 
     context.mutation_allowed_by_context =
         !safety_state &&

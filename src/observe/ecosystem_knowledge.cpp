@@ -1,6 +1,7 @@
 #include "coreflow/ecosystem_knowledge.hpp"
 
 #include <cstring>
+#include <string_view>
 
 namespace coreflow {
 namespace {
@@ -252,6 +253,23 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByKey(
     if (key.empty()) return nullptr;
     for (const auto& e : kCatalog) {
         if (key == e.key) return &e;
+    }
+
+    // Capability names for device-owned block queue nodes are naturally
+    // prefixed by the discovered device (for example "sda:read_ahead_kb").
+    // Resolve only the three reviewed leaf names; never infer semantics from an
+    // arbitrary prefix or from a broad domain label.
+    const std::size_t separator = key.find(':');
+    if (separator != std::string::npos && separator + 1U < key.size()) {
+        // string_view avoids allocation in this noexcept lookup path.
+        const std::string_view leaf(key.data() + separator + 1U,
+                                    key.size() - separator - 1U);
+        if (leaf == "scheduler")
+            return lookupEcosystemKnowledgeByKey("block.queue.scheduler");
+        if (leaf == "read_ahead_kb")
+            return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
+        if (leaf == "nr_requests")
+            return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
     }
     return nullptr;
 }

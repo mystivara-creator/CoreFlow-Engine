@@ -44,6 +44,7 @@ int main() {
     CHECK(uclamp != nullptr && uclamp->safeForMutation());
 
     RuntimeSample sample;
+    sample.load_available = true;
     sample.load1 = 0.30;
     sample.cpu_utilization = 0.20;
     sample.cpu_utilization_available = true;
@@ -52,14 +53,32 @@ int main() {
     sample.mem_available_ratio = 0.60;
     sample.thermal_available = true;
     sample.thermal_millidegrees = 39000;
+    sample.charging_telemetry_available = true;
+    sample.battery_level_percent = 80;
     sample.confidence = 0.90;
 
     ContextEngine context_engine;
+    PolicyEngine policy;
     const SystemContext context = context_engine.evaluate(sample, RuntimeState::Normal);
     CHECK(context.workload == WorkloadClass::Interactive);
     CHECK(context.mutation_allowed_by_context);
 
-    PolicyEngine policy;
+    RuntimeSample unknown_sensors = sample;
+    unknown_sensors.thermal_available = false;
+    unknown_sensors.charging_telemetry_available = false;
+    const SystemContext uncertain =
+        context_engine.evaluate(unknown_sensors, RuntimeState::Normal);
+    CHECK(!uncertain.thermal_headroom);
+    CHECK(!uncertain.power_headroom);
+    CHECK(!uncertain.mutation_allowed_by_context);
+    CHECK(!uncertain.stabilizing_allowed_by_context);
+    const SystemContext uncertain_guard =
+        context_engine.evaluate(unknown_sensors, RuntimeState::ThermalGuard);
+    CHECK(!uncertain_guard.stabilizing_allowed_by_context);
+    const PolicyPlan uncertain_guard_plan = policy.evaluate(uncertain_guard, resources);
+    CHECK(uncertain_guard_plan.action == PolicyAction::ReduceIntervention);
+    CHECK(!uncertain_guard_plan.mutation_eligible);
+
     const PolicyPlan plan = policy.evaluate(context, resources);
     CHECK(plan.action == PolicyAction::Candidate);
     CHECK(plan.mutation_eligible);
@@ -132,6 +151,7 @@ int main() {
     // Commit 5: adaptive intervention policy coverage.
     {
         RuntimeSample safe_sample;
+        safe_sample.load_available = true;
         safe_sample.load1 = 0.30;
         safe_sample.cpu_utilization = 0.82;
         safe_sample.cpu_utilization_available = true;
@@ -140,6 +160,8 @@ int main() {
         safe_sample.mem_available_ratio = 0.60;
         safe_sample.thermal_available = true;
         safe_sample.thermal_millidegrees = 39000;
+        safe_sample.charging_telemetry_available = true;
+        safe_sample.battery_level_percent = 80;
         safe_sample.confidence = 0.95;
 
         const SystemContext safe_context =
@@ -311,6 +333,7 @@ int main() {
     // v2.1.1 graded context gate.
     {
         RuntimeSample base;
+        base.load_available = true;
         base.load1 = 1.0;
         base.cpu_utilization = 0.50;
         base.cpu_utilization_available = true;
@@ -319,6 +342,9 @@ int main() {
         base.mem_available_ratio = 0.60;
         base.thermal_available = true;
         base.thermal_millidegrees = 39000;
+        base.charging_telemetry_available = true;
+        base.battery_level_percent = 80;
+        base.io_activity_available = true;
         base.confidence = 0.95;
 
         // Heavy I/O no longer blocks tuning.

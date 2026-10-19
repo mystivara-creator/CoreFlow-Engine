@@ -142,7 +142,11 @@ void RuntimeObserver::readMemory(RuntimeSample& sample) const {
 
 void RuntimeObserver::readLoad(RuntimeSample& sample) const {
     std::ifstream file("/proc/loadavg");
-    if (file) file >> sample.load1;
+    double value = 0.0;
+    if (file && (file >> value) && std::isfinite(value) && value >= 0.0) {
+        sample.load1 = value;
+        sample.load_available = true;
+    }
 }
 
 void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {

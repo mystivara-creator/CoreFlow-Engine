@@ -136,7 +136,7 @@ struct Sandbox {
         p.id = 0;
         p.path = policy;
         p.governor = live_governor;
-        p.available_governors = {"powersave", "conservative", "schedutil", "performance"};
+        p.available_governors = {"schedutil", "powersave", "conservative", "performance"};
         p.readable = true;
         p.governor_writable = true;
         profile.cpu_policies.push_back(p);
@@ -149,6 +149,7 @@ RuntimeSample sample(double util, double thermalC) {
     s.mem_total_kb = 1000;
     s.mem_available_kb = 500;
     s.mem_available_ratio = 0.5;
+    s.load_available = true;
     s.load1 = util * 8.0;
     s.cpu_utilization = util;
     s.cpu_utilization_available = true;
@@ -250,6 +251,23 @@ void test_restore_returns_to_factory_and_clears_journal() {
     CHECK(!mc.mutated());
     CHECK(journal.clears == 1);
     CHECK(!journal.has_pending);
+}
+
+void test_kernel_advertised_vendor_governor_is_explorable() {
+    Sandbox box;
+    FakeJournal journal;
+    MutationController controller;
+    controller.setJournal(&journal);
+    DeviceProfile profile = box.profile();
+    profile.cpu_policies.front().available_governors = {"powersave", "vendor_adaptive"};
+
+    CHECK(controller.captureBaseline(profile));
+    const MutationResult result = controller.apply(
+        RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
+    CHECK(result == MutationResult::Verified);
+    CHECK(readLine(box.governor_file) == "vendor_adaptive");
+    CHECK(controller.restoreAll());
+    CHECK(readLine(box.governor_file) == "powersave");
 }
 
 void test_live_governor_drives_decisions_not_stale_snapshot() {
@@ -664,6 +682,7 @@ void test_thermal_thresholds_are_consistent() {
     inside.mem_available_ratio = 0.5;
     inside.cpu_utilization_available = true;
     inside.cpu_utilization = 0.1;
+    inside.load_available = true;
     inside.load1 = 0.1;
     CHECK(policy.evaluate(inside, RuntimeState::ThermalGuard) == RuntimeState::ThermalGuard);
 
@@ -864,7 +883,7 @@ void test_rollback_only_latest_candidate_and_preserve_retained_value() {
     second.id = 1;
     second.path = second_policy;
     second.governor = "powersave";
-    second.available_governors = {"powersave", "conservative", "schedutil", "performance"};
+    second.available_governors = {"schedutil", "powersave", "conservative", "performance"};
     second.readable = true;
     second.governor_writable = true;
     profile.cpu_policies.push_back(second);
@@ -1163,7 +1182,7 @@ void test_multi_policy_mutations_all_restored() {
     second.id = 1;
     second.path = policy1;
     second.governor = "powersave";
-    second.available_governors = {"powersave", "conservative", "schedutil", "performance"};
+    second.available_governors = {"schedutil", "powersave", "conservative", "performance"};
     second.readable = true;
     second.governor_writable = true;
     profile.cpu_policies.push_back(second);
@@ -1411,6 +1430,7 @@ int main() {
     };
     const std::vector<Case> cases = {
         {"restore_returns_to_factory_and_clears_journal", test_restore_returns_to_factory_and_clears_journal},
+        {"kernel_advertised_vendor_governor_is_explorable", test_kernel_advertised_vendor_governor_is_explorable},
         {"live_governor_drives_decisions", test_live_governor_drives_decisions_not_stale_snapshot},
         {"rejected_candidate_cooldown", test_rejected_candidate_is_not_reselected_during_cooldown},
         {"refresh_cannot_rebaseline_mutated", test_refresh_cannot_rebaseline_a_mutated_system},

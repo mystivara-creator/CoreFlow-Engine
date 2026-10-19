@@ -206,8 +206,10 @@ std::string statusToJson(const EngineStatus& s) {
     appendEscaped(out, s.memory_trend);
     out << ",\"cpu_utilization\":";
     if (s.cpu_available) appendNumber(out, s.cpu_utilization); else out << "null";
+    out << ",\"load_available\":";
+    appendBool(out, s.load_available);
     out << ",\"load1\":";
-    appendNumber(out, s.load1);
+    if (s.load_available) appendNumber(out, s.load1); else out << "null";
     out << ",\"load_trend\":";
     appendEscaped(out, s.load_trend);
     out << ",\"io_read_kbs\":";

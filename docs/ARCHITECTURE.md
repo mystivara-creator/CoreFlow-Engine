@@ -13,7 +13,7 @@
 - Default configuration is observe-only and mutation is disarmed.
 - Discovery/readability/writability is evidence, not permission.
 - Inference, confidence, experience memory, and UI selections cannot bypass the final mutation authority.
-- CPUFreq governor changes require the separate `allow_cpu_governor` opt-in.
+- CPUFreq governor changes use the global `mutation_mode=adaptive` + `mutation_armed=true` authority; the legacy `allow_cpu_governor` key is compatibility/diagnostic data, not a separate permission.
 - A write must be bounded, journaled, read-back verified, and recoverable.
 - Unknown or insufficiently described interfaces should remain observation-only rather than receive guessed values.
 - A missing sensor or invalid telemetry value must not be interpreted as a safe reading.

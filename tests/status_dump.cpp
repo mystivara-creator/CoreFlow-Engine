@@ -40,7 +40,7 @@ EngineStatus base() {
     s.devfreq_available = true;
     s.discovered_resources = 38;
     s.mutation_ready_resources = 7;
-    s.block_queue_mutations_quarantined = true;
+    s.block_queue_mutations_quarantined = false;
     s.thermal_available = true;
     s.thermal_c = 41.5;
     s.hottest_c = 43.0;
@@ -49,6 +49,7 @@ EngineStatus base() {
     s.memory_trend = "STABLE";
     s.cpu_available = true;
     s.cpu_utilization = 0.31;
+    s.load_available = true;
     s.load1 = 1.25;
     s.load_trend = "RISING";
     s.io_available = true;

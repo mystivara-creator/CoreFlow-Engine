@@ -96,7 +96,7 @@
         hottest: e.thermal_available === false ? null : num(e.hottest_c),
         thermalTrend: str(e.thermal_trend, 16),
         mem: num(e.mem_available_ratio), memTrend: str(e.memory_trend, 16),
-        cpu: num(e.cpu_utilization), load: num(e.load1), loadTrend: str(e.load_trend, 16),
+        cpu: num(e.cpu_utilization), load: e.load_available === true ? num(e.load1) : null, loadTrend: str(e.load_trend, 16),
         ioRead: num(e.io_read_kbs), ioWrite: num(e.io_write_kbs),
         battery: num(e.battery_percent), charging: bool(e.charging), confidence: num(e.confidence)
       },

@@ -6,7 +6,7 @@
 - Language standard: C++20
 - Minimum Android API declared by the package: 34
 - Default operating mode: `observe`
-- Mutation defaults: `mutation_armed=false`, `legacy `allow_cpu_governor` is ignored`
+- Mutation defaults: `mutation_armed=false`, `allow_cpu_governor` is accepted for compatibility/diagnostics but is not mutation authority
 
 ## v2.4.0 hardening changes
 
@@ -18,11 +18,11 @@
 
 ## Validation status for this source archive
 
-- Host CMake configure/build: passed with GCC 14.2.0 and `CORE_FLOW_BUILD_TESTS=ON`.
-- CTest: 10 of 10 passed, including mutation/resource hardening, safety foundation, WebUI integration, and source-release contract.
-- ASan + UBSan host build and CTest: 10 of 10 passed.
-- Version alignment and source-release checks: passed.
-- Android 14+ ARM64 CI has **not yet been run for the v2.4.0 changes**. The earlier v2.2.5 success is not evidence for the updated journal/actuator code. Installation, long-run stability, boot-loop protection, and recovery on a physical device remain operator validation.
+- Host CMake configure/build with GCC 14.2.0 and `CORE_FLOW_BUILD_TESTS=ON`: passed.
+- Host CTest for this audit snapshot: **23 of 23 passed**.
+- Safety foundation and source-release contracts: passed as part of the host validation.
+- ASan + UBSan: **not verified for this exact source snapshot in this audit**.
+- Android 14+ ARM64 NDK build and physical-device behavior: **not verified here**. An earlier CI result is not evidence for the current source tree. Installation, long-run stability, boot-loop protection, and recovery remain separate operator/CI validation gates.
 
 ## Safety posture
 

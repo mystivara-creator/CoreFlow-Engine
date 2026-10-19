@@ -88,11 +88,13 @@ ThermalFeatureVector buildThermalFeatures(
 
     // Completeness: every source the model depends on must be real telemetry.
     // Thermal trend 0 (Unknown) never occurs in training data, so an unknown
-    // thermal or load trend also disqualifies the model. Memory trend 0 is a
-    // valid training value and is accepted.
+    // thermal or load trend also disqualifies the model. A missing load sample
+    // must not be fed as a synthetic zero. Memory trend 0 is a valid training
+    // value and is accepted.
     const bool telemetry_ok =
         current.thermal_available &&
         current.cpu_utilization_available &&
+        current.load_available &&
         current.charging_telemetry_available &&
         current.io_activity_available &&
         current.battery_level_percent >= 0 &&

@@ -173,6 +173,7 @@ void testGenericDiscovery() {
     const TunableDiscoveryStats stats = discovery.discover(matrix, vendor);
     CHECK(stats.added >= 10U);
     CHECK(stats.fatal_skipped >= 4U);
+    CHECK(stats.visited_entries <= TunableDiscovery::kMaxVisits);
 
     const auto* swap = findCap(matrix, r + "/proc/sys/vm/swappiness");
     CHECK(swap && swap->domain == ResourceDomain::Memory && swap->name == "vm.swappiness" &&
@@ -243,6 +244,14 @@ void testGenericDiscovery() {
     CHECK(ud.eligible && ud.stabilizing && ud.requested == "8.75");
     // A zero clamp cannot go lower: nothing to propose under thermal stress.
     CHECK(!model.evaluate(*clamp, "0.00", hot).eligible);
+    // A vendor scalar with "uclamp" in its name does not inherit the standard
+    // cgroup percentage range unless it is the cpu.uclamp.min/max interface.
+    ResourceCapability custom_uclamp = *clamp;
+    custom_uclamp.name = "vendor.uclamp_profile";
+    custom_uclamp.path = r + "/dev/cpuctl/top-app/vendor.uclamp_profile";
+    custom_uclamp.options.clear();
+    custom_uclamp.vendor_values.clear();
+    CHECK(model.proposals(custom_uclamp, "10", hot).empty());
     // Thermal: the vendor's low-power cpuset is the stabilizing choice.
     const EffectScore cs = model.evaluate(*cpus, "0-3", hot);
     CHECK(cs.eligible && cs.requested == "0-1" && cs.source == CandidateSource::VendorEfficiency);
@@ -358,6 +367,41 @@ void testRootsComeFromMountTable() {
 // A writable node in a recognised tree is admitted only when its subsystem is
 // recognised or the vendor declares it. Unknown writable nodes are counted as
 // unclaimed. Symlinks are never followed, so a bus link cannot duplicate a node.
+void testDiscoveryCapacityReportsTruncation() {
+    EnvironmentCapabilityMatrix saturated;
+    saturated.resources.resize(TunableDiscovery::kMaxTunables);
+    const TunableDiscoveryStats stats = TunableDiscovery{}.discover(saturated, VendorKnowledge{});
+    CHECK(stats.truncated);
+    CHECK(stats.visited_entries == 0U);
+    CHECK(stats.added == 0U);
+    CHECK(saturated.resources.size() == TunableDiscovery::kMaxTunables);
+}
+
+void testDiscoveryInputAndDirectoryBounds() {
+    const fs::path root = fs::temp_directory_path() / "coreflow_capdrv_bounds";
+    fs::remove_all(root);
+    const std::string r = root.string();
+
+    // An overlong scalar cannot be silently truncated into a plausible value.
+    writeFile(root / "sys/class/devfreq/gpu/odd_attr", std::string(5000U, '7'));
+    // A wide, unclaimed directory exercises the per-directory memory/work cap
+    // without admitting hundreds of meaningless resources into the matrix.
+    for (std::size_t i = 0; i < TunableDiscovery::kMaxVisits / 9U + 1U; ++i) {
+        const std::string leaf = "entry" + std::to_string(i);
+        writeFile(root / "sys/unmapped" / leaf, "1");
+    }
+    writeFile(root / "proc/mounts", "none " + r + "/sys sysfs rw 0 0\n");
+
+    EnvironmentCapabilityMatrix matrix;
+    VendorKnowledge vendor;
+    const TunableDiscoveryStats stats = TunableDiscovery(r).discover(matrix, vendor);
+    CHECK(stats.truncated);
+    CHECK(stats.visited_entries <= TunableDiscovery::kMaxDirectoryEntries + 16U);
+    CHECK(findCap(matrix, r + "/sys/class/devfreq/gpu/odd_attr") == nullptr);
+    CHECK(matrix.resources.size() < TunableDiscovery::kMaxTunables);
+    fs::remove_all(root);
+}
+
 void testUnclaimedAndSymlinks() {
     const fs::path root = fs::temp_directory_path() / "coreflow_capdrv_unclaimed";
     fs::remove_all(root);
@@ -393,6 +437,8 @@ int main() {
     testFatalGuard();
     testGenericDiscovery();
     testRootsComeFromMountTable();
+    testDiscoveryCapacityReportsTruncation();
+    testDiscoveryInputAndDirectoryBounds();
     testUnclaimedAndSymlinks();
     if (failures == 0) std::cout << "CoreFlow capability-driven contract: PASS\n";
     return failures == 0 ? 0 : 1;

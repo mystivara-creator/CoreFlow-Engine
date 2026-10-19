@@ -78,9 +78,11 @@ BaselineIntelligence::BaselinePoint BaselineIntelligence::project(
     BaselinePoint point;
     point.thermal = sample.thermal_available;
     point.thermal_c = static_cast<double>(sample.hottest_thermal_millidegrees) / 1000.0;
+    point.load_available = sample.load_available;
     point.load = sample.load1;
     point.cpu_available = sample.cpu_utilization_available;
     point.cpu = sample.cpu_utilization;
+    point.memory_available = sample.mem_total_kb > 0U;
     point.memory = sample.mem_available_ratio;
     point.charging_telemetry = sample.charging_telemetry_available;
     point.charging = sample.charging;
@@ -107,7 +109,7 @@ void BaselineIntelligence::accumulate(
         accumulateMetric(aggregate.thermal_c, point.thermal_c);
     }
 
-    if (finite(point.load) && point.load >= 0.0) {
+    if (point.load_available && finite(point.load) && point.load >= 0.0) {
         accumulateMetric(aggregate.load, point.load);
     }
 
@@ -116,7 +118,8 @@ void BaselineIntelligence::accumulate(
         accumulateMetric(aggregate.cpu, point.cpu);
     }
 
-    if (finite(point.memory) && point.memory >= 0.0 && point.memory <= 1.0) {
+    if (point.memory_available && finite(point.memory) &&
+        point.memory >= 0.0 && point.memory <= 1.0) {
         accumulateMetric(aggregate.memory, point.memory);
     }
 
@@ -218,11 +221,13 @@ double BaselineIntelligence::stabilityScore(
 
 double BaselineIntelligence::calculateStabilityScore(
     const Aggregate& baseline,
-    const Aggregate& candidate) noexcept {
+    const Aggregate& candidate,
+    bool contextCompatibleValue) noexcept {
     double score = 0.0;
     double weight = 0.0;
 
-    if (baseline.thermal_c.samples > 1U && candidate.thermal_c.samples > 1U) {
+    if (contextCompatibleValue && baseline.thermal_c.samples > 1U &&
+        candidate.thermal_c.samples > 1U) {
         score += stabilityScore(baseline.thermal_c, candidate.thermal_c) * 0.40;
         weight += 0.40;
     }
@@ -271,21 +276,38 @@ double BaselineIntelligence::calculateConfidence(
     bool contextCompatibleValue) noexcept {
     if (baseline.samples == 0U || candidate.samples == 0U) return 0.0;
 
-    const double baselineCoverage =
-        static_cast<double>(std::max({
-            baseline.thermal_c.samples,
-            baseline.load.samples,
-            baseline.cpu.samples,
-            baseline.memory.samples})) /
-        static_cast<double>(baseline.samples);
+    const auto coverageCount = [](std::size_t metricSamples,
+                                  std::size_t sampleCount) noexcept {
+        if (sampleCount == 0U) return 0.0;
+        return clamp01(static_cast<double>(metricSamples) /
+                       static_cast<double>(sampleCount));
+    };
+    const auto coverage = [&coverageCount](const MetricAggregate& metric,
+                                           std::size_t sampleCount) noexcept {
+        return coverageCount(metric.samples, sampleCount);
+    };
 
-    const double candidateCoverage =
-        static_cast<double>(std::max({
-            candidate.thermal_c.samples,
-            candidate.load.samples,
-            candidate.cpu.samples,
-            candidate.memory.samples})) /
-        static_cast<double>(candidate.samples);
+    // Average coverage across dimensions rather than taking the maximum. A
+    // single fully available sensor must not report near-perfect confidence
+    // while all other telemetry is missing. Charging availability is included
+    // as context evidence, not as an outcome score.
+    const double baselineCoverage = (
+        (contextCompatibleValue ? coverage(baseline.thermal_c, baseline.samples) : 0.0) +
+        coverage(baseline.load, baseline.samples) +
+        coverage(baseline.cpu, baseline.samples) +
+        coverage(baseline.memory, baseline.samples) +
+        coverage(baseline.psi_pressure, baseline.samples) +
+        coverage(baseline.io_latency_ms, baseline.samples) +
+        coverageCount(baseline.charging_telemetry_samples, baseline.samples)) / 7.0;
+
+    const double candidateCoverage = (
+        (contextCompatibleValue ? coverage(candidate.thermal_c, candidate.samples) : 0.0) +
+        coverage(candidate.load, candidate.samples) +
+        coverage(candidate.cpu, candidate.samples) +
+        coverage(candidate.memory, candidate.samples) +
+        coverage(candidate.psi_pressure, candidate.samples) +
+        coverage(candidate.io_latency_ms, candidate.samples) +
+        coverageCount(candidate.charging_telemetry_samples, candidate.samples)) / 7.0;
 
     const double sampleConfidence = std::min(
         1.0,
@@ -297,10 +319,7 @@ double BaselineIntelligence::calculateConfidence(
         (0.30 * baselineCoverage) +
         (0.25 * candidateCoverage);
 
-    if (!contextCompatibleValue) {
-        confidence *= 0.50;
-    }
-
+    if (!contextCompatibleValue) confidence *= 0.50;
     return clamp01(confidence);
 }
 
@@ -371,6 +390,20 @@ BaselineIntelligence::evaluate() const noexcept {
     result.context_compatible =
         contextCompatible(baseline_, observation_);
 
+    const auto paired = [](const MetricAggregate& before,
+                           const MetricAggregate& after) noexcept {
+        return before.samples > 0U && after.samples > 0U;
+    };
+    result.load_available = paired(baseline_.load, observation_.load);
+    result.comparable_metrics =
+        static_cast<std::size_t>(result.context_compatible &&
+            paired(baseline_.thermal_c, observation_.thermal_c)) +
+        static_cast<std::size_t>(result.load_available) +
+        static_cast<std::size_t>(paired(baseline_.cpu, observation_.cpu)) +
+        static_cast<std::size_t>(paired(baseline_.memory, observation_.memory)) +
+        static_cast<std::size_t>(paired(baseline_.psi_pressure, observation_.psi_pressure)) +
+        static_cast<std::size_t>(paired(baseline_.io_latency_ms, observation_.io_latency_ms));
+
     double weightedScore = 0.0;
     double totalWeight = 0.0;
 
@@ -414,10 +447,18 @@ BaselineIntelligence::evaluate() const noexcept {
         totalWeight += kMemoryWeight;
     }
 
-    result.stability_score =
-        calculateStabilityScore(baseline_, observation_);
-    weightedScore += result.stability_score * kStabilityWeight;
-    totalWeight += kStabilityWeight;
+    result.stability_score = calculateStabilityScore(
+        baseline_, observation_, result.context_compatible);
+    const bool stabilityEvidence =
+        (result.context_compatible && baseline_.thermal_c.samples > 1U &&
+         observation_.thermal_c.samples > 1U) ||
+        (baseline_.load.samples > 1U && observation_.load.samples > 1U) ||
+        (baseline_.cpu.samples > 1U && observation_.cpu.samples > 1U) ||
+        (baseline_.memory.samples > 1U && observation_.memory.samples > 1U);
+    if (stabilityEvidence) {
+        weightedScore += result.stability_score * kStabilityWeight;
+        totalWeight += kStabilityWeight;
+    }
 
     if (baseline_.psi_pressure.samples > 0U &&
         observation_.psi_pressure.samples > 0U) {
@@ -447,7 +488,7 @@ BaselineIntelligence::evaluate() const noexcept {
     result.overall_score = clamp01(weightedScore / totalWeight);
     result.confidence = calculateConfidence(
         baseline_, observation_, result.context_compatible);
-    result.valid = result.confidence >= 0.50;
+    result.valid = result.confidence >= 0.50 && result.comparable_metrics >= 2U;
 
     if (!result.valid) {
         result.outcome = Outcome::Inconclusive;

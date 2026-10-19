@@ -88,7 +88,8 @@ Situation classify(const EffectContext& ctx) noexcept {
     s.thermal = ctx.thermal_available &&
                 (ctx.state == RuntimeState::ThermalGuard || ctx.state == RuntimeState::Warming ||
                  ctx.thermal_c >= 48.0);
-    s.memory = ctx.state == RuntimeState::Pressure || ctx.mem_available_ratio < 0.15 ||
+    s.memory = ctx.state == RuntimeState::Pressure ||
+               (ctx.memory_available && ctx.mem_available_ratio < 0.15) ||
                ctx.memory_stall_detected;
     s.io_pressure =
         (ctx.psi_available &&
@@ -164,6 +165,12 @@ double outcomeRisk(const Situation& s, bool stabilizing, CandidateSource source,
     if (source == CandidateSource::BoundedStep) risk += 0.08;
     if (source == CandidateSource::KernelOption) risk += 0.05;
     if (ctx.intervention == InterventionLevel::Low) risk += 0.04;
+    // Missing telemetry is uncertainty, not proof of available headroom. Apply
+    // a graded per-candidate penalty instead of a global veto so known, bounded
+    // candidates can still compete when the rest of their evidence is strong.
+    if (!ctx.thermal_available) risk += 0.05;
+    if (!ctx.memory_available) risk += 0.05;
+    if (!ctx.charging_telemetry_available) risk += 0.03;
     if (ctx.has_experience && ctx.experience_confidence >= 0.40) {
         if (ctx.experience_score < 0.45) risk += (0.45 - ctx.experience_score) * 0.40;
         else if (ctx.experience_score > 0.55) risk -= (ctx.experience_score - 0.55) * 0.20;
@@ -279,6 +286,22 @@ std::vector<EffectScore> EffectModel::proposals(
         if (!situation.stressed() && !situation.elevated && !situation.calm_explore &&
             !(block_scheduler && situation.io_pressure)) return out;
 
+        // The standard cgroup cpu.uclamp.{min,max} interface is expressed as a
+        // percentage (0..100). Do not extend that range to arbitrary vendor paths
+        // merely because their names contain "uclamp"; those require their own
+        // declared semantics or kernel-advertised options.
+        const bool cgroup_uclamp_percent =
+            capability.domain == ResourceDomain::UClamp &&
+            (capability.path.find("/dev/cpuctl/") != std::string::npos ||
+             capability.path.rfind("/sys/fs/cgroup/", 0U) == 0U) &&
+            (endsWith(capability.path, "/cpu.uclamp.min") ||
+             endsWith(capability.path, "/cpu.uclamp.max"));
+        const bool semantic_numeric_bounds = cgroup_uclamp_percent ||
+            (knowledge != nullptr &&
+             (knowledge->risk == KnowledgeRisk::BoundedTune ||
+              (knowledge->risk == KnowledgeRisk::VendorVolatile &&
+               knowledge->path != nullptr && capability.path == knowledge->path)));
+
         const double base_confidence = clamp01(ctx.sample_confidence * 0.92);
         long long base_num = 0;
         const bool base_numeric = parseInteger(base_text, base_num);
@@ -316,7 +339,9 @@ std::vector<EffectScore> EffectModel::proposals(
                 if (existing.requested == requested) return;
             }
             const double benefit = outcomeBenefit(situation, evidence_stabilizing, source, ctx);
-            const double risk = outcomeRisk(situation, evidence_stabilizing, source, ctx, direction);
+            double risk = outcomeRisk(situation, evidence_stabilizing, source, ctx, direction);
+            if (knowledge == nullptr) risk += 0.04;
+            else if (knowledge->risk == KnowledgeRisk::VendorVolatile) risk += 0.06;
             EffectScore score;
             score.requested = requested;
             score.source = source;
@@ -458,7 +483,11 @@ std::vector<EffectScore> EffectModel::proposals(
             return std::string(negative ? "-" : "") +
                    std::to_string(magnitude / unsigned_div) + "." + frac;
         };
-        if (numeric && capability.options.empty()) {
+        // An arbitrary scalar is not evidence of its valid range or effect. Only
+        // generate +/- steps for a catalogued, bounded interface (or an exact
+        // VendorVolatile leaf); unfamiliar nodes need kernel-advertised options,
+        // vendor operating points, or measured evidence instead of guessed bounds.
+        if (numeric && capability.options.empty() && semantic_numeric_bounds) {
             const unsigned long long magnitude = scaled < 0
                 ? static_cast<unsigned long long>(-(scaled + 1LL)) + 1ULL
                 : static_cast<unsigned long long>(scaled);
@@ -472,10 +501,13 @@ std::vector<EffectScore> EffectModel::proposals(
                 const long long step = std::max<long long>(1, signed_magnitude / 8);
                 const long long min = std::numeric_limits<long long>::min();
                 const long long max = std::numeric_limits<long long>::max();
-                const long long lower_bound = scaled > 0 ? std::max<long long>(1, scaled / 2)
-                    : (scaled < min / 2 ? min : scaled * 2);
-                const long long upper_bound = scaled > 0
-                    ? (scaled > max / 2 ? max : scaled * 2) : scaled / 2;
+                const long long scale = decimals > 0
+                    ? static_cast<long long>(std::pow(10.0, decimals)) : 1LL;
+                const long long lower_bound = cgroup_uclamp_percent ? 0LL :
+                    (scaled > 0 ? std::max<long long>(1, scaled / 2)
+                                : (scaled < min / 2 ? min : scaled * 2));
+                const long long upper_bound = cgroup_uclamp_percent ? 100LL * scale :
+                    (scaled > 0 ? (scaled > max / 2 ? max : scaled * 2) : scaled / 2);
                 const long long raw_down = scaled < min + step ? min : scaled - step;
                 const long long raw_up = scaled > max - step ? max : scaled + step;
                 const long long down = std::max(lower_bound, raw_down);

@@ -48,7 +48,7 @@ RuntimeState AdaptivePolicy::evaluate(
     const bool cpu_busy = sample.cpu_utilization_available &&
                           sample.cpu_utilization >= kElevatedUtil;
     const bool load_busy = !sample.cpu_utilization_available &&
-                           sample.load1 >= kElevatedLoad;
+                           sample.load_available && sample.load1 >= kElevatedLoad;
 
     // I/O pressure is a first-class workload signal. Without this branch a
     // device can show sustained PSI/latency but remain Normal/Idle, which makes
@@ -66,9 +66,13 @@ RuntimeState AdaptivePolicy::evaluate(
     // sleep (180-300 s) and an epoch restore, so it also requires low measured
     // CPU utilization, matching ContextEngine's Idle workload definition.
     constexpr double kIdleUtil = 0.15;
-    if (sample.load1 < 0.20 &&
-        (!sample.cpu_utilization_available || sample.cpu_utilization < kIdleUtil))
+    const bool cpu_idle = sample.cpu_utilization_available &&
+                          sample.cpu_utilization < kIdleUtil;
+    const bool load_idle = sample.load_available && sample.load1 < 0.20;
+    if ((load_idle && (!sample.cpu_utilization_available || cpu_idle)) ||
+        (!sample.load_available && cpu_idle)) {
         return RuntimeState::Idle;
+    }
 
     return RuntimeState::Normal;
 }

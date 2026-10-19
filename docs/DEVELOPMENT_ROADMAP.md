@@ -1,4 +1,6 @@
-# CoreFlow Autonomous Engine — Final Development Handoff
+# CoreFlow Autonomous Engine — Final Development Handoff (Historical Snapshot)
+
+> **Historical v2.2.0 handoff.** This is not the current v2.4.0 feature/status inventory; use current source, tests, and `docs/BUILD_STATUS.md` for present behavior.
 
 **Current source identity:** `v2.2.0` / `versionCode 2200`  
 **Position:** final development snapshot; pre-production, not device-certified.

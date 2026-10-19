@@ -28,18 +28,22 @@ namespace coreflow {
 // Admissibility beyond that is decided by classifySurface(). No parameter names
 // are listed anywhere in this module.
 struct TunableDiscoveryStats {
-    std::size_t walked{0};         // writable-candidate files examined
-    std::size_t added{0};          // candidates admitted into the matrix
-    std::size_t vendor_paths{0};   // vendor-declared nodes admitted
-    std::size_t fatal_skipped{0};  // refused by the universal fatal guard
-    std::size_t unclaimed{0};      // writable, unrecognised, undeclared: not admitted
-    bool truncated{false};         // visit budget reached before the walk finished
+    std::size_t walked{0};          // writable-candidate files examined
+    std::size_t added{0};           // candidates admitted into the matrix
+    std::size_t vendor_paths{0};    // vendor-declared nodes admitted
+    std::size_t fatal_skipped{0};   // refused by the universal fatal guard
+    std::size_t unclaimed{0};       // writable, unrecognised, undeclared: not admitted
+    std::size_t visited_entries{0}; // shared budget across every mount and vendor node
+    bool truncated{false};          // a traversal/input cap was reached; inventory may be incomplete
 };
 
 class TunableDiscovery {
 public:
     static constexpr std::size_t kMaxTunables = 4096;
     static constexpr std::size_t kMaxVisits = 40000;
+    static constexpr std::size_t kMaxDirectoryEntries = 4096;
+    static constexpr std::size_t kMaxFirstLineBytes = 4096;
+    static constexpr std::size_t kMaxOptionListBytes = 64U * 1024U;
     static constexpr std::size_t kSysfsDepth = 8;
     static constexpr std::size_t kSysctlDepth = 4;
     static constexpr std::size_t kCgroupDepth = 1;

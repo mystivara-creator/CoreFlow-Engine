@@ -21,6 +21,7 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
     s.thermal_available = true;
     s.thermal_millidegrees = milli_c;
     s.hottest_thermal_millidegrees = milli_c;
+    s.load_available = true;
     s.load1 = load;
     s.cpu_utilization_available = true;
     s.cpu_utilization = cpu;
@@ -207,6 +208,32 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         CHECK(bi.outcome() != BaselineIntelligence::Outcome::Regression);
         // A fresh window is required before the next candidate.
         CHECK(!bi.baselineReady());
+    }
+
+    // Missing load/memory telemetry must not be interpreted as real zeroes,
+    // and one measured dimension alone cannot prove a candidate outcome.
+    {
+        RuntimeSample unavailable_load;
+        CHECK(policy.evaluate(unavailable_load, RuntimeState::Normal) == RuntimeState::Normal);
+
+        RuntimeSample sparse;
+        sparse.thermal_available = true;
+        sparse.thermal_millidegrees = 45000;
+        sparse.hottest_thermal_millidegrees = 45000;
+        sparse.mem_available_ratio = 0.0;  // meaningless without mem_total_kb
+        BaselineIntelligence bi;
+        for (std::size_t i = 0; i < BaselineIntelligence::kBaselineSamples; ++i)
+            (void)bi.captureBaseline(sparse);
+        CHECK(bi.beginObservation());
+        bool done = false;
+        for (std::size_t i = 0; i < BaselineIntelligence::kObservationSamples; ++i)
+            done = bi.observe(sparse);
+        CHECK(done);
+        CHECK(bi.result().comparable_metrics == 1U);
+        CHECK(!bi.result().valid);
+        CHECK(bi.outcome() == BaselineIntelligence::Outcome::Inconclusive);
+        CHECK(!bi.result().load_available);
+        CHECK(!bi.result().memory_available);
     }
 
     // A zero available-memory baseline is valid telemetry. A subsequent

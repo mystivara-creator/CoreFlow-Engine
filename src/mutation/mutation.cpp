@@ -5,9 +5,11 @@
 #include "coreflow/policy.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace coreflow {
@@ -17,13 +19,19 @@ constexpr char kGovernorSuffix[] = "/scaling_governor";
 constexpr std::size_t kGovernorSuffixSize = sizeof(kGovernorSuffix) - 1U;
 constexpr double kAdaptiveHysteresis = 0.10;
 
-const char* knownGovernor(const std::string& governor) noexcept {
-    if (governor == "performance") return "performance";
-    if (governor == "walt") return "walt";
-    if (governor == "schedutil") return "schedutil";
-    if (governor == "conservative") return "conservative";
-    if (governor == "powersave") return "powersave";
-    return nullptr;
+constexpr std::size_t kMaxGovernorNameBytes = 128U;
+
+// Governor identifiers are data supplied by the kernel, not a source-code
+// whitelist. Validate only token shape here; eligibility still requires exact
+// presence in the target policy's kernel-advertised list and a target-bound
+// permit at the actuator boundary.
+bool validGovernorToken(std::string_view governor) noexcept {
+    if (governor.empty() || governor.size() > kMaxGovernorNameBytes) return false;
+    for (const char raw : governor) {
+        const auto ch = static_cast<unsigned char>(raw);
+        if (!std::isalnum(ch) && ch != '_' && ch != '-' && ch != '.') return false;
+    }
+    return true;
 }
 
 std::string governorPathOf(const std::string& policy_path) {
@@ -251,16 +259,18 @@ double MutationController::governorScore(
     RuntimeState state,
     const RuntimeSample& /*sample*/
 ) const noexcept {
-    // This function establishes eligibility, not a hand-authored ranking.
-    // Empirical ranking is applied from ExperienceMemory in buildPlan().
-    if (knownGovernor(governor) == nullptr) return -1.0;
+    // Eligibility comes from this policy's kernel-advertised capability list;
+    // experience changes ranking only after candidate-specific observations.
+    if (!validGovernorToken(governor)) return -1.0;
 
     switch (state) {
         case RuntimeState::Idle:
         case RuntimeState::Pressure:
             return -1.0;
         case RuntimeState::ThermalGuard:
-            // Explicit safety fallback: do not explore under thermal guard.
+            // The standard powersave governor is a deliberate thermal fallback.
+            // Other kernel-advertised vendor governors remain ineligible here
+            // unless the policy gains an explicit, evidence-backed thermal role.
             return governor == "powersave" ? 0.5 : -1.0;
         case RuntimeState::Normal:
         case RuntimeState::Warming:
@@ -394,35 +404,18 @@ bool MutationController::buildPlan(
                 continue;
             }
 
-            const auto advertised = [&policy](const std::string& value) {
-                return std::find(policy.available_governors.begin(),
-                                 policy.available_governors.end(), value) !=
-                       policy.available_governors.end();
-            };
-
             std::string bootstrap;
-            const bool schedutilAdvertised = advertised("schedutil");
-
-            // Bootstrap with a generally adaptive governor if it is advertised
-            // and unmeasured. Respect its rejection cooldown rather than
-            // switching to a different candidate to bypass that cooldown.
-            if (schedutilAdvertised && current != "schedutil" &&
-                experienceRecordFor("schedutil") == nullptr) {
-                if (isRejected(policy.path, "schedutil")) continue;
-                bootstrap = "schedutil";
-            } else {
-                // If that bootstrap candidate is already current or has usable
-                // experience, try the first advertised, unmeasured alternative.
-                for (const std::string& candidate : policy.available_governors) {
-                    if (candidate.empty() || candidate == current ||
-                        knownGovernor(candidate) == nullptr ||
-                        isRejected(policy.path, candidate) ||
-                        experienceRecordFor(candidate) != nullptr) {
-                        continue;
-                    }
-                    bootstrap = candidate;
-                    break;
+            // Bootstrap from the kernel's advertised alternatives, not a
+            // hard-coded governor name. A previously rejected candidate remains
+            // under cooldown; choosing a vendor governor never bypasses it.
+            for (const std::string& candidate : policy.available_governors) {
+                if (!validGovernorToken(candidate) || candidate == current ||
+                    isRejected(policy.path, candidate) ||
+                    experienceRecordFor(candidate) != nullptr) {
+                    continue;
                 }
+                bootstrap = candidate;
+                break;
             }
 
             if (bootstrap.empty()) continue;

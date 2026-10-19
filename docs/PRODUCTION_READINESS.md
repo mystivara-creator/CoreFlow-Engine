@@ -1,4 +1,6 @@
-# Production Readiness Scorecard — CoreFlow v2.2.0
+# Production Readiness Scorecard — CoreFlow v2.2.0 (Historical Snapshot)
+
+> **Historical evaluation; not a score for the current v2.4.0 tree.** Statements below about block-queue quarantine, test counts, and readiness gates belong to the older v2.2.0 source snapshot and must not be treated as the current implementation contract. See `docs/BUILD_STATUS.md` for current validation limits.
 
 **Verdict: TEST-READY / PRE-PRODUCTION — Target rating 9/10 for “siap diuji”, not “production stable.”**
 

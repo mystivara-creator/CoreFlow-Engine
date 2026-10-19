@@ -112,7 +112,7 @@ grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf
 grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q "v${VERSION}" "$ROOT/README.md"
 grep -q "v${VERSION}" "$ROOT/docs/BUILD_STATUS.md"
-grep -q 'v2.1.0' "$ROOT/CHANGELOG.md"
+grep -q "^## v${VERSION}" "$ROOT/CHANGELOG.md"
 
 MODEL="$ROOT/module/system/etc/coreflow/thermal_predictor.onnx"
 MODEL_SHA="$(sha256sum "$MODEL" | cut -d' ' -f1)"

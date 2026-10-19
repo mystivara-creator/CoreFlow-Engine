@@ -30,9 +30,10 @@ public:
     int monitorIntervalSeconds() const noexcept { return monitor_interval_seconds_; }
     double minConfidence() const noexcept { return min_confidence_; }
     MutationMode mutationMode() const noexcept { return mutation_mode_; }
-    // Default-deny. Each domain is writable only when the config grants it
-    // explicitly (allow_cpu_governor=yes, grant_<domain>=yes). A missing key
-    // grants nothing. Capability discovery alone never authorises a write.
+    // Default-deny. A domain is writable only when its grant_<domain>=yes key
+    // is present in the current config snapshot. allow_cpu_governor is retained
+    // for compatibility/diagnostics but is not mutation authority. Missing keys
+    // grant nothing; capability discovery alone never authorises a write.
     bool allowCpuGovernor() const noexcept { return allow_cpu_governor_; }
     bool mutationArmed() const noexcept { return mutation_armed_; }
     bool runtimeRefreshEnabled() const noexcept { return runtime_refresh_enabled_; }

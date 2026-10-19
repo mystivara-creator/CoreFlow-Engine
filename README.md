@@ -92,10 +92,11 @@ Keep ONNX Runtime SDK/cache and build trees outside the source tree.
 |------|--------|
 | Host CMake + deterministic tests | Passed |
 | CTest (hardening, safety, WebUI, release contract) | Passed |
-| ASan + UBSan | Passed |
-| Android 14+ ARM64 production build | Passed |
+| ASan + UBSan on this exact source snapshot | Not verified in this audit |
+| Android 14+ ARM64 production build | Not verified in this audit; run the Android CI workflow |
+| Physical-device behavior / recovery | Operator validation required |
 
-CI success validates the build pipeline and the journal/actuator hardening. It does **not** certify behavior on every device. Installation, soak, recovery, and KernelSU/Magisk path testing remain operator gates before Adaptive mode.
+The source-package audit validates host build/contracts only. An older CI result does not certify this exact snapshot. Android ARM64 build, installation, soak, recovery, and KernelSU/Magisk path testing remain separate gates before Adaptive mode.
 
 See [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) and [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md).
 

@@ -110,6 +110,31 @@ int testExplicitNoDeniesOnlyItsDomain() {
     return 0;
 }
 
+
+// Re-loading a reduced config is a replacement, not a merge: omitted grants
+// must be withdrawn instead of leaking from the previously loaded file.
+int testReloadWithdrawsOmittedGrants() {
+    const fs::path first = writeConfig(
+        "coreflow_grant_reload_first.ini",
+        "mutation_mode=adaptive\nmutation_armed=true\ngrant_memory=yes\ngrant_gpu=yes\n");
+    const fs::path second = writeConfig(
+        "coreflow_grant_reload_second.ini",
+        "mutation_mode=adaptive\nmutation_armed=true\n");
+    EngineConfig config;
+    CHECK(config.load(first.string()));
+    CHECK(config.grantMemory());
+    CHECK(config.grantGpu());
+    CHECK(config.load(second.string()));
+    CHECK(!config.grantMemory());
+    CHECK(!config.grantGpu());
+    CHECK(!config.allowCpuGovernor());
+    CHECK(config.mutationMode() == MutationMode::Adaptive);
+    CHECK(config.mutationArmed());
+    fs::remove(first);
+    fs::remove(second);
+    return 0;
+}
+
 // A rejected mode withdraws every grant as well as arming (fail safe).
 int testRejectedModeWithdrawsGrants() {
     const fs::path path = writeConfig(
@@ -135,6 +160,7 @@ int main() {
     failures += testShippedConfigGrantsAreExplicit() != 0;
     failures += testSingleGrantKeyIsReadAlone() != 0;
     failures += testExplicitNoDeniesOnlyItsDomain() != 0;
+    failures += testReloadWithdrawsOmittedGrants() != 0;
     failures += testRejectedModeWithdrawsGrants() != 0;
     if (failures != 0) {
         std::fprintf(stderr, "CoreFlow authorization gate tests: FAIL (%d)\n", failures);

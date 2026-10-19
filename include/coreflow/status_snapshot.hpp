@@ -53,7 +53,7 @@ struct EngineStatus {
     std::size_t discovered_resources{0};
     std::size_t mutation_ready_resources{0};
     std::vector<ExpandedDomainStatus> expanded_domains;
-    bool block_queue_mutations_quarantined{true};
+    bool block_queue_mutations_quarantined{false};
 
     // eyes: what the engine measured this cycle
     bool thermal_available{false};
@@ -64,6 +64,7 @@ struct EngineStatus {
     std::string memory_trend;
     bool cpu_available{false};
     double cpu_utilization{0.0};
+    bool load_available{false};
     double load1{0.0};
     std::string load_trend;
     bool io_available{false};

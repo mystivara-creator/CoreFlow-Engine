@@ -23,9 +23,11 @@ Authorization (default-deny, each gate traceable):
 
 - Mutation requires `mutation_mode=adaptive`, `mutation_armed=true`, and
   `interactivity_mode=adaptive` for boosts.
-- Each domain requires an explicit grant: `allow_cpu_governor` for governors, and
-  `grant_<domain>` for memory, block_queue, scheduler, gpu, cgroup, cpufreq, and kernel.
-  A missing key grants nothing. `default.conf` states the shipped grants explicitly.
+- Resource-domain mutations require the matching `grant_<domain>` consultation grant
+  (memory, block_queue, scheduler, gpu, cgroup, cpufreq, and kernel), and a missing key
+  grants nothing. CPUFreq governor changes use the global Adaptive + armed authority;
+  the legacy `allow_cpu_governor` key is retained only for compatibility/diagnostics.
+  `default.conf` states the shipped per-domain grants explicitly.
 - Boost domain mapping: GPU minimum frequency to `grant_gpu`, top-app uclamp to
   `grant_cgroup`, read-ahead to `grant_block_queue`.
 - A rejected `mutation_mode` also withdraws every grant (fail safe).
@@ -47,8 +49,9 @@ Journal and restore:
 
 ## Consequences
 
-- With the shipped `default.conf`, behaviour after arming is unchanged for every domain.
-  An operator who writes a partial config gets less than before, and that is intended.
+- With the shipped `default.conf`, behaviour after arming is gated by the configured
+  per-domain grants. An operator who reloads a partial config does not retain omitted
+  authority grants; that fail-closed behavior is intentional.
 - Boosts can now be restored and re-applied. Previously they ran once per path. This
   changes on-device behaviour and must be validated on device.
 - `recoverFromJournal` must be called once before the first `apply()`. The autonomous

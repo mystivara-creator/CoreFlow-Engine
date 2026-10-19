@@ -48,19 +48,18 @@ account of what the daemon can and cannot control.
    machine. A new process in the foreground group opens a window. Continued I/O
    pressure extends it, up to a hard cap. Its thresholds are heuristics and must be
    measured on device before any actuator depends on them.
-3. **GPU load producer (not yet).** Read the GPU busy or load node that discovery
-   finds in the GPU class. Map it to `Signal::GpuBusyRatio`. Node format must be
-   validated per SoC family before use.
-4. **Actuators (not yet), in order of risk:**
-   a. Launch window only: during a window, raise the foreground cpu floor through
-      existing uclamp discovery and restore it when the window closes. Reversible
-      and bounded by the discovered options.
-   b. Storage read-ahead during a window, restored afterwards. Uses the existing
-      block-queue tunables. Reverted by the journal if the window ends unclean.
-   c. GPU frequency floor, only inside a window that the frame analyzer reports as
-      missing deadlines, and capped at the discovered maximum. Lowering the GPU
-      maximum to save power is a separate, later decision, because it can cause
-      stutter.
+3. **GPU busy producer (present, not universally integrated).** `GpuBusySource` probes
+   candidate files and validates numeric load readings. A reviewed discovery-to-sensor
+   mapping for arbitrary GPU interfaces is still required before it can be claimed as
+   a universally available signal; the current loop does not treat arbitrary GPU nodes
+   as a trusted, universal busy metric.
+4. **Interactivity actuators (wired, outcome validation pending).** The source tree
+   connects discovered uclamp, read-ahead, and GPU-floor candidates through
+   `InteractivityBoostController`, a dedicated journal and restore paths. These are
+   opt-in through `interactivity_mode=adaptive` and global Adaptive/armed authority.
+   The frame/launch observations are corroborative; code presence alone does not
+   establish that each boost reduces jank on a device. The outcome-specific causal
+   trigger and before/after device measurements remain validation gaps.
 5. **Measurement before claims.** No actuator is enabled by default. Each one needs
    an observed before and after on the target device (frame deadline miss rate,
    launch-to-first-frame time), recorded in device validation, not inferred from
@@ -78,5 +77,9 @@ account of what the daemon can and cannot control.
 - Frame telemetry runs one bounded child process per poll (no shell, 500 ms timeout,
   256 KiB output cap). The poll rate is capped at 5 Hz. The cap is a starting point and
   must be measured on device.
-- `launch_detector` and `render_collector` are not wired. Either consolidate them with
-  ForegroundTracker or delete them. Do not describe them as active.
+- **Status correction (v2.4.0):** the launch detector is called from the live loop,
+  and `render_collector.cpp` provides the bounded `readLaunchObservation` helper
+  used to count foreground-group PIDs and sample I/O PSI. Frame intervals are read
+  independently by `FrameTelemetrySource`. The filename `render_collector` does not
+  mean that it directly reads rendered frames. Both producer inputs are corroborative;
+  neither by itself proves a tuning outcome.
