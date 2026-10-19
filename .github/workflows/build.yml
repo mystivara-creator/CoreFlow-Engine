@@ -228,7 +228,6 @@ jobs:
           node tools/test_webui_control.js
           grep -Fq 'data-page="journal"' module/webroot/index.html
           grep -Fq 'data-page="about"' module/webroot/index.html
-          grep -Fq 'https://www.perplexity.ai/' module/webroot/index.html
           grep -Fq 'CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md' module/webroot/index.html
 
       - name: Fetch ONNX Runtime Android

@@ -32,7 +32,8 @@ try {
 <button class="nav-item" data-page="decisions">⌁ <span>Decision center</span></button>
 <button class="nav-item" data-page="policy">⚙ <span>Policy & modes</span></button>
 <button class="nav-item" data-page="journal">▤ <span>Journal</span></button>
-<button class="nav-item" data-page="system">▦ <span>System profile</span></button></nav>
+<button class="nav-item" data-page="system">▦ <span>System profile</span></button>
+<button class="nav-item" data-page="about">ⓘ <span>About</span></button></nav>
 <div class="spacer"></div><div class="rail-status"><small>● RUNTIME CHANNEL</small><b id="sidebar-daemon-state">Connecting…</b><span id="sidebar-last-seen">Waiting for daemon status</span></div>
 <div class="motto">✳ <span>Observe. Understand.<br>Balance. Adapt.</span></div></aside>
 <main><header class="topbar"><div class="mobile-brand"><span class="logo">C<span>F</span></span><b>CoreFlow</b></div><div class="crumb">CoreFlow <span>/</span> <b id="current-section">Overview</b></div><div class="top-actions"><span class="connection" id="connection-chip"><i id="connection-dot"></i><span id="connection-label">Connecting</span></span><button class="circle" id="theme-toggle" aria-label="Toggle theme">◐</button><span class="avatar">M</span></div></header>
@@ -68,6 +69,32 @@ try {
 <section class="page" id="page-system"><div class="page-head"><div><small class="eyebrow">DEVICE / ENVIRONMENT</small><h1>System profile<span>.</span></h1><p>Runtime-discovered platform information and interface availability.</p></div><button class="btn tonal" id="btn-system-refresh">↻ Refresh profile</button></div>
 <div class="metrics profile"><article class="metric"><small>PLATFORM</small><b id="system-device">Unknown device</b><p>Device model and code</p></article><article class="metric"><small>ANDROID</small><b id="system-android">Unknown</b><p>Version and API level</p></article><article class="metric"><small>KERNEL</small><b id="system-kernel">Unknown</b><p>Kernel release</p></article><article class="metric"><small>SoC</small><b id="system-soc">Unknown</b><p>Detected chipset family</p></article></div>
 <article class="card"><small class="eyebrow">CAPABILITY MATRIX</small><h3>Observed interface domains</h3><div id="system-capabilities" class="capability-grid"><div class="empty">Capability matrix not reported.</div></div></article><article class="card"><small class="eyebrow">RUNTIME DETAILS</small><h3>Environment snapshot</h3><div id="system-details" class="detail-list"><div class="detail-row"><span>Runtime version</span><b>Unknown</b></div></div></article></section>
+
+<section class="page" id="page-about">
+  <div class="page-head">
+    <div>
+      <small class="eyebrow">PROJECT / INFORMATION</small>
+      <h1>About CoreFlow<span>.</span></h1>
+      <p>Observe. Understand. Balance. Adapt.</p>
+    </div>
+  </div>
+  <div class="two-col">
+    <article class="card">
+      <small class="eyebrow">RUNTIME INTELLIGENCE</small>
+      <h3>CoreFlow Autonomous</h3>
+      <p>Capability-driven Android runtime observation and resource policy.</p>
+      <p>CoreFlow separates discovery, readability, write capability, authorization, and verified outcomes. Unknown telemetry is not fabricated.</p>
+    </article>
+    <article class="card">
+      <small class="eyebrow">SECURITY & GOVERNANCE</small>
+      <h3>Safety first</h3>
+      <p>Observe remains the default posture. Adaptive mode does not bypass policy checks or per-resource authorization.</p>
+      <p><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md" target="_blank" rel="noopener noreferrer">Read the security policy ↗</a></p>
+      <p><a href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer">GitHub repository ↗</a></p>
+    </article>
+  </div>
+</section>
+
 </div><footer><span>✳ CoreFlow Autonomous</span><span>Observe. Understand. Balance. Adapt.</span><small id="footer-material-status">Local-compatible UI</small></footer></main></div>
 <nav class="mobile-nav"><button class="active" data-page="overview">◫<small>Home</small></button><button data-page="resources">⌘<small>Resources</small></button><button data-page="decisions">⌁<small>Decisions</small></button><button data-page="policy">⚙<small>Policy</small></button><button data-page="journal">▤<small>Journal</small></button></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div><dialog id="confirm-dialog"><span class="shield">⛨</span><h2 id="dialog-title">Confirm action</h2><p id="dialog-copy">Continue?</p><div class="dialog-actions"><button class="btn tonal" id="dialog-cancel">Cancel</button><button class="btn primary" id="dialog-confirm">Confirm</button></div></dialog>
