@@ -60,6 +60,7 @@ bool InteractivityBoostController::authorized(
 }
 
 bool InteractivityBoostController::commitJournal() noexcept {
+    try {
     if (journal_ == nullptr || journal_untrusted_) {
         recovery_required_ = true;
         return false;  // a corrupt journal is never overwritten
@@ -72,9 +73,14 @@ bool InteractivityBoostController::commitJournal() noexcept {
     const bool committed = entries.empty() ? journal_->clear() : journal_->commit(entries);
     recovery_required_ = !committed;
     return committed;
+    } catch (...) {
+        recovery_required_ = true;
+        return false;
+    }
 }
 
 std::size_t InteractivityBoostController::recoverFromJournal() noexcept {
+    try {
     if (journal_ == nullptr) {
         recovery_required_ = true;
         return 0;
@@ -100,6 +106,10 @@ std::size_t InteractivityBoostController::recoverFromJournal() noexcept {
         ++adopted;
     }
     return adopted;
+    } catch (...) {
+        recovery_required_ = true;
+        return 0;
+    }
 }
 
 bool InteractivityBoostController::settle() noexcept {
@@ -138,6 +148,7 @@ void InteractivityBoostController::restoreAll() noexcept {
 bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
                                                  std::string& path,
                                                  std::string& requested) noexcept {
+    try {
     switch (intent.kind) {
         case BoostKind::GpuMinFreqStep: {
             if (gpu_min_freq_path_.empty()) return false;
@@ -185,8 +196,13 @@ bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
         }
     }
     return false;
-}
 
+    } catch (...) {
+        path.clear();
+        requested.clear();
+        return false;
+    }
+}
 std::size_t InteractivityBoostController::apply(
     const std::vector<BoostIntent>& intents, const EngineConfig& config,
     std::uint64_t now_ms) noexcept {

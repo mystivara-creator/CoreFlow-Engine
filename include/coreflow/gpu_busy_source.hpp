@@ -18,6 +18,7 @@ namespace coreflow::observe {
 // part, and out-of-range or overflowing values. An invalid reading is never
 // mistaken for an idle GPU.
 [[nodiscard]] inline double parseDevfreqLoadPercent(std::string_view raw) noexcept {
+    try {
     const std::string_view token = integer_parse::trim(raw);
     if (token.empty()) return -1.0;
 
@@ -55,6 +56,9 @@ namespace coreflow::observe {
     if (i != percent.size()) return -1.0;  // trailing garbage in the percent part
     if (result < 0.0 || result > 100.0) return -1.0;
     return result;
+    } catch (...) {
+        return -1.0;
+    }
 }
 
 // Discovers and polls GPU busy-ratio from kernel devfreq nodes (Adreno kgsl,

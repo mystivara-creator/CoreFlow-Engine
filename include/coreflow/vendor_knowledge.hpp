@@ -42,7 +42,7 @@ struct VendorKnob {
 class VendorKnowledge {
 public:
     static constexpr std::size_t kMaxFiles = 512;
-    static constexpr std::size_t kMaxFileBytes = 1024U * 1024U;
+    static constexpr std::size_t kMaxFileBytes = std::size_t{1024} * 1024;
     static constexpr std::size_t kMaxValuesPerKnob = 16;
 
     void clear() noexcept;

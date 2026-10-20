@@ -165,6 +165,25 @@ public:
     ) noexcept = 0;
 };
 
+constexpr const char* actuatorStatusCString(
+    ActuatorStatus status
+) noexcept {
+    switch (status) {
+        case ActuatorStatus::Ok:               return "OK";
+        case ActuatorStatus::Unsupported:      return "UNSUPPORTED";
+        case ActuatorStatus::Unavailable:      return "UNAVAILABLE";
+        case ActuatorStatus::Invalid:          return "INVALID";
+        case ActuatorStatus::ReadFailed:       return "READ_FAILED";
+        case ActuatorStatus::ValidationFailed: return "VALIDATION_FAILED";
+        case ActuatorStatus::SafetyRejected:   return "SAFETY_REJECTED";
+        case ActuatorStatus::WriteFailed:      return "WRITE_FAILED";
+        case ActuatorStatus::VerifyFailed:     return "VERIFY_FAILED";
+        case ActuatorStatus::RolledBack:       return "ROLLED_BACK";
+        case ActuatorStatus::NoChange:         return "NO_CHANGE";
+    }
+    return "UNKNOWN";
+}
+
 constexpr std::string_view actuatorStatusName(
     ActuatorStatus status
 ) noexcept {

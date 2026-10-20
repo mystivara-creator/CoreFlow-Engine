@@ -15,6 +15,7 @@
 namespace coreflow::observe {
 
 void GpuBusySource::discoverDefaultRoots() noexcept {
+    try {
     roots_.clear();
 
     // Resolve the sysfs mount from the live mount table instead of assuming
@@ -29,7 +30,7 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
     constexpr std::size_t kMaxDirectories = 12000U;
     constexpr std::size_t kMaxDepth = 24U;
     std::size_t visited = 0U;
-    const auto containsGpuIdentity = [](const std::string& path) noexcept {
+    const auto containsGpuIdentity = [](const std::string& path) {
         std::string normalized(path);
         std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                        [](unsigned char ch) {
@@ -84,9 +85,13 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
 
     std::sort(roots_.begin(), roots_.end());
     roots_.erase(std::unique(roots_.begin(), roots_.end()), roots_.end());
+    } catch (...) {
+        roots_.clear();
+    }
 }
 
 bool GpuBusySource::poll(double& ratio_out) noexcept {
+    try {
     for (const auto& root : roots_) {
         const std::string path = root + "/load";
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -103,6 +108,9 @@ bool GpuBusySource::poll(double& ratio_out) noexcept {
         return true;
     }
     return false;
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace coreflow::observe

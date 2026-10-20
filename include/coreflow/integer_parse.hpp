@@ -39,48 +39,70 @@ namespace coreflow::integer_parse {
 
 // A whitespace-separated list of unsigned decimals. One invalid token rejects the
 // whole list, so a corrupt sysfs read cannot quietly drop an entry.
-[[nodiscard]] inline bool parseUint64List(std::string_view raw,
-                                          std::vector<std::uint64_t>& out) noexcept {
+[[nodiscard]] inline bool parseUint64List(
+    std::string_view raw,
+    std::vector<std::uint64_t>& out) noexcept {
     out.clear();
-    std::size_t i = 0;
-    while (i < raw.size()) {
-        while (i < raw.size() && isSpace(raw[i])) ++i;
-        if (i >= raw.size()) break;
-        const std::size_t start = i;
-        while (i < raw.size() && !isSpace(raw[i])) ++i;
-        std::uint64_t value = 0;
-        if (!parseUint64(raw.substr(start, i - start), value)) {
-            out.clear();
-            return false;
+
+    try {
+        std::size_t i = 0;
+        while (i < raw.size()) {
+            while (i < raw.size() && isSpace(raw[i])) ++i;
+            if (i >= raw.size()) break;
+
+            const std::size_t start = i;
+            while (i < raw.size() && !isSpace(raw[i])) ++i;
+
+            std::uint64_t value = 0;
+            if (!parseUint64(raw.substr(start, i - start), value)) {
+                out.clear();
+                return false;
+            }
+            out.push_back(value);
         }
-        out.push_back(value);
+        return !out.empty();
+    } catch (...) {
+        out.clear();
+        return false;
     }
-    return !out.empty();
 }
 
-// The frequency reached after `steps` distinct steps above `current` in an
-// available_frequencies list. Only comparisons are performed, so nothing can
-// overflow. Fails when the list is invalid, steps < 1, or no higher step exists.
-[[nodiscard]] inline bool bumpedFrequency(std::string_view available, std::uint64_t current,
-                                          int steps, std::string& requested) noexcept {
+// Returns the frequency `steps` distinct positions above current.
+// Invalid input, steps < 1, or no higher frequency returns false.
+[[nodiscard]] inline bool bumpedFrequency(
+    std::string_view available,
+    std::uint64_t current,
+    int steps,
+    std::string& requested) noexcept {
     if (steps < 1) return false;
-    std::vector<std::uint64_t> frequencies;
-    if (!parseUint64List(available, frequencies)) return false;
-    std::sort(frequencies.begin(), frequencies.end());
-    frequencies.erase(std::unique(frequencies.begin(), frequencies.end()), frequencies.end());
 
-    std::uint64_t chosen = current;
-    int taken = 0;
-    for (const std::uint64_t frequency : frequencies) {
-        if (frequency > chosen) {
-            chosen = frequency;
-            ++taken;
-            if (taken >= steps) break;
+    try {
+        std::vector<std::uint64_t> frequencies;
+        if (!parseUint64List(available, frequencies)) return false;
+
+        std::sort(frequencies.begin(), frequencies.end());
+        frequencies.erase(
+            std::unique(frequencies.begin(), frequencies.end()),
+            frequencies.end());
+
+        std::uint64_t chosen = current;
+        int taken = 0;
+
+        for (const std::uint64_t frequency : frequencies) {
+            if (frequency > chosen) {
+                chosen = frequency;
+                ++taken;
+                if (taken >= steps) break;
+            }
         }
+
+        if (taken == 0) return false;
+
+        requested = std::to_string(chosen);
+        return true;
+    } catch (...) {
+        return false;
     }
-    if (taken == 0) return false;
-    requested = std::to_string(chosen);
-    return true;
 }
 
 } // namespace coreflow::integer_parse

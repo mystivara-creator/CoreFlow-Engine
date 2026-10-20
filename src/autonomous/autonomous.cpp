@@ -1262,7 +1262,7 @@ void AutonomousEngine::tick() {
                     : mutationTraceOutcomeReason(resource_mutation),
                 false, false,
                 resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
-                actuatorStatusName(resource_controller_.lastActuatorStatus()).data()});
+                actuatorStatusCString(resource_controller_.lastActuatorStatus())});
             if (resource_mutation == MutationResult::Verified) {
                 if (baseline_intelligence_.beginObservation()) {
                     observation_context_ = decisionContext();
@@ -1289,7 +1289,7 @@ void AutonomousEngine::tick() {
                                : "observation_window_failure_rollback_failed",
                         false, false,
                         resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
-                        actuatorStatusName(resource_controller_.lastActuatorStatus()).data()});
+                        actuatorStatusCString(resource_controller_.lastActuatorStatus())});
                     logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED resource "
                              "action=ROLLBACK result=%s",
                              rolled ? "verified" : "failed");
