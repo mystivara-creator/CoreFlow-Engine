@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ==========================================================
-# CoreFlow Autonomous - installer (v2.2.0)
+# CoreFlow Autonomous - installer (v3.0.0)
 #
 # Runs inside the Magisk/KernelSU installer, before first boot. Steps:
 #   1. Compatibility gate: arm64, Android 14 (API 34) or newer.

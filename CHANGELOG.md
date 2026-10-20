@@ -1,3 +1,11 @@
+## v3.0.0 — Architecture & Feature Freeze
+
+- Freeze milestone for the CoreFlow Autonomous architecture and supported contracts.
+- Preserve observe-only release defaults and explicit mutation authorization.
+- Feature additions are deferred during freeze; fixes require regression validation.
+- Release status is determined by CI results for the exact tagged commit.
+- Device-specific behavior and thermal-model calibration are not universally certified.
+
 ## v2.4.0 — Full capability authority
 
 - Removed separate `allow_cpu_governor` authorization; CPUFreq uses the global Adaptive + armed authority.

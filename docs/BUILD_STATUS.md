@@ -1,4 +1,4 @@
-# CoreFlow v2.4.0 — Build and validation status
+# CoreFlow v3.0.0 — Release freeze validation status
 
 Honest status for this source tree. Prefer CI logs and device evidence over marketing language.
 
@@ -6,7 +6,7 @@ Honest status for this source tree. Prefer CI logs and device evidence over mark
 
 | Item | Value |
 |------|--------|
-| Version | `v2.4.0` (`versionCode=2400`) |
+| Version | `v3.0.0` (`versionCode=3000`) |
 | Language | C++20 |
 | Min Android API | 34 |
 | Default mode | `observe` (`mutation_armed=false`) |

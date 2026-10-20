@@ -6,7 +6,7 @@
 
 namespace coreflow {
 
-inline constexpr const char* kCoreFlowVersion = "2.4.0";
+inline constexpr const char* kCoreFlowVersion = "3.0.0";
 
 // Interactivity pipeline (v2.4.0): launch/jank sensing and bounded boosts.
 // Observe is the default; adaptation additionally requires the global

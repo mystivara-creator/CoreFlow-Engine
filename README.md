@@ -8,7 +8,7 @@ Not a hard-coded list of tunables. Not aggressive one-size-fits-all tuning.
 
 | | |
 |---|---|
-| Version | `v2.4.0` (`versionCode` 2400) |
+| Version | `v3.0.0` (`versionCode` 3000) |
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
@@ -31,7 +31,7 @@ mutation_armed=false
 
 ---
 
-## v2.4.0 hardening
+## v3.0.0 release freeze
 
 - **Journal v2** — checksummed records (CRC32), unique exclusive temp file, bounds (256 entries / 4 KiB field / 1 MiB file). Rejects symlinks, non-regular files, truncation, checksum mismatch, embedded NUL, duplicate paths. v1 journals remain readable for upgrade recovery.
 - **Actuator write path** — single no-follow descriptor, `fstat` revalidation, requires procfs / sysfs / cgroup semantics, live read-back verification.
