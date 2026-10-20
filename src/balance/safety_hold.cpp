@@ -6,11 +6,14 @@
 namespace coreflow {
 namespace {
 
-// Returns true when the marker file is present or its state is unknown.
+// Returns true only when the marker file is a valid, regular file.
+// Uses lstat to prevent symlink manipulation.
 bool markerActive(const std::string& path) noexcept {
     if (path.empty()) return false;
     struct stat st {};
-    if (::stat(path.c_str(), &st) == 0) return true;
+    if (::lstat(path.c_str(), &st) == 0) {
+        return S_ISREG(st.st_mode);
+    }
     return errno != ENOENT;
 }
 

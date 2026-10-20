@@ -1,8 +1,13 @@
 #include "coreflow/cpufreq_actuator.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <fcntl.h>
 #include <fstream>
+#include <string>
+#include <string_view>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 namespace coreflow {
@@ -10,6 +15,37 @@ namespace {
 
 constexpr std::string_view kGovernorSuffix = "/scaling_governor";
 constexpr std::uint8_t kMaxWritesPerCycle = 1;
+
+bool kernelTunableFilesystem(int fd) noexcept {
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+    (void)fd;
+    return true;
+#else
+    struct statfs fs {};
+    if (::fstatfs(fd, &fs) != 0) return false;
+    const auto type = static_cast<unsigned long>(fs.f_type);
+    constexpr unsigned long kProcfsMagic = 0x00009FA0UL;
+    constexpr unsigned long kSysfsMagic = 0x62656572UL;
+    constexpr unsigned long kCgroupMagic = 0x0027E0EBUL;
+    constexpr unsigned long kCgroup2Magic = 0x63677270UL;
+    return type == kProcfsMagic || type == kSysfsMagic ||
+           type == kCgroupMagic || type == kCgroup2Magic;
+#endif
+}
+
+std::string trimmed(std::string_view raw) {
+    std::size_t first = 0;
+    std::size_t last = raw.size();
+    while (first < last && (raw[first] == ' ' || raw[first] == '\t' ||
+                            raw[first] == '\r' || raw[first] == '\n')) {
+        ++first;
+    }
+    while (last > first && (raw[last - 1] == ' ' || raw[last - 1] == '\t' ||
+                            raw[last - 1] == '\r' || raw[last - 1] == '\n')) {
+        --last;
+    }
+    return std::string(raw.substr(first, last - first));
+}
 
 std::string makeGovernorPath(std::string_view policyPath) {
     std::string path;
@@ -42,8 +78,6 @@ ActuatorCapability CpuFreqActuator::capability() const noexcept {
     capability.rollbackable = false;
     capability.max_writes_per_cycle = 0;
 
-    // Autonomous mode is intentionally enabled only after discover() proves
-    // every prerequisite for the specific device/profile.
     if (profile_ != nullptr) {
         bool anySafePolicy = false;
 
@@ -96,8 +130,6 @@ ActuatorStatus CpuFreqActuator::discover() noexcept {
             if (!readText(path, current))
                 continue;
 
-            // The discovery snapshot is authoritative only if the actual
-            // kernel value can be read successfully.
             if (current.empty())
                 continue;
 
@@ -308,10 +340,6 @@ ActuatorResult CpuFreqActuator::restoreTo(
         return result;
     }
 
-    // Never write a governor the policy does not advertise. This keeps a
-    // stale journal entry from forcing an unsupported value.
-    // Recovery is fail-closed: without an explicit advertised governor list,
-    // never write a value from a stale journal.
     if (!targetAllowed(*policy, target, value)) {
         result.status = ActuatorStatus::ValidationFailed;
         return result;
@@ -362,7 +390,11 @@ bool CpuFreqActuator::readText(
         if (!file)
             return false;
 
-        return static_cast<bool>(std::getline(file, value));
+        if (std::getline(file, value)) {
+            value = trimmed(value);
+            return !value.empty();
+        }
+        return false;
     } catch (...) {
         return false;
     }
@@ -379,33 +411,39 @@ bool CpuFreqActuator::writeVerified(
         const std::string pathString(path);
         const std::string valueString(value);
 
-        // Match ResourceActuator: do not follow a final-component symlink, and
-        // require the kernel write-mode bit. Root passes access(W_OK) on
-        // read-only sysfs nodes via CAP_DAC_OVERRIDE; the mode bit is the real
-        // signal that the node accepts writes.
-        struct stat st {};
-        if (::lstat(pathString.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
-            return false;
-        if ((st.st_mode & 0222) == 0)
-            return false;
-        if (::access(pathString.c_str(), W_OK) != 0)
-            return false;
-
         std::string current;
         if (readText(path, current) && current == valueString)
             return true;
 
-        std::ofstream file(pathString, std::ios::out | std::ios::trunc);
-        if (!file)
+        const int fd = ::open(pathString.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) return false;
+
+        struct stat st {};
+        const bool target_valid =
+            ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+            (st.st_mode & 0222) != 0 && kernelTunableFilesystem(fd);
+        if (!target_valid) {
+            (void)::close(fd);
             return false;
+        }
 
-        file << valueString << '\n';
-        file.flush();
-
-        if (!file.good())
+#ifdef COREFLOW_HOST_TEST_FIXTURES
+        if (::ftruncate(fd, 0) != 0) {
+            (void)::close(fd);
             return false;
+        }
+#endif
 
-        file.close();
+        const std::string payload = valueString + "\n";
+        ssize_t written = -1;
+        do {
+            written = ::write(fd, payload.data(), payload.size());
+        } while (written < 0 && errno == EINTR);
+
+        const bool write_ok = written >= 0 &&
+            static_cast<std::size_t>(written) == payload.size();
+        const bool close_ok = ::close(fd) == 0;
+        if (!write_ok || !close_ok) return false;
 
         std::string actual;
         return readText(path, actual) && actual == valueString;

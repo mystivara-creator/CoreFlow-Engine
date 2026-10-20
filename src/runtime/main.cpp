@@ -19,15 +19,18 @@ volatile std::sig_atomic_t g_stop = 0;
 volatile std::sig_atomic_t g_refresh = 0;
 
 void handleSignal(int signal) noexcept {
-    if (signal == SIGTERM || signal == SIGINT) g_stop = 1;
-    else if (signal == SIGUSR1) g_refresh = 1;
+    if (signal == SIGTERM || signal == SIGINT) {
+        g_stop = 1;
+    } else if (signal == SIGUSR1) {
+        g_refresh = 1;
+    }
 }
 
 int acquireProcessLock() {
-    const int fd = open(kLockPath, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    const int fd = ::open(kLockPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return -1;
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        close(fd);
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        ::close(fd);
         return -2;
     }
     return fd;
@@ -38,9 +41,21 @@ int acquireProcessLock() {
 namespace coreflow::signal_state {
 
 void install() noexcept {
-    std::signal(SIGTERM, handleSignal);
-    std::signal(SIGINT, handleSignal);
-    std::signal(SIGUSR1, handleSignal);
+    struct sigaction sa{};
+    sa.sa_handler = handleSignal;
+    ::sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    (void)::sigaction(SIGTERM, &sa, nullptr);
+    (void)::sigaction(SIGINT, &sa, nullptr);
+    (void)::sigaction(SIGUSR1, &sa, nullptr);
+
+    // Ignore SIGPIPE to prevent daemon termination on broken IPC write pipes.
+    struct sigaction sa_pipe{};
+    sa_pipe.sa_handler = SIG_IGN;
+    ::sigemptyset(&sa_pipe.sa_mask);
+    sa_pipe.sa_flags = 0;
+    (void)::sigaction(SIGPIPE, &sa_pipe, nullptr);
 }
 
 bool stopRequested() noexcept {
@@ -57,7 +72,7 @@ bool consumeRefresh() noexcept {
 
 int main() {
     umask(0077);
-    (void)mkdir("/data/adb/coreflow", 0700);
+    (void)::mkdir("/data/adb/coreflow", 0700);
 
     const int lock_fd = acquireProcessLock();
     if (lock_fd == -2) {
@@ -82,6 +97,6 @@ int main() {
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
                         "CoreFlowMainExit version=%s result=%d", coreflow::kCoreFlowVersion, result);
 
-    close(lock_fd);
+    ::close(lock_fd);
     return result;
 }

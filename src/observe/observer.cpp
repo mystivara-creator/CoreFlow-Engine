@@ -4,10 +4,13 @@
 #include "coreflow/thermal_limits.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <cerrno>
 #include <cstdlib>
 #include <dirent.h>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -18,6 +21,11 @@
 namespace coreflow {
 namespace {
 
+struct DirCloser {
+    DIR* dir;
+    ~DirCloser() { if (dir) ::closedir(dir); }
+};
+
 std::string lowerCopy(const std::string& input) {
     std::string out = input;
     std::transform(out.begin(), out.end(), out.begin(),
@@ -25,16 +33,6 @@ std::string lowerCopy(const std::string& input) {
     return out;
 }
 
-// Qualcomm and other Android kernels frequently expose sentinel values for
-// unavailable virtual zones:
-//   -273000  absolute-zero style "not present"
-//   -40000   sys-therm placeholders
-//        0   BCL / zeroc / empty levels
-// Values outside a realistic mobile silicon range are also rejected so a
-// single bad zone cannot force THERMAL_GUARD.
-
-// Explicitly reject virtual / modem / RF / BCL control zones that are not
-// representative of device thermal pressure for policy decisions.
 bool isExcludedThermalType(const std::string& type) {
     const std::string t = lowerCopy(type);
     if (t.find("bcl") != std::string::npos) return true;
@@ -44,15 +42,11 @@ bool isExcludedThermalType(const std::string& type) {
     if (t.find("ific") != std::string::npos) return true;
     if (t.find("zeroc") != std::string::npos) return true;
     if (t.find("modem") != std::string::npos) return true;
-    if (t.rfind("lvl", 0) != std::string::npos) return true; // *lvl* BCL tiers
+    if (t.rfind("lvl", 0) != std::string::npos) return true;
     if (t.find("lvl") != std::string::npos && t.find("pm") != std::string::npos) return true;
     return false;
 }
 
-// Ranking for representative SoC temperature (higher = preferred).
-// quiet_therm / xo-therm are the most stable skin/xo references on many
-// Qualcomm platforms. Per-core cpu-* zones are useful but spiky; we keep them
-// as primary candidates but prefer quieter sensors when present.
 int thermalTypeRank(const std::string& type) {
     const std::string t = lowerCopy(type);
     if (isExcludedThermalType(type)) return -1;
@@ -68,23 +62,36 @@ int thermalTypeRank(const std::string& type) {
     if (t == "battery") return 40;
     if (t.find("aoss") != std::string::npos) return 35;
     if (t.find("ddr") != std::string::npos) return 30;
-    return 10; // other readable zones still counted for hottest diagnostics
+    return 10;
 }
 
 bool isPrimaryThermalType(const std::string& type) {
     return thermalTypeRank(type) >= 50;
 }
 
-long readLong(const std::string& path, bool& ok) {
-    std::ifstream file(path);
-    long value = 0;
-    ok = static_cast<bool>(file >> value);
-    return value;
+long readLongFd(const std::string& path, bool& ok) noexcept {
+    ok = false;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return 0;
+
+    std::array<char, 64> buffer{};
+    const ssize_t count = ::read(fd, buffer.data(), buffer.size() - 1U);
+    ::close(fd);
+
+    if (count <= 0) return 0;
+    buffer[static_cast<std::size_t>(count)] = '\0';
+
+    char* end = nullptr;
+    errno = 0;
+    const long val = std::strtol(buffer.data(), &end, 10);
+    if (errno == 0 && end != buffer.data()) {
+        ok = true;
+        return val;
+    }
+    return 0;
 }
 
 long normalizeBatteryTemperature(long raw) {
-    // Linux power_supply battery temp is commonly tenths of a degree C.
-    // Millidegree values are much larger. Keep this conservative and read-only.
     if (raw > -1000 && raw < 1000) return raw * 100;
     return raw;
 }
@@ -103,7 +110,6 @@ bool parseProcessStat(const std::string& path, std::string& name,
     std::istringstream in(line.substr(close + 2));
     char state = 0;
     std::uint64_t ignored = 0;
-    // fields after comm: state=3, utime=14, stime=15, rss=24.
     if (!(in >> state)) return false;
     for (int field = 4; field <= 13; ++field) if (!(in >> ignored)) return false;
     std::uint64_t utime = 0;
@@ -118,7 +124,6 @@ bool parseProcessStat(const std::string& path, std::string& name,
                 static_cast<std::uint64_t>(page_kb > 0 ? page_kb : 4);
     return true;
 }
-
 
 } // namespace
 
@@ -185,8 +190,6 @@ void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& profile) const {
-    // Keep every discovered sensor in the sample, including unreadable and
-    // policy-excluded zones. Policy uses only plausible, representative zones.
     long hottest = 0;
     long primary_hottest = 0;
     long preferred = 0;
@@ -207,7 +210,7 @@ void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& pr
         reading.type = zone.type;
 
         bool ok = false;
-        const long value = readLong(zone.path + "/temp", ok);
+        const long value = readLongFd(zone.path + "/temp", ok);
         reading.readable = ok;
         reading.temperature_millidegrees = ok ? value : 0;
 
@@ -266,12 +269,13 @@ void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& pr
 void RuntimeObserver::readCharging(RuntimeSample& sample) const {
     const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
     if (base.empty()) return;
-    DIR* dir = opendir(base.c_str());
-    if (!dir) return;
+    DIR* raw_dir = opendir(base.c_str());
+    if (!raw_dir) return;
+    DirCloser dir_guard{raw_dir};
 
     bool status_found = false;
     bool battery_found = false;
-    while (dirent* entry = readdir(dir)) {
+    while (dirent* entry = readdir(raw_dir)) {
         const std::string name(entry->d_name);
         if (name == "." || name == "..") continue;
         const std::string path = base + "/" + name;
@@ -290,19 +294,18 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
         }
 
         bool level_ok = false;
-        const long level = readLong(path + "/capacity", level_ok);
+        const long level = readLongFd(path + "/capacity", level_ok);
         if (level_ok && level >= 0 && level <= 100) sample.battery_level_percent = static_cast<int>(level);
 
         bool ok = false;
-        const long temp = readLong(path + "/temp", ok);
+        const long temp = readLongFd(path + "/temp", ok);
         if (ok) sample.battery_temperature_millidegrees = normalizeBatteryTemperature(temp);
-        const long current = readLong(path + "/current_now", ok);
+        const long current = readLongFd(path + "/current_now", ok);
         if (ok) sample.battery_current_microamps = current;
-        const long voltage = readLong(path + "/voltage_now", ok);
+        const long voltage = readLongFd(path + "/voltage_now", ok);
         if (ok) sample.battery_voltage_microvolts = voltage;
         break;
     }
-    closedir(dir);
 
     sample.charging_telemetry_available =
         battery_found && (status_found ||
@@ -310,7 +313,6 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
                           sample.battery_current_microamps != 0 ||
                           sample.battery_voltage_microvolts != 0);
 }
-
 
 void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
     std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "diskstats"));
@@ -347,8 +349,6 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
             continue;
         }
 
-        // /proc/diskstats is itself the kernel's dynamic block-device inventory.
-        // Do not reconstruct a second, hard-coded sysfs path to validate it.
         const std::string key =
             std::to_string(major) + ":" +
             std::to_string(minor) + ":" + name;
@@ -372,20 +372,20 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
-    // Process scanning is intentionally throttled: it is a profiling signal,
-    // not a hot-path actuator. Every sixth sample is ~30s at the default cadence.
     if ((sample_counter_ % 6U) != 0U) return;
     const std::string proc_root = kernelFilesystemPath(KernelFsKind::Procfs);
     if (proc_root.empty()) return;
-    DIR* dir = opendir(proc_root.c_str());
-    if (!dir) return;
+    DIR* raw_dir = opendir(proc_root.c_str());
+    if (!raw_dir) return;
+    DirCloser dir_guard{raw_dir};
+
     const long ticks_per_second = sysconf(_SC_CLK_TCK);
     std::unordered_map<int, std::uint64_t> current_ticks;
     std::string best_name;
     std::uint64_t best_delta = 0;
     std::uint64_t best_memory = 0;
     std::uint32_t count = 0;
-    while (dirent* entry = readdir(dir)) {
+    while (dirent* entry = readdir(raw_dir)) {
         const char* text = entry->d_name;
         if (!std::isdigit(static_cast<unsigned char>(text[0]))) continue;
         const int pid = std::atoi(text);
@@ -406,7 +406,7 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
             }
         }
     }
-    closedir(dir);
+
     previous_process_ticks_.swap(current_ticks);
     sample.process_count = count;
     double profile_interval = 30.0;
@@ -426,7 +426,6 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
         sample.process_profile_available = true;
     }
 }
-
 
 void RuntimeObserver::readPsi(RuntimeSample& sample) const {
     auto parsePsiLine = [](const std::string& line,
@@ -454,8 +453,6 @@ void RuntimeObserver::readPsi(RuntimeSample& sample) const {
     if (!any) return;
 
     sample.psi_available = true;
-    // Linux PSI avg10/avg60/avg300 are percentages in [0, 100].
-    // Convert every valid value to a ratio in [0, 1].
     auto norm = [](double& value) {
         value = observer_metrics::normalizePsiPercent(value);
     };
@@ -468,8 +465,6 @@ void RuntimeObserver::readPsi(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::diagnoseStalls(RuntimeSample& sample) const {
-    // PSI CPU measures CPU contention, not direct scheduler/cgroup throttling.
-    // Do not report throttling without a dedicated throttling counter.
     sample.throttle_ratio = 0.0;
     sample.throttling_detected = false;
 
@@ -483,7 +478,6 @@ void RuntimeObserver::diagnoseStalls(RuntimeSample& sample) const {
     sample.memory_stall_score = std::clamp(mem_score, 0.0, 1.0);
     sample.memory_stall_detected = sample.memory_stall_score >= 0.10;
 }
-
 
 RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
     RuntimeSample sample;

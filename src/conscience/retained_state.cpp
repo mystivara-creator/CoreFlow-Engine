@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
-#include <fstream>
+#include <sstream>
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -70,15 +72,38 @@ bool writeAll(int fd, const std::string& data) noexcept {
     return true;
 }
 
-bool fsyncDirectoryOf(const std::string& path) {
-    const std::size_t slash = path.find_last_of('/');
-    const std::string directory = slash == std::string::npos ? "." :
-        (slash == 0U ? "/" : path.substr(0U, slash));
-    const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd < 0) return false;
-    const bool ok = ::fsync(fd) == 0;
-    (void)::close(fd);
-    return ok;
+bool readExact(int fd, std::string& data) noexcept {
+    std::size_t offset = 0U;
+    while (offset < data.size()) {
+        const ssize_t count = ::read(fd, data.data() + offset, data.size() - offset);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (count == 0) return false;
+        offset += static_cast<std::size_t>(count);
+    }
+    char extra = '\0';
+    for (;;) {
+        const ssize_t count = ::read(fd, &extra, 1U);
+        if (count < 0 && errno == EINTR) continue;
+        return count == 0;
+    }
+}
+
+bool fsyncDirectoryOf(const std::string& path) noexcept {
+    try {
+        const std::size_t slash = path.find_last_of('/');
+        const std::string directory = slash == std::string::npos ? "." :
+            (slash == 0U ? "/" : path.substr(0U, slash));
+        const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fd < 0) return false;
+        const bool ok = ::fsync(fd) == 0;
+        (void)::close(fd);
+        return ok;
+    } catch (...) {
+        return false;
+    }
 }
 
 std::string fieldOr(const std::string& value, const char* fallback) {
@@ -165,11 +190,14 @@ bool FileRetainedStateStore::commit(const Entries& entries) noexcept {
         body += "end\n";
         if (body.size() > kMaxFileBytes) return false;
 
-        const std::string temporary = path_ + ".tmp";
-        const int fd = ::open(temporary.c_str(),
-            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+        std::string temporary = path_ + ".tmp.XXXXXX";
+        const int fd = ::mkstemp(temporary.data());
         if (fd < 0) return false;
-        bool ok = (::fchmod(fd, 0600) == 0) && writeAll(fd, body) && ::fsync(fd) == 0;
+
+        struct stat st {};
+        bool ok = ::fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 &&
+                  ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+                  ::fchmod(fd, 0600) == 0 && writeAll(fd, body) && ::fsync(fd) == 0;
         if (::close(fd) != 0) ok = false;
         if (!ok) {
             (void)::unlink(temporary.c_str());
@@ -195,21 +223,41 @@ bool FileRetainedStateStore::clear() noexcept {
 }
 
 RetainedStateStore::LoadState FileRetainedStateStore::load(Entries& out) noexcept {
-    try {
+    out.clear();
+    const auto corrupt = [&out]() {
         out.clear();
-        struct stat st {};
-        if (::lstat(path_.c_str(), &st) != 0) {
-            return errno == ENOENT ? LoadState::Absent : LoadState::Corrupt;
-        }
-        if (!S_ISREG(st.st_mode) || st.st_size < 0 ||
-            static_cast<std::uintmax_t>(st.st_size) > kMaxFileBytes) {
-            return LoadState::Corrupt;
-        }
+        return LoadState::Corrupt;
+    };
+    if (path_.empty() || path_.find('\0') != std::string::npos) return corrupt();
 
-        std::ifstream input(path_);
-        if (!input) return LoadState::Corrupt;
+    const int fd = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        return errno == ENOENT ? LoadState::Absent : LoadState::Corrupt;
+    }
+
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        static_cast<std::uintmax_t>(st.st_size) > kMaxFileBytes) {
+        (void)::close(fd);
+        return corrupt();
+    }
+
+    std::string contents;
+    try {
+        contents.resize(static_cast<std::size_t>(st.st_size));
+    } catch (...) {
+        (void)::close(fd);
+        return corrupt();
+    }
+
+    const bool read_ok = readExact(fd, contents);
+    const bool close_ok = ::close(fd) == 0;
+    if (!read_ok || !close_ok || contents.empty()) return corrupt();
+
+    try {
+        std::istringstream input(contents);
         std::string line;
-        if (!std::getline(input, line) || line != kHeader) return LoadState::Corrupt;
+        if (!std::getline(input, line) || line != kHeader) return corrupt();
 
         std::string payload(kHeader);
         payload.push_back('\n');
@@ -228,12 +276,12 @@ RetainedStateStore::LoadState FileRetainedStateStore::load(Entries& out) noexcep
             if (line.rfind("checksum ", 0U) == 0U) {
                 if (checksum_seen || !parseHex32(
                         std::string_view(line).substr(9U), expected_checksum)) {
-                    return LoadState::Corrupt;
+                    return corrupt();
                 }
                 checksum_seen = true;
                 continue;
             }
-            if (checksum_seen) return LoadState::Corrupt;
+            if (checksum_seen) return corrupt();
 
             const std::size_t first = line.find('\t');
             const std::size_t second = first == std::string::npos ? first :
@@ -243,7 +291,7 @@ RetainedStateStore::LoadState FileRetainedStateStore::load(Entries& out) noexcep
             if (first == std::string::npos || second == std::string::npos ||
                 third == std::string::npos ||
                 line.find('\t', third + 1U) != std::string::npos) {
-                return LoadState::Corrupt;
+                return corrupt();
             }
 
             RetainedStateEntry entry;
@@ -255,7 +303,7 @@ RetainedStateStore::LoadState FileRetainedStateStore::load(Entries& out) noexcep
                 !validField(entry.baseline) || !validField(entry.target) ||
                 entry.baseline == entry.target || !seen.insert(entry.path).second ||
                 loaded.size() >= kMaxEntries) {
-                return LoadState::Corrupt;
+                return corrupt();
             }
             payload += line;
             payload.push_back('\n');
@@ -265,7 +313,7 @@ RetainedStateStore::LoadState FileRetainedStateStore::load(Entries& out) noexcep
         if (!terminated || !checksum_seen || loaded.empty() ||
             checksum32(payload) != expected_checksum ||
             input.peek() != std::char_traits<char>::eof()) {
-            return LoadState::Corrupt;
+            return corrupt();
         }
         out = std::move(loaded);
         return LoadState::Valid;
