@@ -18,8 +18,19 @@ command -v npm >/dev/null
 command -v node >/dev/null
 
 echo "Fetching Material Web upstream ref: ${UPSTREAM_REF}"
-git clone --depth 1 --branch "${UPSTREAM_REF}" "${UPSTREAM_URL}" "${UPSTREAM}"
+# A pinned commit SHA is not a branch name. Fetch the repository first,
+# then resolve the requested ref explicitly and check out the exact commit.
+git init "${UPSTREAM}"
+git -C "${UPSTREAM}" remote add origin "${UPSTREAM_URL}"
+git -C "${UPSTREAM}" fetch --depth 1 origin "${UPSTREAM_REF}"
+git -C "${UPSTREAM}" checkout --detach FETCH_HEAD
 MATERIAL_SHA="$(git -C "${UPSTREAM}" rev-parse HEAD)"
+
+if [[ "${UPSTREAM_REF}" =~ ^[0-9a-fA-F]{40}$ ]] &&
+   [[ "${MATERIAL_SHA}" != "${UPSTREAM_REF}" ]]; then
+  echo "::error::Resolved Material commit does not match the pinned SHA"
+  exit 1
+fi
 MATERIAL_VERSION="$(node -p "require('${UPSTREAM}/package.json').version")"
 
 # The upstream source uses bare Lit imports. Install runtime packages in CI,
