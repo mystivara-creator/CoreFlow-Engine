@@ -96,7 +96,8 @@ bool fsyncDirectoryOf(const std::string& path) noexcept {
         const std::size_t slash = path.find_last_of('/');
         const std::string directory = slash == std::string::npos ? "." :
             (slash == 0U ? "/" : path.substr(0U, slash));
-        const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        const int fd = ::open(directory.c_str(),
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (fd < 0) return false;
         const bool ok = ::fsync(fd) == 0;
         (void)::close(fd);

@@ -35,7 +35,9 @@ bool fsyncDirectoryOf(const std::string& path) noexcept {
         const std::size_t slash = path.find_last_of('/');
         const std::string dir = (slash == std::string::npos) ? "." :
             (slash == 0 ? "/" : path.substr(0, slash));
-        const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        // O_NOFOLLOW rejects a symlinked parent directory before fsync.
+        const int fd = ::open(dir.c_str(),
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (fd < 0) return false;
         const bool ok = ::fsync(fd) == 0;
         (void)::close(fd);

@@ -1,48 +1,31 @@
-# CoreFlow Autonomous — Device validation checklist
+# On-device validation checklist
 
-This package is **host-tested**. Device behavior is **not certified** until the steps below pass on real hardware.
+Operator checklist. Not a certificate of universal compatibility.
 
-## 0. Build & install
+## Before Adaptive
 
-- [ ] CI/NDK produces `coreflowd` ARM64 for the target min API
-- [ ] Module installs on Magisk / KernelSU / APatch without service errors
-- [ ] `/data/adb/coreflow/status.json` updates each monitor interval
+1. Install the **CI release ZIP** for the target ABI (arm64).
+2. Confirm `coreflowd` starts after reboot (logcat / module status).
+3. Leave `mutation_mode=observe` and `mutation_armed=false`.
+4. Confirm WebUI / `status.json` updates.
+5. Confirm journal directory is writable under the module data path.
 
-## 1. Observe-only (default)
+## Optional thermal model
 
-- [ ] After boot, config remains observe / unarmed
-- [ ] Live WebUI shows blocker other than a false Observe when Adaptive is *not* requested
-- [ ] No sysfs/proc writes from CoreFlow (journal empty or restore-only)
+- ONNX ships with the module as a **best-effort** thermal aid.
+- No claim that the model is calibrated for every SoC.
+- Daemon logic does not require a validated model to observe or to apply bounded, permitted mutations when Adaptive is deliberately armed.
 
-## 2. Adaptive path
+## Adaptive (only if you accept risk)
 
-Config minimum:
+1. Arm only after observe soak looks healthy on **this** device.
+2. Prefer one domain at a time if debugging.
+3. Verify journal restore after a forced process stop.
+4. Keep a known-good recovery path (module disable / last good config).
 
-```
-mutation_mode=adaptive
-mutation_armed=true
-# Legacy allow_cpu_governor is ignored.
-```
+## Evidence worth keeping
 
-- [ ] `status.json` → `"mode":"adaptive"`, `"armed":true`
-- [ ] Live banner is **not** stuck on Observe solely because of mode string case
-- [ ] Blocker progresses: BASELINE_CAPTURE → (optional COOLDOWN/CONTEXT_*) → READY or a real gate
-- [ ] Brain shows Decision agent reason when candidates exist
-- [ ] At most one resource mutation per epoch; journal commits before write
-- [ ] Idle / disarm restores factory values
-
-## 3. Stress / safety
-
-- [ ] ThermalGuard / Pressure only allows stabilizing resource writes
-- [ ] Kill switch `DISABLE` and `SAFE_MODE` stop mutation and restore
-- [ ] CPUFreq follows the global Adaptive/armed gate; legacy `allow_cpu_governor` is ignored
-
-## 4. Multi-device notes (fill per device)
-
-| Device | SoC | Kernel | Root | Result |
-|--------|-----|--------|------|--------|
-|        |     |        |      |        |
-
-## Pass criteria for community RC
-
-Observe soak ≥ 24h without unintended writes; Adaptive resource path shows ≥1 verified mutation and clean restore on one primary device; no boot-loop; status/WebUI agree with config.
+- Commit SHA / module version
+- Device model + kernel
+- Log excerpts for start, first mutation, restore
+- Whether thermal model loaded or fell back

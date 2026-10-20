@@ -12,3 +12,4 @@ compile_commands.json
 
 # Ignore a legacy generated WebUI vendor tree; the native WebUI no longer uses it.
 module/webroot/vendor/
+Testing/

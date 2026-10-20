@@ -90,13 +90,13 @@ Keep ONNX Runtime SDK/cache and build trees outside the source tree.
 
 | Gate | Result |
 |------|--------|
-| Host CMake + deterministic tests | Passed |
-| CTest (hardening, safety, WebUI, release contract) | Passed |
-| ASan + UBSan on this exact source snapshot | Not verified in this audit |
-| Android 14+ ARM64 production build | Not verified in this audit; run the Android CI workflow |
-| Physical-device behavior / recovery | Operator validation required |
+| Host CMake + `ctest` | Proven when Actions **Host deterministic tests** is green on that SHA |
+| ASan + UBSan (`detect_leaks=1`) | Proven when Actions **ASan + UBSan** is green on that SHA |
+| Android 14+ ARM64 NDK + artifacts | Proven when Actions **Android 14+ ARM64 Production** is green on that SHA |
+| Per-device soak / recovery / SELinux paths | **Operator** validation — not claimed for all devices |
+| Thermal ONNX calibration per SoC | **Not claimed**; model is optional best-effort aid |
 
-The source-package audit validates host build/contracts only. An older CI result does not certify this exact snapshot. Android ARM64 build, installation, soak, recovery, and KernelSU/Magisk path testing remain separate gates before Adaptive mode.
+CI success on a commit (example: `8af1984` on `refactor/source-consolidation`) certifies **that commit’s** host tests, sanitizers, and ARM64 build. It does not certify every phone. If `coreflowd` runs correctly on a given device, that is evidence for that device only.
 
 See [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) and [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md).
 
@@ -116,12 +116,14 @@ See [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) and [`docs/DEVICE_VALIDATION.
 | Doc | Purpose |
 |-----|---------|
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |
-| [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | What each file is for |
-| [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) | Discovery and eligibility rules |
+| [`SECURITY.md`](SECURITY.md) | Mutation safety rules |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Authority boundaries |
-| [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) | CI and validation status |
+| [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) | Discovery and eligibility |
+| [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Source layout |
+| [`docs/TUNING.md`](docs/TUNING.md) | Operator tuning notes |
+| [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) | What CI does and does not prove |
 | [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md) | On-device checklist |
-| [`docs/adr/`](docs/adr/) | Architecture decisions (0002 packaging, 0004 journal) |
+| [`docs/adr/`](docs/adr/) | Architecture decisions |
 
 ---
 

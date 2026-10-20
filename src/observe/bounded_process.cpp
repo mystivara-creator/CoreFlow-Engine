@@ -67,7 +67,7 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
             return result;
         }
         if (pid == 0) {
-            const int null_fd = ::open("/dev/null", O_RDWR);
+            const int null_fd = ::open("/dev/null", O_RDWR | O_CLOEXEC);
             if (null_fd >= 0) {
                 ::dup2(null_fd, STDIN_FILENO);
                 ::dup2(null_fd, STDERR_FILENO);

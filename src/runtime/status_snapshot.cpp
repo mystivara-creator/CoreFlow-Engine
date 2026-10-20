@@ -7,6 +7,7 @@
 #include <locale>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace coreflow {
@@ -330,21 +331,32 @@ std::string statusToJson(const EngineStatus& s) {
 
 bool writeStatusFile(const std::string& path, const std::string& json) noexcept {
     try {
-        if (path.empty() || json.empty()) return false;
-        const std::string tmp = path + ".tmp";
-        const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (path.empty() || json.empty() || path.find('\0') != std::string::npos) {
+            return false;
+        }
+        // Unique exclusive temp (same pattern as the mutation journal): a fixed
+        // "*.tmp" path is vulnerable to hard-link TOCTOU even with O_NOFOLLOW.
+        std::string temporary = path + ".tmp.XXXXXX";
+        const int fd = ::mkstemp(temporary.data());
         if (fd < 0) return false;
 
+        struct stat st {};
+        bool ok = ::fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 &&
+                  ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+                  ::fchmod(fd, 0600) == 0;
+
         std::size_t written = 0;
-        bool ok = true;
-        while (written < json.size()) {
+        while (ok && written < json.size()) {
             const ssize_t n = ::write(fd, json.data() + written, json.size() - written);
-            if (n <= 0) { ok = false; break; }
+            if (n <= 0) {
+                ok = false;
+                break;
+            }
             written += static_cast<std::size_t>(n);
         }
         if (::close(fd) != 0) ok = false;
-        if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-            (void)::unlink(tmp.c_str());
+        if (!ok || std::rename(temporary.c_str(), path.c_str()) != 0) {
+            (void)::unlink(temporary.c_str());
             return false;
         }
         return true;
