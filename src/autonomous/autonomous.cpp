@@ -714,8 +714,15 @@ void AutonomousEngine::tick() {
             const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);
             if (previous_phase == observe::LaunchPhase::Idle &&
                 phase == observe::LaunchPhase::LaunchWindow) {
-                interactivity_model_.onForegroundChanged(ia_now_ms);
-                logInfo("INTERACTIVITY launch_window source=process_count_psi");
+                // ForegroundTracker owns launch-window creation.
+                // Process-count growth and PSI must not create a duplicate launch event.
+                if (last_interactivity_state_ ==
+                    understand::InteractionState::Launching) {
+                    interactivity_model_.onForegroundChanged(ia_now_ms);
+                    logInfo("INTERACTIVITY launch_window_extend source=process_count_psi");
+                } else {
+                    logInfo("INTERACTIVITY launch_signal source=process_count_psi");
+                }
             }
         }
         std::string ia_foreground_package;
