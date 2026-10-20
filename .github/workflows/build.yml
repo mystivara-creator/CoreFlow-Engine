@@ -238,7 +238,7 @@ jobs:
           ! grep -Eq 'https?://cdn[.]jsdelivr[.]net' module/webroot/index.html
           grep -Fq 'data-page="journal"' module/webroot/index.html
           grep -Fq 'data-page="about"' module/webroot/index.html
-          grep -Fq 'CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md' module/webroot/index.html
+          grep -Fq 'CoreFlow-Engine/blob/refactor/source-consolidation/SECURITY.md' module/webroot/index.html
 
       - name: Fetch ONNX Runtime Android
         shell: bash
