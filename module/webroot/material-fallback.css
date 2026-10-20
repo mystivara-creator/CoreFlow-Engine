@@ -1,3 +1,5 @@
-/* Local fallback styles: custom elements are optional, never required by the core UI. */
-md-button,md-switch,md-card{font:inherit}
-html[data-material="cdn"] .btn{letter-spacing:.02px}
+/* Fallback for when the Material Web modules cannot load (offline, CDN blocked).
+   style.css already styles every control, so this file only keeps optional
+   <md-*> elements from collapsing to inline text when the modules are missing. */
+md-button, md-switch, md-card { display: inline-block; font: inherit; }
+md-card { display: block; }

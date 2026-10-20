@@ -249,8 +249,11 @@ ActuatorResult CpuFreqActuator::apply(
 
     std::string verified;
     if (!readText(mutation.target, verified)) {
-        (void)writeVerified(mutation.target, baseline->second.value);
-        result.status = ActuatorStatus::VerifyFailed;
+        const bool rolledBack =
+            writeVerified(mutation.target, baseline->second.value);
+        result.status = rolledBack
+            ? ActuatorStatus::RolledBack
+            : ActuatorStatus::VerifyFailed;
         return result;
     }
 

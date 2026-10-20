@@ -210,7 +210,19 @@ ActuatorResult ResourceActuator::apply(const ActuatorMutation& mutation,
 
     result.writes_attempted = 1;
     if (!writeAndVerify(mutation.target, requested)) {
-        result.status = ActuatorStatus::VerifyFailed;
+        // The write may have landed before read-back failed. An unverified
+        // value must not stay in place, so restore the pre-write value unless
+        // the node still reads back exactly as it did before this attempt.
+        std::string observed;
+        const bool observed_ok = readComparable(mutation.target, observed);
+        if (observed_ok && observed == current) {
+            result.status = ActuatorStatus::VerifyFailed;  // nothing landed
+            return result;
+        }
+        const bool rolled_back =
+            writable(mutation.target) && writeAndVerify(mutation.target, current);
+        result.status = rolled_back ? ActuatorStatus::RolledBack
+                                    : ActuatorStatus::VerifyFailed;
         return result;
     }
 

@@ -8,18 +8,17 @@
 window.CoreFlowUI=window.CoreFlowUI||{};window.CoreFlowUI.materialState="fallback";
 </script>
 <script type="module">
-try {
- await Promise.all([
-  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/buttons/button.js"),
-  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/switch/switch.js"),
-  import("https://cdn.jsdelivr.net/gh/material-esm/material@3/card/card.js")
- ]);
- document.documentElement.dataset.material="cdn";window.CoreFlowUI.materialState="cdn";
- document.dispatchEvent(new Event("coreflow:material-ready"));
-} catch(e) {
- document.documentElement.dataset.material="fallback";window.CoreFlowUI.materialState="fallback";
- document.dispatchEvent(new Event("coreflow:material-fallback"));
-}
+// Each module loads independently: one failed CDN file must not disable the rest.
+const results = await Promise.allSettled([
+ import("https://cdn.jsdelivr.net/gh/material-esm/material@3/buttons/button.js"),
+ import("https://cdn.jsdelivr.net/gh/material-esm/material@3/switch/switch.js"),
+ import("https://cdn.jsdelivr.net/gh/material-esm/material@3/card/card.js")
+]);
+const loaded = results.filter(r => r.status === "fulfilled").length;
+const mode = loaded === results.length ? "cdn" : loaded > 0 ? "partial" : "fallback";
+document.documentElement.dataset.material = mode;
+window.CoreFlowUI.materialState = mode;
+document.dispatchEvent(new Event(loaded > 0 ? "coreflow:material-ready" : "coreflow:material-fallback"));
 </script>
 <script defer src="./control_logic.js"></script><script defer src="./engine_status.js"></script><script defer src="./app.js"></script>
 </head>
@@ -64,7 +63,7 @@ try {
 <article class="card"><div class="card-title"><div><small class="eyebrow">RUNTIME MODE</small><h3>Operating posture</h3></div><span id="policy-mode-pill" class="pill">UNKNOWN</span></div><div class="mode-options"><button class="mode-option selected" data-mode="observe"><span>◉</span><div><b>Observe</b><small>Discover and explain. No mutation requested.</small></div><i></i></button><button class="mode-option" data-mode="adaptive"><span>⌁</span><div><b>Adaptive</b><small>Request adaptive policy; per-resource authorization still applies.</small></div><i></i></button></div><div class="notice warning">⚠ <span>Adaptive is not blanket write permission. Capability checks, policy authority, journal, read-back verification and rollback remain mandatory.</span></div><div class="form-actions"><button class="btn primary" id="btn-apply-mode">Apply mode</button><small id="mode-apply-status">No changes requested.</small></div></article>
 <article class="card"><small class="eyebrow">RUNTIME CONFIG</small><h3>Reported safety gates</h3><div id="policy-details" class="detail-list"><div class="detail-row"><span>Mutation mode</span><b>Unknown</b></div></div><div class="notice">ⓘ <span>Use existing fixed command builders and validated config writer. No free-form shell is exposed.</span></div></article></div></section>
 
-<section class="page" id="page-journal"><div class="page-head"><div><small class="eyebrow">AUDIT / EVENT HISTORY</small><h1>Journal<span>.</span></h1><p>A human-readable trace of runtime events and safety outcomes.</p></div><button class="btn tonal" id="btn-journal-refresh">↻ Refresh journal</button></div><article class="card"><div class="table-head"><div><h3>Runtime journal</h3><p>Entries are displayed as reported by the runtime.</p></div><input id="journal-search" placeholder="Filter journal…" aria-label="Filter journal"></div><div id="journal-list" class="journal-list"><div class="empty">No journal entries received.</div></div></article></section>
+<section class="page" id="page-journal"><div class="page-head"><div><small class="eyebrow">AUDIT / EVENT HISTORY</small><h1>Journal<span>.</span></h1><p>A human-readable trace of runtime events and safety outcomes.</p></div><button class="btn tonal" id="btn-journal-refresh">↻ Refresh journal</button></div><article class="card"><div class="table-head"><div><h3>Runtime journal</h3><p>Terbaru di atas. Satu siklus dibaca dari bawah ke atas: policy_evaluated sampai cycle_completed. Setiap baris menunjukkan target, nilai yang ditulis, dan nilai sebelumnya.</p></div><input id="journal-search" placeholder="Filter journal…" aria-label="Filter journal"></div><div id="journal-list" class="journal-list"><div class="empty">No journal entries received.</div></div></article></section>
 
 <section class="page" id="page-system"><div class="page-head"><div><small class="eyebrow">DEVICE / ENVIRONMENT</small><h1>System profile<span>.</span></h1><p>Runtime-discovered platform information and interface availability.</p></div><button class="btn tonal" id="btn-system-refresh">↻ Refresh profile</button></div>
 <div class="metrics profile"><article class="metric"><small>PLATFORM</small><b id="system-device">Unknown device</b><p>Device model and code</p></article><article class="metric"><small>ANDROID</small><b id="system-android">Unknown</b><p>Version and API level</p></article><article class="metric"><small>KERNEL</small><b id="system-kernel">Unknown</b><p>Kernel release</p></article><article class="metric"><small>SoC</small><b id="system-soc">Unknown</b><p>Detected chipset family</p></article></div>
@@ -91,6 +90,20 @@ try {
       <p>Observe remains the default posture. Adaptive mode does not bypass policy checks or per-resource authorization.</p>
       <p><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md" target="_blank" rel="noopener noreferrer">Read the security policy ↗</a></p>
       <p><a href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer">GitHub repository ↗</a></p>
+    </article>
+  </div>
+  <div class="two-col">
+    <article class="card">
+      <small class="eyebrow">WHAT THE ACTUATOR CHANGES</small>
+      <h3>Write scope</h3>
+      <p><b>CPU governor:</b> at most one write per cycle to <code>scaling_governor</code> of a CPU policy. Needs <code>allow_cpu_governor=true</code> and <code>grant_cpufreq</code> in config.ini.</p>
+      <p><b>Kernel tunables:</b> at most one write per cycle to a discovered sysctl, sysfs or cgroup node. The value comes from vendor config or an option the kernel advertises. Only domains enabled by <code>grant_*</code> are eligible.</p>
+    </article>
+    <article class="card">
+      <small class="eyebrow">EVERY WRITE</small>
+      <h3>Read, journal, write, verify</h3>
+      <p>1. Read the live value. 2. Save the original to the durable journal. 3. Write one value. 4. Read it back. 5. If read-back differs or fails, restore the original value.</p>
+      <p>Fatal nodes (panic, thermal, power, hotplug, one-shot triggers) are always refused.</p>
     </article>
   </div>
 </section>

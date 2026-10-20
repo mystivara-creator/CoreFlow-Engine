@@ -79,9 +79,9 @@ renderResources(p);renderDecision(p);renderSystem(p);
 const pairs=[["Mutation mode",brain.mode],["Mutation armed",brain.armed],["CPU governor permission",brain.allowCpu],["Status age",p&&p.age!=null?p.age+" s":null],["Status freshness",p?(p.stale?"Stale":"Fresh"):null],["Safety hold",brain.hold]];
 detailRows($("#policy-details"),pairs);const selected=mode==="adaptive"?"adaptive":"observe";$$(".mode-option").forEach(x=>x.classList.toggle("selected",x.dataset.mode===selected));state.selectedMode=selected;
 }
-async function refresh(){
-try{const r=await execShell(C.snapshotCmd(),15000);const parts=C.splitSnapshot(r.stdout);state.probe=parts.probe?C.parseProbe(parts.probe):null;state.parsed=parts.status?S.parse(parts.status):{ok:false,error:r.stderr||"No status payload"};if(r.errno!==0&&state.parsed.ok===false)state.parsed.error=r.stderr||state.parsed.error;render(state.parsed);if(!r.errno)toast("Runtime status updated.");else toast("Status read failed: "+(r.stderr||"bridge error"));}catch(e){state.parsed={ok:false,error:String(e)};render(state.parsed);toast("Unable to read runtime status.")}}
-async function rediscover(){const r=await execShell(C.refreshCmd());if(r.errno===0){toast("Re-discovery signal sent.");setTimeout(refresh,700)}else toast("Re-discovery failed: "+(r.stderr||r.stdout||"unknown error"))}
+async function refresh(silent){
+try{const r=await execShell(C.snapshotCmd(),15000);const parts=C.splitSnapshot(r.stdout);state.probe=parts.probe?C.parseProbe(parts.probe):null;state.parsed=parts.status?S.parse(parts.status):{ok:false,error:r.stderr||"No status payload"};if(r.errno!==0&&state.parsed.ok===false)state.parsed.error=r.stderr||state.parsed.error;render(state.parsed);if(!silent){if(!r.errno)toast("Runtime status updated.");else toast("Status read failed: "+(r.stderr||"bridge error"));}}catch(e){state.parsed={ok:false,error:String(e)};render(state.parsed);if(!silent)toast("Unable to read runtime status.")}}
+async function rediscover(){const r=await execShell(C.refreshCmd());if(r.errno===0){toast("Re-discovery signal sent.");setTimeout(()=>refresh(true),700)}else toast("Re-discovery failed: "+(r.stderr||r.stdout||"unknown error"))}
 async function loadConfig(){const r=await execShell(C.readConfigCmd(),8000);if(r.errno!==0||!r.stdout.trim()){toast("config.ini unavailable; policy was not changed.");return false}state.configRaw=r.stdout;state.config=C.parseIni(r.stdout);return true}
 async function applyMode(){
 if(state.busy)return;state.busy=true;
@@ -93,24 +93,44 @@ const probe=state.probe||{};const g=C.gate(v.values,{currentMode:state.config.mu
 if(!g.ok){toast(g.reason||"Policy gate rejected this change.");return}
 if(g.confirm){const message=g.confirm==="resume"?"Adaptive may resume after the disable marker is cleared. Continue?":g.confirm==="arm"?"Adaptive mode requires explicit arming. Continue?":"Switch to Observe mode?";if(!window.confirm(message))return}
 const raw=C.applyValues(state.configRaw,v.values);const w=await execShell(C.writeConfigCmd(raw,v.values,{clearDisable:g.clearDisable}),15000);
-if(w.errno===0&&w.stdout.includes("CONFIG_COMMIT_OK")){state.configRaw=raw;state.config=C.parseIni(raw);$("#mode-apply-status").textContent="Saved. Restart the engine to apply it.";toast("Policy saved. Restart the engine to apply it.");await refresh()}else toast("Policy save rejected: "+(w.stderr||w.stdout||"unknown error"));
+if(w.errno===0&&w.stdout.includes("CONFIG_COMMIT_OK")){state.configRaw=raw;state.config=C.parseIni(raw);$("#mode-apply-status").textContent="Saved. Restart the engine to apply it.";toast("Policy saved. Restart the engine to apply it.");await refresh(true)}else toast("Policy save rejected: "+(w.stderr||w.stdout||"unknown error"));
 } catch(e){toast("Policy change failed: "+String(e))} finally{state.busy=false}
 }
+function journalEntry(e){
+  const item=node("div","journal-entry");
+  const head=node("div","journal-head");
+  head.append(node("b","",val(pick(e.event,e.type),"Runtime event")),node("span","mini-pill",val(pick(e.result,e.level),"event")));
+  item.appendChild(head);
+  item.appendChild(node("time","",val(pick(e.timestamp,e.time),"—")));
+  const help=C.describeEvent(e.event);
+  if(help)item.appendChild(node("p","journal-help",help));
+  if(e.reason)item.appendChild(node("p","journal-reason","Reason: "+e.reason));
+  const rows=[];
+  if(e.target)rows.push(["Target",e.target]);
+  if(e.requested)rows.push(["Set to",e.requested]);
+  if(e.currentValue)rows.push(["Before",e.currentValue]);
+  if(e.baselineValue)rows.push(["Baseline",e.baselineValue]);
+  if(e.actuatorStatus)rows.push(["Actuator status",e.actuatorStatus]);
+  if(e.writesAttempted!=null)rows.push(["Writes attempted / verified",e.writesAttempted+" / "+val(e.writesVerified,"?")]);
+  if(e.scope)rows.push(["Area",e.scope]);
+  rows.forEach(([k,v])=>{const r=node("div","detail-row");r.append(node("span","",k),node("b","",val(v)));item.appendChild(r);});
+  return item;
+}
 async function loadJournal(){
-try{const r=await Promise.all([execShell(C.readTraceCmd(),10000),execShell(C.readLogCmd(),10000)]);state.trace=r[0].errno===0?C.parseTrace(r[0].stdout,400):[];state.logText=r[1].errno===0?r[1].stdout:"";const q=$("#journal-search").value.toLowerCase();const list=state.trace.filter(e=>!q||JSON.stringify(e).toLowerCase().includes(q));const target=$("#journal-list");clear(target);if(list.length){list.slice(0,100).forEach(e=>{const item=node("div","journal-entry");item.appendChild(node("time","",val(pick(e.timestamp,e.time),"—")));const body=node("div");body.append(node("b","",val(pick(e.event,e.type,e.result),"Runtime event")),node("p","",val(pick(e.reason,e.message,e.decision_reason),"No detail reported")));item.appendChild(body);item.appendChild(node("span","mini-pill",val(pick(e.result,e.level),"event")));target.appendChild(item);});}else{const fallback=!list.length&&state.logText.trim()?state.logText.split("\n").filter(x=>x.toLowerCase().includes(q)).slice(-100).reverse().join("\n"):"No matching journal entries.";target.appendChild(node("div","empty",fallback));}}catch(e){$("#journal-list").textContent="Journal unavailable: "+String(e)}}
+try{const r=await Promise.all([execShell(C.readTraceCmd(),10000),execShell(C.readLogCmd(),10000)]);state.trace=r[0].errno===0?C.parseTrace(r[0].stdout,400):[];state.logText=r[1].errno===0?r[1].stdout:"";const q=$("#journal-search").value.toLowerCase();const list=state.trace.filter(e=>!q||JSON.stringify(e).toLowerCase().includes(q));const target=$("#journal-list");clear(target);if(list.length){list.slice(0,100).forEach(e=>target.appendChild(journalEntry(e)));}else{const fallback=!list.length&&state.logText.trim()?state.logText.split("\n").filter(x=>x.toLowerCase().includes(q)).slice(-100).reverse().join("\n"):"No matching journal entries.";target.appendChild(node("div","empty",fallback));}}catch(e){$("#journal-list").textContent="Journal unavailable: "+String(e)}}
 async function engineAction(kind){
 const cmd=kind==="start"?C.startCmd():kind==="stop"?C.stopCmd():C.restartCmd();
 const question=kind==="start"?"Request CoreFlow engine start?":kind==="stop"?"Stop coreflowd?":"Restart CoreFlow engine?";
 if(!confirm(question))return;
 const r=await execShell(cmd,15000);
-if(r.errno===0){toast(kind.charAt(0).toUpperCase()+kind.slice(1)+" request sent.");setTimeout(refresh,800)}
+if(r.errno===0){toast(kind.charAt(0).toUpperCase()+kind.slice(1)+" request sent.");setTimeout(()=>refresh(true),800)}
 else toast(kind+" failed: "+(r.stderr||r.stdout||"unknown error"));
 }
 function wire(){
 $$("[data-page]").forEach(b=>b.addEventListener("click",()=>page(b.dataset.page)));$$("[data-goto]").forEach(b=>b.addEventListener("click",()=>page(b.dataset.goto)));
 $("#theme-toggle").addEventListener("click",()=>document.documentElement.dataset.theme=document.documentElement.dataset.theme==="dark"?"light":"dark");
 $("#btn-start-engine").addEventListener("click",()=>engineAction("start"));$("#btn-stop-engine").addEventListener("click",()=>engineAction("stop"));$("#btn-restart-engine").addEventListener("click",()=>engineAction("restart"));
-["btn-refresh","btn-resources-refresh","btn-decision-refresh","btn-journal-refresh","btn-system-refresh"].forEach(id=>$("#"+id).addEventListener("click",id==="btn-journal-refresh"?loadJournal:refresh));
+["btn-refresh","btn-resources-refresh","btn-decision-refresh","btn-journal-refresh","btn-system-refresh"].forEach(id=>$("#"+id).addEventListener("click",id==="btn-journal-refresh"?loadJournal:()=>refresh(false)));
 $("#btn-rediscover").addEventListener("click",()=>{if(confirm("Request capability re-discovery? This sends SIGUSR1 and does not write tunables."))rediscover()});
 $("#btn-resources-discover").addEventListener("click",()=>{if(confirm("Request capability re-discovery? This does not write tunables."))rediscover()});
 ["resource-search","resource-domain","resource-state"].forEach(id=>$("#"+id).addEventListener(id==="resource-search"?"input":"change",()=>renderResources(state.parsed)));
@@ -118,8 +138,9 @@ $("#journal-search").addEventListener("input",loadJournal);
 $$(".mode-option").forEach(b=>b.addEventListener("click",()=>{state.selectedMode=b.dataset.mode;$$(".mode-option").forEach(x=>x.classList.toggle("selected",x===b))}));
 $("#btn-apply-mode").addEventListener("click",()=>{if(confirm("Apply "+state.selectedMode+" mode through validated config policy?"))applyMode()});
 $("#dialog-cancel").addEventListener("click",()=>$("#confirm-dialog").close());$("#dialog-confirm").addEventListener("click",()=>{const d=$("#confirm-dialog");d.close();if(state.pending)state.pending();state.pending=null});
-document.addEventListener("coreflow:material-ready",()=>$("#footer-material-status").textContent="Material 3 modules loaded; native controls active");document.addEventListener("coreflow:material-fallback",()=>$("#footer-material-status").textContent="Local fallback active");
-let h=location.hash.slice(1);if(h&&$("#page-"+h))page(h);refresh();setInterval(()=>{if(document.visibilityState!=="hidden")refresh()},5000);
+document.addEventListener("coreflow:material-ready",()=>$("#footer-material-status").textContent="Material 3 modules loaded");document.addEventListener("coreflow:material-fallback",()=>$("#footer-material-status").textContent="Local fallback active");
+const ms=(window.CoreFlowUI||{}).materialState;$("#footer-material-status").textContent=ms==="cdn"?"Material 3 modules loaded":ms==="partial"?"Material 3 partly loaded; fallback styles active":"Local fallback active";
+let h=location.hash.slice(1);if(h&&$("#page-"+h))page(h);refresh(true);setInterval(()=>{if(document.visibilityState!=="hidden")refresh(true)},5000);
 }
 window.CoreFlowUI={...(window.CoreFlowUI||{}),refresh,rediscover,showPage:page,getState:()=>state};
 document.addEventListener("DOMContentLoaded",wire);

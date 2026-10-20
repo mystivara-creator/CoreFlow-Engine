@@ -349,6 +349,25 @@
     return "event";
   }
 
+  // Plain-language meaning of each journal event, in the order a cycle runs.
+  var EVENT_HELP = {
+    policy_evaluated: "Policy menilai kondisi sistem dan menentukan tingkat intervensi serta jumlah kandidat perubahan.",
+    scope_gate_checked: "Gerbang cakupan: kandidat harus berada di area yang diizinkan. Ini belum berarti sudah ditulis.",
+    target_permit_checked: "Izin dikeluarkan untuk satu target dan satu nilai saja. Izin tidak berlaku untuk target lain.",
+    prewrite_read_completed: "Nilai aktif dibaca dari kernel sebelum menulis. Nilai ini menjadi acuan 'sebelum'.",
+    mutation_journal_commit: "Nilai asli disimpan ke jurnal durable sebelum write, supaya bisa dipulihkan bila daemon berhenti mendadak.",
+    actuator_apply_started: "Actuator mulai menulis satu nilai ke satu target. Ini titik ketika kernel benar-benar diubah.",
+    actuator_apply_completed: "Hasil write: berapa write dicoba dan diverifikasi, serta status akhirnya.",
+    mutation_controller_returned: "Controller mengembalikan hasil perubahan ke loop utama.",
+    observation_window_started: "Perubahan sudah terverifikasi. Engine mengamati beberapa siklus; jika tidak membantu, perubahan dibatalkan.",
+    mutation_held: "Tidak ada perubahan baru pada siklus ini. Alasan ada di baris Reason.",
+    cycle_completed: "Satu siklus keputusan selesai. Ini langkah terakhir dari urutan di atas."
+  };
+
+  function describeEvent(name) {
+    return Object.prototype.hasOwnProperty.call(EVENT_HELP, name) ? EVENT_HELP[name] : "";
+  }
+
   // Newest first. Non-JSON or non-object lines are skipped, never rendered as HTML.
   function parseTrace(text, limit) {
     var rows = [];
@@ -364,7 +383,14 @@
         reason: str(o.reason, 160),
         state: str(o.state, 40),
         decision: str(o.decision, 60),
-        kind: classify(o)
+        kind: classify(o),
+        target: str(o.target, 300),
+        requested: str(o.requested, 200),
+        currentValue: str(o.current_value, 200),
+        baselineValue: str(o.baseline_value, 200),
+        actuatorStatus: str(o.actuator_status, 60),
+        writesAttempted: typeof o.writes_attempted === "number" ? o.writes_attempted : null,
+        writesVerified: typeof o.writes_verified === "number" ? o.writes_verified : null
       });
     });
     return rows.reverse();
@@ -384,7 +410,8 @@
     snapshotCmd: snapshotCmd, splitSnapshot: splitSnapshot, parseProbe: parseProbe,
     readConfigCmd: readConfigCmd, readTraceCmd: readTraceCmd, readLogCmd: readLogCmd,
     startCmd: startCmd, stopCmd: stopCmd, restartCmd: restartCmd, refreshCmd: refreshCmd,
-    writeConfigCmd: writeConfigCmd, parseTrace: parseTrace, filterTrace: filterTrace, classify: classify
+    writeConfigCmd: writeConfigCmd, parseTrace: parseTrace, filterTrace: filterTrace, classify: classify,
+    describeEvent: describeEvent
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CoreFlowControl = api;
