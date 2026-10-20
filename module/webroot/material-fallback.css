@@ -1,4 +1,4 @@
-/* Fallback for when the Material Web modules cannot load (offline, CDN blocked).
+/* Fallback for when the Material Web modules cannot load (for example, vendor files are absent).
    style.css already styles every control, so this file only keeps optional
    <md-*> elements from collapsing to inline text when the modules are missing. */
 md-button, md-switch, md-card { display: inline-block; font: inherit; }

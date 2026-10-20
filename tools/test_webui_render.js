@@ -27,7 +27,8 @@ check(/data-page="overview"/.test(html) && /data-page="resources"/.test(html) &&
 for (const id of ["btn-start-engine","btn-stop-engine","btn-restart-engine","btn-rediscover","btn-apply-mode","btn-refresh"]) check(ids.has(id) && app.includes(id), "control is present and wired: " + id);
 check(/C\.snapshotCmd\(\)/.test(app) && /C\.writeConfigCmd\(/.test(app) && /C\.gate\(/.test(app), "runtime status and policy use fixed CoreFlow command builders");
 check(/SAFE_MODE/.test(app) && /mutation_mode/.test(control) && /mutation_armed/.test(control), "mode changes retain explicit policy and safety gates");
-check(/coreflow:material-ready/.test(html) && /coreflow:material-fallback/.test(html) && /material-fallback\.css/.test(html), "CDN enhancement and local fallback are wired");
+check(/coreflow:material-ready/.test(html) && /coreflow:material-fallback/.test(html) && /material-fallback\.css/.test(html), "self-hosted Material enhancement and local fallback are wired");
+check(/\.\/vendor\/material\//.test(html) && !/cdn\.jsdelivr\.net/.test(html), "Material modules resolve locally without a runtime CDN");
 check(/mutation_mode=observe|mutation_mode.*observe/.test(control) && /selected" data-mode="observe/.test(html), "Observe is the UI default");
 console.log("CoreFlow WebUI Material 3 render contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

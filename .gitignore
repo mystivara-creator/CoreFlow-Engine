@@ -10,6 +10,6 @@ third_party/jni/
 .cache/
 compile_commands.json
 
-# Ignore a legacy generated WebUI vendor tree; the native WebUI no longer uses it.
+# CI-generated WebUI vendor tree; produced from the upstream Material Web repository.
 module/webroot/vendor/
 Testing/

@@ -215,6 +215,12 @@ jobs:
           set -euo pipefail
           bash tools/verify_source_release.sh
 
+      - name: Vendor pinned Material Web for offline runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/vendor_webui_material.sh
+
       - name: Verify WebUI payload
         shell: bash
         run: |
@@ -225,7 +231,11 @@ jobs:
           for f in app.js control_logic.js engine_status.js; do
             node --check "module/webroot/$f"
           done
-          node tools/test_webui_control.js
+          bash tools/test_webui_status.sh
+          test -s module/webroot/vendor/material-build-info.json
+          test -s module/webroot/vendor/material/buttons/button.js
+          test -s module/webroot/vendor/node_modules/lit/index.js
+          ! grep -Eq 'https?://cdn[.]jsdelivr[.]net' module/webroot/index.html
           grep -Fq 'data-page="journal"' module/webroot/index.html
           grep -Fq 'data-page="about"' module/webroot/index.html
           grep -Fq 'CoreFlow-Engine/blob/Autonomous-Engine/SECURITY.md' module/webroot/index.html
@@ -395,8 +405,6 @@ jobs:
           test -s module/webroot/control_logic.js
           # Native WebUI; no generated browser libraries or network downloads are required.
           cp -R module/webroot "${MODULE_DIR}/webroot"
-          # Exclude stale ignored vendor output from older source checkouts.
-          rm -rf "${MODULE_DIR}/webroot/vendor"
 
           chmod 0755 \
             "${MODULE_DIR}/system/bin/coreflowd" \
@@ -426,6 +434,14 @@ jobs:
           test -s "$MODEL"
           test -s "$ONNX_LIB"
           test -s "$BINARY"
+
+          # Verify that offline Material Web dependencies survive packaging.
+          WEBROOT="artifacts/CoreFlow-Autonomous/webroot"
+          test -s "$WEBROOT/vendor/material-build-info.json"
+          test -s "$WEBROOT/vendor/material/buttons/button.js"
+          test -s "$WEBROOT/vendor/material/switch/switch.js"
+          test -s "$WEBROOT/vendor/material/card/card.js"
+          test -s "$WEBROOT/vendor/node_modules/lit/index.js"
 
           echo "Thermal model:"
           stat -c '%n %s bytes' "$MODEL"

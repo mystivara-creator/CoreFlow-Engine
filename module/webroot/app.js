@@ -138,8 +138,8 @@ $("#journal-search").addEventListener("input",loadJournal);
 $$(".mode-option").forEach(b=>b.addEventListener("click",()=>{state.selectedMode=b.dataset.mode;$$(".mode-option").forEach(x=>x.classList.toggle("selected",x===b))}));
 $("#btn-apply-mode").addEventListener("click",()=>{if(confirm("Apply "+state.selectedMode+" mode through validated config policy?"))applyMode()});
 $("#dialog-cancel").addEventListener("click",()=>$("#confirm-dialog").close());$("#dialog-confirm").addEventListener("click",()=>{const d=$("#confirm-dialog");d.close();if(state.pending)state.pending();state.pending=null});
-document.addEventListener("coreflow:material-ready",()=>$("#footer-material-status").textContent="Material 3 modules loaded");document.addEventListener("coreflow:material-fallback",()=>$("#footer-material-status").textContent="Local fallback active");
-const ms=(window.CoreFlowUI||{}).materialState;$("#footer-material-status").textContent=ms==="cdn"?"Material 3 modules loaded":ms==="partial"?"Material 3 partly loaded; fallback styles active":"Local fallback active";
+document.addEventListener("coreflow:material-ready",()=>$("#footer-material-status").textContent="Material 3 local modules loaded");document.addEventListener("coreflow:material-fallback",()=>$("#footer-material-status").textContent="Local fallback active");
+const ms=(window.CoreFlowUI||{}).materialState;$("#footer-material-status").textContent=ms==="local"?"Material 3 local modules loaded":ms==="partial"?"Material 3 partly loaded; fallback styles active":"Local fallback active";
 let h=location.hash.slice(1);if(h&&$("#page-"+h))page(h);refresh(true);setInterval(()=>{if(document.visibilityState!=="hidden")refresh(true)},5000);
 }
 window.CoreFlowUI={...(window.CoreFlowUI||{}),refresh,rediscover,showPage:page,getState:()=>state};
