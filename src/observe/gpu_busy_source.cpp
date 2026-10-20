@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <array>
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -29,12 +30,22 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
     constexpr std::size_t kMaxDepth = 24U;
     std::size_t visited = 0U;
     const auto containsGpuIdentity = [](const std::string& path) noexcept {
-        const auto contains = [&path](const char* token) {
-            return path.find(token) != std::string::npos;
+        std::string normalized(path);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char ch) {
+                           return static_cast<char>(std::tolower(ch));
+                       });
+        const auto contains = [&normalized](const char* token) {
+            return normalized.find(token) != std::string::npos;
         };
-        return contains("gpu") || contains("GPU") || contains("kgsl") ||
-               contains("KGSL") || contains("mali") || contains("Mali") ||
-               contains("devfreq");
+        // Bandwidth/DDR/bus devfreq devices can also expose `load`; their
+        // ratio is not a GPU busy signal. Do not use generic "devfreq" as
+        // identity because it matches every devfreq device.
+        if (contains("ddr") || contains("bw") || contains("bus") ||
+            contains("mem")) {
+            return false;
+        }
+        return contains("gpu") || contains("kgsl") || contains("mali");
     };
 
     const auto walk = [&](const auto& self, const std::string& path,

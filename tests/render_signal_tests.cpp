@@ -106,6 +106,37 @@ int testLaunchWindowOpensOnForegroundSwitch() {
     return 0;
 }
 
+int testLaunchWindowOpensAfterOldAppExitsFirst() {
+    LaunchBurstDetector detector;
+    CHECK(detector.observe({1'000'000'000ULL, 5, -1.0}) == LaunchPhase::Idle);
+    CHECK(detector.observe({2'000'000'000ULL, 4, -1.0}) == LaunchPhase::Idle);
+    CHECK(detector.observe({3'000'000'000ULL, 2, -1.0}) == LaunchPhase::Idle);
+    CHECK(detector.observe({4'000'000'000ULL, 3, -1.0}) == LaunchPhase::LaunchWindow);
+    return 0;
+}
+
+int testLaunchWindowDoesNotReopenAfterSettling() {
+    LaunchBurstDetector detector;
+    (void)detector.observe({1'000'000'000ULL, 5, -1.0});
+    (void)detector.observe({2'000'000'000ULL, 4, -1.0});
+    (void)detector.observe({3'000'000'000ULL, 2, -1.0});
+    CHECK(detector.observe({4'000'000'000ULL, 3, -1.0}) == LaunchPhase::LaunchWindow);
+    CHECK(detector.observe({5'000'000'000ULL, 4, -1.0}) == LaunchPhase::LaunchWindow);
+    CHECK(detector.observe({8'000'000'000ULL, 4, 0.0}) == LaunchPhase::Idle);
+    CHECK(detector.observe({9'000'000'000ULL, 4, 0.0}) == LaunchPhase::Idle);
+    return 0;
+}
+
+int testIoPressureThresholdExtendsWindow() {
+    LaunchBurstDetector detector;
+    (void)detector.observe({1'000'000'000ULL, 1, -1.0});
+    (void)detector.observe({2'000'000'000ULL, 2, -1.0});
+    CHECK(detector.observe({4'000'000'000ULL, 2, 1.0}) == LaunchPhase::LaunchWindow);
+    CHECK(detector.observe({6'000'000'000ULL, 2, 0.0}) == LaunchPhase::LaunchWindow);
+    CHECK(detector.observe({7'000'000'000ULL, 2, 0.0}) == LaunchPhase::Idle);
+    return 0;
+}
+
 int testLaunchWindowClosesWhenQuiet() {
     LaunchBurstDetector detector;
     (void)detector.observe({1'000'000'000ULL, 1, -1.0});
@@ -146,6 +177,9 @@ int main() {
     failures += testBoundsInputAndRows() != 0;
     failures += testParsedFramesFeedTheAnalyzer() != 0;
     failures += testLaunchWindowOpensOnForegroundSwitch() != 0;
+    failures += testLaunchWindowOpensAfterOldAppExitsFirst() != 0;
+    failures += testLaunchWindowDoesNotReopenAfterSettling() != 0;
+    failures += testIoPressureThresholdExtendsWindow() != 0;
     failures += testLaunchWindowClosesWhenQuiet() != 0;
     failures += testIoActivityExtendsButNeverPastCap() != 0;
     failures += testInvalidObservationsAreIgnored() != 0;

@@ -30,7 +30,9 @@ public:
     static constexpr std::uint64_t kWindowNs = 3'000'000'000ULL;      // quiet time to close
     static constexpr std::uint64_t kMaxWindowNs = 8'000'000'000ULL;   // hard cap on a window
     static constexpr std::size_t kMinNewPids = 1U;
-    static constexpr double kIoPressureActivePct = 5.0;
+    // PSI avg10 is a 10-second average; a short launch burst can be diluted.
+    // Keep the threshold low enough for window extension to observe that burst.
+    static constexpr double kIoPressureActivePct = 1.0;
 
     // Returns the phase after this observation. Invalid timestamps (zero or not
     // increasing) are ignored and leave the state unchanged.
@@ -45,6 +47,9 @@ private:
     std::uint64_t last_activity_ns_{0};
     std::uint64_t last_timestamp_ns_{0};
     std::size_t last_foreground_pids_{0};
+    // Lowest membership seen while Idle. This catches a new app spawning after
+    // the previous app's foreground processes have already exited.
+    std::size_t floor_foreground_pids_{0};
     bool have_last_{false};
 };
 

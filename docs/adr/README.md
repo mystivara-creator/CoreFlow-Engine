@@ -42,3 +42,5 @@ Benefits, trade-offs, and follow-up work.
 | [0004](0004-durable-mutation-journal.md) | Durable mutation journal v2 | Accepted |
 | [0005](0005-render-launch-and-frame-pacing.md) | Render, app launch, and frame pacing domains | Proposed |
 | [0006](0006-interactivity-boost-authorization-and-recovery.md) | Interactivity boost authorization and journal recovery | Accepted |
+| [0007](0007-evidence-driven-tuning-expansion.md) | Evidence-driven tuning expansion | Proposed |
+| [0008](0008-dynamic-kernel-resource-discovery.md) | Dynamic kernel resource discovery | Proposed |
