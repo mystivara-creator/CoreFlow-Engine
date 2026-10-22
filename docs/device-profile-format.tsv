@@ -1,0 +1,16 @@
+# CoreFlow Device Profile schema v1 (UTF-8 TSV; tabs separate columns)
+# Escape backslash as \\, tab as \t, newline as \n.
+schema_version	1
+device	manufacturer	Xiaomi
+device	model	25098RA98G
+device	codename	kunzite
+device	soc	SM6475
+device	android_release	16
+device	android_api	36
+device	kernel	6.6.118-android15-8-ge56cf6b09cca-ab15511674-4k
+device	inventory_timestamp	2026-10-22T17:44:46+07:00
+device	complete	false
+# capability row columns:
+# capability <id> <domain> <path> <value_type> <access> <semantic_status> <strategy_id> <provenance>
+# Discovery is not proof of optimization eligibility. Keep unclassified resources OBSERVE_ONLY.
+capability	cpu.policy0.governor	cpu	/sys/devices/system/cpu/cpufreq/policy0/scaling_governor	enum	read-only	OBSERVE_ONLY		/sys/devices/system/cpu/cpufreq/policy0/scaling_governor

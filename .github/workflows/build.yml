@@ -2,10 +2,23 @@ name: Build CoreFlow Engine
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "production-grade-fixes" ]
   workflow_dispatch:
 
 jobs:
+  host-tests:
+    name: Host build and regression tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Configure Host Tests
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+    - name: Build Host Tests
+      run: cmake --build build -j2
+    - name: Run Regression Tests
+      run: ctest --test-dir build --output-on-failure
+
   build:
     name: Compile NDK & Package Module
     runs-on: ubuntu-latest
@@ -28,6 +41,7 @@ jobs:
           -DANDROID_ABI=arm64-v8a \
           -DANDROID_PLATFORM=android-30 \
           -DANDROID_STL=c++_static \
+          -DBUILD_TESTING=OFF \
           -DCMAKE_BUILD_TYPE=Release
         make -j$(nproc)
 
@@ -48,8 +62,9 @@ jobs:
 
     - name: Package KernelSU/Magisk Module
       run: |
-        cp build/coreflow_daemon module_template/system/bin/
-        cd module_template
+        mkdir -p module/system/bin
+        cp build/coreflow_daemon module/system/bin/
+        cd module
         zip -r9 ../CoreFlow-Engine-Release.zip .
 
     - name: Upload Module Artifact

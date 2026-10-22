@@ -1,0 +1,5 @@
+# CoreFlow Autonomous Engine v3.0.0
+# Intentionally no blanket proc/sysfs write grants are installed here.
+# SELinux domains and resource labels differ by OEM and root manager. Add only
+# device-verified, narrowly scoped rules after inspecting AVC denials on the target.
+# Never set SELinux permissive globally and never grant broad write access to sysfs.

@@ -1,142 +1,22 @@
 # Changelog
 
-Semua perubahan penting pada proyek ini akan didokumentasikan di file ini.
+## v3.0.0 — initial Autonomous Engine package
 
-Format ini didasarkan pada [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-dan proyek ini mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Added
+- Native C++17 closed-loop runtime: discovery, observation, optimization, decision justification, safety validation, mutation, outcome evaluation, rollback and feedback.
+- Runtime discovery of accessible kernel controls under `/sys` and `/proc/sys`, without a fixed resource or candidate-count cap.
+- Device context discovery for Android build/API, kernel release, SoC properties, online CPU count, RAM and storage/controller type when exposed by the running system.
+- Kernel-advertised discrete choice discovery and policy changes that use the choices actually exposed by the device, rather than fixed governor or I/O-scheduler names.
+- Numeric candidate generation from discovered/semantic bounds and the resource's representation, with runtime pressure-aware direction and per-resource outcome feedback.
+- Symlink-resistant path opening, current-value and object-identity checks, write/read-back verification, and guarded rollback.
+- Outcome comparison using available memory, thermal data and CPU/memory/I/O PSI signals.
+- KernelSU/Magisk-compatible service and ARM64 NDK build workflow.
 
----
+### Changed
+- Strategy catalog is a semantic extension, not a per-device absolute-path allowlist or an arbitrary cap on how many kernel controls may be discovered.
+- Retained CPU governor, devfreq governor, EPP or block scheduler changes trigger follow-up evaluation of related controls within the same discovered subsystem.
+- Potentially dangerous thermal, battery/power, regulator, watchdog, reset, debug, firmware and crash-control surfaces are excluded from mutation.
 
-## [1.0.0-rebuild] - 2026
-
-### ✨ Added
-- **5-Pillar Dynamic State Machine** dengan deteksi beban real-time
-  - Daily Efficiency (Idle mode)
-  - App Launch / Burst acceleration
-  - Gaming Unleashed mode
-  - Ultra Deep Sleep optimization
-  - Thermal Guardian dengan monitoring suhu baterai
-- **Zero-Overhead Architecture** menggunakan C++ File Stream dan Bionic Native API
-- **Anti-Bootloop & Graceful Fallback** system dengan safety nets
-- **Kunzite Privilege Profile** khusus untuk Redmi Note 15 5G (Snapdragon 6 Gen 3 + Adreno 710)
-- **Hybrid Universal Mode** untuk kompatibilitas device Android 14+
-- **DSP/NPU QoS Management** untuk optimasi gaming
-- **ZRAM Swappiness dynamic tuning** (60%-120%)
-- **CPU WALT Scheduler** management
-- **I/O Buffer optimization** (256KB-2048KB adaptive)
-- **Adreno GPU TZ Governor** tuning untuk Snapdragon devices
-- Support untuk Magisk v24+, KernelSU-Next, APatch
-- Logcat verification tool untuk monitoring
-- Graceful fallback untuk SoC non-Snapdragon
-
-### 🔧 Changed
-- Refactored thermal monitoring dengan direct battery temp sensing
-- Improved CPU frequency scaling algorithm
-- Enhanced I/O scheduler tuning untuk smooth app launching
-- Optimized ZRAM swappiness calculation
-
-### 🐛 Fixed
-- Fixed bootloop pada device tanpa sysfs tertentu
-- Fixed thermal throttling overshoot
-- Fixed I/O buffer size mismatch pada gaming mode
-- Fixed Adreno GPU detection untuk non-Snapdragon
-
-### 🚀 Performance
-- **Zero Overhead** - No shell/bash script execution overhead
-- **Real-time Response** - Instant state transitions dengan <100ms latency
-- **Memory Efficient** - Minimal RAM footprint melalui C++ native implementation
-
----
-
-## [2.2] - 2026
-
-### ✨ Added
-- Initial Kunzite Privilege Profile
-- Basic thermal monitoring
-- Core WALT scheduler management
-- ZRAM integration
-
-### 🔧 Changed
-- Improved device compatibility checks
-- Enhanced error handling
-
-### 🐛 Fixed
-- Fixed crashes pada certain Android 14 variants
-- Fixed file permission issues
-
----
-
-## [2.1] - 2026
-
-### ✨ Added
-- Foundation code architecture
-- CMake build system integration
-- Basic I/O management
-- CPU frequency scaling
-
----
-
-## [2.0] - 2026
-
-### ✨ Added
-- Initial release
-- Core daemon functionality
-- Magisk module integration
-
----
-
-## Versi Depan (Roadmap)
-
-### 🔜 Planned Features (v2.0.0)
-- [ ] Machine Learning-based workload prediction
-- [ ] Per-app customizable profiles
-- [ ] Web-based control panel
-- [ ] Real-time monitoring dashboard
-- [ ] Advanced GPU clock tuning
-- [ ] Memory pressure relief optimization
-- [ ] Battery health monitoring
-- [ ] Vibration/haptic response tuning
-- [ ] GPU power efficiency mode
-
-### 🔜 Improvements
-- [ ] Support untuk Android 15+
-- [ ] Dual cluster scheduling untuk big.LITTLE
-- [ ] Extended MediaTek/Exynos GPU profiling
-- [ ] Advanced thermal prediction (AI-based)
-
----
-
-## Release Notes
-
-### Cara Update
-
-1. Unduh versi terbaru dari [Releases](../../releases)
-2. Flash menggunakan Magisk/KernelSU/APatch
-3. Reboot
-4. Verifikasi dengan `logcat -s CoreFlowEngine`
-
-### Backup Rekomendasi
-
-Sebelum update:
-```bash
-# Backup current module
-adb pull /data/adb/modules/CoreFlow_Engine backup/
-
-# Atau gunakan Magisk backup feature
-```
-
----
-
-## Kontribusi
-
-Jika Anda ingin berkontribusi pada project ini, lihat [CONTRIBUTING.md](./CONTRIBUTING.md).
-
----
-
-## Lisensi
-
-Proyek ini dilisensikan di bawah MIT License. Lihat [LICENSE](./LICENSE) untuk detail.
-
----
-
-**Last Updated**: Oct 1, 2026
+### Validation status
+- Host build and all six host regression tests pass in the build environment used to prepare this source package.
+- Android NDK packaging and behavior against a physical Android kernel have not been executed in this environment. Kernel-specific effectiveness and safety cannot be inferred from host tests alone.

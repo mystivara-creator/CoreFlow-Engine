@@ -1,0 +1,33 @@
+# CoreFlow strategy catalogue schema v2.
+# Columns: strategy<TAB>id<TAB>domain<TAB>attribute<TAB>minimum<TAB>maximum
+# Selectors are semantic fallback policies, not an allowlist of resources or a
+# resource-count cap. The daemon also discovers kernel-advertised selector choices
+# and sysfs companion bounds, so newly exposed controls need not be listed here.
+# Rows below provide known semantic ranges where Linux does not publish bounds.
+schema_version	2
+# Virtual-memory controls (the runtime rejects values outside the selected policy range).
+strategy	vm.swappiness	proc_sys.vm	swappiness	0	200
+strategy	vm.vfs_cache_pressure	proc_sys.vm	vfs_cache_pressure	0	1000
+strategy	vm.page_cluster	proc_sys.vm	page-cluster	0	8
+strategy	vm.compaction_proactiveness	proc_sys.vm	compaction_proactiveness	0	100
+strategy	vm.watermark_scale_factor	proc_sys.vm	watermark_scale_factor	10	3000
+strategy	vm.watermark_boost_factor	proc_sys.vm	watermark_boost_factor	0	30000
+strategy	vm.extfrag_threshold	proc_sys.vm	extfrag_threshold	0	1000
+strategy	vm.stat_interval	proc_sys.vm	stat_interval	0	60
+strategy	vm.dirty_expire_centisecs	proc_sys.vm	dirty_expire_centisecs	100	360000
+strategy	vm.dirty_writeback_centisecs	proc_sys.vm	dirty_writeback_centisecs	100	60000
+strategy	vm.dirtytime_expire_seconds	proc_sys.vm	dirtytime_expire_seconds	0	3600
+strategy	vm.overcommit_ratio	proc_sys.vm	overcommit_ratio	0	100
+# Kernel scheduling controls; rows apply only where the running kernel exposes them.
+strategy	kernel.sched_autogroup_enabled	proc_sys.kernel	sched_autogroup_enabled	0	1
+strategy	kernel.sched_child_runs_first	proc_sys.kernel	sched_child_runs_first	0	1
+strategy	kernel.sched_cfs_bandwidth_slice_us	proc_sys.kernel	sched_cfs_bandwidth_slice_us	1000	1000000
+strategy	kernel.sched_latency_ns	proc_sys.kernel	sched_latency_ns	100000	100000000
+strategy	kernel.sched_min_granularity_ns	proc_sys.kernel	sched_min_granularity_ns	100000	100000000
+strategy	kernel.sched_wakeup_granularity_ns	proc_sys.kernel	sched_wakeup_granularity_ns	100000	100000000
+strategy	kernel.perf_cpu_time_max_percent	proc_sys.kernel	perf_cpu_time_max_percent	0	100
+# Per-device block queue controls. Each discovered queue is handled independently.
+strategy	block.read_ahead_kb	sysfs.block.queue	read_ahead_kb	0	8192
+strategy	block.nr_requests	sysfs.block.queue	nr_requests	1	1024
+strategy	block.rq_affinity	sysfs.block.queue	rq_affinity	0	2
+strategy	block.nomerges	sysfs.block.queue	nomerges	0	2

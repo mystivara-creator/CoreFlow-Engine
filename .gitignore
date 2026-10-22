@@ -1,0 +1,5 @@
+/build/
+/build-*/
+/.build/
+CoreFlow-Engine-Release.zip
+CoreFlow-v3.0.0-Full-Source.tar.gz
