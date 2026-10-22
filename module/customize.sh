@@ -6,7 +6,7 @@ CF_TITLE='COREFLOW AUTONOMOUS ENGINE'
 cf_info()  { ui_print "[CoreFlow] $1"; }
 cf_warn()  { ui_print "[CoreFlow][!] $1"; }
 cf_abort() { ui_print "[CoreFlow][X] $1"; abort "$1"; }
-cf_has_entry() { unzip -Z1 "$ZIPFILE" "$1" 2>/dev/null | grep -q .; }
+cf_has_entry() { unzip -p "$ZIPFILE" "$1" >/dev/null 2>&1; }
 
 ui_print ''
 ui_print '╔══════════════════════════════════════════╗'
