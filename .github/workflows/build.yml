@@ -1,81 +1,88 @@
-
-name: CoreFlow Engine CI
+name: Build CoreFlow Engine
 
 on:
   push:
-    branches: [main, production-grade-fixes]
+    branches: [ "main", "production-grade-fixes" ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   host-tests:
-    name: Host Build & Tests
+    name: Host build and regression tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Configure Host Tests
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+    - name: Build Host Tests
+      run: cmake --build build -j2
+    - name: Run Regression Tests
+      run: ctest --test-dir build --output-on-failure
 
-      - name: Build and Test
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-          cmake --build build -j2
-          ctest --test-dir build --output-on-failure
-
-  android:
-    name: Android ARM64 Build & Package
+  build:
+    name: Compile NDK & Package Module
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Build ARM64
-        run: |
-          export NDK="$ANDROID_NDK_LATEST_HOME"
-          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+    - name: Configure Android NDK
+      run: |
+        echo "NDK_PATH=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+        echo "NDK_BIN=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
 
-          cmake -S . -B build-android \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-30 \
-            -DANDROID_STL=c++_static \
-            -DBUILD_TESTING=OFF \
-            -DCMAKE_BUILD_TYPE=Release
+    - name: Build C++ Daemon (arm64-v8a)
+      run: |
+        rm -rf build
+        mkdir build && cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-30 \
+          -DANDROID_STL=c++_static \
+          -DBUILD_TESTING=OFF \
+          -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
 
-          cmake --build build-android -j2
+    - name: Verify & Strip ARM64 Binary
+      run: |
+        file build/daemon
+        ELF_MACHINE=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Machine:' | awk '{print $NF}')
+        ELF_CLASS=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Class:' | awk '{print $NF}')
+        ELF_TYPE=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Type:' | awk '{print $NF}')
+        echo "ELF Class: $ELF_CLASS"
+        echo "ELF Machine: $ELF_MACHINE"
+        echo "ELF Type: $ELF_TYPE"
+        if [ "$ELF_MACHINE" != "AArch64" ]; then
+          echo "ERROR: Binary is not AArch64. Build is broken."
+          exit 1
+        fi
+        if [ "$ELF_CLASS" != "ELF64" ]; then
+          echo "ERROR: Expected ELF64 binary, got $ELF_CLASS"
+          exit 1
+        fi
+        if [ "$ELF_TYPE" != "DYN" ] && [ "$ELF_TYPE" != "EXEC" ]; then
+          echo "ERROR: Unexpected ELF type: $ELF_TYPE"
+          exit 1
+        fi
 
-      - name: Verify and Strip Binary
-        shell: bash
-        run: |
-          set -euo pipefail
+        "$NDK_BIN/llvm-strip" build/daemon
+        "$NDK_BIN/llvm-readelf" -h build/daemon >/dev/null
 
-          BINARY="build-android/daemon"
-          test -f "$BINARY"
+    - name: Package KernelSU/Magisk Module
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p module/system/bin
+        cp build/daemon module/system/bin/
+        cd module
+        zip -r9 ../CoreFlow-Engine-Release.zip .
+        cd ..
+        unzip -Z1 CoreFlow-Engine-Release.zip | grep -qx 'system/bin/coreflow_daemon'
 
-          file "$BINARY"
-          ELF="$("$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h "$BINARY")"
-
-          grep -q 'Class:.*ELF64' <<< "$ELF"
-          grep -q 'Machine:.*AArch64' <<< "$ELF"
-
-          "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$BINARY"
-
-      - name: Package Module
-        run: |
-          set -euo pipefail
-
-          mkdir -p module/system/bin
-          install -m 0755 build-android/daemon module/system/bin/coreflow_daemon
-
-          cd module
-          zip -qr ../CoreFlow-Engine-Release.zip .
-
-          unzip -l ../CoreFlow-Engine-Release.zip
-          unzip -Z1 ../CoreFlow-Engine-Release.zip |
-            grep -qx 'system/bin/coreflow_daemon'
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CoreFlow-Engine-Module
-          path: CoreFlow-Engine-Release.zip
-          if-no-files-found: error
+    - name: Upload Module Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CoreFlow-Engine-Module
+        path: CoreFlow-Engine-Release.zip
