@@ -5,6 +5,8 @@ class OutcomeVerifier {
 public:
     Outcome verify(const SystemObservation& before,
                    const SystemObservation& after) const;
+    Outcome verify(const SystemObservation& before, const SystemObservation& after,
+                   const ChangeProposal& proposal) const;
 };
 class OutcomePolicy {
 public:

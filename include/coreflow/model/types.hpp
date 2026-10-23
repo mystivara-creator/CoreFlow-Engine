@@ -45,6 +45,14 @@ struct SystemObservation {
     bool cpu_pressure_valid{false};
     bool memory_pressure_valid{false};
     bool io_pressure_valid{false};
+    // Available only when the foreground package can be matched to existing
+    // SurfaceFlinger timestats. No diagnostics are enabled or reset by CoreFlow.
+    double frame_average_fps{};
+    double frame_p95_interval_ms{};
+    double frame_p99_interval_ms{};
+    double slow_frame_ratio{};
+    std::string frame_package;
+    bool frame_timing_valid{false};
 };
 struct DeviceContext {
     std::string manufacturer;
@@ -74,6 +82,10 @@ struct ChangeProposal {
     // Empty for bounded numeric controls; populated from the live kernel for
     // discrete controls. Validation and read-back must stay inside this set.
     std::vector<std::string> allowed_values;
+    // Semantic identity is carried with a proposal so verification can score
+    // the changed subsystem instead of unrelated global metrics.
+    std::string domain;
+    std::string attribute;
 };
 struct AppliedChange {
     ChangeProposal proposal;

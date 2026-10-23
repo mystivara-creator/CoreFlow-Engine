@@ -1,16 +1,22 @@
 #include "coreflow/decision/decision.hpp"
+#include "coreflow/optimization/workload.hpp"
+
 namespace coreflow {
-bool ChangeJustifier::justified(const ChangeProposal& p, const ObservationFrame& f,
+bool ChangeJustifier::justified(const ChangeProposal& proposal, const ObservationFrame& frame,
                                 std::string& reason) const {
-    if (p.path.empty() || p.capability_id.empty()) { reason="Candidate identity is incomplete"; return false; }
-    if (p.previous_value == p.target_value) { reason="Candidate has no effect"; return false; }
-    // Require at least one valid runtime signal so outcome can be evaluated.
-    if (!f.system.memory_valid && !f.system.temperature_valid &&
-        !f.system.cpu_pressure_valid && !f.system.memory_pressure_valid &&
-        !f.system.io_pressure_valid) {
-        reason="No valid system-pressure metric is available to evaluate the outcome"; return false;
+    if (proposal.path.empty() || proposal.capability_id.empty()) {
+        reason = "Candidate identity is incomplete";
+        return false;
     }
-    reason=p.rationale;
+    if (proposal.previous_value == proposal.target_value) {
+        reason = "Candidate has no effect";
+        return false;
+    }
+    if (!(workloadScoreForDomain(proposal.domain, frame.system) > 0.0)) {
+        reason = "No sufficiently strong, domain-relevant runtime signal justifies this change";
+        return false;
+    }
+    reason = proposal.rationale;
     return true;
 }
-}
+} // namespace coreflow

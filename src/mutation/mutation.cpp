@@ -1,5 +1,6 @@
 #include "coreflow/mutation/mutation.hpp"
 #include "coreflow/internal/safe_path.hpp"
+#include "coreflow/internal/rollback_guard.hpp"
 #include <cerrno>
 #include <cmath>
 #include <algorithm>
@@ -8,10 +9,31 @@
 #include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 namespace coreflow {
 namespace {
+
+class ScopedFd final {
+public:
+    explicit ScopedFd(int fd = -1) noexcept : fd_(fd) {}
+    ~ScopedFd() noexcept {
+        if (fd_ >= 0) {
+            // Do not retry close() after EINTR: descriptor state may vary
+            // by platform, and retrying can close a reused descriptor.
+            (void)::close(fd_);
+        }
+    }
+
+    ScopedFd(const ScopedFd&) = delete;
+    ScopedFd& operator=(const ScopedFd&) = delete;
+
+    [[nodiscard]] int get() const noexcept { return fd_; }
+
+private:
+    int fd_;
+};
 bool parseFinite(const std::string& text, double& value) {
     char* end = nullptr;
     errno = 0;
@@ -67,6 +89,19 @@ bool valueMatches(const std::string& observed, const std::string& expected,
 }
 
 bool writeValueFd(int fd, const std::string& value) {
+    // Ordinary files retain trailing bytes after shorter writes. Kernel control
+    // files have their own semantics; never ftruncate sysfs/procfs/debugfs/tracefs.
+    // Fail closed if filesystem type cannot be determined.
+    struct statfs fs{};
+    if (::fstatfs(fd, &fs) != 0) return false;
+    constexpr long kProcSuperMagic = 0x9fa0;
+    constexpr long kSysfsMagic = 0x62656572;
+    constexpr long kDebugfsMagic = 0x64626720;
+    constexpr long kTracefsMagic = 0x74726163;
+    const long fs_type = static_cast<long>(fs.f_type);
+    const bool kernel_control_fs = fs_type == kProcSuperMagic || fs_type == kSysfsMagic ||
+                                   fs_type == kDebugfsMagic || fs_type == kTracefsMagic;
+    if (!kernel_control_fs && ::ftruncate(fd, 0) != 0) return false;
     if (::lseek(fd, 0, SEEK_SET) < 0 && errno != ESPIPE) return false;
     std::size_t offset = 0;
     while (offset < value.size()) {
@@ -80,84 +115,148 @@ bool writeValueFd(int fd, const std::string& value) {
 }
 
 AppliedChange ResourceMutation::apply(const ChangeProposal& p) const {
-    AppliedChange a; a.proposal = p;
+    AppliedChange a;
+    a.proposal = p;
+
+    // The guard starts disarmed and is armed immediately before the first write.
+    // This closes the exception-safety gap between a successful kernel write and
+    // the later read-back allocation/verification. A normal return disarms it so
+    // the caller remains responsible for handling a reported write failure.
+    internal::RollbackGuard rollback_guard(
+        [this](const AppliedChange& change, std::string& reason) {
+            return rollback(change, reason);
+        }, a, false);
+
     double previous{}, target{};
     if (p.capability_id.empty() || p.path.empty() || p.path.front() != '/' ||
         p.target_value == p.previous_value ||
         (p.allowed_values.empty() &&
-         (!parseFinite(p.previous_value, previous) || !parseFinite(p.target_value, target) ||
+         (!parseFinite(p.previous_value, previous) ||
+          !parseFinite(p.target_value, target) ||
           !std::isfinite(p.minimum) || !std::isfinite(p.maximum) ||
-          !(p.minimum < p.maximum) || previous < p.minimum || previous > p.maximum ||
-          target < p.minimum || target > p.maximum || target == previous)) ||
+          !(p.minimum < p.maximum) ||
+          previous < p.minimum || previous > p.maximum ||
+          target < p.minimum || target > p.maximum ||
+          target == previous)) ||
         (!p.allowed_values.empty() &&
-         (std::find(p.allowed_values.begin(), p.allowed_values.end(), p.previous_value) == p.allowed_values.end() ||
-          std::find(p.allowed_values.begin(), p.allowed_values.end(), p.target_value) == p.allowed_values.end()))) {
+         (std::find(p.allowed_values.begin(), p.allowed_values.end(),
+                    p.previous_value) == p.allowed_values.end() ||
+          std::find(p.allowed_values.begin(), p.allowed_values.end(),
+                    p.target_value) == p.allowed_values.end()))) {
         a.readback_value = "proposal rejected before opening resource";
         return a;
     }
-    const int read_fd = detail::openNoSymlinkPath(p.path, O_RDONLY | O_NONBLOCK);
-    if (read_fd < 0) return a;
+
+    ScopedFd read_fd(detail::openNoSymlinkPath(
+        p.path, O_RDONLY | O_NONBLOCK));
+    if (read_fd.get() < 0) return a;
+
     struct stat st{};
-    if (::fstat(read_fd, &st) != 0 || !S_ISREG(st.st_mode)) { ::close(read_fd); return a; }
+    if (::fstat(read_fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        return a;
+    }
+
     std::string current_value;
-    if (!readValueFd(read_fd, current_value) || !valueMatches(current_value, p.previous_value, p.allowed_values)) {
-        a.readback_value = current_value; ::close(read_fd); return a;
+    if (!readValueFd(read_fd.get(), current_value) ||
+        !valueMatches(current_value, p.previous_value, p.allowed_values)) {
+        a.readback_value = current_value;
+        return a;
     }
-    const int write_fd = detail::openNoSymlinkPath(p.path, O_WRONLY | O_NONBLOCK);
-    if (write_fd < 0 || !sameObject(read_fd, write_fd)) {
-        if (write_fd >= 0) ::close(write_fd);
-        ::close(read_fd); return a;
-    }
+
     std::string final_check;
-    if (!readValueFd(read_fd, final_check) || !valueMatches(final_check, p.previous_value, p.allowed_values)) {
-        a.readback_value = final_check; ::close(write_fd); ::close(read_fd); return a;
+    {
+        ScopedFd write_fd(detail::openNoSymlinkPath(
+            p.path, O_WRONLY | O_NONBLOCK));
+        if (write_fd.get() < 0 ||
+            !sameObject(read_fd.get(), write_fd.get())) {
+            return a;
+        }
+
+        if (!readValueFd(read_fd.get(), final_check) ||
+            !valueMatches(final_check, p.previous_value, p.allowed_values)) {
+            a.readback_value = final_check;
+            return a;
+        }
+
+        a.write_attempted = true;
+        rollback_guard.arm();
+        a.write_succeeded = writeValueFd(write_fd.get(), p.target_value);
     }
-    a.write_attempted = true;
-    a.write_succeeded = writeValueFd(write_fd, p.target_value);
-    ::close(write_fd);
-    if (!readValueFd(read_fd, a.readback_value)) a.write_succeeded = false;
-    a.write_succeeded = a.write_succeeded && valueMatches(a.readback_value, p.target_value, p.allowed_values);
-    ::close(read_fd);
+
+    if (!readValueFd(read_fd.get(), a.readback_value)) {
+        a.write_succeeded = false;
+    }
+    a.write_succeeded =
+        a.write_succeeded &&
+        valueMatches(a.readback_value, p.target_value, p.allowed_values);
+
+    // The caller receives the complete transaction record and handles any
+    // ordinary write/read-back failure. RAII rollback is reserved for exceptions.
+    rollback_guard.dismiss();
     return a;
 }
 
-bool ResourceMutation::rollback(const AppliedChange& a, std::string& reason) const {
-    if (!a.write_attempted) { reason = "No write was attempted; rollback not required"; return true; }
-    const int read_fd = detail::openNoSymlinkPath(a.proposal.path, O_RDONLY | O_NONBLOCK);
-    if (read_fd < 0) { reason = "Rollback could not safely open resource"; return false; }
-    std::string current_value;
-    if (!readValueFd(read_fd, current_value)) {
-        ::close(read_fd); reason = "Rollback could not read current resource value"; return false;
+bool ResourceMutation::rollback(const AppliedChange& a,
+                                std::string& reason) const {
+    if (!a.write_attempted) {
+        reason = "No write was attempted; rollback not required";
+        return true;
     }
-    if (valueMatches(current_value, a.proposal.previous_value, a.proposal.allowed_values)) {
-        ::close(read_fd);
+
+    ScopedFd read_fd(detail::openNoSymlinkPath(
+        a.proposal.path, O_RDONLY | O_NONBLOCK));
+    if (read_fd.get() < 0) {
+        reason = "Rollback could not safely open resource";
+        return false;
+    }
+
+    std::string current_value;
+    if (!readValueFd(read_fd.get(), current_value)) {
+        reason = "Rollback could not read current resource value";
+        return false;
+    }
+
+    if (valueMatches(current_value, a.proposal.previous_value,
+                     a.proposal.allowed_values)) {
         reason = "Original value is already present; rollback not required";
         return true;
     }
-    if (!valueMatches(current_value, a.proposal.target_value, a.proposal.allowed_values) &&
-        !valueMatches(current_value, a.readback_value, a.proposal.allowed_values)) {
-        ::close(read_fd); reason = "Rollback skipped because resource changed independently"; return false;
+
+    if (!valueMatches(current_value, a.proposal.target_value,
+                      a.proposal.allowed_values)) {
+        reason = "Rollback skipped because resource changed independently";
+        return false;
     }
-    const int write_fd = detail::openNoSymlinkPath(a.proposal.path, O_WRONLY | O_NONBLOCK);
-    if (write_fd < 0 || !sameObject(read_fd, write_fd)) {
-        if (write_fd >= 0) ::close(write_fd);
-        ::close(read_fd); reason = "Rollback refused: resource identity changed or path is unsafe"; return false;
+
+    bool wrote = false;
+    {
+        ScopedFd write_fd(detail::openNoSymlinkPath(
+            a.proposal.path, O_WRONLY | O_NONBLOCK));
+        if (write_fd.get() < 0 ||
+            !sameObject(read_fd.get(), write_fd.get())) {
+            reason = "Rollback refused: resource identity changed or path is unsafe";
+            return false;
+        }
+
+        std::string rechecked;
+        if (!readValueFd(read_fd.get(), rechecked) ||
+            !valueMatches(rechecked, a.proposal.target_value,
+                          a.proposal.allowed_values)) {
+            reason = "Rollback skipped because resource changed independently";
+            return false;
+        }
+
+        wrote = writeValueFd(write_fd.get(), a.proposal.previous_value);
     }
-    std::string rechecked;
-    if (!readValueFd(read_fd, rechecked) ||
-        (!valueMatches(rechecked, a.proposal.target_value, a.proposal.allowed_values) &&
-         !valueMatches(rechecked, a.readback_value, a.proposal.allowed_values))) {
-        ::close(write_fd); ::close(read_fd);
-        reason = "Rollback skipped because resource changed independently"; return false;
-    }
-    const bool wrote = writeValueFd(write_fd, a.proposal.previous_value);
-    ::close(write_fd);
+
     std::string restored;
-    const bool read_ok = readValueFd(read_fd, restored);
-    ::close(read_fd);
-    if (!wrote || !read_ok || !valueMatches(restored, a.proposal.previous_value, a.proposal.allowed_values)) {
-        reason = "Rollback write or read-back verification failed"; return false;
+    if (!wrote || !readValueFd(read_fd.get(), restored) ||
+        !valueMatches(restored, a.proposal.previous_value,
+                      a.proposal.allowed_values)) {
+        reason = "Rollback write or read-back verification failed";
+        return false;
     }
+
     reason = "Previous value restored and verified";
     return true;
 }

@@ -1,4 +1,5 @@
 #include "coreflow/runtime/engine.hpp"
+#include "coreflow/internal/rollback_guard.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -10,8 +11,8 @@
 namespace coreflow {
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr auto kMinimumIdle = std::chrono::seconds(5);
-constexpr auto kMaximumIdle = std::chrono::seconds(60);
+constexpr auto kMinimumIdle = std::chrono::seconds(2);
+constexpr auto kMaximumIdle = std::chrono::seconds(10);
 constexpr auto kDiscoveryRefresh = std::chrono::minutes(2);
 constexpr auto kOutcomeSettle = std::chrono::seconds(10);
 
@@ -26,7 +27,11 @@ void refreshObservedValues(std::vector<Capability>& capabilities, const Observat
     for (const auto& value : frame.capability_values) values.emplace(value.first, value.second);
     for (auto& capability : capabilities) {
         const auto found = values.find(capability.id);
-        if (found == values.end()) continue;
+        if (found == values.end()) {
+            capability.optimization_supported = false;
+            capability.numeric = false;
+            continue;
+        }
         if (!capability.choices.empty()) {
             if (std::find(capability.choices.begin(), capability.choices.end(), found->second) !=
                 capability.choices.end()) {
@@ -51,6 +56,8 @@ void sleepAndBackoff(std::chrono::seconds& delay) {
     std::this_thread::sleep_for(delay);
     delay = std::min(delay * 2, kMaximumIdle);
 }
+
+
 }
 
 void AutonomousEngine::run() {
@@ -75,7 +82,9 @@ void AutonomousEngine::run() {
             }
 
             const auto before = observer_.observe(capabilities);
-            refreshObservedValues(capabilities, before);
+            // Keep discovery inventory intact; invalidate only this frame's candidate.
+            auto observed_capabilities = capabilities;
+            refreshObservedValues(observed_capabilities, before);
             if (!device_context_logged) {
                 const auto& device = before.device;
                 std::clog << "[CoreFlowEngine] Device context: model="
@@ -89,7 +98,7 @@ void AutonomousEngine::run() {
                           << "; storage=" << device.storage_type << '\n';
                 device_context_logged = true;
             }
-            const auto candidate = optimizer_.propose(capabilities, before);
+            const auto candidate = optimizer_.propose(observed_capabilities, before);
             if (!candidate) {
                 sleepAndBackoff(idle_delay);
                 continue;
@@ -98,7 +107,8 @@ void AutonomousEngine::run() {
             std::string reason;
             if (!justifier_.justified(*candidate, before, reason) ||
                 !validator_.validate(*candidate, reason)) {
-                std::clog << "[CoreFlowEngine] Candidate skipped: " << reason << '\n';
+                optimizer_.defer(*candidate, before);
+                std::clog << "[CoreFlowEngine] Candidate deferred: " << reason << '\n';
                 sleepAndBackoff(idle_delay);
                 continue;
             }
@@ -108,6 +118,7 @@ void AutonomousEngine::run() {
             if (!applied.write_succeeded) {
                 std::string recovery_detail;
                 const bool restored = mutation_.rollback(applied, recovery_detail);
+                optimizer_.defer(*candidate, before);
                 std::clog << "[CoreFlowEngine] Mutation failed or read-back differed: "
                           << candidate->path << "; recovery="
                           << (restored ? "verified" : "unresolved")
@@ -116,26 +127,28 @@ void AutonomousEngine::run() {
                 continue;
             }
 
+            internal::RollbackGuard rollback_guard(
+                [this](const AppliedChange& change, std::string& reason) {
+                    return mutation_.rollback(change, reason);
+                }, applied);
             std::this_thread::sleep_for(kOutcomeSettle);
             const auto after = observer_.observe(capabilities);
-            const auto outcome = verifier_.verify(before.system, after.system);
+            const auto outcome = verifier_.verify(before.system, after.system, *candidate);
             const auto disposition = policy_.decide(outcome);
             std::string detail = outcome.explanation;
             if (disposition != Disposition::Retain) {
-                if (!mutation_.rollback(applied, detail)) detail += "; rollback unresolved";
+                const bool restored = mutation_.rollback(applied, detail);
+                if (!restored) detail += "; rollback unresolved";
+                // Keep the guard armed until rollback returns normally.
+                // If rollback throws, the destructor gets one best-effort retry.
+                rollback_guard.dismiss();
             }
-            if (outcome.measurable) {
-                const auto cap = std::find_if(capabilities.begin(), capabilities.end(),
-                    [&](const Capability& c) { return c.id == candidate->capability_id; });
-                if (cap != capabilities.end()) {
-                    optimizer_.recordOutcome(candidate->capability_id, cap->domain, cap->attribute,
-                        disposition == Disposition::Retain, disposition == Disposition::Retain);
-                } else {
-                    optimizer_.recordOutcome(candidate->capability_id,
-                                             disposition == Disposition::Retain);
-                }
-            }
+            // The optimizer owns the final guard against learning from an
+            // inconclusive outcome; callers cannot accidentally train it by
+            // passing a boolean derived from an unavailable measurement.
+            optimizer_.recordOutcome(*candidate, outcome, disposition, before);
             journal_.record(*candidate, outcome, disposition, detail);
+            rollback_guard.dismiss();
             idle_delay = kMinimumIdle * 2;
             sleepAndBackoff(idle_delay);
         } catch (const std::exception& e) {

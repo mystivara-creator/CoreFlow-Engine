@@ -72,7 +72,8 @@ bool containsProtectedKernelControl(const std::string& path) {
         "/thermal/", "/class/thermal/", "/power_supply/", "/class/power_supply/",
         "/regulator/", "/watchdog/", "/reset/", "/reset_reason/", "/debug/",
         "/tracing/", "/firmware/", "/security/", "/bcl/", "/battery/", "/charger/",
-        "/crash/", "/panic/", "/lockup/", "/kexec/", "/reboot/"
+        "/crash/", "/panic/", "/lockup/", "/kexec/", "/reboot/",
+        "/cooling_device/"
     };
     for (const auto* fragment : protected_fragments) {
         if (lower.find(fragment) != std::string::npos) return true;
@@ -82,7 +83,7 @@ bool containsProtectedKernelControl(const std::string& path) {
     static const char* const protected_attributes[] = {
         "voltage", "current_limit", "current_now", "charge", "trip_point",
         "emergency", "watchdog", "reset", "reboot", "panic", "crash",
-        "lockup", "battery", "charger", "regulator"
+        "lockup", "battery", "charger", "regulator", "cur_state", "target_state"
     };
     for (const auto* fragment : protected_attributes) {
         if (name.find(fragment) != std::string::npos) return true;
@@ -126,12 +127,28 @@ std::string domainFor(const std::string& path) {
 bool readResource(const fs::path& path, std::string& raw) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
-    raw.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-    if (raw.size() > 2048) return false;
-    const auto first = raw.find_first_not_of(" \t\r\n");
+
+    // Enforce the size limit while reading; checking raw.size() after assigning
+    // an unbounded stream would not protect discovery from oversized attributes.
+    constexpr std::size_t kMaximumBytes = 2048;
+    std::string buffer;
+    buffer.reserve(256);
+    char chunk[256];
+    while (input) {
+        input.read(chunk, sizeof(chunk));
+        const auto count = input.gcount();
+        if (count > 0) {
+            const auto amount = static_cast<std::size_t>(count);
+            if (amount > kMaximumBytes - buffer.size()) return false;
+            buffer.append(chunk, amount);
+        }
+    }
+    if (input.bad()) return false;
+
+    const auto first = buffer.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return false;
-    const auto last = raw.find_last_not_of(" \t\r\n");
-    raw = raw.substr(first, last - first + 1);
+    const auto last = buffer.find_last_not_of(" \t\r\n");
+    raw = buffer.substr(first, last - first + 1);
     return true;
 }
 
@@ -282,7 +299,7 @@ void scanRoot(const fs::path& root, std::vector<Capability>& out) {
             capability.choices = discoverChoices(path, raw, active);
             if (capability.choices.size() > 1 &&
                 std::find(capability.choices.begin(), capability.choices.end(), active) != capability.choices.end() &&
-                (supportsDiscreteStrategy(domain, capability.attribute) || domain.rfind("sysfs.", 0) == 0)) {
+                supportsDiscreteStrategy(domain, capability.attribute)) {
                 capability.raw_value = active;
                 capability.strategy_id = "discrete." + domain + "." + capability.attribute;
                 capability.optimization_supported = true;
@@ -354,12 +371,15 @@ std::size_t applyStrategyCatalog(std::vector<Capability>& capabilities,
             capability.range = {rule->minimum, rule->maximum, true};
             capability.strategy_id = rule->id;
             capability.optimization_supported = true;
-        } else if (capability.domain.rfind("sysfs.", 0) == 0 &&
-                   capability.domain != "sysfs.protected" && capability.range.valid &&
+        } else if ((capability.domain == "sysfs.block.queue" ||
+                    capability.domain == "sysfs.cpu.cpufreq" ||
+                    capability.domain == "sysfs.devfreq") &&
+                   capability.range.valid &&
                    capability.range.minimum <= capability.numeric_value &&
                    capability.numeric_value <= capability.range.maximum) {
-            // Kernel-advertised companion bounds make this resource dynamically
-            // eligible without adding its name/path to a fixed built-in list.
+            // Only recognized performance subsystems may use metadata-derived
+            // numeric ranges. A range on an unrelated sysfs file is not semantic
+            // authorization; those resources remain observable but read-only.
             capability.strategy_id = "range-derived." + capability.domain + "." + capability.attribute;
             capability.optimization_supported = true;
         } else {

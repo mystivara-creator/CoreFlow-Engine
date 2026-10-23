@@ -1,0 +1,67 @@
+#pragma once
+
+#include <charconv>
+#include <cmath>
+#include <string_view>
+#include <system_error>
+
+namespace coreflow::observation::thermal_policy {
+
+inline constexpr double kRetentionThermalRiseC = 0.5;
+
+// Veto retention only for a measured thermal regression across the same
+// before/after window. A universal absolute ceiling is deliberately avoided:
+// sensor location, package design and vendor policy differ across devices.
+// Android Thermal HAL and vendor throttling remain authoritative.
+[[nodiscard]] inline bool shouldVetoRetention(
+    bool before_valid, double before_celsius,
+    bool after_valid, double after_celsius) noexcept {
+    if (!before_valid || !after_valid ||
+        !std::isfinite(before_celsius) || !std::isfinite(after_celsius)) {
+        return false;
+    }
+    return after_celsius > before_celsius + kRetentionThermalRiseC;
+}
+
+[[nodiscard]] inline bool isTrustedComputeThermalType(
+    std::string_view type) noexcept {
+    return type.starts_with("cpu-") ||
+           type.starts_with("cpuss-") ||
+           type.starts_with("gpuss-");
+}
+
+// Accepts only explicitly trusted sensor types and plausible millidegree
+// Celsius readings. The output parameter is unchanged on failure.
+[[nodiscard]] inline bool parseTrustedThermalCelsius(
+    std::string_view type,
+    std::string_view raw,
+    double& celsius) noexcept {
+    if (!isTrustedComputeThermalType(type) || raw.empty()) {
+        return false;
+    }
+
+    double milli_celsius{};
+    const char* first = raw.data();
+    const char* last = first + raw.size();
+    const auto parsed = std::from_chars(first, last, milli_celsius);
+
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != last ||
+        !std::isfinite(milli_celsius) ||
+        milli_celsius < 10000.0 ||
+        milli_celsius > 125000.0) {
+        return false;
+    }
+
+    const double converted = milli_celsius / 1000.0;
+    if (!std::isfinite(converted) ||
+        converted < 10.0 ||
+        converted > 125.0) {
+        return false;
+    }
+
+    celsius = converted;
+    return true;
+}
+
+} // namespace coreflow::observation::thermal_policy

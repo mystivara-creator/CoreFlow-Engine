@@ -8,7 +8,7 @@ int main() {
     c.writable=true;
     c.range={-2.0,8.0,true};
     assert(c.range.valid && c.range.minimum < c.range.maximum);
-    coreflow::ChangeProposal p{c.id,c.path,"1","2",c.range.minimum,c.range.maximum,"test"};
+    coreflow::ChangeProposal p{c.id,c.path,"1","2",c.range.minimum,c.range.maximum,"test", {}, c.domain, c.attribute};
     assert(p.capability_id==c.id);
     return 0;
 }
