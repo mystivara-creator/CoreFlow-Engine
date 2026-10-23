@@ -75,7 +75,7 @@ jobs:
       run: |
         set -euo pipefail
         mkdir -p module/system/bin
-        cp build/daemon module/system/bin/
+        cp build/daemon module/system/bin/coreflow_daemon
         cd module
         zip -r9 ../CoreFlow-Engine-Release.zip .
         cd ..
