@@ -50,7 +50,7 @@ jobs:
         file build/daemon
         ELF_MACHINE=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Machine:' | awk '{print $NF}')
         ELF_CLASS=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Class:' | awk '{print $NF}')
-        ELF_TYPE=$($NDK_BIN/llvm-readelf -h build/daemon | grep 'Type:' | awk '{print $NF}')
+        ELF_TYPE=$("$NDK_BIN/llvm-readelf" -h build/daemon | awk '/^[[:space:]]*Type:/ {print $2; exit}')
         echo "ELF Class: $ELF_CLASS"
         echo "ELF Machine: $ELF_MACHINE"
         echo "ELF Type: $ELF_TYPE"
