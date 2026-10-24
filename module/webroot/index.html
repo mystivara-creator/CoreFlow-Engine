@@ -4,133 +4,425 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101114">
-<title>CoreFlow · System Tuning Console</title>
+<title>CoreFlow · Console</title>
 <style>
-:root{color-scheme:dark;--bg:#101114;--panel:#191a1f;--panel2:#202127;--line:#303139;--text:#f4f4f6;--muted:#a2a3ad;--red:#ff4b55;--red2:#c92736;--green:#65d6a1;--amber:#ffc76a;--blue:#82b5ff;--r:20px}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% -10%,#382127 0,transparent 34%),var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,sans-serif;letter-spacing:.01em}
-button,input{font:inherit}button{cursor:pointer}.app{max-width:1440px;margin:auto;min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}
-aside{padding:25px 15px;border-right:1px solid var(--line);background:#111216cc;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
-.brand{display:flex;gap:11px;align-items:center;padding:5px 8px 28px}.mark{width:38px;height:38px;border-radius:13px;background:linear-gradient(145deg,#ff666b,#9f1726);display:grid;place-items:center;font-weight:900;font-size:20px;box-shadow:0 7px 25px #ff354326}.brand strong{display:block;font-size:14px;letter-spacing:.08em}.brand small{color:var(--muted);font-size:10px;letter-spacing:.16em}
-.nav-label{padding:12px 12px 8px;color:#777985;font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}.nav{display:grid;gap:5px}.nav button{display:flex;gap:12px;align-items:center;text-align:left;width:100%;padding:11px 12px;border:1px solid transparent;border-radius:12px;background:transparent;color:#b9bac3;transition:.18s}.nav button:hover{background:#ffffff08;color:white}.nav button.active{background:#ff485516;border-color:#ff48552b;color:white}.ico{width:19px;text-align:center;font-size:16px;color:#9698a4}.nav button.active .ico{color:var(--red)}.side-bottom{margin-top:auto;padding:13px 10px;color:#777985;font-size:11px}.side-bottom .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);margin-right:7px}
-main{padding:25px clamp(16px,3vw,42px) 42px;min-width:0}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:28px}.eyebrow{color:var(--red);font-size:10px;letter-spacing:.18em;font-weight:800;text-transform:uppercase}.topbar h1{font-size:clamp(23px,3vw,32px);letter-spacing:-.04em;margin:4px 0 0}.top-actions{display:flex;gap:9px;align-items:center}.pill,.btn{border:1px solid var(--line);border-radius:999px;background:#1b1c21;color:var(--text);padding:9px 13px;font-size:12px}.pill{display:flex;align-items:center;gap:7px;color:#d0d0d7}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--amber);display:inline-block}.btn:hover{border-color:#62636e}.btn.primary{background:var(--red);border-color:var(--red);color:white;font-weight:700}.btn:disabled{opacity:.45;cursor:not-allowed}
-.hero{border:1px solid #603036;background:linear-gradient(115deg,#311c22 0%,#211a20 52%,#1a1b20 100%);border-radius:24px;padding:25px;display:flex;justify-content:space-between;gap:20px;align-items:center;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;width:250px;height:250px;border:1px solid #ff667b21;border-radius:50%;right:7%;top:-150px;box-shadow:0 0 0 25px #ff667b08,0 0 0 55px #ff667b05}.hero h2{font-size:clamp(20px,2.7vw,30px);line-height:1.15;letter-spacing:-.04em;margin:9px 0}.hero p{max-width:600px;color:#c4b7bc;margin:0}.hero-state{position:relative;z-index:1;min-width:150px;text-align:right}.hero-state strong{display:block;font-size:16px}.hero-state small{color:#c5a9b0}
-.grid{display:grid;gap:14px}.metrics{grid-template-columns:repeat(4,minmax(0,1fr));margin:15px 0 22px}.card{border:1px solid var(--line);background:linear-gradient(145deg,#1b1c21,#17181c);border-radius:var(--r);padding:18px;min-width:0}.metric-head{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}.metric-icon{color:var(--red);font-size:17px}.metric-value{font-size:27px;font-weight:750;letter-spacing:-.05em;margin:12px 0 2px}.metric-foot{color:var(--muted);font-size:11px}.section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:24px 0 12px}.section-head h2{font-size:16px;margin:0;letter-spacing:-.02em}.section-head p{color:var(--muted);font-size:11px;margin:3px 0 0}.two{grid-template-columns:minmax(0,1.3fr) minmax(260px,.7fr)}.bar-row{display:grid;grid-template-columns:95px 1fr 40px;gap:10px;align-items:center;margin:16px 0;font-size:12px}.bar{height:7px;background:#303139;border-radius:10px;overflow:hidden}.bar span{display:block;height:100%;width:0;background:linear-gradient(90deg,#cf2938,#ff6970);border-radius:10px;transition:width .3s}.bar-value{text-align:right;color:#ddd}.empty{padding:24px 12px;text-align:center;color:var(--muted);font-size:12px}.empty b{display:block;color:#e5e5e9;font-size:13px;margin-bottom:5px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:14px}table{border-collapse:collapse;width:100%;min-width:640px;font-size:12px}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid #2c2d34;white-space:nowrap}th{color:#8f919d;background:#202127;font-size:10px;letter-spacing:.1em;text-transform:uppercase}td{color:#d9d9e0}tr:last-child td{border-bottom:0}.tag{display:inline-flex;border:1px solid #464750;background:#24252b;border-radius:999px;padding:3px 8px;font-size:10px;color:#c9cad1}.tag.good{border-color:#2c674d;background:#163426;color:#8ce3b6}.tag.warn{border-color:#6b5130;background:#34291a;color:#ffd08a}.tag.bad{border-color:#71333b;background:#3a2025;color:#ff9ca4}.view{display:none}.view.active{display:block}.about-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.profile{display:flex;gap:16px;align-items:center}.avatar{width:66px;height:66px;border-radius:22px;background:linear-gradient(135deg,#34353d,#18191e);border:1px solid #494a54;display:grid;place-items:center;font-size:24px;font-weight:800;color:#ff7a81}.profile h2{margin:0;font-size:20px}.profile p{margin:3px 0;color:var(--muted)}a{color:#ff8288;text-decoration:none}a:hover{text-decoration:underline}.about-links{display:grid;gap:10px;margin-top:18px}.about-link{display:flex;justify-content:space-between;align-items:center;padding:14px;border:1px solid var(--line);border-radius:13px;background:#202127;color:var(--text)}.about-link small{display:block;color:var(--muted);margin-top:3px}.notice{border:1px solid #5e4b2f;background:#292318;color:#e7c78e;border-radius:14px;padding:13px 15px;font-size:12px;margin-top:14px}.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;overflow-wrap:anywhere}.footer{margin-top:28px;padding-top:15px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;color:#747681;font-size:10px}
-@media(max-width:950px){.app{grid-template-columns:75px minmax(0,1fr)}aside{padding:18px 8px}.brand{justify-content:center;padding:4px 0 25px}.brand div:last-child,.nav-label,.nav button .label,.side-bottom span:not(.dot){display:none}.nav button{justify-content:center;padding:12px 5px}.ico{font-size:18px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
-@media(max-width:560px){main{padding:18px 13px 30px}.topbar{align-items:flex-start}.topbar h1{font-size:24px}.top-actions{flex-direction:column;align-items:flex-end}.hero{padding:20px;align-items:flex-start;flex-direction:column}.hero-state{text-align:left}.metrics{gap:9px}.card{padding:14px}.metric-value{font-size:24px}.about-grid{grid-template-columns:1fr}.footer{flex-direction:column}}
-/* The workspace navigation is a compact overflow menu, not a permanent sidebar. */
-.app{display:block;grid-template-columns:minmax(0,1fr)}
-aside{display:none;position:fixed;z-index:30;top:72px;right:16px;left:auto;width:min(280px,calc(100vw - 32px));height:auto;max-height:calc(100vh - 90px);overflow:auto;padding:12px;border:1px solid var(--line);border-radius:16px;background:#191a1f;box-shadow:0 18px 55px #0009}
-.app.menu-open aside{display:flex}
-.brand,.nav-label,.side-bottom{display:none!important}
-aside .nav{display:grid;gap:4px}
-aside .nav button{justify-content:flex-start;padding:12px}
-aside .nav button .label{display:inline!important}
-.menu-trigger{min-width:40px;padding:5px 12px;font-size:20px;line-height:1.2}
-.top-actions{flex-direction:row;align-items:center}
-.nav button:focus-visible,.menu-trigger:focus-visible{outline:2px solid var(--red);outline-offset:2px}
-@media(max-width:560px){.top-actions{flex-direction:row;align-items:center}.menu-trigger{min-width:38px;padding:5px 10px}}
+:root{color-scheme:dark;--bg:#101114;--panel:#191a1f;--line:#2e2f37;--text:#f2f2f5;--muted:#9a9ba6;--red:#ff4b55;--green:#5fd39c;--amber:#ffc66b;--blue:#86b6ff;--r:16px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:#1d1e24;border-radius:999px;padding:8px 14px;font-size:12px}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--red);border-color:var(--red);color:#fff;font-weight:700}
+main{max-width:1100px;margin:0 auto;padding:18px 14px 40px}
+header{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.eyebrow{color:var(--red);font-size:10px;letter-spacing:.18em;font-weight:800;text-transform:uppercase}
+h1{font-size:22px;margin:2px 0 0;letter-spacing:-.02em}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--amber)}
+.dot.ok{background:var(--green)} .dot.bad{background:var(--red)}
+.notice{border:1px solid #5b4a2c;background:#272116;color:#f0d29a;border-radius:12px;padding:11px 13px;font-size:12.5px;margin:12px 0}
+.notice.bad{border-color:#6a3138;background:#2a1b1f;color:#ffb3ba}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin:12px 0}
+.card{border:1px solid var(--line);background:var(--panel);border-radius:var(--r);padding:14px;min-width:0}
+.card h3{margin:0 0 6px;font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.val{font-size:22px;font-weight:700;letter-spacing:-.03em;overflow-wrap:anywhere}
+.sub{color:var(--muted);font-size:11.5px;margin-top:2px;overflow-wrap:anywhere}
+.section{margin-top:18px}
+.section>h2{font-size:15px;margin:0 0 4px}
+.section>p{margin:0 0 10px;color:var(--muted);font-size:12px}
+.pipeline{display:flex;flex-wrap:wrap;gap:6px}
+.stage{font-family:ui-monospace,Menlo,monospace;font-size:11px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;color:var(--muted);background:#15161b}
+.stage small{display:block;color:#6f7180;font-size:9.5px;font-family:inherit}
+.stage.on{border-color:var(--red);color:#fff;background:#3a1e24}
+.bar{height:6px;border-radius:6px;background:#2a2b33;overflow:hidden;margin-top:8px}
+.bar>span{display:block;height:100%;background:linear-gradient(90deg,#c92736,#ff6f76);width:0}
+.tools{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+input[type=search]{flex:1;min-width:160px;background:#15161b;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:13px}
+label.check{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+.table{overflow:auto;border:1px solid var(--line);border-radius:12px;max-height:420px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:12px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #26272e;vertical-align:top}
+th{position:sticky;top:0;background:#202128;color:#9a9ba6;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+td.mono{font-family:ui-monospace,Menlo,monospace;font-size:11px;overflow-wrap:anywhere;max-width:340px}
+.tag{display:inline-block;border-radius:999px;padding:1px 8px;font-size:10.5px;border:1px solid var(--line);color:var(--muted)}
+.tag.ok{color:#8ee6b9;border-color:#2c6a4e} .tag.bad{color:#ffaab2;border-color:#7a3840} .tag.warn{color:#ffd58f;border-color:#6d5630}
+.empty{padding:18px;text-align:center;color:var(--muted)}
+footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
 </style>
 </head>
 <body>
-<div class="app">
-<aside id="navMenu" aria-label="Workspace menu">
-  <div class="brand"><div class="mark">C</div><div><strong>COREFLOW</strong><small>AUTONOMOUS ENGINE</small></div></div>
-  <div class="nav-label" data-i="workspace">Workspace</div>
-  <nav class="nav" aria-label="Primary navigation">
-    <button class="active" data-view="dashboard"><span class="ico">◫</span><span class="label" data-i="dashboard">Dashboard</span></button>
-    <button data-view="capabilities"><span class="ico">⌘</span><span class="label" data-i="capabilities">Capabilities</span></button>
-    <button data-view="decisions"><span class="ico">⌁</span><span class="label" data-i="decisions">Decision Trace</span></button>
-    <button data-view="mutations"><span class="ico">↯</span><span class="label" data-i="mutations">Mutation Journal</span></button>
-    <button data-view="diagnostics"><span class="ico">⌕</span><span class="label" data-i="diagnostics">Diagnostics</span></button>
-  </nav>
-  <div class="nav-label" data-i="system">System</div>
-  <nav class="nav"><button data-view="about"><span class="ico">ⓘ</span><span class="label" data-i="about">About</span></button></nav>
-  <div class="side-bottom"><span class="dot"></span><span data-i="apiWaiting">Waiting for local engine API</span></div>
-</aside>
 <main>
-<header class="topbar"><div><div class="eyebrow">COREFLOW · SYSTEM CONSOLE</div><h1 id="pageTitle">System overview</h1></div><div class="top-actions"><div class="pill"><span class="status-dot" id="connectionDot"></span><span id="connectionText">API disconnected</span></div><button class="btn" id="langToggle" aria-label="Switch language">ID · Bahasa</button><button class="btn menu-trigger" id="navMenuButton" aria-label="Open navigation menu" aria-haspopup="true" aria-expanded="false" aria-controls="navMenu">⋮</button></div></header>
-<section class="view active" id="view-dashboard">
-  <div class="hero"><div><div class="eyebrow" data-i="engineStatus">ENGINE STATUS</div><h2 id="engineState" data-i="awaitingTelemetry">Awaiting live telemetry</h2><p id="heroCopy">The console is ready. Live values will appear when the local CoreFlow API is available. No sample metrics are presented as real device data.</p></div><div class="hero-state"><strong id="modeState">—</strong><small data-i="runtimeMode">Runtime mode</small></div></div>
-  <div class="grid metrics">
-    <article class="card"><div class="metric-head"><span data-i="cpuLoad">CPU load</span><span class="metric-icon">⌁</span></div><div class="metric-value" id="cpuMetric">—</div><div class="metric-foot" data-i="liveApi">Live API required</div></article>
-    <article class="card"><div class="metric-head"><span data-i="memoryAvailable">Memory available</span><span class="metric-icon">▤</span></div><div class="metric-value" id="memoryMetric">—</div><div class="metric-foot" data-i="liveApi">Live API required</div></article>
-    <article class="card"><div class="metric-head"><span data-i="hottestSensor">Hottest sensor</span><span class="metric-icon">♨</span></div><div class="metric-value" id="thermalMetric">—</div><div class="metric-foot" data-i="liveApi">Live API required</div></article>
-    <article class="card"><div class="metric-head"><span data-i="capabilities">Capabilities</span><span class="metric-icon">⌘</span></div><div class="metric-value" id="capMetric">—</div><div class="metric-foot" data-i="liveApi">Live API required</div></article>
+<header>
+  <div><div class="eyebrow">CoreFlow · Console</div><h1 id="title">Engine status</h1></div>
+  <div class="row">
+    <span class="chip"><span class="dot" id="linkDot"></span><span id="linkText">Connecting…</span></span>
+    <button id="langBtn" type="button">ID · Bahasa</button>
   </div>
-  <div class="grid two">
-    <article class="card"><div class="section-head" style="margin-top:0"><div><h2 data-i="subsystemHealth">Subsystem overview</h2><p data-i="basedOnLive">Based on current runtime telemetry</p></div><span class="tag" id="subsystemTag">NO DATA</span></div><div id="subsystemBars" class="empty"><b data-i="noTelemetry">No telemetry received</b><span data-i="apiNotConnected">Connect the local API to populate subsystem metrics.</span></div></article>
-    <article class="card"><div class="section-head" style="margin-top:0"><div><h2 data-i="recentActivity">Recent activity</h2><p data-i="auditTrail">Engine events and mutation audit trail</p></div><span class="tag" data-i="readOnly">READ-ONLY</span></div><div id="recentEvents" class="empty"><b data-i="nothingRecorded">Nothing recorded yet</b><span data-i="activityApi">Events appear when the runtime API supplies them.</span></div></article>
+</header>
+
+<div id="bridgeNotice" class="notice bad" hidden></div>
+<div id="staleNotice" class="notice" hidden></div>
+
+<section class="card">
+  <div class="row" style="justify-content:space-between">
+    <div>
+      <div class="val" id="engineState">—</div>
+      <div class="sub" id="engineSub">Waiting for the daemon’s first status report.</div>
+    </div>
+    <div class="row">
+      <button id="pauseBtn" type="button" disabled>Pause</button>
+      <button id="rescanBtn" type="button" disabled>Rescan</button>
+      <button id="resetBtn" type="button" disabled>Reset learning</button>
+      <button id="refreshBtn" type="button">Refresh</button>
+    </div>
+  </div>
+  <div class="sub" id="cmdResult" style="margin-top:8px"></div>
+</section>
+
+<div class="grid" id="metrics">
+  <div class="card"><h3 data-i="cpu">CPU busy</h3><div class="val" id="mCpu">—</div><div class="bar"><span id="bCpu"></span></div></div>
+  <div class="card"><h3 data-i="mem">Memory available</h3><div class="val" id="mMem">—</div><div class="bar"><span id="bMem"></span></div></div>
+  <div class="card"><h3 data-i="temp">Hottest compute zone</h3><div class="val" id="mTemp">—</div><div class="sub" id="mTempSub"></div></div>
+  <div class="card"><h3 data-i="headroom">Headroom to passive trip</h3><div class="val" id="mHead">—</div><div class="sub" data-i="headroomSub">Kernel-published vendor trip point</div></div>
+  <div class="card"><h3 data-i="frames">Frames (SurfaceFlinger)</h3><div class="val" id="mFps">—</div><div class="sub" id="mFrameSub"></div></div>
+  <div class="card"><h3 data-i="psi">PSI avg10 (CPU / MEM / IO)</h3><div class="val" id="mPsi" style="font-size:16px">—</div></div>
+</div>
+
+<section class="section">
+  <h2 data-i="pipeline">C++ pipeline</h2>
+  <p data-i="pipelineDesc">Each stage below is a C++ function of the daemon. The highlighted stage is the one running now.</p>
+  <div class="pipeline" id="pipeline"></div>
+</section>
+
+<section class="section">
+  <h2 data-i="counters">Outcomes</h2>
+  <div class="grid" style="margin-top:8px">
+    <div class="card"><h3 data-i="retained">Retained</h3><div class="val" id="cRetained">0</div></div>
+    <div class="card"><h3 data-i="rolledBack">Rolled back</h3><div class="val" id="cRolled">0</div></div>
+    <div class="card"><h3 data-i="deferred">Deferred</h3><div class="val" id="cDeferred">0</div></div>
+    <div class="card"><h3 data-i="unresolved">Unresolved</h3><div class="val" id="cUnresolved">0</div></div>
+    <div class="card"><h3 data-i="inventory">Inventory</h3><div class="val" id="cInv">—</div><div class="sub" id="cInvSub"></div></div>
+    <div class="card"><h3 data-i="workload">Workload</h3><div class="val" style="font-size:15px" id="cWorkload">—</div></div>
   </div>
 </section>
-<section class="view" id="view-capabilities"><div class="section-head"><div><h2 data-i="capabilityRegistry">Capability registry</h2><p data-i="capabilityDesc">Discovered resources and verified permissions. Writable does not mean safe to optimize.</p></div><button class="btn" id="refreshBtn" data-i="refresh">Refresh</button></div><div class="table-wrap"><table><thead><tr><th data-i="resource">Resource</th><th data-i="domain">Domain</th><th data-i="access">Access</th><th data-i="semantics">Semantics</th><th data-i="strategy">Strategy</th><th data-i="eligibility">Eligibility</th></tr></thead><tbody id="capTable"><tr><td colspan="6" class="empty" data-i="waitingCapability">Waiting for capability data from API.</td></tr></tbody></table></div><div class="notice" data-i="capNotice">A profile is an inventory hint, not mutation authorization. Runtime discovery and safety validation must confirm every candidate.</div></section>
-<section class="view" id="view-decisions"><div class="section-head"><div><h2 data-i="decisionTrace">Decision trace</h2><p data-i="decisionDesc">Why a candidate was selected, rejected, or deferred.</p></div></div><div class="table-wrap"><table><thead><tr><th data-i="time">Time</th><th data-i="candidate">Candidate</th><th data-i="decision">Decision</th><th data-i="reason">Reason</th></tr></thead><tbody id="decisionTable"><tr><td colspan="4" class="empty" data-i="waitingDecision">Waiting for decision events.</td></tr></tbody></table></div></section>
-<section class="view" id="view-mutations"><div class="section-head"><div><h2 data-i="mutationJournal">Mutation journal</h2><p data-i="mutationDesc">Auditable changes, read-back verification, measured outcome and recovery.</p></div><span class="tag warn" data-i="mutationsDisabled">MUTATIONS NOT CONTROLLED HERE</span></div><div class="table-wrap"><table><thead><tr><th data-i="time">Time</th><th data-i="resource">Resource</th><th data-i="before">Before</th><th data-i="after">After</th><th data-i="verification">Verification</th><th data-i="outcome">Outcome</th><th data-i="recovery">Recovery</th></tr></thead><tbody id="mutationTable"><tr><td colspan="7" class="empty" data-i="waitingMutation">Waiting for mutation journal data.</td></tr></tbody></table></div><div class="notice" data-i="mutationNotice">This interface does not issue kernel writes. Mutation controls must only be added after authenticated backend commands, explicit authorization, bounded writes, and verified rollback are implemented.</div></section>
-<section class="view" id="view-diagnostics"><div class="section-head"><div><h2 data-i="diagnostics">Diagnostics</h2><p data-i="diagDesc">Connection health and data freshness.</p></div><button class="btn" id="retryBtn" data-i="retry">Retry connection</button></div><div class="grid metrics"><article class="card"><div class="metric-head" data-i="apiConnection">API connection</div><div class="metric-value" id="diagConnection">Offline</div><div class="metric-foot" id="lastUpdated">—</div></article><article class="card"><div class="metric-head" data-i="profileStatus">Device profile</div><div class="metric-value" id="profileStatusValue">—</div><div class="metric-foot" data-i="profileCheck">Reported by runtime API</div></article><article class="card"><div class="metric-head" data-i="runtimeUptime">Runtime uptime</div><div class="metric-value" id="uptimeValue">—</div><div class="metric-foot" data-i="uptimeApi">Reported by runtime API</div></article><article class="card"><div class="metric-head" data-i="lastError">Last API error</div><div class="metric-value" style="font-size:15px" id="errorValue">—</div><div class="metric-foot" data-i="noSynthetic">No synthetic data</div></article></div><article class="card"><h2 data-i="apiContract">API contract</h2><p class="muted" data-i="apiContractDesc">The UI expects a same-origin local API. Until the daemon exposes these endpoints, the console remains in an explicit disconnected state.</p><div class="mono">GET /api/status<br>GET /api/capabilities<br>GET /api/decisions<br>GET /api/mutations</div></article></section>
-<section class="view" id="view-about"><div class="eyebrow">COREFLOW AUTONOMOUS · V3.0.0</div><h2 style="font-size:28px;letter-spacing:-.04em" data-i="aboutTitle">Kernel-aware system tuning framework.</h2><p class="muted" data-i="aboutIntro">Discovers runtime kernel controls, observes CPU, memory and I/O pressure, evaluates bounded changes, and rolls back changes without measurable benefit. SurfaceFlinger frame metrics are used only when matching foreground-layer timestats already exist.</p><div class="grid about-grid" style="margin-top:20px"><article class="card"><div class="profile"><div class="avatar">M</div><div><div class="eyebrow" data-i="developer">DEVELOPER</div><h2>Mystivara</h2><p data-i="independentDeveloper">Independent developer · CoreFlow project</p></div></div><p class="muted" style="margin-top:18px" data-i="developerBio">Focused on capability-driven system engineering, runtime observability, and outcome-based optimization for Android.</p><div class="about-links"><a class="about-link" href="https://github.com/mystivara-creator" target="_blank" rel="noopener noreferrer"><span><strong>GitHub Profile</strong><small>github.com/mystivara-creator</small></span><span>↗</span></a><a class="about-link" href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer"><span><strong>Development Repository</strong><small>CoreFlow-Engine · source and issue tracking</small></span><span>↗</span></a></div></article><article class="card"><div class="eyebrow" data-i="engineeringPrinciples">RUNTIME CONTROL PIPELINE</div><h2 style="font-size:20px" data-i="observeUnderstand">Discovery, pressure matching, measured tuning.</h2><p class="muted" data-i="principleDesc">Kernel-advertised choices and discovered bounds define candidate values. A change is retained only when comparable subsystem measurements improve without a thermal regression.</p><div class="about-links"><div class="about-link"><span><strong data-i="capabilityDriven">Capability-driven</strong><small data-i="capabilityDrivenDesc">Discover what the device actually exposes.</small></span><span>01</span></div><div class="about-link"><span><strong data-i="outcomeDriven">Outcome-driven</strong><small data-i="outcomeDrivenDesc">Evaluate comparable measurements before learning.</small></span><span>02</span></div><div class="about-link"><span><strong data-i="safetyFirst">Safety-first mutation</strong><small data-i="safetyFirstDesc">Validate, bound, verify, and recover.</small></span><span>03</span></div></div></article></div><div class="notice" data-i="experimentalNotice">Version 3.0.0 is an experimental baseline. WebUI values remain unavailable until connected to a real local API; this page does not itself change system settings.</div><div class="muted" style="margin-top:14px;font-size:11px">© <span id="year"></span> Mystivara · CoreFlow Autonomous Engine</div></section>
-<div class="footer"><span>COREFLOW AUTONOMOUS · V3.0.0</span><span id="footerConnection">LOCAL API · DISCONNECTED</span></div>
-</main></div>
+
+<section class="section">
+  <h2 data-i="journal">Decision and mutation journal</h2>
+  <p data-i="journalDesc">Newest first. Every write is read back, and every retained change is verified against its outcome.</p>
+  <div class="table"><table><thead><tr><th data-i="time">Time</th><th data-i="kind">Kind</th><th data-i="resource">Resource</th><th data-i="change">From → to</th><th data-i="result">Result</th><th data-i="detail">Detail</th></tr></thead><tbody id="journalBody"></tbody></table></div>
+</section>
+
+<section class="section">
+  <h2 data-i="capabilities">Kernel controls</h2>
+  <p data-i="capDesc">Discovered from the running kernel. Eligible means a validated, bounded candidate exists for this device right now.</p>
+  <div class="tools">
+    <input type="search" id="capFilter" data-i-ph="filterPh" placeholder="Filter path, domain, attribute">
+    <label class="check"><input type="checkbox" id="capEligibleOnly"> <span data-i="eligibleOnly">Eligible only</span></label>
+  </div>
+  <div class="table"><table><thead><tr><th data-i="path">Path</th><th data-i="domain">Domain</th><th data-i="attribute">Attribute</th><th data-i="value">Value</th><th data-i="strategy">Strategy</th><th data-i="eligible">Eligible</th></tr></thead><tbody id="capBody"></tbody></table></div>
+  <div class="sub" id="capTotal" style="margin-top:6px"></div>
+</section>
+
+<footer>CoreFlow Autonomous Engine v3.1.0 · <span id="footerState">state: —</span></footer>
+</main>
+
 <script>
-const I={
-en:{workspace:"Workspace",dashboard:"Dashboard",capabilities:"Capabilities",decisions:"Decision Trace",mutations:"Mutation Journal",diagnostics:"Diagnostics",about:"About",system:"System",apiWaiting:"Waiting for local engine API",awaitingTelemetry:"Awaiting live telemetry",heroCopy:"Opened through KernelSU Manager. The adaptive daemon can run independently; metrics remain unavailable until the daemon exports verified telemetry. No sample metrics are presented as real data.",runtimeMode:"Runtime mode",cpuLoad:"CPU load",memoryAvailable:"Memory available",hottestSensor:"Hottest sensor",liveApi:"Live API required",subsystemHealth:"Subsystem overview",basedOnLive:"Based on current runtime telemetry",noTelemetry:"No telemetry received",apiNotConnected:"Connect the local API to populate subsystem metrics.",recentActivity:"Recent activity",auditTrail:"Engine events and mutation audit trail",readOnly:"READ-ONLY",nothingRecorded:"Nothing recorded yet",activityApi:"Events appear when the runtime API supplies them.",capabilityRegistry:"Capability registry",capabilityDesc:"Discovered resources and verified permissions. Writable does not mean safe to optimize.",refresh:"Refresh",resource:"Resource",domain:"Domain",access:"Access",semantics:"Semantics",strategy:"Strategy",eligibility:"Eligibility",waitingCapability:"Waiting for capability data from API.",capNotice:"A profile is an inventory hint, not mutation authorization. Runtime discovery and safety validation must confirm every candidate.",decisionTrace:"Decision trace",decisionDesc:"Why a candidate was selected, rejected, or deferred.",time:"Time",candidate:"Candidate",decision:"Decision",reason:"Reason",waitingDecision:"Waiting for decision events.",mutationJournal:"Mutation journal",mutationDesc:"Auditable changes, read-back verification, measured outcome and recovery.",mutationsDisabled:"MUTATIONS NOT CONTROLLED HERE",before:"Before",after:"After",verification:"Verification",outcome:"Outcome",recovery:"Recovery",waitingMutation:"Waiting for mutation journal data.",mutationNotice:"This interface does not issue kernel writes. Mutation controls must only be added after authenticated backend commands, explicit authorization, bounded writes, and verified rollback are implemented.",diagDesc:"Connection health and data freshness.",retry:"Retry connection",apiConnection:"API connection",profileStatus:"Device profile",profileCheck:"Reported by runtime API",runtimeUptime:"Device uptime",uptimeApi:"Reported by runtime API",lastError:"Last API error",noSynthetic:"No synthetic data",apiContract:"API contract",apiContractDesc:"This page uses the KernelSU Manager bridge for read-only device diagnostics. The daemon does not yet export verified capability, decision, or mutation event feeds.",aboutTitle:"Kernel-aware system tuning framework.",aboutIntro:"Discovers runtime kernel controls, observes subsystem pressure, tests bounded changes only when relevant signals exist, and rolls back changes without measurable benefit. SurfaceFlinger frame timing is used only when existing foreground-layer timestats are available.",developer:"DEVELOPER",independentDeveloper:"Independent developer · CoreFlow project",developerBio:"Focused on capability-driven system engineering, runtime observability, and outcome-based optimization for Android.",engineeringPrinciples:"RUNTIME CONTROL PIPELINE",observeUnderstand:"Discovery, pressure matching, measured tuning.",principleDesc:"Kernel-advertised choices and discovered bounds define candidate values; CPU, memory, I/O, or frame-pacing pressure must justify the affected subsystem. A change is retained only when comparable measurements improve without a thermal regression.",capabilityDriven:"Capability-driven",capabilityDrivenDesc:"Discover what the device actually exposes.",outcomeDriven:"Outcome-driven",outcomeDrivenDesc:"Evaluate comparable measurements before learning.",safetyFirst:"Safety-first mutation",safetyFirstDesc:"Validate, bound, verify, and recover.",experimentalNotice:"Version 3.0.0 is an experimental baseline. WebUI values remain unavailable until connected to a real local API; this page does not itself change system settings.",offline:"Offline",connected:"Connected",noData:"No data",language:"ID · Bahasa",pageDashboard:"System overview",pageCapabilities:"Capabilities",pageDecisions:"Decision trace",pageMutations:"Mutation journal",pageDiagnostics:"Diagnostics",pageAbout:"About"},
-id:{workspace:"Ruang kerja",dashboard:"Dasbor",capabilities:"Kapabilitas",decisions:"Jejak keputusan",mutations:"Jurnal mutasi",diagnostics:"Diagnostik",about:"Tentang",system:"Sistem",apiWaiting:"Menunggu API engine lokal",awaitingTelemetry:"Menunggu telemetri langsung",heroCopy:"Dibuka melalui KernelSU Manager. Daemon adaptif dapat berjalan secara mandiri; metrik tetap tidak tersedia sampai daemon mengekspor telemetri terverifikasi. Tidak ada metrik contoh yang disajikan sebagai data nyata.",runtimeMode:"Mode runtime",cpuLoad:"Beban CPU",memoryAvailable:"Memori tersedia",hottestSensor:"Sensor terpanas",liveApi:"Memerlukan API langsung",subsystemHealth:"Ringkasan subsistem",basedOnLive:"Berdasarkan telemetri runtime saat ini",noTelemetry:"Belum ada telemetri",apiNotConnected:"Hubungkan API lokal untuk mengisi metrik subsistem.",recentActivity:"Aktivitas terbaru",auditTrail:"Peristiwa engine dan audit mutasi",readOnly:"HANYA BACA",nothingRecorded:"Belum ada catatan",activityApi:"Peristiwa akan muncul ketika disediakan API runtime.",capabilityRegistry:"Registri kapabilitas",capabilityDesc:"Resource yang ditemukan dan izin yang diverifikasi. Bisa ditulis bukan berarti aman dioptimalkan.",refresh:"Segarkan",resource:"Resource",domain:"Domain",access:"Akses",semantics:"Semantik",strategy:"Strategi",eligibility:"Kelayakan",waitingCapability:"Menunggu data kapabilitas dari API.",capNotice:"Profil adalah petunjuk inventaris, bukan izin mutasi. Discovery runtime dan validasi keselamatan harus mengonfirmasi setiap kandidat.",decisionTrace:"Jejak keputusan",decisionDesc:"Alasan kandidat dipilih, ditolak, atau ditunda.",time:"Waktu",candidate:"Kandidat",decision:"Keputusan",reason:"Alasan",waitingDecision:"Menunggu peristiwa keputusan.",mutationJournal:"Jurnal mutasi",mutationDesc:"Perubahan yang dapat diaudit, verifikasi baca ulang, hasil pengukuran, dan pemulihan.",mutationsDisabled:"MUTASI TIDAK DIKENDALIKAN DI SINI",before:"Sebelum",after:"Sesudah",verification:"Verifikasi",outcome:"Hasil",recovery:"Pemulihan",waitingMutation:"Menunggu data jurnal mutasi.",mutationNotice:"Antarmuka ini tidak menulis ke kernel. Kontrol mutasi hanya boleh ditambahkan setelah perintah backend terautentikasi, otorisasi eksplisit, penulisan terbatas, dan rollback terverifikasi tersedia.",diagDesc:"Kesehatan koneksi dan kesegaran data.",retry:"Coba sambungkan",apiConnection:"Koneksi API",profileStatus:"Profil perangkat",profileCheck:"Dilaporkan oleh API runtime",runtimeUptime:"Waktu aktif perangkat",uptimeApi:"Dilaporkan oleh API runtime",lastError:"Error API terakhir",noSynthetic:"Tanpa data simulasi",apiContract:"Kontrak API",apiContractDesc:"Halaman ini memakai bridge KernelSU Manager untuk diagnostik perangkat baca-saja. Daemon belum mengekspor feed capability, keputusan, atau mutasi yang terverifikasi.",aboutTitle:"Framework fine-tuning sistem berbasis kernel.",aboutIntro:"Menemukan kontrol kernel saat runtime, mengamati tekanan subsistem, menguji perubahan berbatas hanya ketika sinyal relevan tersedia, dan mengembalikan perubahan yang tidak memberi manfaat terukur. Timing frame SurfaceFlinger hanya digunakan bila timestats layer foreground sudah tersedia.",developer:"PENGEMBANG",independentDeveloper:"Pengembang independen · Proyek CoreFlow",developerBio:"Berfokus pada rekayasa sistem berbasis kapabilitas, observabilitas runtime, dan optimasi Android berbasis hasil.",engineeringPrinciples:"ALUR KONTROL RUNTIME",observeUnderstand:"Discovery, pencocokan tekanan, tuning terukur.",principleDesc:"Pilihan kernel dan batas yang terdeteksi menjadi kandidat; tekanan CPU, memori, I/O, atau frame-pacing harus membenarkan perubahan pada subsistem terkait. Perubahan dipertahankan hanya bila pengukuran yang sebanding membaik tanpa regresi termal.",capabilityDriven:"Berbasis kapabilitas",capabilityDrivenDesc:"Temukan kemampuan yang benar-benar diekspos perangkat.",outcomeDriven:"Berbasis hasil",outcomeDrivenDesc:"Evaluasi pengukuran yang sebanding sebelum belajar.",safetyFirst:"Mutasi mengutamakan keselamatan",safetyFirstDesc:"Validasi, batasi, verifikasi, dan pulihkan.",experimentalNotice:"Versi 3.0.0 adalah baseline eksperimental. Nilai WebUI belum tersedia sampai terhubung ke API lokal nyata; halaman ini tidak mengubah pengaturan sistem.",offline:"Terputus",connected:"Terhubung",noData:"Tidak ada data",language:"EN · English",pageDashboard:"Ringkasan sistem",pageCapabilities:"Kapabilitas",pageDecisions:"Jejak keputusan",pageMutations:"Jurnal mutasi",pageDiagnostics:"Diagnostik",pageAbout:"Tentang"}
-};
-let lang="en", lastError="—";
-const titles={dashboard:"pageDashboard",capabilities:"pageCapabilities",decisions:"pageDecisions",mutations:"pageMutations",diagnostics:"pageDiagnostics",about:"pageAbout"};
-function tr(k){return I[lang][k]||I.en[k]||k}
-function applyLanguage(){document.documentElement.lang=lang;document.querySelectorAll("[data-i]").forEach(e=>e.textContent=tr(e.dataset.i));document.getElementById("langToggle").textContent=tr("language");const active=document.querySelector(".nav button.active");if(active)document.getElementById("pageTitle").textContent=tr(titles[active.dataset.view]);}
-const appRoot=document.querySelector(".app");
-const navMenu=document.getElementById("navMenu");
-const navMenuButton=document.getElementById("navMenuButton");
-function setNavMenuOpen(open){appRoot.classList.toggle("menu-open",open);navMenuButton.setAttribute("aria-expanded",open?"true":"false");navMenuButton.setAttribute("aria-label",open?"Close navigation menu":"Open navigation menu");}
-navMenuButton.addEventListener("click",()=>setNavMenuOpen(!appRoot.classList.contains("menu-open")));
-document.querySelectorAll(".nav button[data-view]").forEach(b=>b.addEventListener("click",()=>{document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.view===b.dataset.view));document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+b.dataset.view));document.getElementById("pageTitle").textContent=tr(titles[b.dataset.view]);setNavMenuOpen(false);}));
-document.addEventListener("click",event=>{if(!appRoot.classList.contains("menu-open"))return;if(event.target.closest("#navMenu")||event.target.closest("#navMenuButton"))return;setNavMenuOpen(false);});
-document.addEventListener("keydown",event=>{if(event.key==="Escape")setNavMenuOpen(false);});
-document.getElementById("langToggle").addEventListener("click",()=>{lang=lang==="en"?"id":"en";applyLanguage();});
-document.getElementById("year").textContent=new Date().getFullYear();
-function safe(v){return String(v??"—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-function rows(id,arr,keys,emptyKey){const el=document.getElementById(id);if(!Array.isArray(arr)||!arr.length){el.innerHTML=`<tr><td colspan="${keys.length}" class="empty">${safe(tr(emptyKey))}</td></tr>`;return;}el.innerHTML=arr.slice(0,200).map(row=>"<tr>"+keys.map(k=>`<td>${safe(row[k])}</td>`).join("")+"</tr>").join("");}
-function setConnected(ok,err=""){
- document.getElementById("connectionText").textContent=ok?"KernelSU bridge":tr("offline");
- document.getElementById("connectionDot").style.background=ok?"var(--green)":"var(--amber)";
- document.getElementById("diagConnection").textContent=ok?"Bridge available":tr("offline");
- document.getElementById("footerConnection").textContent=ok?"KERNELSU BRIDGE · READ-ONLY":"KERNELSU BRIDGE · DISCONNECTED";
- document.getElementById("lastUpdated").textContent=ok?new Date().toLocaleTimeString():"—";
- document.getElementById("errorValue").textContent=err||"—";
- lastError=err||"—";
-}
-async function runKsuReadOnly(command){
- const bridge=window.ksu;
- if(!bridge||typeof bridge.exec!=="function")throw Error("Open this page from KernelSU Manager to use its WebUI bridge.");
- const result=await Promise.resolve(bridge.exec(command));
- if(!result||Number(result.errno)!==0)throw Error((result&&result.stderr)||"KernelSU diagnostic command failed");
- return String(result.stdout||"").trim();
-}
-async function refresh(){
- try{
-  // Fixed, read-only command. Never interpolate UI values into privileged shell execution.
-  const raw=await runKsuReadOnly("printf 'PID='; pidof coreflow_daemon 2>/dev/null; printf '\\nMODEL='; getprop ro.product.model; printf '\\nANDROID='; getprop ro.build.version.release; printf '\\nKERNEL='; uname -r; printf '\\nUPTIME='; cut -d' ' -f1 /proc/uptime");
-  const fields={};
-  for(const line of raw.split(/\r?\n/)){const idx=line.indexOf("=");if(idx>0)fields[line.slice(0,idx)]=line.slice(idx+1).trim();}
-  setConnected(true);
-  const running=!!fields.PID;
-  document.getElementById("engineState").textContent=running?"Running":"Not running";
-  document.getElementById("modeState").textContent=running?"Adaptive loop · runtime state not exported":"Not running";
-  document.getElementById("cpuMetric").textContent="—";
-  document.getElementById("memoryMetric").textContent="—";
-  document.getElementById("thermalMetric").textContent="—";
-  document.getElementById("capMetric").textContent="—";
-  document.getElementById("profileStatusValue").textContent=fields.MODEL||"Unavailable";
-  document.getElementById("uptimeValue").textContent=fields.UPTIME?fields.UPTIME+" s":"—";
-  document.getElementById("subsystemTag").textContent="NOT EXPORTED";
-  document.getElementById("subsystemBars").innerHTML=`<p class="muted">${safe(fields.MODEL||"Device model unavailable")} · Android ${safe(fields.ANDROID||"—")} · Kernel ${safe(fields.KERNEL||"—")}</p><p class="muted">Live metrics and engine event feeds are not exported by the current daemon.</p>`;
-  document.getElementById("recentEvents").innerHTML=`<b>${safe(tr("nothingRecorded"))}</b><p class="muted">Runtime event feed is not exported by the daemon.</p>`;
-  rows("capTable",[],["path","domain","access","semantic_status","strategy_id","eligibility"],"waitingCapability");
-  rows("decisionTable",[],["time","candidate","decision","reason"],"waitingDecision");
-  rows("mutationTable",[],["time","resource","before","after","verification","outcome","recovery"],"waitingMutation");
-  document.getElementById("errorValue").textContent="Live telemetry and event feeds unavailable";
- }catch(e){setConnected(false,e.message||"KernelSU bridge unavailable");}
-}
-document.getElementById("refreshBtn").addEventListener("click",refresh);document.getElementById("retryBtn").addEventListener("click",refresh);document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh();});applyLanguage();refresh();
+(function () {
+  "use strict";
+
+  // The state directory the daemon writes to. Fixed; never taken from the UI.
+  var DIR = "/data/adb/coreflow";
+  // Only these tokens can be written to the command file.
+  var TOKENS = { pause: true, resume: true, rescan: true, reset_learning: true };
+  var STAGES = [
+    ["command", "takeCommand"], ["discovery", "CapabilityDiscovery::discover"],
+    ["observation", "RuntimeObserver::observe"], ["optimization", "OptimizationEngine::propose"],
+    ["justification", "ChangeJustifier::justified"], ["validation", "CapabilitySafetyValidator::validate"],
+    ["mutation", "ResourceMutation::apply"], ["settling", "wait for outcome window"],
+    ["outcome", "OutcomeVerifier::verify"], ["rollback", "ResourceMutation::rollback"],
+    ["learning", "OptimizationEngine::recordOutcome"], ["idle", "no eligible candidate"],
+    ["paused", "operator pause"]
+  ];
+
+  var T = {
+    en: {
+      cpu: "CPU busy", mem: "Memory available", temp: "Hottest compute zone", headroom: "Headroom to passive trip",
+      headroomSub: "Kernel-published vendor trip point", frames: "Frames (SurfaceFlinger)", psi: "PSI avg10 (CPU / MEM / IO)",
+      pipeline: "C++ pipeline", pipelineDesc: "Each stage is a C++ function in the daemon. The highlighted stage is running now.",
+      counters: "Outcomes", retained: "Retained", rolledBack: "Rolled back", deferred: "Deferred", unresolved: "Unresolved",
+      inventory: "Inventory", workload: "Workload", journal: "Decision and mutation journal",
+      journalDesc: "Newest first. Each write is read back and each retained change is judged on its outcome.",
+      time: "Time", kind: "Kind", resource: "Resource", change: "From → to", result: "Result", detail: "Detail",
+      capabilities: "Kernel controls", capDesc: "Discovered from the running kernel. Eligible means a validated, bounded candidate exists now.",
+      filterPh: "Filter path, domain, attribute", eligibleOnly: "Eligible only", path: "Path", domain: "Domain",
+      attribute: "Attribute", value: "Value", strategy: "Strategy", eligible: "Eligible",
+      running: "Running", paused: "Paused", starting: "Starting", stale: "Stale", offline: "Not reporting",
+      runningSub: "Adaptive loop active. Changes are applied only after validation and verified after settling.",
+      pausedSub: "Observation continues. No kernel writes are issued while paused.",
+      startingSub: "Waiting for the daemon’s first status report.",
+      offlineSub: "No fresh status file. The daemon may not be running; check the module status in KernelSU.",
+      linkOk: "Bridge connected", linkNo: "Bridge unavailable", connecting: "Connecting…",
+      bridgeNo: "This page reads state and sends commands through the KernelSU bridge. Open it from KernelSU Manager (or another root manager that exposes the same WebUI bridge). No terminal is needed.",
+      confirmReset: "Forget all learned feedback? The daemon will re-learn from scratch.",
+      sent: "Command sent: ", failed: "Command failed: ", noState: "No state file yet.",
+      stageNow: "now", pauseBtn: "Pause", resumeBtn: "Resume", none: "—", noRows: "Nothing recorded yet.",
+      capTotal: "Showing {n} of {t} discovered controls", ready: "ready", stateLine: "state: "
+    },
+    id: {
+      cpu: "Beban CPU", mem: "Memori tersedia", temp: "Zona komputasi terpanas", headroom: "Sisa menuju trip pasif",
+      headroomSub: "Trip point vendor yang dipublikasikan kernel", frames: "Frame (SurfaceFlinger)", psi: "PSI avg10 (CPU / MEM / IO)",
+      pipeline: "Pipeline C++", pipelineDesc: "Setiap tahap adalah fungsi C++ di daemon. Tahap yang disorot sedang berjalan.",
+      counters: "Hasil", retained: "Dipertahankan", rolledBack: "Dikembalikan", deferred: "Ditunda", unresolved: "Belum pasti",
+      inventory: "Inventaris", workload: "Beban kerja", journal: "Jurnal keputusan dan mutasi",
+      journalDesc: "Terbaru di atas. Setiap penulisan dibaca ulang dan setiap perubahan dinilai dari hasilnya.",
+      time: "Waktu", kind: "Jenis", resource: "Resource", change: "Dari → ke", result: "Hasil", detail: "Detail",
+      capabilities: "Kontrol kernel", capDesc: "Ditemukan dari kernel yang sedang berjalan. Eligible berarti ada kandidat tervalidasi dan terbatas saat ini.",
+      filterPh: "Filter path, domain, atribut", eligibleOnly: "Hanya yang eligible", path: "Path", domain: "Domain",
+      attribute: "Atribut", value: "Nilai", strategy: "Strategi", eligible: "Eligible",
+      running: "Berjalan", paused: "Dijeda", starting: "Memulai", stale: "Usang", offline: "Tidak melapor",
+      runningSub: "Loop adaptif aktif. Perubahan hanya diterapkan setelah validasi dan diverifikasi setelah settling.",
+      pausedSub: "Observasi tetap berjalan. Tidak ada penulisan kernel selama dijeda.",
+      startingSub: "Menunggu laporan status pertama dari daemon.",
+      offlineSub: "Tidak ada file status terbaru. Daemon mungkin tidak berjalan; cek status modul di KernelSU.",
+      linkOk: "Bridge terhubung", linkNo: "Bridge tidak tersedia", connecting: "Menghubungkan…",
+      bridgeNo: "Halaman ini membaca state dan mengirim perintah lewat bridge KernelSU. Buka dari KernelSU Manager (atau root manager lain yang menyediakan bridge WebUI yang sama). Tidak perlu terminal.",
+      confirmReset: "Lupakan semua umpan balik yang sudah dipelajari? Daemon akan belajar ulang dari awal.",
+      sent: "Perintah terkirim: ", failed: "Perintah gagal: ", noState: "Belum ada file state.",
+      stageNow: "sekarang", pauseBtn: "Jeda", resumeBtn: "Lanjutkan", none: "—", noRows: "Belum ada catatan.",
+      capTotal: "Menampilkan {n} dari {t} kontrol yang ditemukan", ready: "siap", stateLine: "state: "
+    }
+  };
+  var lang = "en";
+  var lastStatus = null;
+  var timer = null;
+  var seq = 0;
+  var hasBridge = false;
+
+  function tr(k) { return (T[lang] && T[lang][k]) || T.en[k] || k; }
+  function $(id) { return document.getElementById(id); }
+  function num(v, digits) { return (typeof v === "number" && isFinite(v)) ? v.toFixed(digits) : "—"; }
+  function text(el, s) { el.textContent = (s === undefined || s === null) ? "—" : String(s); }
+
+  // KernelSU WebUI bridge: ksu.exec(command, optionsJson, callbackName). The result
+  // arrives through the callback as (errno, stdout, stderr).
+  function ksuExec(command) {
+    return new Promise(function (resolve, reject) {
+      var bridge = window.ksu;
+      if (!bridge || typeof bridge.exec !== "function") { reject(new Error("no-bridge")); return; }
+      var name = "__coreflow_cb_" + Date.now() + "_" + (seq++);
+      var timeout = setTimeout(function () { delete window[name]; reject(new Error("timeout")); }, 8000);
+      window[name] = function (errno, stdout, stderr) {
+        clearTimeout(timeout);
+        delete window[name];
+        resolve({ errno: Number(errno), stdout: String(stdout || ""), stderr: String(stderr || "") });
+      };
+      try { bridge.exec(command, "{}", name); }
+      catch (e) { clearTimeout(timeout); delete window[name]; reject(e); }
+    });
+  }
+
+  function readState(file, lines) {
+    var path = "'" + DIR + "/" + file + "'";
+    var cmd = lines ? "tail -n " + lines + " " + path + " 2>/dev/null" : "cat " + path + " 2>/dev/null";
+    return ksuExec(cmd).then(function (r) { return r.errno === 0 ? r.stdout : ""; });
+  }
+
+  function parseJson(raw) { try { return JSON.parse(raw); } catch (e) { return null; } }
+
+  function setLink(ok, label) {
+    $("linkDot").className = "dot " + (ok ? "ok" : "bad");
+    text($("linkText"), label);
+  }
+
+  function sendCommand(token) {
+    if (!TOKENS[token]) return;
+    ksuExec("printf '%s\\n' '" + token + "' > '" + DIR + "/command'").then(function (r) {
+      text($("cmdResult"), r.errno === 0 ? tr("sent") + token : tr("failed") + (r.stderr || r.errno));
+      setTimeout(refresh, 1200);
+    }).catch(function () { text($("cmdResult"), tr("failed") + "bridge"); });
+  }
+
+  function renderStatus(s) {
+    lastStatus = s;
+    var age = Math.floor(Date.now() / 1000) - (s.generated_unix || 0);
+    var stale = age > 30;
+    var state = stale ? "offline" : (s.engine_state || "starting");
+    var stateLabel = { running: tr("running"), paused: tr("paused"), starting: tr("starting"), offline: tr("offline") }[state] || state;
+    text($("engineState"), stateLabel);
+    text($("engineSub"), state === "running" ? tr("runningSub") : state === "paused" ? tr("pausedSub")
+      : state === "offline" ? tr("offlineSub") : tr("startingSub"));
+    $("staleNotice").hidden = !stale;
+    text($("staleNotice"), stale ? tr("offlineSub") + " (" + age + " s)" : "");
+    text($("footerState"), tr("stateLine") + (stale ? "stale" : state));
+    $("pauseBtn").textContent = state === "paused" ? tr("resumeBtn") : tr("pauseBtn");
+    $("pauseBtn").dataset.token = state === "paused" ? "resume" : "pause";
+    ["pauseBtn", "rescanBtn", "resetBtn"].forEach(function (id) { $(id).disabled = !hasBridge || stale; });
+
+    var sys = s.system || {};
+    text($("mCpu"), sys.cpu_busy_percent == null ? "—" : num(sys.cpu_busy_percent, 0) + "%");
+    $("bCpu").style.width = sys.cpu_busy_percent == null ? "0" : Math.min(100, sys.cpu_busy_percent) + "%";
+    text($("mMem"), sys.memory_available_ratio == null ? "—" : num(sys.memory_available_ratio * 100, 0) + "%");
+    $("bMem").style.width = sys.memory_available_ratio == null ? "0" : Math.min(100, sys.memory_available_ratio * 100) + "%";
+    text($("mTemp"), sys.max_temperature_c == null ? "—" : num(sys.max_temperature_c, 1) + " °C");
+    text($("mHead"), sys.thermal_headroom_c == null ? "—" : num(sys.thermal_headroom_c, 1) + " °C");
+    text($("mFps"), sys.frame_average_fps == null ? "—" : num(sys.frame_average_fps, 1) + " fps");
+    text($("mFrameSub"), sys.frame_p95_ms == null ? "" :
+      "p95 " + num(sys.frame_p95_ms, 1) + " ms · p99 " + num(sys.frame_p99_ms, 1) + " ms · slow " +
+      num((sys.slow_frame_ratio || 0) * 100, 1) + "% · " + (sys.frame_package || ""));
+    text($("mPsi"), [sys.cpu_psi_some_avg10, sys.memory_psi_some_avg10, sys.io_psi_some_avg10]
+      .map(function (v) { return v == null ? "—" : num(v, 1); }).join(" / "));
+
+    var stageNow = s.stage || "";
+    var pipe = $("pipeline");
+    pipe.innerHTML = "";
+    STAGES.forEach(function (st) {
+      var el = document.createElement("div");
+      el.className = "stage" + (st[0] === stageNow ? " on" : "");
+      el.textContent = st[0];
+      var small = document.createElement("small");
+      small.textContent = st[1];
+      el.appendChild(small);
+      pipe.appendChild(el);
+    });
+
+    var c = s.counters || {};
+    text($("cRetained"), c.retained || 0);
+    text($("cRolled"), c.rolled_back || 0);
+    text($("cDeferred"), c.deferred || 0);
+    text($("cUnresolved"), c.unresolved || 0);
+    var inv = s.inventory || {};
+    text($("cInv"), (inv.eligible == null ? "—" : inv.eligible) + " / " + (inv.discovered == null ? "—" : inv.discovered));
+    text($("cInvSub"), "eligible / discovered" + (inv.catalog ? " · catalog " + inv.catalog : ""));
+    text($("cWorkload"), s.workload || "idle");
+    var dev = s.device || {};
+    var heading = [dev.model, dev.android ? "Android " + dev.android : ""].filter(Boolean).join(" · ");
+    if (heading) text($("title"), heading);
+  }
+
+  function cell(row, value, cls) {
+    var td = document.createElement("td");
+    if (cls) td.className = cls;
+    td.textContent = (value === undefined || value === null || value === "") ? "—" : String(value);
+    row.appendChild(td);
+    return td;
+  }
+
+  function tagCell(row, value) {
+    var td = document.createElement("td");
+    var span = document.createElement("span");
+    var v = String(value || "");
+    span.className = "tag " + (v === "retain" || v === "eligible" ? "ok" :
+      v === "rollback" || v === "write-failed" || v === "unresolved" ? "bad" : "warn");
+    span.textContent = v || "—";
+    td.appendChild(span);
+    row.appendChild(td);
+  }
+
+  function renderJournal(raw) {
+    var body = $("journalBody");
+    body.innerHTML = "";
+    var lines = raw.split("\n").filter(function (l) { return l.trim(); }).reverse();
+    var rows = lines.map(parseJson).filter(Boolean);
+    if (!rows.length) {
+      var empty = document.createElement("tr"); var td = document.createElement("td");
+      td.colSpan = 6; td.className = "empty"; td.textContent = tr("noRows"); empty.appendChild(td); body.appendChild(empty);
+      return;
+    }
+    rows.slice(0, 200).forEach(function (r) {
+      var tr_ = document.createElement("tr");
+      var when = r.time ? new Date(r.time * 1000).toLocaleTimeString() : "—";
+      cell(tr_, when);
+      cell(tr_, r.kind);
+      cell(tr_, r.resource, "mono");
+      cell(tr_, (r.from || "—") + " → " + (r.to || "—"));
+      tagCell(tr_, r.disposition);
+      cell(tr_, r.detail, "mono");
+      body.appendChild(tr_);
+    });
+  }
+
+  var capItems = [];
+  function renderCapabilities() {
+    var q = $("capFilter").value.trim().toLowerCase();
+    var only = $("capEligibleOnly").checked;
+    var body = $("capBody");
+    body.innerHTML = "";
+    var shown = 0;
+    capItems.forEach(function (it) {
+      if (only && !it.eligible) return;
+      var hay = (it.path + " " + it.domain + " " + it.attribute).toLowerCase();
+      if (q && hay.indexOf(q) === -1) return;
+      if (shown++ >= 400) return;
+      var row = document.createElement("tr");
+      cell(row, it.path, "mono");
+      cell(row, it.domain);
+      cell(row, it.attribute);
+      cell(row, it.value, "mono");
+      cell(row, it.strategy || "—");
+      tagCell(row, it.eligible ? "eligible" : "observe");
+      body.appendChild(row);
+    });
+    if (!shown) {
+      var empty = document.createElement("tr"); var td = document.createElement("td");
+      td.colSpan = 6; td.className = "empty"; td.textContent = tr("noRows"); empty.appendChild(td); body.appendChild(empty);
+    }
+    text($("capTotal"), tr("capTotal").replace("{n}", Math.min(shown, 400)).replace("{t}", capItems.length));
+  }
+
+  function refresh() {
+    if (!window.ksu || typeof window.ksu.exec !== "function") {
+      hasBridge = false;
+      setLink(false, tr("linkNo"));
+      $("bridgeNotice").hidden = false;
+      text($("bridgeNotice"), tr("bridgeNo"));
+      return Promise.resolve();
+    }
+    hasBridge = true;
+    $("bridgeNotice").hidden = true;
+    return Promise.all([readState("status.json"), readState("capabilities.json"), readState("journal.jsonl", 200)])
+      .then(function (parts) {
+        setLink(true, tr("linkOk"));
+        var status = parseJson(parts[0]);
+        if (status) renderStatus(status);
+        else { text($("engineState"), tr("offline")); text($("engineSub"), tr("noState")); }
+        var caps = parseJson(parts[1]);
+        if (caps && Array.isArray(caps.items)) { capItems = caps.items; renderCapabilities(); }
+        renderJournal(parts[2] || "");
+      })
+      .catch(function () { hasBridge = false; setLink(false, tr("linkNo")); });
+  }
+
+  function applyLanguage() {
+    document.documentElement.lang = lang;
+    document.querySelectorAll("[data-i]").forEach(function (el) { text(el, tr(el.getAttribute("data-i"))); });
+    $("capFilter").placeholder = tr("filterPh");
+    $("langBtn").textContent = lang === "en" ? "ID · Bahasa" : "EN · English";
+    if (lastStatus) renderStatus(lastStatus);
+    renderCapabilities();
+  }
+
+  $("langBtn").addEventListener("click", function () { lang = lang === "en" ? "id" : "en"; applyLanguage(); });
+  $("pauseBtn").addEventListener("click", function () { sendCommand(this.dataset.token || "pause"); });
+  $("rescanBtn").addEventListener("click", function () { sendCommand("rescan"); });
+  $("resetBtn").addEventListener("click", function () {
+    if (window.confirm(tr("confirmReset"))) sendCommand("reset_learning");
+  });
+  $("refreshBtn").addEventListener("click", refresh);
+  $("capFilter").addEventListener("input", renderCapabilities);
+  $("capEligibleOnly").addEventListener("change", renderCapabilities);
+
+  function startPolling() { if (!timer) timer = setInterval(refresh, 3000); }
+  function stopPolling() { if (timer) { clearInterval(timer); timer = null; } }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") { refresh(); startPolling(); } else { stopPolling(); }
+  });
+
+  applyLanguage();
+  setLink(false, tr("connecting"));
+  refresh();
+  startPolling();
+})();
 </script>
-</body></html>
+</body>
+</html>

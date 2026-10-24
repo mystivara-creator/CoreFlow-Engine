@@ -1,5 +1,6 @@
-# CoreFlow Autonomous Engine v3.0.0
-# Intentionally no blanket proc/sysfs write grants are installed here.
-# SELinux domains and resource labels differ by OEM and root manager. Add only
-# device-verified, narrowly scoped rules after inspecting AVC denials on the target.
-# Never set SELinux permissive globally and never grant broad write access to sysfs.
+# CoreFlow Autonomous Engine v3.1.0 — SELinux additions.
+# The daemon writes its operator state to /data/adb/coreflow (status.json,
+# capabilities.json, journal.jsonl, command). No allow rules are shipped by default.
+# If AVC denials appear for that directory on a target device, add narrowly scoped
+# rules after inspecting them in logcat. Intentionally no broad sysfs/procfs write
+# grants, and never set SELinux permissive globally.

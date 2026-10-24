@@ -21,7 +21,20 @@ public:
     void recordOutcome(const ChangeProposal& proposal, const Outcome& outcome,
                        Disposition disposition, const ObservationFrame& frame);
     void defer(const ChangeProposal& proposal, const ObservationFrame& frame);
+
+    // A retained selector change (I/O elevator, CPU governor, devfreq governor)
+    // creates new kernel controls beneath it. The runtime must rediscover before
+    // proposing their follow-ups. Returns true once per request.
+    [[nodiscard]] bool consumeRediscoveryRequest() noexcept;
+
+    // Forgets all learned direction, step, and dependency state (operator reset).
+    void reset();
+
 private:
+    // True when `candidate` is a legitimate follow-up of the last retained selector:
+    // a same-subsystem sibling, or a tunable beneath the newly selected directory.
+    [[nodiscard]] bool isDependencyFollowup(const Capability& candidate) const;
+
     void trackContext(const std::string& key);
     void trackCapability(const std::string& capability_id);
 
@@ -44,7 +57,11 @@ private:
     std::string dependency_domain_;
     std::string dependency_trigger_attribute_;
     std::string dependency_workload_signature_;
+    // Directory whose children are re-evaluated after the selector changed, for
+    // example <queue>/iosched or <policy>/<new-governor>. Empty when none applies.
+    std::string dependency_child_parent_;
     bool dependency_followup_pending_{false};
+    bool rediscovery_requested_{false};
     std::size_t next_index_{0};
 };
 }

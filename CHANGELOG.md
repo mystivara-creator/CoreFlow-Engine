@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.1.0 — coordinated tuning, real console bridge, correctness fixes
+
+### Fixed
+- Numeric probes learned the wrong direction when the bounds forced a downward probe; learning now uses the direction actually written.
+- Scheduler and governor follow-ups never ran: tunables beneath `queue/iosched/` and `policyN/<governor>/` were not discovered after the selector changed. A retained selector change now triggers an immediate rediscovery and follow-ups are scoped to the new directory.
+- Writability was inferred from `access(W_OK)`, which root always passes. Mode bits are now checked as well.
+- The WebUI called the KernelSU bridge with an incorrect API and had no daemon data to show.
+- Documentation stated C++17 and the wrong version and test count.
+
+### Added
+- Domains `sysfs.block.iosched` and `sysfs.cpu.governor`, with catalogue rules for the common elevator and governor tunables.
+- Thermal headroom from the kernel's passive trip points as a retention guard, replacing the need for any absolute temperature target.
+- Operator state directory (`/data/adb/coreflow`): atomic `status.json` and `capabilities.json`, rotated `journal.jsonl`, and a `command` file accepting `pause`, `resume`, `rescan`, `reset_learning`.
+- Pipeline stage reporting so the console shows the C++ stage that is running.
+- Four host test targets: discovery classification, runtime state store, thermal headroom, optimization coordination.
+
+### Changed
+- WebUI rewritten: reads daemon state through the KernelSU bridge and sends only fixed tokens. No terminal needed.
+- `service.sh` tails the daemon log from the start and rotates it at 1 MiB.
+- Discovery prunes debugfs, tracing, firmware and pstore subtrees.
+
+### Not yet
+- cpuset and uCLAMP mutation, Performance Hint API integration, app-launch boost, UFS/eMMC policy.
+- Device validation of v3.1.0 changes.
+
 ## v3.0.0 — initial Autonomous Engine package
 
 ### Added

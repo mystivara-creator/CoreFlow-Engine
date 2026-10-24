@@ -160,6 +160,30 @@ DeviceContext discoverDeviceContext() {
     return cached;
 }
 
+// Reads trip_point_N_type/temp pairs for one compute zone. Trip indices are
+// contiguous in the kernel, so the first missing type file ends the scan.
+bool passiveHeadroomForZone(const fs::path& zone, double celsius, double& headroom) {
+    constexpr int kMaximumTripPoints = 32;
+    bool found = false;
+    double best = 0.0;
+    for (int index = 0; index < kMaximumTripPoints; ++index) {
+        const std::string base = "trip_point_" + std::to_string(index);
+        std::string type;
+        if (!readFirst((zone / (base + "_type")).string(), type)) break;
+        if (!observation::thermal_policy::isPassiveTripType(type)) continue;
+        std::string raw;
+        double trip{};
+        if (!readFirst((zone / (base + "_temp")).string(), raw) ||
+            !observation::thermal_policy::parseTripCelsius(raw, trip)) continue;
+        const double room = trip - celsius;
+        if (!found || room < best) {
+            best = room;
+            found = true;
+        }
+    }
+    if (found) headroom = best;
+    return found;
+}
 bool readWhole(const std::string& path, std::string& value) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
@@ -298,6 +322,15 @@ SystemObservation RuntimeObserver::observeSystem() const {
                 o.maximum_temperature_c = celsius;
             }
             o.temperature_valid = true;
+
+            // The hottest zone with a published passive trip defines headroom.
+            // Zones without one contribute nothing rather than a guessed limit.
+            double zone_headroom{};
+            if (passiveHeadroomForZone(it->path(), celsius, zone_headroom) &&
+                (!o.thermal_headroom_valid || zone_headroom < o.thermal_headroom_c)) {
+                o.thermal_headroom_c = zone_headroom;
+                o.thermal_headroom_valid = true;
+            }
         }
     }
     const auto readPressure = [](const char* path, double& avg10) {

@@ -1,4 +1,5 @@
 #include "coreflow/discovery/discovery.hpp"
+#include "coreflow/discovery/classification.hpp"
 #include "coreflow/discovery/strategy_catalog.hpp"
 
 #include <algorithm>
@@ -46,84 +47,6 @@ std::vector<std::string> tokens(const std::string& text) {
     return result;
 }
 
-std::vector<std::string> pathParts(const std::string& path) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    while (start < path.size()) {
-        while (start < path.size() && path[start] == '/') ++start;
-        if (start == path.size()) break;
-        const auto slash = path.find('/', start);
-        const auto end = slash == std::string::npos ? path.size() : slash;
-        parts.emplace_back(path.substr(start, end - start));
-        start = end;
-    }
-    return parts;
-}
-
-bool containsProtectedKernelControl(const std::string& path) {
-    std::string lower = path;
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    // These surfaces can trigger power loss, safety-policy bypass, hardware
-    // stress or irreversible device actions. Discover them as protected rather
-    // than considering a writable bit or a numeric companion range sufficient.
-    static const char* const protected_fragments[] = {
-        "/thermal/", "/class/thermal/", "/power_supply/", "/class/power_supply/",
-        "/regulator/", "/watchdog/", "/reset/", "/reset_reason/", "/debug/",
-        "/tracing/", "/firmware/", "/security/", "/bcl/", "/battery/", "/charger/",
-        "/crash/", "/panic/", "/lockup/", "/kexec/", "/reboot/",
-        "/cooling_device/"
-    };
-    for (const auto* fragment : protected_fragments) {
-        if (lower.find(fragment) != std::string::npos) return true;
-    }
-    const auto name = lower.substr(lower.find_last_of('/') == std::string::npos
-        ? 0 : lower.find_last_of('/') + 1);
-    static const char* const protected_attributes[] = {
-        "voltage", "current_limit", "current_now", "charge", "trip_point",
-        "emergency", "watchdog", "reset", "reboot", "panic", "crash",
-        "lockup", "battery", "charger", "regulator", "cur_state", "target_state"
-    };
-    for (const auto* fragment : protected_attributes) {
-        if (name.find(fragment) != std::string::npos) return true;
-    }
-    return false;
-}
-
-std::string domainFor(const std::string& path) {
-    if (containsProtectedKernelControl(path)) return "sysfs.protected";
-    constexpr const char* proc_root = "/proc/sys/";
-    constexpr const char* sys_root = "/sys/";
-    if (path.compare(0, std::char_traits<char>::length(proc_root), proc_root) == 0) {
-        const auto relative = path.substr(std::char_traits<char>::length(proc_root));
-        const auto slash = relative.rfind('/');
-        if (slash == std::string::npos) return "proc_sys";
-        std::string directory = relative.substr(0, slash);
-        std::replace(directory.begin(), directory.end(), '/', '.');
-        return "proc_sys." + directory;
-    }
-    if (path.compare(0, std::char_traits<char>::length(sys_root), sys_root) != 0) return {};
-
-    const auto parts = pathParts(path);
-    for (std::size_t i = 0; i + 3 < parts.size(); ++i) {
-        if (parts[i] == "block" && parts[i + 2] == "queue" && i + 3 == parts.size() - 1)
-            return "sysfs.block.queue";
-    }
-    for (std::size_t i = 0; i + 2 < parts.size(); ++i) {
-        if (parts[i] == "cpufreq" && parts[i + 1].compare(0, 6, "policy") == 0 &&
-            i + 2 == parts.size() - 1) return "sysfs.cpu.cpufreq";
-    }
-    for (std::size_t i = 0; i + 2 < parts.size(); ++i) {
-        if (parts[i] == "devfreq" && i + 2 == parts.size() - 1)
-            return "sysfs.devfreq";
-    }
-    // General sysfs domain: resources with kernel-published bounds/choice metadata
-    // can participate without inventing a per-resource path entry. More specific
-    // subsystem domains above still take precedence for domain-aware policies.
-    return "sysfs.generic";
-}
-
 bool readResource(const fs::path& path, std::string& raw) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
@@ -150,6 +73,17 @@ bool readResource(const fs::path& path, std::string& raw) {
     const auto last = buffer.find_last_not_of(" \t\r\n");
     raw = buffer.substr(first, last - first + 1);
     return true;
+}
+
+// The active governor of a cpufreq policy. Governor tunables live in a directory
+// named after the governor the policy is running, so classification needs it.
+std::string activeGovernorFor(const fs::path& path) {
+    const auto dir = path.parent_path();
+    const auto policy = dir.parent_path();
+    if (policy.filename().string().rfind("policy", 0) != 0) return {};
+    std::string governor;
+    if (!readResource(policy / "scaling_governor", governor)) return {};
+    return governor;
 }
 
 std::optional<double> readNumber(const fs::path& path) {
@@ -269,28 +203,34 @@ void scanRoot(const fs::path& root, std::vector<Capability>& out) {
         const auto entry = *it;
         const auto link_status = entry.symlink_status(ec);
         if (ec) { ec.clear(); continue; }
+        if (fs::is_directory(link_status)) {
+            if (isPrunedDiscoverySubtree(entry.path().string())) it.disable_recursion_pending();
+            continue;
+        }
         if (fs::is_symlink(link_status) || !fs::is_regular_file(link_status)) continue;
 
         const auto path = entry.path();
-        const auto domain = domainFor(path.string());
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        // Mode bits decide writability for the daemon's own permission class.
+        // access() alone is insufficient because root passes it for read-only files.
+        if (!hasWritePermissionBits(st.st_mode)) continue;
+        if (::access(path.c_str(), R_OK | W_OK) != 0) continue;
+
+        const auto domain = classifyKernelDomain(path.string(), activeGovernorFor(path));
         // Keep discovery broad across kernel namespaces while avoiding unrelated
         // regular files exposed by sysfs/procfs.
         if (domain.empty()) continue;
-        struct stat st{};
-        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
-        if (::access(path.c_str(), R_OK) != 0) continue;
 
         std::string raw;
         if (!readResource(path, raw)) continue;
-        const bool writable = (::access(path.c_str(), W_OK) == 0);
-        if (!writable) continue;
 
         Capability capability;
         capability.path = path.string();
         capability.id = capability.path;
         capability.attribute = path.filename().string();
         capability.domain = domain;
-        capability.writable = true;
+        capability.writable = true;  // Verified above from mode bits and access().
         capability.raw_value = firstToken(raw);
         capability.numeric = parseNumber(capability.raw_value, capability.numeric_value);
 

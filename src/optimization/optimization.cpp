@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
@@ -50,6 +51,34 @@ bool isKernelDiscreteControl(const std::string& domain, const std::string& attri
             (attribute == "scaling_min_freq" || attribute == "scaling_max_freq")) ||
            (domain == "sysfs.devfreq" &&
             (attribute == "min_freq" || attribute == "max_freq"));
+}
+
+// Direction of the numeric probe that was actually written. Learning from an
+// assumed direction mislabels probes that the bounds forced downward.
+int attemptedDirection(const ChangeProposal& proposal) {
+    if (!proposal.allowed_values.empty()) return 0;
+    char* from_end = nullptr;
+    char* to_end = nullptr;
+    const double from = std::strtod(proposal.previous_value.c_str(), &from_end);
+    const double to = std::strtod(proposal.target_value.c_str(), &to_end);
+    if (from_end == proposal.previous_value.c_str() || to_end == proposal.target_value.c_str() ||
+        !std::isfinite(from) || !std::isfinite(to)) return 0;
+    if (to > from) return 1;
+    if (to < from) return -1;
+    return 0;
+}
+
+// Where a retained selector's dependent tunables live in the live kernel layout:
+//   block queue scheduler   -> <queue>/iosched/      (exists only for the active elevator)
+//   cpufreq scaling_governor -> <policy>/<governor>/  (created when the governor starts)
+// Other selectors (EPP, devfreq governor) have no governor-scoped subdirectory.
+std::string dependencyChildParent(const std::string& domain, const std::string& attribute,
+                                  const std::string& path, const std::string& selected) {
+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (domain == "sysfs.block.queue" && attribute == "scheduler") return (parent / "iosched").string();
+    if (domain == "sysfs.cpu.cpufreq" && attribute == "scaling_governor" && !selected.empty() &&
+        selected.find('/') == std::string::npos) return (parent / selected).string();
+    return {};
 }
 
 bool validNumericCapability(const Capability& capability) {
@@ -147,13 +176,8 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
         const double workload_score = workloadScoreForDomain(capability.domain, frame.system);
         if (!(workload_score > 0.0) || !std::isfinite(workload_score)) continue;
 
-        const std::string parent = std::filesystem::path(capability.path).parent_path().string();
         if (has_dependency) {
-            // A retained scheduler/governor change is followed only by a control
-            // in the exact same queue or CPU policy, not any resource in a broad
-            // subsystem. This preserves per-device kernel relationships.
-            if (capability.domain != dependency_domain_ || parent != dependency_parent_ ||
-                capability.attribute == dependency_trigger_attribute_) continue;
+            if (!isDependencyFollowup(capability)) continue;
         } else if (dependency_followup_pending_) {
             dependency_followup_pending_ = false;
         }
@@ -321,6 +345,7 @@ void OptimizationEngine::recordOutcome(const std::string& id, const std::string&
         dependency_domain_ = domain;
         dependency_trigger_attribute_ = attribute;
         dependency_parent_.clear();
+        dependency_child_parent_.clear();
         dependency_workload_signature_.clear();
         dependency_followup_pending_ = false;
     }
@@ -341,11 +366,11 @@ void OptimizationEngine::recordOutcome(const ChangeProposal& proposal, bool impr
     const std::string proposal_key = contextKey(proposal.capability_id, signature);
     trackContext(proposal_key);
     {
-        auto direction = direction_by_context_.find(proposal_key);
-        if (direction == direction_by_context_.end())
-            direction_by_context_.emplace(proposal_key, improved ? 1 : -1);
-        else if (!improved)
-            direction->second = -direction->second;
+        const int attempted = attemptedDirection(proposal);
+        if (attempted != 0) {
+            // Keep the attempted direction when it helped; reverse it when it did not.
+            direction_by_context_[proposal_key] = improved ? attempted : -attempted;
+        }
         auto step = step_fraction_by_context_.find(proposal_key);
         if (step == step_fraction_by_context_.end()) {
             step_fraction_by_context_.emplace(proposal_key, 0.01);
@@ -379,8 +404,33 @@ void OptimizationEngine::recordOutcome(const ChangeProposal& proposal, bool impr
     dependency_domain_ = proposal.domain;
     dependency_trigger_attribute_ = proposal.attribute;
     dependency_parent_ = std::filesystem::path(proposal.path).parent_path().string();
+    dependency_child_parent_ = dependencyChildParent(proposal.domain, proposal.attribute,
+                                                     proposal.path, proposal.target_value);
     dependency_workload_signature_ = signature;
     dependency_followup_pending_ = !dependency_parent_.empty();
+    // The new governor/elevator directory does not exist in the inventory yet.
+    rediscovery_requested_ = true;
+}
+
+bool OptimizationEngine::isDependencyFollowup(const Capability& candidate) const {
+    const std::string parent = std::filesystem::path(candidate.path).parent_path().string();
+    if (candidate.attribute == dependency_trigger_attribute_ && parent == dependency_parent_)
+        return false;
+    // Same-subsystem controls (queue-level nr_requests/read_ahead_kb, policy-level limits).
+    if (candidate.domain == dependency_domain_ && parent == dependency_parent_) return true;
+    // Tunables that belong to the newly selected scheduler or governor.
+    return !dependency_child_parent_.empty() && parent == dependency_child_parent_ &&
+           (candidate.domain == "sysfs.block.iosched" || candidate.domain == "sysfs.cpu.governor");
+}
+
+bool OptimizationEngine::consumeRediscoveryRequest() noexcept {
+    const bool requested = rediscovery_requested_;
+    rediscovery_requested_ = false;
+    return requested;
+}
+
+void OptimizationEngine::reset() {
+    *this = OptimizationEngine{};
 }
 
 void OptimizationEngine::defer(const ChangeProposal& proposal, const ObservationFrame& frame) {

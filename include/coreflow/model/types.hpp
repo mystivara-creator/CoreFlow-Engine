@@ -36,12 +36,17 @@ struct SystemObservation {
     double cpu_busy_percent{};
     double memory_available_ratio{};
     double maximum_temperature_c{};
+    // Distance (C) from the hottest trusted compute zone to the vendor's own
+    // passive trip point, as published by the kernel. Negative means above it.
+    // This replaces any universal absolute temperature target.
+    double thermal_headroom_c{};
     double cpu_pressure_some_avg10{};
     double memory_pressure_some_avg10{};
     double io_pressure_some_avg10{};
     bool cpu_valid{false};
     bool memory_valid{false};
     bool temperature_valid{false};
+    bool thermal_headroom_valid{false};
     bool cpu_pressure_valid{false};
     bool memory_pressure_valid{false};
     bool io_pressure_valid{false};

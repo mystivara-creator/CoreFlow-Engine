@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Autonomous Engine v3.0.0 — Magisk / KernelSU installer.
+# CoreFlow Autonomous Engine v3.1.0 — Magisk / KernelSU installer.
 SKIPUNZIP=1
 
 CF_TITLE='COREFLOW AUTONOMOUS ENGINE'
@@ -11,7 +11,7 @@ cf_has_entry() { unzip -p "$ZIPFILE" "$1" >/dev/null 2>&1; }
 ui_print ''
 ui_print '╔══════════════════════════════════════════╗'
 ui_print '║       COREFLOW AUTONOMOUS ENGINE          ║'
-ui_print '║                 v3.0.0                   ║'
+ui_print '║                 v3.1.0                   ║'
 ui_print '╚══════════════════════════════════════════╝'
 ui_print ''
 cf_info 'Memeriksa lingkungan instalasi...'
@@ -59,7 +59,8 @@ ui_print '│              INSTALASI SIAP              │'
 ui_print '└──────────────────────────────────────────┘'
 cf_info "Perangkat: ${ABI} | Android API: ${API:-unknown}"
 cf_info 'Daemon akan dijalankan oleh service setelah boot selesai.'
-cf_info 'Log: logcat -s CoreFlowEngine'
-cf_info 'WebUI: file tersedia di direktori modul /webroot.'
+cf_info 'Log opsional: logcat -s CoreFlowEngine'
+cf_info 'WebUI: buka dari KernelSU Manager (CoreFlow Console). Tidak perlu terminal.'
+cf_info 'Status WebUI: /data/adb/coreflow/status.json'
 cf_warn 'Hasil mutasi bergantung pada dukungan kernel dan validasi runtime perangkat.'
 ui_print ''

@@ -10,6 +10,17 @@ double normalizedLowerCost(double value) {
     return nonnegative / (1.0 + nonnegative);
 }
 
+// Domain families. A governor or elevator tunable belongs to the same kernel
+// subsystem as its parent policy/queue, so it is judged on that subsystem's
+// signals rather than on unrelated global metrics.
+bool isCpuDomain(const std::string& domain) {
+    return domain == "proc_sys.kernel" || domain == "sysfs.cpu.cpufreq" ||
+           domain == "sysfs.cpu.governor";
+}
+bool isBlockDomain(const std::string& domain) {
+    return domain == "sysfs.block.queue" || domain == "sysfs.block.iosched";
+}
+
 void compareLowerIsBetter(bool before_valid, double before_value,
                           bool after_valid, double after_value, double deadband,
                           Outcome& out, bool& comparable, bool& improved, bool& regressed) {
@@ -103,8 +114,7 @@ Outcome OutcomeVerifier::verify(const SystemObservation& before,
     // A foreground-app switch invalidates the frame comparison window. Do not
     // let a CPU-pressure change sampled across two different foreground apps
     // make a CPU-frequency/governor probe look beneficial by coincidence.
-    if ((proposal.domain == "proc_sys.kernel" ||
-         proposal.domain == "sysfs.cpu.cpufreq") &&
+    if (isCpuDomain(proposal.domain) &&
         before.frame_timing_valid && after.frame_timing_valid &&
         !before.frame_package.empty() && !after.frame_package.empty() &&
         before.frame_package != after.frame_package) {
@@ -121,8 +131,7 @@ Outcome OutcomeVerifier::verify(const SystemObservation& before,
                                   after.memory_valid, after.memory_available_ratio,
                                   0.01, out, comparable, improved, regressed);
         }
-    } else if (proposal.domain == "proc_sys.kernel" ||
-               proposal.domain == "sysfs.cpu.cpufreq") {
+    } else if (isCpuDomain(proposal.domain)) {
         compareLowerIsBetter(before.cpu_pressure_valid, before.cpu_pressure_some_avg10,
                              after.cpu_pressure_valid, after.cpu_pressure_some_avg10,
                              0.1, out, comparable, improved, regressed);
@@ -138,7 +147,7 @@ Outcome OutcomeVerifier::verify(const SystemObservation& before,
                                  true, after.slow_frame_ratio,
                                  0.02, out, comparable, improved, regressed);
         }
-    } else if (proposal.domain == "sysfs.block.queue") {
+    } else if (isBlockDomain(proposal.domain)) {
         compareLowerIsBetter(before.io_pressure_valid, before.io_pressure_some_avg10,
                              after.io_pressure_valid, after.io_pressure_some_avg10,
                              0.1, out, comparable, improved, regressed);
@@ -168,6 +177,12 @@ Outcome OutcomeVerifier::verify(const SystemObservation& before,
             after.temperature_valid, after.maximum_temperature_c)) {
         // This conservative temperature heuristic supplements, but never
         // replaces or disables, the platform's own thermal mitigation.
+        regressed = true;
+    }
+    // Retention must not consume the margin to the vendor's passive trip point.
+    if (observation::thermal_policy::shouldVetoHeadroom(
+            before.thermal_headroom_valid, before.thermal_headroom_c,
+            after.thermal_headroom_valid, after.thermal_headroom_c)) {
         regressed = true;
     }
 

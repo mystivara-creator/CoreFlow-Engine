@@ -55,9 +55,11 @@ double frameScore(const SystemObservation& o) {
 double workloadScoreForDomain(const std::string& domain,
                               const SystemObservation& observation) {
     if (domain == "proc_sys.vm") return memoryScore(observation);
-    if (domain == "proc_sys.kernel" || domain == "sysfs.cpu.cpufreq")
+    if (domain == "proc_sys.kernel" || domain == "sysfs.cpu.cpufreq" ||
+        domain == "sysfs.cpu.governor")
         return cpuScore(observation);
-    if (domain == "sysfs.block.queue") return ioScore(observation);
+    if (domain == "sysfs.block.queue" || domain == "sysfs.block.iosched")
+        return ioScore(observation);
     if (domain == "sysfs.devfreq") return frameScore(observation);
     // Unknown semantics stay observe-only. A numeric range alone is not proof
     // that changing a control is relevant or safe for the current workload.

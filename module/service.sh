@@ -1,9 +1,14 @@
 #!/system/bin/sh
-# CoreFlow Autonomous Engine v3.0.0 persistent service.
+# CoreFlow Autonomous Engine v3.1.0 persistent service.
 MODDIR=${0%/*}
 TAG='CoreFlowEngine'
 DAEMON="$MODDIR/system/bin/coreflow_daemon"
 CATALOG="$MODDIR/strategies.tsv"
+# Persistent state shared with the WebUI. Lives outside the module directory so it
+# survives module updates. The WebUI writes only fixed command tokens here.
+STATE_DIR='/data/adb/coreflow'
+LOGFILE="$MODDIR/coreflow.log"
+LOG_ROTATE_BYTES=1048576
 
 log_msg() {
     _level="$1"; shift
@@ -27,8 +32,12 @@ if [ ! -s "$CATALOG" ]; then
     exit 1
 fi
 
+mkdir -p "$STATE_DIR" 2>/dev/null
+chmod 0700 "$STATE_DIR" 2>/dev/null
+
 export COREFLOW_STRATEGY_CATALOG="$CATALOG"
 export COREFLOW_MODULE_DIR="$MODDIR"
+export COREFLOW_STATE_DIR="$STATE_DIR"
 
 # Keep a single instance owned by this service. Avoid killing an unrelated process
 # by checking the executable path when /proc is available.
@@ -45,15 +54,21 @@ failures=0
 while :; do
     [ -x "$DAEMON" ] || { log_msg e 'Daemon hilang atau tidak executable; service berhenti.'; exit 1; }
     start_time="$(date +%s 2>/dev/null)"
-    log_msg i "Menjalankan daemon v3.0.0; katalog=$CATALOG"
+    log_msg i "Menjalankan daemon v3.1.0; katalog=$CATALOG; state=$STATE_DIR"
 
-    # Run daemon as a child so `wait` captures its real exit status. Tail its log
-    # concurrently for live logcat output; the shell itself never writes kernel knobs.
-    LOGFILE="$MODDIR/coreflow.log"
+    # Rotate the module log so a long-running device cannot fill /data with it.
+    if [ -f "$LOGFILE" ]; then
+        size="$(wc -c < "$LOGFILE" 2>/dev/null)"
+        case "$size" in ''|*[!0-9]*) size=0 ;; esac
+        [ "$size" -gt "$LOG_ROTATE_BYTES" ] && mv -f "$LOGFILE" "$LOGFILE.1" 2>/dev/null
+    fi
     : >> "$LOGFILE" 2>/dev/null
+
+    # Run the daemon as a child so `wait` captures its real exit status. Tail its log
+    # from the beginning so the first lines written at startup are not lost.
     "$DAEMON" >> "$LOGFILE" 2>&1 &
     DAEMON_PID=$!
-    tail -n 0 -f "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
+    tail -n +1 -F "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
         log_msg i "$line"
     done &
     LOGGER_PID=$!

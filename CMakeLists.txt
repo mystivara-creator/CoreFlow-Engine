@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(CoreFlowEngine VERSION 2.4.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 3.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,6 +162,31 @@ if(BUILD_TESTING)
     coreflow_add_test(rollback_guard_tests
         tests/rollback_guard_tests.cpp
     )
+
+    coreflow_add_test(discovery_classification_tests
+        tests/discovery_classification_tests.cpp
+        src/discovery/classification.cpp
+    )
+
+    coreflow_add_test(runtime_state_tests
+        tests/runtime_state_tests.cpp
+        src/runtime/state_store.cpp
+    )
+
+    coreflow_add_test(thermal_headroom_tests
+        tests/thermal_headroom_tests.cpp
+    )
+
+    coreflow_add_test(optimization_coordination_tests
+        tests/optimization_coordination_tests.cpp
+        src/optimization/optimization.cpp
+        src/optimization/workload.cpp
+        src/outcome/outcome.cpp
+        src/discovery/strategy_catalog.cpp
+    )
+    # The coordination test validates the shipped catalogue in the source tree.
+    target_compile_definitions(optimization_coordination_tests PRIVATE
+        COREFLOW_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
     message(STATUS "CoreFlow tests: enabled")
 else()

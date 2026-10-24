@@ -1,7 +1,7 @@
-# CoreFlow Autonomous Engine v3.0.0
+# CoreFlow Autonomous Engine v3.1.0
 
 **Capability-driven, outcome-driven Android kernel adaptation**
-**Implementation:** C++17 · **Target ABI:** `arm64-v8a` · **Module format:** Magisk / KernelSU-compatible ZIP
+**Implementation:** C++20 · **Target ABI:** `arm64-v8a` · **Module format:** Magisk / KernelSU-compatible ZIP
 
 CoreFlow Autonomous Engine is a native Android daemon that discovers kernel controls exposed by the running device, evaluates candidate adjustments, applies validated changes, measures observable system outcomes, and retains or rolls back each change according to the result. The implementation is designed around device capabilities rather than a fixed device profile or a universal tuning preset.
 
@@ -12,104 +12,108 @@ CoreFlow Autonomous Engine is a native Android daemon that discovers kernel cont
 ```text
 Device & System Discovery
           ↓
-Runtime Observation
+Runtime Observation  (CPU/memory/IO PSI, thermal, SurfaceFlinger timestats)
           ↓
-Optimization Engine
+Optimization Engine  (workload-scoped proposals, follow-ups after selector changes)
           ↓
-Change Justification
-          ↓
-Capability & Safety Validation
+Change Justification → Capability & Safety Validation
           ↓
 Bounded Mutation + Read-back Verification
           ↓
-Outcome Verification
+Outcome Verification (subsystem signals + thermal headroom)
        ↙       ↘
    Retain     Rollback
        ↘       ↙
-     Feedback and next cycle
+  Feedback, state export (WebUI), next cycle
 ```
 
-The daemon runs this loop continuously. It does not force a named governor or I/O scheduler. It considers the values and metadata exposed by the active kernel, and it must not interpret “discovered” or “writable” as automatic permission to mutate a resource.
+The daemon does not force a named governor or I/O scheduler. It acts on values and metadata exposed by the active kernel.
+
+## Coordinated follow-up (v3.1.0)
+
+Some kernel controls exist only beneath another control:
+
+| Retained change | Kernel layout that appears | Re-evaluated controls |
+|---|---|---|
+| `queue/scheduler` → X | `queue/iosched/` for elevator X (absent for `none`) | `iosched/*` tunables, plus same-queue controls such as `nr_requests` |
+| `policyN/scaling_governor` → G | `policyN/G/` for governor G | `policyN/G/*` tunables, plus policy-level limits |
+| `devfreq ... governor` | governor tunables beside the governor | same-device siblings |
+
+A retained selector change sets a rediscovery request. The runtime runs a fresh inventory before proposing follow-ups, so new directories are seen immediately rather than after the 2-minute refresh. Only controls under the new directory, or same-subsystem siblings, are eligible; a same-named tunable on another queue or policy is not.
+
+The tunable *names* are discovered live. Numeric bounds come from `module/strategies.tsv`, a semantic policy keyed by domain and attribute. A live value outside those bounds is never proposed.
+
+## Thermal guard
+
+Retention is vetoed when a change consumes the margin to the vendor's own **passive trip point** (`trip_point_N_type == passive` in a trusted compute zone) and the remaining headroom falls below 3 °C. The trip point is published by the kernel, so no device-wide absolute temperature is assumed. The earlier 0.5 °C rise guard still applies.
 
 ## Runtime behavior
 
 ### Device and kernel discovery
 
-The discovery layer inventories readable resources under supported `/proc/sys` and `/sys` locations, reads current values, and derives semantic attributes from the discovered resource path. It also collects device context where available, including Android release/API, kernel release, manufacturer/model, SoC model, online CPU count, total RAM, storage type, thermal measurements, memory availability, and Linux pressure-stall information (PSI).
+Discovery walks `/sys` and `/proc/sys`, skipping debugfs, tracing, firmware and pstore. A resource is considered writable only when its mode has a write bit and `access()` allows it; root bypasses DAC, so `access()` alone is insufficient. Each resource is classified into a semantic domain (see `include/coreflow/discovery/classification.hpp`). Protected surfaces (thermal, battery/charger, regulator, watchdog, reset, debug, firmware, and similar) are never optimization targets.
 
-Discrete controls can use choices advertised by the live kernel—for example, available governors or scheduler choices. Numeric controls require a defensible range, sourced from kernel-published companion metadata or a matching semantic policy. The engine has no fixed maximum count of discovered resources, catalogue rules, or advertised choices. The catalogue supplements semantics; it is not a per-device path list or a maximum-candidate setting.
+Discrete controls use choices advertised by the live kernel. Numeric controls require a defensible range from kernel companion metadata or a catalogue policy.
 
-Discovery coverage depends on what the kernel actually exposes and what the process can read. Unknown or unsupported resources may be inventoried without being eligible for mutation.
+### Optimization
 
-### Optimization and coordinated decisions
-
-`OptimizationEngine` ranks eligible candidates using the current observation, resource metadata, and feedback retained during the daemon process. Numeric proposals are derived from a fraction of the discovered interval and adjusted using previous outcomes; discrete proposals come from kernel-advertised choices. The candidate selector avoids no-op changes and does not require a hard-coded maximum candidate count.
-
-A retained change to a governor or scheduler marks its discovered subsystem for follow-up consideration, allowing related controls in that domain to be re-evaluated. This is a dependency hint, not a promise that every related tunable exists or should be changed.
+`OptimizationEngine` ranks eligible candidates by workload-scoped signals. Numeric probes move in the direction that was actually attempted; a failed probe reverses it. Learning is per workload signature, is bounded in memory, and is not updated by inconclusive outcomes.
 
 ### Validation, mutation, and rollback
 
-Before a write, the engine checks that the proposal corresponds to a supported capability, is not a no-op, remains within its accepted numeric range or advertised discrete choices, and still matches the observed current value. The mutation layer uses guarded path traversal, checks resource identity and current value before writing, then reads the value back to verify the result.
+Before a write, the engine checks capability identity, no-op status, bounds or advertised choices, and the currently observed value. Mutation opens files without following symlinks, verifies object identity, writes, reads back, and rolls back through the same verified path on failure or regression.
 
-If a write fails, read-back differs, the outcome regresses, or the available measurements are inconclusive, the engine attempts a guarded rollback to the previous value. Rollback itself is verified; a failed recovery is reported rather than represented as successful. The implementation also excludes known high-risk control surfaces such as thermal protection, battery/charger, regulator, watchdog, reset, panic, firmware, and similar paths from ordinary optimization.
+### Outcome
 
-The engine evaluates outcomes using comparable signals available before and after the change, including thermal burden, available-memory ratio, and CPU/memory/I/O PSI where supported. Signals that are missing on a device are not fabricated. Feedback and the mutation journal are process-local; the journal is emitted through runtime logging rather than a durable learning database.
+Outcome verification compares before/after signals valid on both sides, using deadbands. Scheduler/governor probes are judged on their own subsystem: I/O pressure for elevator tunables, CPU pressure and SurfaceFlinger frame timing for CPU governor tunables. Missing signals are never fabricated.
+
+## Operator console (WebUI) and state directory
+
+The WebUI does not need a terminal and does not open a network port. The daemon and the console communicate through `/data/adb/coreflow` (override with `COREFLOW_STATE_DIR`):
+
+| File | Written by | Contents |
+|---|---|---|
+| `status.json` | daemon, every cycle (atomic replace) | engine state, current pipeline stage, counters, device, system signals |
+| `capabilities.json` | daemon, after each inventory | discovered controls, domain, strategy, value, eligibility |
+| `journal.jsonl` | daemon, per decision/mutation (rotated at 256 KiB) | decisions, writes, outcomes, rollbacks |
+| `command` | WebUI, one token | consumed and deleted by the daemon |
+
+Accepted command tokens are exactly `pause`, `resume`, `rescan`, and `reset_learning`. Anything else is discarded. The WebUI (`module/webroot/index.html`) reads these files through the KernelSU WebUI bridge (`ksu.exec`) and displays the C++ pipeline stage that is running. A status older than 30 seconds is shown as not reporting, so a stopped daemon is never presented as live.
+
+Pausing keeps observation running but issues no kernel writes.
 
 ## C++ architecture
 
-The implementation uses standard C++17 and separates policy decisions from low-level resource access. The primary source layout is:
+Standard C++20 (the code uses `std::string_view::starts_with` and `std::from_chars` for `double`).
 
 | Component | Responsibility |
 |---|---|
-| `src/main.cpp` | Process entry point, startup logging, and top-level exception boundary. |
-| `src/discovery/discovery.cpp` | Device/kernel resource discovery, semantic classification, live choice parsing, and range discovery. |
-| `src/discovery/strategy_catalog.cpp` | Parses the external TSV policy catalogue, validates its schema/rules, and indexes rules by semantic domain and attribute. |
-| `src/profile/device_profile.cpp` | Reads the versioned TSV device-profile format; profile parsing is separate from live discovery and does not itself mutate resources. |
-| `src/observation/observation.cpp` | Samples system signals and current values for discovered capabilities. |
-| `src/optimization/optimization.cpp` | Selects numeric or discrete proposals, adapts exploration direction/step size from outcomes, and schedules related-domain follow-up after selected policy changes. |
-| `src/decision/decision.cpp` | Determines whether the observed context justifies a candidate change. |
-| `src/validation/validation.cpp` | Enforces proposal validity and resource safety constraints before mutation. |
-| `src/mutation/mutation.cpp` | Performs guarded writes, checks current state and object identity, verifies read-back, and implements rollback. |
-| `src/outcome/outcome.cpp` | Compares available before/after measurements using deadbands and chooses retain, rollback, or unresolved disposition. |
-| `src/recovery/learning.cpp` | Records the proposal, outcome, disposition, and recovery details in runtime logs. |
-| `src/runtime/engine.cpp` | Orchestrates discovery refresh, observation, proposal, validation, mutation, settling, outcome evaluation, rollback, and feedback. |
-| `include/coreflow/model/types.hpp` | Shared domain types for capabilities, observations, proposals, applied changes, outcomes, and dispositions. |
-| `include/coreflow/runtime/engine.hpp` | Composition root that connects the runtime subsystems. |
-
-The design keeps semantic selectors such as `domain + attribute` separate from absolute device paths. Paths are discovered at runtime; they are not supposed to be enumerated as a fixed list of device-specific entries in the strategy catalogue.
+| `src/main.cpp` | Process entry point, startup logging, top-level exception boundary. |
+| `src/discovery/discovery.cpp` | Inventory, writability, live choice and range discovery, catalogue application. |
+| `src/discovery/classification.cpp` | Pure domain classification, protected surfaces, writability bits, pruned subtrees. |
+| `src/discovery/strategy_catalog.cpp` | Validates and indexes the TSV policy catalogue. |
+| `src/profile/device_profile.cpp` | Reads the versioned device-profile TSV. Does not mutate. |
+| `src/observation/observation.cpp` | Samples CPU, memory, PSI, thermal zones and passive-trip headroom. |
+| `src/observation/surface_flinger.cpp` | Read-only SurfaceFlinger timestats parsing via `dumpsys`. |
+| `src/optimization/optimization.cpp` | Proposals, learning, dependency follow-ups, rediscovery requests. |
+| `src/optimization/workload.cpp` | Workload signatures and per-domain scores. |
+| `src/decision/decision.cpp` | Justifies a candidate against the observed workload. |
+| `src/validation/validation.cpp` | Proposal validity and resource safety before mutation. |
+| `src/mutation/mutation.cpp` | Guarded writes, identity and value checks, read-back, rollback. |
+| `src/outcome/outcome.cpp` | Before/after comparison per domain, retain/rollback/unresolved. |
+| `src/recovery/learning.cpp` | Logcat record of each outcome. |
+| `src/runtime/engine.cpp` | Orchestration, stage reporting, command handling. |
+| `src/runtime/state_store.cpp` | Command parsing, JSON formatting, atomic state files. |
 
 ## Strategy catalogue
 
-The optional policy file is `module/strategies.tsv`, schema version `2`. Each rule contains a strategy ID, semantic domain, semantic attribute, and numeric bounds. Example:
-
-```text
-schema_version<TAB>2
-strategy<TAB>vm.swappiness<TAB>proc_sys.vm<TAB>swappiness<TAB>0<TAB>200
-```
-
-The actual file uses tab-separated columns, not the literal `<TAB>` marker shown above. Rules supply semantics where the kernel does not publish a usable bound. They do not define the total number of discoverable resources. Discrete options should be taken from the running kernel rather than assumed from the catalogue.
-
-A numeric bound in a policy file is not proof that a change improves the device. It is one validation input; justification, write verification, outcome measurement, and rollback remain separate requirements.
-
-## Module package
-
-The `module/` directory contains the root of the installable module ZIP:
-
-- `module.prop` — module identity and release metadata.
-- `customize.sh` — installation-time ABI/API and package-content checks, extraction, and permissions.
-- `service.sh` — waits for Android boot completion and launches/restarts the native daemon.
-- `sepolicy.rule` — SELinux policy additions, if needed for the target root-manager/device domain.
-- `strategies.tsv` — semantic strategy policy.
-- `webroot/index.html` — static MIUIX/WebUI assets.
-- `system/bin/coreflow_daemon` — generated ARM64 binary, copied into the package by CI.
-
-The ZIP is intended for a Magisk/KernelSU-style module installer, not the legacy recovery `META-INF/updater-script` format. Do not add `META-INF/` to the module package unless a separate recovery installer is deliberately supported.
+`module/strategies.tsv` (schema version `2`) holds semantic numeric bounds keyed by domain and attribute. It covers virtual-memory and scheduler controls, elevator tunables (`sysfs.block.iosched`), and governor tunables (`sysfs.cpu.governor`). Rules are not device paths and do not limit how many controls are discovered. A value outside a rule's bounds is never mutated.
 
 ## Build and tests
 
-### Host build and regression tests
+### Host
 
-Requirements: CMake 3.22+, a C++17 compiler, and standard build tools.
+Requirements: CMake 3.22+, a C++20 compiler.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
@@ -117,45 +121,28 @@ cmake --build build -j2
 ctest --test-dir build --output-on-failure
 ```
 
-The current CMake test suite contains six targets:
+There are 15 test targets: strategy catalogue, architecture contract, optimization feedback, optimization coordination, mutation safety, device profile, outcome feedback, workload policy, pressure parsing, SurfaceFlinger parsing, thermal policy, thermal headroom, rollback guard, discovery classification, and runtime state store.
 
-- `strategy_catalog_tests` — catalogue schema and selector validation.
-- `architecture_contract_tests` — architecture-level contract checks.
-- `optimization_feedback_tests` — proposal and feedback behavior.
-- `mutation_safety_tests` — guarded mutation and rollback behavior on test resources.
-- `device_profile_tests` — device-profile parsing.
-- `outcome_feedback_tests` — outcome comparison and disposition.
+### Android ARM64 module
 
-### Android ARM64 module build
-
-The GitHub Actions workflow configures the Android NDK toolchain for `arm64-v8a`, compiles `coreflow_daemon` with the Android C++ runtime, checks the resulting ELF architecture, strips the binary, copies it into `module/system/bin/`, and packages the contents of `module/` into `CoreFlow-Engine-Release.zip`.
-
-The module should only be considered package-buildable after the workflow artifact exists and contains the expected root entries, especially `customize.sh`, `service.sh`, `module.prop`, `sepolicy.rule`, `strategies.tsv`, `webroot/index.html`, and `system/bin/coreflow_daemon`.
+The GitHub Actions workflow builds `coreflow_daemon` with the NDK for `arm64-v8a`, verifies the ELF, strips it, and packages `module/` into `CoreFlow-Engine-Release.zip`.
 
 ## Installation and diagnostics
 
-1. Build/download the generated module ZIP from the workflow artifact or a published release.
-2. Install it through the supported root manager and reboot.
-3. Inspect runtime logs:
-
-   ```sh
-   su -c 'logcat -s CoreFlowEngine'
-   ```
-
-4. Check daemon and service status if the log shows repeated restarts. A service restart is a fault signal to diagnose, not evidence that optimization succeeded.
-
-Useful log categories include device context, discovery inventory, candidate rejection, mutation/read-back result, outcome disposition, and rollback status. Access denials or unavailable interfaces should be diagnosed against the target device's actual SELinux domain and kernel layout; do not make SELinux globally permissive to bypass them.
+1. Install the module ZIP through a supported root manager and reboot.
+2. Open **CoreFlow Console** from the root manager's module WebUI. No terminal is needed.
+3. Logs, if needed: `logcat -s CoreFlowEngine`.
 
 ## Scope and limitations
 
-- The implementation is capability-driven, but it cannot infer safe semantics for every arbitrary kernel/vendor file. A resource with unknown value grammar, range, side effects, or recovery behavior must not be guessed into a mutation.
-- A successful host build/tests do not substitute for CI packaging, module-install checks, or observation of the daemon on a physical device.
-- Kernel and OEM differences mean the same setting can have different effects across devices and workloads.
-- Runtime feedback is currently in-memory and does not survive daemon restart.
-- No software can guarantee “absolute” stability, lower temperatures, better battery life, or higher responsiveness across all possible states.
+- Host tests and CI packaging do not substitute for observation on a physical device. The v3.1.0 changes have not yet been exercised on hardware.
+- Not implemented: mutation of cpuset and uCLAMP controls (their layout uses cgroup paths and `max` tokens that need device-specific semantics), Android Performance Hint API integration, app-launch I/O boost, and UFS/eMMC-specific policy. The Performance Hint API is an app-side NDK interface, so a root daemon cannot receive hints without a broker service.
+- Feedback and the journal survive daemon restarts only in the rotated `journal.jsonl`; learned direction and step state are process-local.
+- SELinux rules for `/data/adb/coreflow` are not added by default. If the daemon is denied, add narrowly scoped rules after inspecting AVC denials on the target device. Do not set SELinux permissive.
+- No software can guarantee absolute stability, lower temperatures, battery life, or responsiveness across all states.
 
 ## Contributing
 
-Keep changes aligned with the discovery → observation → justified optimization → safety validation → bounded mutation → outcome verification → retain/rollback contract. Avoid device-specific absolute-path lists, arbitrary resource-count caps, unverified writes, and unsupported performance claims. Add regression coverage for new decision, validation, mutation, and recovery behavior.
+Keep changes aligned with discovery → observation → justified optimization → safety validation → bounded mutation → outcome verification → retain/rollback. Avoid device-specific absolute-path lists, arbitrary resource-count caps, unverified writes, and unsupported performance claims. Add regression coverage for new decision, validation, mutation, and recovery behavior.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [docs/miuix-webui.md](docs/miuix-webui.md), and [LICENSE](LICENSE).

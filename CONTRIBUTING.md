@@ -25,7 +25,7 @@ git checkout -b bugfix/nama-bug-anda
 
 ### 4. Melakukan Perubahan
 
-- Pastikan kode Anda mengikuti standar **C++17**
+- Pastikan kode Anda mengikuti standar **C++20** (proyek menggunakan `std::string_view::starts_with`)
 - Tambahkan komentar yang jelas dan deskriptif
 - Jika menambah fitur baru, update dokumentasi
 
@@ -76,7 +76,7 @@ git push origin fitur/nama-fitur-anda
 - [ ] Dokumentasi sudah diupdate (jika perlu)
 - [ ] Commit message jelas dan deskriptif
 - [ ] Tidak ada file yang tidak perlu (build artifacts, logs)
-- [ ] Mengikuti standar coding C++17
+- [ ] Mengikuti standar coding C++20
 
 ---
 
@@ -149,15 +149,15 @@ freq_mhz++; // Increment frequency sesuai thermal threshold
 
 ### Prasyarat
 - Android NDK (latest)
-- CMake 3.10+
-- GCC/Clang C++17 compatible
+- CMake 3.22+
+- GCC/Clang dengan dukungan C++20
 
 ### Kompilasi
 
 ```bash
-mkdir build && cd build
-cmake ..
-make
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
 ```
 
 ### Testing
