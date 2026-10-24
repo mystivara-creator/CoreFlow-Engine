@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +47,9 @@ struct RuntimeStatus {
     std::string stage{"startup"};          // name of the C++ pipeline stage in progress
     std::int64_t generated_unix{0};
     std::uint64_t uptime_s{0};
+    // Age after which the console must treat this status as stale. Derived by the
+    // daemon from its own loop bounds, so the console never guesses it.
+    std::uint64_t stale_after_s{0};
     std::uint64_t cycles{0};
     std::size_t discovered{0};
     std::size_t eligible{0};
@@ -95,6 +99,9 @@ private:
 
     std::string directory_;
     bool ready_{false};
+    // Public store operations can be called from multiple native threads. This
+    // serializes atomic replacement, journal rotation/appends and command claims.
+    mutable std::mutex io_mutex_;
 };
 
 } // namespace coreflow

@@ -2,9 +2,13 @@
 
 #include <cassert>
 #include <cstdio>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 
 using namespace coreflow;
@@ -118,6 +122,66 @@ int main() {
     assert(store.appendJournal(journal));
     assert(fs::exists(dir / "journal.jsonl.1"));
     assert(fs::file_size(dir / "journal.jsonl") < 1024);
+
+    // Concurrent callers share one store: status replacement remains valid and
+    // journal writes remain complete single JSON lines.
+    std::atomic<bool> concurrent_ok{true};
+    std::vector<std::thread> writers;
+    for (int worker = 0; worker < 4; ++worker) {
+        writers.emplace_back([&, worker] {
+            for (int i = 0; i < 25; ++i) {
+                RuntimeStatus local;
+                local.engine_state = "running";
+                local.stage = "concurrent-test";
+                local.generated_unix = 1700000100 + worker * 25 + i;
+                local.stale_after_s = 60;
+                JournalRecord entry{"mutation", local.generated_unix, "/sys/test",
+                                    "1", "2", "retain", "concurrent write"};
+                if (!store.writeStatus(local) || !store.appendJournal(entry)) {
+                    concurrent_ok.store(false, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& writer : writers) writer.join();
+    assert(concurrent_ok.load(std::memory_order_relaxed));
+    {
+        std::ifstream in(dir / "status.json");
+        const std::string snapshot((std::istreambuf_iterator<char>(in)), {});
+        assert(structurallyValidJson(snapshot));
+        assert(snapshot.find("\"stage\":\"concurrent-test\"") != std::string::npos);
+    }
+    {
+        std::ifstream in(dir / "journal.jsonl");
+        std::string entry;
+        std::size_t line_count = 0;
+        while (std::getline(in, entry)) {
+            assert(structurallyValidJson(entry));
+            ++line_count;
+        }
+        assert(line_count == 101); // one post-rotation entry plus 100 concurrent writes
+    }
+    // Separate StateStore instances must not consume the same mailbox command.
+    { std::ofstream(dir / "command") << "pause\n"; }
+    StateStore second_consumer(dir.string());
+    std::atomic<int> consumed{0};
+    std::thread consumer_a([&] {
+        if (store.takeCommand() != Command::None) consumed.fetch_add(1, std::memory_order_relaxed);
+    });
+    std::thread consumer_b([&] {
+        if (second_consumer.takeCommand() != Command::None)
+            consumed.fetch_add(1, std::memory_order_relaxed);
+    });
+    consumer_a.join();
+    consumer_b.join();
+    assert(consumed.load(std::memory_order_relaxed) == 1);
+    assert(!fs::exists(dir / "command"));
+
+    for (const auto& item : fs::directory_iterator(dir)) {
+        const auto name = item.path().filename().string();
+        assert(name.find(".tmp.") == std::string::npos);
+        assert(name.find("command.claimed.") == std::string::npos);
+    }
 
     fs::remove_all(dir);
     return 0;

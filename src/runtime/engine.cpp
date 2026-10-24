@@ -1,4 +1,5 @@
 #include "coreflow/runtime/engine.hpp"
+#include "coreflow/runtime/limits.hpp"
 #include "coreflow/internal/rollback_guard.hpp"
 #include "coreflow/optimization/workload.hpp"
 
@@ -6,18 +7,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <thread>
 #include <unordered_map>
 
 namespace coreflow {
 namespace {
-constexpr auto kMinimumIdle = std::chrono::seconds(2);
-constexpr auto kMaximumIdle = std::chrono::seconds(10);
-constexpr auto kPausedPoll = std::chrono::seconds(2);
-constexpr auto kDiscoveryRefresh = std::chrono::minutes(2);
-constexpr auto kOutcomeSettle = std::chrono::seconds(10);
-constexpr std::size_t kWebUiLimit = 2048;
+using namespace runtime_limits;
 
 std::int64_t unixNow() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -124,6 +121,7 @@ void AutonomousEngine::publish() {
     status_.uptime_s = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - started_).count());
     status_.engine_state = paused_ ? "paused" : "running";
+    status_.stale_after_s = static_cast<std::uint64_t>(kStaleAfter.count());
     state_.writeStatus(status_);
 }
 
@@ -154,14 +152,8 @@ void AutonomousEngine::run() {
             setStage("command");
             applyCommand(state_.takeCommand());
             status_.cycles += 1;
-            if (paused_) {
-                setStage("paused");
-                publish();
-                std::this_thread::sleep_for(kPausedPoll);
-                continue;
-            }
 
-            // Consume the optimizer's request exactly once per cycle, so a retained
+            // Consume the optimizer's request exactly once per active cycle, so a retained
             // governor/scheduler change always triggers a fresh inventory.
             const bool optimizer_requested = optimizer_.consumeRediscoveryRequest();
             setStage("discovery");
@@ -183,11 +175,16 @@ void AutonomousEngine::run() {
 
             setStage("observation");
             const auto before = observer_.observe(capabilities);
+            // Clear transient cycle exceptions once a complete observation succeeds;
+            // recovery failures remain visible until explicitly resolved.
+            if (status_.last_error.rfind("cycle exception:", 0) == 0) {
+                status_.last_error.clear();
+            }
             auto observed_capabilities = capabilities;
             refreshObservedValues(observed_capabilities, before);
             if (rediscover) state_.writeCapabilities(toRecords(observed_capabilities));
             status_.system = before.system;
-            status_.workload_signature = workloadSignature(before.system);
+            status_.workload_signature = workloadSignature(before.system, before.noise);
             status_.eligible = static_cast<std::size_t>(std::count_if(
                 observed_capabilities.begin(), observed_capabilities.end(),
                 [](const Capability& c) { return c.writable && c.optimization_supported; }));
@@ -208,6 +205,15 @@ void AutonomousEngine::run() {
                           << "; online_cpus=" << device.online_cpu_count
                           << "; storage=" << device.storage_type << '\n';
                 device_context_logged = true;
+            }
+
+            // Pause disables mutation and optimization, but deliberately keeps
+            // discovery and telemetry alive so the console remains current.
+            if (paused_) {
+                setStage("paused");
+                publish();
+                std::this_thread::sleep_for(kPausedPoll);
+                continue;
             }
 
             setStage("optimization");
@@ -244,6 +250,10 @@ void AutonomousEngine::run() {
                 const bool restored = mutation_.rollback(applied, recovery_detail);
                 optimizer_.defer(*candidate, before);
                 status_.deferred += 1;
+                if (!restored) {
+                    ++status_.unresolved;
+                    status_.last_error = "mutation recovery unresolved: " + recovery_detail;
+                }
                 const std::string detail = "write or read-back failed; " + recovery_detail;
                 recordMutation(*candidate, restored ? "write-failed" : "unresolved", detail);
                 std::clog << "[CoreFlowEngine] Mutation failed or read-back differed: "
@@ -258,7 +268,26 @@ void AutonomousEngine::run() {
             // triggers a best-effort rollback from the destructor.
             internal::RollbackGuard rollback_guard(
                 [this](const AppliedChange& change, std::string& reason) {
-                    return mutation_.rollback(change, reason);
+                    try {
+                        const bool restored = mutation_.rollback(change, reason);
+                        if (restored) {
+                            ++status_.rolled_back;
+                        } else {
+                            ++status_.unresolved;
+                            status_.last_error = "rollback unresolved (exception): " + reason;
+                        }
+                        return restored;
+                    } catch (const std::exception& e) {
+                        ++status_.unresolved;
+                        reason = e.what();
+                        status_.last_error = "rollback unresolved (exception): " + reason;
+                        return false;
+                    } catch (...) {
+                        ++status_.unresolved;
+                        reason = "unknown exception during rollback";
+                        status_.last_error = "rollback unresolved (exception): " + reason;
+                        return false;
+                    }
                 }, applied);
             setStage("settling");
             publish();
@@ -266,35 +295,65 @@ void AutonomousEngine::run() {
             setStage("observation");
             const auto after = observer_.observe(capabilities);
             setStage("outcome");
-            const auto outcome = verifier_.verify(before.system, after.system, *candidate);
+            const auto outcome = verifier_.verify(before.system, after.system, *candidate, before.noise);
             const auto disposition = policy_.decide(outcome);
+            auto effective_disposition = disposition;
             std::string detail = outcome.explanation;
-            if (disposition != Disposition::Retain) {
-                setStage("rollback");
-                const bool restored = mutation_.rollback(applied, detail);
-                if (!restored) detail += "; rollback unresolved";
-                if (disposition == Disposition::Rollback) status_.rolled_back += 1;
-                else status_.unresolved += 1;
+            if (disposition == Disposition::Retain) {
+                // The measured outcome has committed this mutation. Ancillary
+                // learning/journal failures must not roll it back after feedback
+                // has already accepted it.
+                rollback_guard.dismiss();
+                ++status_.retained;
             } else {
-                status_.retained += 1;
+                setStage("rollback");
+                std::string rollback_detail;
+                const bool restored = mutation_.rollback(applied, rollback_detail);
+                if (restored) {
+                    // Count an actual, verified restoration, including when the
+                    // measured outcome was inconclusive and policy chose safety.
+                    ++status_.rolled_back;
+                    effective_disposition = Disposition::Rollback;
+                    detail += "; rollback verified: " + rollback_detail;
+                } else {
+                    ++status_.unresolved;
+                    effective_disposition = Disposition::Unresolved;
+                    detail += "; rollback failed: " + rollback_detail;
+                    status_.last_error = "rollback unresolved: " + rollback_detail;
+                }
+                // The explicit attempt has a known result. Do not let the RAII
+                // guard silently retry it if later journaling/learning throws.
+                rollback_guard.dismiss();
             }
             setStage("learning");
-            // The optimizer owns the final guard against learning from an
-            // inconclusive outcome; callers cannot train it with a boolean.
+            // Keep the policy disposition for learning: inconclusive outcomes must
+            // not train the optimizer, even if the safety rollback was verified.
             optimizer_.recordOutcome(*candidate, outcome, disposition, before);
-            journal_.record(*candidate, outcome, disposition, detail);
-            recordMutation(*candidate, dispositionName(disposition), detail);
-            rollback_guard.dismiss();
+            journal_.record(*candidate, outcome, effective_disposition, detail);
+            recordMutation(*candidate, dispositionName(effective_disposition), detail);
             idle_delay = kMinimumIdle * 2;
             publish();
             sleepAndBackoff(idle_delay);
         } catch (const std::exception& e) {
-            status_.last_error = std::string("cycle exception: ") + e.what();
+            const std::string recovery_error = status_.last_error;
+            const bool recovery_unresolved =
+                recovery_error.rfind("rollback unresolved", 0) == 0 ||
+                recovery_error.rfind("mutation recovery unresolved", 0) == 0;
+            if (recovery_unresolved) {
+                status_.last_error = recovery_error + "; cycle exception: " + e.what();
+            } else {
+                status_.last_error = std::string("cycle exception: ") + e.what();
+            }
             std::clog << "[CoreFlowEngine] cycle exception: " << e.what() << '\n';
             publish();
             sleepAndBackoff(idle_delay);
         } catch (...) {
-            status_.last_error = "unknown cycle exception";
+            if (status_.last_error.rfind("rollback unresolved", 0) == 0 ||
+                status_.last_error.rfind("mutation recovery unresolved", 0) == 0) {
+                status_.last_error += "; unknown cycle exception";
+            } else {
+                status_.last_error = "unknown cycle exception";
+            }
             std::clog << "[CoreFlowEngine] unknown cycle exception\n";
             publish();
             sleepAndBackoff(idle_delay);

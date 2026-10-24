@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Autonomous Engine v3.1.0 persistent service.
+# CoreFlow Autonomous Engine v3.2.0 persistent service.
 MODDIR=${0%/*}
 TAG='CoreFlowEngine'
 DAEMON="$MODDIR/system/bin/coreflow_daemon"
@@ -54,7 +54,7 @@ failures=0
 while :; do
     [ -x "$DAEMON" ] || { log_msg e 'Daemon hilang atau tidak executable; service berhenti.'; exit 1; }
     start_time="$(date +%s 2>/dev/null)"
-    log_msg i "Menjalankan daemon v3.1.0; katalog=$CATALOG; state=$STATE_DIR"
+    log_msg i "Menjalankan daemon v3.2.0; katalog=$CATALOG; state=$STATE_DIR"
 
     # Rotate the module log so a long-running device cannot fill /data with it.
     if [ -f "$LOGFILE" ]; then
@@ -64,17 +64,12 @@ while :; do
     fi
     : >> "$LOGFILE" 2>/dev/null
 
-    # Run the daemon as a child so `wait` captures its real exit status. Tail its log
-    # from the beginning so the first lines written at startup are not lost.
+    # The daemon writes its own diagnostics. On Android they go to logcat through
+    # __android_log_print; the file captures stderr and early startup failures.
     "$DAEMON" >> "$LOGFILE" 2>&1 &
     DAEMON_PID=$!
-    tail -n +1 -F "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
-        log_msg i "$line"
-    done &
-    LOGGER_PID=$!
     wait "$DAEMON_PID"
     exit_code=$?
-    kill "$LOGGER_PID" 2>/dev/null
     end_time="$(date +%s 2>/dev/null)"
     runtime=0
     case "$start_time:$end_time" in *[!0-9:]*|'':*) ;; *) runtime=$((end_time - start_time)) ;; esac

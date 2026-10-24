@@ -15,7 +15,8 @@ inline constexpr std::size_t kMaximumPressureTextBytes = 4096;
 // while duplicate/malformed avg10 values and percentages outside [0, 100] fail
 // closed. The output argument is unchanged on failure.
 [[nodiscard]] inline bool parseSomeAvg10(std::string_view snapshot,
-                                         double& output) noexcept {
+                                         double& output,
+                                         double* measurement_resolution = nullptr) noexcept {
     if (snapshot.empty() || snapshot.size() > kMaximumPressureTextBytes) {
         return false;
     }
@@ -23,6 +24,7 @@ inline constexpr std::size_t kMaximumPressureTextBytes = 4096;
     bool found_some_line = false;
     bool found_avg10 = false;
     double parsed_avg10 = 0.0;
+    double parsed_resolution = 0.0;
 
     std::size_t offset = 0;
     while (offset < snapshot.size()) {
@@ -71,13 +73,39 @@ inline constexpr std::size_t kMaximumPressureTextBytes = 4096;
                 !std::isfinite(candidate) || candidate < 0.0 || candidate > 100.0) {
                 return false;
             }
+            // Preserve the precision of the published decimal instead of
+            // inferring sensor resolution from a workload transition. In PSI
+            // files this is commonly 0.01 for the avg10 fields.
+            const auto exponent_pos = value_text.find_first_of("eE");
+            const auto mantissa = value_text.substr(0, exponent_pos);
+            int exponent = 0;
+            if (exponent_pos != std::string_view::npos) {
+                auto exponent_text = value_text.substr(exponent_pos + 1);
+                // std::from_chars for integers intentionally does not accept a
+                // leading '+', although scientific notation does.
+                if (!exponent_text.empty() && exponent_text.front() == '+') {
+                    exponent_text.remove_prefix(1);
+                }
+                if (exponent_text.empty()) return false;
+                const auto exp_parse = std::from_chars(
+                    exponent_text.data(), exponent_text.data() + exponent_text.size(), exponent);
+                if (exp_parse.ec != std::errc{} ||
+                    exp_parse.ptr != exponent_text.data() + exponent_text.size()) return false;
+            }
+            const auto decimal_pos = mantissa.find('.');
+            const int decimals = decimal_pos == std::string_view::npos
+                ? 0 : static_cast<int>(mantissa.size() - decimal_pos - 1);
+            const double quantum = std::pow(10.0, (static_cast<double>(exponent) - static_cast<double>(decimals)));
+            if (!std::isfinite(quantum) || quantum <= 0.0) return false;
             parsed_avg10 = candidate;
+            parsed_resolution = quantum;
             found_avg10 = true;
         }
     }
 
     if (!found_some_line || !found_avg10) return false;
     output = parsed_avg10;
+    if (measurement_resolution) *measurement_resolution = parsed_resolution;
     return true;
 }
 

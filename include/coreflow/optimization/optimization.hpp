@@ -31,6 +31,12 @@ public:
     void reset();
 
 private:
+    // What a conclusive probe result says about the probe size. A probe that helped
+    // is kept; one that regressed was too large; one that was neutral was too small.
+    enum class ProbeFeedback { Keep, Grow, Shrink };
+    void applyProposalOutcome(const ChangeProposal& proposal, bool improved, bool retained,
+                              const ObservationFrame& frame, ProbeFeedback feedback);
+
     // True when `candidate` is a legitimate follow-up of the last retained selector:
     // a same-subsystem sibling, or a tunable beneath the newly selected directory.
     [[nodiscard]] bool isDependencyFollowup(const Capability& candidate) const;
@@ -39,10 +45,9 @@ private:
     void trackCapability(const std::string& capability_id);
 
     std::map<std::string, int> direction_by_context_;
-    std::map<std::string, double> step_fraction_by_context_;
+    // Probe size is quantum * 2^growth. Growth is learned per workload context.
+    std::map<std::string, int> growth_by_context_;
     // Legacy feedback without workload context is retained only for API compatibility.
-    std::map<std::string, int> legacy_direction_by_capability_;
-    std::map<std::string, double> legacy_step_fraction_by_capability_;
     std::map<std::string, std::size_t> next_choice_index_;
     std::map<std::string, std::set<std::string>> tried_choices_by_context_;
     std::set<std::string> retained_choice_contexts_;

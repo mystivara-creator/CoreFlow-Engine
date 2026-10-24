@@ -9,9 +9,12 @@ namespace coreflow {
 struct FrameTimingMetrics {
     bool valid{false};
     double average_fps{};
+    double average_fps_resolution{};
     double p95_frame_interval_ms{};
     double p99_frame_interval_ms{};
     double slow_frame_ratio{};
+    double interval_resolution_ms{};
+    double slow_frame_ratio_resolution{};
     unsigned long long total_frames{};
     std::string package_name;
 };

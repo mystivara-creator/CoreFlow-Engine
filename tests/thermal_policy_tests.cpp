@@ -41,23 +41,23 @@ int main() {
 
     // Retention veto boundaries are explicit and deterministic. Missing or
     // non-finite readings do not masquerade as a measured thermal regression.
-    assert(!shouldVetoRetention(true, 40.0, true, 40.5));
-    assert(shouldVetoRetention(true, 40.0, true, 40.5001));
-    assert(shouldVetoRetention(true, 44.0, true, 45.0));
+    assert(!shouldVetoRetention(true, 40.0, true, 40.5, 0.5));
+    assert(shouldVetoRetention(true, 40.0, true, 40.5001, 0.5));
+    assert(shouldVetoRetention(true, 44.0, true, 45.0, 0.5));
 
     // Absolute temperature is not a universal retention veto. A high but stable
     // reading cannot prove that this mutation caused a thermal regression.
-    assert(!shouldVetoRetention(true, 48.0, true, 48.0));
-    assert(!shouldVetoRetention(true, 50.0, true, 50.1));
-    assert(!shouldVetoRetention(true, 48.0, true, 48.5));
+    assert(!shouldVetoRetention(true, 48.0, true, 48.0, 0.5));
+    assert(!shouldVetoRetention(true, 50.0, true, 50.1, 0.5));
+    assert(!shouldVetoRetention(true, 48.0, true, 48.5, 0.5));
 
     // A thermal rise is not inferred when either side of the comparison is
     // unavailable or non-finite.
-    assert(!shouldVetoRetention(false, 0.0, true, 44.9));
-    assert(!shouldVetoRetention(false, 0.0, true, 125.0));
-    assert(!shouldVetoRetention(true, 40.0, false, 99.0));
-    assert(!shouldVetoRetention(true, std::nan(""), true, 50.0));
-    assert(!shouldVetoRetention(true, 40.0, true, std::nan("")));
+    assert(!shouldVetoRetention(false, 0.0, true, 44.9, 0.5));
+    assert(!shouldVetoRetention(false, 0.0, true, 125.0, 0.5));
+    assert(!shouldVetoRetention(true, 40.0, false, 99.0, 0.5));
+    assert(!shouldVetoRetention(true, std::nan(""), true, 50.0, 0.5));
+    assert(!shouldVetoRetention(true, 40.0, true, std::nan(""), 0.5));
 
     return 0;
 }

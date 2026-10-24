@@ -124,7 +124,7 @@ footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
   <div class="sub" id="capTotal" style="margin-top:6px"></div>
 </section>
 
-<footer>CoreFlow Autonomous Engine v3.1.0 · <span id="footerState">state: —</span></footer>
+<footer>CoreFlow Autonomous Engine v3.2.0 · <span id="footerState">state: —</span></footer>
 </main>
 
 <script>
@@ -162,6 +162,7 @@ footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
       pausedSub: "Observation continues. No kernel writes are issued while paused.",
       startingSub: "Waiting for the daemon’s first status report.",
       offlineSub: "No fresh status file. The daemon may not be running; check the module status in KernelSU.",
+      schemaNo: "The status file does not declare its freshness bound. Update the module to a matching version.",
       linkOk: "Bridge connected", linkNo: "Bridge unavailable", connecting: "Connecting…",
       bridgeNo: "This page reads state and sends commands through the KernelSU bridge. Open it from KernelSU Manager (or another root manager that exposes the same WebUI bridge). No terminal is needed.",
       confirmReset: "Forget all learned feedback? The daemon will re-learn from scratch.",
@@ -185,6 +186,7 @@ footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
       pausedSub: "Observasi tetap berjalan. Tidak ada penulisan kernel selama dijeda.",
       startingSub: "Menunggu laporan status pertama dari daemon.",
       offlineSub: "Tidak ada file status terbaru. Daemon mungkin tidak berjalan; cek status modul di KernelSU.",
+      schemaNo: "File status tidak menyatakan batas kesegarannya. Perbarui modul ke versi yang cocok.",
       linkOk: "Bridge terhubung", linkNo: "Bridge tidak tersedia", connecting: "Menghubungkan…",
       bridgeNo: "Halaman ini membaca state dan mengirim perintah lewat bridge KernelSU. Buka dari KernelSU Manager (atau root manager lain yang menyediakan bridge WebUI yang sama). Tidak perlu terminal.",
       confirmReset: "Lupakan semua umpan balik yang sudah dipelajari? Daemon akan belajar ulang dari awal.",
@@ -236,8 +238,14 @@ footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
   }
 
   function sendCommand(token) {
-    if (!TOKENS[token]) return;
-    ksuExec("printf '%s\\n' '" + token + "' > '" + DIR + "/command'").then(function (r) {
+    if (typeof token !== "string" || !Object.prototype.hasOwnProperty.call(TOKENS, token)) return;
+    var commandPath = DIR + "/command";
+    // Publish a complete command atomically. The daemon first renames this
+    // mailbox entry to a private claimed name before reading/removing it.
+    var commandWrite = "umask 077; tmp=$(mktemp '" + DIR + "/command.tmp.XXXXXX') || exit 1; " +
+      "printf '%s\\n' '" + token + "' > \"$tmp\" && mv -f \"$tmp\" '" + commandPath +
+      "' || { rm -f \"$tmp\"; exit 1; }";
+    ksuExec(commandWrite).then(function (r) {
       text($("cmdResult"), r.errno === 0 ? tr("sent") + token : tr("failed") + (r.stderr || r.errno));
       setTimeout(refresh, 1200);
     }).catch(function () { text($("cmdResult"), tr("failed") + "bridge"); });
@@ -246,14 +254,22 @@ footer{margin-top:22px;color:#6f7180;font-size:11px;text-align:center}
   function renderStatus(s) {
     lastStatus = s;
     var age = Math.floor(Date.now() / 1000) - (s.generated_unix || 0);
-    var stale = age > 30;
+    // The daemon publishes its own staleness bound, derived from its loop timing.
+    // A status without it cannot be judged, so it is reported as unusable.
+    var limit = Number(s.stale_after_s);
+    if (!isFinite(limit) || limit <= 0) {
+        text($("engineState"), tr("offline"));
+        text($("engineSub"), tr("schemaNo"));
+        return;
+    }
+    var stale = age > limit;
     var state = stale ? "offline" : (s.engine_state || "starting");
     var stateLabel = { running: tr("running"), paused: tr("paused"), starting: tr("starting"), offline: tr("offline") }[state] || state;
     text($("engineState"), stateLabel);
     text($("engineSub"), state === "running" ? tr("runningSub") : state === "paused" ? tr("pausedSub")
       : state === "offline" ? tr("offlineSub") : tr("startingSub"));
     $("staleNotice").hidden = !stale;
-    text($("staleNotice"), stale ? tr("offlineSub") + " (" + age + " s)" : "");
+    text($("staleNotice"), stale ? tr("offlineSub") + " (" + age + " s > " + limit + " s)" : "");
     text($("footerState"), tr("stateLine") + (stale ? "stale" : state));
     $("pauseBtn").textContent = state === "paused" ? tr("resumeBtn") : tr("pauseBtn");
     $("pauseBtn").dataset.token = state === "paused" ? "resume" : "pause";

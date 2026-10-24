@@ -60,60 +60,86 @@ void compareHigherRawIsBetter(bool before_valid, double before_value,
 }
 }
 
+namespace {
+// A comparison is made only when both samples are valid and the device has learned
+// a noise floor for the signal. An unlearned floor makes the result inconclusive;
+// it never falls back to a guessed threshold.
+bool comparableSignal(bool before_valid, bool after_valid, const SignalBaseline& baseline) {
+    return before_valid && after_valid && baseline.ready && baseline.deadband > 0.0;
+}
+// Frame-timing signals that are only comparable inside one foreground package.
+void compareFrameLowerIsBetter(const SystemObservation& before, const SystemObservation& after,
+                               const NoiseFloor& noise, Outcome& out, bool& comparable,
+                               bool& improved, bool& regressed) {
+    const auto& p95 = noise[Signal::FrameP95];
+    compareLowerIsBetter(comparableSignal(true, true, p95), before.frame_p95_interval_ms, true,
+                         after.frame_p95_interval_ms, p95.deadband, out, comparable, improved, regressed);
+    const auto& p99 = noise[Signal::FrameP99];
+    compareLowerIsBetter(comparableSignal(true, true, p99), before.frame_p99_interval_ms, true,
+                         after.frame_p99_interval_ms, p99.deadband, out, comparable, improved, regressed);
+    const auto& slow = noise[Signal::SlowFrameRatio];
+    compareLowerIsBetter(comparableSignal(true, true, slow), before.slow_frame_ratio, true,
+                         after.slow_frame_ratio, slow.deadband, out, comparable, improved, regressed);
+}
+} // namespace
+
 Outcome OutcomeVerifier::verify(const SystemObservation& before,
-                                const SystemObservation& after) const {
+                                const SystemObservation& after,
+                                const NoiseFloor& noise) const {
     Outcome out;
     bool comparable = false;
     bool regressed = false;
     bool improved = false;
 
-    // Compare only signals valid on both sides. PSI provides CPU, memory and I/O
-    // stall pressure; temperature and available-memory ratio are additional
-    // stability signals. Deadbands reduce retention decisions caused by sampling noise.
-    // Temperature is stored in Celsius; use the same unit as the
-    // candidate-aware verifier. A 0.2 C deadband filters sampling noise.
-    compareLowerIsBetter(before.temperature_valid, before.maximum_temperature_c,
-                         after.temperature_valid, after.maximum_temperature_c,
-                         0.2, out, comparable, improved, regressed);
-    compareHigherIsBetter(before.memory_valid, before.memory_available_ratio,
-                          after.memory_valid, after.memory_available_ratio,
-                          0.01, out, comparable, improved, regressed);
-    compareLowerIsBetter(before.cpu_pressure_valid, before.cpu_pressure_some_avg10 / 100.0,
-                         after.cpu_pressure_valid, after.cpu_pressure_some_avg10 / 100.0,
-                         0.001, out, comparable, improved, regressed);
-    compareLowerIsBetter(before.memory_pressure_valid, before.memory_pressure_some_avg10 / 100.0,
-                         after.memory_pressure_valid, after.memory_pressure_some_avg10 / 100.0,
-                         0.001, out, comparable, improved, regressed);
-    compareLowerIsBetter(before.io_pressure_valid, before.io_pressure_some_avg10 / 100.0,
-                         after.io_pressure_valid, after.io_pressure_some_avg10 / 100.0,
-                         0.001, out, comparable, improved, regressed);
+    const auto& temperature = noise[Signal::Temperature];
+    compareLowerIsBetter(comparableSignal(before.temperature_valid, after.temperature_valid, temperature),
+                         before.maximum_temperature_c, true, after.maximum_temperature_c,
+                         temperature.deadband, out, comparable, improved, regressed);
+    const auto& memory = noise[Signal::MemoryAvailable];
+    compareHigherIsBetter(comparableSignal(before.memory_valid, after.memory_valid, memory),
+                          before.memory_available_ratio, true, after.memory_available_ratio,
+                          memory.deadband, out, comparable, improved, regressed);
+    const auto& cpu = noise[Signal::CpuPressure];
+    compareLowerIsBetter(comparableSignal(before.cpu_pressure_valid, after.cpu_pressure_valid, cpu),
+                         before.cpu_pressure_some_avg10, true, after.cpu_pressure_some_avg10,
+                         cpu.deadband, out, comparable, improved, regressed);
+    const auto& cpu_busy = noise[Signal::CpuBusy];
+    compareLowerIsBetter(comparableSignal(before.cpu_valid, after.cpu_valid, cpu_busy),
+                         before.cpu_busy_percent, true, after.cpu_busy_percent,
+                         cpu_busy.deadband, out, comparable, improved, regressed);
+    const auto& memory_pressure = noise[Signal::MemoryPressure];
+    compareLowerIsBetter(comparableSignal(before.memory_pressure_valid, after.memory_pressure_valid, memory_pressure),
+                         before.memory_pressure_some_avg10, true, after.memory_pressure_some_avg10,
+                         memory_pressure.deadband, out, comparable, improved, regressed);
+    const auto& io = noise[Signal::IoPressure];
+    compareLowerIsBetter(comparableSignal(before.io_pressure_valid, after.io_pressure_valid, io),
+                         before.io_pressure_some_avg10, true, after.io_pressure_some_avg10,
+                         io.deadband, out, comparable, improved, regressed);
 
     out.measurable = comparable;
     out.improved = comparable && improved && !regressed;
     out.explanation = !comparable
-        ? "OUTCOME_INCONCLUSIVE: no comparable pressure, thermal or memory signal"
+        ? "OUTCOME_INCONCLUSIVE: no comparable pressure, thermal or memory signal with a learned noise floor"
         : (regressed
             ? "OUTCOME_REGRESSION: a comparable system-pressure signal worsened"
             : (improved
-                ? "Outcome improved without regression beyond metric deadbands"
-                : "Outcome neutral: changes are below deadbands or no signal improved"));
+                ? "Outcome improved without regression beyond the measured noise floor"
+                : "Outcome neutral: changes are within the measured noise floor or no signal improved"));
     return out;
 }
 
 Outcome OutcomeVerifier::verify(const SystemObservation& before,
                                 const SystemObservation& after,
-                                const ChangeProposal& proposal) const {
+                                const ChangeProposal& proposal,
+                                const NoiseFloor& noise) const {
     Outcome out;
     bool comparable = false;
     bool regressed = false;
     bool improved = false;
 
-    // Judge a probe against signals from the subsystem it changed. Mixing global
-    // memory, CPU and I/O metrics lets unrelated background work retain a bad
-    // governor or scheduler change, so only relevant signals are primary.
-    // A foreground-app switch invalidates the frame comparison window. Do not
-    // let a CPU-pressure change sampled across two different foreground apps
-    // make a CPU-frequency/governor probe look beneficial by coincidence.
+    // Judge a probe against signals from the subsystem it changed. A foreground-app
+    // switch invalidates the frame comparison window, so CPU-domain probes are
+    // inconclusive when the package changed during measurement.
     if (isCpuDomain(proposal.domain) &&
         before.frame_timing_valid && after.frame_timing_valid &&
         !before.frame_package.empty() && !after.frame_package.empty() &&
@@ -121,80 +147,87 @@ Outcome OutcomeVerifier::verify(const SystemObservation& before,
         out.explanation = "OUTCOME_INCONCLUSIVE: foreground package changed during measurement";
         return out;
     }
+    const bool same_frame_window = before.frame_timing_valid && after.frame_timing_valid &&
+        !before.frame_package.empty() && before.frame_package == after.frame_package;
 
     if (proposal.domain == "proc_sys.vm") {
-        compareLowerIsBetter(before.memory_pressure_valid, before.memory_pressure_some_avg10,
-                             after.memory_pressure_valid, after.memory_pressure_some_avg10,
-                             0.1, out, comparable, improved, regressed);
-        if (!before.memory_pressure_valid || !after.memory_pressure_valid) {
-            compareHigherIsBetter(before.memory_valid, before.memory_available_ratio,
-                                  after.memory_valid, after.memory_available_ratio,
-                                  0.01, out, comparable, improved, regressed);
+        const auto& pressure = noise[Signal::MemoryPressure];
+        if (comparableSignal(before.memory_pressure_valid, after.memory_pressure_valid, pressure)) {
+            compareLowerIsBetter(true, before.memory_pressure_some_avg10, true,
+                                 after.memory_pressure_some_avg10, pressure.deadband,
+                                 out, comparable, improved, regressed);
+        }
+        // MemAvailable is an independent headroom signal, not a substitute for
+        // PSI only when PSI is absent. Compare it whenever its own floor is ready
+        // so a memory-headroom regression can veto an otherwise positive outcome.
+        const auto& available = noise[Signal::MemoryAvailable];
+        if (comparableSignal(before.memory_valid, after.memory_valid, available)) {
+            compareHigherIsBetter(true, before.memory_available_ratio, true,
+                                  after.memory_available_ratio, available.deadband,
+                                  out, comparable, improved, regressed);
         }
     } else if (isCpuDomain(proposal.domain)) {
-        compareLowerIsBetter(before.cpu_pressure_valid, before.cpu_pressure_some_avg10,
-                             after.cpu_pressure_valid, after.cpu_pressure_some_avg10,
-                             0.1, out, comparable, improved, regressed);
-        if (before.frame_timing_valid && after.frame_timing_valid &&
-            !before.frame_package.empty() && before.frame_package == after.frame_package) {
-            compareLowerIsBetter(true, before.frame_p95_interval_ms,
-                                 true, after.frame_p95_interval_ms,
-                                 0.5, out, comparable, improved, regressed);
-            compareLowerIsBetter(true, before.frame_p99_interval_ms,
-                                 true, after.frame_p99_interval_ms,
-                                 1.0, out, comparable, improved, regressed);
-            compareLowerIsBetter(true, before.slow_frame_ratio,
-                                 true, after.slow_frame_ratio,
-                                 0.02, out, comparable, improved, regressed);
+        const auto& pressure = noise[Signal::CpuPressure];
+        compareLowerIsBetter(comparableSignal(before.cpu_pressure_valid, after.cpu_pressure_valid, pressure),
+                             before.cpu_pressure_some_avg10, true, after.cpu_pressure_some_avg10,
+                             pressure.deadband, out, comparable, improved, regressed);
+        // CPU PSI is not exposed by every Android kernel. Keep CPU-busy as an
+        // independently normalized fallback so a CPU-domain probe is not doomed
+        // to an inconclusive result solely because /proc/pressure/cpu is absent.
+        // If both signals are available, either signal can veto a regression.
+        const auto& busy = noise[Signal::CpuBusy];
+        compareLowerIsBetter(comparableSignal(before.cpu_valid, after.cpu_valid, busy),
+                             before.cpu_busy_percent, true, after.cpu_busy_percent,
+                             busy.deadband, out, comparable, improved, regressed);
+        if (same_frame_window) {
+            compareFrameLowerIsBetter(before, after, noise, out, comparable, improved, regressed);
         }
     } else if (isBlockDomain(proposal.domain)) {
-        compareLowerIsBetter(before.io_pressure_valid, before.io_pressure_some_avg10,
-                             after.io_pressure_valid, after.io_pressure_some_avg10,
-                             0.1, out, comparable, improved, regressed);
+        const auto& pressure = noise[Signal::IoPressure];
+        compareLowerIsBetter(comparableSignal(before.io_pressure_valid, after.io_pressure_valid, pressure),
+                             before.io_pressure_some_avg10, true, after.io_pressure_some_avg10,
+                             pressure.deadband, out, comparable, improved, regressed);
     } else if (proposal.domain == "sysfs.devfreq") {
-        if (before.frame_timing_valid && after.frame_timing_valid &&
-            !before.frame_package.empty() && before.frame_package == after.frame_package) {
-            compareHigherRawIsBetter(true, before.frame_average_fps,
-                                     true, after.frame_average_fps,
-                                     1.0, out, comparable, improved, regressed);
-            compareLowerIsBetter(true, before.frame_p95_interval_ms,
-                                 true, after.frame_p95_interval_ms,
-                                 0.5, out, comparable, improved, regressed);
-            compareLowerIsBetter(true, before.frame_p99_interval_ms,
-                                 true, after.frame_p99_interval_ms,
-                                 1.0, out, comparable, improved, regressed);
-            compareLowerIsBetter(true, before.slow_frame_ratio,
-                                 true, after.slow_frame_ratio,
-                                 0.02, out, comparable, improved, regressed);
+        if (same_frame_window) {
+            const auto& fps = noise[Signal::FrameFps];
+            const bool fps_ok = comparableSignal(true, true, fps);
+            compareHigherRawIsBetter(fps_ok, before.frame_average_fps, true, after.frame_average_fps,
+                                     fps.deadband, out, comparable, improved, regressed);
+            compareFrameLowerIsBetter(before, after, noise, out, comparable, improved, regressed);
         }
     }
 
-    // A meaningful temperature rise vetoes retention even when the primary
-    // performance signal improved. This is a regression guard, not an absolute
-    // temperature target; vendor thermal control remains authoritative.
+    // A rise beyond the device's own temperature noise vetoes retention. Without a
+    // learned floor the veto is strict: any measured rise counts.
+    const auto& temperature = noise[Signal::Temperature];
     if (observation::thermal_policy::shouldVetoRetention(
             before.temperature_valid, before.maximum_temperature_c,
-            after.temperature_valid, after.maximum_temperature_c)) {
-        // This conservative temperature heuristic supplements, but never
-        // replaces or disables, the platform's own thermal mitigation.
+            after.temperature_valid, after.maximum_temperature_c,
+            temperature.ready ? temperature.deadband : 0.0)) {
+        // This guard supplements, and never replaces or disables, the platform's
+        // own thermal mitigation.
         regressed = true;
     }
-    // Retention must not consume the margin to the vendor's passive trip point.
+    // Retention must not consume headroom beyond the device's noise, and must not
+    // move the hottest zone into its kernel-published hysteresis band.
+    const auto& headroom = noise[Signal::ThermalHeadroom];
     if (observation::thermal_policy::shouldVetoHeadroom(
             before.thermal_headroom_valid, before.thermal_headroom_c,
-            after.thermal_headroom_valid, after.thermal_headroom_c)) {
+            after.thermal_headroom_valid, after.thermal_headroom_c,
+            before.thermal_headroom_margin_valid ? before.thermal_headroom_margin_c : 0.0,
+            headroom.ready ? headroom.deadband : 0.0)) {
         regressed = true;
     }
 
     out.measurable = comparable;
     out.improved = comparable && improved && !regressed;
     out.explanation = !comparable
-        ? "OUTCOME_INCONCLUSIVE: no comparable signal for the changed subsystem"
+        ? "OUTCOME_INCONCLUSIVE: no comparable signal with a learned noise floor for this subsystem"
         : (regressed
-            ? "OUTCOME_REGRESSION: a subsystem or thermal safety signal worsened"
+            ? "OUTCOME_REGRESSION: a comparable subsystem or thermal safety signal worsened"
             : (improved
-                ? "Subsystem outcome improved without a measured regression"
-                : "Outcome neutral: improvement did not exceed measurement deadbands"));
+                ? "Outcome improved without regression beyond the measured noise floor"
+                : "Outcome neutral: changes are within the measured noise floor or no signal improved"));
     return out;
 }
 

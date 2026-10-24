@@ -3,10 +3,12 @@
 namespace coreflow {
 class OutcomeVerifier {
 public:
-    Outcome verify(const SystemObservation& before,
-                   const SystemObservation& after) const;
+    // Every threshold comes from the learned noise floor of the observation that
+    // preceded the change. Signals without a learned floor are inconclusive.
     Outcome verify(const SystemObservation& before, const SystemObservation& after,
-                   const ChangeProposal& proposal) const;
+                   const NoiseFloor& noise) const;
+    Outcome verify(const SystemObservation& before, const SystemObservation& after,
+                   const ChangeProposal& proposal, const NoiseFloor& noise) const;
 };
 class OutcomePolicy {
 public:

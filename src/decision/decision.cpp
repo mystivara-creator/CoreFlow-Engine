@@ -12,7 +12,7 @@ bool ChangeJustifier::justified(const ChangeProposal& proposal, const Observatio
         reason = "Candidate has no effect";
         return false;
     }
-    if (!(workloadScoreForDomain(proposal.domain, frame.system) > 0.0)) {
+    if (!(workloadScoreForDomain(proposal.domain, frame.system, frame.noise) > 0.0)) {
         reason = "No sufficiently strong, domain-relevant runtime signal justifies this change";
         return false;
     }

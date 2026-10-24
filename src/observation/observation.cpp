@@ -162,10 +162,16 @@ DeviceContext discoverDeviceContext() {
 
 // Reads trip_point_N_type/temp pairs for one compute zone. Trip indices are
 // contiguous in the kernel, so the first missing type file ends the scan.
-bool passiveHeadroomForZone(const fs::path& zone, double celsius, double& headroom) {
-    constexpr int kMaximumTripPoints = 32;
+// Reads the passive trip points of one zone. The headroom reported is for the
+// closest passive trip, and the hysteresis published for that same trip is the
+// margin the kernel itself uses to leave the throttled state.
+bool passiveHeadroomForZone(const fs::path& zone, double celsius, double& headroom,
+                            bool& margin_valid, double& margin) {
+    constexpr int kMaximumTripPoints = 32;  // structural scan bound for trip indices
     bool found = false;
     double best = 0.0;
+    bool best_margin_valid = false;
+    double best_margin = 0.0;
     for (int index = 0; index < kMaximumTripPoints; ++index) {
         const std::string base = "trip_point_" + std::to_string(index);
         std::string type;
@@ -179,9 +185,18 @@ bool passiveHeadroomForZone(const fs::path& zone, double celsius, double& headro
         if (!found || room < best) {
             best = room;
             found = true;
+            std::string hyst_raw;
+            double hyst{};
+            best_margin_valid = readFirst((zone / (base + "_hyst")).string(), hyst_raw) &&
+                observation::thermal_policy::parseHysteresisCelsius(hyst_raw, hyst);
+            best_margin = best_margin_valid ? hyst : 0.0;
         }
     }
-    if (found) headroom = best;
+    if (found) {
+        headroom = best;
+        margin_valid = best_margin_valid;
+        margin = best_margin;
+    }
     return found;
 }
 bool readWhole(const std::string& path, std::string& value) {
@@ -258,6 +273,11 @@ SystemObservation RuntimeObserver::observeSystem() const {
                         o.cpu_valid = std::isfinite(o.cpu_busy_percent) &&
                             o.cpu_busy_percent >= 0.0 &&
                             o.cpu_busy_percent <= 100.0;
+                        if (o.cpu_valid) {
+                            // One scheduler accounting tick is the source quantum
+                            // of this delta-derived utilization percentage.
+                            o.cpu_busy_resolution = 100.0 / static_cast<double>(total_delta);
+                        }
                     }
                 }
 
@@ -290,7 +310,12 @@ SystemObservation RuntimeObserver::observeSystem() const {
         total_kb > 0.0 && available_kb >= 0.0) {
         o.memory_available_ratio =
             std::clamp(available_kb / total_kb, 0.0, 1.0);
-        o.memory_valid = true;
+        // /proc/meminfo reports integer KiB values. One KiB is the native
+        // granularity of the ratio; total_kb is stable for this observation.
+        o.memory_available_resolution = 1.0 / total_kb;
+        o.memory_valid = std::isfinite(o.memory_available_ratio) &&
+                         std::isfinite(o.memory_available_resolution) &&
+                         o.memory_available_resolution > 0.0;
     }
     // Only consume recognized compute-related zones with plausible
     // millidegree-Celsius values. Ignore battery, modem, BCL, level indicators,
@@ -322,18 +347,25 @@ SystemObservation RuntimeObserver::observeSystem() const {
                 o.maximum_temperature_c = celsius;
             }
             o.temperature_valid = true;
+            o.temperature_resolution = 0.001; // sysfs thermal values are millidegrees C
 
-            // The hottest zone with a published passive trip defines headroom.
-            // Zones without one contribute nothing rather than a guessed limit.
+            // The zone nearest its published passive trip supplies the most
+            // constrained headroom. Zones without a passive trip contribute nothing.
             double zone_headroom{};
-            if (passiveHeadroomForZone(it->path(), celsius, zone_headroom) &&
+            bool zone_margin_valid{false};
+            double zone_margin{};
+            if (passiveHeadroomForZone(it->path(), celsius, zone_headroom,
+                                       zone_margin_valid, zone_margin) &&
                 (!o.thermal_headroom_valid || zone_headroom < o.thermal_headroom_c)) {
                 o.thermal_headroom_c = zone_headroom;
                 o.thermal_headroom_valid = true;
+                o.thermal_headroom_resolution = 0.001;
+                o.thermal_headroom_margin_c = zone_margin;
+                o.thermal_headroom_margin_valid = zone_margin_valid;
             }
         }
     }
-    const auto readPressure = [](const char* path, double& avg10) {
+    const auto readPressure = [](const char* path, double& avg10, double& resolution) {
         std::ifstream input(path, std::ios::binary);
         if (!input) return false;
 
@@ -351,11 +383,14 @@ SystemObservation RuntimeObserver::observeSystem() const {
             }
         }
         if (input.bad()) return false;
-        return observation::pressure::parseSomeAvg10(snapshot, avg10);
+        return observation::pressure::parseSomeAvg10(snapshot, avg10, &resolution);
     };
-    o.cpu_pressure_valid = readPressure("/proc/pressure/cpu", o.cpu_pressure_some_avg10);
-    o.memory_pressure_valid = readPressure("/proc/pressure/memory", o.memory_pressure_some_avg10);
-    o.io_pressure_valid = readPressure("/proc/pressure/io", o.io_pressure_some_avg10);
+    o.cpu_pressure_valid = readPressure("/proc/pressure/cpu", o.cpu_pressure_some_avg10,
+                                        o.cpu_pressure_resolution);
+    o.memory_pressure_valid = readPressure("/proc/pressure/memory", o.memory_pressure_some_avg10,
+                                           o.memory_pressure_resolution);
+    o.io_pressure_valid = readPressure("/proc/pressure/io", o.io_pressure_some_avg10,
+                                       o.io_pressure_resolution);
 
     // SurfaceFlinger metrics are opportunistic and strictly read-only. When the
     // foreground package cannot be correlated with available timestats, the
@@ -363,17 +398,27 @@ SystemObservation RuntimeObserver::observeSystem() const {
     const auto frames = surface_flinger_.observe();
     if (frames.valid) {
         o.frame_average_fps = frames.average_fps;
+        o.frame_average_fps_resolution = frames.average_fps_resolution;
         o.frame_p95_interval_ms = frames.p95_frame_interval_ms;
         o.frame_p99_interval_ms = frames.p99_frame_interval_ms;
         o.slow_frame_ratio = frames.slow_frame_ratio;
+        o.frame_interval_resolution_ms = frames.interval_resolution_ms;
+        o.slow_frame_ratio_resolution = frames.slow_frame_ratio_resolution;
         o.frame_package = frames.package_name;
         o.frame_timing_valid = true;
     }
     return o;
 }
 ObservationFrame RuntimeObserver::observe(const std::vector<Capability>& capabilities) const {
+    // The CPU deltas, SurfaceFlinger cache and noise-floor tracker are stateful.
+    // Serialize a whole observation so concurrent callers cannot reorder samples.
+    std::lock_guard<std::mutex> observation_lock(observe_mutex_);
     ObservationFrame f;
-    f.system=observeSystem();
+    f.system = observeSystem();
+    // Decide against history that predates this sample. The sample must not alter
+    // its own baseline before a candidate is scored or before/after comparison starts.
+    f.noise = noise_.floor();
+    noise_.observe(f.system);
     f.device=discoverDeviceContext();
     f.capability_values.reserve(capabilities.size());
     for (const auto& c: capabilities) {

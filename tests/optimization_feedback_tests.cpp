@@ -6,9 +6,33 @@
 #include <string>
 #include <vector>
 
+// Test fixture: the learned noise floor of a device whose signals vary by these
+// deadbands. Production code learns these values at runtime from observations.
+namespace {
+coreflow::NoiseFloor testNoise() {
+    coreflow::NoiseFloor n;
+    auto set = [&n](coreflow::Signal s, double deadband) {
+        n.signals[static_cast<std::size_t>(s)] = {true, 0.0, deadband};
+    };
+    set(coreflow::Signal::CpuPressure, 0.1);
+    set(coreflow::Signal::MemoryPressure, 0.1);
+    set(coreflow::Signal::IoPressure, 0.1);
+    set(coreflow::Signal::MemoryAvailable, 0.01);
+    set(coreflow::Signal::Temperature, 0.5);
+    set(coreflow::Signal::ThermalHeadroom, 0.5);
+    set(coreflow::Signal::FrameFps, 1.0);
+    set(coreflow::Signal::FrameP95, 0.5);
+    set(coreflow::Signal::FrameP99, 1.0);
+    set(coreflow::Signal::SlowFrameRatio, 0.02);
+    return n;
+}
+} // namespace
+
+
 int main() {
     using namespace coreflow;
     ObservationFrame io_frame;
+    io_frame.noise = testNoise();
     io_frame.system.io_pressure_valid = true;
     io_frame.system.io_pressure_some_avg10 = 5.0;
 
@@ -132,6 +156,7 @@ int main() {
     minimum_frequency.domain = "sysfs.cpu.cpufreq";
     minimum_frequency.attribute = "scaling_min_freq";
     ObservationFrame cpu_frame;
+    cpu_frame.noise = testNoise();
     cpu_frame.system.cpu_pressure_valid = true;
     cpu_frame.system.cpu_pressure_some_avg10 = 5.0;
     OptimizationEngine linked_engine;
@@ -247,6 +272,7 @@ int main() {
 
     // Learning for one workload must not change the initial direction for another.
     ObservationFrame memory_frame;
+    memory_frame.noise = testNoise();
     memory_frame.system.memory_pressure_valid = true;
     memory_frame.system.memory_pressure_some_avg10 = 5.0;
     OptimizationEngine isolated_learning_engine;
@@ -265,6 +291,7 @@ int main() {
     assert(!generic_engine.propose(std::vector<Capability>{generic}, io_frame));
 
     ObservationFrame idle;
+    idle.noise = testNoise();
     assert(!generic_engine.propose(caps, idle));
     return 0;
 }

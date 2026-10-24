@@ -176,7 +176,9 @@ struct LayerStats {
     std::string layer_name;
     std::string package_name;
     double average_fps{};
+    double average_fps_resolution{};
     unsigned long long total_frames{};
+    double interval_resolution_ms{};
     std::vector<std::pair<double, unsigned long long>> intervals;
 };
 
@@ -196,9 +198,32 @@ bool parseUnsigned(const std::string& text, unsigned long long& value) {
     return true;
 }
 
+
+double decimalQuantum(const std::string& text) {
+    const auto exponent_pos = text.find_first_of("eE");
+    const auto mantissa = text.substr(0, exponent_pos);
+    int exponent = 0;
+    if (exponent_pos != std::string::npos) {
+        const std::string exponent_text = text.substr(exponent_pos + 1);
+        char* end = nullptr;
+        errno = 0;
+        const long parsed = std::strtol(exponent_text.c_str(), &end, 10);
+        if (errno != 0 || !end || end == exponent_text.c_str() || *end != '\0' ||
+            parsed < std::numeric_limits<int>::min() ||
+            parsed > std::numeric_limits<int>::max()) return 0.0;
+        exponent = static_cast<int>(parsed);
+    }
+    const auto decimal_pos = mantissa.find('.');
+    const int decimals = decimal_pos == std::string::npos
+        ? 0 : static_cast<int>(mantissa.size() - decimal_pos - 1);
+    const double quantum = std::pow(10.0, (static_cast<double>(exponent) - static_cast<double>(decimals)));
+    return std::isfinite(quantum) && quantum > 0.0 ? quantum : 0.0;
+}
+
 bool parseHistogramLine(
     const std::string& line,
-    std::vector<std::pair<double, unsigned long long>>& intervals) {
+    std::vector<std::pair<double, unsigned long long>>& intervals,
+    double& interval_resolution_ms) {
     std::istringstream tokens(line);
     std::string token;
     bool found_bucket = false;
@@ -222,6 +247,11 @@ bool parseHistogramLine(
         }
 
         intervals.emplace_back(ms, count);
+        const double quantum = decimalQuantum(bucket);
+        if (quantum > 0.0 &&
+            (!(interval_resolution_ms > 0.0) || quantum < interval_resolution_ms)) {
+            interval_resolution_ms = quantum;
+        }
         found_bucket = true;
     }
 
@@ -264,8 +294,13 @@ std::vector<LayerStats> parseLayers(const std::string& timestats_dump) {
             const std::string raw = trim(line.substr(std::string("averageFPS =").size()));
             errno = 0;
             current.average_fps = std::strtod(raw.c_str(), &end);
-            if (errno != 0 || !end || *end != '\0' || !std::isfinite(current.average_fps))
+            if (errno != 0 || !end || *end != '\0' || !std::isfinite(current.average_fps) ||
+                current.average_fps <= 0.0) {
                 current.average_fps = 0.0;
+                current.average_fps_resolution = 0.0;
+            } else {
+                current.average_fps_resolution = decimalQuantum(raw);
+            }
             in_p2p_histogram = false;
         } else if (line.find("histogram is as below") != std::string::npos) {
             std::string lower = line;
@@ -279,10 +314,13 @@ std::vector<LayerStats> parseLayers(const std::string& timestats_dump) {
                 in_p2p_histogram = false;
             } else {
                 if (line.find("ms=") != std::string::npos) {
-                    if (!parseHistogramLine(line, current.intervals)) {
+                    if (!parseHistogramLine(line, current.intervals,
+                                            current.interval_resolution_ms)) {
                         current.intervals.clear();
+                        current.interval_resolution_ms = 0.0;
                         current.total_frames = 0;
                         current.average_fps = 0.0;
+                        current.average_fps_resolution = 0.0;
                         in_p2p_histogram = false;
                     }
                 } else if (line.find("histogram") == std::string::npos) {
@@ -350,6 +388,31 @@ unsigned long long histogramCount(const std::map<double, unsigned long long>& bi
     return total;
 }
 
+// Fraction of frames that missed at least one whole refresh. The dominant interval
+// of the histogram is the display's own cadence, since most frames are presented on
+// it; a mean-based threshold would be skewed by the very stalls it should detect.
+// A frame that misses one refresh is presented at least two cadences after the
+// previous one. This defines a missed vsync and is not a tuned threshold.
+std::optional<double> missedRefreshRatio(const std::map<double, unsigned long long>& bins,
+                                         unsigned long long samples) {
+    double dominant_interval_ms = 0.0;
+    unsigned long long dominant_count = 0;
+    for (const auto& [interval_ms, count] : bins) {
+        if (interval_ms > 0.0 && count > dominant_count) {
+            dominant_interval_ms = interval_ms;
+            dominant_count = count;
+        }
+    }
+    if (!(dominant_interval_ms > 0.0) || !std::isfinite(dominant_interval_ms) || samples == 0) {
+        return std::nullopt;
+    }
+    double slow_count = 0.0;
+    for (const auto& [interval_ms, count] : bins) {
+        if (interval_ms >= 2.0 * dominant_interval_ms) slow_count += static_cast<double>(count);
+    }
+    return std::clamp(slow_count / static_cast<double>(samples), 0.0, 1.0);
+}
+
 FrameTimingMetrics metricsFromSnapshot(const LayerStats& layer, const std::string& package) {
     FrameTimingMetrics result;
     if (!(layer.average_fps > 0.0) || !std::isfinite(layer.average_fps)) return result;
@@ -358,22 +421,20 @@ FrameTimingMetrics metricsFromSnapshot(const LayerStats& layer, const std::strin
     const auto samples = histogramCount(bins, valid);
     if (!valid || samples < kMinimumFrameSamples) return result;
     const std::vector<std::pair<double, unsigned long long>> intervals(bins.begin(), bins.end());
-    const double mean_interval_ms = 1000.0 / layer.average_fps;
-    if (!std::isfinite(mean_interval_ms) || mean_interval_ms <= 0.0) return result;
-
-    double slow_count = 0.0;
-    for (const auto& [interval_ms, count] : bins) {
-        if (interval_ms > mean_interval_ms * 1.5) slow_count += static_cast<double>(count);
-    }
+    const auto slow_ratio = missedRefreshRatio(bins, samples);
+    if (!slow_ratio) return result;
     const auto p95 = percentile(intervals, samples, 0.95);
     const auto p99 = percentile(intervals, samples, 0.99);
     if (!p95 || !p99) return result;
 
     result.valid = true;
     result.average_fps = layer.average_fps;
+    result.average_fps_resolution = layer.average_fps_resolution;
     result.p95_frame_interval_ms = *p95;
     result.p99_frame_interval_ms = *p99;
-    result.slow_frame_ratio = std::clamp(slow_count / static_cast<double>(samples), 0.0, 1.0);
+    result.slow_frame_ratio = *slow_ratio;
+    result.interval_resolution_ms = layer.interval_resolution_ms;
+    result.slow_frame_ratio_resolution = 1.0 / static_cast<double>(samples);
     result.total_frames = layer.total_frames;
     result.package_name = package;
     return result;
@@ -417,24 +478,23 @@ FrameTimingMetrics metricsFromDelta(const std::vector<LayerStats>& current_layer
     if (!valid || sample_count < kMinimumFrameSamples || frame_delta < kMinimumFrameSamples)
         return result;
     const double fps = static_cast<double>(frame_delta) / elapsed_seconds;
-    const double mean_interval_ms = 1000.0 / fps;
-    if (!std::isfinite(fps) || fps <= 0.0 ||
-        !std::isfinite(mean_interval_ms) || mean_interval_ms <= 0.0) return result;
+    if (!std::isfinite(fps) || fps <= 0.0) return result;
 
     const std::vector<std::pair<double, unsigned long long>> intervals(delta_bins.begin(), delta_bins.end());
     const auto p95 = percentile(intervals, sample_count, 0.95);
     const auto p99 = percentile(intervals, sample_count, 0.99);
     if (!p95 || !p99) return result;
-    double slow_count = 0.0;
-    for (const auto& [interval_ms, count] : delta_bins) {
-        if (interval_ms > mean_interval_ms * 1.5) slow_count += static_cast<double>(count);
-    }
+    const auto slow_ratio = missedRefreshRatio(delta_bins, sample_count);
+    if (!slow_ratio) return result;
 
     result.valid = true;
     result.average_fps = fps;
+    result.average_fps_resolution = 1.0 / elapsed_seconds;
     result.p95_frame_interval_ms = *p95;
     result.p99_frame_interval_ms = *p99;
-    result.slow_frame_ratio = std::clamp(slow_count / static_cast<double>(sample_count), 0.0, 1.0);
+    result.slow_frame_ratio = *slow_ratio;
+    result.interval_resolution_ms = current->interval_resolution_ms;
+    result.slow_frame_ratio_resolution = 1.0 / static_cast<double>(sample_count);
     result.total_frames = frame_delta;
     result.package_name = package;
     return result;

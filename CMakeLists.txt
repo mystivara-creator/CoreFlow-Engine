@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(CoreFlowEngine VERSION 3.1.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 3.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -146,6 +146,12 @@ if(BUILD_TESTING)
         src/optimization/workload.cpp
     )
 
+    coreflow_add_test(noise_floor_tests
+        tests/noise_floor_tests.cpp
+        src/observation/noise_floor.cpp
+        src/optimization/workload.cpp
+    )
+
     coreflow_add_test(pressure_tests
         tests/pressure_tests.cpp
     )
@@ -168,10 +174,12 @@ if(BUILD_TESTING)
         src/discovery/classification.cpp
     )
 
+    find_package(Threads REQUIRED)
     coreflow_add_test(runtime_state_tests
         tests/runtime_state_tests.cpp
         src/runtime/state_store.cpp
     )
+    target_link_libraries(runtime_state_tests PRIVATE Threads::Threads)
 
     coreflow_add_test(thermal_headroom_tests
         tests/thermal_headroom_tests.cpp

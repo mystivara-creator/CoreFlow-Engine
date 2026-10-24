@@ -63,6 +63,7 @@ int main() {
     assert(metrics.package_name == "com.example.game");
     assert(metrics.total_frames == 100);
     assert(std::abs(metrics.average_fps - 60.0) < 0.001);
+    assert(std::abs(metrics.average_fps_resolution - 0.001) < 1e-12);
     assert(metrics.p95_frame_interval_ms == 35.0);
     assert(metrics.p99_frame_interval_ms == 35.0);
     assert(std::abs(metrics.slow_frame_ratio - 0.20) < 0.001);
@@ -78,6 +79,7 @@ int main() {
     const auto delta = SurfaceFlingerObserver::parseDelta(activity, stats, previous_stats, 2.0 / 3.0);
     assert(delta.valid && delta.total_frames == 40);
     assert(std::abs(delta.average_fps - 60.0) < 0.001);
+    assert(std::abs(delta.average_fps_resolution - 1.5) < 1e-12);
     assert(delta.p95_frame_interval_ms == 35.0);
     assert(std::abs(delta.slow_frame_ratio - 0.375) < 0.001);
     const auto reset_counter = SurfaceFlingerObserver::parseDelta(activity, previous_stats, stats, 1.0);

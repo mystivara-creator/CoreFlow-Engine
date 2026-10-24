@@ -14,6 +14,13 @@ int main() {
         "some avg10=3.25 avg60=2.00 avg300=1.00 total=9876\n"
         "full avg10=0.50 avg60=0.20 avg300=0.10 total=123\n", avg10));
     assert(std::abs(avg10 - 3.25) < 1e-12);
+    double resolution = -1.0;
+    assert(parseSomeAvg10("some avg10=3.25 avg60=2.00 avg300=1.00 total=0\n", avg10, &resolution));
+    assert(std::abs(resolution - 0.01) < 1e-12);
+    assert(parseSomeAvg10("some avg10=0 avg60=0 avg300=0 total=0\n", avg10, &resolution));
+    assert(std::abs(resolution - 1.0) < 1e-12);
+    assert(parseSomeAvg10("some avg10=1e+2 avg60=0 avg300=0 total=0\n", avg10, &resolution));
+    assert(std::abs(resolution - 100.0) < 1e-12);
 
     // Whitespace and future key/value fields are tolerated, while the 'full'
     // line must not be confused with the 'some' signal used by CoreFlow.

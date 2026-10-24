@@ -7,6 +7,29 @@
 #include <string>
 #include <vector>
 
+// Test fixture: the learned noise floor of a device whose signals vary by these
+// deadbands. Production code learns these values at runtime from observations.
+namespace {
+coreflow::NoiseFloor testNoise() {
+    coreflow::NoiseFloor n;
+    auto set = [&n](coreflow::Signal s, double deadband) {
+        n.signals[static_cast<std::size_t>(s)] = {true, 0.0, deadband};
+    };
+    set(coreflow::Signal::CpuPressure, 0.1);
+    set(coreflow::Signal::MemoryPressure, 0.1);
+    set(coreflow::Signal::IoPressure, 0.1);
+    set(coreflow::Signal::MemoryAvailable, 0.01);
+    set(coreflow::Signal::Temperature, 0.5);
+    set(coreflow::Signal::ThermalHeadroom, 0.5);
+    set(coreflow::Signal::FrameFps, 1.0);
+    set(coreflow::Signal::FrameP95, 0.5);
+    set(coreflow::Signal::FrameP99, 1.0);
+    set(coreflow::Signal::SlowFrameRatio, 0.02);
+    return n;
+}
+} // namespace
+
+
 #ifndef COREFLOW_SOURCE_DIR
 #define COREFLOW_SOURCE_DIR "."
 #endif
@@ -48,6 +71,8 @@ Capability selector(const std::string& path, const std::string& domain,
 
 ObservationFrame ioFrame() {
     ObservationFrame f;
+    f.noise = testNoise();
+    f.noise = testNoise();
     f.system.io_pressure_valid = true;
     f.system.io_pressure_some_avg10 = 5.0;
     return f;
@@ -55,6 +80,8 @@ ObservationFrame ioFrame() {
 
 ObservationFrame cpuFrame() {
     ObservationFrame f;
+    f.noise = testNoise();
+    f.noise = testNoise();
     f.system.cpu_pressure_valid = true;
     f.system.cpu_pressure_some_avg10 = 5.0;
     return f;
@@ -178,13 +205,15 @@ int main() {
         before.io_pressure_some_avg10 = 10.0;
         after.io_pressure_some_avg10 = 2.0;
         OutcomeVerifier verifier;
-        auto outcome = verifier.verify(before, after, p);
+        auto outcome = verifier.verify(before, after, p, testNoise());
         assert(outcome.measurable && outcome.improved);
 
         before.thermal_headroom_valid = after.thermal_headroom_valid = true;
+        before.thermal_headroom_margin_valid = true;
+        before.thermal_headroom_margin_c = 3.0;
         before.thermal_headroom_c = 6.0;
         after.thermal_headroom_c = 2.0;
-        outcome = verifier.verify(before, after, p);
+        outcome = verifier.verify(before, after, p, testNoise());
         assert(outcome.measurable && !outcome.improved);
         assert(outcome.explanation.find("OUTCOME_REGRESSION") != std::string::npos);
     }
@@ -202,30 +231,29 @@ int main() {
         before.cpu_pressure_valid = after.cpu_pressure_valid = true;
         before.cpu_pressure_some_avg10 = 8.0;
         after.cpu_pressure_some_avg10 = 1.0;
-        const auto outcome = OutcomeVerifier{}.verify(before, after, p);
+        const auto outcome = OutcomeVerifier{}.verify(before, after, p, testNoise());
         assert(outcome.measurable && outcome.improved);
     }
 
     // 8) Workload scoring routes the new domains to the matching pressure signal.
     {
         ObservationFrame f = ioFrame();
-        assert(workloadScoreForDomain("sysfs.block.iosched", f.system) > 0.0);
-        assert(workloadScoreForDomain("sysfs.cpu.governor", f.system) == 0.0);
+        assert(workloadScoreForDomain("sysfs.block.iosched", f.system, f.noise) > 0.0);
+        assert(workloadScoreForDomain("sysfs.cpu.governor", f.system, f.noise) == 0.0);
         f = cpuFrame();
-        assert(workloadScoreForDomain("sysfs.cpu.governor", f.system) > 0.0);
-        assert(workloadScoreForDomain("sysfs.block.iosched", f.system) == 0.0);
+        assert(workloadScoreForDomain("sysfs.cpu.governor", f.system, f.noise) > 0.0);
+        assert(workloadScoreForDomain("sysfs.block.iosched", f.system, f.noise) == 0.0);
     }
 
-    // 9) The shipped catalogue loads and covers the new semantic domains.
+    // 9) The shipped catalogue is schema-only: no numeric bounds ship with the daemon.
     {
         StrategyCatalog catalog;
         std::string error;
         assert(catalog.load(std::string(COREFLOW_SOURCE_DIR) + "/module/strategies.tsv", error));
         assert(error.empty());
-        assert(catalog.find("sysfs.block.iosched", "read_expire") != nullptr);
-        assert(catalog.find("sysfs.cpu.governor", "rate_limit_us") != nullptr);
-        assert(catalog.find("sysfs.cpu.governor", "sampling_rate") != nullptr);
-        assert(catalog.find("sysfs.block.iosched", "unknown") == nullptr);
+        assert(catalog.size() == 0);
+        assert(catalog.find("sysfs.block.iosched", "read_expire") == nullptr);
+        assert(catalog.find("sysfs.cpu.governor", "rate_limit_us") == nullptr);
     }
     return 0;
 }

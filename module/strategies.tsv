@@ -1,53 +1,8 @@
-# CoreFlow strategy catalogue schema v2.
-# Columns: strategy<TAB>id<TAB>domain<TAB>attribute<TAB>minimum<TAB>maximum
-# Selectors are semantic fallback policies, not an allowlist of resources or a
-# resource-count cap. The daemon also discovers kernel-advertised selector choices
-# and sysfs companion bounds, so newly exposed controls need not be listed here.
-# Rows below provide known semantic ranges where Linux does not publish bounds.
+# CoreFlow strategy policy extension (schema v2). This shipped file defines NO numeric
+# rules. Every numeric bound CoreFlow mutates comes from the kernel itself: discrete
+# choices it advertises, or range metadata it publishes for a recognized subsystem.
+#
+# A device operator may supply their own extension file and point the daemon at it
+# with COREFLOW_STRATEGY_CATALOG. Rules in such a file are operator policy, are
+# validated strictly, and never override a kernel-published limit.
 schema_version	2
-# Virtual-memory controls (the runtime rejects values outside the selected policy range).
-strategy	vm.swappiness	proc_sys.vm	swappiness	0	200
-strategy	vm.vfs_cache_pressure	proc_sys.vm	vfs_cache_pressure	0	1000
-strategy	vm.page_cluster	proc_sys.vm	page-cluster	0	8
-strategy	vm.compaction_proactiveness	proc_sys.vm	compaction_proactiveness	0	100
-strategy	vm.watermark_scale_factor	proc_sys.vm	watermark_scale_factor	10	3000
-strategy	vm.watermark_boost_factor	proc_sys.vm	watermark_boost_factor	0	30000
-strategy	vm.extfrag_threshold	proc_sys.vm	extfrag_threshold	0	1000
-strategy	vm.stat_interval	proc_sys.vm	stat_interval	0	60
-strategy	vm.dirty_expire_centisecs	proc_sys.vm	dirty_expire_centisecs	100	360000
-strategy	vm.dirty_writeback_centisecs	proc_sys.vm	dirty_writeback_centisecs	100	60000
-strategy	vm.dirtytime_expire_seconds	proc_sys.vm	dirtytime_expire_seconds	0	3600
-strategy	vm.overcommit_ratio	proc_sys.vm	overcommit_ratio	0	100
-# Kernel scheduling controls; rows apply only where the running kernel exposes them.
-strategy	kernel.sched_autogroup_enabled	proc_sys.kernel	sched_autogroup_enabled	0	1
-strategy	kernel.sched_child_runs_first	proc_sys.kernel	sched_child_runs_first	0	1
-strategy	kernel.sched_cfs_bandwidth_slice_us	proc_sys.kernel	sched_cfs_bandwidth_slice_us	1000	1000000
-strategy	kernel.sched_latency_ns	proc_sys.kernel	sched_latency_ns	100000	100000000
-strategy	kernel.sched_min_granularity_ns	proc_sys.kernel	sched_min_granularity_ns	100000	100000000
-strategy	kernel.sched_wakeup_granularity_ns	proc_sys.kernel	sched_wakeup_granularity_ns	100000	100000000
-strategy	kernel.perf_cpu_time_max_percent	proc_sys.kernel	perf_cpu_time_max_percent	0	100
-# Per-device block queue controls. Each discovered queue is handled independently.
-strategy	block.read_ahead_kb	sysfs.block.queue	read_ahead_kb	0	8192
-strategy	block.nr_requests	sysfs.block.queue	nr_requests	1	1024
-strategy	block.rq_affinity	sysfs.block.queue	rq_affinity	0	2
-strategy	block.nomerges	sysfs.block.queue	nomerges	0	2
-# Elevator tunables (sysfs.block.iosched). The set of attributes is discovered from
-# /sys/block/<dev>/queue/iosched/, which exists only for the elevator the kernel
-# currently runs. Bounds below are kernel-documented ranges; a live value outside
-# them is never proposed for mutation.
-strategy	block.mq_deadline.read_expire	sysfs.block.iosched	read_expire	1	10000
-strategy	block.mq_deadline.write_expire	sysfs.block.iosched	write_expire	1	10000
-strategy	block.mq_deadline.fifo_batch	sysfs.block.iosched	fifo_batch	1	1024
-strategy	block.mq_deadline.writes_starved	sysfs.block.iosched	writes_starved	0	16
-strategy	block.mq_deadline.front_merges	sysfs.block.iosched	front_merges	0	1
-strategy	block.kyber.read_lat_nsec	sysfs.block.iosched	read_lat_nsec	1000	1000000000
-strategy	block.kyber.write_lat_nsec	sysfs.block.iosched	write_lat_nsec	1000	1000000000
-strategy	block.bfq.slice_idle	sysfs.block.iosched	slice_idle	0	1000
-strategy	block.bfq.low_latency	sysfs.block.iosched	low_latency	0	1
-# CPU governor tunables (sysfs.cpu.governor). Discovered only from the directory of
-# the governor each policy is running now, e.g. policyN/schedutil/rate_limit_us.
-strategy	cpu.schedutil.rate_limit_us	sysfs.cpu.governor	rate_limit_us	100	50000
-strategy	cpu.ondemand.sampling_rate	sysfs.cpu.governor	sampling_rate	1000	1000000
-strategy	cpu.ondemand.up_threshold	sysfs.cpu.governor	up_threshold	1	100
-strategy	cpu.ondemand.sampling_down_factor	sysfs.cpu.governor	sampling_down_factor	1	100
-strategy	cpu.ondemand.io_is_busy	sysfs.cpu.governor	io_is_busy	0	1

@@ -1,4 +1,7 @@
 #pragma once
+
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -40,6 +43,9 @@ struct SystemObservation {
     // passive trip point, as published by the kernel. Negative means above it.
     // This replaces any universal absolute temperature target.
     double thermal_headroom_c{};
+    // Kernel-published hysteresis of that same passive trip point (C). It is the
+    // margin the kernel itself uses to leave the throttled state.
+    double thermal_headroom_margin_c{};
     double cpu_pressure_some_avg10{};
     double memory_pressure_some_avg10{};
     double io_pressure_some_avg10{};
@@ -47,6 +53,7 @@ struct SystemObservation {
     bool memory_valid{false};
     bool temperature_valid{false};
     bool thermal_headroom_valid{false};
+    bool thermal_headroom_margin_valid{false};
     bool cpu_pressure_valid{false};
     bool memory_pressure_valid{false};
     bool io_pressure_valid{false};
@@ -56,6 +63,20 @@ struct SystemObservation {
     double frame_p95_interval_ms{};
     double frame_p99_interval_ms{};
     double slow_frame_ratio{};
+    // Native measurement granularity. These values are populated from the
+    // source representation (kernel PSI decimal precision, /proc/meminfo KiB,
+    // millidegree thermal files, and SurfaceFlinger histogram samples). They are
+    // estimator metadata, not tuning thresholds and are not part of the WebUI API.
+    double cpu_busy_resolution{};
+    double frame_average_fps_resolution{};
+    double cpu_pressure_resolution{};
+    double memory_pressure_resolution{};
+    double io_pressure_resolution{};
+    double memory_available_resolution{};
+    double temperature_resolution{};
+    double thermal_headroom_resolution{};
+    double frame_interval_resolution_ms{};
+    double slow_frame_ratio_resolution{};
     std::string frame_package;
     bool frame_timing_valid{false};
 };
@@ -71,10 +92,41 @@ struct DeviceContext {
     std::uint64_t total_memory_kb{};
     std::size_t online_cpu_count{};
 };
+// Signals whose typical level and sample-to-sample variation are learned from the
+// device's own history. Every decision threshold derives from these baselines.
+enum class Signal : std::size_t {
+    CpuPressure,
+    MemoryPressure,
+    IoPressure,
+    MemoryAvailable,
+    Temperature,
+    ThermalHeadroom,
+    FrameFps,
+    FrameP95,
+    FrameP99,
+    SlowFrameRatio,
+    CpuBusy,
+    Count
+};
+
+struct SignalBaseline {
+    bool ready{false};     // enough variation observed to separate signal from noise
+    double median{0.0};    // typical level of the signal on this device, recently
+    double deadband{0.0};  // smallest change attributable to the signal itself
+};
+
+struct NoiseFloor {
+    std::array<SignalBaseline, static_cast<std::size_t>(Signal::Count)> signals{};
+    [[nodiscard]] const SignalBaseline& operator[](Signal signal) const noexcept {
+        return signals[static_cast<std::size_t>(signal)];
+    }
+};
+
 struct ObservationFrame {
     SystemObservation system;
     DeviceContext device;
     std::vector<std::pair<std::string, std::string>> capability_values;
+    NoiseFloor noise;
 };
 struct ChangeProposal {
     std::string capability_id;

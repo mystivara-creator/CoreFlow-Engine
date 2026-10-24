@@ -1,6 +1,8 @@
 #include "coreflow/runtime/state_store.hpp"
+#include "coreflow/runtime/limits.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +20,7 @@ namespace {
 namespace fs = std::filesystem;
 constexpr std::uintmax_t kJournalRotateBytes = 256U * 1024U;
 constexpr std::size_t kMaximumCommandBytes = 64;
+std::atomic<std::uint64_t> gTemporarySequence{0};
 
 std::string_view trimmed(std::string_view text) noexcept {
     const auto first = text.find_first_not_of(" \t\r\n");
@@ -90,7 +93,8 @@ std::string formatStatusJson(const RuntimeStatus& s) {
     out << "{\"schema\":1,\"generated_unix\":" << s.generated_unix << ',';
     appendStringField(out, "engine_state", s.engine_state); out << ',';
     appendStringField(out, "stage", s.stage); out << ',';
-    out << "\"uptime_s\":" << s.uptime_s << ",\"cycles\":" << s.cycles << ',';
+    out << "\"uptime_s\":" << s.uptime_s << ",\"stale_after_s\":" << s.stale_after_s
+        << ",\"cycles\":" << s.cycles << ',';
     appendStringField(out, "workload", s.workload_signature); out << ',';
     out << "\"device\":{";
     appendStringField(out, "model", s.model); out << ',';
@@ -171,13 +175,24 @@ StateStore::StateStore(std::string directory) : directory_(std::move(directory))
 bool StateStore::atomicWrite(const std::string& name, const std::string& content) const {
     if (!ready_) return false;
     const auto target = fs::path(directory_) / name;
-    const auto temporary = fs::path(directory_) / (name + ".tmp");
+    const auto temporary = fs::path(directory_) /
+        (name + ".tmp." + std::to_string(static_cast<long long>(::getpid())) + "." +
+         std::to_string(gTemporarySequence.fetch_add(1, std::memory_order_relaxed)));
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
+        if (!out) {
+            std::error_code remove_error;
+            fs::remove(temporary, remove_error);
+            return false;
+        }
         out << content;
         out.flush();
-        if (!out) return false;
+        if (!out) {
+            out.close();
+            std::error_code remove_error;
+            fs::remove(temporary, remove_error);
+            return false;
+        }
     }
     // rename() replaces the destination atomically on the same filesystem, so the
     // WebUI never observes a half-written JSON document.
@@ -191,39 +206,67 @@ bool StateStore::atomicWrite(const std::string& name, const std::string& content
 }
 
 bool StateStore::writeStatus(const RuntimeStatus& status) const {
+    std::lock_guard<std::mutex> lock(io_mutex_);
     return atomicWrite("status.json", formatStatusJson(status) + "\n");
 }
 
 bool StateStore::writeCapabilities(const std::vector<CapabilityRecord>& records) const {
-    return atomicWrite("capabilities.json", formatCapabilitiesJson(records, 2048) + "\n");
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    return atomicWrite("capabilities.json",
+                       formatCapabilitiesJson(records, runtime_limits::kWebUiLimit) + "\n");
 }
 
 bool StateStore::appendJournal(const JournalRecord& record) const {
+    std::lock_guard<std::mutex> lock(io_mutex_);
     if (!ready_) return false;
+
     const auto path = fs::path(directory_) / "journal.jsonl";
     std::error_code ec;
-    const auto size = fs::exists(path, ec) ? fs::file_size(path, ec) : std::uintmax_t{0};
-    if (!ec && size > kJournalRotateBytes) {
-        fs::rename(path, fs::path(directory_) / "journal.jsonl.1", ec);
+    const bool exists = fs::exists(path, ec);
+    if (ec) return false;
+    if (exists) {
+        const auto size = fs::file_size(path, ec);
+        if (ec) return false;
+        if (size > kJournalRotateBytes) {
+            fs::rename(path, fs::path(directory_) / "journal.jsonl.1", ec);
+            // Do not keep appending to an oversized journal if rotation failed.
+            if (ec) return false;
+        }
     }
+
     std::ofstream out(path, std::ios::binary | std::ios::app);
     if (!out) return false;
     out << formatJournalLine(record) << '\n';
+    out.flush();
     return static_cast<bool>(out);
 }
 
 Command StateStore::takeCommand() const {
+    std::lock_guard<std::mutex> lock(io_mutex_);
     if (!ready_) return Command::None;
+
     const auto path = fs::path(directory_) / "command";
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return Command::None;
+    // Claim the complete request by rename before opening it. The WebUI publishes
+    // commands by writing a sibling temporary file and renaming it into place, so
+    // a new request arriving during this read cannot be deleted by this consumer.
+    const auto claimed = fs::path(directory_) /
+        ("command.claimed." + std::to_string(static_cast<long long>(::getpid())) + "." +
+         std::to_string(gTemporarySequence.fetch_add(1, std::memory_order_relaxed)));
+    std::error_code ec;
+    fs::rename(path, claimed, ec);
+    if (ec) return Command::None;
+
+    std::ifstream in(claimed, std::ios::binary);
+    if (!in) {
+        fs::remove(claimed, ec);
+        return Command::None;
+    }
     std::string buffer(kMaximumCommandBytes + 1, '\0');
     in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     const auto count = static_cast<std::size_t>(in.gcount());
     in.close();
-    // Consume the request even when it is invalid, so a bad token cannot repeat forever.
-    std::error_code ec;
-    fs::remove(path, ec);
+    // Consume invalid input too; an oversized request must not replay forever.
+    fs::remove(claimed, ec);
     if (count == 0 || count > kMaximumCommandBytes) return Command::None;
     return parseCommand(std::string_view(buffer.data(), count));
 }

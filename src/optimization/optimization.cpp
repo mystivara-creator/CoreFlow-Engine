@@ -53,6 +53,20 @@ bool isKernelDiscreteControl(const std::string& domain, const std::string& attri
             (attribute == "min_freq" || attribute == "max_freq"));
 }
 
+struct Rank {
+    bool dependency{false};
+    double signal{0.0};
+    bool selector{false};
+};
+
+// True when `current` should be replaced by `candidate`.
+bool rankBefore(const std::optional<Rank>& current, const Rank& candidate) {
+    if (!current) return true;
+    if (current->dependency != candidate.dependency) return !current->dependency;
+    if (current->signal != candidate.signal) return candidate.signal > current->signal;
+    return candidate.selector && !current->selector;
+}
+
 // Direction of the numeric probe that was actually written. Learning from an
 // assumed direction mislabels probes that the bounds forced downward.
 int attemptedDirection(const ChangeProposal& proposal) {
@@ -122,7 +136,7 @@ void OptimizationEngine::trackContext(const std::string& key) {
         non_improving_by_context_.erase(expired);
         numeric_trials_by_context_.erase(expired);
         direction_by_context_.erase(expired);
-        step_fraction_by_context_.erase(expired);
+        growth_by_context_.erase(expired);
     }
 }
 
@@ -149,8 +163,6 @@ void OptimizationEngine::trackCapability(const std::string& capability_id) {
         capability_history_order_.pop_front();
         tracked_capability_ids_.erase(expired);
         next_choice_index_.erase(expired);
-        legacy_direction_by_capability_.erase(expired);
-        legacy_step_fraction_by_capability_.erase(expired);
     }
 }
 
@@ -158,13 +170,13 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
     const std::vector<Capability>& capabilities, const ObservationFrame& frame) {
     if (capabilities.empty()) return std::nullopt;
 
-    const std::string signature = workloadSignature(frame.system);
+    const std::string signature = workloadSignature(frame.system, frame.noise);
     if (signature == "idle") return std::nullopt;
 
     const bool has_dependency = dependency_followup_pending_ &&
         dependency_workload_signature_ == signature;
     std::optional<ChangeProposal> best;
-    double best_priority = -std::numeric_limits<double>::infinity();
+    std::optional<Rank> best_rank;
     std::size_t best_index = next_index_ % capabilities.size();
 
     for (std::size_t offset = 0; offset < capabilities.size(); ++offset) {
@@ -173,7 +185,7 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
         if (capability.id.empty() || capability.path.empty() || !capability.writable ||
             !capability.optimization_supported) continue;
 
-        const double workload_score = workloadScoreForDomain(capability.domain, frame.system);
+        const double workload_score = workloadScoreForDomain(capability.domain, frame.system, frame.noise);
         if (!(workload_score > 0.0) || !std::isfinite(workload_score)) continue;
 
         if (has_dependency) {
@@ -222,10 +234,12 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
             if (!(quantum > 0.0) || !std::isfinite(quantum) || !(span > 0.0) ||
                 !std::isfinite(span)) continue;
 
-            const auto learned_step = step_fraction_by_context_.find(key);
-            const double fraction = learned_step == step_fraction_by_context_.end()
-                ? 0.01 : learned_step->second;
-            double step = std::max(quantum, span * fraction);
+            // The smallest step is one representation quantum, the finest change the
+            // kernel can express. Feedback grows it in powers of two while probes are
+            // too small to matter, and never beyond the advertised span.
+            const auto learned_growth = growth_by_context_.find(key);
+            const int growth = learned_growth == growth_by_context_.end() ? 0 : learned_growth->second;
+            double step = std::min(span, std::ldexp(quantum, growth));
             if (quantum >= 1.0) step = std::max(1.0, std::round(step));
             if (!std::isfinite(step) || !(step > 0.0)) continue;
 
@@ -277,12 +291,13 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
                 {}, capability.domain, capability.attribute};
         }
 
-        double priority = workload_score;
-        if (isSelector(capability.domain, capability.attribute)) priority += 0.25;
-        if (has_dependency) priority += 1000.0;
-        if (!best || priority > best_priority) {
+        // Ranking is lexicographic: a retained selector's follow-up first, then the
+        // strongest elevated signal, then selectors ahead of plain controls.
+        const Rank rank{has_dependency && isDependencyFollowup(capability), workload_score,
+                        isSelector(capability.domain, capability.attribute)};
+        if (!best || rankBefore(best_rank, rank)) {
             best = std::move(proposal);
-            best_priority = priority;
+            best_rank = rank;
             best_index = index;
         }
     }
@@ -315,24 +330,12 @@ std::optional<ChangeProposal> OptimizationEngine::propose(
 }
 
 void OptimizationEngine::recordOutcome(const std::string& id, bool improved) {
-    // Compatibility API lacks workload identity, so it must not train the
-    // workload-scoped policy used by propose(). Its independent legacy state is
-    // still bounded so external callers cannot grow these maps indefinitely.
+    // Compatibility API: without workload identity it must not train the
+    // workload-scoped policy used by propose(). It only keeps the bounded
+    // capability inventory, so external callers cannot grow state indefinitely.
+    (void)improved;
     if (id.empty()) return;
     trackCapability(id);
-    auto direction = legacy_direction_by_capability_.find(id);
-    if (direction == legacy_direction_by_capability_.end()) {
-        legacy_direction_by_capability_.emplace(id, improved ? 1 : -1);
-    } else if (!improved) {
-        direction->second = -direction->second;
-    }
-    auto step = legacy_step_fraction_by_capability_.find(id);
-    if (step == legacy_step_fraction_by_capability_.end()) {
-        legacy_step_fraction_by_capability_.emplace(id, 0.01);
-        step = legacy_step_fraction_by_capability_.find(id);
-    }
-    step->second = improved ? std::max(0.0001, step->second * 0.5)
-                            : std::min(0.5, step->second * 2.0);
 }
 
 void OptimizationEngine::recordOutcome(const std::string& id, const std::string& domain,
@@ -357,27 +360,46 @@ void OptimizationEngine::recordOutcome(const ChangeProposal& proposal,
                                        const ObservationFrame& frame) {
     if (!outcome.measurable || disposition == Disposition::Unresolved) return;
     const bool retained = disposition == Disposition::Retain;
-    recordOutcome(proposal, outcome.improved && retained, retained, frame);
+    const bool improved = outcome.improved && retained;
+    // Normalized costs are lower-is-better, so a higher after-cost is a regression.
+    ProbeFeedback feedback = ProbeFeedback::Grow;
+    if (improved) feedback = ProbeFeedback::Keep;
+    else if (outcome.after_score > outcome.before_score) feedback = ProbeFeedback::Shrink;
+    applyProposalOutcome(proposal, improved, retained, frame, feedback);
 }
 
 void OptimizationEngine::recordOutcome(const ChangeProposal& proposal, bool improved,
                                        bool retained, const ObservationFrame& frame) {
-    const std::string signature = workloadSignature(frame.system);
+    // Boolean evidence cannot distinguish a probe that was too small (no effect)
+    // from one that was too large (regression). A non-improving probe most often
+    // had no measurable effect, so it grows. The outcome-aware overload decides
+    // regressions precisely and shrinks the probe for them.
+    applyProposalOutcome(proposal, improved, retained, frame,
+                         improved ? ProbeFeedback::Keep : ProbeFeedback::Grow);
+}
+
+void OptimizationEngine::applyProposalOutcome(const ChangeProposal& proposal, bool improved,
+                                              bool retained, const ObservationFrame& frame,
+                                              ProbeFeedback feedback) {
+    const std::string signature = workloadSignature(frame.system, frame.noise);
     const std::string proposal_key = contextKey(proposal.capability_id, signature);
     trackContext(proposal_key);
-    {
-        const int attempted = attemptedDirection(proposal);
-        if (attempted != 0) {
-            // Keep the attempted direction when it helped; reverse it when it did not.
-            direction_by_context_[proposal_key] = improved ? attempted : -attempted;
-        }
-        auto step = step_fraction_by_context_.find(proposal_key);
-        if (step == step_fraction_by_context_.end()) {
-            step_fraction_by_context_.emplace(proposal_key, 0.01);
-            step = step_fraction_by_context_.find(proposal_key);
-        }
-        step->second = improved ? std::max(0.0001, step->second * 0.5)
-                                : std::min(0.5, step->second * 2.0);
+    const int attempted = attemptedDirection(proposal);
+    if (attempted != 0) {
+        // Keep the attempted direction when it helped; reverse it when it did not.
+        direction_by_context_[proposal_key] = improved ? attempted : -attempted;
+    }
+    // A probe is never grown past the 62-bit exponent range: beyond that, a
+    // probe is already larger than any representable span, and span clamps it anyway.
+    constexpr int kMaximumGrowth = 62;
+    auto growth = growth_by_context_.find(proposal_key);
+    if (growth == growth_by_context_.end()) {
+        growth = growth_by_context_.emplace(proposal_key, 0).first;
+    }
+    switch (feedback) {
+        case ProbeFeedback::Keep: break;
+        case ProbeFeedback::Grow: growth->second = std::min(growth->second + 1, kMaximumGrowth); break;
+        case ProbeFeedback::Shrink: growth->second = std::max(growth->second - 1, 0); break;
     }
     deferred_numeric_contexts_.erase(proposal_key);
     if (proposal.allowed_values.empty()) {
@@ -435,7 +457,7 @@ void OptimizationEngine::reset() {
 
 void OptimizationEngine::defer(const ChangeProposal& proposal, const ObservationFrame& frame) {
     if (proposal.capability_id.empty() || !proposal.allowed_values.empty()) return;
-    const std::string signature = workloadSignature(frame.system);
+    const std::string signature = workloadSignature(frame.system, frame.noise);
     if (signature == "idle") return;
     const auto key = contextKey(proposal.capability_id, signature);
     trackContext(key);

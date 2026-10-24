@@ -1,6 +1,6 @@
 id=coreflow_engine
 name=CoreFlow Autonomous Engine
-version=v3.1.0
-versionCode=30100
+version=v3.2.0
+versionCode=30200
 author=Mystivara
 description=Autonomous capability-driven Android kernel adaptation with coordinated scheduler/governor follow-up, bounded mutation, outcome verification, rollback and a native WebUI console.

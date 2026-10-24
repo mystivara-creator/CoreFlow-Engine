@@ -45,7 +45,7 @@ The tunable *names* are discovered live. Numeric bounds come from `module/strate
 
 ## Thermal guard
 
-Retention is vetoed when a change consumes the margin to the vendor's own **passive trip point** (`trip_point_N_type == passive` in a trusted compute zone) and the remaining headroom falls below 3 °C. The trip point is published by the kernel, so no device-wide absolute temperature is assumed. The earlier 0.5 °C rise guard still applies.
+Retention is vetoed when a change consumes headroom beyond the device's own noise and leaves the hottest zone inside the hysteresis band the kernel publishes for its **passive trip point** (`trip_point_N_type == passive`, `trip_point_N_hyst`). A rise of the hottest zone beyond its own noise also vetoes retention. Both thresholds are learned from the device; no absolute temperature is assumed.
 
 ## Runtime behavior
 
@@ -53,7 +53,7 @@ Retention is vetoed when a change consumes the margin to the vendor's own **pass
 
 Discovery walks `/sys` and `/proc/sys`, skipping debugfs, tracing, firmware and pstore. A resource is considered writable only when its mode has a write bit and `access()` allows it; root bypasses DAC, so `access()` alone is insufficient. Each resource is classified into a semantic domain (see `include/coreflow/discovery/classification.hpp`). Protected surfaces (thermal, battery/charger, regulator, watchdog, reset, debug, firmware, and similar) are never optimization targets.
 
-Discrete controls use choices advertised by the live kernel. Numeric controls require a defensible range from kernel companion metadata or a catalogue policy.
+Discrete controls use choices advertised by the live kernel. Numeric controls require a range published by the kernel, or an operator-supplied catalogue rule. The shipped build provides no numeric bounds of its own.
 
 ### Optimization
 
@@ -65,7 +65,7 @@ Before a write, the engine checks capability identity, no-op status, bounds or a
 
 ### Outcome
 
-Outcome verification compares before/after signals valid on both sides, using deadbands. Scheduler/governor probes are judged on their own subsystem: I/O pressure for elevator tunables, CPU pressure and SurfaceFlinger frame timing for CPU governor tunables. Missing signals are never fabricated.
+Outcome verification compares before/after signals valid on both sides. Every deadband is the device's measured sample-to-sample variation of that signal; a signal without a learned floor is inconclusive. Scheduler/governor probes are judged on their own subsystem: I/O pressure for elevator tunables, CPU pressure and SurfaceFlinger frame timing for CPU governor tunables. Missing signals are never fabricated.
 
 ## Operator console (WebUI) and state directory
 
@@ -78,7 +78,7 @@ The WebUI does not need a terminal and does not open a network port. The daemon 
 | `journal.jsonl` | daemon, per decision/mutation (rotated at 256 KiB) | decisions, writes, outcomes, rollbacks |
 | `command` | WebUI, one token | consumed and deleted by the daemon |
 
-Accepted command tokens are exactly `pause`, `resume`, `rescan`, and `reset_learning`. Anything else is discarded. The WebUI (`module/webroot/index.html`) reads these files through the KernelSU WebUI bridge (`ksu.exec`) and displays the C++ pipeline stage that is running. A status older than 30 seconds is shown as not reporting, so a stopped daemon is never presented as live.
+Accepted command tokens are exactly `pause`, `resume`, `rescan`, and `reset_learning`. Anything else is discarded. The WebUI (`module/webroot/index.html`) reads these files through the KernelSU WebUI bridge (`ksu.exec`) and displays the C++ pipeline stage that is running. A status older than the `stale_after_s` the daemon publishes (three worst-case loop intervals) is shown as not reporting, so a stopped daemon is never presented as live.
 
 Pausing keeps observation running but issues no kernel writes.
 
@@ -107,7 +107,7 @@ Standard C++20 (the code uses `std::string_view::starts_with` and `std::from_cha
 
 ## Strategy catalogue
 
-`module/strategies.tsv` (schema version `2`) holds semantic numeric bounds keyed by domain and attribute. It covers virtual-memory and scheduler controls, elevator tunables (`sysfs.block.iosched`), and governor tunables (`sysfs.cpu.governor`). Rules are not device paths and do not limit how many controls are discovered. A value outside a rule's bounds is never mutated.
+`module/strategies.tsv` ships schema version `2` with no rules. Numeric bounds come from the kernel, or from an operator-supplied extension file selected with `COREFLOW_STRATEGY_CATALOG`. Operator rules are validated strictly and never override a kernel-published limit. A value outside a rule's bounds is never mutated.
 
 ## Build and tests
 
@@ -121,7 +121,7 @@ cmake --build build -j2
 ctest --test-dir build --output-on-failure
 ```
 
-There are 15 test targets: strategy catalogue, architecture contract, optimization feedback, optimization coordination, mutation safety, device profile, outcome feedback, workload policy, pressure parsing, SurfaceFlinger parsing, thermal policy, thermal headroom, rollback guard, discovery classification, and runtime state store.
+There are 16 test targets: strategy catalogue, architecture contract, optimization feedback, optimization coordination, mutation safety, device profile, outcome feedback, workload policy, noise-floor estimation, pressure parsing, SurfaceFlinger parsing, thermal policy, thermal headroom, rollback guard, discovery classification, and runtime state store.
 
 ### Android ARM64 module
 

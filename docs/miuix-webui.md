@@ -20,7 +20,7 @@ The daemon accepts only those tokens and deletes the command file after reading 
 
 ## Status freshness
 
-`status.json` carries `generated_unix`. If it is more than 30 seconds old, the console reports the daemon as not reporting and disables the control buttons. A missing file is shown as "no state file yet".
+`status.json` carries `generated_unix` and `stale_after_s`. If the status is older than `stale_after_s`, the console reports the daemon as not reporting and disables the control buttons. A status without `stale_after_s` cannot be judged and is reported as an incompatible schema. A missing file is shown as "no state file yet".
 
 ## status.json
 
@@ -28,7 +28,7 @@ The daemon accepts only those tokens and deletes the command file after reading 
 {
   "schema": 1, "generated_unix": 1700000000,
   "engine_state": "running|paused|starting", "stage": "outcome",
-  "uptime_s": 3725, "cycles": 412, "workload": "cpu+io",
+  "uptime_s": 3725, "stale_after_s": 60, "cycles": 412, "workload": "cpu+io",
   "device": {"model": "...", "soc": "...", "android": "16", "kernel": "...", "storage": "UFS"},
   "inventory": {"discovered": 6, "eligible": 4, "catalog": "configured"},
   "counters": {"retained": 7, "rolled_back": 3, "deferred": 12, "unresolved": 1},
