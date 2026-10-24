@@ -8,10 +8,10 @@ on:
 jobs:
   host-tests:
     name: Host build and regression tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
     - name: Configure Host Tests
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
     - name: Build Host Tests
@@ -21,11 +21,11 @@ jobs:
 
   build:
     name: Compile NDK & Package Module
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Configure Android NDK
       run: |
@@ -82,7 +82,7 @@ jobs:
         unzip -Z1 CoreFlow-Engine-Release.zip | grep -qx 'system/bin/coreflow_daemon'
 
     - name: Upload Module Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: CoreFlow-Engine-Module
         path: CoreFlow-Engine-Release.zip

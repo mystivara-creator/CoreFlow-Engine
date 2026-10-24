@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Autonomous Engine v3.2.0 — Magisk / KernelSU installer.
+# CoreFlow Autonomous Engine v3.0.0 — Magisk / KernelSU installer.
 SKIPUNZIP=1
 
 CF_TITLE='COREFLOW AUTONOMOUS ENGINE'
@@ -11,7 +11,7 @@ cf_has_entry() { unzip -p "$ZIPFILE" "$1" >/dev/null 2>&1; }
 ui_print ''
 ui_print '╔══════════════════════════════════════════╗'
 ui_print '║       COREFLOW AUTONOMOUS ENGINE          ║'
-ui_print '║                 v3.2.0                   ║'
+ui_print '║                 v3.0.0                   ║'
 ui_print '╚══════════════════════════════════════════╝'
 ui_print ''
 cf_info 'Memeriksa lingkungan instalasi...'

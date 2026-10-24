@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Autonomous Engine v3.2.0 persistent service.
+# CoreFlow Autonomous Engine v3.0.0 persistent service.
 MODDIR=${0%/*}
 TAG='CoreFlowEngine'
 DAEMON="$MODDIR/system/bin/coreflow_daemon"
@@ -54,7 +54,7 @@ failures=0
 while :; do
     [ -x "$DAEMON" ] || { log_msg e 'Daemon hilang atau tidak executable; service berhenti.'; exit 1; }
     start_time="$(date +%s 2>/dev/null)"
-    log_msg i "Menjalankan daemon v3.2.0; katalog=$CATALOG; state=$STATE_DIR"
+    log_msg i "Menjalankan daemon v3.0.0; katalog=$CATALOG; state=$STATE_DIR"
 
     # Rotate the module log so a long-running device cannot fill /data with it.
     if [ -f "$LOGFILE" ]; then

@@ -1,6 +1,26 @@
 # Changelog
 
-## v3.2.0 — hardening freeze
+## Current release line: v3.0.0 — Autonomous Architecture baseline
+
+This release deliberately resets the **displayed** version label to `v3.0.0` to mark CoreFlow's Autonomous Architecture baseline. It does not revert the source to the original historical v3.0.0 package: the release carries forward the outcome-driven and adaptive-workload hardening developed on the previous version line. The internal module `versionCode` remains monotonic at `30300` so package update ordering does not move backwards.
+
+### Added
+- `docs/architecture-contract.md`: CoreFlow-owned stage contracts, hard safety invariants, module boundaries, learning rules, reference sources and release acceptance criteria.
+- Explicit end-to-end architecture flow: discovery → observation → workload assessment → justified candidate → capability/safety validation → bounded mutation → read-back/outcome verification → retain or verified rollback → evidence-based learning.
+- A phone-portrait-only WebUI layout. Landscape and wide viewports show an orientation message; no frontend framework or network listener is introduced.
+- CI JavaScript actions updated to Node.js 24-compatible major versions and the runner is pinned to `ubuntu-24.04` to avoid implicit `ubuntu-latest` image migration.
+
+### Retained
+- Adaptive noise-floor and workload assessment; per-signal unit separation and fallbacks; outcome-based retain/rollback; pause-with-observation; runtime state and atomic command handling; native C++20 engine and Android ARM64 packaging workflow.
+- Encore Tweaks remains a comparison source for patterns. This patch does not copy Encore implementation files; all adaptations must be reviewed against CoreFlow contracts and external license notices.
+
+### Validation boundary
+- The source baseline at commit `388bfda` had passed host regression tests and the Android NDK packaging workflow before this release-specific delta. This patch must run through CI again.
+- Physical-device behavior, thermal interactions, SELinux permissions and performance/energy effects still require direct device validation.
+
+## Historical engineering notes (previous display-version line)
+
+### Previous v3.2.0 — hardening freeze
 
 No new features. Every tuning value that remained in the daemon was either derived from the device or removed.
 
@@ -36,7 +56,7 @@ No new features. Every tuning value that remained in the daemon was either deriv
 - Algorithmic constants: the power-of-two probe growth, the 2× missed-refresh definition, the signal-to-noise test (an elevation must exceed one deadband), and the exploration budgets (six numeric trials, two misses before deferral).
 - Memory budgets for tracked contexts and capabilities.
 
-## v3.1.0 — coordinated tuning, real console bridge, correctness fixes
+### Previous v3.1.0 — coordinated tuning, real console bridge, correctness fixes
 
 ### Fixed
 - Numeric probes learned the wrong direction when the bounds forced a downward probe; learning now uses the direction actually written.
@@ -61,7 +81,7 @@ No new features. Every tuning value that remained in the daemon was either deriv
 - cpuset and uCLAMP mutation, Performance Hint API integration, app-launch boost, UFS/eMMC policy.
 - Device validation of v3.1.0 changes.
 
-## v3.0.0 — initial Autonomous Engine package
+### Original v3.0.0 — initial Autonomous Engine package
 
 ### Added
 - Native C++17 closed-loop runtime: discovery, observation, optimization, decision justification, safety validation, mutation, outcome evaluation, rollback and feedback.

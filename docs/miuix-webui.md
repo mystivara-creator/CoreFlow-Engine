@@ -1,6 +1,6 @@
-# CoreFlow Console (WebUI) — v3.1.0
+# CoreFlow Console (WebUI) — v3.0.0
 
-The console is `module/webroot/index.html`. It is self-contained, mobile-first, and offers English (default) and Indonesian.
+The console is `module/webroot/index.html`. It is self-contained, phone-portrait-only, and offers English (default) and Indonesian. Landscape orientation and wide desktop/tablet viewports intentionally show an orientation notice instead of the dashboard. The layout adds no frontend framework or runtime dependency.
 
 ## Data path
 
@@ -14,7 +14,7 @@ Reads (fixed commands, fixed paths under `/data/adb/coreflow`):
 
 Writes (fixed tokens only):
 
-- `printf '%s\n' '<token>' > '/data/adb/coreflow/command'`, where `<token>` is one of `pause`, `resume`, `rescan`, `reset_learning`.
+- The page validates a fixed token (`pause`, `resume`, `rescan`, or `reset_learning`), writes it to a unique `mktemp` sibling, then publishes it to `/data/adb/coreflow/command` using an atomic rename. The daemon claims the command with a rename before reading it.
 
 The daemon accepts only those tokens and deletes the command file after reading it.
 

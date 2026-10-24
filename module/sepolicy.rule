@@ -1,4 +1,4 @@
-# CoreFlow Autonomous Engine v3.1.0 — SELinux additions.
+# CoreFlow Autonomous Engine v3.0.0 — SELinux additions.
 # The daemon writes its operator state to /data/adb/coreflow (status.json,
 # capabilities.json, journal.jsonl, command). No allow rules are shipped by default.
 # If AVC denials appear for that directory on a target device, add narrowly scoped
