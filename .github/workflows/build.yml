@@ -73,6 +73,18 @@ jobs:
           ninja --version
           g++ --version | head -n1
 
+      - name: Setup Node.js for WebUI contract tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build offline React WebUI into module/webroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+
       - name: Configure host tests
         run: |
           set -euo pipefail
@@ -102,6 +114,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Node.js for WebUI contract tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build offline React WebUI into module/webroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
 
       - name: Configure sanitized host build
         run: |

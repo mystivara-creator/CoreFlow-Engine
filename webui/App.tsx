@@ -141,10 +141,10 @@ export const App: React.FC = () => {
   );
   const [policyForm, setPolicyForm] = useState<PolicyFormValues>(() => getDefaultForm());
 
-  // Live probe & status parsed via control_logic.js + engine_status.js
-  const [probe, setProbe] = useState<DaemonProbe | null>(null);
-  const [parsedStatus, setParsedStatus] = useState<ParsedEngineStatus | null>(null);
-  const [traceRows, setTraceRows] = useState<ConscienceTraceRow[]>([]);
+  // Native KernelSU live probe & status states (populated only when isNativeBridge is true)
+  const [nativeProbe, setNativeProbe] = useState<DaemonProbe | null>(null);
+  const [nativeParsedStatus, setNativeParsedStatus] = useState<ParsedEngineStatus | null>(null);
+  const [nativeTraceRows, setNativeTraceRows] = useState<ConscienceTraceRow[]>([]);
   const [nativeLogLines, setNativeLogLines] = useState<string[]>([]);
   const [daemonBusy, setDaemonBusy] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -192,18 +192,9 @@ export const App: React.FC = () => {
     [inputs, currentSample, capabilities]
   );
 
-  const currentDaemonMode = useMemo(() => {
-    if (parsedStatus?.data?.brain?.mode) {
-      return parsedStatus.data.brain.mode;
-    }
-    const C = window.CoreFlowControl;
-    const cfg = C ? C.parseIni(rawConfigText) : {};
-    return cfg.mutation_mode === 'adaptive' ? 'adaptive' : 'observe';
-  }, [parsedStatus, rawConfigText]);
-
   const mutationArmed = useMemo(() => {
     if (isNativeBridge) {
-      return Boolean(parsedStatus?.data?.brain?.armed);
+      return Boolean(nativeParsedStatus?.data?.brain?.armed);
     }
     const C = window.CoreFlowControl;
     const cfg = C ? C.parseIni(mirrorStore.configRaw) : {};
@@ -214,11 +205,25 @@ export const App: React.FC = () => {
       !mirrorStore.safeMode &&
       !mirrorStore.disableMarker
     );
-  }, [isNativeBridge, parsedStatus, mirrorStore]);
+  }, [isNativeBridge, nativeParsedStatus, mirrorStore]);
+
+  const mirrorSysfsNodes: SysfsNodeEntry[] = useMemo(
+    () =>
+      computeSysfsNodes(
+        profile,
+        capabilities,
+        pillarMode,
+        policyState,
+        currentSample,
+        experiment,
+        mutationArmed
+      ),
+    [profile, capabilities, pillarMode, policyState, currentSample, experiment, mutationArmed]
+  );
 
   const sysfsNodes: SysfsNodeEntry[] = useMemo(() => {
-    if (isNativeBridge && parsedStatus?.data) {
-      const d = parsedStatus.data;
+    if (isNativeBridge && nativeParsedStatus?.data) {
+      const d = nativeParsedStatus.data;
       const liveRows: SysfsNodeEntry[] = [];
       for (const c of d.hands.cpuApplied) {
         liveRows.push({
@@ -253,26 +258,72 @@ export const App: React.FC = () => {
         return liveRows;
       }
     }
-    return computeSysfsNodes(
+    return mirrorSysfsNodes;
+  }, [isNativeBridge, nativeParsedStatus, mirrorSysfsNodes]);
+
+  // Pure synchronous derivation of Mirror snapshot via control_logic.js + engine_status.js
+  const mirrorDerived = useMemo(() => {
+    if (isNativeBridge) {
+      return {
+        probe: null as DaemonProbe | null,
+        parsedStatus: null as ParsedEngineStatus | null,
+        traceRows: [] as ConscienceTraceRow[],
+      };
+    }
+    const C = window.CoreFlowControl;
+    const S = window.CoreFlowStatus;
+    if (!C || !S) {
+      return {
+        probe: null as DaemonProbe | null,
+        parsedStatus: null as ParsedEngineStatus | null,
+        traceRows: [] as ConscienceTraceRow[],
+      };
+    }
+
+    const rawSnapshot = buildMirrorStatusSnapshot(
+      mirrorStore,
       profile,
-      capabilities,
-      pillarMode,
-      policyState,
       currentSample,
-      experiment,
-      mutationArmed
+      policyState,
+      prevPolicyState,
+      decision,
+      pillarMode,
+      mirrorSysfsNodes,
+      experiment.baselineSamples.length,
+      experiment.mutatedSamples.length
     );
+    const parts = C.splitSnapshot(rawSnapshot);
+    return {
+      probe: C.parseProbe(parts.probe),
+      parsedStatus: S.parse(parts.status),
+      traceRows: C.parseTrace(mirrorStore.traceLines.join('\n'), 80),
+    };
   }, [
     isNativeBridge,
-    parsedStatus,
+    mirrorStore,
     profile,
-    capabilities,
-    pillarMode,
-    policyState,
     currentSample,
-    experiment,
-    mutationArmed,
+    policyState,
+    prevPolicyState,
+    decision,
+    pillarMode,
+    mirrorSysfsNodes,
+    experiment.baselineSamples.length,
+    experiment.mutatedSamples.length,
   ]);
+
+  const probe = isNativeBridge ? nativeProbe : mirrorDerived.probe;
+  const parsedStatus = isNativeBridge ? nativeParsedStatus : mirrorDerived.parsedStatus;
+  const traceRows = isNativeBridge ? nativeTraceRows : mirrorDerived.traceRows;
+
+  const currentDaemonMode = useMemo(() => {
+    if (parsedStatus?.data?.brain?.mode) {
+      return parsedStatus.data.brain.mode;
+    }
+    const C = window.CoreFlowControl;
+    const cfg = C ? C.parseIni(rawConfigText) : {};
+    return cfg.mutation_mode === 'adaptive' ? 'adaptive' : 'observe';
+  }, [parsedStatus, rawConfigText]);
 
   const prediction = useMemo(
     () => computeThermalPrediction(currentSample, history, inputs.monitorIntervalSec),
@@ -297,43 +348,6 @@ export const App: React.FC = () => {
     return window.CoreFlowStatus.pipeline(parsedStatus.data);
   }, [parsedStatus]);
 
-  // Synchronize Mirror status snapshot through real control_logic.js + engine_status.js
-  useEffect(() => {
-    if (isNativeBridge) return;
-    const C = window.CoreFlowControl;
-    const S = window.CoreFlowStatus;
-    if (!C || !S) return;
-
-    const rawSnapshot = buildMirrorStatusSnapshot(
-      mirrorStore,
-      profile,
-      currentSample,
-      policyState,
-      prevPolicyState,
-      decision,
-      pillarMode,
-      sysfsNodes,
-      experiment.baselineSamples.length,
-      experiment.mutatedSamples.length
-    );
-    const parts = C.splitSnapshot(rawSnapshot);
-    setProbe(C.parseProbe(parts.probe));
-    setParsedStatus(S.parse(parts.status));
-    setTraceRows(C.parseTrace(mirrorStore.traceLines.join('\n'), 80));
-  }, [
-    isNativeBridge,
-    mirrorStore,
-    profile,
-    currentSample,
-    policyState,
-    prevPolicyState,
-    decision,
-    pillarMode,
-    sysfsNodes,
-    experiment.baselineSamples.length,
-    experiment.mutatedSamples.length,
-  ]);
-
   // Native KernelSU polling & sync
   const syncFromNativeDaemon = useCallback(
     async (includeConfigAndLogs = false) => {
@@ -346,8 +360,8 @@ export const App: React.FC = () => {
         const parts = C.splitSnapshot(snapRes.stdout);
         const nextProbe = C.parseProbe(parts.probe);
         const nextParsed = S.parse(parts.status);
-        setProbe(nextProbe);
-        setParsedStatus(nextParsed);
+        setNativeProbe(nextProbe);
+        setNativeParsedStatus(nextParsed);
 
         if (nextParsed.ok && nextParsed.data) {
           const d = nextParsed.data;
@@ -412,7 +426,7 @@ export const App: React.FC = () => {
           setPolicyForm(C.formFromConfig({ ...C.DEFAULTS, ...parsedCfg }));
         }
         if (traceRes.errno === 0) {
-          setTraceRows(C.parseTrace(traceRes.stdout, 120));
+          setNativeTraceRows(C.parseTrace(traceRes.stdout, 120));
         }
         if (logRes.errno === 0) {
           setNativeLogLines(
