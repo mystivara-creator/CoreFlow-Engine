@@ -113,7 +113,14 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
 
           <button
             type="button"
-            onClick={() => onUpdateForm({ ...form, mutation_mode: 'adaptive' })}
+            onClick={() =>
+              onUpdateForm({
+                ...form,
+                mutation_mode: 'adaptive',
+                interactivity_mode: 'adaptive',
+                runtime_refresh: true,
+              })
+            }
             className={`p-4 text-left rounded-xl border transition-colors ${
               form.mutation_mode === 'adaptive'
                 ? 'border-blue-600 bg-blue-50/50'
@@ -121,10 +128,10 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
             }`}
           >
             <div className="text-sm font-semibold text-slate-900">
-              Adaptive Mode (Armed &amp; Journaled)
+              Adaptive Mode (Armed &amp; Coupled)
             </div>
             <p className="mt-1 text-xs text-slate-600">
-              Issues single-target MutationPermits backed by durable pre-write journal commits, read-back verification, and 4-sample BaselineIntelligence rollback.
+              Enables multi-domain StrategyCatalog coupling, GPU/KGSL/Vulkan headroom, interactivity boost, journaled writes, and read-back verification.
             </p>
           </button>
         </div>

@@ -159,6 +159,10 @@ bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
             const std::string dir =
                 gpu_min_freq_path_.substr(0, gpu_min_freq_path_.find_last_of('/'));
             if (!ResourceActuator::readComparable(dir + "/available_frequencies",
+                                                  available) &&
+                !ResourceActuator::readComparable(dir + "/gpu_freq_table",
+                                                  available) &&
+                !ResourceActuator::readComparable(dir + "/gpu_available_frequencies",
                                                   available)) {
                 return false;
             }

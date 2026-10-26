@@ -176,7 +176,8 @@ FatalClass classifyFatalSurface(std::string_view path) noexcept {
     if (leafIs(leaf, {"write_cache", "fua", "discard_max_bytes", "discard_zeroes_data",
                       "write_same_max_bytes", "write_zeroes_max_bytes", "zone_append_max_bytes",
                       "dax", "ro", "force_ro"}) ||
-        contains(path, "/rpmb") || contains(path, "/ufshc")) {
+        contains(path, "/rpmb") ||
+        (contains(path, "/ufshc") && !(contains(path, "/block/") && contains(path, "/queue/")))) {
         return FatalClass::StorageIntegrity;
     }
 

@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ==========================================================
-# CoreFlow Autonomous - installer (v3.0.0)
+# CoreFlow Autonomous - installer (v3.0.1)
 #
 # Runs inside the Magisk/KernelSU installer, before first boot. Steps:
 #   1. Compatibility gate: arm64, Android 14 (API 34) or newer.
@@ -240,10 +240,12 @@ write_config_for_mode() {
     if [ "$_w_mode" = "adaptive" ]; then
         sed -e 's/^mutation_mode=observe$/mutation_mode=adaptive/' \
             -e 's/^mutation_armed=false$/mutation_armed=true/' \
+            -e 's/^interactivity_mode=observe$/interactivity_mode=adaptive/' \
             "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
             || abort "Could not write adaptive configuration."
         grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
             && grep -qx 'mutation_armed=true' "$TMP_CONF" \
+            && grep -qx 'interactivity_mode=adaptive' "$TMP_CONF" \
             || abort "Adaptive configuration did not verify; aborting."
     else
         grep -qx 'mutation_mode=observe' "$TMP_CONF" \

@@ -89,8 +89,24 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
 
     // ---- CPUFreq / power (AOSP power values + sysfs) ----
     {"cpufreq.policies", "/sys/devices/system/cpu/cpufreq", ResourceDomain::CpuFreq,
-     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, false,
+     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, true,
      "Per-cluster cpufreq policies; governors and min/max are primary CPU knobs.",
+     "source.android.com/docs/core/power/values"},
+    {"cpufreq.governor.rate_limit_us", "dynamic:cpufreq-gov", ResourceDomain::Scheduler,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Governor frequency transition rate limit in microseconds.",
+     "docs.kernel.org/admin-guide/pm/cpufreq.html"},
+    {"cpufreq.governor.up_rate_limit_us", "dynamic:cpufreq-gov", ResourceDomain::Scheduler,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Governor upward frequency ramp delay in microseconds.",
+     "docs.kernel.org/admin-guide/pm/cpufreq.html"},
+    {"cpufreq.governor.down_rate_limit_us", "dynamic:cpufreq-gov", ResourceDomain::Scheduler,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Governor downward frequency decay hold in microseconds.",
+     "docs.kernel.org/admin-guide/pm/cpufreq.html"},
+    {"cpufreq.governor.hispeed_load", "dynamic:cpufreq-gov", ResourceDomain::Scheduler,
+     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, true,
+     "Utilization threshold before jumping to hispeed frequency.",
      "source.android.com/docs/core/power/values"},
     {"cpufreq.stats", "/sys/devices/system/cpu/cpu0/cpufreq/stats", ResourceDomain::CpuFreq,
      KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::ObserveOnly, false,
@@ -174,6 +190,38 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
      "Request queue depth; bounded on physical block devices only.",
      "docs.kernel.org/block/queue-sysfs.html"},
+    {"block.queue.rq_affinity", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Complete I/O on submitting CPU/group (0..2) to cut cross-cluster wakeups.",
+     "docs.kernel.org/block/queue-sysfs.html"},
+    {"block.queue.nomerges", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Block request merge control (0..2) for low-overhead flash queues.",
+     "docs.kernel.org/block/queue-sysfs.html"},
+    {"block.queue.wbt_lat_usec", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Writeback throttling target latency in microseconds.",
+     "docs.kernel.org/block/queue-sysfs.html"},
+    {"block.queue.read_expire", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Deadline scheduler read request expiration target in milliseconds.",
+     "docs.kernel.org/block/deadline-iosched.html"},
+    {"block.queue.write_expire", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Deadline scheduler write request expiration target in milliseconds.",
+     "docs.kernel.org/block/deadline-iosched.html"},
+    {"block.queue.fifo_batch", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Deadline scheduler batch size before re-evaluating deadline queue.",
+     "docs.kernel.org/block/deadline-iosched.html"},
+    {"block.queue.writes_starved", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Read batches dispatched before serving queued writes.",
+     "docs.kernel.org/block/deadline-iosched.html"},
+    {"block.queue.front_merges", "dynamic:block-queue", ResourceDomain::Io,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Deadline front-merge toggle when flash random access dominates.",
+     "docs.kernel.org/block/deadline-iosched.html"},
     // Generic queue attribute semantics ensure newly discovered attributes remain
     // visible to the reasoning layer without pretending every attribute is a
     // reviewed actuator. Unknown leaves remain observe-only until classified.
@@ -182,15 +230,23 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      "Dynamically discovered block queue attribute; semantics require classification.",
      "docs.kernel.org/block/queue-sysfs.html"},
 
-    // ---- GPU / devfreq (vendor) ----
+    // ---- GPU / devfreq / driver headroom (vendor + ACK) ----
     {"gpu.kgsl", "/sys/class/kgsl", ResourceDomain::Gpu,
-     KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, false,
-     "Qualcomm KGSL GPU sysfs; clocks and busy% are vendor-specific.",
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
+     "Qualcomm KGSL Adreno GPU sysfs; power levels, clocks, and governors.",
      "vendor:qualcomm-kgsl"},
     {"gpu.devfreq", "/sys/class/devfreq", ResourceDomain::Gpu,
-     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::VendorVolatile, false,
-     "Generic devfreq devices (GPU/DDR/interconnect); governors vary by SoC.",
+     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::VendorVolatile, true,
+     "Generic devfreq devices (GPU/DDR/interconnect); advertised scales and governors.",
      "docs.kernel.org/driver-api/devfreq.html"},
+    {"gpu.mali", "/sys/devices/platform/mali", ResourceDomain::Gpu,
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
+     "ARM Mali GPU platform DVFS and rendering policy controls.",
+     "vendor:arm-mali"},
+    {"gpu.ged", "/sys/module/ged", ResourceDomain::Gpu,
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
+     "MediaTek GPU Extension Device (GED) DVFS headroom parameters.",
+     "vendor:mediatek-ged"},
 
     // ---- Thermal ----
     {"thermal.zones", "/sys/class/thermal", ResourceDomain::Thermal,
@@ -238,7 +294,38 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
             return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
         if (hasSuffix("/queue/nr_requests"))
             return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+        if (hasSuffix("/queue/rq_affinity"))
+            return lookupEcosystemKnowledgeByKey("block.queue.rq_affinity");
+        if (hasSuffix("/queue/nomerges"))
+            return lookupEcosystemKnowledgeByKey("block.queue.nomerges");
+        if (hasSuffix("/queue/wbt_lat_usec"))
+            return lookupEcosystemKnowledgeByKey("block.queue.wbt_lat_usec");
+        if (hasSuffix("/queue/read_expire") || hasSuffix("/queue/iosched/read_expire"))
+            return lookupEcosystemKnowledgeByKey("block.queue.read_expire");
+        if (hasSuffix("/queue/write_expire") || hasSuffix("/queue/iosched/write_expire"))
+            return lookupEcosystemKnowledgeByKey("block.queue.write_expire");
+        if (hasSuffix("/queue/fifo_batch") || hasSuffix("/queue/iosched/fifo_batch"))
+            return lookupEcosystemKnowledgeByKey("block.queue.fifo_batch");
+        if (hasSuffix("/queue/writes_starved") || hasSuffix("/queue/iosched/writes_starved"))
+            return lookupEcosystemKnowledgeByKey("block.queue.writes_starved");
+        if (hasSuffix("/queue/front_merges") || hasSuffix("/queue/iosched/front_merges"))
+            return lookupEcosystemKnowledgeByKey("block.queue.front_merges");
         return lookupEcosystemKnowledgeByKey("block.queue.attribute");
+    }
+
+    if (path.find("/cpufreq/") != std::string::npos) {
+        const auto hasSuffix = [&path](const char* suffix) noexcept {
+            const std::size_t n = std::strlen(suffix);
+            return path.size() >= n && path.compare(path.size() - n, n, suffix) == 0;
+        };
+        if (hasSuffix("/up_rate_limit_us"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.governor.up_rate_limit_us");
+        if (hasSuffix("/down_rate_limit_us"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.governor.down_rate_limit_us");
+        if (hasSuffix("/rate_limit_us"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.governor.rate_limit_us");
+        if (hasSuffix("/hispeed_load"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.governor.hispeed_load");
     }
 
     // Prefer the most-specific matching catalog path. Several entries may
@@ -266,11 +353,9 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByKey(
 
     // Capability names for device-owned block queue nodes are naturally
     // prefixed by the discovered device (for example "sda:read_ahead_kb").
-    // Resolve only the three reviewed leaf names; never infer semantics from an
-    // arbitrary prefix or from a broad domain label.
+    // Resolve only reviewed leaf names; unknown leaves stay ObserveOnly.
     const std::size_t separator = key.find(':');
     if (separator != std::string::npos && separator + 1U < key.size()) {
-        // string_view avoids allocation in this noexcept lookup path.
         const std::string_view leaf(key.data() + separator + 1U,
                                     key.size() - separator - 1U);
         if (leaf == "scheduler")
@@ -279,6 +364,22 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByKey(
             return lookupEcosystemKnowledgeByKey("block.queue.read_ahead_kb");
         if (leaf == "nr_requests")
             return lookupEcosystemKnowledgeByKey("block.queue.nr_requests");
+        if (leaf == "rq_affinity")
+            return lookupEcosystemKnowledgeByKey("block.queue.rq_affinity");
+        if (leaf == "nomerges")
+            return lookupEcosystemKnowledgeByKey("block.queue.nomerges");
+        if (leaf == "wbt_lat_usec")
+            return lookupEcosystemKnowledgeByKey("block.queue.wbt_lat_usec");
+        if (leaf == "read_expire" || leaf == "iosched.read_expire")
+            return lookupEcosystemKnowledgeByKey("block.queue.read_expire");
+        if (leaf == "write_expire" || leaf == "iosched.write_expire")
+            return lookupEcosystemKnowledgeByKey("block.queue.write_expire");
+        if (leaf == "fifo_batch" || leaf == "iosched.fifo_batch")
+            return lookupEcosystemKnowledgeByKey("block.queue.fifo_batch");
+        if (leaf == "writes_starved" || leaf == "iosched.writes_starved")
+            return lookupEcosystemKnowledgeByKey("block.queue.writes_starved");
+        if (leaf == "front_merges" || leaf == "iosched.front_merges")
+            return lookupEcosystemKnowledgeByKey("block.queue.front_merges");
         return lookupEcosystemKnowledgeByKey("block.queue.attribute");
     }
     return nullptr;

@@ -411,7 +411,11 @@ std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
             const std::string uname = upper(name);
             if (uname.find("POWERHINT") != std::string::npos ||
                 uname.find("PERFHINT") != std::string::npos ||
-                uname.find("ADPF") != std::string::npos) {
+                uname.find("ADPF") != std::string::npos ||
+                uname.find("PERF") != std::string::npos ||
+                uname.find("BOOST") != std::string::npos ||
+                uname.find("GPU") != std::string::npos ||
+                uname.find("POWER") != std::string::npos) {
                 kind = Kind::PowerHint;
             }
         }
@@ -475,8 +479,9 @@ std::size_t VendorKnowledge::harvest(const std::vector<std::string>& roots) noex
 std::size_t VendorKnowledge::harvest() noexcept {
     try {
         return harvest({
-            "/vendor/etc/init", "/vendor/etc/powerhint.json", "/vendor/etc",
-            "/odm/etc/init", "/odm/etc", "/vendor/odm/etc/init",
+            "/vendor/etc/init", "/vendor/etc/powerhint.json", "/vendor/etc/perf",
+            "/vendor/etc/pwr", "/vendor/etc",
+            "/odm/etc/init", "/odm/etc/perf", "/odm/etc", "/vendor/odm/etc/init",
             "/system/etc/init/hw", "/system/etc/init", "/system_ext/etc/init",
             "/product/etc/init", "/vendor/bin",
         });

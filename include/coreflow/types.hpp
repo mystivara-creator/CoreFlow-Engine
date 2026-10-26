@@ -242,6 +242,12 @@ struct RuntimeSample {
     std::uint64_t top_process_memory_kb{0};
     bool process_profile_available{false};
 
+    // Live GPU / SurfaceFlinger rendering signals when interactivity telemetry runs.
+    bool gpu_busy_available{false};
+    double gpu_busy_ratio{0.0};
+    double frame_jank_rate{0.0};
+    bool gaming_active{false};
+
     Trend thermal_trend{Trend::Unknown};
     Trend memory_trend{Trend::Unknown};
     Trend load_trend{Trend::Unknown};

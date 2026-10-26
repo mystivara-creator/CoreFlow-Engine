@@ -103,6 +103,12 @@ struct EffectContext {
     bool io_latency_available{false};
     double io_avg_latency_ms{0.0};
 
+    // Live rendering / GPU headroom signals for sustained gaming & frame pacing.
+    bool gpu_busy_available{false};
+    double gpu_busy_ratio{0.0};
+    double frame_jank_rate{0.0};
+    bool gaming_active{false};
+
     // Experience prior: when the same candidate was measured before, the
     // machine's own score replaces the static prior. 0.5 = neutral/unknown.
     double experience_score{0.5};

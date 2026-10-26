@@ -2,11 +2,11 @@
 
 ## Control pipeline
 
-1. **Observe:** discover mounted kernel interfaces and collect telemetry.
-2. **Understand:** construct context, baselines, candidate effects, confidence, and expected impact.
-3. **Balance:** evaluate policy, consultation, current constraints, and safety holds.
-4. **Adapt:** only an explicitly armed and authorized mutation path may attempt a bounded change.
-5. **Verify:** journal before mutation, read the value back, evaluate the result, and roll back when verification or safety checks fail.
+1. **Observe (`Device & Runtime Discovery` -> `Capability Registry` -> `Telemetry & Context`):** discover mounted `procfs`, `cgroup`, and `sysfs` interfaces, harvest vendor PowerHAL/perf profiles, and sample thermal, PSI, memory, CPU, GPU busy, and dynamic refresh-period frame telemetry.
+2. **Understand (`Baseline Intelligence` -> `Outcome Evaluator` -> `Strategy Catalog` -> `Effect Model & Candidate Ranking`):** maintain rolling pre-mutation baselines, classify workload regimes (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`), couple dependent domains (I/O scheduler <-> queue depth/readahead <-> CPU governor/rate-limit <-> foreground UClamp <-> GPU floor), and rank candidates strictly from live capability evidence.
+3. **Balance (`Policy Authority` -> `Safety Gate`):** evaluate headroom, cooperative Power HAL / Performance Hint posture, `SAFE_MODE` / `DISABLE` / thermal guard holds, and issue target-bound `MutationPermit` tokens (or route to `Observe-only / Reject`).
+4. **Adapt (`Mutation Transaction` -> `Durable Mutation Journal` -> `Resource Actuator`):** commit pre-write baselines to the checksummed v2 journal before writing through a single `O_NOFOLLOW` + `fstat` kernel-FS descriptor.
+5. **Verify (`Read-back Verification` -> `Outcome Measurement` -> `Experience & Model Update` / `Rollback & Recovery`):** verify live read-back immediately, measure multi-sample runtime outcomes, retain verified beneficial or stable zero-harm improvements, and roll back regressions or crash leftovers deterministically.
 
 ## Non-negotiable invariants
 

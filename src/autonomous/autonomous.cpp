@@ -93,7 +93,8 @@ InteractivityPaths discoverInteractivityPaths(
             resource.path.empty()) continue;
         const std::filesystem::path path(resource.path);
         const std::string filename = path.filename().string();
-        if (resource.domain == ResourceDomain::Gpu && filename == "min_freq") {
+        if (resource.domain == ResourceDomain::Gpu &&
+            (filename == "min_freq" || filename == "gpuclk")) {
             const int gscore = gpuPathScore(resource.path);
             if (gscore < 0) continue;
             if (gscore > best_gpu) {
@@ -734,7 +735,8 @@ void AutonomousEngine::tick() {
                 last_interactivity_state_ == understand::InteractionState::Stuttering;
             for (const std::uint64_t ia_duration_ns :
                  frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
-                interactivity_model_.ingestFrame(ia_duration_ns, 16'666'667ULL);
+                interactivity_model_.ingestFrame(
+                    ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
             }
             // The launch detector and render collector are now part of the live
             // loop. Their signal is corroborative: ForegroundTracker remains the
@@ -784,6 +786,14 @@ void AutonomousEngine::tick() {
             ia_sample.thermal_guard = next == RuntimeState::ThermalGuard;
             const understand::InteractivitySnapshot ia_snap =
                 interactivity_model_.evaluate(ia_sample);
+            sample.gpu_busy_available = ia_snap.gpu_busy_available;
+            sample.gpu_busy_ratio = ia_snap.gpu_busy_ratio;
+            sample.frame_jank_rate =
+                ia_snap.frame.valid ? ia_snap.frame.deadline_miss_rate : 0.0;
+            sample.gaming_active =
+                (ia_snap.gpu_busy_available && ia_snap.gpu_busy_ratio >= 0.55) ||
+                (ia_snap.state == understand::InteractionState::Stuttering &&
+                 ia_snap.gpu_busy_available && ia_snap.gpu_busy_ratio >= 0.35);
             if (ia_snap.state != last_interactivity_state_) {
                 logInfo("INTERACTIVITY_STATE %s -> %s gpu_busy=%.2f io_full=%.3f",
                         understand::interactionStateName(last_interactivity_state_),
@@ -1043,7 +1053,80 @@ void AutonomousEngine::tick() {
                         break;
                     }
 
-                    case BaselineIntelligence::Outcome::Neutral:
+                    case BaselineIntelligence::Outcome::Neutral: {
+                        mutation_cooldown_until_sample_ =
+                            sample_count_ + kOutcomeHoldSamples + 1U;
+                        const bool cpu_pending = controller_.hasPendingOutcome();
+                        const bool resource_pending =
+                            resource_controller_.hasPendingOutcome();
+                        const bool single_pending =
+                            (cpu_pending || resource_pending) &&
+                            !(cpu_pending && resource_pending);
+                        // Fine-tuning changes such as I/O scheduler alignment,
+                        // governor rate_limit_us, or KGSL min_pwrlevel often improve
+                        // micro-latency / frame pacing while scoring Neutral (>= 0.50)
+                        // on coarse 4-sample averages. Retain single-target Neutral
+                        // candidates when stability and thermal scores show zero harm;
+                        // roll back anything noisy, dual-pending, or below 0.50.
+                        const bool neutral_safe_to_retain =
+                            single_pending &&
+                            evaluation.valid &&
+                            evaluation.context_compatible &&
+                            evaluation.overall_score >= 0.50 &&
+                            evaluation.stability_score >= 0.48 &&
+                            (!evaluation.thermal_available ||
+                             evaluation.thermal_score >= 0.48);
+                        if (neutral_safe_to_retain) {
+                            bool retained = false;
+                            if (cpu_pending) {
+                                retained = controller_.retainLastMutation(snapshot_.profile);
+                            } else if (resource_pending) {
+                                retained = resource_controller_.retainLastMutation(
+                                    snapshot_.profile);
+                            }
+                            if (retained) {
+                                logInfo("EFFICIENCY_NEUTRAL action=RETAINED score=%.3f "
+                                        "hold_until_sample=%llu",
+                                        evaluation.overall_score,
+                                        static_cast<unsigned long long>(
+                                            mutation_cooldown_until_sample_));
+                                break;
+                            }
+                        }
+                        const bool had_pending_candidate =
+                            cpu_pending || resource_pending;
+                        bool rolled_back = true;
+                        if (cpu_pending) {
+                            if (!controller_.rollbackLastMutation()) {
+                                rolled_back = false;
+                            }
+                        }
+                        if (resource_pending) {
+                            if (!resource_controller_.rollbackLastMutation()) {
+                                rolled_back = false;
+                            }
+                        }
+                        if (!had_pending_candidate) {
+                            rolled_back = false;
+                        }
+                        if (!rolled_back) {
+                            const bool cpu_recovered = controller_.restoreAll();
+                            const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool recovered = cpu_recovered && resource_recovered;
+                            refresh_pending_ = !recovered;
+                            rolled_back = recovered;
+                        }
+                        mutation = rolled_back ? MutationResult::RolledBack
+                                               : MutationResult::Failed;
+                        logInfo("EFFICIENCY_UNPROVEN action=%s result=%s "
+                                "until_sample=%llu",
+                                had_pending_candidate ? "ROLLBACK" : "RECOVERY_NO_PENDING",
+                                rolled_back ? "verified" : "failed",
+                                static_cast<unsigned long long>(
+                                    mutation_cooldown_until_sample_));
+                        break;
+                    }
+
                     case BaselineIntelligence::Outcome::Inconclusive:
                     case BaselineIntelligence::Outcome::Unknown: {
                         mutation_cooldown_until_sample_ =

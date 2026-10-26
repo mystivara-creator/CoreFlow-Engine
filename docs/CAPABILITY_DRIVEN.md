@@ -2,9 +2,9 @@
 
 CoreFlow discovers interfaces from mounted filesystem roots and records evidence about their existence, readability, writability, and semantics. Discovery is bounded by traversal depth, visit budget, and filesystem boundaries; symlinks are not followed. A truncated inventory must be reported as incomplete rather than treated as exhaustive.
 
-## Candidate admission
+## Candidate admission and cross-domain coupling
 
-A writable interface is only a candidate when its subsystem is recognized by location evidence or explicitly described by vendor configuration. Unclaimed writable nodes should be recorded for diagnostics, not automatically mutated. Candidate value generation should rely on vendor configuration, kernel-advertised options, ordered scales, or a conservative bounded step appropriate to the interface semantics.
+A writable interface is only a candidate when its subsystem is recognized by location evidence (including UFS-backed `/block/*/queue/*` nodes while raw controller attributes remain blocked, CPUFreq/CPPC scales, cgroup UClamp/CpuSet, VM sysctl, and Qualcomm KGSL / ARM Mali / MediaTek GED / devfreq GPU surfaces) or explicitly described by vendor PowerHAL/perf configuration. Unclaimed writable nodes are recorded for diagnostics, not automatically mutated. Candidate value generation relies exclusively on vendor configuration, kernel-advertised options, hardware ordered scales (respecting inverted KGSL `min_pwrlevel` indices), or conservative bounded steps, and `StrategyCatalog` couples related subsystems when live scheduler, governor, or rendering posture changes.
 
 ## Eligibility is not authorization
 

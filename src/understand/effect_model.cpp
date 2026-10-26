@@ -2,6 +2,7 @@
 #include "coreflow/ecosystem_knowledge.hpp"
 #include "coreflow/fatal_surface.hpp"
 #include "coreflow/pressure_limits.hpp"
+#include "coreflow/strategy_catalog.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -72,6 +73,7 @@ namespace {
 
 struct Situation {
     bool thermal{false};
+    bool warm_equilibrium{false};
     bool memory{false};
     bool elevated{false};
     bool calm_explore{false};
@@ -85,9 +87,14 @@ struct Situation {
 
 Situation classify(const EffectContext& ctx) noexcept {
     Situation s;
+    // Align thermal stress with ContextEngine thermal_headroom (< 52°C) so warm
+    // sustained gaming / multitasking (48..51.9°C) stays eligible for coupled
+    // fine-tuning without triggering a stress veto.
     s.thermal = ctx.thermal_available &&
-                (ctx.state == RuntimeState::ThermalGuard || ctx.state == RuntimeState::Warming ||
-                 ctx.thermal_c >= 48.0);
+                (ctx.state == RuntimeState::ThermalGuard || ctx.thermal_c >= 52.0);
+    s.warm_equilibrium = !s.thermal &&
+                         ((ctx.thermal_available && ctx.thermal_c >= 48.0) ||
+                          ctx.state == RuntimeState::Warming);
     s.memory = ctx.state == RuntimeState::Pressure ||
                (ctx.memory_available && ctx.mem_available_ratio < 0.15) ||
                ctx.memory_stall_detected;
@@ -98,14 +105,17 @@ Situation classify(const EffectContext& ctx) noexcept {
          ctx.io_avg_latency_ms >= pressure_limits::kIoLatencyEnterMs);
     const bool cpu_or_load_elevated =
         (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.70) ||
-        ctx.load1 >= 1.50;
+        ctx.load1 >= 1.50 ||
+        ctx.gaming_active ||
+        (ctx.gpu_busy_available && ctx.gpu_busy_ratio >= 0.45);
     // AdaptivePolicy can enter Elevated due to I/O alone. Do not interpret that
-    // state as a general CPU-load signal unless CPU/load telemetry agrees.
+    // state as a general CPU-load signal unless CPU/load/GPU telemetry agrees.
     s.elevated = cpu_or_load_elevated ||
                  (ctx.state == RuntimeState::Elevated && !s.io_pressure);
-    s.calm_explore = (ctx.state == RuntimeState::Normal) &&
+    s.calm_explore = (ctx.state == RuntimeState::Normal ||
+                      (ctx.state == RuntimeState::Warming && !s.thermal)) &&
                      ctx.intervention >= InterventionLevel::Low &&
-                     ctx.sample_confidence >= 0.75;
+                     ctx.sample_confidence >= 0.60;
     s.throttling = ctx.throttling_detected;
 
     double sev = 0.0;
@@ -115,7 +125,10 @@ Situation classify(const EffectContext& ctx) noexcept {
     if (ctx.throttle_ratio > sev) sev = ctx.throttle_ratio;
     if (ctx.memory_stall_score > sev) sev = ctx.memory_stall_score;
     if (s.thermal && ctx.thermal_available) {
-        const double t = std::clamp((ctx.thermal_c - 48.0) / 12.0, 0.0, 1.0);
+        const double t = std::clamp((ctx.thermal_c - 50.0) / 10.0, 0.0, 1.0);
+        sev = std::max(sev, t);
+    } else if (s.warm_equilibrium && ctx.thermal_available) {
+        const double t = std::clamp((ctx.thermal_c - 48.0) / 16.0, 0.0, 0.25);
         sev = std::max(sev, t);
     }
     if (s.memory && ctx.mem_available_ratio < 0.20) {
@@ -398,6 +411,13 @@ std::vector<EffectScore> EffectModel::proposals(
         if (!capability.options.empty()) {
             if (capability.ordered_scale && base_numeric) {
                 // Neighbour steps along the hardware's own ordered scale.
+                // Note: Qualcomm KGSL pwrlevels index 0 = highest clock and
+                // N-1 = lowest clock, so increasing min_pwrlevel lowers the
+                // minimum GPU clock (stabilizing) while decreasing toward 0
+                // raises the minimum GPU floor for rendering consistency.
+                const bool kgsl_inverted_pwrlevel =
+                    capability.domain == ResourceDomain::Gpu &&
+                    endsWith(capability.path, "/min_pwrlevel");
                 long long below = 0;
                 long long above = 0;
                 bool has_below = false;
@@ -410,13 +430,19 @@ std::vector<EffectScore> EffectModel::proposals(
                 }
                 if (has_below) {
                     emit(std::to_string(below), CandidateSource::OrderedScale,
-                         EffectDirection::Decrease, situation.thermal || situation.throttling,
-                         "one step down the advertised hardware scale");
+                         EffectDirection::Decrease,
+                         !kgsl_inverted_pwrlevel && (situation.thermal || situation.throttling),
+                         kgsl_inverted_pwrlevel
+                             ? "one step toward higher KGSL GPU power level"
+                             : "one step down the advertised hardware scale");
                 }
                 if (has_above) {
                     emit(std::to_string(above), CandidateSource::OrderedScale,
-                         EffectDirection::Increase, false,
-                         "one step up the advertised hardware scale");
+                         EffectDirection::Increase,
+                         kgsl_inverted_pwrlevel && (situation.thermal || situation.throttling),
+                         kgsl_inverted_pwrlevel
+                             ? "one step toward lower KGSL GPU power level"
+                             : "one step up the advertised hardware scale");
                 }
             } else if (!capability.ordered_scale) {
                 for (const auto& option : capability.options) {
@@ -524,6 +550,18 @@ std::vector<EffectScore> EffectModel::proposals(
                          EffectDirection::Increase, false,
                          "bounded exploration step up");
                 }
+            } else if (cgroup_uclamp_percent && scaled == 0 && !situation.stressed() &&
+                       endsWith(capability.path, "/cpu.uclamp.min") &&
+                       isPreferredForegroundPath(capability.path)) {
+                // OEM factory configs commonly ship top-app / foreground
+                // cpu.uclamp.min at 0 or 0.00. Allow a conservative 10% floor
+                // step when headroom is available while preserving 0/1 feature
+                // toggle protection for all non-uclamp scalar nodes.
+                const long long scale = decimals > 0
+                    ? static_cast<long long>(std::pow(10.0, decimals)) : 1LL;
+                emit(format(10LL * scale), CandidateSource::BoundedStep,
+                     EffectDirection::Increase, false,
+                     "foreground utilization clamp baseline floor step");
             }
         }
     } catch (...) {
@@ -565,6 +603,7 @@ std::vector<EffectScore> EffectModel::rank(
 ) const noexcept {
     std::vector<EffectScore> ranked;
     ranked.reserve(matrix.resources.size());
+    const CouplingSnapshot coupling = StrategyCatalog::analyze(matrix, baselines, ctx);
 
     for (const auto& cap : matrix.resources) {
         if (!cap.exists || !cap.mutation_ready || !cap.permission_granted ||
@@ -576,6 +615,21 @@ std::vector<EffectScore> EffectModel::rank(
 
         std::vector<EffectScore> local = proposals(cap, baseline->second, ctx);
         for (auto& score : local) {
+            const StrategyAdjustment adj = StrategyCatalog::evaluateCandidate(
+                cap, baseline->second, score.requested, score.direction, coupling, ctx);
+            score.benefit = clamp01(score.benefit + adj.benefit_delta);
+            score.risk = clamp01(score.risk + adj.risk_delta);
+            score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
+                             score.confidence >= kMinConfidence;
+            if (!score.eligible) {
+                score.utility = -1.0;
+                continue;
+            }
+            if (adj.coupling_tag != nullptr && adj.coupling_tag[0] != '\0') {
+                score.reason += " [";
+                score.reason += adj.coupling_tag;
+                score.reason += "]";
+            }
             score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
             // Foreground placement is a small tie-breaker, not a claim that the
             // write is less risky. The preference remains a small utility prior.
@@ -595,7 +649,7 @@ std::vector<EffectScore> EffectModel::rank(
         std::size_t kept = 0;
         for (auto& score : local) {
             if (kept >= kProposalsPerResource) break;
-            if (!std::isfinite(score.utility) || score.utility < 0.02) continue;
+            if (!score.eligible || !std::isfinite(score.utility) || score.utility < 0.02) continue;
             ranked.push_back(std::move(score));
             ++kept;
         }

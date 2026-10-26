@@ -2,8 +2,8 @@
 
 This map describes the current source layout. It is intentionally organized by responsibility, not by individual tunable.
 
-- `src/observe/`: mount-derived discovery, capability registry, tunable inventory, kernel roots, and vendor/ecosystem evidence.
-- `src/understand/`: runtime context, effect estimates, thermal features/guards/prediction, experience, and baseline intelligence.
+- `src/observe/`: mount-derived discovery, capability registry, tunable inventory, frame/GPU telemetry, kernel roots, and vendor/ecosystem evidence.
+- `src/understand/`: runtime context, `StrategyCatalog` cross-domain coupling, `EffectModel` candidate ranking, thermal features/guards/prediction, experience, and baseline intelligence.
 - `src/balance/`: policy, resource state, consultation, control planning, and safety holds.
 - `src/mutation/`: generic resource mutation, CPUFreq actuator, write verification, and rollback paths.
 - `src/conscience/`: mutation journal, retained state, fatal-surface guard, and decision trace.

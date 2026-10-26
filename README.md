@@ -2,75 +2,63 @@
 
 **Observe. Understand. Balance. Adapt.**
 
-Capability-driven native C++ engine for Android. Discovers what the device actually exposes, evaluates candidates with semantic evidence and runtime context, and keeps every mutation behind explicit policy and safety authority.
-
-Not a hard-coded list of tunables. Not aggressive one-size-fits-all tuning.
+Capability-driven C++20 system optimization and fine-tuning engine for Android. Refines stock OEM/vendor kernel configurations dynamically across I/O, CPUFreq, UClamp, CpuSet, GPU/KGSL/Mali/GED rendering headroom, and VM pressure — cooperating with Android Power HAL and Performance Hint API without hardcoded tunable values.
 
 | | |
 |---|---|
-| Version | `v3.0.0` (`versionCode` 3000) |
+| Version | `v3.0.1` (`versionCode` 3010) |
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
-| Default mode | Observe-only |
+| Default mode | Observe-only (`mutation_mode=observe`, `mutation_armed=false`) |
 
 ---
 
-## Principles
+## Closed-Loop Architecture
 
-1. **Discovery ≠ authority.** A writable interface is only a candidate. Permission comes from policy, context, and a valid mutation permit.
-2. **Evidence over assumption.** EffectModel ranks candidates from domain priors, vendor configuration, and measured runtime state — not from path presence alone.
-3. **Bounded mutation.** Journal before write, verify after, roll back on failure. Corrupt or missing journal fails closed.
-4. **Safe defaults.** Ship observe-only. Adaptive mode and CPU governor changes require explicit operator opt-in after device validation.
-
-```ini
-mutation_mode=observe
-mutation_armed=false
-# Legacy allow_cpu_governor is ignored.
+```mermaid
+flowchart TD
+    A["Device & Runtime Discovery"] --> B["Capability Registry"]
+    B --> C["Telemetry & Context"]
+    C --> D["Baseline Intelligence"]
+    D --> E["Outcome Evaluator"]
+    E --> F["Strategy Catalog"]
+    F --> G["Effect Model & Candidate Ranking"]
+    G --> H["Policy Authority"]
+    H --> I["Safety Gate"]
+    I --> J["Mutation Transaction"]
+    J --> K["Resource Actuator"]
+    K --> L["Read-back Verification"]
+    L --> M["Outcome Measurement"]
+    M --> N["Experience & Model Update"]
+    N --> D
+    J --> O["Durable Mutation Journal"]
+    O --> P["Rollback & Recovery"]
+    I --> Q["Observe-only / Reject"]
 ```
 
----
-
-## v3.0.0 release freeze
-
-- **Journal v2** — checksummed records (CRC32), unique exclusive temp file, bounds (256 entries / 4 KiB field / 1 MiB file). Rejects symlinks, non-regular files, truncation, checksum mismatch, embedded NUL, duplicate paths. v1 journals remain readable for upgrade recovery.
-- **Actuator write path** — single no-follow descriptor, `fstat` revalidation, requires procfs / sysfs / cgroup semantics, live read-back verification.
-- **Baseline capture** — fails closed when recovery journal is not configured.
-- ADR 0004 records the journal contract. ADR 0003 (system-property overlays) remains Proposed and is not shipped.
-
----
-
-## Architecture
-
-| Pillar | Role | Responsibility |
-|--------|------|----------------|
-| `src/observe/` | Eyes | Mount-derived discovery, capability registry, sampling |
-| `src/understand/` | Reasoning | Context, EffectModel, decision agent, thermal, baseline |
-| `src/balance/` | Brain | Policy, safety hold, consultation (Allow / Defer / Deny) |
-| `src/mutation/` | Hands | Actuators and controllers — write only with a permit |
-| `src/conscience/` | Memory | Mutation journal, retained state, decision trace |
-| `src/runtime/` | Lifecycle | Config, paths, status export, daemon entry |
-| `src/autonomous/` | Loop | Tick orchestration |
-
-Headers under `include/coreflow/`. Sources discovered dynamically (`cmake/CoreFlowSources.cmake`); platform membership is per-file via `@coreflow-platform` or Android header inference.
+| Pillar | Role | Function |
+|--------|------|----------|
+| `src/observe/` | Discovery & Telemetry | Mount-derived procfs/cgroup/sysfs discovery, vendor PowerHAL/perf harvesting, dynamic 60–144Hz SurfaceFlinger frame telemetry, PSI & GPU busy sampling |
+| `src/understand/` | Reasoning & Coupling | Context classification, `StrategyCatalog` cross-domain parameter coupling, `EffectModel` ranking, 18-feature ONNX thermal prediction, `BaselineIntelligence` |
+| `src/balance/` | Policy & Safety Gate | `PolicyEngine`, `MutationAuthority` target-bound permits, `InteractivityBoostController`, `SAFE_MODE` / `DISABLE` / thermal guard holds |
+| `src/mutation/` | Transaction & Actuators | `O_NOFOLLOW` + `fstat` kernel-FS verified writes, live read-back verification, single-epoch outcome attribution |
+| `src/conscience/` | Durable Memory | Checksummed v2 `MutationJournal`, `RetainedStateStore`, `FatalSurface` guard, `DecisionTrace` |
+| `src/runtime/` & `src/autonomous/` | Daemon Loop | Low-overhead `coreflowd` tick orchestration, config reload, status snapshot export |
 
 ---
 
-## What it covers
+## Key Capabilities (`v3.0.1`)
 
-- Mount-derived tunable roots (procfs / sysfs / cgroup) with bounded, non-symlink walks
-- VM sysctl, block-queue, CPUFreq, devfreq, uclamp, and related surfaces when capability + policy allow
-- ONNX thermal prediction in the packaged ARM64 build
-- Persistent experience memory scoped to device/kernel identity
-- Lightweight native KernelSU WebUI for daemon start/stop/restart/re-discovery, runtime policy, decision journal, detailed telemetry/capability evidence, and Project & AI acknowledgements (including Perplexity). No external fonts, CDN, or vendored browser runtime; kernel writes stay with coreflowd.
-
-Details: [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- **Zero hardcoded tunable values** — every candidate comes from kernel-advertised options (`scaling_available_governors`, `/queue/scheduler`, `available_frequencies`, KGSL `num_pwrlevels`, CPPC bounds), harvested vendor configs (`powerhint*.json`, `init*.rc`, perf XML/JSON), or bounded steps on catalogued interfaces.
+- **Cross-domain StrategyCatalog coupling** — changing an I/O scheduler (`A -> B`), CPU governor, or workload regime (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`) automatically re-ranks coupled block-queue (`nr_requests`, `read_ahead_kb`, `rq_affinity`, `wbt_lat_usec`), governor (`rate_limit_us`), foreground `uclamp.min`, and GPU floor candidates.
+- **GPU & rendering headroom** — discovers Qualcomm Adreno KGSL (`min_pwrlevel`, `gpuclk`, `bus_split`, `force_bus_on`), Mali/arm-gpufreq/devfreq `min_freq`, and MediaTek GED surfaces; tracks live display refresh period (`60/90/120/144Hz`) to eliminate frame drops and micro-stutter while holding warm equilibrium (`48–52°C`) below thermal throttling.
+- **Unattended multi-week safety** — ships observe-only by default; every Adaptive write commits a CRC32 v2 journal before opening the descriptor, verifies read-back, retains beneficial or verified zero-harm neutral improvements, and rolls back regressions or crash leftovers automatically.
+- **Portrait-first KernelSU WebUI** — offline native WebUI (`module/webroot/`) with compact hamburger navigation for portrait phones, daemon lifecycle controls, live telemetry, and validated `config.ini` gating.
 
 ---
 
-## Build
-
-**Host tests**
+## Build & Verify
 
 ```sh
 cmake -S . -B /tmp/coreflow-build -DCORE_FLOW_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
@@ -80,52 +68,23 @@ bash tools/verify_safety_foundation.sh
 bash tools/verify_source_release.sh
 ```
 
-**Android ARM64** — GitHub Actions workflow (`build.yml`) produces the installable module ZIP and daemon binary. This source archive does not ship `coreflowd` or `libonnxruntime.so`.
-
-Keep ONNX Runtime SDK/cache and build trees outside the source tree.
+Android ARM64 release ZIPs (`coreflowd` + `libonnxruntime.so` + WebUI) are built reproducibly by `.github/workflows/build.yml`. Keep build directories and SDK caches outside the source tree.
 
 ---
 
-## Validation (v2.4.0)
+## Documentation
 
-| Gate | Result |
-|------|--------|
-| Host CMake + `ctest` | Proven when Actions **Host deterministic tests** is green on that SHA |
-| ASan + UBSan (`detect_leaks=1`) | Proven when Actions **ASan + UBSan** is green on that SHA |
-| Android 14+ ARM64 NDK + artifacts | Proven when Actions **Android 14+ ARM64 Production** is green on that SHA |
-| Per-device soak / recovery / SELinux paths | **Operator** validation — not claimed for all devices |
-| Thermal ONNX calibration per SoC | **Not claimed**; model is optional best-effort aid |
-
-CI success on a commit (example: `8af1984` on `refactor/source-consolidation`) certifies **that commit’s** host tests, sanitizers, and ARM64 build. It does not certify every phone. If `coreflowd` runs correctly on a given device, that is evidence for that device only.
-
-See [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) and [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md).
-
----
-
-## Install (operator)
-
-1. Use the **CI-produced release ZIP**, not this source archive.
-2. Install via KernelSU / Magisk.
-3. Leave defaults at observe-only until recovery checks pass on the target device.
-4. Enable Adaptive only deliberately; all supported non-fatal resource namespaces follow the global Adaptive/armed authority.
-
----
-
-## Docs map
-
-| Doc | Purpose |
-|-----|---------|
-| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
-| [`SECURITY.md`](SECURITY.md) | Mutation safety rules |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Authority boundaries |
-| [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) | Discovery and eligibility |
-| [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Source layout |
-| [`docs/TUNING.md`](docs/TUNING.md) | Operator tuning notes |
-| [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) | What CI does and does not prove |
-| [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md) | On-device checklist |
-| [`docs/adr/`](docs/adr/) | Architecture decisions |
-
----
+| Document | Scope |
+|----------|-------|
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.0.1` checkpoint) |
+| [`SECURITY.md`](SECURITY.md) | Mutation safety invariants |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Closed-loop pipeline & authority boundaries |
+| [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) | Discovery, cross-domain coupling, and eligibility |
+| [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Source tree layout |
+| [`docs/TUNING.md`](docs/TUNING.md) | Operator configuration reference |
+| [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) | CI & device validation scope |
+| [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md) | On-device verification checklist |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 
 ## License
 

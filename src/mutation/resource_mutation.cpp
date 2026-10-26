@@ -286,16 +286,44 @@ bool ResourceMutationController::selectCandidate(
     ctx.memory_stall_score = sample.memory_stall_score;
     ctx.io_latency_available = sample.io_latency_available;
     ctx.io_avg_latency_ms = sample.io_avg_latency_ms;
+    ctx.gpu_busy_available = sample.gpu_busy_available;
+    ctx.gpu_busy_ratio = sample.gpu_busy_ratio;
+    ctx.frame_jank_rate = sample.frame_jank_rate;
+    ctx.gaming_active = sample.gaming_active;
 
     if (policy.action == PolicyAction::ReduceIntervention) {
         ctx.intervention = InterventionLevel::Low;
     }
 
     std::unordered_map<std::string, std::string> baseline_values;
-    baseline_values.reserve(baseline_.size());
+    baseline_values.reserve(baseline_.size() + profile.cpu_policies.size());
     for (const auto& item : baseline_) {
         if (item.second.valid) {
             baseline_values[item.first] = item.second.value;
+        }
+    }
+    // When an I/O scheduler was already transitioned (A -> B), let StrategyCatalog
+    // observe the live active scheduler B so coupled block-queue / governor /
+    // uclamp tunables align with B, while baseline_ retains factory A for rollback.
+    for (const std::string& dirty_path : dirty_resources_) {
+        if (dirty_path.size() >= 16U &&
+            dirty_path.compare(dirty_path.size() - 16U, 16U, "/queue/scheduler") == 0) {
+            std::string live_sched;
+            if (ResourceActuator::readComparable(dirty_path, live_sched) && !live_sched.empty()) {
+                baseline_values[dirty_path] = live_sched;
+            }
+        }
+    }
+    // Expose active CPUFreq scaling_governor posture so StrategyCatalog can
+    // couple governor rate_limit_us / uclamp / queue parameters to the live governor.
+    for (const CpuPolicy& cpu_pol : profile.cpu_policies) {
+        if (cpu_pol.path.empty()) continue;
+        const std::string gov_path = cpu_pol.path + "/scaling_governor";
+        std::string live_gov;
+        if (ResourceActuator::readComparable(gov_path, live_gov) && !live_gov.empty()) {
+            baseline_values[gov_path] = live_gov;
+        } else if (!cpu_pol.governor.empty()) {
+            baseline_values[gov_path] = cpu_pol.governor;
         }
     }
 

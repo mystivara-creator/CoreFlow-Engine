@@ -49,17 +49,20 @@ PolicyPlan PolicyEngine::evaluate(
         plan.reason = "pressure warning: stabilizing candidates only";
     } else if (!context.mutation_allowed_by_context) {
         plan.reason = "advisory: context headroom/confidence warning; evaluate bounded candidates";
-    } else if (context.state == RuntimeState::Warming ||
-               context.state == RuntimeState::Elevated) {
-        plan.reason = "warming/elevated context allows low autonomous tune";
-    } else if (context.state == RuntimeState::Normal &&
-               context.workload == WorkloadClass::CpuBound &&
-               context.confidence >= 0.72 &&
+    } else if ((context.workload == WorkloadClass::CpuBound ||
+                context.workload == WorkloadClass::GpuBound ||
+                context.workload == WorkloadClass::Sustained) &&
+               context.confidence >= 0.65 &&
                context.thermal_headroom &&
                context.memory_headroom &&
                context.power_headroom) {
         plan.intervention = InterventionLevel::Moderate;
-        plan.reason = "cpu-bound with headroom";
+        plan.reason = context.workload == WorkloadClass::GpuBound
+                          ? "gpu-bound rendering with headroom"
+                          : "sustained/cpu-bound with headroom";
+    } else if (context.state == RuntimeState::Warming ||
+               context.state == RuntimeState::Elevated) {
+        plan.reason = "warming/elevated context allows low autonomous tune";
     } else {
         plan.reason = "adaptive context: low autonomous tune";
     }

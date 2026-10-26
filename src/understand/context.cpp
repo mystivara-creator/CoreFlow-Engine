@@ -54,6 +54,9 @@ SystemContext ContextEngine::evaluate(
     } else if (sample.mem_total_kb > 0U && sample.mem_available_ratio > 0.0 &&
                sample.mem_available_ratio < 0.20) {
         context.workload = WorkloadClass::MemoryBound;
+    } else if (sample.gaming_active ||
+               (sample.gpu_busy_available && sample.gpu_busy_ratio >= 0.62)) {
+        context.workload = WorkloadClass::GpuBound;
     } else if ((sample.load_available && sample.load1 < 0.20 &&
                 (!sample.cpu_utilization_available || sample.cpu_utilization < 0.15)) ||
                (!sample.load_available && sample.cpu_utilization_available &&

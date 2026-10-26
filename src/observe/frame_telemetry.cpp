@@ -29,6 +29,7 @@ std::vector<std::uint64_t> FrameTelemetrySource::poll(std::uint64_t now_ms,
     if (!result.started || result.timed_out || result.truncated || result.exit_status != 0) {
         return {};  // unavailable telemetry yields no samples, never a stale one
     }
+    last_refresh_period_ns_ = parseLatencyRefreshPeriodNs(result.output);
     return parseLatencyDurations(result.output);
 }
 

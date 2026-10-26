@@ -153,8 +153,9 @@ ResourceDomain TunableDiscovery::domainFor(std::string_view p) const noexcept {
     if (hasSegment("/block/") && hasSegment("/queue/"))
         return ResourceDomain::Io;
     if (hasSegment("/devfreq/") || hasSegment("/kgsl/") ||
-        hasSegment("/mali/") || containsText(leaf, "gpu") ||
-        containsText(leaf, "gpuclk"))
+        hasSegment("/mali") || hasSegment("/ged/") ||
+        containsText(leaf, "gpu") || containsText(leaf, "gpuclk") ||
+        containsText(leaf, "pwrlevel"))
         return ResourceDomain::Gpu;
     if (hasSegment("/cpuctl/") || hasSegment("/stune/") ||
         (hasSegment("/cgroup/") && startsWith(leaf, "cpu.")))
@@ -284,6 +285,26 @@ void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const Vendo
                 if (::lstat(full.c_str(), &st) != 0) continue;
                 if (S_ISLNK(st.st_mode)) continue;
                 if (S_ISDIR(st.st_mode)) {
+                    const std::string_view rel = strip(full);
+                    const bool fatal_subtree =
+                        startsWith(rel, "/sys/bus/") || rel == "/sys/bus" ||
+                        startsWith(rel, "/sys/firmware/") || rel == "/sys/firmware" ||
+                        startsWith(rel, "/sys/kernel/debug") ||
+                        startsWith(rel, "/sys/kernel/tracing") ||
+                        startsWith(rel, "/sys/kernel/security") ||
+                        startsWith(rel, "/sys/fs/selinux") ||
+                        startsWith(rel, "/sys/fs/bpf") ||
+                        startsWith(rel, "/sys/fs/pstore") ||
+                        startsWith(rel, "/sys/class/thermal") ||
+                        startsWith(rel, "/sys/class/power_supply") ||
+                        startsWith(rel, "/sys/class/regulator") ||
+                        startsWith(rel, "/sys/class/gpio") ||
+                        startsWith(rel, "/sys/devices/virtual/thermal") ||
+                        startsWith(rel, "/sys/devices/system/memory");
+                    if (fatal_subtree) {
+                        ++stats.fatal_skipped;
+                        continue;
+                    }
                     if (depth + 1U <= max_depth && st.st_dev == root_st.st_dev &&
                         accept_dir(name)) {
                         queue.emplace_back(full, depth + 1U);
@@ -315,38 +336,42 @@ TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& ma
             stats.truncated = true;
             return stats;
         }
-        // The kernel mount table is the inventory of tunable filesystems. Nothing
-        // here names a directory: a root exists only if the kernel mounted it.
-        for (const KernelMount& mount : readKernelMounts(prefix_)) {
+        // Walk compact high-value mounts (procfs sysctls and cgroups) before
+        // sysfs so deep sysfs hierarchies can never starve VM, scheduler,
+        // UClamp, or CpuSet discovery under the bounded visit budget.
+        const auto mounts = readKernelMounts(prefix_);
+        for (const KernelMount& mount : mounts) {
             if (stats.truncated) break;
-            switch (mount.kind) {
-                case KernelFsKind::Procfs:
-                    walkTree(matrix, vendor, mount.mountpoint + "/sys", kSysctlDepth,
-                             acceptAllDirs, stats);
-                    break;
-                case KernelFsKind::Sysfs:
-                    walkTree(matrix, vendor, mount.mountpoint, kSysfsDepth, acceptAllDirs, stats);
-                    break;
-                case KernelFsKind::Cgroup:
-                    walkTree(matrix, vendor, mount.mountpoint, kCgroupDepth, acceptAllDirs,
-                             stats);
-                    break;
-                case KernelFsKind::Other:
-                    break;
+            if (mount.kind == KernelFsKind::Procfs) {
+                walkTree(matrix, vendor, mount.mountpoint + "/sys", kSysctlDepth,
+                         acceptAllDirs, stats);
+            } else if (mount.kind == KernelFsKind::Cgroup) {
+                walkTree(matrix, vendor, mount.mountpoint, kCgroupDepth,
+                         acceptAllDirs, stats);
+            }
+        }
+        for (const KernelMount& mount : mounts) {
+            if (stats.truncated) break;
+            if (mount.kind == KernelFsKind::Sysfs) {
+                walkTree(matrix, vendor, mount.mountpoint, kSysfsDepth,
+                         acceptAllDirs, stats);
             }
         }
 
-        // Every node the vendor itself configures, wherever it lives. These are
-        // declared by the device's own configuration, so they are admitted here.
+        // Every node the vendor itself configures, wherever it lives. Reserve a
+        // dedicated bounded pass (up to 512 vendor knobs within kMaxTunables)
+        // so sysfs width truncation never drops explicit Power HAL / init knobs.
+        constexpr std::size_t kMaxVendorAdmissions = 512U;
+        std::size_t vendor_checked = 0;
         for (const auto& knob : vendor.knobs()) {
-            if (stats.visited_entries >= kMaxVisits ||
+            if (vendor_checked >= kMaxVendorAdmissions ||
                 matrix.resources.size() >= kMaxTunables) {
-                stats.truncated = true;
+                if (matrix.resources.size() >= kMaxTunables) stats.truncated = true;
                 break;
             }
-            ++stats.visited_entries;
+            ++vendor_checked;
+            if (stats.visited_entries < kMaxVisits) ++stats.visited_entries;
             if (addTunable(matrix, knob.path, vendor, stats)) ++stats.vendor_paths;
-            if (stats.truncated) break;
         }
 
         enrich(matrix, vendor);
@@ -385,19 +410,38 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 continue;
             }
 
-            // 2) Sibling available_* list published by the same driver.
+            // 2) Sibling available_* / driver frequency table / KGSL pwrlevel / CPPC bounds.
             const std::string dir(dirOf(cap.path));
             const std::string leaf(leafOf(cap.path));
             const bool governor_like = containsText(leaf, "governor") || containsText(leaf, "policy");
-            // Level indices (e.g. *pwrlevel) are not frequencies: only nodes
-            // whose own name is a frequency/clock pair with a frequency list.
             const bool scale_like = containsText(leaf, "freq") || containsText(leaf, "clk");
-            if (!governor_like && !scale_like) continue;
+            const bool pwrlevel_like = containsText(leaf, "pwrlevel");
+            if (!governor_like && !scale_like && !pwrlevel_like) continue;
             bool siblings_truncated = false;
             const auto siblings = listDir(dir, TunableDiscovery::kMaxDirectoryEntries, siblings_truncated);
             if (siblings_truncated) continue;  // incomplete option inventories are not evidence
+
+            if (pwrlevel_like) {
+                std::string num_levels_text;
+                if (readFirstLine(dir + "/num_pwrlevels", num_levels_text)) {
+                    char* end = nullptr;
+                    const long long n = std::strtoll(num_levels_text.c_str(), &end, 10);
+                    if (end != num_levels_text.c_str() && *end == '\0' && n >= 2LL && n <= 32LL) {
+                        cap.options.clear();
+                        for (long long idx = 0; idx < n; ++idx) {
+                            cap.options.push_back(std::to_string(idx));
+                        }
+                        cap.ordered_scale = true;
+                    }
+                }
+                continue;
+            }
+
             for (const auto& sibling : siblings) {
-                if (!containsText(sibling, "available") || sibling == leaf) continue;
+                if (sibling == leaf) continue;
+                const bool gpu_table_alias =
+                    sibling == "gpu_freq_table" || sibling == "freq_table_mhz";
+                if (!containsText(sibling, "available") && !gpu_table_alias) continue;
                 const bool match_governor = governor_like && (containsText(sibling, "governor") ||
                                                               containsText(sibling, "polic"));
                 const bool match_scale = scale_like && (containsText(sibling, "freq") ||
@@ -417,11 +461,15 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 auto opts = words(list);
                 if (opts.empty()) continue;
                 if (match_scale) {
+                    const long long unit_mult = (sibling == "freq_table_mhz" &&
+                                                 live.size() >= 7U) ? 1000000LL : 1LL;
                     std::vector<long long> nums;
                     for (const auto& o : opts) {
                         char* end = nullptr;
                         const long long v = std::strtoll(o.c_str(), &end, 10);
-                        if (end != o.c_str() && *end == '\0') nums.push_back(v);
+                        if (end != o.c_str() && *end == '\0' && v > 0LL) {
+                            nums.push_back(v * unit_mult);
+                        }
                     }
                     if (nums.size() < 2U) continue;
                     std::sort(nums.begin(), nums.end());
@@ -433,6 +481,44 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                     cap.options = opts;
                 }
                 break;
+            }
+
+            // 3) CPPC / driver min-max hardware envelope fallback when no discrete
+            //    available_frequencies table is exported by the kernel driver.
+            if (cap.options.empty() &&
+                (leaf == "scaling_max_freq" || leaf == "scaling_min_freq")) {
+                std::string min_text, max_text;
+                if (readFirstLine(dir + "/cpuinfo_min_freq", min_text) &&
+                    readFirstLine(dir + "/cpuinfo_max_freq", max_text)) {
+                    char* end_min = nullptr;
+                    char* end_max = nullptr;
+                    char* end_cur = nullptr;
+                    const long long min_f = std::strtoll(min_text.c_str(), &end_min, 10);
+                    const long long max_f = std::strtoll(max_text.c_str(), &end_max, 10);
+                    const long long cur_f = std::strtoll(live.c_str(), &end_cur, 10);
+                    if (end_min != min_text.c_str() && *end_min == '\0' &&
+                        end_max != max_text.c_str() && *end_max == '\0' &&
+                        min_f > 0LL && max_f > min_f) {
+                        const long long span = max_f - min_f;
+                        std::vector<long long> steps = {
+                            min_f,
+                            min_f + span / 4LL,
+                            min_f + span / 2LL,
+                            min_f + (span * 3LL) / 4LL,
+                            max_f,
+                        };
+                        if (end_cur != live.c_str() && *end_cur == '\0' &&
+                            cur_f >= min_f && cur_f <= max_f) {
+                            steps.push_back(cur_f);
+                        }
+                        std::sort(steps.begin(), steps.end());
+                        steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
+                        if (steps.size() >= 2U) {
+                            for (const auto v : steps) cap.options.push_back(std::to_string(v));
+                            cap.ordered_scale = true;
+                        }
+                    }
+                }
             }
         } catch (...) {
         }

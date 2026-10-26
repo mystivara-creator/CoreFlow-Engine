@@ -1,3 +1,11 @@
+## v3.0.1 — Closed-Loop Adaptive Coupling & Unattended Release Checkpoint
+
+- **Cross-domain StrategyCatalog (`src/understand/strategy_catalog.cpp`)**: Added zero-I/O multi-domain coupling across I/O scheduler posture (`LowLatencyNone`, `DeadlineFair`, `BudgetFair`), CPUFreq governor posture (`EnergyAwareDynamic` `schedutil`/`walt`/`sugov`), foreground `cpu.uclamp.min`, GPU floor (`kgsl` / `devfreq` / `mali` / `ged`), and VM pressure under `DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, and `ThermalStabilization` regimes.
+- **Discovery & UFS/GPU capability unlocking**: Prioritized `procfs` and `cgroup` roots before `sysfs` with non-tunable bus pruning and reserved vendor-knob slots so `/proc/sys/vm/*`, `/dev/cpuctl/*`, UFS block queues (`/block/*/queue/*` on `/ufshc` controllers), Qualcomm KGSL (`min_pwrlevel` inverted power-level scale, `gpuclk`, `gpu_freq_table`), Mali/devfreq, and OEM PowerHAL/perf JSON hints are reliably discovered without hardcoded values.
+- **Dynamic 60–144Hz frame pacing & warm equilibrium (`48–52°C`)**: Parsed live display refresh period from `SurfaceFlinger --latency` headers, classified `WorkloadClass::GpuBound`, separated warm sustained gaming equilibrium (`48–51.9°C`) from `ThermalGuard` stress (`>= 52°C`), and enabled single-pending verified zero-harm `Neutral` retention alongside `Beneficial` outcomes.
+- **Portrait-ready KernelSU WebUI**: Replaced horizontal-overflow top tabs on portrait screens (`< lg`) with an accessible hamburger menu drawer, collapsible mobile daemon control strip, and 1-tap Adaptive + Interactivity profile configuration while preserving all `CoreFlowControl` safety gates.
+- **Safety invariants preserved**: Ships `mutation_mode=observe` and `mutation_armed=false` by default; keeps CRC32 v2 pre-write journaling, `O_NOFOLLOW` + `fstat` kernel-FS verification, live read-back checks, `SAFE_MODE` / `DISABLE` holds, and deterministic rollback.
+
 ## v3.0.0 — Architecture & Feature Freeze
 
 - Freeze milestone for the CoreFlow Autonomous architecture and supported contracts.

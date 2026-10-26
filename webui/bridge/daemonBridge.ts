@@ -429,7 +429,7 @@ export function buildMirrorStatusSnapshot(
 
   const statusObj = {
     schema: 1,
-    version: '3.0.0',
+    version: '3.0.1',
     pid: store.running ? store.pid : 0,
     sample: sample.sampleIndex,
     updated_epoch: nowEpoch,

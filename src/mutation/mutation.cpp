@@ -275,7 +275,15 @@ double MutationController::governorScore(
         case RuntimeState::Normal:
         case RuntimeState::Warming:
         case RuntimeState::Elevated:
-            return 0.5;  // neutral prior; no claimed empirical advantage
+            // Energy-aware dynamic governors cooperate directly with Android
+            // Power HAL, Performance Hint API, and UClamp requests. Keep the
+            // delta (0.04) strictly below kAdaptiveHysteresis (0.10) so no
+            // unmeasured switch occurs without positive outcome evidence, while
+            // breaking ties cleanly against static powersave/userspace governors.
+            if (governor == "schedutil" || governor == "walt" || governor == "sugov") {
+                return 0.54;
+            }
+            return 0.5;
     }
     return -1.0;
 }

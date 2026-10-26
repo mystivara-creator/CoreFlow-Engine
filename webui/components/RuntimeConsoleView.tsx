@@ -212,7 +212,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         <div className="text-xs text-slate-600 font-mono tabular-nums">
           <span>Sample #{d?.sample ?? currentSample.sampleIndex}</span>
           <span className="mx-2" aria-hidden="true">·</span>
-          <span>CoreFlow v{d?.version || '3.0.0'}</span>
+          <span>CoreFlow v{d?.version || '3.0.1'}</span>
           <span className="mx-2" aria-hidden="true">·</span>
           <span>Poll {d?.interval ?? effectiveSleepSec}s</span>
         </div>
