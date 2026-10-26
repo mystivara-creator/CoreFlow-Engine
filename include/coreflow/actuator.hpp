@@ -1,0 +1,206 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+#include <string>
+#include <utility>
+
+namespace coreflow {
+
+class MutationAuthority;
+
+enum class ActuatorDomain : std::uint8_t {
+    CpuFreq = 0,
+    Uclamp,
+    CpuSet,
+    Io,
+    Vm,
+};
+
+enum class ActuatorMode : std::uint8_t {
+    Observational = 0,
+    Autonomous,
+};
+
+enum class ActuatorStatus : std::uint8_t {
+    Ok = 0,
+    Unsupported,
+    Unavailable,
+    Invalid,
+    ReadFailed,
+    ValidationFailed,
+    SafetyRejected,
+    WriteFailed,
+    VerifyFailed,
+    RolledBack,
+    NoChange,
+};
+
+struct ActuatorId {
+    ActuatorDomain domain{ActuatorDomain::CpuFreq};
+    std::uint16_t instance{0};
+
+    constexpr bool operator==(const ActuatorId& other) const noexcept {
+        return domain == other.domain && instance == other.instance;
+    }
+};
+
+struct ActuatorCapability {
+    ActuatorId id{};
+    ActuatorMode mode{ActuatorMode::Observational};
+    bool readable{false};
+    bool writable{false};
+    bool verifiable{false};
+    bool rollbackable{false};
+    std::uint8_t max_writes_per_cycle{0};
+
+    constexpr bool mutationSafe() const noexcept {
+        return mode == ActuatorMode::Autonomous &&
+               readable && writable && verifiable &&
+               rollbackable && max_writes_per_cycle != 0;
+    }
+};
+
+struct ActuatorObservation {
+    ActuatorId id{};
+    std::string_view target{};
+    std::string_view current{};
+    std::string_view baseline{};
+    bool valid{false};
+    bool baseline_valid{false};
+};
+
+struct ActuatorMutation {
+    ActuatorId id{};
+    std::string_view target{};
+    std::string_view requested{};
+};
+
+struct ActuatorResult {
+    ActuatorStatus status{ActuatorStatus::Invalid};
+    std::uint8_t writes_attempted{0};
+    std::uint8_t writes_verified{0};
+
+    constexpr bool succeeded() const noexcept {
+        return status == ActuatorStatus::Ok ||
+               status == ActuatorStatus::NoChange;
+    }
+
+    constexpr bool changed() const noexcept {
+        return status == ActuatorStatus::Ok &&
+               writes_verified != 0;
+    }
+};
+
+class MutationPermit final {
+public:
+    // Legacy scope retained only while existing controller call sites migrate.
+    // New code should use the capability-bound authorization overload.
+    enum class Scope : std::uint8_t { CpuFreq = 0, Resource };
+
+    MutationPermit(const MutationPermit&) = default;
+    MutationPermit& operator=(const MutationPermit&) = default;
+
+    bool valid() const noexcept { return valid_; }
+    bool isCapabilityBound() const noexcept { return valid_ && capability_bound_; }
+    bool validFor(Scope scope) const noexcept {
+        return valid_ && legacy_scope_bound_ && scope_ == scope;
+    }
+
+    // A capability-bound permit is valid only for the exact actuator, target,
+    // and operation for which it was issued. Target is owned by the permit so
+    // callers cannot invalidate authorization by changing a temporary string.
+    bool validFor(const ActuatorMutation& mutation) const noexcept {
+        if (!valid_ || !capability_bound_) return false;
+        return mutation.id == actuator_id_ &&
+               mutation.target == target_ &&
+               mutation_operation_ == Operation::Write;
+    }
+
+    enum class Operation : std::uint8_t { Read = 0, Write, Restore };
+
+private:
+    explicit MutationPermit(bool valid, Scope scope) noexcept
+        : valid_(valid), scope_(scope), legacy_scope_bound_(true) {}
+
+    MutationPermit(bool valid, ActuatorId id, std::string target,
+                   Operation operation)
+        : valid_(valid), capability_bound_(valid), actuator_id_(id),
+          target_(std::move(target)), mutation_operation_(operation) {}
+
+    bool valid_{false};
+    Scope scope_{Scope::CpuFreq};
+    bool legacy_scope_bound_{false};
+    bool capability_bound_{false};
+    ActuatorId actuator_id_{};
+    std::string target_;
+    Operation mutation_operation_{Operation::Write};
+    friend class MutationAuthority;
+};
+
+class IActuator {
+public:
+    virtual ~IActuator() = default;
+
+    virtual ActuatorId id() const noexcept = 0;
+    virtual ActuatorCapability capability() const noexcept = 0;
+
+    // Discovery/refresh may perform filesystem I/O. Never call from the
+    // normal sampling hot path.
+    virtual ActuatorStatus discover() noexcept = 0;
+
+    // Observation must not mutate kernel state.
+    virtual ActuatorObservation observe(std::string_view target) noexcept = 0;
+
+    // The caller owns policy selection. This method only performs a bounded,
+    // already-approved mutation and read-back verification.
+    virtual ActuatorResult apply(
+        const ActuatorMutation& mutation,
+        const MutationPermit& permit
+    ) noexcept = 0;
+
+    virtual ActuatorResult restore(
+        std::string_view target
+    ) noexcept = 0;
+};
+
+constexpr const char* actuatorStatusCString(
+    ActuatorStatus status
+) noexcept {
+    switch (status) {
+        case ActuatorStatus::Ok:               return "OK";
+        case ActuatorStatus::Unsupported:      return "UNSUPPORTED";
+        case ActuatorStatus::Unavailable:      return "UNAVAILABLE";
+        case ActuatorStatus::Invalid:          return "INVALID";
+        case ActuatorStatus::ReadFailed:       return "READ_FAILED";
+        case ActuatorStatus::ValidationFailed: return "VALIDATION_FAILED";
+        case ActuatorStatus::SafetyRejected:   return "SAFETY_REJECTED";
+        case ActuatorStatus::WriteFailed:      return "WRITE_FAILED";
+        case ActuatorStatus::VerifyFailed:     return "VERIFY_FAILED";
+        case ActuatorStatus::RolledBack:       return "ROLLED_BACK";
+        case ActuatorStatus::NoChange:         return "NO_CHANGE";
+    }
+    return "UNKNOWN";
+}
+
+constexpr std::string_view actuatorStatusName(
+    ActuatorStatus status
+) noexcept {
+    switch (status) {
+        case ActuatorStatus::Ok:               return "OK";
+        case ActuatorStatus::Unsupported:      return "UNSUPPORTED";
+        case ActuatorStatus::Unavailable:      return "UNAVAILABLE";
+        case ActuatorStatus::Invalid:          return "INVALID";
+        case ActuatorStatus::ReadFailed:       return "READ_FAILED";
+        case ActuatorStatus::ValidationFailed: return "VALIDATION_FAILED";
+        case ActuatorStatus::SafetyRejected:   return "SAFETY_REJECTED";
+        case ActuatorStatus::WriteFailed:      return "WRITE_FAILED";
+        case ActuatorStatus::VerifyFailed:     return "VERIFY_FAILED";
+        case ActuatorStatus::RolledBack:      return "ROLLED_BACK";
+        case ActuatorStatus::NoChange:        return "NO_CHANGE";
+    }
+    return "UNKNOWN";
+}
+
+} // namespace coreflow

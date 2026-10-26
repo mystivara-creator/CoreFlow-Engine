@@ -1,0 +1,516 @@
+name: CoreFlow Autonomous Android NDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_min_api:
+        description: "Minimum Android API supported by the native build"
+        required: false
+        default: "34"
+        type: string
+  workflow_call:
+    inputs:
+      android_min_api:
+        description: "Minimum Android API supported by the native build"
+        required: false
+        default: "34"
+        type: string
+  push:
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+      - "webui/**"
+      - "package.json"
+      - "vite.config.ts"
+      - "index.html"
+      - "module/**"
+      - "!module/update.json"
+      - "tools/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coreflow-autonomous-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "30.0.16248370"
+  ANDROID_MIN_API: ${{ inputs.android_min_api || '34' }}
+  # Stable build SDK; native compatibility baseline remains API 34.
+  ANDROID_SDK_API: "36"
+  ANDROID_ABI: "arm64-v8a"
+  ONNX_RUNTIME_VERSION: "1.24.3"
+  # Pinned SHA-256 of the thermal model artifact (training provenance: synthetic-only, see BUILD_STATUS.md). Any change to the model
+  # must be reviewed and the pin updated deliberately.
+  THERMAL_MODEL_SHA256: "a605b046086f2f30e0a625c64547de5399e407887d69461d3c5642f7344f0703"
+
+jobs:
+  host-tests:
+    name: Host deterministic tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify host build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in cmake ninja g++; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required host tool is missing: $tool"
+              exit 1
+            }
+          done
+          cmake --version | head -n1
+          ninja --version
+          g++ --version | head -n1
+
+      - name: Configure host tests
+        run: |
+          set -euo pipefail
+          cmake \
+            -S . \
+            -B build/host \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCORE_FLOW_BUILD_TESTS=ON
+
+      - name: Build host tests
+        run: |
+          set -euo pipefail
+          cmake --build build/host --parallel $(nproc)
+
+      - name: Run host tests
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/host --output-on-failure --no-tests=error
+
+  sanitizer:
+    name: ASan + UBSan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    needs: host-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure sanitized host build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/sanitize -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCORE_FLOW_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build sanitized tests
+        run: cmake --build build/sanitize --parallel "$(nproc)"
+
+      - name: Run sanitized tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build/sanitize --output-on-failure --no-tests=error
+
+  android:
+    name: Android 14+ ARM64 Production
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    needs: host-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODULE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          MODULE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          CMAKE_VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
+          CONFIG_VERSION="$(sed -n 's/.*kCoreFlowVersion = "\([^"]*\)".*/\1/p' include/coreflow/config.hpp | head -n1)"
+          [[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 1000 + $2 * 100 + $3 * 10}' <<< "$CMAKE_VERSION")"
+          test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
+          test "$MODULE_CODE" = "$EXPECTED_CODE"
+          test "$CONFIG_VERSION" = "$CMAKE_VERSION"
+          echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
+          echo "Android native minimum API: ${ANDROID_MIN_API}"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platforms;android-${ANDROID_SDK_API}" \
+            "ndk;${NDK_VERSION}"
+
+      - name: Configure NDK
+        run: |
+          set -euo pipefail
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_BIN=${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_ENV"
+          test -f \
+            "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+
+      - name: Verify Android build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in cmake ninja; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required Android build tool is missing: $tool"
+              exit 1
+            }
+          done
+          cmake --version | head -n1
+          ninja --version
+
+      - name: Validate Android build contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${ANDROID_MIN_API}" in
+            ''|*[!0-9]*)
+              echo "::error::ANDROID_MIN_API must be numeric."
+              exit 2
+              ;;
+          esac
+
+          if [ "${ANDROID_MIN_API}" -lt 34 ]; then
+            echo "::error::CoreFlow requires Android API 34 or newer."
+            exit 2
+          fi
+
+          if [ "${ANDROID_MIN_API}" -gt "${ANDROID_SDK_API}" ]; then
+            echo "::error::ANDROID_MIN_API (${ANDROID_MIN_API}) cannot exceed the installed Android SDK API (${ANDROID_SDK_API})."
+            exit 2
+          fi
+
+          echo "Android native minimum API: ${ANDROID_MIN_API}"
+          echo "Android SDK platform installed: ${ANDROID_SDK_API}"
+          echo "NDK: ${NDK_VERSION}"
+          echo "ABI: ${ANDROID_ABI}"
+
+      - name: Setup Node.js for WebUI bundle
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build offline React WebUI into module/webroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Verify source package contract
+        run: |
+          set -euo pipefail
+          bash tools/verify_source_release.sh
+
+      - name: Verify WebUI payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in index.html style.css app.js control_logic.js engine_status.js; do
+            test -s "module/webroot/$f"
+          done
+          for f in control_logic.js engine_status.js; do
+            node --check "module/webroot/$f"
+          done
+          bash tools/test_webui_status.sh
+          ! grep -Eq 'https?://(cdn[.]jsdelivr[.]net|fonts[.]googleapis[.]com|unpkg[.]com)' module/webroot/index.html
+
+      - name: Fetch ONNX Runtime Android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ORT_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
+          ORT_AAR="/tmp/onnxruntime-android-${ONNX_RUNTIME_VERSION}.aar"
+
+          mkdir -p "$ORT_ROOT"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --silent \
+            --show-error \
+            -o "$ORT_AAR" \
+            "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ONNX_RUNTIME_VERSION}/onnxruntime-android-${ONNX_RUNTIME_VERSION}.aar"
+
+          test -s "$ORT_AAR"
+          unzip -q "$ORT_AAR" -d "$ORT_ROOT"
+
+          test -f "${ORT_ROOT}/headers/onnxruntime_cxx_api.h"
+          test -f "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so"
+
+          test "$(stat -c '%s' "${ORT_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")" -gt 100000
+
+      - name: Verify thermal model source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODEL="${GITHUB_WORKSPACE}/module/system/etc/coreflow/thermal_predictor.onnx"
+
+          if [ ! -s "$MODEL" ]; then
+            echo "::error::thermal_predictor.onnx is missing from module/system/etc/coreflow/"
+            exit 1
+          fi
+
+          MODEL_SIZE="$(stat -c '%s' "$MODEL")"
+          echo "Thermal model size: ${MODEL_SIZE} bytes"
+
+          if [ "$MODEL_SIZE" -lt 1000 ]; then
+            echo "::error::thermal_predictor.onnx is unexpectedly small (${MODEL_SIZE} bytes)"
+            exit 1
+          fi
+
+          ACTUAL_SHA="$(sha256sum "$MODEL" | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA" != "$THERMAL_MODEL_SHA256" ]; then
+            echo "::error::thermal_predictor.onnx digest mismatch: expected ${THERMAL_MODEL_SHA256}, got ${ACTUAL_SHA}"
+            exit 1
+          fi
+          echo "Thermal model digest verified: ${ACTUAL_SHA}"
+
+
+      - name: Configure Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S . \
+            -B build/android-arm64 \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${ANDROID_ABI}" \
+            -DANDROID_PLATFORM="android-${ANDROID_MIN_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCORE_FLOW_BUILD_TESTS=OFF \
+            -DCOREFLOW_ONNX_ROOT="${GITHUB_WORKSPACE}/third_party/onnxruntime-android"
+
+      - name: Build and Strip Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/android-arm64 --parallel $(nproc) --verbose
+
+          BINARY="$(
+            find build/android-arm64 \
+              -type f \
+              -name coreflowd \
+              -perm -111 \
+              | head -n 1
+          )"
+
+          test -n "$BINARY"
+          file "$BINARY"
+          file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
+          
+          # Strip debug symbols to keep the deployed footprint minimal.
+          "${TOOLCHAIN_BIN}/llvm-strip" --strip-all "$BINARY"
+
+      - name: Assemble module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BINARY="$(
+            find build/android-arm64 \
+              -type f \
+              -name coreflowd \
+              -perm -111 \
+              | head -n 1
+          )"
+
+          test -n "$BINARY"
+
+          ONNX_LIB="${GITHUB_WORKSPACE}/third_party/onnxruntime-android/jni/${ANDROID_ABI}/libonnxruntime.so"
+          MODEL="${GITHUB_WORKSPACE}/module/system/etc/coreflow/thermal_predictor.onnx"
+
+          test -s "$ONNX_LIB"
+          test -s "$MODEL"
+
+          file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
+          file "$ONNX_LIB" | grep -E "ELF 64-bit.*ARM aarch64"
+
+          MODULE_DIR="artifacts/CoreFlow-Autonomous"
+
+          mkdir -p \
+            "${MODULE_DIR}/system/bin" \
+            "${MODULE_DIR}/system/lib64" \
+            "${MODULE_DIR}/system/etc/coreflow"
+
+          cp "$BINARY" \
+            "${MODULE_DIR}/system/bin/coreflowd"
+
+          cp "$ONNX_LIB" \
+            "${MODULE_DIR}/system/lib64/libonnxruntime.so"
+
+          # Critical: deploy the actual thermal ML model into the module.
+          cp "$MODEL" \
+            "${MODULE_DIR}/system/etc/coreflow/thermal_predictor.onnx"
+
+          cp module/module.prop \
+            "${MODULE_DIR}/module.prop"
+
+          cp module/customize.sh \
+            "${MODULE_DIR}/customize.sh"
+
+          cp module/post-fs-data.sh \
+            "${MODULE_DIR}/post-fs-data.sh"
+
+          cp module/service.sh \
+            "${MODULE_DIR}/service.sh"
+
+          cp module/uninstall.sh \
+            "${MODULE_DIR}/uninstall.sh"
+
+          cp module/sepolicy.rule \
+            "${MODULE_DIR}/sepolicy.rule"
+
+          cp module/system/etc/coreflow/default.conf \
+            "${MODULE_DIR}/system/etc/coreflow/default.conf"
+
+          # Ship the static KernelSU WebUI with the installable module.
+          test -s module/webroot/index.html
+          test -s module/webroot/app.js
+          test -s module/webroot/style.css
+          test -s module/webroot/control_logic.js
+          # Native WebUI; no generated browser libraries or network downloads are required.
+          cp -R module/webroot "${MODULE_DIR}/webroot"
+
+          chmod 0755 \
+            "${MODULE_DIR}/system/bin/coreflowd" \
+            "${MODULE_DIR}/customize.sh" \
+            "${MODULE_DIR}/post-fs-data.sh" \
+            "${MODULE_DIR}/service.sh" \
+            "${MODULE_DIR}/uninstall.sh"
+
+          find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
+
+          chmod 0644 \
+            "${MODULE_DIR}/module.prop" \
+            "${MODULE_DIR}/sepolicy.rule" \
+            "${MODULE_DIR}/system/etc/coreflow/default.conf" \
+            "${MODULE_DIR}/system/etc/coreflow/thermal_predictor.onnx" \
+            "${MODULE_DIR}/system/lib64/libonnxruntime.so"
+
+      - name: Verify packaged deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODEL="artifacts/CoreFlow-Autonomous/system/etc/coreflow/thermal_predictor.onnx"
+          ONNX_LIB="artifacts/CoreFlow-Autonomous/system/lib64/libonnxruntime.so"
+          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
+
+          test -s "$MODEL"
+          test -s "$ONNX_LIB"
+          test -s "$BINARY"
+
+          # Verify that offline KernelSU WebUI bundle survives packaging.
+          WEBROOT="artifacts/CoreFlow-Autonomous/webroot"
+          for f in index.html style.css app.js control_logic.js engine_status.js; do
+            test -s "$WEBROOT/$f"
+          done
+
+          echo "Thermal model:"
+          stat -c '%n %s bytes' "$MODEL"
+
+          echo "ONNX Runtime:"
+          stat -c '%n %s bytes' "$ONNX_LIB"
+
+          echo "coreflowd:"
+          stat -c '%n %s bytes' "$BINARY"
+
+      - name: Package module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          VERSION="${VERSION:-unknown}"
+
+          ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-minapi${ANDROID_MIN_API}-arm64.zip"
+
+          cd artifacts/CoreFlow-Autonomous
+          zip -r "../$(basename "$ZIP")" .
+
+      - name: Verify package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          ZIP="artifacts/CoreFlow-Autonomous-${VERSION}-minapi${ANDROID_MIN_API}-arm64.zip"
+
+          test -f "$ZIP"
+
+          unzip -l "$ZIP" | grep -F "system/bin/coreflowd"
+          unzip -l "$ZIP" | grep -F "system/lib64/libonnxruntime.so"
+          unzip -l "$ZIP" | grep -F "system/etc/coreflow/default.conf"
+          unzip -l "$ZIP" | grep -F "system/etc/coreflow/thermal_predictor.onnx"
+          unzip -l "$ZIP" | grep -F "webroot/index.html"
+          unzip -l "$ZIP" | grep -F "webroot/app.js"
+          unzip -l "$ZIP" | grep -F "webroot/style.css"
+
+      - name: Generate binary provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
+          SHA="artifacts/CoreFlow-Autonomous/coreflowd-${ANDROID_ABI}.sha256"
+          sha256sum "$BINARY" | tee "$SHA"
+          printf 'version=%s\nabi=%s\nmin_api=%s\n' \
+            "$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')" \
+            "$ANDROID_ABI" "$ANDROID_MIN_API" \
+            > artifacts/CoreFlow-Autonomous/build-provenance.txt
+
+      - name: Upload raw production binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreFlow-coreflowd-${{ env.ANDROID_ABI }}-minapi${{ env.ANDROID_MIN_API }}
+          path: |
+            artifacts/CoreFlow-Autonomous/system/bin/coreflowd
+            artifacts/CoreFlow-Autonomous/coreflowd-${{ env.ANDROID_ABI }}.sha256
+            artifacts/CoreFlow-Autonomous/build-provenance.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload production artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreFlow-Autonomous-onnx-minapi${{ env.ANDROID_MIN_API }}-arm64
+          path: artifacts/CoreFlow-Autonomous-*-minapi${{ env.ANDROID_MIN_API }}-arm64.zip
+          if-no-files-found: error
+          retention-days: 30

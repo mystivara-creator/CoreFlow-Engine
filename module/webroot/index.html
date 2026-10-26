@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#10131a"><title>CoreFlow · Runtime Intelligence</title>
+<link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./material-fallback.css">
+<script>
+window.CoreFlowUI=window.CoreFlowUI||{};
+window.CoreFlowUI.materialState="fallback";
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "material/": "./vendor/material/",
+    "lit": "./vendor/node_modules/lit/index.js",
+    "lit/": "./vendor/node_modules/lit/",
+    "lit-html": "./vendor/node_modules/lit-html/lit-html.js",
+    "lit-html/": "./vendor/node_modules/lit-html/",
+    "lit-element/lit-element.js": "./vendor/node_modules/lit-element/lit-element.js",
+    "@lit/reactive-element": "./vendor/node_modules/@lit/reactive-element/reactive-element.js",
+    "@lit/reactive-element/": "./vendor/node_modules/@lit/reactive-element/",
+    "@lit/localize": "./vendor/node_modules/@lit/localize/lit-localize.js"
+  }
+}
+</script>
+<script type="module">
+// Material Web is vendored by CI from the upstream repository.
+// Runtime has no CDN dependency; missing/incomplete vendor files use the CSS fallback.
+const results = await Promise.allSettled([
+ import("./vendor/material/buttons/button.js"),
+ import("./vendor/material/switch/switch.js"),
+ import("./vendor/material/card/card.js")
+]);
+const loaded = results.filter(r => r.status === "fulfilled").length;
+const mode = loaded === results.length ? "local" : loaded > 0 ? "partial" : "fallback";
+document.documentElement.dataset.material = mode;
+window.CoreFlowUI.materialState = mode;
+document.dispatchEvent(new Event(loaded > 0 ? "coreflow:material-ready" : "coreflow:material-fallback"));
+</script>
+<script defer src="./control_logic.js"></script><script defer src="./engine_status.js"></script><script defer src="./app.js"></script>
+</head>
+<body>
+<div class="shell">
+<aside class="rail"><a class="brand" href="#overview"><span class="logo">C<span>F</span></span><span><b>CoreFlow</b><small>Runtime intelligence</small></span></a>
+<p class="caption">WORKSPACE</p><nav class="nav">
+<button class="nav-item active" data-page="overview">◫ <span>Overview</span></button>
+<button class="nav-item" data-page="resources">⌘ <span>Resource explorer</span><i id="nav-resource-count">—</i></button>
+<button class="nav-item" data-page="decisions">⌁ <span>Decision center</span></button>
+<button class="nav-item" data-page="policy">⚙ <span>Policy & modes</span></button>
+<button class="nav-item" data-page="journal">▤ <span>Journal</span></button>
+<button class="nav-item" data-page="system">▦ <span>System profile</span></button>
+<button class="nav-item" data-page="about">ⓘ <span>About</span></button></nav>
+<div class="spacer"></div><div class="rail-status"><small>● RUNTIME CHANNEL</small><b id="sidebar-daemon-state">Connecting…</b><span id="sidebar-last-seen">Waiting for daemon status</span></div>
+<div class="motto">✳ <span>Observe. Understand.<br>Balance. Adapt.</span></div></aside>
+<main><header class="topbar"><div class="mobile-brand"><span class="logo">C<span>F</span></span><b>CoreFlow</b></div><div class="crumb">CoreFlow <span>/</span> <b id="current-section">Overview</b></div><div class="top-actions"><span class="connection" id="connection-chip"><i id="connection-dot"></i><span id="connection-label">Connecting</span></span><button class="circle" id="theme-toggle" aria-label="Toggle theme">◐</button><span class="avatar">M</span></div></header>
+<div class="content">
+<section class="page active" id="page-overview"><div class="page-head"><div><small class="eyebrow">RUNTIME / LIVE OBSERVATION</small><h1>System overview<span>.</span></h1><p>A live view of what CoreFlow can observe, understand, and safely act on.</p></div><div class="actions"><button class="btn tonal" id="btn-rediscover">↻ Re-discover</button><button class="btn primary" id="btn-refresh">Refresh status</button></div></div>
+<div class="hero-grid"><article class="hero"><div class="hero-top"><small>ENGINE STATE</small><span id="engine-state-pill" class="pill">UNKNOWN</span></div><div class="orbit">CF</div><h2 id="engine-state-title">Waiting for CoreFlow</h2><p id="engine-state-description">Status appears when the runtime bridge responds.</p>
+<div class="actions engine-actions"><button class="btn tonal" id="btn-start-engine">▶ Start</button><button class="btn tonal" id="btn-stop-engine">■ Stop</button><button class="btn tonal" id="btn-restart-engine">↻ Restart</button></div><div class="hero-meta"><span id="engine-mode-label">Mode: unknown</span><span id="engine-version-label">Version: —</span></div></article>
+<article class="card safety"><div class="card-title"><div><small class="eyebrow">SAFETY POSTURE</small><h3>Mutation authority</h3></div><span class="shield">⛨</span></div><div class="safety-main"><span id="mutation-state" class="pill">UNKNOWN</span><b id="mutation-summary">Awaiting policy evidence</b></div><p id="mutation-detail">Discovery alone never grants permission to write a kernel resource.</p><small id="safety-gates">Safety gates: not reported</small></article></div>
+<div class="section-head"><div><h2>Live signals</h2><p>Missing telemetry stays unknown; values are never fabricated.</p></div><small>● LIVE SNAPSHOT</small></div>
+<div class="metrics">
+<article class="metric"><div class="metric-label">Thermal <span>♨</span></div><strong><span id="metric-thermal">—</span><small>°C</small></strong><p id="thermal-caption">No sensor sample</p><div class="track"><i id="thermal-track"></i></div></article>
+<article class="metric"><div class="metric-label">CPU activity <span>⌁</span></div><strong><span id="metric-cpu">—</span><small>%</small></strong><p id="cpu-caption">No activity sample</p><div class="track"><i id="cpu-track"></i></div></article>
+<article class="metric"><div class="metric-label">Memory available <span>▥</span></div><strong><span id="metric-memory">—</span><small>%</small></strong><p id="memory-caption">No memory sample</p><div class="track"><i id="memory-track"></i></div></article>
+<article class="metric"><div class="metric-label">Battery <span>ϟ</span></div><strong><span id="metric-battery">—</span><small>%</small></strong><p id="battery-caption">No battery sample</p><div class="track"><i id="battery-track"></i></div></article></div>
+<div class="two-col"><article class="card"><div class="card-title"><div><small class="eyebrow">CAPABILITY DISCOVERY</small><h3>Kernel resource map</h3></div><button class="link-btn" data-goto="resources">Explore ↗</button></div><div class="resource-summary"><div><strong id="discovered-total">—</strong><small>discovered resources</small></div><div class="bars"><label>Readable <i><b id="bar-readable"></b></i><strong id="readable-total">—</strong></label><label>Writable evidence <i><b id="bar-writable"></b></i><strong id="writable-total">—</strong></label><label>Mutation authorized <i><b id="bar-authorized"></b></i><strong id="authorized-total">—</strong></label></div></div><div class="notice">ⓘ <span>Discovered, readable, writable, authorized, and verified are separate states.</span></div></article>
+<article class="card"><div class="card-title"><div><small class="eyebrow">DECISION PIPELINE</small><h3>Latest activity</h3></div><button class="link-btn" data-goto="decisions">Open trace ↗</button></div><div id="overview-timeline" class="timeline"><div class="empty">Waiting for runtime data.</div></div></article></div></section>
+
+<section class="page" id="page-resources"><div class="page-head"><div><small class="eyebrow">OBSERVABILITY / DISCOVERY</small><h1>Resource explorer<span>.</span></h1><p>Inspect dynamically discovered interfaces without assuming a fixed kernel layout.</p></div><div class="actions"><button class="btn tonal" id="btn-resources-refresh">↻ Refresh</button><button class="btn primary" id="btn-resources-discover">Re-discover</button></div></div>
+<article class="card"><div class="stats"><div><strong id="resource-count-all">—</strong><small>Discovered</small></div><div><strong id="resource-count-readable">—</strong><small>Readable</small></div><div><strong id="resource-count-writable">—</strong><small>Writable evidence</small></div><div><strong id="resource-count-authorized">—</strong><small>Authorized</small></div></div><div class="notice">⛨ <span><b>Read-only explorer.</b> This screen visualizes discovery and policy evidence; it does not write kernel values.</span></div></article>
+<article class="card table-card"><div class="table-head"><div><h3>Discovered resources</h3><p id="resource-table-caption">Waiting for resource inventory.</p></div><div class="filters"><input id="resource-search" placeholder="Search name or path…" aria-label="Search resources"><select id="resource-domain" aria-label="Filter domain"><option value="">All domains</option><option>CPU</option><option>Memory</option><option>Scheduler</option><option>Io</option><option>GPU</option><option>Thermal</option><option>Battery</option><option>UClamp</option><option>CpuSet</option><option>Vendor</option><option>Unknown</option></select><select id="resource-state" aria-label="Filter state"><option value="">All states</option><option value="readable">Readable</option><option value="writable">Writable evidence</option><option value="authorized">Authorized</option><option value="verified">Verified</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Resource</th><th>Domain</th><th>Discovered</th><th>Readable</th><th>Writable</th><th>Authority</th><th>Verified</th></tr></thead><tbody id="resource-table-body"><tr><td colspan="7" class="empty">No inventory received yet.</td></tr></tbody></table></div><div class="table-bottom"><span id="resource-visible-count">0 resources</span><span>Unknown is not treated as false or true.</span></div></article></section>
+
+<section class="page" id="page-decisions"><div class="page-head"><div><small class="eyebrow">POLICY / EXPLAINABILITY</small><h1>Decision center<span>.</span></h1><p>Follow evidence, confidence, policy authority, and verification as separate stages.</p></div><button class="btn tonal" id="btn-decision-refresh">↻ Refresh trace</button></div>
+<div class="card pipeline"><div><small>01</small><b>Observe</b><span>Signals & resources</span></div><i>→</i><div><small>02</small><b>Understand</b><span>Capability & context</span></div><i>→</i><div><small>03</small><b>Balance</b><span>Policy & confidence</span></div><i>→</i><div><small>04</small><b>Adapt</b><span>Authorized only</span></div></div>
+<div class="two-col"><article class="card"><small class="eyebrow">LATEST DECISION</small><h3>Decision snapshot</h3><div id="decision-snapshot" class="detail-list"><div class="detail-row"><span>Decision</span><b>Not reported</b></div></div></article><article class="card"><small class="eyebrow">CONSULTATION</small><h3>Evidence ledger</h3><div id="consultation-ledger" class="empty">No consultation evidence reported.</div></article></div>
+<article class="card"><div class="card-title"><div><small class="eyebrow">DECISION TRACE</small><h3>Event timeline</h3></div><small id="decision-trace-count">0 events</small></div><div id="decision-timeline" class="timeline"><div class="empty">No decision events received.</div></div></article></section>
+
+<section class="page" id="page-policy"><div class="page-head"><div><small class="eyebrow">CONTROL PLANE / POLICY</small><h1>Policy & modes<span>.</span></h1><p>Explicit mode selection; Adaptive never bypasses runtime safety gates.</p></div></div><div class="two-col">
+<article class="card"><div class="card-title"><div><small class="eyebrow">RUNTIME MODE</small><h3>Operating posture</h3></div><span id="policy-mode-pill" class="pill">UNKNOWN</span></div><div class="mode-options"><button class="mode-option selected" data-mode="observe"><span>◉</span><div><b>Observe</b><small>Discover and explain. No mutation requested.</small></div><i></i></button><button class="mode-option" data-mode="adaptive"><span>⌁</span><div><b>Adaptive</b><small>Request adaptive policy; per-resource authorization still applies.</small></div><i></i></button></div><div class="notice warning">⚠ <span>Adaptive is not blanket write permission. Capability checks, policy authority, journal, read-back verification and rollback remain mandatory.</span></div><div class="form-actions"><button class="btn primary" id="btn-apply-mode">Apply mode</button><small id="mode-apply-status">No changes requested.</small></div></article>
+<article class="card"><small class="eyebrow">RUNTIME CONFIG</small><h3>Reported safety gates</h3><div id="policy-details" class="detail-list"><div class="detail-row"><span>Mutation mode</span><b>Unknown</b></div></div><div class="notice">ⓘ <span>Use existing fixed command builders and validated config writer. No free-form shell is exposed.</span></div></article></div></section>
+
+<section class="page" id="page-journal"><div class="page-head"><div><small class="eyebrow">AUDIT / EVENT HISTORY</small><h1>Journal<span>.</span></h1><p>A human-readable trace of runtime events and safety outcomes.</p></div><button class="btn tonal" id="btn-journal-refresh">↻ Refresh journal</button></div><article class="card"><div class="table-head"><div><h3>Runtime journal</h3><p>Terbaru di atas. Satu siklus dibaca dari bawah ke atas: policy_evaluated sampai cycle_completed. Setiap baris menunjukkan target, nilai yang ditulis, dan nilai sebelumnya.</p></div><input id="journal-search" placeholder="Filter journal…" aria-label="Filter journal"></div><div id="journal-list" class="journal-list"><div class="empty">No journal entries received.</div></div></article></section>
+
+<section class="page" id="page-system"><div class="page-head"><div><small class="eyebrow">DEVICE / ENVIRONMENT</small><h1>System profile<span>.</span></h1><p>Runtime-discovered platform information and interface availability.</p></div><button class="btn tonal" id="btn-system-refresh">↻ Refresh profile</button></div>
+<div class="metrics profile"><article class="metric"><small>PLATFORM</small><b id="system-device">Unknown device</b><p>Device model and code</p></article><article class="metric"><small>ANDROID</small><b id="system-android">Unknown</b><p>Version and API level</p></article><article class="metric"><small>KERNEL</small><b id="system-kernel">Unknown</b><p>Kernel release</p></article><article class="metric"><small>SoC</small><b id="system-soc">Unknown</b><p>Detected chipset family</p></article></div>
+<article class="card"><small class="eyebrow">CAPABILITY MATRIX</small><h3>Observed interface domains</h3><div id="system-capabilities" class="capability-grid"><div class="empty">Capability matrix not reported.</div></div></article><article class="card"><small class="eyebrow">RUNTIME DETAILS</small><h3>Environment snapshot</h3><div id="system-details" class="detail-list"><div class="detail-row"><span>Runtime version</span><b>Unknown</b></div></div></article></section>
+
+<section class="page" id="page-about">
+  <div class="page-head"><div>
+    <small class="eyebrow">PROJECT / PEOPLE / ECOSYSTEM</small>
+    <h1>About CoreFlow<span>.</span></h1>
+    <p>Observe. Understand. Balance. Adapt. — an independent Android runtime intelligence project by Mystivara.</p>
+  </div></div>
+
+  <article class="card developer-hero">
+    <div class="developer-mark" aria-hidden="true">M<span>✳</span></div>
+    <div class="developer-copy">
+      <small class="eyebrow">DEVELOPER PROFILE</small>
+      <h2>Mystivara</h2>
+      <p>Independent developer focused on Android systems, adaptive runtime engineering, capability discovery, and safe resource orchestration.</p>
+      <div class="developer-links">
+        <a class="btn primary" href="https://github.com/mystivara-creator" target="_blank" rel="noopener noreferrer">⌘ GitHub profile ↗</a>
+        <a class="btn tonal" href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer">View CoreFlow repository ↗</a>
+      </div>
+      <div class="profile-tags"><span>Android systems</span><span>C++ / Native</span><span>Runtime intelligence</span><span>Open source</span></div>
+    </div>
+  </article>
+
+  <div class="section-head"><div><h2>Project spotlight</h2><p>The engine behind the dashboard.</p></div><small>CORE PROJECT</small></div>
+  <article class="card project-spotlight">
+    <div class="project-emblem" aria-hidden="true">CF</div>
+    <div class="project-copy">
+      <small class="eyebrow">AUTONOMOUS RUNTIME ENGINE</small>
+      <h2>CoreFlow Autonomous</h2>
+      <p>Capability-driven Android runtime observation and resource policy. It discovers what the device exposes, reasons over available evidence, and keeps policy authorization separate from discovery.</p>
+      <div class="project-principles">
+        <div><b>01 / Observe</b><span>Collect reported signals and runtime state.</span></div>
+        <div><b>02 / Understand</b><span>Discover interfaces and evaluate context.</span></div>
+        <div><b>03 / Balance</b><span>Rank decisions against policy and confidence.</span></div>
+        <div><b>04 / Adapt</b><span>Act only through the engine's authorized control path.</span></div>
+      </div>
+      <div class="project-links"><a href="https://github.com/mystivara-creator/CoreFlow-Engine" target="_blank" rel="noopener noreferrer">Repository ↗</a><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/refactor/source-consolidation/README.md" target="_blank" rel="noopener noreferrer">Documentation ↗</a><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/refactor/source-consolidation/SECURITY.md" target="_blank" rel="noopener noreferrer">Security policy ↗</a></div>
+    </div>
+  </article>
+
+  <div class="section-head"><div><h2>Technology ecosystem</h2><p>Platforms and development tools associated with this project.</p></div><small>PLATFORMS & TOOLS</small></div>
+  <div class="ecosystem-grid">
+    <a class="ecosystem-card platform-card" href="https://www.android.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon android-mark">A</span><span><b>Android</b><small>Target runtime platform</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card platform-card" href="https://kernel.org/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon linux-mark">L</span><span><b>Linux</b><small>Kernel and system interfaces</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card platform-card" href="https://github.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon github-mark">⌘</span><span><b>GitHub</b><small>Source hosting and CI workflows</small></span><span class="ecosystem-arrow">↗</span></a>
+  </div>
+
+  <div class="section-head"><div><h2>AI development toolkit</h2><p>Tools that may assist research, coding, review, and problem-solving.</p></div><small>AI ECOSYSTEM</small></div>
+  <div class="ecosystem-grid ai-grid">
+    <a class="ecosystem-card" href="https://gemini.google.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">G</span><span><b>Gemini</b><small>Research & reasoning</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://grok.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">𝕏</span><span><b>Grok</b><small>Exploration & analysis</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://www.perplexity.ai/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">P</span><span><b>Perplexity</b><small>Web research</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://github.com/features/copilot" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">⌘</span><span><b>GitHub Copilot</b><small>Coding assistance</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">✳</span><span><b>ChatGPT</b><small>Planning & engineering support</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://claude.ai/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">C</span><span><b>Claude</b><small>Code review & writing</small></span><span class="ecosystem-arrow">↗</span></a>
+    <a class="ecosystem-card" href="https://www.kimi.com/" target="_blank" rel="noopener noreferrer"><span class="ecosystem-icon">K</span><span><b>Kimi</b><small>Long-context assistance</small></span><span class="ecosystem-arrow">↗</span></a>
+  </div>
+  <p class="ecosystem-disclaimer">Acknowledgement: these are independent platforms and tools in the wider development ecosystem. Their inclusion does not imply official sponsorship, partnership, endorsement, or that every tool contributed directly to this release.</p>
+
+  <div class="two-col">
+    <article class="card"><small class="eyebrow">ENGINE PHILOSOPHY</small><h3>Evidence before action</h3>
+      <p>CoreFlow keeps discovery, readability, write capability, authorization, and verified outcomes distinct. Missing telemetry remains unknown instead of being fabricated.</p>
+      <p>Adaptive is an operating policy, not a blanket permission; actual changes remain subject to the engine's configured authorization and validation path.</p>
+    </article>
+    <article class="card"><small class="eyebrow">SECURITY & GOVERNANCE</small><h3>Auditable control path</h3>
+      <p>Resource changes are expected to pass capability checks, policy evaluation, journaling, bounded writes, read-back verification, and recovery handling.</p>
+      <p><a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/refactor/source-consolidation/SECURITY.md" target="_blank" rel="noopener noreferrer">Read security policy ↗</a></p>
+    </article>
+  </div>
+</section>
+
+</div><footer><span>✳ CoreFlow Autonomous</span><span>Observe. Understand. Balance. Adapt.</span><small id="footer-material-status">Local-compatible UI</small></footer></main></div>
+<nav class="mobile-nav"><button class="active" data-page="overview">◫<small>Home</small></button><button data-page="resources">⌘<small>Resources</small></button><button data-page="decisions">⌁<small>Decisions</small></button><button data-page="policy">⚙<small>Policy</small></button><button data-page="journal">▤<small>Journal</small></button><button data-page="about">ⓘ<small>About</small></button></nav>
+<div class="toast" id="toast" role="status" aria-live="polite"></div><dialog id="confirm-dialog"><span class="shield">⛨</span><h2 id="dialog-title">Confirm action</h2><p id="dialog-copy">Continue?</p><div class="dialog-actions"><button class="btn tonal" id="dialog-cancel">Cancel</button><button class="btn primary" id="dialog-confirm">Confirm</button></div></dialog>
+</body></html>

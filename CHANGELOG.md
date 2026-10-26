@@ -1,0 +1,336 @@
+## v3.0.0 — Architecture & Feature Freeze
+
+- Freeze milestone for the CoreFlow Autonomous architecture and supported contracts.
+- Preserve observe-only release defaults and explicit mutation authorization.
+- Feature additions are deferred during freeze; fixes require regression validation.
+- Release status is determined by CI results for the exact tagged commit.
+- Device-specific behavior and thermal-model calibration are not universally certified.
+
+## v2.4.0 — Full capability authority
+
+- Removed separate `allow_cpu_governor` authorization; CPUFreq uses the global Adaptive + armed authority.
+- Per-domain `grant_*` flags remain explicit default-deny consultation gates. A grant never bypasses Adaptive/arming, candidate evidence, exact-target authorization, journaling, read-back verification, or rollback.
+- Interactivity boosts honor the corresponding `grant_gpu`, `grant_cgroup`, and `grant_block_queue` consultation gates, and apply eligible intents in a policy batch rather than one intent per tick.
+- Expanded launch-window, readahead, and GPU-step configuration ranges; kernel-advertised capability and fatal-surface policy remain authoritative.
+- Kept observe-only release defaults, global arming, thermal protection, fatal-surface exclusions, durable journaling, read-back verification, and rollback.
+
+# Changelog
+
+## Unreleased — WebUI redesign: CoreFlow Pulse
+
+- Rebuilt the webroot layout around a structured runtime dashboard: device telemetry, four-stage decision pipeline, baseline/outcome progress, authority and safety state, consultation reason cards, namespace reasons, capability matrix, and expandable detailed telemetry.
+- Rebuilt Policy, Journal, and Project & AI layouts with responsive native controls; restored the full Project & AI profile/acknowledgement page and added Perplexity.
+- Replaced Material web components and the Lit runtime with native HTML/CSS/JavaScript. The page uses system fonts, has no browser runtime vendor step, and makes no external font, CDN, image, or script requests.
+- Preserved the fixed control-command builders, config validation, Adaptive safety confirmation, SAFE_MODE gate, DISABLE kill switch, daemon-supervisor lifecycle commands, and text-only rendering of daemon data.
+- Updated render-contract tests and CI packaging to verify the native WebUI and exclude the previous vendored component runtime from the module payload.
+
+## Unreleased — Hardening on v2.4.0: authorization, journal recovery, bounded telemetry
+
+### Security and correctness
+- Per-domain grants are real and default-deny. `grant_<domain>` keys authorize resource domains and eligible interactivity boosts; the legacy `allow_cpu_governor` key remains parseable for compatibility/diagnostics but is not authority for CPUFreq governor changes. Capability alone cannot write (ADR 0006).
+- A successful boost restore was treated as a failure, so boosts never left the journal and their paths stayed blocked after the first use. Fixed by accepting `RolledBack` for restores, following `mutation.cpp`.
+- Journal commit, clear, and restore results are no longer discarded. Failures set `recovery_required_`, and new boosts are refused until a commit succeeds.
+- A boost is never re-read as its own baseline. Crash recovery adopts journal entries on start. A corrupt journal blocks boosts and is not overwritten.
+- The deadline arithmetic for the launch window saturates instead of wrapping.
+- `ftruncate` in the decision trace is checked. A failed truncate counts as a failed batch.
+- `FrameTelemetrySource` no longer uses `popen`. It runs `dumpsys` through a bounded runner: no shell, absolute path, 500 ms timeout, 256 KiB output cap, child killed on either limit. The poll rate is capped at 5 Hz.
+- Telemetry rows are parsed strictly: exactly three fields, each checked for overflow. The earlier parser accepted overflow and extra fields.
+- Devfreq load parsing is strict. `12garbage` and `8.5@abc` are rejected. This changes behaviour for inputs that were accepted before.
+
+### Tests
+- 21 host test binaries pass in the normal build, and 21 pass under ASan and UBSan with `-fno-sanitize-recover`.
+- New: `bounded_process`, `interactivity_boost` (fault injection for journal, restore, and recovery), `interactivity_deadline`, `strict_parse` (integers, devfreq grammar, telemetry rows), and `authorization_gate`.
+- `psi_parser_regex` silences one GCC false positive (`-Wmaybe-uninitialized` in libstdc++ `<regex>`) under sanitizers. The reason is recorded in the file.
+
+### Not done
+- Android ARM64 build and device validation.
+- At the time of this initial hardening snapshot, `launch_detector` and `render_collector` were not yet wired into the loop; this status was superseded by the later v2.4.0 Render Signals integration noted below.
+- Historical gap at the initial hardening snapshot: boost targets still relied on literal paths. The current source routes the boost target selection through discovered writable capabilities, but the journal path remains a configured runtime path rather than a discovered kernel capability.
+- Peer-thread ownership and PID identity checks (handoff P2) are not implemented.
+- Trailing whitespace in `autonomous.cpp` predates this release and is not changed here.
+
+## v2.4.0 — Render Signals and Interactivity Pipeline
+
+### Render and launch observation
+- Integrated the bounded `frame_latency` parser, deterministic `launch_detector`, and `render_collector` from the render-engine update. The collector reports unavailable pressure as unavailable rather than treating it as zero.
+- Added host tests for render collection, signal parsing, and frame-analyzer integration. ADR 0005 documents the render/launch/frame-pacing domains. Status was superseded by subsequent v2.4.0 integration: launch detection and bounded launch observation are called from the live loop when supported capabilities are discovered; GPU-busy mapping and device-outcome validation remain incomplete.
+
+### Bounded interactivity adaptation
+- Added foreground-change, GPU-busy, and SurfaceFlinger frame telemetry sources plus a deterministic interactivity state model and policy.
+- Interactivity remains observe-only by default. Boosts require `interactivity_mode=adaptive`, `mutation_mode=adaptive`, and `mutation_armed=true`; thermal guard and safety holds suppress boosts.
+- Added bounded, expiring boost intents with journal-before-write, read-back verification and restoration paths. The boost target domains honor their corresponding explicit `grant_gpu`, `grant_cgroup`, or `grant_block_queue` gate.
+- Configuration clamps launch windows, jank threshold, uclamp values, GPU steps, readahead, and boost duration.
+
+### Validation
+- Host build and deterministic test suite: see the merge validation results for this source package.
+- Android ARM64 build and target-device behavior have not been certified by this host run.
+
+## v2.3.0 — Production Hardening Candidate
+
+### Safety and recovery
+- Mutation journal writes use a checksummed v2 format. The loader remains backward-compatible with v1 journals so a pending journal created by an earlier version can still be recovered after an upgrade.
+- Journal operations are bounded (256 entries, 4096 bytes per field, 1 MiB per file), use a unique exclusive temporary to prevent hard-link truncation, reject embedded NULs and duplicate paths, refuse symlink/non-regular journal files, and fail closed on truncation or checksum mismatch.
+- Resource actuator writes now operate through a no-follow descriptor that is checked with `fstat` before the write, rather than re-opening a path through a stream after the earlier path check. The final write gate also requires procfs, sysfs, or cgroup filesystem semantics so a journal path cannot redirect recovery into an ordinary data file. The live value is still read back and verified.
+- Resource baseline capture refuses to proceed if recovery cannot be checked because the mutation journal is not configured.
+- Observe-only/disarmed defaults are unchanged.
+
+### Release and packaging
+- Version metadata is aligned to `2.3.0` / `v2.3.0`, `versionCode=2300`, including CMake, runtime, module metadata, updater feed, README, and build-status documentation.
+- CMake discovers source and `*_tests.cpp` files dynamically. Source platform membership is explicit when tagged and otherwise inferred from platform headers; each test source gets a matching test target.
+- Tunable discovery uses mounted kernel interface roots and bounded traversal, avoids following discovered symlinks, and leaves unclaimed writable nodes out of mutation candidacy. Discovery remains evidence, not authorization.
+- ADR 0002 records dynamic packaging; ADR 0003 remains Proposed and keeps system-property mutation out of this release; ADR 0004 records journal v2 compatibility and bounds.
+
+### Validation
+- The v2.3.0 candidate must pass its own host tests, safety/source-release contracts, ASan/UBSan and Android ARM64 production workflow before publication.
+- The v2.2.5 CI results are not carried forward as evidence for the new journal/actuator code. Physical-device installation, long-run and recovery tests remain to be completed by the operator.
+
+## v2.2.5 — Evidence-Based Resource Reasoning & Release Validation
+
+### Changed
+
+- Refined EffectModel eligibility to use semantic evidence, runtime context, and risk rather than assuming that a writable interface implies benefit.
+- Memory-pressure handling no longer assumes arbitrary numeric tunables, such as swappiness, will stabilize memory. Stabilizing candidates require relevant domain and vendor evidence.
+- Utilization-clamp candidates are considered stabilizing only in relevant thermal or throttling contexts.
+- Physical block-queue controls (`read_ahead_kb` and `nr_requests`) remain eligible for evaluation when device capability, policy, and runtime evidence permit them. They are not globally disabled; stress and safety gates remain.
+- Aligned release version metadata across CMake, runtime configuration, module metadata, updater metadata, README, and packaged default configuration.
+
+### Safety
+
+- Default mode remains `mutation_mode=observe`.
+- Mutation remains disarmed by default (`mutation_armed=false`).
+- Superseded: CPUFreq now follows the global Adaptive/armed authority; the legacy flag is ignored.
+- Discovery does not grant mutation authority. Policy authorization, capability checks, bounded writes, journaling, read-back verification, safety holds, and rollback remain required.
+- Fatal and protected surfaces remain outside the normal mutation path.
+
+### Validation
+
+- Host deterministic tests: passed in GitHub Actions.
+- Android 14+ ARM64 production build and package validation: passed in GitHub Actions.
+- ASan + UBSan: passed in GitHub Actions.
+
+### Scope and limitations
+
+- CI success does not certify behavior on every Android device.
+- KernelSU/Magisk installation, device-specific behavior, sustained observation, and recovery testing should be validated on the target device before enabling Adaptive mode.
+- Publish the public release only with the verified CI-produced ZIP and matching release metadata.
+
+---
+
+## v2.2.0 — Final development snapshot (not yet device-certified)
+
+### Merged improvements (post-merge audit)
+- Expanded `ResourceActuator::mutationTargetAllowed` beyond the hard-coded seven VM paths: now admits all EffectModel-prior VM sysctls (`watermark_scale_factor`, `page-cluster` included) and physical block-queue numeric nodes (`/sys/block/<dev>/queue/{read_ahead_kb,nr_requests}`). Virtual devices and scheduler tokens remain denied.
+- Aligned actuator allow-list with consultation `SurfaceClass::Admissible` and the existing EffectModel I/O priors so `grant_block_queue=yes` can actually take effect.
+- Updated host tests to assert physical queue admission and continued virtual/scheduler denial.
+
+### Included
+- Capability-bound resource authorization and consultation Allow/Defer/Deny ledger exposed in runtime status and WebUI.
+- Expanded domain evidence summaries and aligned module/CMake/runtime version identity (`v2.2.0`, `versionCode 2200`).
+- Updated handoff and readiness documentation to distinguish completed host validation from outstanding Android/device gates.
+
+### Not certified
+- Android NDK/ARM64 + ONNX Runtime link, KernelSU/Magisk install tests, and real-device soak/recovery validation remain outstanding.
+- Settings DB observation, grant/revoke control API, and grant TTL remain intentionally out of scope until their permission and authority boundaries are reviewed.
+
+## Unreleased — Consultation brain and user grants
+
+### Changed
+- Source tree reorganized by role: `observe/` (eyes), `understand/` and `balance/` (reasoning and brain), `mutation/` (hands), `conscience/` (memory), `runtime/`, and `autonomous/`.
+- Discovery no longer decides mutation admissibility by itself. It asks `balance/consultation` through `classifySurface`.
+
+### Added
+- Expose the bounded consultation ledger in the read-only `status.json` snapshot: cumulative counts by reason plus each namespace's latest reason and whether runtime need was present.
+- Render consultation reason counts and last namespace decisions in the WebUI's live Brain panel. Older daemon snapshots remain readable and show an explicit unavailable message.
+- Consultation: every resource candidate gets an Allow, Defer, or Deny verdict with a reason. Order: observe-only namespaces and kernel-critical surfaces are denied; missing observation, baseline, semantic knowledge, stress compatibility, runtime need, and EffectModel benefit are deferred; user permission is checked last.
+- Per-namespace user grants: `grant_memory`, `grant_block_queue`, `grant_scheduler` (default `no`). A device need never grants permission on its own.
+- Bounded consultation ledger for status and diagnostics.
+- `coreflow_consultation_tests` and an end-to-end test proving that no kernel value changes without a user grant.
+
+### Safety
+- Build properties and settings database are observed, never written, in this build.
+- Benefit judgment reuses EffectModel's single eligibility definition; no second threshold was introduced.
+
+## v2.2.0 — Adaptive reasoning + 15-domain capability expansion
+
+### Added
+- Bounded multi-stage decision review: observation validation, candidate generation,
+  evidence/risk review, ambiguity handling, and proposal-only output.
+- Fifteen additional domain capability descriptors with detected/observable/unavailable
+  evidence levels; domain discovery never grants actuator authority.
+- Live status JSON and WebUI summary for expanded domain coverage.
+
+### Safety
+- Existing policy permits, actuator verification, rollback, and quarantined interfaces
+  remain authoritative. Newly catalogued domains are observation-only.
+
+
+## v2.1.0 — Hardening (status truth + agent visibility)
+
+### Fixed
+- **Adaptive shown as Observe on Live page**: `status.json` now publishes `mode` as
+  `adaptive`/`observe` (config tokens). `primaryBlocker` accepts case-insensitive mode
+  so legacy `ADAPTIVE`/`DISABLED` log tokens cannot force `OBSERVE_MODE`.
+- **Confidence gate in status blocker** aligned to 0.60 (Balance default).
+
+### Improved
+### Polish
+- `skip_reason` + observation epoch progress (`observation_samples` / `observation_target=5`) in status.json
+- WebUI Brain shows observation epoch and skip/wait reason (no silent NO_ACTION)
+- `default.conf` `min_confidence=0.60` aligned with Balance EngineConfig
+
+- **DecisionAgent** proposal summaries include resource, utility, benefit, risk, confidence.
+- **ResourceMutationController** records `lastAgentReason()`; published in status as
+  `brain.agent_mode` / `brain.agent_reason`.
+- **WebUI** Brain panel shows Decision agent row.
+- Host tests: `ADAPTIVE` mode must not map to `OBSERVE_MODE`.
+- `DEVICE_VALIDATION.md` staged checklist for real-device RC evidence.
+
+
+## Unreleased — v2.1.0 safety and observability follow-up
+
+This is a source hardening continuation of the supplied v2.1.0 tree, not a version reset or new public release.
+
+- Added `policy_authorized` as a distinct capability fact; `writable`/`permission_granted` evidence and model inference no longer substitute for the explicit policy gate.
+- Restricted the production `ResourceMutationController` and central resource actuator to seven exact VM paths with semantic priors; other resource paths are denied for new writes. The separate CPUFreq path remains behind its explicit `allow_cpu_governor` opt-in (default `no`). Block-device queue writes (`scheduler`, `nr_requests`, `read_ahead_kb`) are quarantined across discovery, baseline capture, ranking/selection and the central actuator, including fallback paths.
+- Kept journal-based restore available for recovery from changes recorded by older builds; the new-write guard is intentionally not applied to restore.
+- Added live device/ecosystem data to `status.json` and the WebUI: manufacturer/model, Android/API, kernel/ABI, SoC/board, interface presence, discovered capabilities and policy-ready count.
+- Added regression coverage for policy authorization and protected block queue targets, plus WebUI contract/render assertions.
+- Migrated the native build contract to C++20 for host and Android NDK builds.
+- Connected `ScoringDecisionAgent` to the real resource-candidate ranking path. It returns explainable ranked proposals only; policy authorization, MutationAuthority, journal, actuator verification, ExperienceMemory scoring and rollback remain downstream.
+- Added a KernelSU / KernelSU Next `updateJson` feed. A GitHub Release workflow validates the versioned install ZIP and attaches a release-specific `update.json` so the manager can detect newer `versionCode` values.
+- Host build/CTest passed in this work. Android NDK/ARM64 linking, Android ONNX integration and device-level behavior still require the operator's CI and staged validation.
+
+## v2.1.0 — Balance pass (community evaluation target)
+
+Identity: **Observe. Understand. Balance. Adapt.**
+
+Authority was fail-closed to a fault: real devices often never reached
+`mutation_allowed_by_context`, so Adaptive could not adapt. This pass keeps every
+hard safety stop (journal, verify, rollback, Idle/disarm/kill-switch, CPU opt-in)
+and opens the dead bands that blocked useful Low/Moderate resource mutation.
+
+### Balance changes (real-device impact)
+- **Context confidence** gate: `0.70` → `0.60` (mutation + stabilizing).
+- **Config `min_confidence`**: `0.70` → `0.60` (MutationAuthority / controllers).
+- **Thermal headroom**: `< 50°C` → `< 52°C` (still below ThermalGuard enter 55°C).
+- **Memory headroom**: `≥ 0.18` → `≥ 0.14` (Pressure still enters at 0.10).
+- **CpuBound classification**: util `≥ 0.80` → `≥ 0.72`; Sustained rising util `≥ 0.65` → `≥ 0.60`.
+- **Policy Normal / CpuBound**: Moderate confidence `0.85` → `0.72`.
+- **Policy Normal**: mild activity with headroom may take **Low** (was Hold-only).
+- **EffectModel**: confidence multipliers raised (`0.85`→`0.92` numeric, `0.75`→`0.88` scheduler);
+  utility floor `0.05` → `0.02`; scheduler justify includes Normal / moderate load.
+
+### Still hard (unchanged on purpose)
+- Default remains observe-only until Adaptive + armed.
+- Superseded: no separate CPU governor opt-in is required.
+- ThermalGuard / Pressure: only `stabilizing_only` resource writes; never CPU governor.
+- Journal before write, read-back verify, regression restore, one write per epoch.
+
+### Also in this tree
+- `IDecisionAgent` + `ScoringDecisionAgent` (interface ready; ranking still EffectModel).
+- `DEVELOPMENT_ROADMAP.md` for post-community agentic work.
+
+## Unreleased (audit fixes originally on v2.1.0 source)
+
+### Added: live engine status for the WebUI (eyes, brain, hands)
+The WebUI used to re-read `/proc` through a shell and guess decisions from log regexes, so
+it never saw what the engine itself saw or decided.
+- **C++**: `status_snapshot` (host-tested). The daemon writes `/data/adb/coreflow/status.json`
+  atomically (temp file + rename, mode 0600) once per cycle, and a final `running:false`
+  snapshot at shutdown. Writing is best-effort and cannot affect control.
+- **Content**: eyes (the engine's own telemetry), brain (state, workload, context gates, plan,
+  mode/armed, what `MutationAuthority` would grant now, baseline and cooldown), hands (changes
+  held, applied values, verified/rolled-back/failed counters, last change).
+- **`blocker` code**: one stable answer to "why is the engine not acting?", from a fixed
+  evaluation order (stopped, safety hold, observe, not armed, baseline, observing, change
+  held, cooldown, context idle/confidence/headroom, no candidates, ready).
+- **WebUI**: new default page "Live engine" with a decision pipeline and Eyes/Brain/Hands
+  panels. Read-only; polls only while visible; reports a missing, stale or stopped daemon.
+  Rendering uses `textContent` only.
+- **Tests**: strict-JSON validation of the writer (NaN, quotes, control characters, size caps),
+  blocker ordering, atomic write; a cross-language test that feeds real C++ output to the
+  WebUI parser and checks both sides agree on every field and blocker code; an end-to-end
+  smoke test running the real `app.js` against a fake DOM and KernelSU bridge. Writer and
+  reader mutants were all caught.
+
+### Changed (behavior): graded safety instead of a hard block
+Before, ThermalGuard and Pressure blocked every write at three separate layers, and
+the daemon restored any change the moment such a state began. Those are the moments
+the tuning priors were written for, so the engine was idle exactly when needed.
+- **Context**: new `stabilizing_allowed_by_context` (non-Idle, confidence >= 0.70, and
+  stressed: ThermalGuard/Pressure or missing thermal/memory headroom). Heavy I/O no
+  longer blocks proactive tuning.
+- **Policy**: a stressed but trustworthy context yields a `stabilizing_only` plan at
+  Low intervention (Memory/Io candidates). Low confidence or Idle is still a hard hold.
+- **EffectModel**: marks a candidate `stabilizing` only when it answers thermal stress
+  by lowering load or answers memory pressure in the prior's memory direction.
+  Schedulers are never stabilizing.
+- **Authority**: a stabilizing plan gets a Resource permit only. It never gets a CPU
+  governor permit. In ThermalGuard/Pressure any non-stabilizing plan gets nothing.
+- **Daemon**: the immediate restore under stress is skipped only for a held
+  stabilizing resource write while the plan still permits one (`shouldRestoreEpochNow`,
+  host-tested). Idle, disarm, kill switch, SAFE_MODE, low confidence, any CPU governor
+  change, and a measured regression still restore. The observation window, outcome
+  hold and one-write-per-epoch limit still apply.
+- **Resource rejection**: `rejectLastMutation()` previously only cleared a list. A
+  regressed candidate is now suppressed for 120 controller cycles, as the CPU
+  controller already did.
+- Trace and log gain `stabilizing_only`.
+- Unchanged: journal before write, read-back verify, rollback, boot-loop guard,
+  kill switch, SAFE_MODE, `allow_cpu_governor` opt-in.
+
+### Fixed
+- **Scheduler selector values** (`queue/scheduler`): the kernel reads back the
+  active token in brackets (`[mq-deadline] kyber none`) but accepts only the bare
+  token on write. Verification and baseline capture now use the comparable active
+  token, so rollback writes a value the kernel accepts. Journals written by earlier
+  builds are normalized on restore.
+- **Installer legacy flag**: `/sdcard/CoreFlow/enable_adaptive` no longer arms Adaptive
+  (shared storage is writable by any app). Only an explicit Volume Down press does;
+  timeout means observe, as the on-screen text states.
+- **CPU governor permit**: `MutationAuthority` now refuses the CPUFreq permit unless
+  the global Adaptive/armed gate, matching the controller-side authority.
+- **Resource apply result**: a `NoChange` outcome is reported as `Skipped`, not
+  `Verified`. The journal is no longer dropped while another resource is still changed.
+- **WebUI shell interpolation**: `mutation_mode` is quoted in the config-write script.
+
+### Tests
+- Regression tests for selector comparison, scheduler rollback to the bare token,
+  legacy journal normalization, and CPU permit gating. Verified to fail on the
+  pre-fix behavior.
+- Installer harness: 10/10 (previously 2 of 12 cases failed). Flag cases now assert the flag is ignored.
+
+### Removed
+- Dead `webui_adaptive_pending` branch in `service.sh` (nothing ever created the marker).
+
+### Known gaps
+- Scheduler behavior is verified with regular files, not real sysfs. Device validation is still required.
+- Stabilizing priors (direction and step of each knob) are source-level assumptions, not device measurements.
+- `autonomous.cpp` and `decision_trace.cpp` cannot be built on the host; they were syntax-checked with `-Werror` against a stub `android/log.h` only. The NDK build is still required.
+- No dedicated test yet for the `ReadFailed`/journal-retention path in `applyCandidate`.
+## v2.1.0 — Fully Autonomous Capability-Driven Engine
+
+### Architecture
+- **EffectModel** ranks discovered writable resources using a consistent benefit/risk/confidence utility and structured resource identity. Unknown numeric controls remain ineligible until semantics are defined.
+- I/O queue controls require observed I/O activity; CPU utilization or load alone is not sufficient evidence to tune them.
+- **ResourceMutationController**: candidate generation is now capability-matrix driven, not a hard-coded resource name list. Baseline capture covers every `mutation_ready` Memory / Io / Scheduler capability.
+- **PolicyEngine**: more proactive under Warming / Elevated / active workloads while remaining fail-closed on Idle and when context headroom is missing. Candidates are taken from the resource model.
+- **MutationAuthority**: issues permits only for eligible `Candidate` plans; `ReduceIntervention` is hold/recovery-only and never starts a new write.
+
+### Discovery
+- Expanded VM tunables: `vm.min_free_kbytes`, `vm.dirty_expire_centisecs`, `vm.dirty_writeback_centisecs` in addition to swappiness / dirty ratios / vfs_cache_pressure.
+
+### Safety (unchanged contract)
+- Release default remains observe-only (`mutation_mode=observe`, `mutation_armed=false`).
+- Journal → bounded write → read-back verify → rollback.
+- Boot-loop guard and SAFE_MODE preserved.
+
+### Context gate
+- `ThermalGuard` and `Pressure` block new optimization writes. Recovery and rollback remain available through the controller's restoration path.
+
+### Intent
+The engine discovers what the device exposes, scores what is safe and useful to change, applies at most one verified mutation per epoch, measures outcome, and rolls back. Resource identity is not pre-selected by the packager.
+
+## v2.0.1
+- Release-candidate source package with observe-only defaults, ONNX thermal predictor, host tests, and safety contracts.
+

@@ -1,0 +1,7 @@
+id=coreflow_autonomous
+name=CoreFlow Autonomous
+version=v3.0.0
+versionCode=3000
+author=Mystivara
+description=Observe. Understand. Balance. Adapt. Capability-driven native C++ autonomous engine — graded safety, bounded mutation, verified rollback.
+updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

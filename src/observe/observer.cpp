@@ -1,0 +1,509 @@
+#include "coreflow/kernel_roots.hpp"
+#include "coreflow/observer.hpp"
+#include "coreflow/observer_metrics.hpp"
+#include "coreflow/thermal_limits.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cerrno>
+#include <cstdlib>
+#include <dirent.h>
+#include <fcntl.h>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <unistd.h>
+
+namespace coreflow {
+namespace {
+
+struct DirCloser {
+    DIR* dir;
+    ~DirCloser() { if (dir) ::closedir(dir); }
+};
+
+std::string lowerCopy(const std::string& input) {
+    std::string out = input;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+bool isExcludedThermalType(const std::string& type) {
+    const std::string t = lowerCopy(type);
+    if (t.find("bcl") != std::string::npos) return true;
+    if (t.find("mmw") != std::string::npos) return true;
+    if (t.find("sub1") != std::string::npos) return true;
+    if (t.find("sdr") != std::string::npos) return true;
+    if (t.find("ific") != std::string::npos) return true;
+    if (t.find("zeroc") != std::string::npos) return true;
+    if (t.find("modem") != std::string::npos) return true;
+    if (t.rfind("lvl", 0) != std::string::npos) return true;
+    if (t.find("lvl") != std::string::npos && t.find("pm") != std::string::npos) return true;
+    return false;
+}
+
+int thermalTypeRank(const std::string& type) {
+    const std::string t = lowerCopy(type);
+    if (isExcludedThermalType(type)) return -1;
+    if (t == "quiet_therm" || t.find("quiet") != std::string::npos) return 100;
+    if (t == "xo-therm" || t.find("xo_therm") != std::string::npos ||
+        t.find("xo-therm") != std::string::npos) return 95;
+    if (t.find("skin") != std::string::npos || t.find("shell") != std::string::npos) return 90;
+    if (t.find("cpuss") != std::string::npos) return 80;
+    if (t.find("cpu-") != std::string::npos || t.find("cpu_") != std::string::npos) return 70;
+    if (t.find("tsens") != std::string::npos) return 65;
+    if (t.find("gpu") != std::string::npos) return 55;
+    if (t.find("soc") != std::string::npos && t.find("socd") == std::string::npos) return 50;
+    if (t == "battery") return 40;
+    if (t.find("aoss") != std::string::npos) return 35;
+    if (t.find("ddr") != std::string::npos) return 30;
+    return 10;
+}
+
+bool isPrimaryThermalType(const std::string& type) {
+    return thermalTypeRank(type) >= 50;
+}
+
+long readLongFd(const std::string& path, bool& ok) noexcept {
+    ok = false;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return 0;
+
+    std::array<char, 64> buffer{};
+    const ssize_t count = ::read(fd, buffer.data(), buffer.size() - 1U);
+    ::close(fd);
+
+    if (count <= 0) return 0;
+    buffer[static_cast<std::size_t>(count)] = '\0';
+
+    char* end = nullptr;
+    errno = 0;
+    const long val = std::strtol(buffer.data(), &end, 10);
+    if (errno == 0 && end != buffer.data()) {
+        ok = true;
+        return val;
+    }
+    return 0;
+}
+
+long normalizeBatteryTemperature(long raw) {
+    if (raw > -1000 && raw < 1000) return raw * 100;
+    return raw;
+}
+
+bool parseProcessStat(const std::string& path, std::string& name,
+                      std::uint64_t& ticks, std::uint64_t& memory_kb) {
+    std::ifstream file(path);
+    if (!file) return false;
+    std::string line;
+    std::getline(file, line);
+    if (line.empty()) return false;
+    const std::size_t open = line.find('(');
+    const std::size_t close = line.rfind(')');
+    if (open == std::string::npos || close == std::string::npos || close <= open) return false;
+    name = line.substr(open + 1, close - open - 1);
+    std::istringstream in(line.substr(close + 2));
+    char state = 0;
+    std::uint64_t ignored = 0;
+    if (!(in >> state)) return false;
+    for (int field = 4; field <= 13; ++field) if (!(in >> ignored)) return false;
+    std::uint64_t utime = 0;
+    std::uint64_t stime = 0;
+    if (!(in >> utime >> stime)) return false;
+    for (int field = 16; field <= 23; ++field) if (!(in >> ignored)) return false;
+    long long rss_pages = 0;
+    if (!(in >> rss_pages) || rss_pages < 0) return false;
+    ticks = utime + stime;
+    const long page_kb = sysconf(_SC_PAGESIZE) / 1024L;
+    memory_kb = static_cast<std::uint64_t>(rss_pages) *
+                static_cast<std::uint64_t>(page_kb > 0 ? page_kb : 4);
+    return true;
+}
+
+} // namespace
+
+void RuntimeObserver::readMemory(RuntimeSample& sample) const {
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "meminfo"));
+    if (!file) return;
+
+    std::string key;
+    std::uint64_t value = 0;
+    std::string unit;
+    while (file >> key >> value >> unit) {
+        if (key == "MemTotal:") sample.mem_total_kb = value;
+        else if (key == "MemAvailable:") sample.mem_available_kb = value;
+    }
+
+    if (sample.mem_total_kb > 0) {
+        sample.mem_available_ratio =
+            static_cast<double>(sample.mem_available_kb) /
+            static_cast<double>(sample.mem_total_kb);
+    }
+}
+
+void RuntimeObserver::readLoad(RuntimeSample& sample) const {
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "loadavg"));
+    double value = 0.0;
+    if (file && (file >> value) && std::isfinite(value) && value >= 0.0) {
+        sample.load1 = value;
+        sample.load_available = true;
+    }
+}
+
+void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "stat"));
+    if (!file) return;
+
+    std::string cpu;
+    std::uint64_t user = 0, nice = 0, system = 0, idle = 0;
+    std::uint64_t iowait = 0, irq = 0, softirq = 0, steal = 0;
+    if (!(file >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal)) return;
+    if (cpu != "cpu") return;
+
+    const std::uint64_t total = user + nice + system + idle + iowait + irq + softirq + steal;
+    const std::uint64_t idle_total = idle + iowait;
+
+    if (!have_cpu_baseline_) {
+        previous_cpu_total_ = total;
+        previous_cpu_idle_ = idle_total;
+        have_cpu_baseline_ = true;
+        return;
+    }
+
+    if (total <= previous_cpu_total_ || idle_total < previous_cpu_idle_) return;
+
+    const std::uint64_t total_delta = total - previous_cpu_total_;
+    const std::uint64_t idle_delta = idle_total - previous_cpu_idle_;
+    previous_cpu_total_ = total;
+    previous_cpu_idle_ = idle_total;
+
+    if (total_delta == 0 || idle_delta > total_delta) return;
+    sample.cpu_utilization =
+        1.0 - static_cast<double>(idle_delta) / static_cast<double>(total_delta);
+    sample.cpu_utilization = std::clamp(sample.cpu_utilization, 0.0, 1.0);
+    sample.cpu_utilization_available = true;
+}
+
+void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& profile) const {
+    long hottest = 0;
+    long primary_hottest = 0;
+    long preferred = 0;
+    int preferred_rank = -1;
+    bool any = false;
+    bool primary = false;
+
+    sample.thermal_readings.clear();
+    sample.thermal_readings.reserve(profile.thermal_zones.size());
+    sample.thermal_sensor_count = static_cast<std::uint32_t>(profile.thermal_zones.size());
+    sample.thermal_valid_sensor_count = 0;
+
+    for (const ThermalZone& zone : profile.thermal_zones) {
+        ThermalReading reading;
+        const std::size_t separator = zone.path.find_last_of('/');
+        reading.zone = separator == std::string::npos
+                           ? zone.path : zone.path.substr(separator + 1);
+        reading.type = zone.type;
+
+        bool ok = false;
+        const long value = readLongFd(zone.path + "/temp", ok);
+        reading.readable = ok;
+        reading.temperature_millidegrees = ok ? value : 0;
+
+        if (!ok) {
+            reading.status = ThermalReadingStatus::Unreadable;
+            sample.thermal_readings.push_back(std::move(reading));
+            continue;
+        }
+        if (!isPlausibleThermalMilli(value)) {
+            reading.status = ThermalReadingStatus::InvalidRange;
+            sample.thermal_readings.push_back(std::move(reading));
+            continue;
+        }
+
+        reading.valid = true;
+        reading.status = ThermalReadingStatus::Valid;
+        ++sample.thermal_valid_sensor_count;
+        const bool excluded = isExcludedThermalType(zone.type);
+        reading.policy_eligible = !excluded;
+        if (excluded) reading.status = ThermalReadingStatus::ExcludedFromPolicy;
+        sample.thermal_readings.push_back(reading);
+        if (excluded) continue;
+
+        any = true;
+        hottest = std::max(hottest, value);
+
+        const int rank = thermalTypeRank(zone.type);
+        if (rank > preferred_rank) {
+            preferred_rank = rank;
+            preferred = value;
+        } else if (rank == preferred_rank && rank >= 0) {
+            preferred = std::max(preferred, value);
+        }
+        if (isPrimaryThermalType(zone.type)) {
+            primary = true;
+            primary_hottest = std::max(primary_hottest, value);
+        }
+    }
+
+    if (!any) return;
+    sample.thermal_available = true;
+    sample.hottest_thermal_millidegrees = hottest;
+
+    if (preferred_rank >= 50) {
+        sample.thermal_millidegrees = preferred;
+        sample.thermal_source = ThermalSource::Primary;
+    } else if (primary) {
+        sample.thermal_millidegrees = primary_hottest;
+        sample.thermal_source = ThermalSource::Primary;
+    } else {
+        sample.thermal_millidegrees = hottest;
+        sample.thermal_source = ThermalSource::Fallback;
+    }
+}
+
+void RuntimeObserver::readCharging(RuntimeSample& sample) const {
+    const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
+    if (base.empty()) return;
+    DIR* raw_dir = opendir(base.c_str());
+    if (!raw_dir) return;
+    DirCloser dir_guard{raw_dir};
+
+    bool status_found = false;
+    bool battery_found = false;
+    while (dirent* entry = readdir(raw_dir)) {
+        const std::string name(entry->d_name);
+        if (name == "." || name == "..") continue;
+        const std::string path = base + "/" + name;
+
+        std::ifstream type_file(path + "/type");
+        std::string type;
+        if (!type_file || !std::getline(type_file, type) || type != "Battery") continue;
+        battery_found = true;
+
+        std::ifstream status_file(path + "/status");
+        std::string status;
+        if (status_file && std::getline(status_file, status)) {
+            status_found = true;
+            sample.battery_status = status;
+            sample.charging = (status == "Charging");
+        }
+
+        bool level_ok = false;
+        const long level = readLongFd(path + "/capacity", level_ok);
+        if (level_ok && level >= 0 && level <= 100) sample.battery_level_percent = static_cast<int>(level);
+
+        bool ok = false;
+        const long temp = readLongFd(path + "/temp", ok);
+        if (ok) sample.battery_temperature_millidegrees = normalizeBatteryTemperature(temp);
+        const long current = readLongFd(path + "/current_now", ok);
+        if (ok) sample.battery_current_microamps = current;
+        const long voltage = readLongFd(path + "/voltage_now", ok);
+        if (ok) sample.battery_voltage_microvolts = voltage;
+        break;
+    }
+
+    sample.charging_telemetry_available =
+        battery_found && (status_found ||
+                          sample.battery_temperature_millidegrees != 0 ||
+                          sample.battery_current_microamps != 0 ||
+                          sample.battery_voltage_microvolts != 0);
+}
+
+void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
+    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "diskstats"));
+    if (!file) return;
+
+    observer_metrics::DiskCounterMap current;
+    std::string line;
+
+    while (std::getline(file, line)) {
+        std::istringstream in(line);
+        int major = 0;
+        int minor = 0;
+        std::string name;
+
+        std::uint64_t rd_ios = 0;
+        std::uint64_t rd_merged = 0;
+        std::uint64_t rd_sectors = 0;
+        std::uint64_t rd_ms = 0;
+        std::uint64_t wr_ios = 0;
+        std::uint64_t wr_merged = 0;
+        std::uint64_t wr_sectors = 0;
+        std::uint64_t wr_ms = 0;
+
+        if (!(in >> major >> minor >> name
+                 >> rd_ios >> rd_merged >> rd_sectors >> rd_ms
+                 >> wr_ios >> wr_merged >> wr_sectors >> wr_ms)) {
+            continue;
+        }
+
+        if (name.rfind("loop", 0) == 0 ||
+            name.rfind("ram", 0) == 0 ||
+            name.rfind("zram", 0) == 0 ||
+            name.rfind("dm-", 0) == 0) {
+            continue;
+        }
+
+        const std::string key =
+            std::to_string(major) + ":" +
+            std::to_string(minor) + ":" + name;
+
+        current[key] = observer_metrics::DiskCounters{
+            rd_sectors, wr_sectors, rd_ios, wr_ios, rd_ms, wr_ms
+        };
+    }
+
+    const auto delta = observer_metrics::calculateIoDelta(
+        current, previous_io_devices_, last_interval_seconds_);
+
+    sample.io_read_kb_per_sec = delta.read_kb_per_sec;
+    sample.io_write_kb_per_sec = delta.write_kb_per_sec;
+    sample.io_activity_available = delta.activity_available;
+
+    sample.io_read_latency_ms = delta.read_latency_ms;
+    sample.io_write_latency_ms = delta.write_latency_ms;
+    sample.io_avg_latency_ms = delta.avg_latency_ms;
+    sample.io_latency_available = delta.latency_available;
+}
+
+void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
+    if ((sample_counter_ % 6U) != 0U) return;
+    const std::string proc_root = kernelFilesystemPath(KernelFsKind::Procfs);
+    if (proc_root.empty()) return;
+    DIR* raw_dir = opendir(proc_root.c_str());
+    if (!raw_dir) return;
+    DirCloser dir_guard{raw_dir};
+
+    const long ticks_per_second = sysconf(_SC_CLK_TCK);
+    std::unordered_map<int, std::uint64_t> current_ticks;
+    std::string best_name;
+    std::uint64_t best_delta = 0;
+    std::uint64_t best_memory = 0;
+    std::uint32_t count = 0;
+    while (dirent* entry = readdir(raw_dir)) {
+        const char* text = entry->d_name;
+        if (!std::isdigit(static_cast<unsigned char>(text[0]))) continue;
+        const int pid = std::atoi(text);
+        if (pid <= 0) continue;
+        std::string name;
+        std::uint64_t ticks = 0;
+        std::uint64_t memory_kb = 0;
+        if (!parseProcessStat(proc_root + "/" + text + "/stat", name, ticks, memory_kb)) continue;
+        ++count;
+        current_ticks[pid] = ticks;
+        const auto old = previous_process_ticks_.find(pid);
+        if (old != previous_process_ticks_.end() && ticks >= old->second) {
+            const std::uint64_t delta = ticks - old->second;
+            if (delta > best_delta) {
+                best_delta = delta;
+                best_name = std::move(name);
+                best_memory = memory_kb;
+            }
+        }
+    }
+
+    previous_process_ticks_.swap(current_ticks);
+    sample.process_count = count;
+    double profile_interval = 30.0;
+    const auto now = std::chrono::steady_clock::now();
+    if (have_process_profile_time_) {
+        profile_interval = std::chrono::duration<double>(now - previous_process_profile_time_).count();
+    }
+    previous_process_profile_time_ = now;
+    have_process_profile_time_ = true;
+    if (ticks_per_second > 0 && best_delta > 0) {
+        sample.top_process_name = best_name;
+        sample.top_process_memory_kb = best_memory;
+        sample.top_process_cpu_ratio = std::clamp(
+            static_cast<double>(best_delta) /
+                (static_cast<double>(ticks_per_second) * std::clamp(profile_interval, 1.0, 120.0)),
+            0.0, 1.0);
+        sample.process_profile_available = true;
+    }
+}
+
+void RuntimeObserver::readPsi(RuntimeSample& sample) const {
+    auto parsePsiLine = [](const std::string& line,
+                           double& some_avg10,
+                           double& full_avg10) -> bool {
+        return observer_metrics::parsePsiLine(
+            line, some_avg10, full_avg10);
+    };
+
+    auto readResource = [&](const char* path, double& some, double& full) -> bool {
+        std::ifstream file(path);
+        if (!file) return false;
+        std::string line;
+        bool got = false;
+        while (std::getline(file, line)) {
+            if (parsePsiLine(line, some, full)) got = true;
+        }
+        return got;
+    };
+
+    bool any = false;
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/cpu").c_str(), sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/memory").c_str(), sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/io").c_str(), sample.psi_io_some_avg10, sample.psi_io_full_avg10);
+    if (!any) return;
+
+    sample.psi_available = true;
+    auto norm = [](double& value) {
+        value = observer_metrics::normalizePsiPercent(value);
+    };
+    norm(sample.psi_cpu_some_avg10);
+    norm(sample.psi_memory_some_avg10);
+    norm(sample.psi_io_some_avg10);
+    norm(sample.psi_cpu_full_avg10);
+    norm(sample.psi_memory_full_avg10);
+    norm(sample.psi_io_full_avg10);
+}
+
+void RuntimeObserver::diagnoseStalls(RuntimeSample& sample) const {
+    sample.throttle_ratio = 0.0;
+    sample.throttling_detected = false;
+
+    double mem_score = 0.0;
+    if (sample.psi_available) {
+        mem_score = std::max(sample.psi_memory_some_avg10, sample.psi_memory_full_avg10 * 1.2);
+    }
+    if (sample.mem_total_kb > 0 && sample.mem_available_ratio < 0.12) {
+        mem_score = std::max(mem_score, 1.0 - sample.mem_available_ratio);
+    }
+    sample.memory_stall_score = std::clamp(mem_score, 0.0, 1.0);
+    sample.memory_stall_detected = sample.memory_stall_score >= 0.10;
+}
+
+RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
+    RuntimeSample sample;
+    ++sample_counter_;
+    const auto now = std::chrono::steady_clock::now();
+    if (have_sample_time_) {
+        last_interval_seconds_ = std::chrono::duration<double>(now - previous_sample_time_).count();
+    }
+    previous_sample_time_ = now;
+    have_sample_time_ = true;
+
+    std::ifstream uptime(kernelFilesystemPath(KernelFsKind::Procfs, "uptime"));
+    double seconds = 0.0;
+    if (uptime && (uptime >> seconds) && seconds >= 0.0)
+        sample.uptime_seconds = static_cast<std::uint64_t>(seconds);
+
+    readMemory(sample);
+    readLoad(sample);
+    readCpuUtilization(sample);
+    readThermal(sample, profile);
+    readCharging(sample);
+    readIoActivity(sample);
+    readPsi(sample);
+    diagnoseStalls(sample);
+    readProcessProfile(sample);
+    return sample;
+}
+
+} // namespace coreflow

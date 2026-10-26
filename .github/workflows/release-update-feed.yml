@@ -1,0 +1,87 @@
+name: KernelSU Update Feed
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing published release tag to sync (blank = latest release)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coreflow-update-feed
+  cancel-in-progress: false
+
+jobs:
+  publish-update-feed:
+    name: Publish KernelSU / KernelSU Next update metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MIN_API: "34"
+    steps:
+      - name: Sync update metadata into the published release
+        shell: bash
+        env:
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name || inputs.tag_name || '' }}
+        run: |
+          set -euo pipefail
+
+          TAG="${RELEASE_EVENT_TAG}"
+          if [[ -z "$TAG" ]]; then
+            TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          [[ -n "$TAG" ]] || { echo "::error::No published GitHub release was found."; exit 1; }
+
+          ASSET="CoreFlow-Autonomous-${TAG}-minapi${MIN_API}-arm64.zip"
+          WORK_DIR="$RUNNER_TEMP/coreflow-release"
+          mkdir -p "$WORK_DIR"
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ASSET" \
+            --dir "$WORK_DIR"
+          PACKAGE="$WORK_DIR/$ASSET"
+          test -s "$PACKAGE" || { echo "::error::Expected release asset missing: $ASSET"; exit 1; }
+
+          unzip -p "$PACKAGE" module.prop > "$WORK_DIR/module.prop"
+          RELEASE_VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$WORK_DIR/module.prop" | tr -d '[:space:]')"
+          RELEASE_CODE="$(awk -F= '$1=="versionCode" {print $2; exit}' "$WORK_DIR/module.prop" | tr -d '[:space:]')"
+          [[ "$RELEASE_VERSION" == "$TAG" ]] || {
+            echo "::error::Release tag ($TAG) and packaged module version ($RELEASE_VERSION) do not match."; exit 1;
+          }
+          [[ "$RELEASE_CODE" =~ ^[0-9]+$ ]] || {
+            echo "::error::module.prop versionCode is missing or invalid."; exit 1;
+          }
+
+          # KernelSU reads the latest release's update.json, which points to the exact
+          # versioned ZIP. No moving branch metadata or mutable "latest" ZIP is needed.
+          ZIP_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}"
+          CHANGELOG_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/CHANGELOG.md"
+          UPDATE_JSON="$WORK_DIR/update.json"
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --argjson versionCode "$RELEASE_CODE" \
+            --arg zipUrl "$ZIP_URL" \
+            --arg changelog "$CHANGELOG_URL" \
+            '{version: $version, versionCode: $versionCode, zipUrl: $zipUrl, changelog: $changelog}' \
+            > "$UPDATE_JSON"
+
+          python3 - "$UPDATE_JSON" "$RELEASE_VERSION" "$RELEASE_CODE" <<'PY'
+          import json, sys
+          path, version, code = sys.argv[1:]
+          with open(path, encoding="utf-8") as handle:
+              data = json.load(handle)
+          assert data["version"] == version
+          assert data["versionCode"] == int(code)
+          assert data["zipUrl"].endswith(".zip")
+          PY
+
+          gh release upload "$TAG" "$UPDATE_JSON#update.json" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Published KernelSU update metadata for ${RELEASE_VERSION} (versionCode ${RELEASE_CODE})."
