@@ -1,0 +1,5 @@
+{
+  "name": "CoreFlow Engine",
+  "description": "Interactive runtime optimization simulator, adaptive policy state machine, and virtual Android kernel sysfs inspector for CoreFlow Engine.",
+  "requestFramePermissions": []
+}

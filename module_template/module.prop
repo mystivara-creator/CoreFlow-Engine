@@ -1,7 +1,0 @@
-id=coreflow_engine
-name=CoreFlow Engine
-version=v1.0.0-Rebuild
-versionCode=100
-author=Mystivara
-description=Native C++17 System Daemon. Optimizes CPU WALT, UFS I/O multi-block, and ZRAM Swappiness dynamically. Includes Anti-Bootloop Thermal Guardian.
-
