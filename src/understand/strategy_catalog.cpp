@@ -19,8 +19,15 @@ bool endsWithToken(std::string_view value, std::string_view suffix) noexcept {
 std::string toLowerAscii(std::string_view input) noexcept {
     std::string out;
     out.reserve(input.size());
-    for (unsigned char c : input) {
-        out.push_back(static_cast<char>(std::tolower(c)));
+    for (const char raw : input) {
+        // Convert through unsigned char before inspecting a byte. The explicit
+        // conversion avoids -Wsign-conversion while keeping UTF-8 bytes intact.
+        auto byte = static_cast<unsigned char>(raw);
+        if (byte >= static_cast<unsigned char>('A') &&
+            byte <= static_cast<unsigned char>('Z')) {
+            byte = static_cast<unsigned char>(byte + ('a' - 'A'));
+        }
+        out.push_back(static_cast<char>(byte));
     }
     return out;
 }
