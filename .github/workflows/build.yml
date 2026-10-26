@@ -57,7 +57,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify host build toolchain
         shell: bash
@@ -74,9 +74,9 @@ jobs:
           g++ --version | head -n1
 
       - name: Setup Node.js for WebUI contract tests
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build offline React WebUI into module/webroot
         shell: bash
@@ -113,12 +113,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js for WebUI contract tests
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build offline React WebUI into module/webroot
         shell: bash
@@ -153,7 +153,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify release version
         shell: bash
@@ -238,9 +238,9 @@ jobs:
           echo "ABI: ${ANDROID_ABI}"
 
       - name: Setup Node.js for WebUI bundle
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build offline React WebUI into module/webroot
         shell: bash
@@ -521,7 +521,7 @@ jobs:
             > artifacts/CoreFlow-Autonomous/build-provenance.txt
 
       - name: Upload raw production binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: CoreFlow-coreflowd-${{ env.ANDROID_ABI }}-minapi${{ env.ANDROID_MIN_API }}
           path: |
@@ -532,7 +532,7 @@ jobs:
           retention-days: 30
 
       - name: Upload production artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: CoreFlow-Autonomous-onnx-minapi${{ env.ANDROID_MIN_API }}-arm64
           path: artifacts/CoreFlow-Autonomous-*-minapi${{ env.ANDROID_MIN_API }}-arm64.zip
