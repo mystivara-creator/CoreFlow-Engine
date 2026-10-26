@@ -223,12 +223,14 @@ VendorProfile VendorKnowledge::profileFromLabel(std::string_view label) noexcept
     try {
         const std::string u = upper(label);
         for (const char* k : {"LOW_POWER", "LOWPOWER", "SUSTAINED", "THERMAL", "BATTERY",
-                              "POWER_SAVE", "POWERSAVE", "EFFICIEN", "SAVER", "ECO"}) {
+                              "POWER_SAVE", "POWERSAVE", "EFFICIEN", "SAVER", "ECO",
+                              "DISPLAY_INACTIVE", "LOAD_RESET"}) {
             if (u.find(k) != std::string::npos) return VendorProfile::Efficiency;
         }
         for (const char* k : {"LAUNCH", "INTERACTION", "INTERACTIVE", "BOOST", "PERFORMANCE",
                               "GAME", "RENDERING", "CAMERA", "AUDIO_LOW_LATENCY", "TOUCH",
-                              "FLING", "SCROLL"}) {
+                              "FLING", "SCROLL", "ADPF", "LOAD_UP",
+                              "DISPLAY_UPDATE_IMMINENT", "EARLY_WAKEUP"}) {
             if (u.find(k) != std::string::npos) return VendorProfile::Performance;
         }
     } catch (...) {
@@ -405,8 +407,14 @@ std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
         enum class Kind { None, Rc, Shell, PowerHint } kind = Kind::None;
         if (endsWith(name, ".rc")) kind = Kind::Rc;
         else if (endsWith(name, ".sh")) kind = Kind::Shell;
-        else if (endsWith(name, ".json") && upper(name).find("POWERHINT") != std::string::npos)
-            kind = Kind::PowerHint;
+        else if (endsWith(name, ".json")) {
+            const std::string uname = upper(name);
+            if (uname.find("POWERHINT") != std::string::npos ||
+                uname.find("PERFHINT") != std::string::npos ||
+                uname.find("ADPF") != std::string::npos) {
+                kind = Kind::PowerHint;
+            }
+        }
         if (kind == Kind::None) return 0;  // never read unrelated vendor files
 
         const std::string canonical = canonicalPath(path);

@@ -20,7 +20,16 @@ umask 077
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 chmod 0700 "$STATE_DIR" "$LOG_DIR"
 
+MAX_LOG_BYTES=262144
+
 log() {
+    if [ -f "$LOG_FILE" ]; then
+        log_bytes="$(wc -c < "$LOG_FILE" 2>/dev/null)"
+        case "$log_bytes" in
+            ''|*[!0-9]*) ;;
+            *) [ "$log_bytes" -ge "$MAX_LOG_BYTES" ] && mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null ;;
+        esac
+    fi
     echo "$(date '+%F %T') $*" >> "$LOG_FILE"
 }
 

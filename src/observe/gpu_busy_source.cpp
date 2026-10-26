@@ -46,7 +46,8 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
             contains("mem")) {
             return false;
         }
-        return contains("gpu") || contains("kgsl") || contains("mali");
+        return contains("gpu") || contains("kgsl") || contains("mali") ||
+               contains("pvr");
     };
 
     const auto walk = [&](const auto& self, const std::string& path,
@@ -85,28 +86,42 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
 
     std::sort(roots_.begin(), roots_.end());
     roots_.erase(std::unique(roots_.begin(), roots_.end()), roots_.end());
+    active_root_.clear();
     } catch (...) {
         roots_.clear();
+        active_root_.clear();
     }
 }
 
 bool GpuBusySource::poll(double& ratio_out) noexcept {
     try {
-    for (const auto& root : roots_) {
+    const auto readRootLoad = [&](const std::string& root) -> bool {
         const std::string path = root + "/load";
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        if (fd < 0) continue;
+        if (fd < 0) return false;
         std::array<char, 64> buffer{};
         const ssize_t n = ::read(fd, buffer.data(), buffer.size() - 1U);
         ::close(fd);
-        if (n <= 0) continue;
+        if (n <= 0) return false;
         const double percent = parseDevfreqLoadPercent(
             std::string_view(buffer.data(), static_cast<std::size_t>(n)));
-        if (percent < 0.0) continue;
+        if (percent < 0.0) return false;
         ratio_out = percent / 100.0;
         active_root_ = root;
         return true;
+    };
+
+    if (!active_root_.empty() &&
+        std::find(roots_.begin(), roots_.end(), active_root_) != roots_.end() &&
+        readRootLoad(active_root_)) {
+        return true;
     }
+
+    for (const auto& root : roots_) {
+        if (root == active_root_) continue;
+        if (readRootLoad(root)) return true;
+    }
+    active_root_.clear();
     return false;
     } catch (...) {
         return false;

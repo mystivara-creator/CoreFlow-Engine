@@ -6,14 +6,17 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <unistd.h>
@@ -69,17 +72,29 @@ bool isPrimaryThermalType(const std::string& type) {
     return thermalTypeRank(type) >= 50;
 }
 
-long readLongFd(const std::string& path, bool& ok) noexcept {
-    ok = false;
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0) return 0;
+template <std::size_t N>
+std::size_t readBoundedFd(const std::string& path, std::array<char, N>& buffer,
+                          int extra_flags = 0) noexcept {
+    static_assert(N >= 2U, "Buffer must hold at least 1 byte plus NUL");
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | extra_flags);
+    if (fd < 0) return 0U;
 
-    std::array<char, 64> buffer{};
-    const ssize_t count = ::read(fd, buffer.data(), buffer.size() - 1U);
+    ssize_t count = 0;
+    do {
+        count = ::read(fd, buffer.data(), N - 1U);
+    } while (count < 0 && errno == EINTR);
     ::close(fd);
 
-    if (count <= 0) return 0;
-    buffer[static_cast<std::size_t>(count)] = '\0';
+    if (count <= 0) return 0U;
+    const auto len = static_cast<std::size_t>(count);
+    buffer[len] = '\0';
+    return len;
+}
+
+long readLongFd(const std::string& path, bool& ok) noexcept {
+    ok = false;
+    std::array<char, 64> buffer{};
+    if (readBoundedFd(path, buffer, O_NOFOLLOW) == 0U) return 0;
 
     char* end = nullptr;
     errno = 0;
@@ -91,6 +106,78 @@ long readLongFd(const std::string& path, bool& ok) noexcept {
     return 0;
 }
 
+bool readTrimmedLineFd(const std::string& path, std::string& out) noexcept {
+    std::array<char, 64> buffer{};
+    const std::size_t len = readBoundedFd(path, buffer);
+    if (len == 0U) return false;
+    std::string_view view(buffer.data(), len);
+    const std::size_t eol = view.find('\n');
+    if (eol != std::string_view::npos) view = view.substr(0U, eol);
+    if (!view.empty() && view.back() == '\r') view.remove_suffix(1U);
+    out.assign(view);
+    return true;
+}
+
+bool parseLeadingNonNegativeDouble(std::string_view text, double& out) noexcept {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1U);
+    }
+    if (text.empty() || text.front() < '0' || text.front() > '9') return false;
+
+    double integer_part = 0.0;
+    std::size_t pos = 0U;
+    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+        integer_part = integer_part * 10.0 + static_cast<double>(text[pos] - '0');
+        ++pos;
+    }
+
+    double fraction_part = 0.0;
+    double scale = 0.1;
+    if (pos < text.size() && text[pos] == '.') {
+        ++pos;
+        if (pos >= text.size() || text[pos] < '0' || text[pos] > '9') return false;
+        while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+            fraction_part += static_cast<double>(text[pos] - '0') * scale;
+            scale *= 0.1;
+            ++pos;
+        }
+    }
+
+    const double result = integer_part + fraction_part;
+    if (!std::isfinite(result) || result < 0.0) return false;
+    out = result;
+    return true;
+}
+
+bool nextUint64Token(const char*& cur, const char* end, std::uint64_t& value) noexcept {
+    while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+    if (cur >= end || *cur < '0' || *cur > '9') return false;
+    const auto res = std::from_chars(cur, end, value);
+    if (res.ec != std::errc{}) return false;
+    cur = res.ptr;
+    return true;
+}
+
+bool skipToken(const char*& cur, const char* end) noexcept {
+    while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+    if (cur >= end || *cur == '\n' || *cur == '\r') return false;
+    while (cur < end && *cur != ' ' && *cur != '\t' && *cur != '\n' && *cur != '\r') ++cur;
+    return true;
+}
+
+long cachedPageKb() noexcept {
+    static const long kPageKb = [] {
+        const long kb = ::sysconf(_SC_PAGESIZE) / 1024L;
+        return kb > 0 ? kb : 4L;
+    }();
+    return kPageKb;
+}
+
+long cachedClockTicks() noexcept {
+    static const long kTicks = ::sysconf(_SC_CLK_TCK);
+    return kTicks;
+}
+
 long normalizeBatteryTemperature(long raw) {
     if (raw > -1000 && raw < 1000) return raw * 100;
     return raw;
@@ -98,45 +185,89 @@ long normalizeBatteryTemperature(long raw) {
 
 bool parseProcessStat(const std::string& path, std::string& name,
                       std::uint64_t& ticks, std::uint64_t& memory_kb) {
-    std::ifstream file(path);
-    if (!file) return false;
-    std::string line;
-    std::getline(file, line);
+    std::array<char, 512> buffer{};
+    const std::size_t len = readBoundedFd(path, buffer);
+    if (len == 0U) return false;
+
+    std::string_view line(buffer.data(), len);
+    const std::size_t eol = line.find('\n');
+    if (eol != std::string_view::npos) line = line.substr(0U, eol);
     if (line.empty()) return false;
+
     const std::size_t open = line.find('(');
     const std::size_t close = line.rfind(')');
-    if (open == std::string::npos || close == std::string::npos || close <= open) return false;
-    name = line.substr(open + 1, close - open - 1);
-    std::istringstream in(line.substr(close + 2));
-    char state = 0;
-    std::uint64_t ignored = 0;
-    if (!(in >> state)) return false;
-    for (int field = 4; field <= 13; ++field) if (!(in >> ignored)) return false;
+    if (open == std::string_view::npos || close == std::string_view::npos ||
+        close <= open || close + 2U >= line.size()) {
+        return false;
+    }
+    name.assign(line.substr(open + 1U, close - open - 1U));
+
+    const char* cur = line.data() + close + 2U;
+    const char* const end = line.data() + line.size();
+
+    // Field 3: state token, Fields 4..13: 10 scalar tokens before utime/stime.
+    if (!skipToken(cur, end)) return false;
+    for (int field = 4; field <= 13; ++field) {
+        if (!skipToken(cur, end)) return false;
+    }
+
     std::uint64_t utime = 0;
     std::uint64_t stime = 0;
-    if (!(in >> utime >> stime)) return false;
-    for (int field = 16; field <= 23; ++field) if (!(in >> ignored)) return false;
+    if (!nextUint64Token(cur, end, utime) || !nextUint64Token(cur, end, stime)) {
+        return false;
+    }
+
+    // Fields 16..23: 8 tokens before rss (field 24).
+    for (int field = 16; field <= 23; ++field) {
+        if (!skipToken(cur, end)) return false;
+    }
+
+    while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+    if (cur >= end) return false;
     long long rss_pages = 0;
-    if (!(in >> rss_pages) || rss_pages < 0) return false;
+    const auto rss_res = std::from_chars(cur, end, rss_pages);
+    if (rss_res.ec != std::errc{} || rss_pages < 0) return false;
+
     ticks = utime + stime;
-    const long page_kb = sysconf(_SC_PAGESIZE) / 1024L;
     memory_kb = static_cast<std::uint64_t>(rss_pages) *
-                static_cast<std::uint64_t>(page_kb > 0 ? page_kb : 4);
+                static_cast<std::uint64_t>(cachedPageKb());
     return true;
 }
 
 } // namespace
 
 void RuntimeObserver::readMemory(RuntimeSample& sample) const {
-    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "meminfo"));
-    if (!file) return;
+    std::array<char, 2048> buffer{};
+    const std::size_t len = readBoundedFd(
+        kernelFilesystemPath(KernelFsKind::Procfs, "meminfo"), buffer);
+    if (len == 0U) return;
 
-    std::string key;
-    std::uint64_t value = 0;
-    std::string unit;
-    while (file >> key >> value >> unit) {
-        if (key == "MemTotal:") sample.mem_total_kb = value;
-        else if (key == "MemAvailable:") sample.mem_available_kb = value;
+    bool got_total = false;
+    bool got_avail = false;
+    std::string_view text(buffer.data(), len);
+    while (!text.empty() && !(got_total && got_avail)) {
+        const std::size_t eol = text.find('\n');
+        const std::string_view line =
+            eol == std::string_view::npos ? text : text.substr(0U, eol);
+        text = eol == std::string_view::npos ? std::string_view{} : text.substr(eol + 1U);
+
+        if (line.rfind("MemTotal:", 0U) == 0U) {
+            const char* cur = line.data() + 9U;
+            const char* const end = line.data() + line.size();
+            std::uint64_t val = 0;
+            if (nextUint64Token(cur, end, val)) {
+                sample.mem_total_kb = val;
+                got_total = true;
+            }
+        } else if (line.rfind("MemAvailable:", 0U) == 0U) {
+            const char* cur = line.data() + 13U;
+            const char* const end = line.data() + line.size();
+            std::uint64_t val = 0;
+            if (nextUint64Token(cur, end, val)) {
+                sample.mem_available_kb = val;
+                got_avail = true;
+            }
+        }
     }
 
     if (sample.mem_total_kb > 0) {
@@ -147,23 +278,46 @@ void RuntimeObserver::readMemory(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readLoad(RuntimeSample& sample) const {
-    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "loadavg"));
+    std::array<char, 128> buffer{};
+    const std::size_t len = readBoundedFd(
+        kernelFilesystemPath(KernelFsKind::Procfs, "loadavg"), buffer);
+    if (len == 0U) return;
+
     double value = 0.0;
-    if (file && (file >> value) && std::isfinite(value) && value >= 0.0) {
+    if (parseLeadingNonNegativeDouble(std::string_view(buffer.data(), len), value)) {
         sample.load1 = value;
         sample.load_available = true;
     }
 }
 
 void RuntimeObserver::readCpuUtilization(RuntimeSample& sample) const {
-    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "stat"));
-    if (!file) return;
+    std::array<char, 256> buffer{};
+    const std::size_t len = readBoundedFd(
+        kernelFilesystemPath(KernelFsKind::Procfs, "stat"), buffer);
+    if (len < 5U) return;
 
-    std::string cpu;
+    std::string_view line(buffer.data(), len);
+    const std::size_t eol = line.find('\n');
+    if (eol != std::string_view::npos) line = line.substr(0U, eol);
+    if (line.size() < 4U || line.rfind("cpu", 0U) != 0U ||
+        (line[3] != ' ' && line[3] != '\t')) {
+        return;
+    }
+
+    const char* cur = line.data() + 4U;
+    const char* const end = line.data() + line.size();
     std::uint64_t user = 0, nice = 0, system = 0, idle = 0;
     std::uint64_t iowait = 0, irq = 0, softirq = 0, steal = 0;
-    if (!(file >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal)) return;
-    if (cpu != "cpu") return;
+    if (!nextUint64Token(cur, end, user) ||
+        !nextUint64Token(cur, end, nice) ||
+        !nextUint64Token(cur, end, system) ||
+        !nextUint64Token(cur, end, idle) ||
+        !nextUint64Token(cur, end, iowait) ||
+        !nextUint64Token(cur, end, irq) ||
+        !nextUint64Token(cur, end, softirq) ||
+        !nextUint64Token(cur, end, steal)) {
+        return;
+    }
 
     const std::uint64_t total = user + nice + system + idle + iowait + irq + softirq + steal;
     const std::uint64_t idle_total = idle + iowait;
@@ -269,25 +423,18 @@ void RuntimeObserver::readThermal(RuntimeSample& sample, const DeviceProfile& pr
 void RuntimeObserver::readCharging(RuntimeSample& sample) const {
     const std::string base = kernelFilesystemPath(KernelFsKind::Sysfs, "class/power_supply");
     if (base.empty()) return;
-    DIR* raw_dir = opendir(base.c_str());
-    if (!raw_dir) return;
-    DirCloser dir_guard{raw_dir};
 
-    bool status_found = false;
-    bool battery_found = false;
-    while (dirent* entry = readdir(raw_dir)) {
-        const std::string name(entry->d_name);
-        if (name == "." || name == "..") continue;
-        const std::string path = base + "/" + name;
+    if (cached_battery_base_ != base) {
+        cached_battery_base_ = base;
+        cached_battery_path_.clear();
+    }
 
-        std::ifstream type_file(path + "/type");
+    auto sampleBatteryNode = [&](const std::string& path, bool& status_found) -> bool {
         std::string type;
-        if (!type_file || !std::getline(type_file, type) || type != "Battery") continue;
-        battery_found = true;
+        if (!readTrimmedLineFd(path + "/type", type) || type != "Battery") return false;
 
-        std::ifstream status_file(path + "/status");
         std::string status;
-        if (status_file && std::getline(status_file, status)) {
+        if (readTrimmedLineFd(path + "/status", status)) {
             status_found = true;
             sample.battery_status = status;
             sample.charging = (status == "Charging");
@@ -304,7 +451,31 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
         if (ok) sample.battery_current_microamps = current;
         const long voltage = readLongFd(path + "/voltage_now", ok);
         if (ok) sample.battery_voltage_microvolts = voltage;
-        break;
+        return true;
+    };
+
+    bool status_found = false;
+    bool battery_found = false;
+
+    if (!cached_battery_path_.empty()) {
+        battery_found = sampleBatteryNode(cached_battery_path_, status_found);
+        if (!battery_found) cached_battery_path_.clear();
+    }
+
+    if (!battery_found) {
+        DIR* raw_dir = opendir(base.c_str());
+        if (!raw_dir) return;
+        DirCloser dir_guard{raw_dir};
+
+        while (dirent* entry = readdir(raw_dir)) {
+            const std::string name(entry->d_name);
+            if (name == "." || name == "..") continue;
+            const std::string path = base + "/" + name;
+            if (!sampleBatteryNode(path, status_found)) continue;
+            battery_found = true;
+            cached_battery_path_ = path;
+            break;
+        }
     }
 
     sample.charging_telemetry_available =
@@ -379,9 +550,13 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
     if (!raw_dir) return;
     DirCloser dir_guard{raw_dir};
 
-    const long ticks_per_second = sysconf(_SC_CLK_TCK);
+    const long ticks_per_second = cachedClockTicks();
     std::unordered_map<int, std::uint64_t> current_ticks;
+    current_ticks.reserve(previous_process_ticks_.size());
     std::string best_name;
+    std::string name;
+    std::string stat_path;
+    stat_path.reserve(proc_root.size() + 24U);
     std::uint64_t best_delta = 0;
     std::uint64_t best_memory = 0;
     std::uint32_t count = 0;
@@ -390,10 +565,13 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
         if (!std::isdigit(static_cast<unsigned char>(text[0]))) continue;
         const int pid = std::atoi(text);
         if (pid <= 0) continue;
-        std::string name;
+        stat_path.assign(proc_root);
+        stat_path.push_back('/');
+        stat_path.append(text);
+        stat_path.append("/stat");
         std::uint64_t ticks = 0;
         std::uint64_t memory_kb = 0;
-        if (!parseProcessStat(proc_root + "/" + text + "/stat", name, ticks, memory_kb)) continue;
+        if (!parseProcessStat(stat_path, name, ticks, memory_kb)) continue;
         ++count;
         current_ticks[pid] = ticks;
         const auto old = previous_process_ticks_.find(pid);
@@ -401,7 +579,7 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
             const std::uint64_t delta = ticks - old->second;
             if (delta > best_delta) {
                 best_delta = delta;
-                best_name = std::move(name);
+                best_name = name;
                 best_memory = memory_kb;
             }
         }
@@ -428,28 +606,34 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readPsi(RuntimeSample& sample) const {
-    auto parsePsiLine = [](const std::string& line,
-                           double& some_avg10,
-                           double& full_avg10) -> bool {
-        return observer_metrics::parsePsiLine(
-            line, some_avg10, full_avg10);
-    };
+    std::string line_buf;
+    line_buf.reserve(128U);
+    auto readResource = [&](const std::string& path, double& some, double& full) -> bool {
+        std::array<char, 512> buffer{};
+        const std::size_t len = readBoundedFd(path, buffer);
+        if (len == 0U) return false;
 
-    auto readResource = [&](const char* path, double& some, double& full) -> bool {
-        std::ifstream file(path);
-        if (!file) return false;
-        std::string line;
         bool got = false;
-        while (std::getline(file, line)) {
-            if (parsePsiLine(line, some, full)) got = true;
+        std::string_view text(buffer.data(), len);
+        while (!text.empty()) {
+            const std::size_t eol = text.find('\n');
+            const std::string_view line =
+                eol == std::string_view::npos ? text : text.substr(0U, eol);
+            text = eol == std::string_view::npos ? std::string_view{} : text.substr(eol + 1U);
+            if (line.empty()) continue;
+            line_buf.assign(line);
+            if (observer_metrics::parsePsiLine(line_buf, some, full)) got = true;
         }
         return got;
     };
 
     bool any = false;
-    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/cpu").c_str(), sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
-    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/memory").c_str(), sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
-    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/io").c_str(), sample.psi_io_some_avg10, sample.psi_io_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/cpu"),
+                        sample.psi_cpu_some_avg10, sample.psi_cpu_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/memory"),
+                        sample.psi_memory_some_avg10, sample.psi_memory_full_avg10);
+    any |= readResource(kernelFilesystemPath(KernelFsKind::Procfs, "pressure/io"),
+                        sample.psi_io_some_avg10, sample.psi_io_full_avg10);
     if (!any) return;
 
     sample.psi_available = true;
@@ -489,10 +673,14 @@ RuntimeSample RuntimeObserver::sample(const DeviceProfile& profile) const {
     previous_sample_time_ = now;
     have_sample_time_ = true;
 
-    std::ifstream uptime(kernelFilesystemPath(KernelFsKind::Procfs, "uptime"));
+    std::array<char, 128> uptime_buf{};
+    const std::size_t uptime_len = readBoundedFd(
+        kernelFilesystemPath(KernelFsKind::Procfs, "uptime"), uptime_buf);
     double seconds = 0.0;
-    if (uptime && (uptime >> seconds) && seconds >= 0.0)
+    if (uptime_len > 0U &&
+        parseLeadingNonNegativeDouble(std::string_view(uptime_buf.data(), uptime_len), seconds)) {
         sample.uptime_seconds = static_cast<std::uint64_t>(seconds);
+    }
 
     readMemory(sample);
     readLoad(sample);

@@ -21,7 +21,21 @@ umask 077
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 chmod 0700 "$STATE_DIR" "$LOG_DIR"
 
+MAX_LOG_BYTES=524288
+
+rotate_log_if_needed() {
+    [ -f "$LOG_FILE" ] || return 0
+    log_bytes="$(wc -c < "$LOG_FILE" 2>/dev/null)"
+    case "$log_bytes" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$log_bytes" -ge "$MAX_LOG_BYTES" ]; then
+        mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null
+    fi
+}
+
 log() {
+    rotate_log_if_needed
     echo "$(date '+%F %T') $*" >> "$LOG_FILE"
 }
 
@@ -64,6 +78,7 @@ supervise() {
 
     restarts=0
     while [ "$STOPPING" -eq 0 ]; do
+        rotate_log_if_needed
         log "starting coreflowd attempt=$((restarts + 1)) version=$VERSION"
         # This marker only tracks UI configuration changes that require a daemon restart.
         # It is not a safety marker and never changes engine mutation policy.

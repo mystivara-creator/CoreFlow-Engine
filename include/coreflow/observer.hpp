@@ -37,6 +37,8 @@ private:
     mutable bool have_sample_time_{false};
     mutable bool have_process_profile_time_{false};
     mutable std::unordered_map<int, std::uint64_t> previous_process_ticks_;
+    mutable std::string cached_battery_base_;
+    mutable std::string cached_battery_path_;
 };
 
 } // namespace coreflow

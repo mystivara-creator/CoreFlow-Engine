@@ -3,11 +3,34 @@
 #include "coreflow/observer_metrics.hpp"
 
 #include <array>
-#include <fstream>
-#include <iterator>
-#include <sstream>
+#include <cerrno>
+#include <fcntl.h>
+#include <string_view>
+#include <unistd.h>
 
 namespace coreflow::observe {
+
+namespace {
+
+bool readFirstLineBounded(const std::string& path, std::string& line_out) noexcept {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+
+    std::array<char, 256> buffer{};
+    ssize_t count = 0;
+    do {
+        count = ::read(fd, buffer.data(), buffer.size());
+    } while (count < 0 && errno == EINTR);
+    ::close(fd);
+    if (count <= 0) return false;
+
+    const std::string_view raw(buffer.data(), static_cast<std::size_t>(count));
+    const std::size_t eol = raw.find('\n');
+    line_out.assign(raw.substr(0U, eol == std::string_view::npos ? raw.size() : eol));
+    return true;
+}
+
+} // namespace
 
 std::size_t countCgroupProcs(const std::string& text) noexcept {
     std::size_t count = 0;
@@ -31,26 +54,36 @@ bool readLaunchObservation(const std::string& foreground_procs_path,
                            std::uint64_t timestamp_monotonic_ns,
                            LaunchObservation& out) {
     constexpr std::size_t kMaxMembershipBytes = 1U << 20U; // 1 MiB hard cap
-    std::ifstream procs(foreground_procs_path, std::ios::binary);
-    if (!procs) return false;
-    std::string procs_body(kMaxMembershipBytes + 1U, '\0');
-    procs.read(procs_body.data(),
-               static_cast<std::streamsize>(procs_body.size()));
-    const std::streamsize bytes_read = procs.gcount();
-    if (bytes_read < 0 ||
-        static_cast<std::size_t>(bytes_read) > kMaxMembershipBytes) {
-        return false; // oversized or hostile membership input: fail closed
+    const int fd = ::open(foreground_procs_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+
+    std::string procs_body;
+    procs_body.reserve(256U);
+    std::array<char, 4096> chunk{};
+    for (;;) {
+        const ssize_t n = ::read(fd, chunk.data(), chunk.size());
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            return false;
+        }
+        if (n == 0) break;
+        const auto got = static_cast<std::size_t>(n);
+        if (got > kMaxMembershipBytes - procs_body.size()) {
+            ::close(fd);
+            return false; // oversized or hostile membership input: fail closed
+        }
+        procs_body.append(chunk.data(), got);
     }
-    procs_body.resize(static_cast<std::size_t>(bytes_read));
+    ::close(fd);
 
     out = LaunchObservation{};
     out.timestamp_monotonic_ns = timestamp_monotonic_ns;
     out.foreground_pids = countCgroupProcs(procs_body);
     out.io_pressure_some = -1.0;
 
-    std::ifstream pressure(io_pressure_path);
     std::string line;
-    if (pressure && std::getline(pressure, line)) {
+    if (readFirstLineBounded(io_pressure_path, line)) {
         double some_avg10 = 0.0;
         double full_avg10 = 0.0;
         if (observer_metrics::parsePsiLine(line, some_avg10, full_avg10)) {

@@ -30,6 +30,7 @@ public:
     void addReadaheadPath(std::string path) {
         readahead_paths_.push_back(std::move(path));
     }
+    void clearReadaheadPaths() noexcept { readahead_paths_.clear(); }
     // Receives dynamically discovered read-ahead resources; never synthesizes paths.
 
     // Adopts the entries a previous run left in the journal, so each one is

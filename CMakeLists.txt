@@ -73,10 +73,11 @@ if(ANDROID AND NOT CORE_FLOW_BUILD_TESTS)
         PRIVATE
             coreflow_compile_options
             coreflow_onnxruntime)
-    target_compile_definitions(coreflowd PRIVATE CORE_FLOW_ANDROID=1)
+    target_compile_definitions(coreflowd PRIVATE CORE_FLOW_ANDROID=1 NDEBUG)
     target_compile_options(coreflowd
         PRIVATE
             -O2
+            -fvisibility=hidden
             -fstack-protector-strong
             -ffunction-sections
             -fdata-sections

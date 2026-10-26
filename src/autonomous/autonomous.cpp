@@ -64,6 +64,26 @@ InteractivityPaths discoverInteractivityPaths(
         if (p.find("/foreground/") != std::string::npos) return 30;
         return 0;
     };
+    auto gpuPathScore = [](const std::string& p) -> int {
+        std::string lower = p;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower.find("ddr") != std::string::npos ||
+            lower.find("llcc") != std::string::npos ||
+            lower.find("bw") != std::string::npos ||
+            lower.find("bus") != std::string::npos ||
+            lower.find("mem") != std::string::npos) {
+            return -40;
+        }
+        if (lower.find("kgsl") != std::string::npos ||
+            lower.find("mali") != std::string::npos ||
+            lower.find("sgpu") != std::string::npos ||
+            lower.find("pvr") != std::string::npos ||
+            lower.find("gpu") != std::string::npos) {
+            return 40;
+        }
+        return 0;
+    };
     int best_gpu = -1000;
     int best_uclamp = -1000;
     for (const auto& resource : matrix.resources) {
@@ -73,13 +93,15 @@ InteractivityPaths discoverInteractivityPaths(
             resource.path.empty()) continue;
         const std::filesystem::path path(resource.path);
         const std::string filename = path.filename().string();
-        const int score = pathScore(resource.path);
         if (resource.domain == ResourceDomain::Gpu && filename == "min_freq") {
-            if (score > best_gpu) {
-                best_gpu = score;
+            const int gscore = gpuPathScore(resource.path);
+            if (gscore < 0) continue;
+            if (gscore > best_gpu) {
+                best_gpu = gscore;
                 result.gpu_min_freq = resource.path;
             }
         }
+        const int score = pathScore(resource.path);
         if (resource.domain == ResourceDomain::UClamp &&
             (filename == "uclamp.min" || filename == "cpu.uclamp.min")) {
             // An interactivity boost must never be aimed at a background group
@@ -257,9 +279,11 @@ AutonomousEngine::~AutonomousEngine() {
         // Double-restore protection (from HARDENED)
         // Prevents calling restore twice if already restored
         if (!has_restored_) {
+            boost_controller_.restoreAll();
             const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
-            has_restored_ = cpu_restored && resource_restored;
+            has_restored_ = cpu_restored && resource_restored &&
+                            !boost_controller_.recoveryRequired();
         }
         (void)experience_memory_.flush(kPaths.experience_db);
     } catch (const std::exception& e) {
@@ -356,13 +380,15 @@ bool AutonomousEngine::refreshEnvironment() {
 
     // Refresh must never re-baseline a mutated system. If the factory restore
     // is incomplete, keep the current profile and retry on the next cycle.
+    boost_controller_.restoreAll();
     const bool cpu_restored = controller_.restoreAll();
     const bool resource_restored = resource_controller_.restoreAll();
-    if (!cpu_restored || !resource_restored) {
+    if (!cpu_restored || !resource_restored || boost_controller_.recoveryRequired()) {
         refresh_pending_ = true;
         logWarn("Refresh deferred: owned mutation restore incomplete, will retry");
         return false;
     }
+    interactivity_sources_ready_ = false;
 
     DeviceProfile refreshed = discovery_.discover();
     snapshot_.profile = std::move(refreshed);
@@ -656,6 +682,7 @@ void AutonomousEngine::tick() {
             boost_controller_.setJournal(interactivity_journal_.get());
             boost_controller_.setGpuMinFreqPath(paths.gpu_min_freq);
             boost_controller_.setTopAppUclampPath(paths.uclamp_min);
+            boost_controller_.clearReadaheadPaths();
             // Prefer fully admitted read-ahead nodes from capability discovery.
             // Accept any dynamically discovered block-queue path, independent
             // of sysfs alias and device name; avoid synthesizing fallback paths.
@@ -687,86 +714,102 @@ void AutonomousEngine::tick() {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch())
                 .count());
-        const bool ia_jank_recent =
-            last_interactivity_state_ == understand::InteractionState::Stuttering;
-        for (const std::uint64_t ia_duration_ns :
-             frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
-            interactivity_model_.ingestFrame(ia_duration_ns, 16'666'667ULL);
-        }
-        // The launch detector and render collector are now part of the live
-        // loop. Their signal is corroborative: ForegroundTracker remains the
-        // PID-change signal, while process-count growth plus PSI can extend a
-        // bounded launch window. Missing observation files fail closed.
-        const std::string launch_procs_path = foreground_tracker_.procsPath();
-        observe::LaunchObservation launch_observation;
-        constexpr std::uint64_t kNsPerMs = 1'000'000ULL;
-        const bool timestamp_convertible =
-            ia_now_ms <= std::numeric_limits<std::uint64_t>::max() / kNsPerMs;
-        const std::uint64_t ia_now_ns = timestamp_convertible
-            ? ia_now_ms * kNsPerMs : 0U;
-        if (timestamp_convertible && !launch_procs_path.empty() &&
-            observe::readLaunchObservation(
-                launch_procs_path,
-                coreflow::kernelFilesystemPath(
-                    coreflow::KernelFsKind::Procfs, "pressure/io"),
-                                           ia_now_ns, launch_observation)) {
-            const observe::LaunchPhase previous_phase = launch_detector_.phase();
-            const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);
-            if (previous_phase == observe::LaunchPhase::Idle &&
-                phase == observe::LaunchPhase::LaunchWindow) {
-                // ForegroundTracker owns launch-window creation.
-                // Process-count growth and PSI must not create a duplicate launch event.
-                if (last_interactivity_state_ ==
-                    understand::InteractionState::Launching) {
-                    interactivity_model_.onForegroundChanged(ia_now_ms);
-                    logInfo("INTERACTIVITY launch_window_extend source=process_count_psi");
-                } else {
-                    logInfo("INTERACTIVITY launch_signal source=process_count_psi");
+        boost_controller_.expire(ia_now_ms);
+        if (next == RuntimeState::Idle) {
+            // Quiescent / screen-off state: avoid spawning dumpsys SurfaceFlinger
+            // child processes or polling foreground cgroup/GPU load, and release
+            // any remaining interactivity boost immediately.
+            if (boost_controller_.activeCount() > 0U ||
+                boost_controller_.recoveryRequired()) {
+                boost_controller_.restoreAll();
+            }
+            if (last_interactivity_state_ != understand::InteractionState::Idle) {
+                logInfo("INTERACTIVITY_STATE %s -> %s (runtime_idle)",
+                        understand::interactionStateName(last_interactivity_state_),
+                        understand::interactionStateName(understand::InteractionState::Idle));
+                last_interactivity_state_ = understand::InteractionState::Idle;
+            }
+        } else {
+            const bool ia_jank_recent =
+                last_interactivity_state_ == understand::InteractionState::Stuttering;
+            for (const std::uint64_t ia_duration_ns :
+                 frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
+                interactivity_model_.ingestFrame(ia_duration_ns, 16'666'667ULL);
+            }
+            // The launch detector and render collector are now part of the live
+            // loop. Their signal is corroborative: ForegroundTracker remains the
+            // PID-change signal, while process-count growth plus PSI can extend a
+            // bounded launch window. Missing observation files fail closed.
+            const std::string launch_procs_path = foreground_tracker_.procsPath();
+            observe::LaunchObservation launch_observation;
+            constexpr std::uint64_t kNsPerMs = 1'000'000ULL;
+            const bool timestamp_convertible =
+                ia_now_ms <= std::numeric_limits<std::uint64_t>::max() / kNsPerMs;
+            const std::uint64_t ia_now_ns = timestamp_convertible
+                ? ia_now_ms * kNsPerMs : 0U;
+            if (timestamp_convertible && !launch_procs_path.empty() &&
+                observe::readLaunchObservation(
+                    launch_procs_path,
+                    coreflow::kernelFilesystemPath(
+                        coreflow::KernelFsKind::Procfs, "pressure/io"),
+                    ia_now_ns, launch_observation)) {
+                const observe::LaunchPhase previous_phase = launch_detector_.phase();
+                const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);
+                if (previous_phase == observe::LaunchPhase::Idle &&
+                    phase == observe::LaunchPhase::LaunchWindow) {
+                    // ForegroundTracker owns launch-window creation.
+                    // Process-count growth and PSI must not create a duplicate launch event.
+                    if (last_interactivity_state_ ==
+                        understand::InteractionState::Launching) {
+                        interactivity_model_.onForegroundChanged(ia_now_ms);
+                        logInfo("INTERACTIVITY launch_window_extend source=process_count_psi");
+                    } else {
+                        logInfo("INTERACTIVITY launch_signal source=process_count_psi");
+                    }
                 }
             }
-        }
-        std::string ia_foreground_package;
-        if (foreground_tracker_.poll(ia_foreground_package)) {
-            interactivity_model_.onForegroundChanged(ia_now_ms);
-            logInfo("INTERACTIVITY foreground_change pkg=%s",
-                    ia_foreground_package.empty() ? "unknown"
-                                                  : ia_foreground_package.c_str());
-        }
-        understand::InteractivitySample ia_sample;
-        ia_sample.now_ms = ia_now_ms;
-        ia_sample.gpu_busy_available =
-            gpu_busy_source_.poll(ia_sample.gpu_busy_ratio);
-        ia_sample.io_full_avg10 = sample.psi_io_full_avg10;
-        ia_sample.memory_some_avg10 = sample.psi_memory_some_avg10;
-        ia_sample.thermal_guard = next == RuntimeState::ThermalGuard;
-        const understand::InteractivitySnapshot ia_snap =
-            interactivity_model_.evaluate(ia_sample);
-        if (ia_snap.state != last_interactivity_state_) {
-            logInfo("INTERACTIVITY_STATE %s -> %s gpu_busy=%.2f io_full=%.3f",
-                    understand::interactionStateName(last_interactivity_state_),
-                    understand::interactionStateName(ia_snap.state),
-                    ia_snap.gpu_busy_ratio, ia_snap.io_full_avg10);
-            last_interactivity_state_ = ia_snap.state;
-        }
+            std::string ia_foreground_package;
+            if (foreground_tracker_.poll(ia_foreground_package)) {
+                interactivity_model_.onForegroundChanged(ia_now_ms);
+                logInfo("INTERACTIVITY foreground_change pkg=%s",
+                        ia_foreground_package.empty() ? "unknown"
+                                                      : ia_foreground_package.c_str());
+            }
+            understand::InteractivitySample ia_sample;
+            ia_sample.now_ms = ia_now_ms;
+            ia_sample.gpu_busy_available =
+                gpu_busy_source_.poll(ia_sample.gpu_busy_ratio);
+            ia_sample.io_full_avg10 = sample.psi_io_full_avg10;
+            ia_sample.memory_some_avg10 = sample.psi_memory_some_avg10;
+            ia_sample.thermal_guard = next == RuntimeState::ThermalGuard;
+            const understand::InteractivitySnapshot ia_snap =
+                interactivity_model_.evaluate(ia_sample);
+            if (ia_snap.state != last_interactivity_state_) {
+                logInfo("INTERACTIVITY_STATE %s -> %s gpu_busy=%.2f io_full=%.3f",
+                        understand::interactionStateName(last_interactivity_state_),
+                        understand::interactionStateName(ia_snap.state),
+                        ia_snap.gpu_busy_ratio, ia_snap.io_full_avg10);
+                last_interactivity_state_ = ia_snap.state;
+            }
 
-        boost_controller_.expire(ia_now_ms);
-        if (next == RuntimeState::ThermalGuard || hold != HoldReason::None) {
-            boost_controller_.restoreAll();
-        } else if (boost_controller_.authorized(config_)) {
-            InteractivityPolicy::BoostConfig ia_boost_config;
-            ia_boost_config.boost_window_ms =
-                static_cast<std::uint64_t>(config_.boostWindowMs());
-            ia_boost_config.uclamp_launch = config_.boostUclampLaunch();
-            ia_boost_config.uclamp_jank = config_.boostUclampJank();
-            ia_boost_config.readahead_kb = config_.boostReadaheadKb();
-            ia_boost_config.gpu_steps = config_.boostGpuSteps();
-            interactivity_policy_.setConfig(ia_boost_config);
-            const std::size_t ia_boosted = boost_controller_.apply(
-                interactivity_policy_.evaluate(ia_snap, ia_now_ms),
-                config_, ia_now_ms);
-            if (ia_boosted > 0U) {
-                logInfo("INTERACTIVITY_BOOST applied=%zu state=%s",
-                        ia_boosted, understand::interactionStateName(ia_snap.state));
+            if (next == RuntimeState::ThermalGuard || hold != HoldReason::None) {
+                boost_controller_.restoreAll();
+            } else if (boost_controller_.authorized(config_)) {
+                InteractivityPolicy::BoostConfig ia_boost_config;
+                ia_boost_config.boost_window_ms =
+                    static_cast<std::uint64_t>(config_.boostWindowMs());
+                ia_boost_config.uclamp_launch = config_.boostUclampLaunch();
+                ia_boost_config.uclamp_jank = config_.boostUclampJank();
+                ia_boost_config.readahead_kb = config_.boostReadaheadKb();
+                ia_boost_config.gpu_steps = config_.boostGpuSteps();
+                interactivity_policy_.setConfig(ia_boost_config);
+                const std::size_t ia_boosted = boost_controller_.apply(
+                    interactivity_policy_.evaluate(ia_snap, ia_now_ms),
+                    config_, ia_now_ms);
+                if (ia_boosted > 0U) {
+                    logInfo("INTERACTIVITY_BOOST applied=%zu state=%s",
+                            ia_boosted, understand::interactionStateName(ia_snap.state));
+                }
             }
         }
 
@@ -1693,9 +1736,11 @@ int AutonomousEngine::run() {
     try {
         if (!has_restored_) {
             // Keep either journal if restore is incomplete: the next start recovers it.
+            boost_controller_.restoreAll();
             const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
-            has_restored_ = cpu_restored && resource_restored;
+            has_restored_ = cpu_restored && resource_restored &&
+                            !boost_controller_.recoveryRequired();
         }
     } catch (const std::exception& e) {
         logError("Exception during shutdown restore: %s", e.what());
