@@ -94,13 +94,19 @@ public:
                                               "CoreFlowThermal");
             Ort::SessionOptions options;
             options.SetIntraOpNumThreads(1);
+            options.SetInterOpNumThreads(1);
+            options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+            options.DisableCpuMemArena();
+            options.DisableMemPattern();
+            options.AddConfigEntry("session.intra_op.allow_spinning", "0");
+            options.AddConfigEntry("session.inter_op.allow_spinning", "0");
             options.SetGraphOptimizationLevel(
                 GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
             // Mobile: prefer CPU EP only; no GPU dependency.
             session_ = std::make_unique<Ort::Session>(
                 *env_, model_path, options);
             memory_info_ = std::make_unique<Ort::MemoryInfo>(
-                Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
+                Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault));
 
             // Validate expected input/output shape for the v1.2 18-feature model.
             // The inference path uses exactly one input and one output.
@@ -189,28 +195,24 @@ public:
             // skl2onnx export used by the v1.2 training pipeline:
             // input  = "float_input"  [1, 18]
             // output = "variable"     [1, 1]   (1-step Celsius prediction)
+            float output_value = std::numeric_limits<float>::quiet_NaN();
+            std::array<int64_t, 2> output_shape{1, 1};
+            Ort::Value output_tensor = Ort::Value::CreateTensor<float>(
+                *memory_info_,
+                &output_value,
+                1U,
+                output_shape.data(),
+                output_shape.size());
+
             const char* input_names[] = {"float_input"};
             const char* output_names[] = {"variable"};
 
-            auto outputs = session_->Run(
+            session_->Run(
                 Ort::RunOptions{nullptr},
-                input_names, &input_tensor, 1,
-                output_names, 1);
+                input_names, &input_tensor, 1U,
+                output_names, &output_tensor, 1U);
 
-            if (outputs.empty() || !outputs[0].IsTensor()) {
-                return std::numeric_limits<double>::quiet_NaN();
-            }
-
-            if (outputs[0].GetTensorTypeAndShapeInfo().GetElementCount() != 1U) {
-                return std::numeric_limits<double>::quiet_NaN();
-            }
-
-            const float* data = outputs[0].GetTensorData<float>();
-            if (data == nullptr) {
-                return std::numeric_limits<double>::quiet_NaN();
-            }
-
-            double pred = static_cast<double>(data[0]);
+            double pred = static_cast<double>(output_value);
             // If the model was trained for a 1-step horizon, extrapolate.
             // Otherwise treat the output as already multi-step.
             if (steps_ahead > 1) {

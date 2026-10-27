@@ -1,18 +1,21 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace coreflow::observer_metrics {
 
-inline bool parsePsiPercentage(const std::string& text,
-                               double& result) {
-    if (text.empty()) return false;
+inline bool parsePsiPercentage(std::string_view text,
+                               double& result) noexcept {
+    if (text.empty() || text.size() >= 31U) return false;
 
     std::size_t i = 0U;
     while (i < text.size() &&
@@ -36,11 +39,15 @@ inline bool parsePsiPercentage(const std::string& text,
 
     if (i != text.size()) return false;
 
+    std::array<char, 32> buf{};
+    std::memcpy(buf.data(), text.data(), text.size());
+    buf[text.size()] = '\0';
+
     char* end = nullptr;
     errno = 0;
-    const double value = std::strtod(text.c_str(), &end);
+    const double value = std::strtod(buf.data(), &end);
 
-    if (end != text.c_str() + text.size() ||
+    if (end != buf.data() + text.size() ||
         errno == ERANGE ||
         !std::isfinite(value) ||
         value < 0.0 || value > 100.0) {
@@ -51,16 +58,16 @@ inline bool parsePsiPercentage(const std::string& text,
     return true;
 }
 
-inline bool parsePsiLine(const std::string& line,
+inline bool parsePsiLine(std::string_view line,
                          double& some_avg10,
-                         double& full_avg10) {
-    // Keep the production path allocation-light. Regex is used only as a
+                         double& full_avg10) noexcept {
+    // Keep the production path allocation-free. Regex is used only as a
     // grammar oracle in tests, never in the runtime sampling path.
     const auto is_space = [](char c) noexcept {
         return c == ' ' || c == '\t' || c == '\r' || c == '\n';
     };
-    const bool is_some = line.rfind("some", 0) == 0;
-    const bool is_full = line.rfind("full", 0) == 0;
+    const bool is_some = line.size() >= 4U && line.compare(0U, 4U, "some") == 0;
+    const bool is_full = line.size() >= 4U && line.compare(0U, 4U, "full") == 0;
     if (!is_some && !is_full) return false;
 
     constexpr std::size_t prefix_size = 4U;
@@ -80,13 +87,13 @@ inline bool parsePsiLine(const std::string& line,
 
         const std::size_t token_begin = cursor;
         while (cursor < line.size() && !is_space(line[cursor])) ++cursor;
-        const std::string token = line.substr(token_begin, cursor - token_begin);
+        const std::string_view token = line.substr(token_begin, cursor - token_begin);
         const auto equals = token.find('=');
-        if (equals == std::string::npos || equals == 0U ||
+        if (equals == std::string_view::npos || equals == 0U ||
             equals + 1U >= token.size()) return false;
 
-        const std::string key = token.substr(0U, equals);
-        const std::string value_text = token.substr(equals + 1U);
+        const std::string_view key = token.substr(0U, equals);
+        const std::string_view value_text = token.substr(equals + 1U);
         if (key == "avg10") {
             if (found_avg10) return false;
             found_avg10 = true;

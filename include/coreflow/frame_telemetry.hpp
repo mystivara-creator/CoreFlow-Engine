@@ -16,6 +16,7 @@ namespace coreflow::observe {
 [[nodiscard]] inline std::vector<std::uint64_t> parseLatencyDurations(
     std::string_view dump) {
     std::vector<std::uint64_t> out;
+    if (!dump.empty()) out.reserve(128U);
     std::size_t pos = 0;
     while (pos < dump.size()) {
         std::size_t end = dump.find('\n', pos);

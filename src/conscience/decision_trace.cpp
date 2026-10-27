@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <csignal>
 #include <deque>
 #include <cstdio>
 #include <ctime>
@@ -186,6 +187,13 @@ private:
     static constexpr std::size_t kBatchCapacity = 64U;
 
     void run() noexcept {
+        sigset_t mask{};
+        if (sigemptyset(&mask) == 0) {
+            (void)sigaddset(&mask, SIGTERM);
+            (void)sigaddset(&mask, SIGINT);
+            (void)sigaddset(&mask, SIGUSR1);
+            (void)::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+        }
         for (;;) {
             std::vector<std::string> batch;
             try {

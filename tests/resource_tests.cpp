@@ -1184,9 +1184,16 @@ void test_block_queue_mutation_targets_are_admitted_for_physical() {
     CHECK(!ResourceActuator::mutationTargetAllowed("/dev/cpuctl/top-app/cgroup.procs"));
     CHECK(!ResourceActuator::mutationTargetAllowed("/sys/kernel/debug/sched_features"));
     CHECK(!ResourceActuator::mutationTargetAllowed("/data/local/tmp/anything"));
-    // The CPU governor belongs to MutationController.
+    // The CPU governor belongs to MutationController and cpufreq policy bounds
+    // belong to PowerHAL.
     CHECK(!ResourceActuator::mutationTargetAllowed(
         "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq"));
+    CHECK(!ResourceActuator::mutationTargetAllowed(
+        "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq"));
 
     // The central actuator guard rejects fatal paths before any I/O.
     EngineConfig config;

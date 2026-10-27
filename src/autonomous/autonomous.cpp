@@ -16,6 +16,7 @@
 
 #include <android/log.h>
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <ctime>
 #include <memory>
@@ -1222,7 +1223,10 @@ void AutonomousEngine::tick() {
                             : "beneficial_outcome_candidate_retained";
                         break;
                     case BaselineIntelligence::Outcome::Neutral:
-                        outcome_reason = "neutral_outcome_candidate_rollback_attempted";
+                        outcome_reason = (mutation == MutationResult::RolledBack ||
+                                          mutation == MutationResult::Failed)
+                            ? "neutral_outcome_candidate_rollback_attempted"
+                            : "neutral_outcome_candidate_retained";
                         break;
                     case BaselineIntelligence::Outcome::Inconclusive:
                         outcome_reason = "inconclusive_outcome_candidate_rollback_attempted";
@@ -1757,9 +1761,6 @@ int AutonomousEngine::run() {
 
         const int configured = std::max(1, config_.monitorIntervalSeconds());
         int sleep_seconds = configured;
-        // Slice between stop/refresh checks. Idle uses a coarse slice so the
-        // process does not interrupt deep sleep with 250 ms wakeups.
-        int slice_ms = 1000;
 
         switch (snapshot_.state) {
             case RuntimeState::Idle:
@@ -1768,45 +1769,65 @@ int AutonomousEngine::run() {
                 // daemon only needs a rare heartbeat while the SoC sleeps.
                 sleep_seconds = std::max(180, configured * 12);
                 if (sleep_seconds > 300) sleep_seconds = 300;
-                slice_ms = 10000;
                 break;
 
             case RuntimeState::Warming:
             case RuntimeState::Elevated:
             case RuntimeState::Pressure:
                 sleep_seconds = std::max(1, configured / 2);
-                slice_ms = 500;
                 break;
 
             case RuntimeState::ThermalGuard:
                 sleep_seconds = 1;
-                slice_ms = 250;
                 break;
 
             case RuntimeState::Normal:
             default:
-                slice_ms = 1000;
                 break;
         }
 
         next_tick_time += std::chrono::seconds(sleep_seconds);
 
-        while (!signal_state::stopRequested()) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= next_tick_time) break;
+        // Honour bounded interactivity boost windows even when the steady-state
+        // tick interval is longer than boost_window_ms.
+        const std::uint64_t boost_deadline_ms = boost_controller_.earliestDeadlineMs();
+        if (boost_deadline_ms > 0U) {
+            const auto now_tp = std::chrono::steady_clock::now();
+            const std::uint64_t now_ms = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now_tp.time_since_epoch())
+                    .count());
+            const std::uint64_t wait_ms =
+                boost_deadline_ms > now_ms ? (boost_deadline_ms - now_ms) : 0U;
+            const auto boost_wake_tp =
+                now_tp + std::chrono::milliseconds(std::max<std::uint64_t>(50U, wait_ms));
+            if (boost_wake_tp < next_tick_time) {
+                next_tick_time = boost_wake_tp;
+            }
+        }
 
+        // Single kernel timer sleep (no periodic polling slices): SIGTERM,
+        // SIGINT, and SIGUSR1 are installed without SA_RESTART and masked on
+        // background threads, so clock_nanosleep wakes immediately with EINTR.
+        while (!signal_state::stopRequested()) {
             if (config_.runtimeRefreshEnabled() && signal_state::consumeRefresh()) {
                 refresh_pending_ = true;
                 break;
             }
 
-            const auto remaining = next_tick_time - now;
-            const auto sleep_for = std::min(
-                remaining,
-                std::chrono::steady_clock::duration{
-                    std::chrono::milliseconds(slice_ms)});
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_tick_time) break;
 
-            std::this_thread::sleep_for(sleep_for);
+            const auto remaining_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(next_tick_time - now).count();
+            if (remaining_ns <= 0) break;
+
+            timespec req{};
+            req.tv_sec = static_cast<time_t>(remaining_ns / 1'000'000'000LL);
+            req.tv_nsec = static_cast<long>(remaining_ns % 1'000'000'000LL);
+            const int rc = ::clock_nanosleep(CLOCK_MONOTONIC, 0, &req, nullptr);
+            if (rc == 0 || rc == EINTR) continue;
+            break;
         }
 
         // Avoid a burst of catch-up ticks after a long stall.

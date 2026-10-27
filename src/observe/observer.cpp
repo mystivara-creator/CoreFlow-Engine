@@ -13,11 +13,9 @@
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
@@ -29,46 +27,74 @@ struct DirCloser {
     ~DirCloser() { if (dir) ::closedir(dir); }
 };
 
-std::string lowerCopy(const std::string& input) {
-    std::string out = input;
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
+constexpr char asciiLower(char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
-bool isExcludedThermalType(const std::string& type) {
-    const std::string t = lowerCopy(type);
-    if (t.find("bcl") != std::string::npos) return true;
-    if (t.find("mmw") != std::string::npos) return true;
-    if (t.find("sub1") != std::string::npos) return true;
-    if (t.find("sdr") != std::string::npos) return true;
-    if (t.find("ific") != std::string::npos) return true;
-    if (t.find("zeroc") != std::string::npos) return true;
-    if (t.find("modem") != std::string::npos) return true;
-    if (t.rfind("lvl", 0) != std::string::npos) return true;
-    if (t.find("lvl") != std::string::npos && t.find("pm") != std::string::npos) return true;
+bool equalsAsciiIgnoreCase(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0U; i < a.size(); ++i) {
+        if (asciiLower(a[i]) != b[i]) return false;
+    }
+    return true;
+}
+
+bool startsWithAsciiIgnoreCase(std::string_view text, std::string_view lower_prefix) noexcept {
+    if (text.size() < lower_prefix.size()) return false;
+    for (std::size_t i = 0U; i < lower_prefix.size(); ++i) {
+        if (asciiLower(text[i]) != lower_prefix[i]) return false;
+    }
+    return true;
+}
+
+bool containsAsciiIgnoreCase(std::string_view text, std::string_view lower_needle) noexcept {
+    if (lower_needle.empty()) return true;
+    if (text.size() < lower_needle.size()) return false;
+    const std::size_t limit = text.size() - lower_needle.size();
+    for (std::size_t i = 0U; i <= limit; ++i) {
+        bool match = true;
+        for (std::size_t j = 0U; j < lower_needle.size(); ++j) {
+            if (asciiLower(text[i + j]) != lower_needle[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
     return false;
 }
 
-int thermalTypeRank(const std::string& type) {
-    const std::string t = lowerCopy(type);
+bool isExcludedThermalType(std::string_view type) noexcept {
+    if (containsAsciiIgnoreCase(type, "bcl")) return true;
+    if (containsAsciiIgnoreCase(type, "mmw")) return true;
+    if (containsAsciiIgnoreCase(type, "sub1")) return true;
+    if (containsAsciiIgnoreCase(type, "sdr")) return true;
+    if (containsAsciiIgnoreCase(type, "ific")) return true;
+    if (containsAsciiIgnoreCase(type, "zeroc")) return true;
+    if (containsAsciiIgnoreCase(type, "modem")) return true;
+    if (startsWithAsciiIgnoreCase(type, "lvl")) return true;
+    if (containsAsciiIgnoreCase(type, "lvl") && containsAsciiIgnoreCase(type, "pm")) return true;
+    return false;
+}
+
+int thermalTypeRank(std::string_view type) noexcept {
     if (isExcludedThermalType(type)) return -1;
-    if (t == "quiet_therm" || t.find("quiet") != std::string::npos) return 100;
-    if (t == "xo-therm" || t.find("xo_therm") != std::string::npos ||
-        t.find("xo-therm") != std::string::npos) return 95;
-    if (t.find("skin") != std::string::npos || t.find("shell") != std::string::npos) return 90;
-    if (t.find("cpuss") != std::string::npos) return 80;
-    if (t.find("cpu-") != std::string::npos || t.find("cpu_") != std::string::npos) return 70;
-    if (t.find("tsens") != std::string::npos) return 65;
-    if (t.find("gpu") != std::string::npos) return 55;
-    if (t.find("soc") != std::string::npos && t.find("socd") == std::string::npos) return 50;
-    if (t == "battery") return 40;
-    if (t.find("aoss") != std::string::npos) return 35;
-    if (t.find("ddr") != std::string::npos) return 30;
+    if (equalsAsciiIgnoreCase(type, "quiet_therm") || containsAsciiIgnoreCase(type, "quiet")) return 100;
+    if (equalsAsciiIgnoreCase(type, "xo-therm") || containsAsciiIgnoreCase(type, "xo_therm") ||
+        containsAsciiIgnoreCase(type, "xo-therm")) return 95;
+    if (containsAsciiIgnoreCase(type, "skin") || containsAsciiIgnoreCase(type, "shell")) return 90;
+    if (containsAsciiIgnoreCase(type, "cpuss")) return 80;
+    if (containsAsciiIgnoreCase(type, "cpu-") || containsAsciiIgnoreCase(type, "cpu_")) return 70;
+    if (containsAsciiIgnoreCase(type, "tsens")) return 65;
+    if (containsAsciiIgnoreCase(type, "gpu")) return 55;
+    if (containsAsciiIgnoreCase(type, "soc") && !containsAsciiIgnoreCase(type, "socd")) return 50;
+    if (equalsAsciiIgnoreCase(type, "battery")) return 40;
+    if (containsAsciiIgnoreCase(type, "aoss")) return 35;
+    if (containsAsciiIgnoreCase(type, "ddr")) return 30;
     return 10;
 }
 
-bool isPrimaryThermalType(const std::string& type) {
+bool isPrimaryThermalType(std::string_view type) noexcept {
     return thermalTypeRank(type) >= 50;
 }
 
@@ -183,11 +209,27 @@ long normalizeBatteryTemperature(long raw) {
     return raw;
 }
 
-bool parseProcessStat(const std::string& path, std::string& name,
-                      std::uint64_t& ticks, std::uint64_t& memory_kb) {
-    std::array<char, 512> buffer{};
-    const std::size_t len = readBoundedFd(path, buffer);
-    if (len == 0U) return false;
+bool parseProcessStatAt(int proc_dir_fd, const char* pid_text,
+                        std::array<char, 512>& buffer,
+                        std::string_view& comm_out,
+                        std::uint64_t& ticks, std::uint64_t& memory_kb) noexcept {
+    const std::size_t pid_len = std::strlen(pid_text);
+    std::array<char, 32> rel_path{};
+    if (pid_len == 0U || pid_len + 6U >= rel_path.size()) return false;
+    std::memcpy(rel_path.data(), pid_text, pid_len);
+    std::memcpy(rel_path.data() + pid_len, "/stat", 6U);
+
+    const int fd = ::openat(proc_dir_fd, rel_path.data(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    ssize_t count = 0;
+    do {
+        count = ::read(fd, buffer.data(), buffer.size() - 1U);
+    } while (count < 0 && errno == EINTR);
+    ::close(fd);
+    if (count <= 0) return false;
+
+    const auto len = static_cast<std::size_t>(count);
+    buffer[len] = '\0';
 
     std::string_view line(buffer.data(), len);
     const std::size_t eol = line.find('\n');
@@ -200,7 +242,7 @@ bool parseProcessStat(const std::string& path, std::string& name,
         close <= open || close + 2U >= line.size()) {
         return false;
     }
-    name.assign(line.substr(open + 1U, close - open - 1U));
+    comm_out = line.substr(open + 1U, close - open - 1U);
 
     const char* cur = line.data() + close + 2U;
     const char* const end = line.data() + line.size();
@@ -232,6 +274,83 @@ bool parseProcessStat(const std::string& path, std::string& name,
     memory_kb = static_cast<std::uint64_t>(rss_pages) *
                 static_cast<std::uint64_t>(cachedPageKb());
     return true;
+}
+
+bool nextIntToken(const char*& cur, const char* end, int& value) noexcept {
+    while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+    if (cur >= end) return false;
+    const auto res = std::from_chars(cur, end, value);
+    if (res.ec != std::errc{}) return false;
+    cur = res.ptr;
+    return true;
+}
+
+void parseDiskstatsLine(std::string_view line, observer_metrics::DiskCounterMap& out) {
+    const char* cur = line.data();
+    const char* const end = line.data() + line.size();
+
+    int major = 0;
+    int minor = 0;
+    if (!nextIntToken(cur, end, major) || !nextIntToken(cur, end, minor)) return;
+
+    while (cur < end && (*cur == ' ' || *cur == '\t')) ++cur;
+    const char* const name_begin = cur;
+    while (cur < end && *cur != ' ' && *cur != '\t' && *cur != '\r') ++cur;
+    if (cur == name_begin) return;
+    const std::string_view name(name_begin, static_cast<std::size_t>(cur - name_begin));
+
+    // Reject synthetic/layered devices before parsing counters or allocating keys.
+    if ((name.size() >= 4U && name.compare(0U, 4U, "loop") == 0) ||
+        (name.size() >= 3U && name.compare(0U, 3U, "ram") == 0) ||
+        (name.size() >= 4U && name.compare(0U, 4U, "zram") == 0) ||
+        (name.size() >= 3U && name.compare(0U, 3U, "dm-") == 0)) {
+        return;
+    }
+
+    std::uint64_t rd_ios = 0;
+    std::uint64_t rd_merged = 0;
+    std::uint64_t rd_sectors = 0;
+    std::uint64_t rd_ms = 0;
+    std::uint64_t wr_ios = 0;
+    std::uint64_t wr_merged = 0;
+    std::uint64_t wr_sectors = 0;
+    std::uint64_t wr_ms = 0;
+
+    if (!nextUint64Token(cur, end, rd_ios) ||
+        !nextUint64Token(cur, end, rd_merged) ||
+        !nextUint64Token(cur, end, rd_sectors) ||
+        !nextUint64Token(cur, end, rd_ms) ||
+        !nextUint64Token(cur, end, wr_ios) ||
+        !nextUint64Token(cur, end, wr_merged) ||
+        !nextUint64Token(cur, end, wr_sectors) ||
+        !nextUint64Token(cur, end, wr_ms)) {
+        return;
+    }
+
+    std::array<char, 96> key_buf{};
+    char* kp = key_buf.data();
+    char* const kend = key_buf.data() + key_buf.size();
+    const auto r1 = std::to_chars(kp, kend, major);
+    if (r1.ec != std::errc{} || r1.ptr >= kend) return;
+    kp = r1.ptr;
+    *kp++ = ':';
+    const auto r2 = std::to_chars(kp, kend, minor);
+    if (r2.ec != std::errc{} || r2.ptr >= kend) return;
+    kp = r2.ptr;
+    *kp++ = ':';
+    const auto rem = static_cast<std::size_t>(kend - kp);
+    if (name.size() <= rem) {
+        std::memcpy(kp, name.data(), name.size());
+        kp += name.size();
+        out[std::string(key_buf.data(), static_cast<std::size_t>(kp - key_buf.data()))] =
+            observer_metrics::DiskCounters{
+                rd_sectors, wr_sectors, rd_ios, wr_ios, rd_ms, wr_ms};
+    } else {
+        std::string key(key_buf.data(), static_cast<std::size_t>(kp - key_buf.data()));
+        key.append(name);
+        out[std::move(key)] = observer_metrics::DiskCounters{
+            rd_sectors, wr_sectors, rd_ios, wr_ios, rd_ms, wr_ms};
+    }
 }
 
 } // namespace
@@ -486,51 +605,54 @@ void RuntimeObserver::readCharging(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
-    std::ifstream file(kernelFilesystemPath(KernelFsKind::Procfs, "diskstats"));
-    if (!file) return;
+    const std::string path = kernelFilesystemPath(KernelFsKind::Procfs, "diskstats");
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
 
-    observer_metrics::DiskCounterMap current;
-    std::string line;
+    scratch_io_devices_.clear();
+    std::array<char, 4096> buffer{};
+    std::size_t carry = 0U;
+    bool discard_until_eol = false;
 
-    while (std::getline(file, line)) {
-        std::istringstream in(line);
-        int major = 0;
-        int minor = 0;
-        std::string name;
-
-        std::uint64_t rd_ios = 0;
-        std::uint64_t rd_merged = 0;
-        std::uint64_t rd_sectors = 0;
-        std::uint64_t rd_ms = 0;
-        std::uint64_t wr_ios = 0;
-        std::uint64_t wr_merged = 0;
-        std::uint64_t wr_sectors = 0;
-        std::uint64_t wr_ms = 0;
-
-        if (!(in >> major >> minor >> name
-                 >> rd_ios >> rd_merged >> rd_sectors >> rd_ms
-                 >> wr_ios >> wr_merged >> wr_sectors >> wr_ms)) {
-            continue;
+    for (;;) {
+        ssize_t n = 0;
+        do {
+            n = ::read(fd, buffer.data() + carry, buffer.size() - carry);
+        } while (n < 0 && errno == EINTR);
+        if (n <= 0) {
+            if (!discard_until_eol && carry > 0U) {
+                parseDiskstatsLine(std::string_view(buffer.data(), carry), scratch_io_devices_);
+            }
+            break;
         }
 
-        if (name.rfind("loop", 0) == 0 ||
-            name.rfind("ram", 0) == 0 ||
-            name.rfind("zram", 0) == 0 ||
-            name.rfind("dm-", 0) == 0) {
-            continue;
+        const std::size_t total = carry + static_cast<std::size_t>(n);
+        std::size_t start = 0U;
+        for (;;) {
+            const void* nl = std::memchr(buffer.data() + start, '\n', total - start);
+            if (nl == nullptr) break;
+            const auto eol = static_cast<std::size_t>(static_cast<const char*>(nl) - buffer.data());
+            if (!discard_until_eol) {
+                parseDiskstatsLine(std::string_view(buffer.data() + start, eol - start),
+                                   scratch_io_devices_);
+            } else {
+                discard_until_eol = false;
+            }
+            start = eol + 1U;
         }
 
-        const std::string key =
-            std::to_string(major) + ":" +
-            std::to_string(minor) + ":" + name;
-
-        current[key] = observer_metrics::DiskCounters{
-            rd_sectors, wr_sectors, rd_ios, wr_ios, rd_ms, wr_ms
-        };
+        carry = total - start;
+        if (carry == buffer.size()) {
+            carry = 0U;
+            discard_until_eol = true;
+        } else if (carry > 0U && start > 0U) {
+            std::memmove(buffer.data(), buffer.data() + start, carry);
+        }
     }
+    ::close(fd);
 
     const auto delta = observer_metrics::calculateIoDelta(
-        current, previous_io_devices_, last_interval_seconds_);
+        scratch_io_devices_, previous_io_devices_, last_interval_seconds_);
 
     sample.io_read_kb_per_sec = delta.read_kb_per_sec;
     sample.io_write_kb_per_sec = delta.write_kb_per_sec;
@@ -543,49 +665,63 @@ void RuntimeObserver::readIoActivity(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
-    if ((sample_counter_ % 6U) != 0U) return;
+    // Seed baseline on sample 1 and refresh every 10th sample to match the
+    // engine's periodic telemetry cadence without wasted intermediate scans.
+    if (sample_counter_ != 1U && (sample_counter_ % 10U) != 0U) return;
     const std::string proc_root = kernelFilesystemPath(KernelFsKind::Procfs);
     if (proc_root.empty()) return;
     DIR* raw_dir = opendir(proc_root.c_str());
     if (!raw_dir) return;
     DirCloser dir_guard{raw_dir};
+    const int dir_fd = ::dirfd(raw_dir);
+    if (dir_fd < 0) return;
 
     const long ticks_per_second = cachedClockTicks();
-    std::unordered_map<int, std::uint64_t> current_ticks;
-    current_ticks.reserve(previous_process_ticks_.size());
+    scratch_process_ticks_.clear();
+    if (scratch_process_ticks_.capacity() < previous_process_ticks_.size()) {
+        scratch_process_ticks_.reserve(previous_process_ticks_.size());
+    }
+
+    std::array<char, 512> stat_buf{};
     std::string best_name;
-    std::string name;
-    std::string stat_path;
-    stat_path.reserve(proc_root.size() + 24U);
     std::uint64_t best_delta = 0;
     std::uint64_t best_memory = 0;
     std::uint32_t count = 0;
+
     while (dirent* entry = readdir(raw_dir)) {
         const char* text = entry->d_name;
-        if (!std::isdigit(static_cast<unsigned char>(text[0]))) continue;
-        const int pid = std::atoi(text);
-        if (pid <= 0) continue;
-        stat_path.assign(proc_root);
-        stat_path.push_back('/');
-        stat_path.append(text);
-        stat_path.append("/stat");
+        if (text[0] < '1' || text[0] > '9') continue;
+        int pid = 0;
+        const std::size_t name_len = std::strlen(text);
+        const auto pid_res = std::from_chars(text, text + name_len, pid);
+        if (pid_res.ec != std::errc{} || pid_res.ptr != text + name_len || pid <= 0) continue;
+
+        std::string_view comm_view;
         std::uint64_t ticks = 0;
         std::uint64_t memory_kb = 0;
-        if (!parseProcessStat(stat_path, name, ticks, memory_kb)) continue;
+        if (!parseProcessStatAt(dir_fd, text, stat_buf, comm_view, ticks, memory_kb)) continue;
         ++count;
-        current_ticks[pid] = ticks;
-        const auto old = previous_process_ticks_.find(pid);
-        if (old != previous_process_ticks_.end() && ticks >= old->second) {
+        scratch_process_ticks_.emplace_back(pid, ticks);
+
+        const auto old = std::lower_bound(
+            previous_process_ticks_.begin(), previous_process_ticks_.end(), pid,
+            [](const std::pair<int, std::uint64_t>& elem, int target) noexcept {
+                return elem.first < target;
+            });
+        if (old != previous_process_ticks_.end() && old->first == pid && ticks >= old->second) {
             const std::uint64_t delta = ticks - old->second;
             if (delta > best_delta) {
                 best_delta = delta;
-                best_name = name;
+                best_name.assign(comm_view);
                 best_memory = memory_kb;
             }
         }
     }
 
-    previous_process_ticks_.swap(current_ticks);
+    std::sort(scratch_process_ticks_.begin(), scratch_process_ticks_.end(),
+              [](const auto& a, const auto& b) noexcept { return a.first < b.first; });
+    previous_process_ticks_.swap(scratch_process_ticks_);
+
     sample.process_count = count;
     double profile_interval = 30.0;
     const auto now = std::chrono::steady_clock::now();
@@ -595,7 +731,7 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
     previous_process_profile_time_ = now;
     have_process_profile_time_ = true;
     if (ticks_per_second > 0 && best_delta > 0) {
-        sample.top_process_name = best_name;
+        sample.top_process_name = std::move(best_name);
         sample.top_process_memory_kb = best_memory;
         sample.top_process_cpu_ratio = std::clamp(
             static_cast<double>(best_delta) /
@@ -606,8 +742,6 @@ void RuntimeObserver::readProcessProfile(RuntimeSample& sample) const {
 }
 
 void RuntimeObserver::readPsi(RuntimeSample& sample) const {
-    std::string line_buf;
-    line_buf.reserve(128U);
     auto readResource = [&](const std::string& path, double& some, double& full) -> bool {
         std::array<char, 512> buffer{};
         const std::size_t len = readBoundedFd(path, buffer);
@@ -621,8 +755,7 @@ void RuntimeObserver::readPsi(RuntimeSample& sample) const {
                 eol == std::string_view::npos ? text : text.substr(0U, eol);
             text = eol == std::string_view::npos ? std::string_view{} : text.substr(eol + 1U);
             if (line.empty()) continue;
-            line_buf.assign(line);
-            if (observer_metrics::parsePsiLine(line_buf, some, full)) got = true;
+            if (observer_metrics::parsePsiLine(line, some, full)) got = true;
         }
         return got;
     };

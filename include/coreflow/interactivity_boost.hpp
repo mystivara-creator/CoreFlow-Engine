@@ -47,6 +47,16 @@ public:
     void restoreAll() noexcept;
 
     [[nodiscard]] std::size_t activeCount() const noexcept { return active_.size(); }
+    [[nodiscard]] std::uint64_t earliestDeadlineMs() const noexcept {
+        std::uint64_t earliest = 0U;
+        for (const auto& entry : active_) {
+            if (entry.second.restored) continue;
+            if (earliest == 0U || entry.second.deadline_ms < earliest) {
+                earliest = entry.second.deadline_ms;
+            }
+        }
+        return earliest;
+    }
     [[nodiscard]] bool authorized(const EngineConfig& config) const noexcept;
     [[nodiscard]] bool recoveryRequired() const noexcept { return recovery_required_; }
 

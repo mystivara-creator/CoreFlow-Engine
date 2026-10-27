@@ -140,8 +140,6 @@ bool ResourceMutationController::captureBaseline(
     pending_outcome_ = false;
     baseline_.clear();
     dirty_resources_.clear();
-    retained_active_resources_.clear();
-    active_resources_cache_.clear();
     last_applied_resources_.clear();
 
     for (const auto& cap : profile.capabilities.resources) {
@@ -690,6 +688,15 @@ MutationResult ResourceMutationController::applyCandidate(
 
     if (result.status != ActuatorStatus::Ok && result.status != ActuatorStatus::NoChange) {
         try {
+            if (rejected_.size() >= 128U) {
+                for (auto it = rejected_.begin(); it != rejected_.end(); ) {
+                    if (cycle_ - it->second >= kRejectionCooldownCycles) {
+                        it = rejected_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
             rejected_[candidate.path + "\n" + candidate.requested] = cycle_;
         } catch (...) {
         }
@@ -1097,6 +1104,7 @@ bool ResourceMutationController::isRejected(
     const std::string& path,
     const std::string& requested
 ) const noexcept {
+    if (rejected_.empty()) return false;
     try {
         const auto it = rejected_.find(path + "\n" + requested);
         return it != rejected_.end() &&

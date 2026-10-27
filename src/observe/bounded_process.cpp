@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <limits>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -90,7 +91,10 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
                 break;
             }
             pollfd watch{read_fd, POLLIN, 0};
-            const int ready = ::poll(&watch, 1, static_cast<int>(deadline - now));
+            const std::uint64_t wait_ms = std::min<std::uint64_t>(
+                deadline - now,
+                static_cast<std::uint64_t>(std::numeric_limits<int>::max()));
+            const int ready = ::poll(&watch, 1, static_cast<int>(wait_ms));
             if (ready < 0) {
                 if (errno == EINTR) continue;
                 break;  // unexpected poll failure: killed below

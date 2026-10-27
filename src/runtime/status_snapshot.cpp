@@ -1,14 +1,19 @@
 #include "coreflow/status_snapshot.hpp"
 
+#include <array>
+#include <cerrno>
+#include <charconv>
 #include <cmath>
+#include <concepts>
 #include <cstdio>
 #include <fcntl.h>
 #include <iterator>
-#include <locale>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <sys/stat.h>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 namespace coreflow {
 namespace {
@@ -45,7 +50,69 @@ constexpr const char* kBlockerCodes[] = {
     "READY",
 };
 
-void appendEscaped(std::ostringstream& out, const std::string& text) {
+class JsonBuffer final {
+public:
+    explicit JsonBuffer(std::size_t reserve_bytes = 3072U) {
+        buf_.reserve(reserve_bytes);
+    }
+
+    JsonBuffer& operator<<(char ch) {
+        buf_.push_back(ch);
+        return *this;
+    }
+
+    JsonBuffer& operator<<(const char* text) {
+        if (text != nullptr) buf_.append(text);
+        return *this;
+    }
+
+    JsonBuffer& operator<<(std::string_view text) {
+        buf_.append(text);
+        return *this;
+    }
+
+    JsonBuffer& operator<<(const std::string& text) {
+        buf_.append(text);
+        return *this;
+    }
+
+    template <typename T>
+        requires std::integral<T> &&
+                 (!std::same_as<std::remove_cv_t<T>, char>) &&
+                 (!std::same_as<std::remove_cv_t<T>, bool>)
+    JsonBuffer& operator<<(T value) {
+        std::array<char, 32> tmp{};
+        const auto res = std::to_chars(tmp.data(), tmp.data() + tmp.size(), value);
+        if (res.ec == std::errc{}) {
+            buf_.append(tmp.data(), static_cast<std::size_t>(res.ptr - tmp.data()));
+        } else {
+            buf_.push_back('0');
+        }
+        return *this;
+    }
+
+    void appendDouble(double value) {
+        if (!std::isfinite(value)) {
+            buf_.append("null", 4U);
+            return;
+        }
+        std::array<char, 48> tmp{};
+        const auto res = std::to_chars(
+            tmp.data(), tmp.data() + tmp.size(), value, std::chars_format::general, 6);
+        if (res.ec == std::errc{}) {
+            buf_.append(tmp.data(), static_cast<std::size_t>(res.ptr - tmp.data()));
+        } else {
+            buf_.append("null", 4U);
+        }
+    }
+
+    std::string take() noexcept { return std::move(buf_); }
+
+private:
+    std::string buf_;
+};
+
+void appendEscaped(JsonBuffer& out, std::string_view text) {
     constexpr std::size_t kMaxString = 512;
     out << '"';
     std::size_t count = 0;
@@ -60,7 +127,7 @@ void appendEscaped(std::ostringstream& out, const std::string& text) {
             case '\t': out << "\\t"; break;
             default:
                 if (c < 0x20) {
-                    static const char* hex = "0123456789abcdef";
+                    static constexpr char hex[] = "0123456789abcdef";
                     out << "\\u00" << hex[(c >> 4) & 0xF] << hex[c & 0xF];
                 } else {
                     out << raw;
@@ -70,19 +137,15 @@ void appendEscaped(std::ostringstream& out, const std::string& text) {
     out << '"';
 }
 
-void appendNumber(std::ostringstream& out, double value) {
-    if (!std::isfinite(value)) {
-        out << "null";
-    } else {
-        out << value;
-    }
+void appendNumber(JsonBuffer& out, double value) {
+    out.appendDouble(value);
 }
 
-void appendBool(std::ostringstream& out, bool value) {
+void appendBool(JsonBuffer& out, bool value) {
     out << (value ? "true" : "false");
 }
 
-void appendPairs(std::ostringstream& out,
+void appendPairs(JsonBuffer& out,
                  const std::vector<std::pair<std::string, std::string>>& pairs,
                  const char* key_name) {
     constexpr std::size_t kMaxItems = 16;
@@ -137,9 +200,7 @@ std::string primaryBlocker(const EngineStatus& s) {
 }
 
 std::string statusToJson(const EngineStatus& s) {
-    std::ostringstream out;
-    out.imbue(std::locale::classic());
-    out.precision(6);
+    JsonBuffer out(3072U);
 
     out << "{\"schema\":" << kStatusSchemaVersion << ",\"version\":";
     appendEscaped(out, s.version);
@@ -326,7 +387,7 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"rolled_back\":" << s.rolled_back
         << ",\"failed\":" << s.failed << "}}";
 
-    return out.str();
+    return out.take();
 }
 
 bool writeStatusFile(const std::string& path, const std::string& json) noexcept {
@@ -348,7 +409,12 @@ bool writeStatusFile(const std::string& path, const std::string& json) noexcept 
         std::size_t written = 0;
         while (ok && written < json.size()) {
             const ssize_t n = ::write(fd, json.data() + written, json.size() - written);
-            if (n <= 0) {
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                ok = false;
+                break;
+            }
+            if (n == 0) {
                 ok = false;
                 break;
             }

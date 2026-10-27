@@ -196,6 +196,12 @@ void testNamespaceMapping() {
     CHECK(namespaceOf(ResourceDomain::Io, "sda:read_ahead_kb") == ControlNamespace::BlockQueue);
     CHECK(namespaceOf(ResourceDomain::Scheduler, "scheduler") == ControlNamespace::Scheduler);
     CHECK(namespaceOf(ResourceDomain::CpuFreq, "policies") == ControlNamespace::CpuFreq);
+    CHECK(namespaceOf(ResourceDomain::CpuFreq,
+                      "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq") ==
+          ControlNamespace::CpuFreq);
+    CHECK(namespaceOf(ResourceDomain::CpuFreq,
+                      "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference") ==
+          ControlNamespace::CpuFreqTunable);
     CHECK(namespaceOf(ResourceDomain::Thermal, "thermal-zones") == ControlNamespace::Other);
 }
 
@@ -219,7 +225,7 @@ void testSurfaceClassification() {
                           "/sys/class/kgsl/kgsl-3d0/max_gpuclk") == SurfaceClass::Admissible);
     CHECK(classifySurface(ResourceDomain::UClamp, "/dev/cpuctl/top-app/cpu.uclamp.min",
                           "/dev/cpuctl/top-app/cpu.uclamp.min") == SurfaceClass::Admissible);
-    // Fatal classes and the governor authority boundary.
+    // Fatal classes and the governor / PowerHAL cpufreq authority boundary.
     CHECK(classifySurface(ResourceDomain::Gpu, "x", "/sys/class/kgsl/kgsl-3d0/throttling") ==
           SurfaceClass::Denied);
     CHECK(classifySurface(ResourceDomain::Vendor, "x", "/sys/class/thermal/thermal_zone3/mode") ==
@@ -227,6 +233,18 @@ void testSurfaceClassification() {
     CHECK(classifySurface(ResourceDomain::CpuFreq, "x",
                           "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor") ==
           SurfaceClass::OutOfClass);
+    CHECK(classifySurface(ResourceDomain::CpuFreq, "x",
+                          "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq") ==
+          SurfaceClass::OutOfClass);
+    CHECK(classifySurface(ResourceDomain::CpuFreq, "x",
+                          "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq") ==
+          SurfaceClass::OutOfClass);
+    CHECK(classifySurface(ResourceDomain::CpuFreq, "x",
+                          "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq") ==
+          SurfaceClass::OutOfClass);
+    CHECK(classifySurface(ResourceDomain::CpuFreq, "energy_performance_preference",
+                          "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference") ==
+          SurfaceClass::Admissible);
     CHECK(classifySurface(ResourceDomain::Thermal, "x", "/sys/class/foo/bar") ==
           SurfaceClass::OutOfClass);
     CHECK(classifySurface(ResourceDomain::Memory, "vm.x", "") == SurfaceClass::OutOfClass);

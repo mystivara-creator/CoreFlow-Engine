@@ -197,8 +197,7 @@ void testGenericDiscovery() {
     CHECK(sched && sched->domain == ResourceDomain::Scheduler && sched->mutation_ready);
 
     const auto* maxf = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
-    CHECK(maxf && maxf->domain == ResourceDomain::CpuFreq && maxf->ordered_scale &&
-          maxf->options.size() == 3U);
+    CHECK(maxf && maxf->domain == ResourceDomain::CpuFreq && !maxf->mutation_ready);
     const auto* gov = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor");
     CHECK(gov && !gov->mutation_ready);  // governor authority is separate
     const auto* rate = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us");
@@ -244,14 +243,15 @@ void testGenericDiscovery() {
     hot.sample_confidence = 0.95;
     hot.intervention = InterventionLevel::Low;
 
-    // Thermal: a step down the advertised GPU/CPU scale.
-    CHECK(gpu_max != nullptr);
-    if (gpu_max == nullptr) return;
+    // Thermal: a step down the advertised GPU scale; CPU policy frequency
+    // bounds remain PowerHAL-owned and ineligible for generic actuation.
+    CHECK(gpu_max != nullptr && maxf != nullptr);
+    if (gpu_max == nullptr || maxf == nullptr) return;
     const EffectScore g = model.evaluate(*gpu_max, "900000000", hot);
     CHECK(g.eligible && g.requested == "600000000" && g.stabilizing &&
           g.source == CandidateSource::OrderedScale);
     const EffectScore c = model.evaluate(*maxf, "1804800", hot);
-    CHECK(c.eligible && c.requested == "1036800");
+    CHECK(!c.eligible && c.requested.empty());
     // Thermal: a lower utilization clamp.
     const EffectScore u = model.evaluate(*clamp, "10", hot);
     CHECK(u.eligible && u.stabilizing && u.requested == "9");

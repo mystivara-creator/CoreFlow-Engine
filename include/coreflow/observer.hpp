@@ -3,7 +3,8 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
-#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "coreflow/types.hpp"
 #include "coreflow/observer_metrics.hpp"
@@ -30,13 +31,15 @@ private:
     mutable std::uint64_t previous_cpu_total_{0};
     mutable std::uint64_t previous_cpu_idle_{0};
     mutable observer_metrics::DiskCounterMap previous_io_devices_;
+    mutable observer_metrics::DiskCounterMap scratch_io_devices_;
     mutable std::uint64_t sample_counter_{0};
     mutable double last_interval_seconds_{5.0};
     mutable std::chrono::steady_clock::time_point previous_sample_time_{};
     mutable std::chrono::steady_clock::time_point previous_process_profile_time_{};
     mutable bool have_sample_time_{false};
     mutable bool have_process_profile_time_{false};
-    mutable std::unordered_map<int, std::uint64_t> previous_process_ticks_;
+    mutable std::vector<std::pair<int, std::uint64_t>> previous_process_ticks_;
+    mutable std::vector<std::pair<int, std::uint64_t>> scratch_process_ticks_;
     mutable std::string cached_battery_base_;
     mutable std::string cached_battery_path_;
 };

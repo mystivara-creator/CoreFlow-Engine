@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 
 namespace coreflow {
 namespace {
@@ -13,6 +14,14 @@ constexpr std::size_t index(ControlNamespace ns) noexcept {
 
 constexpr std::size_t index(ConsultReason reason) noexcept {
     return static_cast<std::size_t>(reason);
+}
+
+constexpr bool isReservedCpuFreqSurface(std::string_view text) noexcept {
+    const std::size_t slash = text.rfind('/');
+    const std::string_view leaf =
+        slash == std::string_view::npos ? text : text.substr(slash + 1U);
+    return leaf == "scaling_governor" || leaf == "scaling_min_freq" ||
+           leaf == "scaling_max_freq" || leaf == "scaling_cur_freq";
 }
 
 Consultation makeResult(ConsultVerdict verdict, ConsultReason reason,
@@ -60,13 +69,12 @@ ControlNamespace namespaceOf(ResourceDomain domain, const std::string& name) noe
         case ResourceDomain::CpuSet:    return ControlNamespace::Cgroup;
         case ResourceDomain::Vendor:    return ControlNamespace::KernelTunable;
         case ResourceDomain::CpuFreq: {
-            // The governor node belongs to MutationController; every other
-            // cpufreq node is an ordinary resource tunable.
-            const bool governor =
-                name == "policies" ||
-                (name.size() >= 16U &&
-                 name.compare(name.size() - 16U, 16U, "scaling_governor") == 0);
-            return governor ? ControlNamespace::CpuFreq : ControlNamespace::CpuFreqTunable;
+            // The governor node belongs to MutationController and frequency
+            // bounds/telemetry belong to PowerHAL/cpufreq; secondary cpufreq
+            // attributes remain ordinary resource tunables.
+            const bool reserved =
+                name == "policies" || isReservedCpuFreqSurface(name);
+            return reserved ? ControlNamespace::CpuFreq : ControlNamespace::CpuFreqTunable;
         }
         default:                        return ControlNamespace::Other;
     }
@@ -79,10 +87,10 @@ SurfaceClass classifySurface(ResourceDomain domain, const std::string& name,
     if (isFatalSurface(path)) return SurfaceClass::Denied;
     // Inventory/telemetry domains are not autonomous tunables.
     if (!isTunableResourceDomain(domain)) return SurfaceClass::OutOfClass;
-    // The CPU governor has its own authority (MutationController).
+    // CPU governor and PowerHAL-owned policy frequency bounds are outside the
+    // generic resource actuator's authority.
     if (namespaceOf(domain, name) == ControlNamespace::CpuFreq) return SurfaceClass::OutOfClass;
-    if (path.size() >= 16U && path.compare(path.size() - 16U, 16U, "scaling_governor") == 0)
-        return SurfaceClass::OutOfClass;
+    if (isReservedCpuFreqSurface(path)) return SurfaceClass::OutOfClass;
     // Capability-driven: every other discovered kernel tunable is a candidate.
     return SurfaceClass::Admissible;
 }

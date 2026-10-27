@@ -27,11 +27,13 @@ A green run on a given SHA (for example `8af1984` on `refactor/source-consolidat
 - Field soak, boot-loop immunity, or SELinux path validation on every OEM.
 - That the bundled thermal ONNX is calibrated per SoC. The model is shipped as an optional inference aid; the daemon remains functional without per-device model validation. Operators should treat model quality as device-specific.
 
-## Hardening posture (source)
+## Hardening & low-overhead posture (source)
 
 - Mutation writes: single FD, `O_NOFOLLOW`, `fstat` on that FD, kernel FS check, read-back verify, journal before write.
-- Journals / status files: exclusive temps where applicable; reject symlink and non-regular journal inputs.
+- Authority boundaries: `scaling_governor` belongs exclusively to `MutationController`; `scaling_min_freq`, `scaling_max_freq`, and `scaling_cur_freq` remain PowerHAL/observe-only across `Consultation`, `TunableDiscovery`, `EcosystemKnowledge`, and `ResourceActuator`.
+- Journals / status files: exclusive temps where applicable; `EINTR`-safe writes; reject symlink and non-regular journal inputs.
 - Directory fsync for durable stores: `O_DIRECTORY | O_NOFOLLOW`.
+- Low-overhead daemon loop: single-timer signal-interruptible `clock_nanosleep` (zero slice-polling wakeups during deep sleep), exact interactivity boost-expiry wake clamping, zero-allocation `string_view` / `from_chars` / `to_chars` telemetry & status paths, and non-spinning arena-free ONNX Runtime CPU execution.
 - Defaults remain observe-only; Adaptive still requires arming and capability/policy/permit gates.
 
 ## Host reproduce
