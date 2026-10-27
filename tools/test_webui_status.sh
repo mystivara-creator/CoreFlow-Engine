@@ -6,7 +6,7 @@ if ! command -v node >/dev/null 2>&1; then echo "SKIP: node not installed; WebUI
 if ! command -v g++ >/dev/null 2>&1; then echo "SKIP: g++ not installed; WebUI status contract NOT verified"; exit 0; fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-g++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/include" \
+g++ -std=c++20 -Wall -Wextra -Werror -I"$ROOT/include" \
     "$ROOT/tests/status_dump.cpp" "$ROOT/src/runtime/status_snapshot.cpp" -o "$TMP/status_dump"
 mkdir -p "$TMP/out"
 "$TMP/status_dump" "$TMP/out"
