@@ -155,7 +155,8 @@ bool ResourceActuator::mutationTargetAllowed(std::string_view path) noexcept {
     if (isFatalSurface(path)) return false;
     const auto slash = path.rfind('/');
     const std::string_view leaf = slash == std::string_view::npos ? path : path.substr(slash + 1);
-    if (leaf == "scaling_governor") return false;
+    if (leaf == "scaling_governor" || leaf == "scaling_cur_freq" ||
+        leaf == "scaling_min_freq" || leaf == "scaling_max_freq") return false;
     return true;
 }
 

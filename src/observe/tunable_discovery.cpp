@@ -300,7 +300,11 @@ void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const Vendo
                         startsWith(rel, "/sys/class/regulator") ||
                         startsWith(rel, "/sys/class/gpio") ||
                         startsWith(rel, "/sys/devices/virtual/thermal") ||
-                        startsWith(rel, "/sys/devices/system/memory");
+                        startsWith(rel, "/sys/devices/system/memory") ||
+                        startsWith(rel, "/proc/sys/net/ipv4/conf") ||
+                        startsWith(rel, "/proc/sys/net/ipv4/neigh") ||
+                        startsWith(rel, "/proc/sys/net/ipv6/conf") ||
+                        startsWith(rel, "/proc/sys/net/ipv6/neigh");
                     if (fatal_subtree) {
                         ++stats.fatal_skipped;
                         continue;
@@ -481,44 +485,6 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                     cap.options = opts;
                 }
                 break;
-            }
-
-            // 3) CPPC / driver min-max hardware envelope fallback when no discrete
-            //    available_frequencies table is exported by the kernel driver.
-            if (cap.options.empty() &&
-                (leaf == "scaling_max_freq" || leaf == "scaling_min_freq")) {
-                std::string min_text, max_text;
-                if (readFirstLine(dir + "/cpuinfo_min_freq", min_text) &&
-                    readFirstLine(dir + "/cpuinfo_max_freq", max_text)) {
-                    char* end_min = nullptr;
-                    char* end_max = nullptr;
-                    char* end_cur = nullptr;
-                    const long long min_f = std::strtoll(min_text.c_str(), &end_min, 10);
-                    const long long max_f = std::strtoll(max_text.c_str(), &end_max, 10);
-                    const long long cur_f = std::strtoll(live.c_str(), &end_cur, 10);
-                    if (end_min != min_text.c_str() && *end_min == '\0' &&
-                        end_max != max_text.c_str() && *end_max == '\0' &&
-                        min_f > 0LL && max_f > min_f) {
-                        const long long span = max_f - min_f;
-                        std::vector<long long> steps = {
-                            min_f,
-                            min_f + span / 4LL,
-                            min_f + span / 2LL,
-                            min_f + (span * 3LL) / 4LL,
-                            max_f,
-                        };
-                        if (end_cur != live.c_str() && *end_cur == '\0' &&
-                            cur_f >= min_f && cur_f <= max_f) {
-                            steps.push_back(cur_f);
-                        }
-                        std::sort(steps.begin(), steps.end());
-                        steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
-                        if (steps.size() >= 2U) {
-                            for (const auto v : steps) cap.options.push_back(std::to_string(v));
-                            cap.ordered_scale = true;
-                        }
-                    }
-                }
             }
         } catch (...) {
         }

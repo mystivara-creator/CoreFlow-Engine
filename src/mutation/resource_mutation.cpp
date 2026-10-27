@@ -688,6 +688,13 @@ MutationResult ResourceMutationController::applyCandidate(
         last_failure_stage_ = ResourceMutationFailureStage::ActuatorOther;
     }
 
+    if (result.status != ActuatorStatus::Ok && result.status != ActuatorStatus::NoChange) {
+        try {
+            rejected_[candidate.path + "\n" + candidate.requested] = cycle_;
+        } catch (...) {
+        }
+    }
+
     // Any attempted write may have landed, even if verification failed, so the
     // path is tracked as dirty until an explicit rollback clears it.
     if (result.writes_attempted != 0 && result.status != ActuatorStatus::RolledBack) {

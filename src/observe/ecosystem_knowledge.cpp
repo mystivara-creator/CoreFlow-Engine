@@ -108,6 +108,18 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, true,
      "Utilization threshold before jumping to hispeed frequency.",
      "source.android.com/docs/core/power/values"},
+    {"cpufreq.scaling_min_freq", "dynamic:cpufreq", ResourceDomain::CpuFreq,
+     KnowledgeLayer::AndroidFramework, KnowledgeRisk::FrameworkOwned, false,
+     "CPU frequency lower bound; managed by Power HAL and thermal mitigation.",
+     "source.android.com/docs/core/power/values"},
+    {"cpufreq.scaling_max_freq", "dynamic:cpufreq", ResourceDomain::CpuFreq,
+     KnowledgeLayer::AndroidFramework, KnowledgeRisk::FrameworkOwned, false,
+     "CPU frequency upper bound; managed by Power HAL and thermal mitigation.",
+     "source.android.com/docs/core/power/values"},
+    {"cpufreq.scaling_cur_freq", "dynamic:cpufreq", ResourceDomain::CpuFreq,
+     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::ObserveOnly, false,
+     "Current operating frequency of the CPU policy cluster.",
+     "docs.kernel.org/admin-guide/pm/cpufreq.html"},
     {"cpufreq.stats", "/sys/devices/system/cpu/cpu0/cpufreq/stats", ResourceDomain::CpuFreq,
      KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::ObserveOnly, false,
      "time_in_state used by Android power profiles and battery attribution.",
@@ -326,6 +338,12 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
             return lookupEcosystemKnowledgeByKey("cpufreq.governor.rate_limit_us");
         if (hasSuffix("/hispeed_load"))
             return lookupEcosystemKnowledgeByKey("cpufreq.governor.hispeed_load");
+        if (hasSuffix("/scaling_min_freq"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.scaling_min_freq");
+        if (hasSuffix("/scaling_max_freq"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.scaling_max_freq");
+        if (hasSuffix("/scaling_cur_freq"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.scaling_cur_freq");
     }
 
     // Prefer the most-specific matching catalog path. Several entries may
