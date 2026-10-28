@@ -6,11 +6,11 @@
 #   1. Compatibility gate: arm64, Android 14 (API 34) or newer.
 #   2. Payload integrity: ELF checks for coreflowd and libonnxruntime, a pinned
 #      SHA-256 for the thermal model, the model's input-name marker, and a
-#      check that the shipped default configuration is observe-only.
+#      check that the shipped default configuration is Standby (mutation disabled).
 #   3. Device profile: SoC family and identifier, plus a read-only sysfs/procfs
 #      capability probe. Nothing is written to kernel controls here.
 #   4. Mode decision: volume-key interactive prompt (Up=observe, Down=adaptive).
-#      Timeout and missing keys fall back to observe-only. Adaptive writes
+#      Timeout and missing keys fall back to Standby (mutation disabled). Adaptive writes
 #      mutation_mode=adaptive + mutation_armed=true for all supported non-fatal namespaces.
 #   5. Report: $STATE_DIR/install_report.txt, for support requests.
 #
@@ -170,8 +170,8 @@ ui_print "     > Thermal model      : universal, digest pinned OK"
 [ -s "$DEFAULT_CONF" ] || abort "default.conf is missing or empty."
 grep -qx 'mutation_mode=observe' "$DEFAULT_CONF" \
     && grep -qx 'mutation_armed=false' "$DEFAULT_CONF" \
-    || abort "default.conf must ship observe-only defaults. This package is not release-safe."
-ui_print "     > Default config     : observe-only OK"
+    || abort "default.conf must ship Standby (mutation disabled) defaults. This package is not release-safe."
+ui_print "     > Default config     : Standby (mutation disabled) OK"
 ui_print " "
 
 # ---- 3. Device profile and read-only probe -------------------------------
@@ -193,9 +193,9 @@ ui_print " "
 
 # ---- 4. Volume-key mode selection ----------------------------------------
 # Interactive installer (Magisk / KernelSU):
-#   Volume Up   = Observe only (recommended / safe default)
+#   Volume Up   = Standby (recommended / safe default)
 #   Volume Down = Adaptive (mutations allowed after reboot)
-#   Timeout 12s = Observe only
+#   Timeout 12s = Standby
 #
 # Existing config.ini:
 #   Volume Up   = Keep existing config
@@ -250,13 +250,13 @@ write_config_for_mode() {
     else
         grep -qx 'mutation_mode=observe' "$TMP_CONF" \
             && grep -qx 'mutation_armed=false' "$TMP_CONF" \
-            || abort "Observe configuration did not verify; aborting."
+            || abort "Standby configuration did not verify; aborting."
     fi
     mv "$TMP_CONF" "$CONFIG" || abort "Could not install config.ini."
 }
 
 MODE="observe"
-MODE_REASON="default observe-only"
+MODE_REASON="default Standby (mutation disabled)"
 CPU_GOV_CHOICE="no"
 GRANT_CHOICE="no"
 REWRITE_CONFIG=1
@@ -271,7 +271,7 @@ if [ -f "$STATE_DIR/SAFE_MODE" ]; then
     CPU_GOV_CHOICE="no"
     REWRITE_CONFIG=1
     ui_print " [>] Mode selection"
-    ui_print "     ! SAFE_MODE detected — observe-only will be written."
+    ui_print "     ! SAFE_MODE detected — Standby (mutation disabled) will be written."
     ui_print " "
 else
     # Existing config: ask keep vs reset
@@ -345,7 +345,7 @@ else
             ui_print " "
             ui_print "     ! ADAPTIVE will run after reboot."
             ui_print "     ! Mutations are journaled and restorable."
-            ui_print "     ! Prefer 7 days observe-only on a new device/SoC."
+            ui_print "     ! Prefer 7 days Standby (mutation disabled) on a new device/SoC."
             ui_print " "
         fi
     fi

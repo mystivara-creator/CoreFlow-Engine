@@ -89,7 +89,7 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
             Global Kernel Mutation Authority
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            CoreFlow ships Observe-only by default. Adaptive mode sets mutation_armed=true and removes the DISABLE kill-switch only after explicit confirmation.
+            CoreFlow starts in Standby with mutation disabled. Adaptive mode sets mutation_armed=true and removes the DISABLE kill-switch only after explicit confirmation.
           </p>
         </div>
 
@@ -104,10 +104,10 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
             }`}
           >
             <div className="text-sm font-semibold text-slate-900">
-              Observe Mode (Read-Only Default)
+              Standby (Mutation Disabled)
             </div>
             <p className="mt-1 text-xs text-slate-600">
-              Runs full 7-layer observation, 18-feature ONNX thermal prediction, and candidate scoring without writing any /sys or /proc tunable. Touches /data/adb/coreflow/DISABLE.
+              Keeps telemetry, thermal prediction, and candidate scoring active. Blocks new tuning writes and restores owned changes through the recovery path. Creates /data/adb/coreflow/DISABLE.
             </p>
           </button>
 
@@ -250,7 +250,7 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
                   ? 'Adaptive mode will clear /data/adb/coreflow/DISABLE and arm bounded kernel mutations upon restart. Confirm commit?'
                   : pendingConfirm === 'arm'
                     ? 'Enabling Adaptive mode sets mutation_armed=true in config.ini. Confirm arming?'
-                    : 'Switching to Observe mode sets mutation_armed=false and creates the DISABLE kill-switch. Confirm?'}
+                    : 'Switching to Standby sets mutation_armed=false and creates the DISABLE kill-switch. Confirm?'}
               </p>
             </div>
           </div>

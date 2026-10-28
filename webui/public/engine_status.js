@@ -18,7 +18,7 @@
   var BLOCKERS = {
     STOPPED: { tone: "bad", title: "Engine stopped", detail: "The daemon is not running. It restores any change it made when it shuts down." },
     SAFETY_HOLD: { tone: "warn", title: "Safety hold active", detail: "The kill switch or SAFE_MODE is set, so mutation is disabled until it is cleared." },
-    OBSERVE_MODE: { tone: "info", title: "Observe mode", detail: "The engine watches and reasons but is not allowed to change anything. Choose Adaptive in the Policy tab to let it act." },
+    OBSERVE_MODE: { tone: "info", title: "Standby", detail: "New tuning writes are disabled; recovery can restore owned changes. Choose Adaptive in the Policy tab to enable tuning." },
     NOT_ARMED: { tone: "warn", title: "Adaptive is not armed", detail: "Adaptive is requested but mutation_armed is off, so no permit is issued." },
     BASELINE_CAPTURE: { tone: "info", title: "Measuring factory behaviour", detail: "The engine first records how the device behaves untouched, so it can tell later whether a change helped." },
     OBSERVING_OUTCOME: { tone: "info", title: "Measuring the effect of a change", detail: "A change was applied. The engine is checking whether it helped, and will roll it back if it did not." },

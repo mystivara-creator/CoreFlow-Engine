@@ -374,7 +374,7 @@ export function createInitialVirtualDaemonStore(): VirtualDaemonStore {
         event: 'policy_evaluated',
         scope: 'balance',
         result: 'OBSERVE_ONLY',
-        reason: 'Default release configuration starts in observe-only mode.',
+        reason: 'Default release configuration starts in Standby with mutation disabled.',
         state: 'NORMAL',
         decision: 'NO_ACTION',
       }),
