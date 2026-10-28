@@ -46,8 +46,16 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
             contains("mem")) {
             return false;
         }
-        return contains("gpu") || contains("kgsl") || contains("mali") ||
-               contains("pvr");
+        // Universal Linux & Android GPU architectures across all vendors:
+        // Qualcomm (kgsl, adreno), ARM (mali, valhall, bifrost, immortalis),
+        // Imagination (pvr, powervr, rogue), Samsung Exynos / AMD (xclipse, sgpu, rdna),
+        // NXP / VeriSilicon (galcore, etnaviv), Intel (i915, xe), Broadcom (v3d, vc4).
+        return contains("gpu") || contains("kgsl") || contains("adreno") ||
+               contains("mali") || contains("valhall") || contains("bifrost") ||
+               contains("immortalis") || contains("pvr") || contains("powervr") ||
+               contains("xclipse") || contains("sgpu") || contains("rdna") ||
+               contains("galcore") || contains("etnaviv") || contains("i915") ||
+               contains("xe") || contains("v3d") || contains("vc4");
     };
 
     const auto walk = [&](const auto& self, const std::string& path,

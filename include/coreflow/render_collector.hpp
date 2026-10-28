@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "coreflow/launch_detector.hpp"
 
@@ -12,7 +13,7 @@ namespace coreflow::observe {
 // line). Malformed lines are skipped. Counting stops at kMaxPids, which bounds
 // the work done on an untrusted file.
 inline constexpr std::size_t kMaxCgroupPids = 65536U;
-[[nodiscard]] std::size_t countCgroupProcs(const std::string& text) noexcept;
+[[nodiscard]] std::size_t countCgroupProcs(std::string_view text) noexcept;
 
 // Reads the foreground group membership and the I/O pressure file, then builds
 // one LaunchObservation. The caller supplies the monotonic timestamp. Returns

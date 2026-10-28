@@ -1,7 +1,7 @@
 id=coreflow_autonomous
-name=CoreFlow Autonomous
+name=CoreFlow System Framework
 version=v3.0.1
 versionCode=3010
 author=Mystivara
-description=Observe. Understand. Balance. Adapt. Closed-loop C++20 system optimization framework — cross-domain tuning, GPU/driver headroom, Power HAL helper, verified rollback.
+description=Universal Android Autonomous System Framework & Optimization Engine (C++20). Dynamic cross-domain kernel tuning, Vulkan/Skia render acceleration, DEX2OAT compiler unshackling, adaptive frame pacing, and verified safety journal.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

@@ -12,11 +12,12 @@ namespace coreflow::observe {
 
 namespace {
 
-bool readFirstLineBounded(const std::string& path, std::string& line_out) noexcept {
+bool readFirstLineBounded(const std::string& path,
+                          std::array<char, 256>& buffer,
+                          std::string_view& line_out) noexcept {
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) return false;
 
-    std::array<char, 256> buffer{};
     ssize_t count = 0;
     do {
         count = ::read(fd, buffer.data(), buffer.size());
@@ -26,18 +27,18 @@ bool readFirstLineBounded(const std::string& path, std::string& line_out) noexce
 
     const std::string_view raw(buffer.data(), static_cast<std::size_t>(count));
     const std::size_t eol = raw.find('\n');
-    line_out.assign(raw.substr(0U, eol == std::string_view::npos ? raw.size() : eol));
+    line_out = raw.substr(0U, eol == std::string_view::npos ? raw.size() : eol);
     return true;
 }
 
 } // namespace
 
-std::size_t countCgroupProcs(const std::string& text) noexcept {
+std::size_t countCgroupProcs(std::string_view text) noexcept {
     std::size_t count = 0;
     std::size_t pos = 0;
     while (pos < text.size() && count < kMaxCgroupPids) {
         std::size_t eol = text.find('\n', pos);
-        if (eol == std::string::npos) eol = text.size();
+        if (eol == std::string_view::npos) eol = text.size();
         const std::size_t length = eol - pos;
         bool numeric = length > 0U;
         for (std::size_t i = pos; numeric && i < eol; ++i) {
@@ -82,11 +83,12 @@ bool readLaunchObservation(const std::string& foreground_procs_path,
     out.foreground_pids = countCgroupProcs(procs_body);
     out.io_pressure_some = -1.0;
 
-    std::string line;
-    if (readFirstLineBounded(io_pressure_path, line)) {
+    std::array<char, 256> line_buf{};
+    std::string_view line_view;
+    if (readFirstLineBounded(io_pressure_path, line_buf, line_view)) {
         double some_avg10 = 0.0;
         double full_avg10 = 0.0;
-        if (observer_metrics::parsePsiLine(line, some_avg10, full_avg10)) {
+        if (observer_metrics::parsePsiLine(line_view, some_avg10, full_avg10)) {
             out.io_pressure_some = some_avg10;
         }
     }
