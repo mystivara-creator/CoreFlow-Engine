@@ -51,6 +51,31 @@ echo 0 > "$BOOT_COUNTER" 2>/dev/null
 log "boot confirmed; boot-loop counter reset"
 sleep 5
 
+# Performance & ART / DEX2OAT Optimization
+# Unshackle vendor marketing caps on dex2oat compiler threads & enable Vulkan HWUI
+ncpu="$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 8)"
+[ "$ncpu" -gt 0 ] 2>/dev/null || ncpu=8
+
+if command -v resetprop >/dev/null 2>&1; then
+    # ART dex2oat multi-threaded compilation (removes OEM marketing caps on mid-range SoCs)
+    resetprop -n dalvik.vm.dex2oat-threads "$ncpu" 2>/dev/null
+    resetprop -n dalvik.vm.image-dex2oat-threads "$ncpu" 2>/dev/null
+    resetprop -n dalvik.vm.boot-dex2oat-threads "$ncpu" 2>/dev/null
+    resetprop -n pm.dexopt.install speed-profile 2>/dev/null
+    resetprop -n pm.dexopt.bg-dexopt speed-profile 2>/dev/null
+
+    # Lighten GPU rendering load with Skia Vulkan HWUI pipeline when supported
+    if [ -f /vendor/lib64/hw/vulkan.*.so ] || [ -f /system/lib64/hw/vulkan.*.so ]; then
+        resetprop -n debug.hwui.renderer skiavk 2>/dev/null
+        resetprop -n renderthread.skia.reduceopstasksplitting true 2>/dev/null
+    fi
+
+    # Chipset responsiveness & low-latency gesture recognition
+    resetprop -n vendor.perf.gesturefunc 1 2>/dev/null
+    resetprop -n debug.sf.latch_unsignaled 1 2>/dev/null
+    log "Applied ART compiler ($ncpu threads), Vulkan HWUI, and chipset optimization"
+fi
+
 [ -x "$BINARY" ] || { log "coreflowd missing or not executable"; exit 1; }
 [ -s "$LIB_DIR/libonnxruntime.so" ] || { log "libonnxruntime.so missing"; exit 1; }
 [ -s "$MODEL" ] || { log "thermal_predictor.onnx missing"; exit 1; }

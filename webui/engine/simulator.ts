@@ -879,3 +879,69 @@ export function formatStartupLogs(
     },
   ];
 }
+
+export function exportHistoryToCsv(history: RuntimeSample[]): string {
+  const headers = [
+    'Sample',
+    'Uptime(s)',
+    'CPU(%)',
+    'GPU_Busy(%)',
+    'Load1',
+    'Mem_Total(KB)',
+    'Mem_Available(KB)',
+    'Mem_Available_Ratio',
+    'Thermal_Available',
+    'Thermal(°C)',
+    'Hottest_Thermal(°C)',
+    'Thermal_Source',
+    'Thermal_Trend',
+    'Mem_Trend',
+    'Load_Trend',
+    'Charging',
+    'Battery(%)',
+    'Battery_Temp(°C)',
+    'Battery_Current(mA)',
+    'Battery_Voltage(V)',
+    'IO_Read(KB/s)',
+    'IO_Write(KB/s)',
+    'Confidence',
+  ];
+
+  const escapeCsv = (val: unknown): string => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const rows = history.map((s) => [
+    s.sampleIndex,
+    s.uptimeSeconds,
+    s.cpuUsagePct.toFixed(1),
+    s.gpuBusyPct.toFixed(1),
+    s.load1.toFixed(2),
+    s.memTotalKb,
+    s.memAvailableKb,
+    s.memAvailableRatio.toFixed(3),
+    s.thermalAvailable ? 'true' : 'false',
+    (s.thermalMillidegrees / 1000).toFixed(1),
+    (s.hottestThermalMillidegrees / 1000).toFixed(1),
+    s.thermalSource,
+    s.thermalTrend,
+    s.memoryTrend,
+    s.loadTrend,
+    s.charging ? 'true' : 'false',
+    s.batteryPercent,
+    (s.batteryTempMillidegrees / 1000).toFixed(1),
+    (s.batteryCurrentMicroamps / 1000).toFixed(1),
+    (s.batteryVoltageMicrovolts / 1000000).toFixed(3),
+    s.ioReadKbs.toFixed(1),
+    s.ioWriteKbs.toFixed(1),
+    s.confidence.toFixed(2),
+  ]);
+
+  return [headers.join(','), ...rows.map((r) => r.map(escapeCsv).join(','))].join('\n');
+}
+

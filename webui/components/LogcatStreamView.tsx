@@ -1,13 +1,15 @@
 import React, { useMemo, useState } from 'react';
-import { Download, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Download, FileSpreadsheet, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { ConscienceTraceRow } from '../bridge/daemonBridge';
-import { LogcatEntry } from '../engine/types';
+import { exportHistoryToCsv } from '../engine/simulator';
+import { LogcatEntry, RuntimeSample } from '../engine/types';
 
 interface LogcatStreamViewProps {
   entries: LogcatEntry[];
   traceRows: ConscienceTraceRow[];
   nativeLogLines: string[];
   isNativeBridge: boolean;
+  history?: RuntimeSample[];
   onRefreshLogs: () => void;
   onClearLogs: () => void;
 }
@@ -20,6 +22,7 @@ export const LogcatStreamView: React.FC<LogcatStreamViewProps> = ({
   traceRows,
   nativeLogLines,
   isNativeBridge,
+  history,
   onRefreshLogs,
   onClearLogs,
 }) => {
@@ -84,6 +87,20 @@ export const LogcatStreamView: React.FC<LogcatStreamViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleExportCsv = () => {
+    if (!history || history.length === 0) return;
+    const csvContent = exportHistoryToCsv(history);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `coreflow-telemetry-history-${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-6">
       <div className="pb-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -111,8 +128,19 @@ export const LogcatStreamView: React.FC<LogcatStreamViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
           >
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Export</span>
+            <span>Export Logs</span>
           </button>
+          {history && history.length > 0 && (
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              title="Export historical telemetry samples into CSV format for diagnostics"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+              <span>Download History CSV ({history.length})</span>
+            </button>
+          )}
           {!isNativeBridge && (
             <button
               type="button"

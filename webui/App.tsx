@@ -892,6 +892,7 @@ export const App: React.FC = () => {
               traceRows={traceRows}
               nativeLogLines={nativeLogLines}
               isNativeBridge={isNativeBridge}
+              history={history}
               onRefreshLogs={() => syncFromNativeDaemon(true)}
               onClearLogs={() => setLogs([])}
             />
