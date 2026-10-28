@@ -125,7 +125,7 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
 
         // The child closed stdout. Reap it within the same budget, then kill it
         // if it is still running, so a child that closes stdout cannot hang us.
-        const std::uint64_t reap_deadline = monotonicMs() + timeout_ms;
+        const std::uint64_t reap_deadline = deadline;
         int status = 0;
         for (;;) {
             const pid_t done = ::waitpid(pid, &status, WNOHANG);

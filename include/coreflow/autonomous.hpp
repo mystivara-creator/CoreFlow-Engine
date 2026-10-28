@@ -59,6 +59,7 @@ private:
 
     bool has_restored_{false};
     bool refresh_pending_{false};
+    bool telemetry_recovery_pending_{false};
     bool validateSample(const RuntimeSample&) const;
     void updateTrends(RuntimeSample&) const;
     double calculateConfidence(const RuntimeSample&) const;

@@ -341,6 +341,18 @@ bool AutonomousEngine::initialize() {
             ml_ready ? "READY" : "FALLBACK",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
+    // Recover bounded boosts before any controller captures its factory baseline.
+    // A boost left by a crashed process is not a factory value.
+    interactivity_journal_ = std::make_unique<FileMutationJournal>(
+        kPaths.root + "/interactivity.journal");
+    boost_controller_.setJournal(interactivity_journal_.get());
+    (void)boost_controller_.recoverFromJournal();
+    boost_controller_.restoreAll();
+    if (boost_controller_.activeCount() != 0U || boost_controller_.recoveryRequired()) {
+        logError("Interactivity recovery incomplete; refusing baseline capture");
+        return false;
+    }
+
     if (!controller_.captureBaseline(snapshot_.profile)) {
         logWarn("Factory baseline not established; mutation stays blocked until recovery succeeds");
     }
@@ -611,12 +623,40 @@ void AutonomousEngine::tick() {
         config_.setMutationMode(held ? MutationMode::Disabled : configured_mode_);
         config_.setMutationArmed(held ? false : configured_armed_);
 
+        // Retry a failed telemetry-triggered restore independently of optional
+        // discovery refresh, even if the next sample would be valid.
+        if (telemetry_recovery_pending_) {
+            boost_controller_.restoreAll();
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            telemetry_recovery_pending_ = !cpu_restored || !resource_restored ||
+                boost_controller_.activeCount() != 0U ||
+                boost_controller_.recoveryRequired();
+            if (telemetry_recovery_pending_) {
+                logWarn("Mutation recovery pending; tuning remains blocked");
+                ++sample_count_;
+                return;
+            }
+        }
+
         // STEP 1: Sample runtime environment
         RuntimeSample sample = observer_.sample(snapshot_.profile);
 
         // STEP 2: Validate sample (comprehensive from HARDENED)
         if (!validateSample(sample)) {
-            logWarn("Skipping tick: validation failed");
+            // Recovery must not depend on valid telemetry, including when an
+            // operator has just asserted DISABLE/SAFE_MODE. Preserve journals
+            // on failure and retry without opening another mutation epoch.
+            boost_controller_.restoreAll();
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            baseline_intelligence_.reset();
+            history_.clear();
+            thermal_guard_state_ = ThermalGuardState{};
+            telemetry_recovery_pending_ = !cpu_restored || !resource_restored ||
+                boost_controller_.activeCount() != 0U ||
+                boost_controller_.recoveryRequired();
+            logWarn("Skipping tick: validation failed; owned mutations restore attempted");
             ++sample_count_;
             return;
         }
@@ -679,9 +719,6 @@ void AutonomousEngine::tick() {
             // Empty means discovery did not find a safe observation path; do
             // not silently fall back to a vendor-specific default.
             foreground_tracker_.setProcsPath(paths.foreground_procs);
-            interactivity_journal_ = std::make_unique<FileMutationJournal>(
-                "/data/adb/coreflow/interactivity.journal");
-            boost_controller_.setJournal(interactivity_journal_.get());
             boost_controller_.setGpuMinFreqPath(paths.gpu_min_freq);
             boost_controller_.setTopAppUclampPath(paths.uclamp_min);
             boost_controller_.clearReadaheadPaths();
@@ -701,9 +738,6 @@ void AutonomousEngine::tick() {
                 // No fallback path synthesis: if generic discovery did not
                 // admit a target, the boost remains unavailable this cycle.
             }
-            // A previous run may have died while a boost was active. Adopt its
-            // journal so the next pass restores the true baseline.
-            (void)boost_controller_.recoverFromJournal();
             interactivity_sources_ready_ = true;
         }
         understand::InteractivityThresholds ia_thresholds;
@@ -805,7 +839,11 @@ void AutonomousEngine::tick() {
 
             if (next == RuntimeState::ThermalGuard || hold != HoldReason::None) {
                 boost_controller_.restoreAll();
-            } else if (boost_controller_.authorized(config_)) {
+            } else if (boost_controller_.authorized(config_) &&
+                       !controller_.mutated() && !resource_controller_.mutated() &&
+                       !controller_.hasPendingOutcome() &&
+                       !resource_controller_.hasPendingOutcome() &&
+                       !baseline_intelligence_.observing()) {
                 InteractivityPolicy::BoostConfig ia_boost_config;
                 ia_boost_config.boost_window_ms =
                     static_cast<std::uint64_t>(config_.boostWindowMs());
@@ -818,6 +856,9 @@ void AutonomousEngine::tick() {
                     interactivity_policy_.evaluate(ia_snap, ia_now_ms),
                     config_, ia_now_ms);
                 if (ia_boosted > 0U) {
+                    // Boost and measured epochs share actuator paths. Rebuild
+                    // the measurement baseline only after all boosts settle.
+                    baseline_intelligence_.reset();
                     logInfo("INTERACTIVITY_BOOST applied=%zu state=%s",
                             ia_boosted, understand::interactionStateName(ia_snap.state));
                 }
@@ -871,7 +912,9 @@ void AutonomousEngine::tick() {
         // always compared with the workload immediately before it (not with a
         // window captured once at daemon start). It is frozen while observing.
         // It is deliberately separate from MutationController's restore baseline.
-        if (!baseline_intelligence_.observing() &&
+        if (boost_controller_.activeCount() == 0U &&
+            !boost_controller_.recoveryRequired() &&
+            !baseline_intelligence_.observing() &&
             !controller_.hasPendingOutcome() &&
             !resource_controller_.hasPendingOutcome()) {
             const bool was_ready = baseline_intelligence_.baselineReady();
@@ -1242,7 +1285,9 @@ void AutonomousEngine::tick() {
                     "outcome_resolved", "pending_mutation_epoch",
                     mutationResultName(mutation), outcome_reason});
             }
-        } else if (baseline_intelligence_.baselineReady()) {
+        } else if (baseline_intelligence_.baselineReady() &&
+                   boost_controller_.activeCount() == 0U &&
+                   !boost_controller_.recoveryRequired()) {
             const bool mutationCooldownActive =
                 sample_count_ < mutation_cooldown_until_sample_;
 
@@ -1362,6 +1407,8 @@ void AutonomousEngine::tick() {
         // resource write without a ready baseline could never begin observation,
         // stayed pending forever and blocked every later candidate.
         if (!resource_mutation_cooldown && mutation != MutationResult::Verified &&
+            boost_controller_.activeCount() == 0U &&
+            !boost_controller_.recoveryRequired() &&
             baseline_intelligence_.baselineReady() &&
             !baseline_intelligence_.observing() && !controller_.hasPendingOutcome() &&
             !resource_controller_.hasPendingOutcome()) {
@@ -1764,11 +1811,11 @@ int AutonomousEngine::run() {
 
         switch (snapshot_.state) {
             case RuntimeState::Idle:
-                // Deep-sleep friendly: long quiescent period. Factory settings
-                // are already restored on Idle (shouldRestoreEpochNow), so the
-                // daemon only needs a rare heartbeat while the SoC sleeps.
-                sleep_seconds = std::max(180, configured * 12);
-                if (sleep_seconds > 300) sleep_seconds = 300;
+                // Idle is inferred from CPU/load, not a screen-off event.
+                // There is no activity wake source, so retain the configured
+                // cadence to detect a new foreground workload promptly. Idle
+                // ticks already skip the expensive interactivity collectors.
+                sleep_seconds = configured;
                 break;
 
             case RuntimeState::Warming:
