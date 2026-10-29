@@ -51,64 +51,8 @@ echo 0 > "$BOOT_COUNTER" 2>/dev/null
 log "boot confirmed; boot-loop counter reset"
 sleep 5
 
-# Performance, Rendering & ART Compiler Framework
-# Universal dynamic detection: no vendor-locked or hardcoded chipset assumptions.
-ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 8)"
-[ "$ncpu" -gt 0 ] 2>/dev/null || ncpu=8
-
-if command -v resetprop >/dev/null 2>&1; then
-    # 1. ART DEX2OAT multi-threaded compilation (unshackle OEM marketing limits)
-    resetprop -n dalvik.vm.dex2oat-threads "$ncpu" 2>/dev/null
-    resetprop -n dalvik.vm.image-dex2oat-threads "$ncpu" 2>/dev/null
-    resetprop -n dalvik.vm.boot-dex2oat-threads "$ncpu" 2>/dev/null
-    resetprop -n pm.dexopt.install speed-profile 2>/dev/null
-    resetprop -n pm.dexopt.bg-dexopt speed-profile 2>/dev/null
-
-    # 2. Universal Hardware Vulkan Discovery & Skia Render Pipeline
-    # Checks package manager features and vendor driver libraries across all architectures.
-    # Excludes CPU-only software rasterizers (e.g. SwiftShader, pastel) to ensure real hardware GPU execution.
-    has_hw_vulkan=0
-    if pm has-feature android.hardware.vulkan.level 2>/dev/null | grep -q "true" || \
-       pm has-feature android.hardware.vulkan.version 2>/dev/null | grep -q "true"; then
-        has_hw_vulkan=1
-    fi
-
-    if [ "$has_hw_vulkan" -eq 0 ]; then
-        for vklib in /vendor/lib64/hw/vulkan.*.so /odm/lib64/hw/vulkan.*.so /system/lib64/hw/vulkan.*.so /vendor/lib/hw/vulkan.*.so; do
-            if [ -f "$vklib" ]; then
-                case "$vklib" in
-                    *pastel*|*swiftshader*) ;;
-                    *) has_hw_vulkan=1; break ;;
-                esac
-            fi
-        done
-    fi
-
-    if [ "$has_hw_vulkan" -eq 1 ]; then
-        resetprop -n debug.hwui.renderer skiavk 2>/dev/null
-        resetprop -n ro.hwui.use_vulkan true 2>/dev/null
-        resetprop -n renderthread.skia.reduceopstasksplitting true 2>/dev/null
-        resetprop -n debug.hwui.use_partial_updates true 2>/dev/null
-        resetprop -n debug.hwui.skia_tracing_enabled false 2>/dev/null
-        resetprop -n debug.hwui.skia_atrace_enabled false 2>/dev/null
-        resetprop -n debug.hwui.render_thread_priority -10 2>/dev/null
-        log "Universal hardware Vulkan active: Skia Vulkan GPU pipeline engaged"
-    else
-        resetprop -n debug.hwui.renderer skiagl 2>/dev/null
-        resetprop -n renderthread.skia.reduceopstasksplitting true 2>/dev/null
-        resetprop -n debug.hwui.use_partial_updates true 2>/dev/null
-        log "Vulkan hardware driver not present: optimized SkiaGL pipeline engaged"
-    fi
-
-    # 3. Universal Compositor & Frame Pacing Latency Reduction
-    resetprop -n debug.sf.latch_unsignaled 1 2>/dev/null
-    resetprop -n debug.sf.enable_gl_backpressure 1 2>/dev/null
-    resetprop -n sys.use_fifo_ui 1 2>/dev/null
-    if [ -n "$(getprop vendor.perf.gesturefunc 2>/dev/null)" ] || [ -f /sys/devices/system/cpu/perf/perf_profile ]; then
-        resetprop -n vendor.perf.gesturefunc 1 2>/dev/null
-    fi
-    log "Applied framework optimizations: ART ($ncpu threads), Skia rendering, and frame latching"
-fi
+# System tuning belongs to the daemon capability and recovery pipeline.
+# Starting the supervisor must not change global framework properties.
 
 [ -x "$BINARY" ] || { log "coreflowd missing or not executable"; exit 1; }
 [ -s "$LIB_DIR/libonnxruntime.so" ] || { log "libonnxruntime.so missing"; exit 1; }
@@ -144,20 +88,6 @@ supervise() {
         rm -f "$STATE_DIR/webui_config_pending" 2>/dev/null
         "$BINARY" >> "$LOG_FILE" 2>&1 &
         CHILD=$!
-
-        # Optimize daemon handle: elevate scheduling priority, protect from Android LMK (-800),
-        # tune I/O niceness, and attach to system cgroups if available.
-        if [ -n "$CHILD" ] && [ "$CHILD" -gt 0 ] 2>/dev/null; then
-            echo -800 > "/proc/$CHILD/oom_score_adj" 2>/dev/null
-            renice -n -10 -p "$CHILD" 2>/dev/null
-            ionice -c 2 -n 2 -p "$CHILD" 2>/dev/null
-            for cg in /dev/cpuset/system-background/cgroup.procs /dev/cpuset/foreground/cgroup.procs; do
-                if [ -w "$cg" ]; then
-                    echo "$CHILD" > "$cg" 2>/dev/null
-                    break
-                fi
-            done
-        fi
 
         rc=0
         while :; do

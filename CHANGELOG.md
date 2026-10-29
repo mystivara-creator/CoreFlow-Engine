@@ -1,3 +1,13 @@
+## v3.0.2 — Automatic operation and scoped control recovery
+
+- Activate bounded optimization automatically during installation.
+- Preserve engine operation when a vendor changes an individual tuning target.
+- Simplify engine settings and retain explicit stop/recovery controls.
+- Pin frontend dependencies and scope CSS source detection.
+- Remove unjournaled boot-time framework overrides and forced daemon priority.
+- Reject dangling configuration symlinks during installation.
+- Trigger build validation when the frontend lockfile changes.
+
 ## v3.0.1 — Closed-Loop Adaptive Coupling & Unattended Release Checkpoint
 
 - **Cross-domain StrategyCatalog (`src/understand/strategy_catalog.cpp`)**: Added zero-I/O multi-domain coupling across I/O scheduler posture (`LowLatencyNone`, `DeadlineFair`, `BudgetFair`), CPUFreq governor posture (`EnergyAwareDynamic` `schedutil`/`walt`/`sugov`), foreground `cpu.uclamp.min`, GPU floor (`kgsl` / `devfreq` / `mali` / `ged`), and VM pressure under `DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, and `ThermalStabilization` regimes.

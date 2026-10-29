@@ -92,6 +92,7 @@ set_api33() { sed -i 's/ro.build.version.sdk=34/ro.build.version.sdk=33/' "$1/pr
 unarmed_cfg() { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=false\n' > "$1/state/config.ini"; }
 safe_cfg() { existing_cfg "$1"; touch "$1/state/SAFE_MODE"; }
 stop_cfg() { existing_cfg "$1"; touch "$1/state/DISABLE"; }
+dangling_cfg() { mkdir -p "$1/state"; ln -s "$1/missing-target" "$1/state/config.ini"; }
 expect_line() {
   if ! grep -qx "$2" "$T/$1/state/config.ini"; then echo "FAIL $1 missing $2"; FAIL=$((FAIL+1)); fi
 }
@@ -108,6 +109,7 @@ expect_line existing_config_migrated 'grant_gpu=no'
 expect_line existing_config_migrated 'custom_key=keep'
 expect_line existing_config_migrated 'grant_memory=yes'
 expect_line existing_config_migrated 'mutation_armed=true'
+run dangling_config_rejected fail "" dangling_cfg
 run api33_rejected fail "" set_api33
 run tampered_model_rejected fail "" tampered_model
 run passive_payload_rejected fail "" passive_default

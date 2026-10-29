@@ -857,7 +857,7 @@ export function formatStartupLogs(
       timeFormatted,
       level: 'I',
       tag: 'CoreFlowAutonomous',
-      message: `CoreFlow Autonomous v3.0.1 | abi=${profile.abi} kernel=${profile.kernelRelease} discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
+      message: `CoreFlow Autonomous v3.0.2 | abi=${profile.abi} kernel=${profile.kernelRelease} discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
     },
     {
       id: `boot-2-${nonce}`,

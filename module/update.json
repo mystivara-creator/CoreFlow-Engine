@@ -1,6 +1,6 @@
 {
-  "version": "v3.0.1",
-  "versionCode": 3010,
-  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v3.0.1/CoreFlow-Autonomous-v3.0.1-minapi34-arm64.zip",
-  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v3.0.1/CHANGELOG.md"
+  "version": "v3.0.2",
+  "versionCode": 3020,
+  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v3.0.2/CoreFlow-Autonomous-v3.0.2-minapi34-arm64.zip",
+  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v3.0.2/CHANGELOG.md"
 }

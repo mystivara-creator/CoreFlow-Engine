@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ==========================================================
-# CoreFlow Autonomous - installer (v3.0.1)
+# CoreFlow Autonomous - installer (v3.0.2)
 #
 # Runs inside the Magisk/KernelSU installer, before first boot. Steps:
 #   1. Compatibility gate: arm64, Android 14 (API 34) or newer.
@@ -199,7 +199,7 @@ chmod 0700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null
 umask 077
 TMP_CONF="$CONFIG.install.tmp.$$"
 PREVIOUS_CONF=/dev/null
-[ ! -e "$CONFIG" ] || {
+[ ! -e "$CONFIG" ] && [ ! -L "$CONFIG" ] || {
     [ -f "$CONFIG" ] && [ -r "$CONFIG" ] && [ ! -L "$CONFIG" ] \
         || abort "Existing config.ini is not a readable regular file."
     PREVIOUS_CONF="$CONFIG"

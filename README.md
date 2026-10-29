@@ -6,7 +6,7 @@ Capability-driven C++20 system optimization and fine-tuning engine for Android. 
 
 | | |
 |---|---|
-| Version | `v3.0.1` (`versionCode` 3010) |
+| Version | `v3.0.2` (`versionCode` 3020) |
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
@@ -48,7 +48,7 @@ flowchart TD
 
 ---
 
-## Key Capabilities (`v3.0.1`)
+## Key Capabilities (`v3.0.2`)
 
 - **Zero hardcoded tunable values** — every candidate comes from kernel-advertised options (`scaling_available_governors`, `/queue/scheduler`, `available_frequencies`, KGSL `num_pwrlevels`, CPPC bounds), harvested vendor configs (`powerhint*.json`, `init*.rc`, perf XML/JSON), or bounded steps on catalogued interfaces.
 - **Cross-domain StrategyCatalog coupling** — changing an I/O scheduler (`A -> B`), CPU governor, or workload regime (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`) automatically re-ranks coupled block-queue (`nr_requests`, `read_ahead_kb`, `rq_affinity`, `wbt_lat_usec`), governor (`rate_limit_us`), foreground `uclamp.min`, and GPU floor candidates.
@@ -90,7 +90,7 @@ Android ARM64 release ZIPs (`coreflowd` + `libonnxruntime.so` + WebUI) are built
 
 | Document | Scope |
 |----------|-------|
-| [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.0.1` checkpoint) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.0.2` checkpoint) |
 | [`SECURITY.md`](SECURITY.md) | Mutation safety invariants |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Closed-loop pipeline & authority boundaries |
 | [`docs/INTEGRATED_RUNTIME.md`](docs/INTEGRATED_RUNTIME.md) | Runtime diagnosis, hardware health, continuity, rendering outcomes & app ADPF integration |

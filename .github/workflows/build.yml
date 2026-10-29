@@ -24,6 +24,7 @@ on:
       - "tests/**"
       - "webui/**"
       - "package.json"
+      - "package-lock.json"
       - "vite.config.ts"
       - "index.html"
       - "module/**"

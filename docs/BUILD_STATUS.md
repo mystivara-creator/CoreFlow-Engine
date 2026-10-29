@@ -1,4 +1,4 @@
-# CoreFlow v3.0.1 — Release checkpoint validation status
+# CoreFlow v3.0.2 — Release checkpoint validation status
 
 Honest status for this source tree. Prefer CI logs and device evidence over marketing language.
 
@@ -6,7 +6,7 @@ Honest status for this source tree. Prefer CI logs and device evidence over mark
 
 | Item | Value |
 |------|--------|
-| Version | `v3.0.1` (`versionCode=3010`) |
+| Version | `v3.0.2` (`versionCode=3020`) |
 | Language | C++20 |
 | Min Android API | 34 |
 | Installed operation | Automatic bounded optimization after boot |
