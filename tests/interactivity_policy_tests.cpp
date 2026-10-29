@@ -27,6 +27,8 @@ int main() {
 
     snap.state = InteractionState::Launching;
     snap.launch_deadline_ms = 10'000;
+    snap.gpu_busy_available = true; snap.gpu_busy_ratio = 0.9;
+    snap.io_full_avg10 = 0.02;
     const auto launch = policy.evaluate(snap, 8'000);
     CHECK(launch.size() == 3U);
     if (launch.size() == 3U) {
@@ -40,7 +42,16 @@ int main() {
         CHECK(launch[2].window_ms == 2'000U);
     }
 
+    CHECK(policy.evaluate(snap, 10'000).empty()); // deadline is exclusive
+    snap.gpu_busy_available = false; snap.io_full_avg10 = 0.0;
+    CHECK(policy.evaluate(snap, 8'000).size() == 1U); // no speculative GPU/IO
+    snap.gpu_busy_available = true; snap.gpu_busy_ratio = 0.9;
+    snap.io_full_avg10 = 0.02; snap.memory_some_avg10 = 0.2;
+    CHECK(policy.evaluate(snap, 8'000).size() == 2U); // memory pressure excludes read-ahead
+    CHECK(policy.evaluate(snap, 0)[0].window_ms == 3000U); // cap to configured duration
     snap.state = InteractionState::Stuttering;
+    snap.frame.valid = true;
+    snap.cpu_pressure_available = true; snap.cpu_pressure_ratio = 0.2;
     snap.gpu_busy_available = true;
     snap.gpu_busy_ratio = 0.9;
     const auto gpu_bound = policy.evaluate(snap, 0);
@@ -59,6 +70,12 @@ int main() {
 
     snap.gpu_busy_available = false;
     CHECK(policy.evaluate(snap, 0).size() == 1U);
+
+    snap.cpu_pressure_available = false;
+    CHECK(policy.evaluate(snap, 0).empty()); // no pressure, no blind CPU boost
+    snap.gpu_busy_available = true; snap.gpu_busy_ratio = 0.9;
+    snap.frame.valid = false;
+    CHECK(policy.evaluate(snap, 0).empty()); // missing frame evidence
 
     if (failures != 0) {
         std::cerr << failures << " interactivity policy test(s) failed\n";

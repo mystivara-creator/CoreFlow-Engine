@@ -11,8 +11,6 @@
 #include "coreflow/interactivity_boost.hpp"
 #include "coreflow/interactivity_model.hpp"
 #include "coreflow/interactivity_policy.hpp"
-#include "coreflow/launch_detector.hpp"
-#include "coreflow/render_collector.hpp"
 
 #include <android/log.h>
 #include <algorithm>
@@ -816,7 +814,10 @@ void AutonomousEngine::tick() {
         sample.storage_health_caution = storage_health_.caution;
         boost_controller_.expire(ia_now_ms);
         if (next == RuntimeState::Idle) {
-            // Quiescent / screen-off state: avoid spawning dumpsys SurfaceFlinger
+            foreground_tracker_.invalidate();
+            interactivity_model_.reset();
+            frame_telemetry_.reset();
+            // Inferred quiescent state (not an observed display-off event): avoid spawning dumpsys SurfaceFlinger
             // child processes or polling foreground cgroup/GPU load, and release
             // any remaining interactivity boost immediately.
             if (boost_controller_.activeCount() > 0U ||
@@ -830,59 +831,55 @@ void AutonomousEngine::tick() {
                 last_interactivity_state_ = understand::InteractionState::Idle;
             }
         } else {
-            const bool ia_jank_recent =
-                last_interactivity_state_ == understand::InteractionState::Stuttering;
-            const auto previous_period = frame_telemetry_.lastRefreshPeriodNs();
-            const auto fresh_frames = frame_telemetry_.poll(ia_now_ms, ia_jank_recent);
-            if (previous_period != frame_telemetry_.lastRefreshPeriodNs()) interactivity_model_.reset();
-            for (const std::uint64_t ia_duration_ns : fresh_frames) {
-                interactivity_model_.ingestFrame(
-                    ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
-            }
-            // The launch detector and render collector are now part of the live
-            // loop. Their signal is corroborative: ForegroundTracker remains the
-            // PID-change signal, while process-count growth plus PSI can extend a
-            // bounded launch window. Missing observation files fail closed.
-            const std::string launch_procs_path = foreground_tracker_.procsPath();
-            observe::LaunchObservation launch_observation;
-            constexpr std::uint64_t kNsPerMs = 1'000'000ULL;
-            const bool timestamp_convertible =
-                ia_now_ms <= std::numeric_limits<std::uint64_t>::max() / kNsPerMs;
-            const std::uint64_t ia_now_ns = timestamp_convertible
-                ? ia_now_ms * kNsPerMs : 0U;
-            if (timestamp_convertible && !launch_procs_path.empty() &&
-                observe::readLaunchObservation(
-                    launch_procs_path,
-                    coreflow::kernelFilesystemPath(
-                        coreflow::KernelFsKind::Procfs, "pressure/io"),
-                    ia_now_ns, launch_observation)) {
-                const observe::LaunchPhase previous_phase = launch_detector_.phase();
-                const observe::LaunchPhase phase = launch_detector_.observe(launch_observation);
-                if (previous_phase == observe::LaunchPhase::Idle &&
-                    phase == observe::LaunchPhase::LaunchWindow) {
-                    // ForegroundTracker owns launch-window creation.
-                    // Process-count growth and PSI must not create a duplicate launch event.
-                    if (last_interactivity_state_ ==
-                        understand::InteractionState::Launching) {
-                        interactivity_model_.onForegroundChanged(ia_now_ms);
-                        logInfo("INTERACTIVITY launch_window_extend source=process_count_psi");
-                    } else {
-                        logInfo("INTERACTIVITY launch_signal source=process_count_psi");
-                    }
-                }
-            }
             std::string ia_foreground_package;
             if (foreground_tracker_.poll(ia_foreground_package)) {
+                // Cross-workload measurements cannot establish causality. Drop
+                // pending trials without learning a success or a regression.
+                boost_controller_.restoreAll();
+                const bool cpu_settled = !controller_.hasPendingOutcome() ||
+                    controller_.rollbackLastMutation();
+                const bool resource_settled = !resource_controller_.hasPendingOutcome() ||
+                    resource_controller_.rollbackLastMutation();
+                baseline_intelligence_.reset();
+                history_.clear();
+                telemetry_recovery_pending_ = !cpu_settled || !resource_settled ||
+                    boost_controller_.activeCount() != 0U || boost_controller_.recoveryRequired();
+                if (telemetry_recovery_pending_) {
+                    logWarn("WORKLOAD_CHANGE recovery pending; new changes paused");
+                    ++sample_count_;
+                    return;
+                }
+                frame_telemetry_.reset(); // includes same-name process restart
+                interactivity_model_.reset();
                 interactivity_model_.onForegroundChanged(ia_now_ms);
                 logInfo("INTERACTIVITY foreground_change pkg=%s",
                         ia_foreground_package.empty() ? "unknown"
                                                       : ia_foreground_package.c_str());
+            }
+            if (!foreground_tracker_.available()) {
+                interactivity_model_.reset();
+                if (boost_controller_.activeCount() > 0U || boost_controller_.recoveryRequired())
+                    boost_controller_.restoreAll();
+            }
+            frame_telemetry_.setForeground(foreground_tracker_.available()
+                ? std::string_view(foreground_tracker_.identity()) : std::string_view{});
+            const bool ia_jank_recent =
+                last_interactivity_state_ == understand::InteractionState::Stuttering;
+            const auto previous_period = frame_telemetry_.lastRefreshPeriodNs();
+            const auto fresh_frames = frame_telemetry_.poll(ia_now_ms, ia_jank_recent);
+            if (fresh_frames.empty()) interactivity_model_.clearFrames();
+            if (previous_period != frame_telemetry_.lastRefreshPeriodNs()) interactivity_model_.reset();
+            for (const std::uint64_t ia_duration_ns : fresh_frames) {
+                interactivity_model_.ingestFrame(
+                    ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
             }
             understand::InteractivitySample ia_sample;
             ia_sample.frame_fresh = !fresh_frames.empty();
             ia_sample.now_ms = ia_now_ms;
             ia_sample.gpu_busy_available =
                 gpu_busy_source_.poll(ia_sample.gpu_busy_ratio);
+            ia_sample.cpu_pressure_available = sample.psi_available;
+            ia_sample.cpu_pressure_ratio = sample.psi_cpu_some_avg10;
             ia_sample.io_full_avg10 = sample.psi_io_full_avg10;
             ia_sample.memory_some_avg10 = sample.psi_memory_some_avg10;
             ia_sample.thermal_guard = next == RuntimeState::ThermalGuard;
@@ -894,10 +891,9 @@ void AutonomousEngine::tick() {
             sample.frame_period_ns = frame_telemetry_.lastRefreshPeriodNs();
             sample.frame_jank_rate =
                 ia_snap.frame.valid ? ia_snap.frame.deadline_miss_rate : 0.0;
-            sample.gaming_active =
-                (ia_snap.gpu_busy_available && ia_snap.gpu_busy_ratio >= 0.55) ||
-                (ia_snap.state == understand::InteractionState::Stuttering &&
-                 ia_snap.gpu_busy_available && ia_snap.gpu_busy_ratio >= 0.35);
+            // A busy GPU also renders camera, browser and System UI workloads.
+            // No verified game identity source is installed in this backend.
+            sample.gaming_active = false;
             if (ia_snap.state != last_interactivity_state_) {
                 logInfo("INTERACTIVITY_STATE %s -> %s gpu_busy=%.2f io_full=%.3f",
                         understand::interactionStateName(last_interactivity_state_),
@@ -1688,6 +1684,11 @@ void AutonomousEngine::publishStatus(
         s.version = kCoreFlowVersion;
         s.runtime_pressure = runtimePressureName(runtime_diagnosis_.dominant);
         s.diagnosis_confidence = runtime_diagnosis_.confidence;
+        s.foreground_available = foreground_tracker_.available();
+        if (s.foreground_available) s.foreground_process = foreground_tracker_.identity();
+        s.rendering_layer = frame_telemetry_.layer();
+        s.rendering_availability = frame_telemetry_.availability();
+        s.interaction_state = understand::interactionStateName(last_interactivity_state_);
         s.rendering_available = sample.frame_jank_available;
         s.frame_jank_rate = sample.frame_jank_rate;
         s.control_conflict = !external_control_paths_.empty();

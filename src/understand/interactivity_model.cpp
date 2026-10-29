@@ -24,6 +24,9 @@ void InteractivityModel::onForegroundChanged(std::uint64_t now_ms) noexcept {
     // deadline, which would close the launch window at once.
     const std::uint64_t window = thresholds_.launch_window_ms;
     constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+    analyzer_.reset();
+    stutter_ticks_ = 0;
+    clean_ticks_ = 0;
     launch_active_ = true;
     launch_deadline_ms_ = (window > kMax - now_ms) ? kMax : now_ms + window;
 }
@@ -35,6 +38,9 @@ InteractivitySnapshot InteractivityModel::evaluate(
     out.gpu_busy_available = sample.gpu_busy_available;
     out.gpu_busy_ratio = sample.gpu_busy_ratio;
     out.io_full_avg10 = sample.io_full_avg10;
+    out.memory_some_avg10 = sample.memory_some_avg10;
+    out.cpu_pressure_available = sample.cpu_pressure_available;
+    out.cpu_pressure_ratio = sample.cpu_pressure_ratio;
     out.launch_deadline_ms = launch_deadline_ms_;
 
     InteractionState want = InteractionState::Idle;
@@ -45,7 +51,7 @@ InteractivitySnapshot InteractivityModel::evaluate(
         stutter_ticks_ = 0;
         clean_ticks_ = 0;
     } else {
-        if (launch_active_ && sample.now_ms > launch_deadline_ms_) {
+        if (launch_active_ && sample.now_ms >= launch_deadline_ms_) {
             launch_active_ = false;
         }
         const bool janky = out.frame.valid &&
@@ -77,6 +83,12 @@ InteractivitySnapshot InteractivityModel::evaluate(
     out.state = state_;
     out.state_entered_ms = state_entered_ms_;
     return out;
+}
+
+void InteractivityModel::clearFrames() noexcept {
+    analyzer_.reset();
+    stutter_ticks_ = 0;
+    clean_ticks_ = 0;
 }
 
 void InteractivityModel::reset() noexcept {

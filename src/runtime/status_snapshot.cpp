@@ -216,6 +216,15 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"confidence\":"; appendNumber(out, s.diagnosis_confidence);
     out << ",\"rendering_available\":"; appendBool(out, s.rendering_available);
     out << ",\"frame_jank_rate\":"; appendNumber(out, s.frame_jank_rate);
+    out << ",\"foreground_available\":"; appendBool(out, s.foreground_available);
+    out << ",\"foreground_process\":"; appendEscaped(out, s.foreground_process);
+    out << ",\"rendering_layer\":"; appendEscaped(out, s.rendering_layer);
+    out << ",\"rendering_availability\":"; appendEscaped(out, s.rendering_availability);
+    out << ",\"interaction_state\":"; appendEscaped(out, s.interaction_state);
+    out << ",\"rendering_metric\":\"presentation_interval_vs_display_period_proxy\""
+        << ",\"launch_metric\":\"foreground_process_transition_heuristic\""
+        << ",\"art_backend\":\"platform_managed\""
+        << ",\"frame_pacing_backend\":\"application_integration_required\"";
     out << ",\"control_conflict\":"; appendBool(out, s.control_conflict);
     out << ",\"external_control_paths\":" << s.external_control_paths;
     out << ",\"learned_candidates\":" << s.learned_candidates;

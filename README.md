@@ -98,6 +98,7 @@ Android ARM64 release ZIPs (`coreflowd` + `libonnxruntime.so` + WebUI) are built
 | [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Source tree layout |
 | [`docs/TUNING.md`](docs/TUNING.md) | Operator configuration reference |
 | [`docs/BUILD_STATUS.md`](docs/BUILD_STATUS.md) | CI & device validation scope |
+| [`docs/RENDER_LAUNCH_CAPABILITIES.md`](docs/RENDER_LAUNCH_CAPABILITIES.md) | Workload/render telemetry, assistance policy and framework boundaries |
 | [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md) | On-device verification checklist |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 

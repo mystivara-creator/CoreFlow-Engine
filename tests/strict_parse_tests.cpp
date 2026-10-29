@@ -115,7 +115,7 @@ int testDevfreqGrammarRejects() {
 int testLatencyRowsAreStrict() {
     using coreflow::observe::parseLatencyDurations;
     const auto ok = parseLatencyDurations("100 1000 1500\n200 2000 2600\n");
-    CHECK(ok.size() == 2U && ok[0] == 500U && ok[1] == 600U);
+    CHECK(ok.size() == 1U && ok[0] == 1000U);
     // Overflowing field, a fourth field, non-numeric field, ERROR row, reversed row.
     CHECK(parseLatencyDurations("1 99999999999999999999 5\n").empty());
     CHECK(parseLatencyDurations("1 2 3 4\n").empty());

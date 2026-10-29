@@ -33,6 +33,11 @@ struct EngineStatus {
     double diagnosis_confidence{0.0};
     bool rendering_available{false};
     double frame_jank_rate{0.0};
+    std::string foreground_process;
+    bool foreground_available{false};
+    std::string rendering_layer;
+    std::string rendering_availability;
+    std::string interaction_state;
     bool control_conflict{false};
     std::size_t external_control_paths{0};
     StorageHealth storage_health;

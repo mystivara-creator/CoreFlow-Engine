@@ -7,6 +7,13 @@
 - Remove unjournaled boot-time framework overrides and forced daemon priority.
 - Reject dangling configuration symlinks during installation.
 - Trigger build validation when the frontend lockfile changes.
+- Attribute SurfaceFlinger collection to an unambiguous package-qualified layer;
+  expose unavailable reasons and presentation-proxy semantics in the WebUI.
+- Make foreground observation retryable and insensitive to cgroup row order.
+- Cancel pending outcome trials on observed workload transitions without learning
+  a false benefit or regression; preserve recovery obligations.
+- Filter interactivity boosts by measured pressure and enforce launch deadlines.
+- Correct the legacy frame parser to use actual presentation intervals.
 
 ## v3.0.1 — Closed-Loop Adaptive Coupling & Unattended Release Checkpoint
 

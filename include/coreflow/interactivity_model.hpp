@@ -32,6 +32,8 @@ struct InteractivitySample {
     double gpu_busy_ratio{0.0};
     double io_full_avg10{0.0};     // PSI io full avg10, fraction 0..1
     double memory_some_avg10{0.0}; // PSI memory some avg10, fraction 0..1
+    bool cpu_pressure_available{false};
+    double cpu_pressure_ratio{0.0};
     bool thermal_guard{false};
 };
 
@@ -41,6 +43,9 @@ struct InteractivitySnapshot {
     bool gpu_busy_available{false};
     double gpu_busy_ratio{0.0};
     double io_full_avg10{0.0};
+    double memory_some_avg10{0.0};
+    bool cpu_pressure_available{false};
+    double cpu_pressure_ratio{0.0};
     std::uint64_t state_entered_ms{0};
     std::uint64_t launch_deadline_ms{0};
 };
@@ -58,6 +63,7 @@ public:
     void onForegroundChanged(std::uint64_t now_ms) noexcept;
     [[nodiscard]] InteractivitySnapshot evaluate(
         const InteractivitySample& sample) noexcept;
+    void clearFrames() noexcept;
     void reset() noexcept;
 
 private:

@@ -73,6 +73,16 @@ int main() {
     s.now_ms += 100;
     CHECK(model.evaluate(s).state == InteractionState::Interactive);
 
+    model.onForegroundChanged(40'000);
+    s.now_ms = 42'500;
+    s.frame_fresh = false;
+    CHECK(model.evaluate(s).state != InteractionState::Launching); // exclusive deadline
+    model.onForegroundChanged(50'000);
+    model.clearFrames();
+    s.now_ms = 50'100;
+    CHECK(model.evaluate(s).state == InteractionState::Launching); // missing frames do not extend deadline
+    CHECK(!model.evaluate(s).frame.valid);
+
     if (failures != 0) {
         std::cerr << failures << " interactivity model test(s) failed\n";
         return 1;

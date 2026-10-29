@@ -112,7 +112,6 @@ private:
     understand::InteractivityModel interactivity_model_;
     observe::GpuBusySource gpu_busy_source_;
     observe::ForegroundTracker foreground_tracker_;
-    observe::LaunchBurstDetector launch_detector_;
     observe::FrameTelemetrySource frame_telemetry_;
     InteractivityPolicy interactivity_policy_;
     InteractivityBoostController boost_controller_;

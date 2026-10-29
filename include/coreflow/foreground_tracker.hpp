@@ -35,20 +35,27 @@ namespace coreflow::observe {
 }
 
 // Tracks the foreground application via the top-app cgroup (no binder, no
-// Java). Detects the transition point that starts an app-launch window.
+// Java). A changed first PID is a foreground-process heuristic, not proof
+// of an application launch or a measurement of launch completion.
 class ForegroundTracker final {
 public:
     void setProcsPath(std::string path) { procs_path_ = std::move(path); }
     void setProcRoot(std::string path) { proc_root_ = std::move(path); }
     [[nodiscard]] const std::string& procsPath() const noexcept { return procs_path_; }
     // Returns true once per detected foreground change; fills the resolved
-    // package name when /proc/<pid>/cmdline is readable.
+    // process identity when /proc/<pid>/cmdline is complete and readable.
+    // Unresolved identities are retried and do not emit an event.
+    void invalidate() noexcept { available_ = false; }
+    [[nodiscard]] bool available() const noexcept { return available_; }
+    [[nodiscard]] const std::string& identity() const noexcept { return identity_; }
     [[nodiscard]] bool poll(std::string& package_out) noexcept;
 
 private:
     std::string procs_path_{"/dev/cpuctl/top-app/cgroup.procs"};
     std::string proc_root_{"/proc"};
     std::uint32_t last_pid_{0};
+    std::string identity_;
+    bool available_{false};
 };
 
 } // namespace coreflow::observe
