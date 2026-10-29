@@ -71,7 +71,7 @@ check(S.eyesRows(p.data).some((r) => r[0] === "Temperature" && /hottest 43\.0/.t
   check(S.eyesRows(q.data).some((r) => r[0] === "Temperature" && r[1] === "n/a"), "no thermal sensor => n/a, not a stale number");
 }
 check(S.eyesRows(p.data).some((r) => r[0] === "Memory free" && r[1] === "52%"), "memory row");
-check(S.brainRows(p.data).some((r) => r[0] === "Mode" && /adaptive/.test(r[1]) && /armed/.test(r[1])), "mode row");
+check(S.brainRows(p.data).some((r) => r[0] === "Operation" && r[1] === "active"), "automatic operation row");
 check(S.deviceRows(p.data).some((r) => r[0] === "Manufacturer / model" && /ExampleDevice/.test(r[1])), "live device identity row");
 check(S.deviceRows(p.data).some((r) => r[0] === "Capabilities" && /38 discovered/.test(r[1]) && /7 policy-ready/.test(r[1])), "discovery vs policy-ready capabilities remain distinct");
 check(S.deviceRows(p.data).some((r) => r[0] === "Block I/O mutation" && r[1] === "capability-driven"), "ready status reports capability-driven block queue policy");
@@ -82,7 +82,7 @@ sum = S.summary(p);
 check(sum.code === "OBSERVE_MODE" && sum.tone === "info", "observe summary");
 pipe = S.pipeline(p.data);
 check(pipe.find((x) => x.id === "authority").tone === "bad", "authority denied in observe");
-check(/observe/.test(pipe.find((x) => x.id === "authority").note), "authority explains why");
+check(/configuration/.test(pipe.find((x) => x.id === "authority").note), "authority explains why");
 
 // ---- stressed + holding a stabilizing change ----
 p = S.parse(raw("stressed_holding.json"));
@@ -149,14 +149,14 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
 {
   const j = JSON.parse(load("ready.json"));
   j.intelligence = { pressure: "IO_STALL", confidence: 0.8,
-    control_conflict: true, rendering_available: true, frame_jank_rate: 0.1,
+    control_conflict: true, external_control_paths: 1, rendering_available: true, frame_jank_rate: 0.1,
     storage_available: true, storage_caution: true, ufs_life_a: 10,
     ufs_life_b: 4, ufs_pre_eol: 2, learned_candidates: 7,
     power_hal_backend: "vendor_profiles_and_continuity", adpf_backend: "application_integration_required" };
   const q = S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j));
   check(q.ok && q.data.intelligence.controlConflict && q.data.intelligence.pressure === "IO_STALL" &&
       q.data.intelligence.storageCaution && q.data.intelligence.learnedCandidates === 7 &&
-      S.brainRows(q.data).some((r) => r[0] === "Control continuity" && /paused/.test(r[1])),
+      S.brainRows(q.data).some((r) => r[0] === "Control continuity" && /controlled externally/.test(r[1])),
       "integrated runtime evidence is parsed and displayed");
 }
 

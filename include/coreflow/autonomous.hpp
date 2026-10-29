@@ -4,6 +4,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/config.hpp"
@@ -61,7 +62,9 @@ private:
     bool has_restored_{false};
     bool refresh_pending_{false};
     bool telemetry_recovery_pending_{false};
-    bool control_conflict_{false};
+    bool continuity_recovery_pending_{false};
+    std::unordered_set<std::string> external_control_paths_;
+    bool reconcileControlContinuity();
     RuntimeDiagnosis runtime_diagnosis_;
     StorageHealth storage_health_;
     std::vector<std::string> storage_health_directories_;

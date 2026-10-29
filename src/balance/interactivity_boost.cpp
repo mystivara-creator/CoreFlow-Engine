@@ -125,6 +125,7 @@ void InteractivityBoostController::expire(std::uint64_t now_ms) noexcept {
     for (auto& item : active_) {
         ActiveBoost& boost = item.second;
         if (boost.restored || now_ms < boost.deadline_ms) continue;
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(item.first)) continue;
         // A failed restore keeps the entry. It stays journaled and blocks its
         // path until a later pass restores it.
         if (restoreSucceeded(actuator_.restore(item.first, boost.baseline))) {
@@ -136,13 +137,39 @@ void InteractivityBoostController::expire(std::uint64_t now_ms) noexcept {
 }
 
 void InteractivityBoostController::restoreAll() noexcept {
+    bool handoff_pending = false;
     for (auto& item : active_) {
         if (item.second.restored) continue;
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(item.first)) {
+            handoff_pending = true; continue;
+        }
         if (restoreSucceeded(actuator_.restore(item.first, item.second.baseline))) {
             item.second.restored = true;
         }
     }
     (void)settle();  // entries whose restore failed remain journaled
+    if (handoff_pending) recovery_required_ = true;
+}
+
+bool InteractivityBoostController::reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept {
+    try {
+        for (auto it = active_.begin(); it != active_.end();) {
+            if (it->second.restored) { ++it; continue; }
+            std::string live;
+            if (it->second.requested.empty() || !ResourceActuator::readComparable(it->first, live)) return false;
+            if (live == ResourceActuator::comparableValue(it->second.requested) && !paths.contains(it->first)) {
+                ++it; continue;
+            }
+            paths.insert(it->first);
+            if (journal_ == nullptr || journal_untrusted_ ||
+                !journal_->releaseExternallyControlledPath(it->first)) {
+                recovery_required_ = true;
+                return false;
+            }
+            it = active_.erase(it); // journal handoff completed; never restore the external value
+        }
+        return settle();
+    } catch (...) { recovery_required_ = true; return false; }
 }
 
 ControlContinuity InteractivityBoostController::inspectContinuity() const noexcept {
@@ -197,6 +224,7 @@ bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
         }
         case BoostKind::IoReadaheadKb: {
             for (const auto& candidate : readahead_paths_) {
+                if (external_control_paths_ != nullptr && external_control_paths_->contains(candidate)) continue;
                 if (active_.find(candidate) != active_.end()) continue;
                 std::string current;
                 if (!ResourceActuator::readComparable(candidate, current)) continue;
@@ -233,6 +261,7 @@ std::size_t InteractivityBoostController::apply(
         if (!grantedFor(intent.kind, config)) continue;
         std::string path, requested;
         if (!resolveTarget(intent, path, requested)) continue;
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) continue;
 
         // One boost per path. A path that is still boosted, or whose restore is
         // pending, is never touched: its current value is the boosted one, and

@@ -217,6 +217,7 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"rendering_available\":"; appendBool(out, s.rendering_available);
     out << ",\"frame_jank_rate\":"; appendNumber(out, s.frame_jank_rate);
     out << ",\"control_conflict\":"; appendBool(out, s.control_conflict);
+    out << ",\"external_control_paths\":" << s.external_control_paths;
     out << ",\"learned_candidates\":" << s.learned_candidates;
     out << ",\"storage_available\":"; appendBool(out, s.storage_health.available);
     out << ",\"storage_caution\":"; appendBool(out, s.storage_health.caution);

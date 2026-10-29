@@ -58,6 +58,7 @@ export const ControlSidebar: React.FC<ControlSidebarProps> = ({
   };
 
   const [mobileExpanded, setMobileExpanded] = useState(false);
+  const engineLabel = daemonMode === 'adaptive' ? 'Active' : daemonMode === 'stopped' ? 'Stopped' : daemonMode === 'unknown' ? 'Awaiting status' : 'Held';
   const pidDisplay = probe?.pids?.length ? probe.pids.join(', ') : 'stopped';
 
   return (
@@ -68,7 +69,7 @@ export const ControlSidebar: React.FC<ControlSidebarProps> = ({
             C++ Daemon Bridge · {isNativeBridge ? 'KernelSU Live' : 'C++ Mirror'}
           </div>
           <div className="text-xs font-mono text-slate-500 truncate tabular-nums">
-            PID {pidDisplay} · mode={daemonMode}
+            PID {pidDisplay} · engine={engineLabel}
           </div>
         </div>
         <button
@@ -104,8 +105,8 @@ export const ControlSidebar: React.FC<ControlSidebarProps> = ({
               <span className="font-semibold text-slate-900">{pidDisplay}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-500">Config Mode</span>
-              <span className="font-semibold text-slate-900">{daemonMode}</span>
+              <span className="text-slate-500">Engine state</span>
+              <span className="font-semibold text-slate-900">{engineLabel}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Markers</span>

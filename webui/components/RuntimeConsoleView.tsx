@@ -236,7 +236,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
               onClick={onOpenPolicy}
               className="px-3.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap shrink-0"
             >
-              Configure Adaptive Policy &rarr;
+              Open Engine Settings &rarr;
             </button>
           )}
         </div>
@@ -259,7 +259,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         <div className="p-5">
           <div className="text-xs font-medium text-slate-500">Authority &amp; Plan Action</div>
           <div className="mt-2 text-lg font-bold font-mono text-slate-900">
-            {d ? `${d.brain.mode.toUpperCase()}${d.brain.armed ? ' (ARMED)' : ''}` : pillarMode}
+            {d ? (d.brain.mode === 'adaptive' && d.brain.armed ? 'ACTIVE' : 'HELD') : pillarMode}
           </div>
           <div className="mt-1.5 text-xs text-slate-500">
             <span>Plan: </span>

@@ -4,13 +4,13 @@
 
 1. **Observe (`Device & Runtime Discovery` -> `Capability Registry` -> `Telemetry & Context`):** discover mounted `procfs`, `cgroup`, and `sysfs` interfaces, harvest vendor PowerHAL/perf profiles, and sample thermal, PSI, memory, CPU, GPU busy, and dynamic refresh-period frame telemetry.
 2. **Understand (`Baseline Intelligence` -> `Outcome Evaluator` -> `Strategy Catalog` -> `Effect Model & Candidate Ranking`):** maintain rolling pre-mutation baselines, classify workload regimes (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`), couple dependent domains (I/O scheduler <-> queue depth/readahead <-> CPU governor/rate-limit <-> foreground UClamp <-> GPU floor), and rank candidates strictly from live capability evidence.
-3. **Balance (`Policy Authority` -> `Safety Gate`):** evaluate headroom, cooperative Power HAL / Performance Hint posture, `SAFE_MODE` / `DISABLE` / thermal guard holds, and issue target-bound `MutationPermit` tokens (or route to `Observe-only / Reject`).
+3. **Balance (`Policy Authority` -> `Safety Gate`):** evaluate headroom, cooperative Power HAL / Performance Hint posture, `SAFE_MODE` / `DISABLE` / thermal guard holds, and issue target-bound `MutationPermit` tokens (or route to `Keep configuration / Explain hold`).
 4. **Adapt (`Mutation Transaction` -> `Durable Mutation Journal` -> `Resource Actuator`):** commit pre-write baselines to the checksummed v2 journal before writing through a single `O_NOFOLLOW` + `fstat` kernel-FS descriptor.
 5. **Verify (`Read-back Verification` -> `Outcome Measurement` -> `Experience & Model Update` / `Rollback & Recovery`):** verify live read-back immediately, measure multi-sample runtime outcomes, retain verified beneficial or stable zero-harm improvements, and roll back regressions or crash leftovers deterministically.
 
 ## Non-negotiable invariants
 
-- Default configuration is observe-only and mutation is disarmed.
+- The installer configures automatic bounded optimization; missing/invalid configuration fails closed. Observe/Standby is not a user-selectable mode.
 - Discovery/readability/writability is evidence, not permission.
 - Inference, confidence, experience memory, and UI selections cannot bypass the final mutation authority.
 - CPUFreq governor changes use the global `mutation_mode=adaptive` + `mutation_armed=true` authority; the legacy `allow_cpu_governor` key is compatibility/diagnostic data, not a separate permission.

@@ -18,8 +18,8 @@
   var BLOCKERS = {
     STOPPED: { tone: "bad", title: "Engine stopped", detail: "The daemon is not running. It restores any change it made when it shuts down." },
     SAFETY_HOLD: { tone: "warn", title: "Safety hold active", detail: "The kill switch or SAFE_MODE is set, so mutation is disabled until it is cleared." },
-    OBSERVE_MODE: { tone: "info", title: "Standby", detail: "New tuning writes are disabled; recovery can restore owned changes. Choose Adaptive in the Policy tab to enable tuning." },
-    NOT_ARMED: { tone: "warn", title: "Adaptive is not armed", detail: "Adaptive is requested but mutation_armed is off, so no permit is issued." },
+    OBSERVE_MODE: { tone: "info", title: "Configuration blocked", detail: "The installed engine configuration does not enable tuning. Save Engine Settings and restart; recovery and operator stop markers remain authoritative." },
+    NOT_ARMED: { tone: "warn", title: "Configuration incomplete", detail: "The compatibility activation fields are inconsistent. Save Engine Settings and restart; no extra operating mode needs to be selected." },
     BASELINE_CAPTURE: { tone: "info", title: "Measuring factory behaviour", detail: "The engine first records how the device behaves untouched, so it can tell later whether a change helped." },
     OBSERVING_OUTCOME: { tone: "info", title: "Measuring the effect of a change", detail: "A change was applied. The engine is checking whether it helped, and will roll it back if it did not." },
     CHANGE_HELD: { tone: "ok", title: "A verified change is in place", detail: "It is held for a short window, then restored so the next experiment starts from the original state." },
@@ -104,7 +104,7 @@
       intelligence: {
         pressure: str(insight.pressure, 32), confidence: num(insight.confidence),
         renderingAvailable: bool(insight.rendering_available), frameJankRate: num(insight.frame_jank_rate),
-        controlConflict: bool(insight.control_conflict), learnedCandidates: int(insight.learned_candidates, 0),
+        controlConflict: bool(insight.control_conflict), externalControlPaths: int(insight.external_control_paths, 0), learnedCandidates: int(insight.learned_candidates, 0),
         storageAvailable: bool(insight.storage_available), storageCaution: bool(insight.storage_caution),
         lifeA: int(insight.ufs_life_a, 0), lifeB: int(insight.ufs_life_b, 0), preEol: int(insight.ufs_pre_eol, 0),
         powerHalBackend: str(insight.power_hal_backend, 64), adpfBackend: str(insight.adpf_backend, 64)
@@ -213,7 +213,7 @@
     if (b.permitResource || b.permitCpu) {
       auth = { tone: "ok", state: "Permit", note: "resource " + (b.permitResource ? "yes" : "no") + " · CPU governor " + (b.permitCpu ? "yes" : "no") };
     } else {
-      var mode = String(b.mode || "").toLowerCase(); var why = b.holdActive ? "safety hold" : mode !== "adaptive" ? "observe mode" : !b.armed ? "not armed" : "plan not permitted";
+      var mode = String(b.mode || "").toLowerCase(); var why = b.holdActive ? "safety hold" : mode !== "adaptive" ? "configuration blocked" : !b.armed ? "activation incomplete" : "plan not permitted";
       auth = { tone: "bad", state: "Denied", note: why };
     }
 
@@ -282,7 +282,7 @@
     var i = d.intelligence || {};
     return [
       ["Measured pressure", i.pressure || "not supplied", "evidence, not proof of application causality"],
-      ["Control continuity", i.controlConflict ? "external change; tuning paused" : "no conflict reported", "rediscover after reviewing competing controllers"],
+      ["Control continuity", i.controlConflict ? (String(i.externalControlPaths || 0) + " resource(s) controlled externally") : "no conflict reported", "Adaptive continues on uncontested resources; rediscovery retries excluded paths"],
       ["Rendering", i.renderingAvailable ? pct(i.frameJankRate) : "unavailable", "presentation-interval estimate"],
       ["Storage health", i.storageAvailable ? (i.storageCaution ? "caution" : "no warning reported") : "unavailable", "UFS descriptor codes; not an exact remaining lifetime"],
       ["Learning", String(i.learnedCandidates || 0) + " candidates", "measured local experience"],
@@ -290,7 +290,7 @@
       ["Workload", b.workload, ""],
       ["Decision", b.decision, ""],
       ["Plan", b.planAction + " · " + b.intervention, b.stabilizingOnly ? "stabilizing only" : ""],
-      ["Mode", b.mode + (b.armed ? " · armed" : " · not armed"), b.allowCpu ? "CPU governor allowed" : "CPU governor off"],
+      ["Operation", b.mode === "adaptive" && b.armed ? "active" : "held", b.allowCpu ? "CPU governor allowed" : "CPU governor off"],
       ["Decision agent", b.agentMode || "ScoringOnly", b.agentReason || "no proposal this cycle"],
       ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
       ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],

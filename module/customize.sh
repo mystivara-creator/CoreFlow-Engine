@@ -6,12 +6,11 @@
 #   1. Compatibility gate: arm64, Android 14 (API 34) or newer.
 #   2. Payload integrity: ELF checks for coreflowd and libonnxruntime, a pinned
 #      SHA-256 for the thermal model, the model's input-name marker, and a
-#      check that the shipped default configuration is Standby (mutation disabled).
+#      check that the shipped default configuration enables the bounded engine.
 #   3. Device profile: SoC family and identifier, plus a read-only sysfs/procfs
 #      capability probe. Nothing is written to kernel controls here.
-#   4. Mode decision: volume-key interactive prompt (Up=observe, Down=adaptive).
-#      Timeout and missing keys fall back to Standby (mutation disabled). Adaptive writes
-#      mutation_mode=adaptive + mutation_armed=true for all supported non-fatal namespaces.
+#   4. Automatic configuration: preserve tuning and explicit domain exclusions,
+#      migrate legacy mode keys to active operation. No volume-key mode prompt.
 #   5. Report: $STATE_DIR/install_report.txt, for support requests.
 #
 # The thermal model is universal: one artifact, one pinned digest, one input
@@ -168,10 +167,10 @@ grep -q "$MODEL_INPUT_MARKER" "$MODEL" || abort "thermal_predictor.onnx does not
 ui_print "     > Thermal model      : universal, digest pinned OK"
 
 [ -s "$DEFAULT_CONF" ] || abort "default.conf is missing or empty."
-grep -qx 'mutation_mode=observe' "$DEFAULT_CONF" \
-    && grep -qx 'mutation_armed=false' "$DEFAULT_CONF" \
-    || abort "default.conf must ship Standby (mutation disabled) defaults. This package is not release-safe."
-ui_print "     > Default config     : Standby (mutation disabled) OK"
+grep -qx 'mutation_mode=adaptive' "$DEFAULT_CONF" \
+    && grep -qx 'mutation_armed=true' "$DEFAULT_CONF" \
+    || abort "default.conf must enable the bounded engine."
+ui_print "     > Default config     : automatic optimization OK"
 ui_print " "
 
 # ---- 3. Device profile and read-only probe -------------------------------
@@ -191,206 +190,71 @@ ui_print "     > battery telemetry      : $BATTERY_READ"
 ui_print "     > vm.swappiness readable : $VM_SWAPPINESS"
 ui_print " "
 
-# ---- 4. Volume-key mode selection ----------------------------------------
-# Interactive installer (Magisk / KernelSU):
-#   Volume Up   = Standby (recommended / safe default)
-#   Volume Down = Adaptive (mutations allowed after reboot)
-#   Timeout 12s = Standby
-#
-# Existing config.ini:
-#   Volume Up   = Keep existing config
-#   Volume Down = Reset and choose mode again
-#   Timeout 10s = Keep existing
-#
-# The legacy /sdcard/CoreFlow/enable_adaptive flag is ignored: shared storage is
-# writable by any app, so it must never arm kernel mutation. Only an explicit
-# Volume Down press selects Adaptive. Timeout and missing keys mean observe.
-
-VOLUME_TIMEOUT_MAIN=12
-VOLUME_TIMEOUT_SUB=10
-
-# Returns: up | down | timeout
-# Uses getevent KEY_VOLUME* which works on Magisk and KernelSU installers.
-volume_choice() {
-    _vc_timeout="${1:-10}"
-    _vc_end=$(( $(date +%s) + _vc_timeout ))
-    # Drain a few pending events so a previous key does not leak in.
-    timeout 0.2 getevent -qlc 1 >/dev/null 2>&1 || true
-    while [ "$(date +%s)" -lt "$_vc_end" ]; do
-        _vc_line="$(timeout 1 getevent -qlc 1 2>/dev/null || true)"
-        case "$_vc_line" in
-            *KEY_VOLUMEUP*)
-                echo "up"
-                return 0
-                ;;
-            *KEY_VOLUMEDOWN*)
-                echo "down"
-                return 0
-                ;;
-        esac
-    done
-    echo "timeout"
-    return 0
-}
-
-write_config_for_mode() {
-    _w_mode="$1"
-    TMP_CONF="$CONFIG.tmp"
-    cp "$DEFAULT_CONF" "$TMP_CONF" || abort "Could not stage configuration in $STATE_DIR."
-    if [ "$_w_mode" = "adaptive" ]; then
-        sed -e 's/^mutation_mode=observe$/mutation_mode=adaptive/' \
-            -e 's/^mutation_armed=false$/mutation_armed=true/' \
-            -e 's/^interactivity_mode=observe$/interactivity_mode=adaptive/' \
-            "$TMP_CONF" > "$TMP_CONF.2" && mv "$TMP_CONF.2" "$TMP_CONF" \
-            || abort "Could not write adaptive configuration."
-        grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
-            && grep -qx 'mutation_armed=true' "$TMP_CONF" \
-            && grep -qx 'interactivity_mode=adaptive' "$TMP_CONF" \
-            || abort "Adaptive configuration did not verify; aborting."
-    else
-        grep -qx 'mutation_mode=observe' "$TMP_CONF" \
-            && grep -qx 'mutation_armed=false' "$TMP_CONF" \
-            || abort "Standby configuration did not verify; aborting."
-    fi
-    mv "$TMP_CONF" "$CONFIG" || abort "Could not install config.ini."
-}
-
-MODE="observe"
-MODE_REASON="default Standby (mutation disabled)"
-CPU_GOV_CHOICE="no"
-GRANT_CHOICE="no"
-REWRITE_CONFIG=1
-
-mkdir -p "$STATE_DIR/logs" 2>/dev/null
+# ---- 4. Automatic activation and compatible config migration --------------
+# Installation authorizes bounded tuning. Preserve user tuning and explicit
+# grant_<domain>=no exclusions. Old mode/arming keys are normalized atomically.
+# Existing operator stop/recovery markers are never cleared by installation.
+mkdir -p "$STATE_DIR/logs" || abort "Could not create CoreFlow state directory."
 chmod 0700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null
+umask 077
+TMP_CONF="$CONFIG.install.tmp.$$"
+PREVIOUS_CONF=/dev/null
+[ ! -e "$CONFIG" ] || {
+    [ -f "$CONFIG" ] && [ -r "$CONFIG" ] && [ ! -L "$CONFIG" ] \
+        || abort "Existing config.ini is not a readable regular file."
+    PREVIOUS_CONF="$CONFIG"
+}
+awk '
+function key(line, k) {
+    if (line ~ /^[ \t]*[#;]/ || index(line,"=")==0) return ""
+    k=substr(line,1,index(line,"=")-1)
+    gsub(/^[ \t]+|[ \t]+$/, "", k)
+    return k
+}
+function activation(k) { return k=="mutation_mode" || k=="mutation_armed" || k=="interactivity_mode" }
+FNR==NR { defaults[++n]=$0; next }
+{
+    k=key($0)
+    if (activation(k)) next
+    if (k!="") seen[k]=1
+    print
+}
+END {
+    for (i=1;i<=n;i++) {
+        k=key(defaults[i])
+        if (k!="" && !activation(k) && !seen[k]) { print defaults[i]; seen[k]=1 }
+    }
+    print "mutation_mode=adaptive"
+    print "mutation_armed=true"
+    print "interactivity_mode=adaptive"
+}' "$DEFAULT_CONF" "$PREVIOUS_CONF" > "$TMP_CONF" || {
+    rm -f "$TMP_CONF"
+    abort "Could not migrate CoreFlow configuration."
+}
+grep -qx 'mutation_mode=adaptive' "$TMP_CONF" \
+    && grep -qx 'mutation_armed=true' "$TMP_CONF" \
+    && grep -qx 'interactivity_mode=adaptive' "$TMP_CONF" \
+    || abort "Automatic engine configuration did not verify."
+chmod 0600 "$TMP_CONF" || abort "Could not protect configuration."
+mv "$TMP_CONF" "$CONFIG" || abort "Could not install configuration."
 
-# SAFE_MODE always forces observe and may rewrite to safe defaults.
-if [ -f "$STATE_DIR/SAFE_MODE" ]; then
-    MODE="observe"
-    MODE_REASON="SAFE_MODE marker present — forced observe"
-    CPU_GOV_CHOICE="no"
-    REWRITE_CONFIG=1
-    ui_print " [>] Mode selection"
-    ui_print "     ! SAFE_MODE detected — Standby (mutation disabled) will be written."
-    ui_print " "
-else
-    # Existing config: ask keep vs reset
-    if [ -f "$CONFIG" ]; then
-        ui_print " [>] Existing config.ini detected"
-        ui_print " "
-        ui_print "     Volume Up   = Keep existing config"
-        ui_print "     Volume Down = Reset and choose mode"
-        ui_print "     Timeout ${VOLUME_TIMEOUT_SUB}s = Keep existing"
-        ui_print " "
-        _keep="$(volume_choice "$VOLUME_TIMEOUT_SUB")"
-        case "$_keep" in
-            down)
-                ui_print "     > choice: RESET config"
-                REWRITE_CONFIG=1
-                ;;
-            *)
-                ui_print "     > choice: KEEP existing config"
-                REWRITE_CONFIG=0
-                MODE_REASON="existing config.ini kept (user or timeout)"
-                ;;
-        esac
-        ui_print " "
-    fi
-
-    if [ "$REWRITE_CONFIG" -eq 1 ]; then
-        # Legacy flag still counts as adaptive request (optional).
-        _legacy_adaptive=0
-        [ -f "$ADAPTIVE_FLAG" ] && _legacy_adaptive=1
-
-        ui_print " [>] Select CoreFlow mode"
-        ui_print " "
-        ui_print "     Volume Up   = OBSERVE only (recommended)"
-        ui_print "                   Monitor only — no kernel mutation"
-        ui_print "     Volume Down = ADAPTIVE"
-        ui_print "                   Bounded mutation after reboot"
-        ui_print "     Timeout ${VOLUME_TIMEOUT_MAIN}s = OBSERVE only"
-        ui_print " "
-        if [ "$_legacy_adaptive" -eq 1 ]; then
-            ui_print "     note: enable_adaptive flag ignored (cannot arm Adaptive)"
-            ui_print " "
-        fi
-
-        _sel="$(volume_choice "$VOLUME_TIMEOUT_MAIN")"
-        case "$_sel" in
-            down)
-                MODE="adaptive"
-                MODE_REASON="volume down — adaptive armed"
-                ;;
-            up)
-                MODE="observe"
-                MODE_REASON="volume up — observe only"
-                ;;
-            *)
-                MODE="observe"
-                if [ "$_legacy_adaptive" -eq 1 ]; then
-                    MODE_REASON="timeout — observe only (enable_adaptive flag ignored)"
-                else
-                    MODE_REASON="timeout — observe only (safe default)"
-                fi
-                ;;
-        esac
-        ui_print "     > selected: $MODE"
-        ui_print " "
-
-        if [ "$MODE" = "adaptive" ]; then
-            ui_print " [>] Adaptive scope"
-            ui_print "     > all supported non-fatal namespaces enabled"
-            ui_print "     > CPUFreq / GPU / scheduler / memory / I/O follow global Adaptive authority"
-            ui_print "     > fatal-surface exclusions, thermal guard, journal and rollback remain active"
-            ui_print " "
-            ui_print "     ! ADAPTIVE will run after reboot."
-            ui_print "     ! Mutations are journaled and restorable."
-            ui_print "     ! Prefer 7 days Standby (mutation disabled) on a new device/SoC."
-            ui_print " "
-        fi
-    fi
-fi
-
-REQUESTED_MODE="$MODE"
-
-ui_print " [>] Mode request"
-ui_print "     > requested : $MODE"
-ui_print "     > reason    : $MODE_REASON"
-ui_print " "
-
-# ---- 5. Configuration and state ------------------------------------------
-if [ "$REWRITE_CONFIG" -eq 1 ]; then
-    write_config_for_mode "$MODE"
-    ui_print " [>] Configuration: config.ini written (mode=$MODE; supported non-fatal namespaces follow global authority)"
-else
-    ui_print " [>] Configuration: existing config.ini kept unchanged"
-fi
-ui_print " "
-
-# ---- 5b. Effective mode: what the daemon will actually run ---------------
-EFF_MODE="$(config_value mutation_mode)"
-EFF_ARMED="$(config_value mutation_armed)"
+MODE=adaptive
+MODE_REASON="automatic bounded engine; installation configured activation"
+REQUESTED_MODE=adaptive
+CPU_GOV=no
 EFF_CPU="$(config_value allow_cpu_governor)"
-EFF_REASON="mutation_mode=${EFF_MODE:-unset} mutation_armed=${EFF_ARMED:-unset} allow_cpu_governor=${EFF_CPU:-unset}"
-
-MODE="observe"
-CPU_GOV="no"
-if [ "$EFF_MODE" = "adaptive" ] && config_true "$EFF_ARMED"; then
-    MODE="adaptive"
-    config_true "$EFF_CPU" && CPU_GOV="yes"
-elif [ "$EFF_MODE" = "adaptive" ]; then
-    EFF_REASON="$EFF_REASON (adaptive without arming: no mutation can occur)"
+config_true "$EFF_CPU" && CPU_GOV=yes
+EFF_REASON="automatic activation; tuning and explicit grant exclusions preserved"
+if [ -f "$STATE_DIR/SAFE_MODE" ]; then
+    EFF_REASON="$EFF_REASON; hold=SAFE_MODE"
+    ui_print " [>] Recovery hold remains active (SAFE_MODE)."
+elif [ -f "$STATE_DIR/DISABLE" ]; then
+    EFF_REASON="$EFF_REASON; hold=DISABLE"
+    ui_print " [>] Existing operator stop preserved. Use Start in WebUI to resume."
+else
+    ui_print " [>] Engine will optimize automatically after reboot."
 fi
-
-ui_print " [>] Effective mode (read from config.ini)"
-ui_print "     > effective : $MODE"
-ui_print "     > source    : $EFF_REASON"
-if [ "$MODE" = "adaptive" ]; then
-    ui_print " "
-    ui_print "     ! WARNING: ADAPTIVE mutation is armed for the next boot."
-    ui_print "     ! To disable before reboot: set mutation_mode=observe and"
-    ui_print "     ! mutation_armed=false in /data/adb/coreflow/config.ini"
-fi
+ui_print "     > Discovery, thermal checks, journal and rollback remain active."
 ui_print " "
 
 # Legacy enable flag is one-shot.
@@ -431,5 +295,5 @@ if [ -d "$MODPATH/webroot" ]; then
 fi
 ui_print "     > Permissions applied"
 ui_print " "
-ui_print " [=== INSTALLATION COMPLETE: reboot to start CoreFlow (mode=$MODE) ===]"
+ui_print " [=== INSTALLATION COMPLETE: reboot to start CoreFlow automatically ===]"
 ui_print " "

@@ -29,11 +29,12 @@
     service: MODULE + "/service.sh"
   };
 
-  // Values the daemon uses when a key is absent (src/runtime/config.hpp).
+  // Packaged active-operation defaults. Missing/invalid daemon configuration
+  // still fails closed until installed or explicitly saved.
   var DEFAULTS = {
-    mutation_mode: "observe",
+    mutation_mode: "adaptive",
     runtime_refresh: "true",
-    interactivity_mode: "observe",
+    interactivity_mode: "adaptive",
     monitor_interval: "5",
     min_confidence: "0.6",
     launch_window_ms: "2500",
@@ -106,9 +107,9 @@
   function formFromConfig(cfg) {
     var c = cfg || {};
     var form = {
-      mutation_mode: c.mutation_mode === "adaptive" ? "adaptive" : "observe",
+      mutation_mode: "adaptive",
       runtime_refresh: parseBool(c.runtime_refresh, true),
-      interactivity_mode: c.interactivity_mode === "adaptive" ? "adaptive" : "observe"
+      interactivity_mode: c.interactivity_mode === "observe" ? "observe" : "adaptive"
     };
     NUMERIC.forEach(function (f) {
       form[f.key] = c[f.key] != null && c[f.key] !== "" ? c[f.key] : DEFAULTS[f.key];
@@ -134,9 +135,9 @@
       }
       values[f.key] = f.kind === "int" ? String(Math.floor(n)) : String(n);
     });
-    values.mutation_mode = form.mutation_mode === "adaptive" ? "adaptive" : "observe";
-    // mutation_armed is derived: the daemon requires it true only in Adaptive mode.
-    values.mutation_armed = values.mutation_mode === "adaptive" ? "true" : "false";
+    values.mutation_mode = "adaptive";
+    // Compatibility fields always configure active operation; no mode selector.
+    values.mutation_armed = "true";
     values.interactivity_mode = form.interactivity_mode === "adaptive" ? "adaptive" : "observe";
     values.runtime_refresh = form.runtime_refresh ? "true" : "false";
     return { ok: Object.keys(errors).length === 0, errors: errors, values: values };
@@ -145,16 +146,11 @@
   // Safety gates for a save. ctx: { currentMode, safe, disable }.
   // Returns { ok, reason, confirm, clearDisable }. confirm names the dialog to show.
   function gate(values, ctx) {
-    var c = ctx || {};
-    var adaptive = values.mutation_mode === "adaptive";
-    var changed = values.mutation_mode !== (c.currentMode === "adaptive" ? "adaptive" : "observe");
-    if (adaptive && c.safe) {
-      return { ok: false, reason: "SAFE_MODE is present. Adaptive stays blocked until the normal recovery procedure clears it." };
-    }
-    var confirm = null;
-    if (adaptive && c.disable) confirm = "resume";
-    else if (changed) confirm = adaptive ? "arm" : "observe";
-    return { ok: true, confirm: confirm, clearDisable: adaptive && !!c.disable };
+    if (!values || values.mutation_mode !== "adaptive" || values.mutation_armed !== "true")
+      return { ok: false, reason: "Invalid active-engine configuration." };
+    // Saving settings never clears operator stops or recovery markers. Start is
+    // the explicit resume action. The daemon enforces any remaining safety hold.
+    return { ok: true, confirm: null, clearDisable: false };
   }
 
   // Replaces owned keys in place (all duplicates collapse to one line) and appends
@@ -265,8 +261,10 @@
   // Newline-joined on purpose: "&" ends a command, so it must not be followed by ";".
   function startBody() {
     return [
-      "if [ -n \"$(pidof coreflowd 2>/dev/null)\" ]; then echo ALREADY_RUNNING; exit 0; fi",
       "[ -x " + q(PATHS.service) + " ] || { echo MODULE_MISSING; exit 21; }",
+      "[ ! -e " + q(PATHS.safe) + " ] || { echo RECOVERY_HOLD; exit 22; }",
+      "rm -f " + q(PATHS.disable) + " || { echo RESUME_FAILED; exit 23; }",
+      "if [ -n \"$(pidof coreflowd 2>/dev/null)\" ]; then echo ALREADY_RUNNING; exit 0; fi",
       "nohup sh " + q(PATHS.service) + " </dev/null >/dev/null 2>&1 &",
       "echo START_REQUESTED"
     ].join("\n");
@@ -307,10 +305,10 @@
     ].join("\n");
   }
 
-  // Writes config.ini atomically and sets the pending-restart marker. Observe creates
-  // the DISABLE kill switch; Adaptive removes it only after explicit resume.
+  // Save active-operation settings atomically. Never edit safety/stop markers.
   function writeConfigCmd(newRaw, values, opts) {
-    var adaptive = values.mutation_mode === "adaptive";
+    if (values.mutation_mode !== "adaptive" || values.mutation_armed !== "true")
+      return "echo INVALID_ACTIVE_CONFIG; exit 22";
     var lines = [
       "set -eu",
       "CFG=" + q(PATHS.config),
@@ -324,9 +322,7 @@
       "grep -qx " + q("mutation_mode=" + values.mutation_mode) + " \"$TMP\"",
       "grep -qx " + q("mutation_armed=" + values.mutation_armed) + " \"$TMP\""
     ];
-    if (!adaptive) lines.push("touch \"$DIR/DISABLE\"");
     lines.push("mv \"$TMP\" \"$CFG\"", "chmod 0600 \"$CFG\"");
-    if (adaptive && opts && opts.clearDisable) lines.push("rm -f \"$DIR/DISABLE\"");
     lines.push("touch \"$DIR/webui_config_pending\"", "chmod 0600 \"$DIR/webui_config_pending\"", "echo CONFIG_COMMIT_OK");
     return lines.join("; ");
   }

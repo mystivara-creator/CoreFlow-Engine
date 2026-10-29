@@ -85,41 +85,58 @@ run() {  # run <name> <expect: ok|fail> <mode-expected or -> <setup-fn> [arch]
 }
 none() { :; }
 flag() { touch "$1/flag"; }
-existing_cfg() { mkdir -p "$1/state"; echo "mutation_mode=observe" > "$1/state/config.ini"; }
+existing_cfg() { mkdir -p "$1/state"; printf 'mutation_mode=observe\nmutation_armed=false\nmonitor_interval=7\ngrant_gpu=no\ncustom_key=keep\n' > "$1/state/config.ini"; }
 tampered_model() { echo junk >> "$1/mod/system/etc/coreflow/thermal_predictor.onnx"; }
-adaptive_default() { sed -i 's/^mutation_mode=observe$/mutation_mode=adaptive/' "$1/mod/system/etc/coreflow/default.conf"; }
-no_sysfs() { rm -rf "$1/sys/class"; }
-api33() { :; }
+passive_default() { sed -i 's/^mutation_mode=adaptive$/mutation_mode=observe/' "$1/mod/system/etc/coreflow/default.conf"; }
 set_api33() { sed -i 's/ro.build.version.sdk=34/ro.build.version.sdk=33/' "$1/props"; }
-bad_arch() { :; }
-
-run positive_observe_no_flag ok observe none
-grep -q "CoreFlow Autonomous install report" "$T/positive_observe_no_flag/state/install_report.txt" && echo "   report present"
-grep -qx 'mutation_mode=observe' "$T/positive_observe_no_flag/state/config.ini" && echo "   config observe"
-# The legacy flag must never arm Adaptive: shared storage is writable by any app.
-run flag_ignored_on_timeout ok observe flag
-echo "$LAST_OUT" | grep -q "flag ignored" && echo "   flag reported as ignored" || { echo "FAIL flag not reported"; FAIL=$((FAIL+1)); }
-grep -qx 'mutation_mode=observe' "$T/flag_ignored_on_timeout/state/config.ini" \
-  && grep -qx 'mutation_armed=false' "$T/flag_ignored_on_timeout/state/config.ini" \
-  && echo "   config observe/unarmed" || { echo "FAIL config armed by flag"; FAIL=$((FAIL+1)); }
-run existing_config_kept ok observe existing_cfg
-grep -q "existing config" "$T/existing_config_kept/state/install_report.txt" && echo "   existing config untouched"
+unarmed_cfg() { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=false\n' > "$1/state/config.ini"; }
+safe_cfg() { existing_cfg "$1"; touch "$1/state/SAFE_MODE"; }
+stop_cfg() { existing_cfg "$1"; touch "$1/state/DISABLE"; }
+expect_line() {
+  if ! grep -qx "$2" "$T/$1/state/config.ini"; then echo "FAIL $1 missing $2"; FAIL=$((FAIL+1)); fi
+}
+run automatic_fresh ok adaptive none
+expect_line automatic_fresh 'mutation_armed=true'
+expect_line automatic_fresh 'interactivity_mode=adaptive'
+expect_line automatic_fresh 'monitor_interval=5'
+expect_line automatic_fresh 'grant_cpufreq=yes'
+echo "$LAST_OUT" | grep -q 'Volume Up' && { echo 'FAIL mode prompt remains'; FAIL=$((FAIL+1)); }
+run shared_storage_flag_unnecessary ok adaptive flag
+run existing_config_migrated ok adaptive existing_cfg
+expect_line existing_config_migrated 'monitor_interval=7'
+expect_line existing_config_migrated 'grant_gpu=no'
+expect_line existing_config_migrated 'custom_key=keep'
+expect_line existing_config_migrated 'grant_memory=yes'
+expect_line existing_config_migrated 'mutation_armed=true'
 run api33_rejected fail "" set_api33
 run tampered_model_rejected fail "" tampered_model
-run adaptive_default_rejected fail "" adaptive_default
+run passive_payload_rejected fail "" passive_default
 run x86_rejected fail "" none x86_64
-# Effective-mode cases: the report and banner must reflect config.ini, and an
-# adaptive config must trigger the warning even though the installer did not
-# write it.
-adaptive_cfg() { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=true\nallow_cpu_governor=yes\n' > "$1/state/config.ini"; }
-unarmed_cfg()  { mkdir -p "$1/state"; printf 'mutation_mode=adaptive\nmutation_armed=false\n' > "$1/state/config.ini"; }
-observe_cfg()  { mkdir -p "$1/state"; printf 'mutation_mode=observe\nmutation_armed=false\n' > "$1/state/config.ini"; }
-run existing_adaptive_armed_reports_adaptive ok adaptive adaptive_cfg
-echo "$LAST_OUT" | grep -q "ADAPTIVE mutation" && echo "   warning shown" || { echo "FAIL warning missing"; FAIL=$((FAIL+1)); }
-printf 'mutation_mode=adaptive\nmutation_armed=true\nallow_cpu_governor=yes\n' > "$T/expected.ini"
-cmp -s "$T/existing_adaptive_armed_reports_adaptive/state/config.ini" "$T/expected.ini" && echo "   config left untouched" || { echo "FAIL config modified"; FAIL=$((FAIL+1)); }
-run existing_adaptive_unarmed_reports_observe ok observe unarmed_cfg
-run existing_observe_reports_observe ok observe observe_cfg
-echo "$LAST_OUT" | grep -q "ADAPTIVE mutation" && { echo "FAIL spurious warning"; FAIL=$((FAIL+1)); } || echo "   no spurious warning"
-echo
+run legacy_unarmed_migrated ok adaptive unarmed_cfg
+expect_line legacy_unarmed_migrated 'mutation_armed=true'
+run recovery_marker_preserved ok adaptive safe_cfg
+[ -f "$T/recovery_marker_preserved/state/SAFE_MODE" ] || { echo 'FAIL recovery marker cleared'; FAIL=$((FAIL+1)); }
+run operator_stop_preserved ok adaptive stop_cfg
+[ -f "$T/operator_stop_preserved/state/DISABLE" ] || { echo 'FAIL operator stop cleared'; FAIL=$((FAIL+1)); }
+# Verify the migrated text with the real daemon parser, not only shell grep.
+if command -v g++ >/dev/null 2>&1; then
+  if g++ -std=c++20 -I"$SRC/../include" -x c++ - "$SRC/../src/runtime/config.cpp" -o "$T/config_probe" <<'CPP'
+#include "coreflow/config.hpp"
+int main(int argc,char** argv) {
+    coreflow::EngineConfig c;
+    return argc!=2 || !c.load(argv[1]) ||
+        c.mutationMode()!=coreflow::MutationMode::Adaptive || !c.mutationArmed() ||
+        c.interactivityMode()!=coreflow::InteractivityMode::Adaptive ||
+        c.monitorIntervalSeconds()!=7 || c.grantGpu() || !c.grantMemory();
+}
+CPP
+  then
+    if "$T/config_probe" "$T/existing_config_migrated/state/config.ini"; then
+      echo "PASS migrated configuration accepted by daemon parser"
+    else echo "FAIL migrated configuration rejected by daemon parser"; FAIL=$((FAIL+1)); fi
+  else echo "FAIL configuration probe did not compile"; FAIL=$((FAIL+1)); fi
+else
+  echo "SKIP daemon parser integration: g++ unavailable"
+fi
 echo "RESULT: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

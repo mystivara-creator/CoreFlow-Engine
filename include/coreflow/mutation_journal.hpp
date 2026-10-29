@@ -18,7 +18,8 @@ namespace coreflow {
  *
  * Contract:
  *   - commit() must be durable (fsync'd) before the first sysfs write.
- *   - clear() is called only after a fully verified restore.
+ *   - clear() follows verified restores or explicit release of externally
+ *     replaced paths; other owned paths must remain journaled.
  *   - load() reports whether a previous run left an unrestored journal.
  */
 class MutationJournal {
@@ -32,6 +33,11 @@ public:
     };
 
     virtual ~MutationJournal() = default;
+    // Caller must first establish that another controller replaced its target.
+    // Release only that path durably; preserve every other recovery obligation.
+    // Idempotent after a successful release, including retry after a sync error.
+    bool releaseExternallyControlledPath(const std::string& path) noexcept;
+
     virtual bool commit(const Entries& factory_values) noexcept = 0;
     virtual bool clear() noexcept = 0;
     virtual LoadState load(Entries& out) noexcept = 0;

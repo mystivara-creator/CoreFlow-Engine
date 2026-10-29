@@ -12,7 +12,7 @@ CoreFlow runs as a privileged Android module and can interact with kernel-facing
 6. Restore the baseline when leaving the protected state or shutting down.
 7. Skip unknown or unsupported controls.
 
-The release default is observe-only: no kernel control is written. An operator can opt in to adaptive mutation across all supported, discovered non-fatal resource namespaces by setting `mutation_mode=adaptive` and `mutation_armed=true`. Legacy `allow_cpu_governor` and `grant_*` flags no longer restrict CPUFreq, uClamp, cpusets, graphics, memory, scheduler, or I/O domains; capability discovery and fatal-surface policy still reject unsupported or dangerous nodes. Adaptive mode does not bypass capability, policy, journal, bounded-write, verification, rollback, or safety-hold gates. A malformed mutation mode fails safe to observe-only.
+Installation enables automatic bounded tuning using explicit compatibility keys and domain grants in config.ini. Upgrades preserve explicit grant_<domain>=no exclusions. There is no Observe/Standby mode selector. Missing, unreadable or malformed configuration blocks new writes; SAFE_MODE and DISABLE remain authoritative. Capability admission, target-bound permits, journals, read-back verification and rollback still apply. Saving WebUI settings never clears an operator stop or recovery marker. Explicit Start may resume DISABLE only while SAFE_MODE is absent.
 
 ## SELinux
 
@@ -24,5 +24,5 @@ For a crash, boot loop, corrupted configuration or unexpected kernel behavior, i
 
 ## v2.1.0 capability-driven mutation
 
-Discovery marks resources `mutation_ready` when readable and writable. EffectModel may propose bounded changes only for Memory / Io / Scheduler domains. Charging, thermal sensors, GPU, ART and other controls remain telemetry-only. Unknown numeric knobs remain observe-only until an adapter or semantic prior establishes their direction and safe bounds. Soft priors for known VM/I/O parameters are model knowledge, not permission to bypass capability, policy, or authority checks. I/O queue tuning requires measured I/O activity; CPU utilization alone is not enough evidence.
+Discovery records capabilities, not permission by itself. EffectModel proposes only admitted resources with known semantics, bounded candidate values and the required domain grant. Fatal controls remain excluded. Unknown scalars require appropriate advertised or measured evidence. Neither automatic activation nor historical experience bypasses current permits, write verification, journal recovery or safety holds.
 

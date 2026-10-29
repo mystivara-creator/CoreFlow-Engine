@@ -267,11 +267,11 @@ export const EXPANDED_DOMAIN_NAMES: Record<number, string> = {
   14: 'Kernel General Sysctl',
 };
 
-const DEFAULT_CONFIG_INI = `# CoreFlow Autonomous v3.0.0 source defaults: OBSERVE-ONLY.
+const DEFAULT_CONFIG_INI = `# CoreFlow System Framework: automatic operation.
 monitor_interval=5
 min_confidence=0.60
-mutation_mode=observe
-mutation_armed=false
+mutation_mode=adaptive
+mutation_armed=true
 runtime_refresh=true
 allow_cpu_governor=yes
 grant_memory=yes
@@ -281,7 +281,7 @@ grant_gpu=yes
 grant_cgroup=yes
 grant_cpufreq=yes
 grant_kernel=yes
-interactivity_mode=observe
+interactivity_mode=adaptive
 launch_window_ms=2500
 jank_miss_rate=0.05
 boost_window_ms=3000
@@ -361,7 +361,7 @@ export function createInitialVirtualDaemonStore(): VirtualDaemonStore {
     running: true,
     pid: 4281,
     safeMode: false,
-    disableMarker: true,
+    disableMarker: false,
     configPending: false,
     bootAttempts: 0,
     configRaw: DEFAULT_CONFIG_INI,
@@ -373,8 +373,8 @@ export function createInitialVirtualDaemonStore(): VirtualDaemonStore {
         timestamp: new Date().toISOString().slice(11, 19),
         event: 'policy_evaluated',
         scope: 'balance',
-        result: 'OBSERVE_ONLY',
-        reason: 'Default release configuration starts in Standby with mutation disabled.',
+        result: 'ACTIVE',
+        reason: 'Engine starts automatically with bounded optimization enabled.',
         state: 'NORMAL',
         decision: 'NO_ACTION',
       }),

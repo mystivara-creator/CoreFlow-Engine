@@ -22,12 +22,14 @@ It is not evidence of measured device performance gains or additional hardware c
   Codes are not exact health percentages. A caution demotes exploratory I/O proposals;
   it is not proof that a tuning value changes NAND write amplification or lifespan.
 - CPU/resource/boost owned settings are checked before attributing telemetry to an
-  outcome. A changed value invalidates the measurement, uses the established recovery
-  path, and latches tuning off until explicit rediscovery. An unreadable setting
-  triggers recovery/retry without blaming an external writer. The identity of the
-  writer cannot be inferred; a mismatch may also represent another root tool or
-  autonomous kernel behavior. Existing recovery writes can restore a baseline;
-  this is not a transparent ownership handoff to Power HAL.
+  outcome. An external change invalidates that measurement, durably removes only
+  the contested path from the recovery journal and retained ledger, and excludes
+  that path across actuator classes until rediscovery/restart. It does not change
+  configured Adaptive/armed state. Other admitted resources remain eligible.
+  If handoff persistence fails, the control loop retries before any new mutation;
+  known contested paths are not restored over the external value during that retry.
+  The writer is not identified: it could be Android, a kernel driver, or another tool.
+  This is cooperation after detecting an override, not a cross-process atomic lock.
 - Live SurfaceFlinger history is interpreted according to AOSP column order:
   desired-present, actual-present, ready. Presentation intervals are deduplicated
   across polls and pending fences are excluded. Static history supplies no new

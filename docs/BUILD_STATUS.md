@@ -9,7 +9,7 @@ Honest status for this source tree. Prefer CI logs and device evidence over mark
 | Version | `v3.0.1` (`versionCode=3010`) |
 | Language | C++20 |
 | Min Android API | 34 |
-| Default mode | `observe` (`mutation_armed=false`) |
+| Installed operation | Automatic bounded optimization after boot |
 
 ## What CI proves (when green on a commit)
 
@@ -34,7 +34,7 @@ A green run on a given SHA (for example `8af1984` on `refactor/source-consolidat
 - Journals / status files: exclusive temps where applicable; `EINTR`-safe writes; reject symlink and non-regular journal inputs.
 - Directory fsync for durable stores: `O_DIRECTORY | O_NOFOLLOW`.
 - Low-overhead daemon loop: single-timer signal-interruptible `clock_nanosleep` (zero slice-polling wakeups during deep sleep), exact interactivity boost-expiry wake clamping, zero-allocation `string_view` / `from_chars` / `to_chars` telemetry & status paths, and non-spinning arena-free ONNX Runtime CPU execution.
-- Defaults remain observe-only; Adaptive still requires arming and capability/policy/permit gates.
+- Installed configuration enables bounded optimization automatically. Uninitialized/invalid configuration still fails closed; capability, domain-grant, journal and safety-hold checks remain.
 
 ## Host reproduce
 

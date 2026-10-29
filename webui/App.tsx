@@ -317,13 +317,12 @@ export const App: React.FC = () => {
   const traceRows = isNativeBridge ? nativeTraceRows : mirrorDerived.traceRows;
 
   const currentDaemonMode = useMemo(() => {
-    if (parsedStatus?.data?.brain?.mode) {
-      return parsedStatus.data.brain.mode;
-    }
-    const C = window.CoreFlowControl;
-    const cfg = C ? C.parseIni(rawConfigText) : {};
-    return cfg.mutation_mode === 'adaptive' ? 'adaptive' : 'observe';
-  }, [parsedStatus, rawConfigText]);
+    const status = parsedStatus?.data;
+    if (!status) return 'unknown';
+    if (!status.running || probe?.running === false) return 'stopped';
+    return status.brain.mode === 'adaptive' && status.brain.armed && !status.brain.holdActive
+      ? 'adaptive' : 'held';
+  }, [parsedStatus, probe?.running]);
 
   const prediction = useMemo(
     () => computeThermalPrediction(currentSample, history, inputs.monitorIntervalSec),

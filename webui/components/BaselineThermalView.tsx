@@ -111,7 +111,7 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
                 {liveBrain.permitResource || liveBrain.permitCpu ? 'GRANTED' : 'HELD'}
               </div>
               <div className="text-[11px] text-slate-500 mt-0.5">
-                mode={liveBrain.mode} · armed={String(liveBrain.armed)}
+                engine={liveBrain.mode === 'adaptive' && liveBrain.armed ? 'active' : 'held'}
               </div>
             </div>
           </div>

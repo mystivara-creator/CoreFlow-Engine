@@ -9,7 +9,7 @@ namespace coreflow {
 inline constexpr const char* kCoreFlowVersion = "3.0.1";
 
 // Interactivity pipeline (v2.4.0): launch/jank sensing and bounded boosts.
-// Observe is the default; adaptation additionally requires the global
+// An uninitialized configuration grants no authority; installed operation uses the global
 // mutation gates (mutation_mode=adaptive + mutation_armed).
 enum class InteractivityMode {
     Observe,
@@ -80,8 +80,8 @@ private:
     // Balance: 0.60 lets Adaptive act on trustworthy-but-not-perfect samples.
     // Authority, journal, and regression rollback remain the hard stops.
     double min_confidence_{0.60};
-    // Release default is observe-only. Kernel mutation requires explicit
-    // opt-in (mutation_mode=adaptive, mutation_armed=true).
+    // Missing/invalid configuration grants no authority. The installer supplies
+    // explicit active-operation compatibility fields and per-domain grants.
     MutationMode mutation_mode_{MutationMode::Disabled};
     bool runtime_refresh_enabled_{true};
     bool mutation_armed_{false};

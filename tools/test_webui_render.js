@@ -74,9 +74,9 @@ check(
 
 check(
   /SAFE_MODE/.test(webuiSource) && /mutation_mode/.test(control) && /mutation_armed/.test(control),
-  "mode changes retain explicit policy and SAFE_MODE gates"
+  "automatic operation retains compatibility authority and SAFE_MODE handling"
 );
-check(/mutation_mode=observe|mutation_mode.*observe/.test(control), "Observe-only remains the default mode");
+check(/mutation_mode: "adaptive"/.test(control) && !/Standby \(Mutation Disabled\)/.test(webuiSource), "automatic operation is default and the Standby selector is removed");
 
 console.log("CoreFlow WebUI render contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

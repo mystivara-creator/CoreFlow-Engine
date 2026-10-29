@@ -16,6 +16,21 @@
 #include <unordered_set>
 
 namespace coreflow {
+
+bool MutationJournal::releaseExternallyControlledPath(const std::string& path) noexcept {
+    try {
+        Entries entries;
+        const auto state = load(entries);
+        if (state == LoadState::Corrupt) return false;
+        if (state == LoadState::Absent) return clear();
+        const auto before = entries.size();
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+            [&path](const auto& entry) { return entry.first == path; }), entries.end());
+        if (entries.size() == before) return commit(entries);
+        return entries.empty() ? clear() : commit(entries);
+    } catch (...) { return false; }
+}
+
 namespace {
 
 constexpr const char* kHeaderV1 = "coreflow-mutation-journal v1";

@@ -369,6 +369,13 @@ bool ResourceMutationController::selectCandidate(
         }
     }
 
+    // Exclude shared externally controlled paths before top-N ranking, so
+    // contested candidates cannot crowd out otherwise eligible resources.
+    if (external_control_paths_ != nullptr) {
+        for (auto& cap : effective_matrix.resources)
+            if (external_control_paths_->contains(cap.path)) cap.mutation_ready = false;
+    }
+
     // The DecisionAgent is the proposal layer for resource candidates. It only
     // ranks observed capabilities; this controller still independently enforces
     // policy, intervention level, experience confidence, rejection cooldown,
@@ -406,6 +413,7 @@ bool ResourceMutationController::selectCandidate(
         const std::string& name = scored.resource_name;
         const std::string& path = scored.path;
         if (name.empty() || path.empty()) continue;
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) continue;
 
         auto bit = baseline_.find(path);
         if (bit == baseline_.end() || !bit->second.valid ||
@@ -869,11 +877,50 @@ MutationResult ResourceMutationController::apply(
     return apply(state, sample, profile, config, plan, permit);
 }
 
+bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept {
+    try {
+        const auto owned = active_resources_cache_;
+        for (const auto& setting : owned) {
+            const std::string path = setting.first;
+            std::string live;
+            if (!ResourceActuator::readComparable(path, live)) return false;
+            if (live == ResourceActuator::comparableValue(setting.second) && !paths.contains(path)) continue;
+            paths.insert(path); // block all actuator classes before any durable handoff
+            if (retained_store_ != nullptr && !retained_store_->erasePath(path)) return false;
+            if (journal_committed_ && (journal_ == nullptr ||
+                !journal_->releaseExternallyControlledPath(path))) return false;
+            dirty_resources_.erase(path);
+            const auto baseline = baseline_.find(path);
+            if (baseline != baseline_.end()) baseline->second.valid = false;
+            retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
+                [&path](const auto& entry) { return entry.path == path; }), retained_entries_.end());
+            retained_active_resources_.erase(std::remove_if(retained_active_resources_.begin(), retained_active_resources_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), retained_active_resources_.end());
+            active_resources_cache_.erase(std::remove_if(active_resources_cache_.begin(), active_resources_cache_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), active_resources_cache_.end());
+            last_applied_resources_.erase(std::remove_if(last_applied_resources_.begin(), last_applied_resources_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), last_applied_resources_.end());
+            if (last_mutation_path_ == path) {
+                pending_outcome_ = false;
+                last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
+                last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
+            }
+            mutated_ = !dirty_resources_.empty();
+            journal_committed_ = mutated_;
+            if (!mutated_) restore_failed_ = false;
+        }
+        return true;
+    } catch (...) { return false; }
+}
+
 bool ResourceMutationController::restoreAll() noexcept {
     if (!mutated_ && !restore_failed_) return true;
 
     bool ok = true;
     for (const auto& path : dirty_resources_) {
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) {
+            ok = false; continue;
+        }
         const auto item = baseline_.find(path);
         std::error_code path_error;
         const bool path_exists = std::filesystem::exists(path, path_error);

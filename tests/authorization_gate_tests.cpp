@@ -80,7 +80,7 @@ int testShippedConfigGrantsAreExplicit() {
     CHECK(config.grantCgroup());
     CHECK(config.grantCpuFreq());
     CHECK(config.grantKernel());
-    CHECK(!config.mutationArmed());  // arming is still an explicit operator act
+    CHECK(config.mutationArmed());  // installing the module supplies explicit activation
     return 0;
 }
 

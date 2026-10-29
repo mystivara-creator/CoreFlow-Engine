@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_set>
 
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +26,13 @@ namespace coreflow {
 // journal state.
 class InteractivityBoostController final {
 public:
+    // Quarantine is shared across actuator classes; it never changes global config.
+    void setExternalControlPaths(const std::unordered_set<std::string>* paths) noexcept {
+        external_control_paths_ = paths;
+    }
+    // Withdraw only externally replaced targets, without writing their kernel nodes.
+    bool reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept;
+
     void setJournal(MutationJournal* journal) noexcept { journal_ = journal; }
     void setGpuMinFreqPath(std::string path) { gpu_min_freq_path_ = std::move(path); }
     void setTopAppUclampPath(std::string path) { uclamp_path_ = std::move(path); }
@@ -63,6 +71,8 @@ public:
     [[nodiscard]] bool recoveryRequired() const noexcept { return recovery_required_; }
 
 private:
+    const std::unordered_set<std::string>* external_control_paths_{nullptr};
+
     struct ActiveBoost {
         ActuatorId id{};
         std::string baseline;

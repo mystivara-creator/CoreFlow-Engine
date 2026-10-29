@@ -107,9 +107,9 @@ grep -q 'ContextEngine' "$ROOT/include/coreflow/context.hpp"
 grep -q 'PolicyEngine' "$ROOT/include/coreflow/control.hpp"
 grep -q 'ActuatorManager' "$ROOT/include/coreflow/control.hpp"
 grep -q 'DecisionOutcome' "$ROOT/include/coreflow/outcome.hpp"
-# Release default is observe-only; kernel mutation requires explicit opt-in.
-grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q '^mutation_armed=false$' "$ROOT/module/system/etc/coreflow/default.conf"
+# Installation configures automatic bounded operation; permits and holds remain enforced.
+grep -q '^mutation_mode=adaptive$' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q '^mutation_armed=true$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q "v${VERSION}" "$ROOT/README.md"
 grep -q "v${VERSION}" "$ROOT/docs/BUILD_STATUS.md"
 grep -q "^## v${VERSION}" "$ROOT/CHANGELOG.md"

@@ -10,7 +10,7 @@ Capability-driven C++20 system optimization and fine-tuning engine for Android. 
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
-| Default mode | Standby (`mutation_mode=observe`, `mutation_armed=false`) |
+| Operation | Automatic bounded optimization after boot |
 
 ---
 
@@ -34,7 +34,7 @@ flowchart TD
     N --> D
     J --> O["Durable Mutation Journal"]
     O --> P["Rollback & Recovery"]
-    I --> Q["Standby / Reject"]
+    I --> Q["Keep configuration / Explain hold"]
 ```
 
 | Pillar | Role | Function |
@@ -53,23 +53,24 @@ flowchart TD
 - **Zero hardcoded tunable values** — every candidate comes from kernel-advertised options (`scaling_available_governors`, `/queue/scheduler`, `available_frequencies`, KGSL `num_pwrlevels`, CPPC bounds), harvested vendor configs (`powerhint*.json`, `init*.rc`, perf XML/JSON), or bounded steps on catalogued interfaces.
 - **Cross-domain StrategyCatalog coupling** — changing an I/O scheduler (`A -> B`), CPU governor, or workload regime (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`) automatically re-ranks coupled block-queue (`nr_requests`, `read_ahead_kb`, `rq_affinity`, `wbt_lat_usec`), governor (`rate_limit_us`), foreground `uclamp.min`, and GPU floor candidates.
 - **GPU & rendering headroom** — discovers Qualcomm Adreno KGSL (`min_pwrlevel`, `gpuclk`, `bus_split`, `force_bus_on`), Mali/arm-gpufreq/devfreq `min_freq`, and MediaTek GED surfaces; tracks live display refresh period (`60/90/120/144Hz`) to eliminate frame drops and micro-stutter while holding warm equilibrium (`48–52°C`) below thermal throttling.
-- **Unattended multi-week safety** — starts in Standby by default; every Adaptive write commits a CRC32 v2 journal before opening the descriptor, verifies read-back, retains beneficial or verified zero-harm neutral improvements, and rolls back regressions or crash leftovers automatically.
+- **Unattended multi-week safety** — starts automatically after boot; every Adaptive write commits a CRC32 v2 journal before opening the descriptor, verifies read-back, retains beneficial or verified zero-harm neutral improvements, and rolls back regressions or crash leftovers automatically.
 - **Portrait-first KernelSU WebUI** — offline native WebUI (`module/webroot/`) with compact hamburger navigation for portrait phones, daemon lifecycle controls, live telemetry, and validated `config.ini` gating.
 
 ---
 
-## Operating states
+## Automatic operation
 
-**Adaptive** is the autonomous tuning mode. It requires `mutation_mode=adaptive`,
-`mutation_armed=true`, and explicit domain grants; capability discovery is not
-permission to write. Policy, journal, verification, and rollback remain mandatory.
+Install and reboot: CoreFlow starts discovery, recovery, baseline measurement and
+bounded optimization automatically. There is no Observe/Standby mode selector.
+Use Start, Stop and Restart to control the daemon. Existing recovery and operator
+stop markers remain authoritative; saving settings does not remove them.
 
-**Standby** disables new tuning writes while telemetry and reasoning continue.
-Recovery may still restore changes owned by the engine, so this state is not
-strictly read-only. The existing `mutation_mode=observe` token (also accepted as
-`disabled` by the daemon) remains a compatibility setting. SAFE_MODE and DISABLE
-still withdraw mutation authority. Baseline collection and outcome observation
-are internal phases of Adaptive, not separate operating modes.
+Legacy `mutation_mode=adaptive` / `mutation_armed=true` configuration fields are
+written by the installer for compatibility. They remain internal authority checks,
+not a manual activation step. Explicit domain exclusions are preserved on upgrade.
+Missing or malformed configuration still blocks new writes with an explanation.
+Baseline collection, outcome measurement, cooldown and retaining a good setting
+are normal engine activities, not passive operating modes.
 
 ## Build & Verify
 

@@ -296,6 +296,9 @@ AutonomousEngine::~AutonomousEngine() {
 }
 
 bool AutonomousEngine::initialize() {
+    controller_.setExternalControlPaths(&external_control_paths_);
+    resource_controller_.setExternalControlPaths(&external_control_paths_);
+    boost_controller_.setExternalControlPaths(&external_control_paths_);
     controller_.setJournal(&journal_);
     resource_controller_.setJournal(&resource_journal_);
     controller_.setRetainedStateStore(&cpu_retained_store_);
@@ -305,8 +308,8 @@ bool AutonomousEngine::initialize() {
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
     if (!config_.load(kPaths.config_ini)) {
-        // A missing or unreadable config keeps the observe-only defaults.
-        logWarn("config.ini not loaded; using observe-only defaults");
+        // Missing/unreadable configuration is an initialization hold, not a selectable mode.
+        logWarn("config.ini not loaded; new tuning blocked until configuration is repaired");
     }
 
     configured_mode_ = config_.mutationMode();
@@ -387,6 +390,10 @@ bool AutonomousEngine::initialize() {
 
 bool AutonomousEngine::refreshEnvironment() {
     refresh_pending_ = false;
+    if (continuity_recovery_pending_) {
+        continuity_recovery_pending_ = !reconcileControlContinuity();
+        if (continuity_recovery_pending_) { refresh_pending_ = true; return false; }
+    }
     controller_.setRetainedStateStore(&cpu_retained_store_);
     resource_controller_.setRetainedStateStore(&resource_retained_store_);
     controller_.setExperienceMemory(&experience_memory_);
@@ -446,7 +453,8 @@ bool AutonomousEngine::refreshEnvironment() {
         (void)resource_controller_.syncPolicyModel(resource_model_);
     }
 
-    control_conflict_ = false;
+    external_control_paths_.clear();
+    continuity_recovery_pending_ = false;
     storage_health_directories_ = discoverStorageHealthDirectories(
         kernelFilesystemPath(KernelFsKind::Sysfs, ""));
     storage_health_ = summarizeStorageHealth(storage_health_directories_);
@@ -618,6 +626,22 @@ void AutonomousEngine::emitNotification(NotificationEvent event, const RuntimeSa
     }
 }
 
+bool AutonomousEngine::reconcileControlContinuity() {
+    baseline_intelligence_.reset();
+    history_.clear();
+    const bool boost_ok = boost_controller_.reconcileExternalChanges(external_control_paths_);
+    const bool cpu_ok = controller_.reconcileExternalChanges(external_control_paths_);
+    const bool resource_ok = resource_controller_.reconcileExternalChanges(external_control_paths_);
+    if (!boost_ok || !cpu_ok || !resource_ok) return false;
+    // Other pending candidates share contaminated telemetry, so discard those
+    // measurements without learning a regression. Accepted settings stay owned.
+    const bool cpu_rolled = !controller_.hasPendingOutcome() || controller_.rollbackLastMutation();
+    const bool resource_rolled = !resource_controller_.hasPendingOutcome() ||
+                                 resource_controller_.rollbackLastMutation();
+    telemetry_recovery_pending_ = telemetry_recovery_pending_ || !cpu_rolled || !resource_rolled;
+    return true;
+}
+
 void AutonomousEngine::tick() {
     try {
         // SAFETY HOLD: an operator kill switch or a guard-raised SAFE_MODE forces
@@ -629,8 +653,19 @@ void AutonomousEngine::tick() {
             hold_reason_ = hold;
         }
         const bool held = hold != HoldReason::None;
-        config_.setMutationMode((held || control_conflict_) ? MutationMode::Disabled : configured_mode_);
-        config_.setMutationArmed((held || control_conflict_) ? false : configured_armed_);
+        config_.setMutationMode(held ? MutationMode::Disabled : configured_mode_);
+        config_.setMutationArmed(held ? false : configured_armed_);
+
+        // Finish durable external-ownership handoffs before any restore path.
+        // Otherwise a failed journal update could restore over a vendor's new value.
+        if (continuity_recovery_pending_) {
+            continuity_recovery_pending_ = !reconcileControlContinuity();
+            if (continuity_recovery_pending_) {
+                logWarn("External control handoff pending; new mutations paused");
+                ++sample_count_;
+                return;
+            }
+        }
 
         // Retry a failed telemetry-triggered restore independently of optional
         // discovery refresh, even if the next sample would be valid.
@@ -651,6 +686,25 @@ void AutonomousEngine::tick() {
         // STEP 1: Sample runtime environment
         RuntimeSample sample = observer_.sample(snapshot_.profile);
 
+        // Check causal continuity before using telemetry to judge an owned epoch.
+        // A mismatch identifies an external change, not its writer. Do not learn
+        // a success/regression from a candidate whose live setting has changed.
+        const auto boost_continuity = boost_controller_.inspectContinuity();
+        const auto cpu_continuity = inspectOwnedSettings(controller_.activeGovernorSettings(), true);
+        const auto resource_continuity = inspectOwnedSettings(resource_controller_.activeResourceSettings());
+        if (boost_continuity != ControlContinuity::Intact ||
+            cpu_continuity != ControlContinuity::Intact ||
+            resource_continuity != ControlContinuity::Intact) {
+            continuity_recovery_pending_ = !reconcileControlContinuity();
+            logWarn("CONTROL_CONTINUITY external_paths=%zu handoff=%s; configured mode preserved",
+                    external_control_paths_.size(), continuity_recovery_pending_ ? "pending" : "complete");
+            publishStatus(sample, snapshot_.state, snapshot_.state, Decision::NoAction,
+                SystemContext{}, PolicyPlan{}, hold, MutationResult::Skipped, MutationResult::Skipped);
+            ++sample_count_;
+            return;
+        }
+
+
         // STEP 2: Validate sample (comprehensive from HARDENED)
         if (!validateSample(sample)) {
             // Recovery must not depend on valid telemetry, including when an
@@ -666,35 +720,6 @@ void AutonomousEngine::tick() {
                 boost_controller_.activeCount() != 0U ||
                 boost_controller_.recoveryRequired();
             logWarn("Skipping tick: validation failed; owned mutations restore attempted");
-            ++sample_count_;
-            return;
-        }
-
-        // Check causal continuity before using telemetry to judge an owned epoch.
-        // A mismatch identifies an external change, not its writer. Do not learn
-        // a success/regression from a candidate whose live setting has changed.
-        const auto boost_continuity = boost_controller_.inspectContinuity();
-        const auto cpu_continuity = inspectOwnedSettings(controller_.activeGovernorSettings(), true);
-        const auto resource_continuity = inspectOwnedSettings(resource_controller_.activeResourceSettings());
-        if (boost_continuity != ControlContinuity::Intact ||
-            cpu_continuity != ControlContinuity::Intact ||
-            resource_continuity != ControlContinuity::Intact) {
-            control_conflict_ = control_conflict_ || boost_continuity == ControlContinuity::Changed ||
-                                cpu_continuity == ControlContinuity::Changed ||
-                                resource_continuity == ControlContinuity::Changed;
-            config_.setMutationMode(MutationMode::Disabled);
-            config_.setMutationArmed(false);
-            boost_controller_.restoreAll();
-            const bool cpu_restored = controller_.restoreAll();
-            const bool resource_restored = resource_controller_.restoreAll();
-            telemetry_recovery_pending_ = !cpu_restored || !resource_restored ||
-                boost_controller_.activeCount() != 0U || boost_controller_.recoveryRequired();
-            baseline_intelligence_.reset();
-            history_.clear();
-            logWarn("CONTROL_CONTINUITY lost; recovery attempted; conflict=%s",
-                    control_conflict_ ? "latched_until_refresh" : "unreadable");
-            publishStatus(sample, snapshot_.state, snapshot_.state, Decision::NoAction,
-                SystemContext{}, PolicyPlan{}, hold, MutationResult::Skipped, MutationResult::Skipped);
             ++sample_count_;
             return;
         }
@@ -1665,7 +1690,8 @@ void AutonomousEngine::publishStatus(
         s.diagnosis_confidence = runtime_diagnosis_.confidence;
         s.rendering_available = sample.frame_jank_available;
         s.frame_jank_rate = sample.frame_jank_rate;
-        s.control_conflict = control_conflict_;
+        s.control_conflict = !external_control_paths_.empty();
+        s.external_control_paths = external_control_paths_.size();
         s.storage_health = storage_health_;
         s.learned_candidates = experience_memory_.size();
         s.pid = static_cast<long>(::getpid());
@@ -1767,8 +1793,8 @@ void AutonomousEngine::publishStatus(
         s.stabilizing_epoch = resource_controller_.stabilizingEpoch();
 
         // Human-readable why this cycle did not open a new mutation epoch.
-        if (control_conflict_) {
-            s.skip_reason = "external setting change detected; explicit rediscovery required";
+        if (continuity_recovery_pending_) {
+            s.skip_reason = "finishing durable handoff of externally controlled resources";
         } else if (s.hold_active) {
             s.skip_reason = "safety hold active";
         } else if (s.observing) {

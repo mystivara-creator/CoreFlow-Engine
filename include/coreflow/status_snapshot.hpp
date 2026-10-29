@@ -34,6 +34,7 @@ struct EngineStatus {
     bool rendering_available{false};
     double frame_jank_rate{0.0};
     bool control_conflict{false};
+    std::size_t external_control_paths{0};
     StorageHealth storage_health;
     std::size_t learned_candidates{0};
 

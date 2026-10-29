@@ -1,5 +1,6 @@
 #include "coreflow/mutation.hpp"
 #include "coreflow/context.hpp"
+#include "coreflow/resource_actuator.hpp"
 #include "coreflow/decision_trace.hpp"
 #include "coreflow/outcome.hpp"
 #include "coreflow/policy.hpp"
@@ -302,6 +303,7 @@ bool MutationController::buildPlan(
         }
 
         const std::string governorPath = governorPathOf(policy.path);
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(governorPath)) continue;
         const auto baseline = baseline_.find(governorPath);
         if (baseline == baseline_.end() || !baseline->second.valid) continue;
 
@@ -669,6 +671,9 @@ MutationResult MutationController::restoreGovernors() noexcept {
     bool failed = false;
 
     for (const auto& path : dirty_governors_) {
+        if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) {
+            failed = true; continue; // durable handoff must finish before dropping the journal
+        }
         const auto entry = baseline_.find(path);
 
         if (entry == baseline_.end() || !entry->second.valid) {
@@ -1019,6 +1024,42 @@ MutationResult MutationController::apply(
 MutationResult MutationController::relaxToBaseline() noexcept {
     if (!mutated_ && !restore_failed_) return MutationResult::Skipped;
     return restoreGovernors();
+}
+
+bool MutationController::reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept {
+    try {
+        const auto owned = active_governors_cache_;
+        for (const auto& setting : owned) {
+            const std::string path = governorPathOf(setting.first);
+            std::string live;
+            if (!ResourceActuator::readComparable(path, live)) return false;
+            if (live == ResourceActuator::comparableValue(setting.second) && !paths.contains(path)) continue;
+            paths.insert(path); // block all actuator classes before any durable handoff
+            if (retained_store_ != nullptr && !retained_store_->erasePath(path)) return false;
+            if (journal_committed_ && (journal_ == nullptr ||
+                !journal_->releaseExternallyControlledPath(path))) return false;
+            dirty_governors_.erase(path);
+            const auto baseline = baseline_.find(path);
+            if (baseline != baseline_.end()) baseline->second.valid = false;
+            retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
+                [&path](const auto& entry) { return entry.path == path; }), retained_entries_.end());
+            retained_active_governors_.erase(std::remove_if(retained_active_governors_.begin(), retained_active_governors_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), retained_active_governors_.end());
+            active_governors_cache_.erase(std::remove_if(active_governors_cache_.begin(), active_governors_cache_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), active_governors_cache_.end());
+            last_applied_governors_.erase(std::remove_if(last_applied_governors_.begin(), last_applied_governors_.end(),
+                [&setting](const auto& entry) { return entry.first == setting.first; }), last_applied_governors_.end());
+            if (last_mutation_path_ == path) {
+                pending_outcome_ = false;
+                last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
+                last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
+            }
+            mutated_ = !dirty_governors_.empty();
+            journal_committed_ = mutated_;
+            if (!mutated_) restore_failed_ = false;
+        }
+        return true;
+    } catch (...) { return false; }
 }
 
 bool MutationController::restoreAll() noexcept {

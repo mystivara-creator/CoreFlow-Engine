@@ -41,7 +41,7 @@ const good = {
 };
 let v = C.validate(good);
 check(v.ok, "defaults-like form validates");
-check(v.values.mutation_armed === "false", "armed is derived false in observe");
+check(v.values.mutation_armed === "true" && v.values.mutation_mode === "adaptive", "obsolete form modes normalize to automatic operation");
 check(v.values.runtime_refresh === "true", "runtime_refresh serialised as true");
 check(v.values.min_confidence === "0.6", "min_confidence canonical");
 
@@ -60,19 +60,15 @@ bounds.forEach(function (pair) {
   check(!r.ok && r.errors[pair[0]], "rejects " + pair[0] + "=" + JSON.stringify(pair[1]));
 });
 
-// ---- safety gates ----
-check(!C.gate({ mutation_mode: "adaptive" }, { currentMode: "observe", safe: true, disable: false }).ok,
-  "SAFE_MODE blocks Adaptive");
-let g = C.gate({ mutation_mode: "adaptive" }, { currentMode: "observe", safe: false, disable: true });
-check(g.ok && g.confirm === "resume" && g.clearDisable === true, "DISABLE requires explicit resume");
-g = C.gate({ mutation_mode: "adaptive" }, { currentMode: "observe", safe: false, disable: false });
-check(g.ok && g.confirm === "arm" && g.clearDisable === false, "enabling Adaptive asks to arm");
-g = C.gate({ mutation_mode: "observe" }, { currentMode: "adaptive", safe: false, disable: false });
-check(g.ok && g.confirm === "observe", "leaving Adaptive asks to confirm");
-g = C.gate({ mutation_mode: "observe" }, { currentMode: "observe", safe: false, disable: false });
-check(g.ok && g.confirm === null, "no mode change means no dialog");
-g = C.gate({ mutation_mode: "observe" }, { currentMode: "observe", safe: true, disable: true });
-check(g.ok, "Observe is always allowed, even under SAFE_MODE");
+// ---- settings cannot change runtime hold markers ----
+check(C.gate({ mutation_mode: "adaptive", mutation_armed: "true" }, { safe: true }).ok,
+  "settings can be repaired during a recovery hold without clearing it");
+let g = C.gate({ mutation_mode: "adaptive", mutation_armed: "true" }, { currentMode: "observe", disable: true });
+check(g.ok && g.confirm === null && g.clearDisable === false, "saving settings preserves an operator stop");
+g = C.gate({ mutation_mode: "adaptive", mutation_armed: "true" }, { currentMode: "observe", safe: false });
+check(g.ok && g.confirm === null, "automatic operation needs no arm/mode dialog");
+check(!C.gate({ mutation_mode: "observe" }, {}).ok, "legacy passive writes are rejected");
+check(!C.gate({ mutation_mode: "adaptive", mutation_armed: "false" }, {}).ok, "inconsistent active config is rejected");
 
 // ---- config.ini editing ----
 const raw = [
@@ -165,16 +161,16 @@ check(r.status === 0 && r.stdout.indexOf("CONFIG_COMMIT_OK") >= 0, "adaptive wri
 let written = fs.readFileSync(path.join(dir, "config.ini"), "utf8");
 check(written.indexOf("mutation_mode=adaptive") >= 0 && written.indexOf("allow_cpu_governor=yes") >= 0,
   "adaptive write keeps legacy lines");
-check(!fs.existsSync(path.join(dir, "DISABLE")), "resume removes DISABLE");
+check(fs.existsSync(path.join(dir, "DISABLE")), "saving settings preserves DISABLE even with obsolete clearDisable option");
 check(fs.existsSync(path.join(dir, "webui_config_pending")), "write marks restart pending");
 check((fs.statSync(path.join(dir, "config.ini")).mode & 0o077) === 0, "config is private (0600)");
 
-// Write Observe: must create DISABLE (kill switch for a running Adaptive daemon).
+// Obsolete passive form inputs cannot create a hidden mode or disarm the engine.
 const obs = C.validate(Object.assign({}, f, { mutation_mode: "observe" }));
 r = sh(rewrite(C.writeConfigCmd(C.applyValues(written, obs.values), obs.values, {}), dir));
-check(r.status === 0 && fs.existsSync(path.join(dir, "DISABLE")), "observe write creates DISABLE");
+check(r.status === 0 && fs.existsSync(path.join(dir, "DISABLE")), "settings never remove an existing operator stop");
 written = fs.readFileSync(path.join(dir, "config.ini"), "utf8");
-check(written.indexOf("mutation_armed=false") >= 0, "observe write disarms");
+check(written.indexOf("mutation_armed=true") >= 0 && written.indexOf("mutation_mode=adaptive") >= 0, "legacy passive form is saved as active config");
 fs.rmSync(dir, { recursive: true, force: true });
 
 // A missing state directory must fail closed without creating anything.
@@ -205,6 +201,24 @@ const startRun = spawnSync("sh", ["-c", rewrite(C.startCmd(), dir)], { encoding:
 check(startRun.stdout.indexOf("MODULE_MISSING") >= 0 && startRun.status === 21, "start without a module fails closed");
 const refreshRun = spawnSync("sh", ["-c", C.refreshCmd()], { encoding: "utf8", env: env, timeout: 20000 });
 check(refreshRun.stdout.indexOf("NOT_RUNNING") >= 0 && refreshRun.status === 2, "refresh without a daemon does nothing");
+fs.rmSync(dir, { recursive: true, force: true });
+
+// Explicit Start resumes DISABLE, but refuses SAFE_MODE. A fake running daemon
+// avoids launching a service or sending any real process a signal.
+dir = sandbox();
+const stub = path.join(dir, "service.sh");
+fs.writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+fs.mkdirSync(path.join(dir, "bin"));
+fs.writeFileSync(path.join(dir, "bin", "pidof"), "#!/bin/sh\necho 999999\n", { mode: 0o755 });
+const resumeEnv = { PATH: path.join(dir, "bin") + ":/usr/bin:/bin" };
+fs.writeFileSync(path.join(dir, "DISABLE"), "");
+fs.writeFileSync(path.join(dir, "SAFE_MODE"), "");
+let resumeCmd = rewrite(C.startCmd(), dir).split(C.PATHS.service).join(stub);
+let resumed = spawnSync("sh", ["-c", resumeCmd], { encoding: "utf8", env: resumeEnv, timeout: 20000 });
+check(resumed.status === 22 && fs.existsSync(path.join(dir, "DISABLE")), "Start preserves operator stop while SAFE_MODE is present");
+fs.rmSync(path.join(dir, "SAFE_MODE"));
+resumed = spawnSync("sh", ["-c", resumeCmd], { encoding: "utf8", env: resumeEnv, timeout: 20000 });
+check(resumed.status === 0 && !fs.existsSync(path.join(dir, "DISABLE")), "explicit Start resumes an operator stop");
 fs.rmSync(dir, { recursive: true, force: true });
 
 console.log("CoreFlow WebUI control contract: " + (checks - failures) + "/" + checks + " checks passed");

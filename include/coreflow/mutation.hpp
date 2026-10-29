@@ -35,6 +35,13 @@ struct DecisionTraceContext;
  */
 class MutationController {
 public:
+    // Quarantine is shared across actuator classes; it never changes global config.
+    void setExternalControlPaths(const std::unordered_set<std::string>* paths) noexcept {
+        external_control_paths_ = paths;
+    }
+    // Withdraw only externally replaced targets, without writing their kernel nodes.
+    bool reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept;
+
     MutationController() = default;
 
     void setJournal(MutationJournal* journal) noexcept;
@@ -64,7 +71,8 @@ public:
         const EngineConfig& config
     ) noexcept;
 
-    // True only when every touched governor has been verified at its factory value.
+    // True only when every still-owned governor is restored; externally handed-off
+    // paths are no longer restore obligations.
     bool restoreAll() noexcept;
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
@@ -88,6 +96,8 @@ public:
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
 
 private:
+    const std::unordered_set<std::string>* external_control_paths_{nullptr};
+
     struct Baseline {
         std::string value;
         bool valid{false};

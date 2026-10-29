@@ -25,7 +25,6 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
   onCommitConfig,
   onRestartDaemon,
 }) => {
-  const [pendingConfirm, setPendingConfirm] = useState<'resume' | 'arm' | 'observe' | null>(null);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -35,15 +34,13 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
     try {
       const res = await onCommitConfig(confirmed);
       if (res.needsConfirm) {
-        setPendingConfirm(res.needsConfirm);
+        setFeedback({ kind: 'err', text: 'Use Start in Controls to resume the stopped engine.' });
       } else if (res.error) {
-        setPendingConfirm(null);
         setFeedback({ kind: 'err', text: res.error });
       } else if (res.saved) {
-        setPendingConfirm(null);
         setFeedback({
           kind: 'ok',
-          text: 'Committed to /data/adb/coreflow/config.ini (CONFIG_COMMIT_OK). Restart coreflowd to apply.',
+          text: 'Settings saved. Restart the engine to apply.',
         });
       }
     } finally {
@@ -59,14 +56,14 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
       <div className="pb-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
           <div className="text-xs font-mono text-slate-500">
-            /data/adb/coreflow/config.ini · Validated via CoreFlowControl.validate &amp; gate
+            Operational settings · applied after restarting the engine
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
-            Daemon Policy &amp; Authorization Gate
+            Engine Settings
           </h1>
         </div>
         <div className="text-xs font-mono text-slate-600">
-          Active Engine Mode: <strong className="text-slate-900">{currentDaemonMode}</strong>
+          Engine: <strong className="text-slate-900">{currentDaemonMode === 'adaptive' ? 'Active' : currentDaemonMode === 'stopped' ? 'Stopped' : currentDaemonMode === 'unknown' ? 'Awaiting status' : 'Held — see runtime reason'}</strong>
         </div>
       </div>
 
@@ -74,66 +71,22 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
         <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-xs text-red-800">
           <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-red-700" aria-hidden="true" />
           <div>
-            <div className="font-semibold">SAFE_MODE Marker Present (/data/adb/coreflow/SAFE_MODE)</div>
+            <div className="font-semibold">Recovery protection is active</div>
             <p className="mt-0.5 text-red-700">
-              Bootloop / crash recovery protection is active. Switching to Adaptive mode is blocked by CoreFlowControl.gate() until SAFE_MODE is cleared.
+              Bootloop / crash recovery protection is active. New tuning is paused by recovery protection. Saving settings does not clear this marker.
             </p>
           </div>
         </div>
       )}
 
-      {/* Mutation Authority Mode Selector */}
       <section className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">
-            Global Kernel Mutation Authority
-          </h2>
+          <h2 className="text-base font-semibold text-slate-900">Automatic optimization</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            CoreFlow starts in Standby with mutation disabled. Adaptive mode sets mutation_armed=true and removes the DISABLE kill-switch only after explicit confirmation.
+            CoreFlow starts after boot and applies justified, bounded changes automatically.
+            Discovery, outcome measurement, thermal protection and rollback remain active.
+            Use Controls to start, stop or restart the daemon.
           </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <button
-            type="button"
-            onClick={() => onUpdateForm({ ...form, mutation_mode: 'observe' })}
-            className={`p-4 text-left rounded-xl border transition-colors ${
-              form.mutation_mode === 'observe'
-                ? 'border-blue-600 bg-blue-50/50'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
-            }`}
-          >
-            <div className="text-sm font-semibold text-slate-900">
-              Standby (Mutation Disabled)
-            </div>
-            <p className="mt-1 text-xs text-slate-600">
-              Keeps telemetry, thermal prediction, and candidate scoring active. Blocks new tuning writes and restores owned changes through the recovery path. Creates /data/adb/coreflow/DISABLE.
-            </p>
-          </button>
-
-          <button
-            type="button"
-            onClick={() =>
-              onUpdateForm({
-                ...form,
-                mutation_mode: 'adaptive',
-                interactivity_mode: 'adaptive',
-                runtime_refresh: true,
-              })
-            }
-            className={`p-4 text-left rounded-xl border transition-colors ${
-              form.mutation_mode === 'adaptive'
-                ? 'border-blue-600 bg-blue-50/50'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
-            }`}
-          >
-            <div className="text-sm font-semibold text-slate-900">
-              Adaptive Mode (Armed &amp; Coupled)
-            </div>
-            <p className="mt-1 text-xs text-slate-600">
-              Enables multi-domain StrategyCatalog coupling, GPU/KGSL/Vulkan headroom, interactivity boost, journaled writes, and read-back verification.
-            </p>
-          </button>
         </div>
 
         <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -238,41 +191,6 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
         </section>
       </div>
 
-      {/* Inline Gate Confirmation Banner (no window.confirm) */}
-      {pendingConfirm && (
-        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-2.5 text-xs text-amber-900">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
-            <div>
-              <div className="font-semibold">Authorization Gate Confirmation Required</div>
-              <p className="mt-0.5">
-                {pendingConfirm === 'resume'
-                  ? 'Adaptive mode will clear /data/adb/coreflow/DISABLE and arm bounded kernel mutations upon restart. Confirm commit?'
-                  : pendingConfirm === 'arm'
-                    ? 'Enabling Adaptive mode sets mutation_armed=true in config.ini. Confirm arming?'
-                    : 'Switching to Standby sets mutation_armed=false and creates the DISABLE kill-switch. Confirm?'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setPendingConfirm(null)}
-              className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSaveClick(true)}
-              className="px-3.5 py-1.5 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800"
-            >
-              Confirm &amp; Write config.ini
-            </button>
-          </div>
-        </div>
-      )}
-
       {feedback && (
         <div
           className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
@@ -295,7 +213,7 @@ export const PolicyConfigView: React.FC<PolicyConfigViewProps> = ({
               onClick={onRestartDaemon}
               className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 whitespace-nowrap shrink-0"
             >
-              Restart coreflowd Now
+              Restart Engine
             </button>
           )}
         </div>

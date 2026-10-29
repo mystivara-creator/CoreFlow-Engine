@@ -68,6 +68,13 @@ inline const char* resourceMutationFailureStageName(
 
 class ResourceMutationController final {
 public:
+    // Quarantine is shared across actuator classes; it never changes global config.
+    void setExternalControlPaths(const std::unordered_set<std::string>* paths) noexcept {
+        external_control_paths_ = paths;
+    }
+    // Withdraw only externally replaced targets, without writing their kernel nodes.
+    bool reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept;
+
     void setJournal(MutationJournal* journal) noexcept;
     void setRetainedStateStore(RetainedStateStore* store) noexcept;
     void setExperienceMemory(const ExperienceMemory* memory) noexcept;
@@ -136,6 +143,8 @@ public:
     }
 
 private:
+    const std::unordered_set<std::string>* external_control_paths_{nullptr};
+
     struct Baseline {
         ResourceDomain domain{ResourceDomain::AndroidRuntime};
         std::string name;

@@ -54,13 +54,15 @@ void testEngineDefaultsAreObserveOnly() {
     CHECK(!cfg.allowCpuGovernor());
 }
 
-void testShippedDefaultConfIsObserveOnly() {
+void testShippedDefaultConfStartsAutomatically() {
     const fs::path conf =
         fs::path(COREFLOW_SOURCE_DIR) / "module/system/etc/coreflow/default.conf";
     EngineConfig cfg;
     CHECK(cfg.load(conf.string()));
-    CHECK(cfg.mutationMode() == MutationMode::Disabled);
-    CHECK(!cfg.mutationArmed());
+    CHECK(cfg.mutationMode() == MutationMode::Adaptive);
+    CHECK(cfg.mutationArmed());
+    CHECK(cfg.interactivityMode() == InteractivityMode::Adaptive);
+    CHECK(cfg.grantMemory() && cfg.grantBlockQueue() && cfg.grantCpuFreq());
     CHECK(cfg.allowCpuGovernor());   // shipped default.conf grants it explicitly
 }
 
@@ -674,7 +676,7 @@ void testWriteStatusFileIsAtomic() {
 
 int main() {
     testEngineDefaultsAreObserveOnly();
-    testShippedDefaultConfIsObserveOnly();
+    testShippedDefaultConfStartsAutomatically();
     testExplicitOptInEnablesAdaptiveMutation();
     testMalformedModeFailsSafe();
     testFailedLoadPreservesExistingConfig();

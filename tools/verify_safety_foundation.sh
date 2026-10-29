@@ -68,11 +68,11 @@ if grep -qE '/sys/|/proc/' "$ROOT/src/runtime/status_snapshot.cpp"; then
   echo "error: status_snapshot.cpp must not reference kernel control paths" >&2; exit 1
 fi
 
-# Release defaults are observe-only: no governor writes and no arming until opt-in.
+# Uninitialized C++ config fails closed; the installed module explicitly enables bounded operation.
 grep -q 'mutation_armed_{false}' "$ROOT/include/coreflow/config.hpp"
 grep -q 'MutationMode mutation_mode_{MutationMode::Disabled}' "$ROOT/include/coreflow/config.hpp"
-grep -q '^mutation_mode=observe$' "$ROOT/module/system/etc/coreflow/default.conf"
-grep -q 'mutation_armed=false' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q '^mutation_mode=adaptive$' "$ROOT/module/system/etc/coreflow/default.conf"
+grep -q '^mutation_armed=true$' "$ROOT/module/system/etc/coreflow/default.conf"
 grep -q 'MutationPermit' "$ROOT/include/coreflow/actuator.hpp"
 grep -q 'ResourceMutationController' "$ROOT/include/coreflow/resource_mutation.hpp"
 grep -q 'ResourceActuator' "$ROOT/include/coreflow/resource_actuator.hpp"
