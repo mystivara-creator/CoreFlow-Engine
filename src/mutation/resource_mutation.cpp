@@ -288,6 +288,8 @@ bool ResourceMutationController::selectCandidate(
     ctx.gpu_busy_ratio = sample.gpu_busy_ratio;
     ctx.frame_jank_rate = sample.frame_jank_rate;
     ctx.gaming_active = sample.gaming_active;
+    ctx.frame_jank_available = sample.frame_jank_available;
+    ctx.storage_health_caution = sample.storage_health_caution;
 
     if (policy.action == PolicyAction::ReduceIntervention) {
         ctx.intervention = InterventionLevel::Low;

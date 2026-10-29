@@ -9,6 +9,7 @@
 
 #include "coreflow/actuator.hpp"
 #include "coreflow/config.hpp"
+#include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/interactivity_policy.hpp"
 #include "coreflow/mutation_journal.hpp"
@@ -45,6 +46,7 @@ public:
     void expire(std::uint64_t now_ms) noexcept;
     // Restores everything and clears the journal (thermal guard, disarm).
     void restoreAll() noexcept;
+    [[nodiscard]] ControlContinuity inspectContinuity() const noexcept;
 
     [[nodiscard]] std::size_t activeCount() const noexcept { return active_.size(); }
     [[nodiscard]] std::uint64_t earliestDeadlineMs() const noexcept {

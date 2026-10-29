@@ -27,6 +27,7 @@ struct InteractivityThresholds {
 
 struct InteractivitySample {
     std::uint64_t now_ms{0};
+    bool frame_fresh{true};
     bool gpu_busy_available{false};
     double gpu_busy_ratio{0.0};
     double io_full_avg10{0.0};     // PSI io full avg10, fraction 0..1

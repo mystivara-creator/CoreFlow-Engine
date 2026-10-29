@@ -61,6 +61,8 @@ public:
         // the comparison. Fewer than two cannot support an outcome classification.
         std::size_t comparable_metrics{0};
         bool context_compatible{true};
+        bool rendering_regression{false};
+        double rendering_score{0.0};
         bool valid{false};
     };
 
@@ -109,6 +111,9 @@ private:
         MetricAggregate memory;
         MetricAggregate psi_pressure;   // max of cpu/mem/io some avg10
         MetricAggregate io_latency_ms;
+        MetricAggregate frame_jank;
+        std::uint64_t frame_period_ns{0};
+        bool mixed_frame_periods{false};
 
         std::size_t samples{0};
         std::size_t charging_telemetry_samples{0};
@@ -121,6 +126,8 @@ private:
             memory.reset();
             psi_pressure.reset();
             io_latency_ms.reset();
+            frame_jank.reset();
+            frame_period_ns = 0; mixed_frame_periods = false;
             samples = 0;
             charging_telemetry_samples = 0;
             charging_true_samples = 0;
@@ -144,6 +151,9 @@ private:
         double psi_pressure{0.0};
         bool io_latency_available{false};
         double io_latency_ms{0.0};
+        bool rendering_available{false};
+        double frame_jank{0.0};
+        std::uint64_t frame_period_ns{0};
     };
 
     static BaselinePoint project(const RuntimeSample&) noexcept;

@@ -49,6 +49,7 @@
 
   // Validate and normalize. Unknown fields are dropped; wrong types become safe defaults.
   function normalize(j) {
+    var insight = isObj(j.intelligence) ? j.intelligence : {};
     var e = isObj(j.eyes) ? j.eyes : {};
     var b = isObj(j.brain) ? j.brain : {};
     var h = isObj(j.hands) ? j.hands : {};
@@ -99,6 +100,14 @@
         cpu: num(e.cpu_utilization), load: e.load_available === true ? num(e.load1) : null, loadTrend: str(e.load_trend, 16),
         ioRead: num(e.io_read_kbs), ioWrite: num(e.io_write_kbs),
         battery: num(e.battery_percent), charging: bool(e.charging), confidence: num(e.confidence)
+      },
+      intelligence: {
+        pressure: str(insight.pressure, 32), confidence: num(insight.confidence),
+        renderingAvailable: bool(insight.rendering_available), frameJankRate: num(insight.frame_jank_rate),
+        controlConflict: bool(insight.control_conflict), learnedCandidates: int(insight.learned_candidates, 0),
+        storageAvailable: bool(insight.storage_available), storageCaution: bool(insight.storage_caution),
+        lifeA: int(insight.ufs_life_a, 0), lifeB: int(insight.ufs_life_b, 0), preEol: int(insight.ufs_pre_eol, 0),
+        powerHalBackend: str(insight.power_hal_backend, 64), adpfBackend: str(insight.adpf_backend, 64)
       },
       brain: {
         state: str(b.state, 24), previous: str(b.previous_state, 24), decision: str(b.decision, 32),
@@ -270,7 +279,13 @@
 
   function brainRows(d) {
     var b = d.brain;
+    var i = d.intelligence || {};
     return [
+      ["Measured pressure", i.pressure || "not supplied", "evidence, not proof of application causality"],
+      ["Control continuity", i.controlConflict ? "external change; tuning paused" : "no conflict reported", "rediscover after reviewing competing controllers"],
+      ["Rendering", i.renderingAvailable ? pct(i.frameJankRate) : "unavailable", "presentation-interval estimate"],
+      ["Storage health", i.storageAvailable ? (i.storageCaution ? "caution" : "no warning reported") : "unavailable", "UFS descriptor codes; not an exact remaining lifetime"],
+      ["Learning", String(i.learnedCandidates || 0) + " candidates", "measured local experience"],
       ["State", b.state, b.previous && b.previous !== b.state ? "was " + b.previous : ""],
       ["Workload", b.workload, ""],
       ["Decision", b.decision, ""],

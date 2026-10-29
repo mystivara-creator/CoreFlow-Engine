@@ -30,7 +30,7 @@ std::vector<std::uint64_t> FrameTelemetrySource::poll(std::uint64_t now_ms,
         return {};  // unavailable telemetry yields no samples, never a stale one
     }
     last_refresh_period_ns_ = parseLatencyRefreshPeriodNs(result.output);
-    return parseLatencyDurations(result.output);
+    return presentations_.consume(result.output);
 }
 
 } // namespace coreflow::observe

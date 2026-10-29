@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "coreflow/integer_parse.hpp"
+#include "coreflow/presentation_window.hpp"
 
 namespace coreflow::observe {
 
@@ -97,6 +98,10 @@ public:
     // Each poll starts a bounded child process, so the rate is capped. The cap is
     // a conservative starting point and must be measured on device (ADR 0005).
     static constexpr unsigned kMaxPollHz = 5U;
+    void reset() noexcept {
+        presentations_.reset(); next_poll_ms_ = 0;
+        last_refresh_period_ns_ = 16666667ULL;
+    }
     void setPollRatesHz(unsigned idle_hz, unsigned active_hz) noexcept {
         idle_hz_ = std::min(idle_hz, kMaxPollHz);
         active_hz_ = std::min(active_hz, kMaxPollHz);
@@ -108,6 +113,7 @@ public:
     }
 
 private:
+    PresentationWindow presentations_;
     std::uint64_t next_poll_ms_{0};
     std::uint64_t last_refresh_period_ns_{16666667ULL};
     unsigned idle_hz_{1};

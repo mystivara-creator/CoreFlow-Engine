@@ -313,6 +313,9 @@ bool AutonomousEngine::initialize() {
     configured_armed_ = config_.mutationArmed();
 
     snapshot_.profile = discovery_.discover();
+    storage_health_directories_ = discoverStorageHealthDirectories(
+        kernelFilesystemPath(KernelFsKind::Sysfs, ""));
+    storage_health_ = summarizeStorageHealth(storage_health_directories_);
     resource_model_.reset(snapshot_.profile.capabilities);
     logInfo("CAPABILITY_SURFACE vendor_files=%zu vendor_knobs=%zu walked=%zu tunables=%zu fatal_skipped=%zu",
             snapshot_.profile.vendor_files_parsed, snapshot_.profile.vendor_knobs,
@@ -403,6 +406,8 @@ bool AutonomousEngine::refreshEnvironment() {
         return false;
     }
     interactivity_sources_ready_ = false;
+    frame_telemetry_.reset();
+    interactivity_model_.reset();
 
     DeviceProfile refreshed = discovery_.discover();
     snapshot_.profile = std::move(refreshed);
@@ -441,6 +446,10 @@ bool AutonomousEngine::refreshEnvironment() {
         (void)resource_controller_.syncPolicyModel(resource_model_);
     }
 
+    control_conflict_ = false;
+    storage_health_directories_ = discoverStorageHealthDirectories(
+        kernelFilesystemPath(KernelFsKind::Sysfs, ""));
+    storage_health_ = summarizeStorageHealth(storage_health_directories_);
     logInfo(
         "Runtime discovery refresh complete cpu_policies=%zu thermal_zones=%zu",
         snapshot_.profile.cpu_policies.size(),
@@ -620,8 +629,8 @@ void AutonomousEngine::tick() {
             hold_reason_ = hold;
         }
         const bool held = hold != HoldReason::None;
-        config_.setMutationMode(held ? MutationMode::Disabled : configured_mode_);
-        config_.setMutationArmed(held ? false : configured_armed_);
+        config_.setMutationMode((held || control_conflict_) ? MutationMode::Disabled : configured_mode_);
+        config_.setMutationArmed((held || control_conflict_) ? false : configured_armed_);
 
         // Retry a failed telemetry-triggered restore independently of optional
         // discovery refresh, even if the next sample would be valid.
@@ -657,6 +666,35 @@ void AutonomousEngine::tick() {
                 boost_controller_.activeCount() != 0U ||
                 boost_controller_.recoveryRequired();
             logWarn("Skipping tick: validation failed; owned mutations restore attempted");
+            ++sample_count_;
+            return;
+        }
+
+        // Check causal continuity before using telemetry to judge an owned epoch.
+        // A mismatch identifies an external change, not its writer. Do not learn
+        // a success/regression from a candidate whose live setting has changed.
+        const auto boost_continuity = boost_controller_.inspectContinuity();
+        const auto cpu_continuity = inspectOwnedSettings(controller_.activeGovernorSettings(), true);
+        const auto resource_continuity = inspectOwnedSettings(resource_controller_.activeResourceSettings());
+        if (boost_continuity != ControlContinuity::Intact ||
+            cpu_continuity != ControlContinuity::Intact ||
+            resource_continuity != ControlContinuity::Intact) {
+            control_conflict_ = control_conflict_ || boost_continuity == ControlContinuity::Changed ||
+                                cpu_continuity == ControlContinuity::Changed ||
+                                resource_continuity == ControlContinuity::Changed;
+            config_.setMutationMode(MutationMode::Disabled);
+            config_.setMutationArmed(false);
+            boost_controller_.restoreAll();
+            const bool cpu_restored = controller_.restoreAll();
+            const bool resource_restored = resource_controller_.restoreAll();
+            telemetry_recovery_pending_ = !cpu_restored || !resource_restored ||
+                boost_controller_.activeCount() != 0U || boost_controller_.recoveryRequired();
+            baseline_intelligence_.reset();
+            history_.clear();
+            logWarn("CONTROL_CONTINUITY lost; recovery attempted; conflict=%s",
+                    control_conflict_ ? "latched_until_refresh" : "unreadable");
+            publishStatus(sample, snapshot_.state, snapshot_.state, Decision::NoAction,
+                SystemContext{}, PolicyPlan{}, hold, MutationResult::Skipped, MutationResult::Skipped);
             ++sample_count_;
             return;
         }
@@ -750,6 +788,7 @@ void AutonomousEngine::tick() {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch())
                 .count());
+        sample.storage_health_caution = storage_health_.caution;
         boost_controller_.expire(ia_now_ms);
         if (next == RuntimeState::Idle) {
             // Quiescent / screen-off state: avoid spawning dumpsys SurfaceFlinger
@@ -768,8 +807,10 @@ void AutonomousEngine::tick() {
         } else {
             const bool ia_jank_recent =
                 last_interactivity_state_ == understand::InteractionState::Stuttering;
-            for (const std::uint64_t ia_duration_ns :
-                 frame_telemetry_.poll(ia_now_ms, ia_jank_recent)) {
+            const auto previous_period = frame_telemetry_.lastRefreshPeriodNs();
+            const auto fresh_frames = frame_telemetry_.poll(ia_now_ms, ia_jank_recent);
+            if (previous_period != frame_telemetry_.lastRefreshPeriodNs()) interactivity_model_.reset();
+            for (const std::uint64_t ia_duration_ns : fresh_frames) {
                 interactivity_model_.ingestFrame(
                     ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
             }
@@ -813,6 +854,7 @@ void AutonomousEngine::tick() {
                                                       : ia_foreground_package.c_str());
             }
             understand::InteractivitySample ia_sample;
+            ia_sample.frame_fresh = !fresh_frames.empty();
             ia_sample.now_ms = ia_now_ms;
             ia_sample.gpu_busy_available =
                 gpu_busy_source_.poll(ia_sample.gpu_busy_ratio);
@@ -823,6 +865,8 @@ void AutonomousEngine::tick() {
                 interactivity_model_.evaluate(ia_sample);
             sample.gpu_busy_available = ia_snap.gpu_busy_available;
             sample.gpu_busy_ratio = ia_snap.gpu_busy_ratio;
+            sample.frame_jank_available = ia_snap.frame.valid && !fresh_frames.empty();
+            sample.frame_period_ns = frame_telemetry_.lastRefreshPeriodNs();
             sample.frame_jank_rate =
                 ia_snap.frame.valid ? ia_snap.frame.deadline_miss_rate : 0.0;
             sample.gaming_active =
@@ -868,6 +912,7 @@ void AutonomousEngine::tick() {
         // v1.9 foundation: classify context and build a plan without granting
         // an actuator permit. MutationController remains the only owner of the
         // final mutation gate.
+        runtime_diagnosis_ = diagnoseRuntime(sample);
         const SystemContext context = context_engine_.evaluate(sample, next);
         const PolicyPlan ecosystem_plan = policy_engine_.evaluate(context, resource_model_);
         // Log on eligibility change, and at a low fixed rate otherwise, so the
@@ -1616,6 +1661,13 @@ void AutonomousEngine::publishStatus(
 
         EngineStatus s;
         s.version = kCoreFlowVersion;
+        s.runtime_pressure = runtimePressureName(runtime_diagnosis_.dominant);
+        s.diagnosis_confidence = runtime_diagnosis_.confidence;
+        s.rendering_available = sample.frame_jank_available;
+        s.frame_jank_rate = sample.frame_jank_rate;
+        s.control_conflict = control_conflict_;
+        s.storage_health = storage_health_;
+        s.learned_candidates = experience_memory_.size();
         s.pid = static_cast<long>(::getpid());
         s.sample = sample_count_;
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
@@ -1715,7 +1767,9 @@ void AutonomousEngine::publishStatus(
         s.stabilizing_epoch = resource_controller_.stabilizingEpoch();
 
         // Human-readable why this cycle did not open a new mutation epoch.
-        if (s.hold_active) {
+        if (control_conflict_) {
+            s.skip_reason = "external setting change detected; explicit rediscovery required";
+        } else if (s.hold_active) {
             s.skip_reason = "safety hold active";
         } else if (s.observing) {
             s.skip_reason = "observing outcome epoch " +

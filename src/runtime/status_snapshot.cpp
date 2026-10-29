@@ -211,6 +211,21 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"blocker\":";
     appendEscaped(out, primaryBlocker(s));
 
+    out << ",\"intelligence\":{\"pressure\":";
+    appendEscaped(out, s.runtime_pressure);
+    out << ",\"confidence\":"; appendNumber(out, s.diagnosis_confidence);
+    out << ",\"rendering_available\":"; appendBool(out, s.rendering_available);
+    out << ",\"frame_jank_rate\":"; appendNumber(out, s.frame_jank_rate);
+    out << ",\"control_conflict\":"; appendBool(out, s.control_conflict);
+    out << ",\"learned_candidates\":" << s.learned_candidates;
+    out << ",\"storage_available\":"; appendBool(out, s.storage_health.available);
+    out << ",\"storage_caution\":"; appendBool(out, s.storage_health.caution);
+    out << ",\"ufs_life_a\":" << s.storage_health.life_a
+        << ",\"ufs_life_b\":" << s.storage_health.life_b
+        << ",\"ufs_pre_eol\":" << s.storage_health.pre_eol
+        << ",\"power_hal_backend\":\"vendor_profiles_and_continuity\""
+        << ",\"adpf_backend\":\"application_integration_required\"}";
+
     out << ",\"device\":{\"manufacturer\":";
     appendEscaped(out, s.manufacturer);
     out << ",\"model\":"; appendEscaped(out, s.model);

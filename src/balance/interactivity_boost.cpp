@@ -145,6 +145,20 @@ void InteractivityBoostController::restoreAll() noexcept {
     (void)settle();  // entries whose restore failed remain journaled
 }
 
+ControlContinuity InteractivityBoostController::inspectContinuity() const noexcept {
+    try {
+        bool unavailable = false;
+        for (const auto& [path, boost] : active_) {
+            if (boost.restored) continue;
+            if (boost.requested.empty()) { unavailable = true; continue; }
+            std::string live;
+            if (!ResourceActuator::readComparable(path, live)) { unavailable = true; continue; }
+            if (live != boost.requested) return ControlContinuity::Changed;
+        }
+        return unavailable ? ControlContinuity::Unavailable : ControlContinuity::Intact;
+    } catch (...) { return ControlContinuity::Unavailable; }
+}
+
 bool InteractivityBoostController::resolveTarget(const BoostIntent& intent,
                                                  std::string& path,
                                                  std::string& requested) noexcept {

@@ -92,6 +92,7 @@ Android ARM64 release ZIPs (`coreflowd` + `libonnxruntime.so` + WebUI) are built
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.0.1` checkpoint) |
 | [`SECURITY.md`](SECURITY.md) | Mutation safety invariants |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Closed-loop pipeline & authority boundaries |
+| [`docs/INTEGRATED_RUNTIME.md`](docs/INTEGRATED_RUNTIME.md) | Runtime diagnosis, hardware health, continuity, rendering outcomes & app ADPF integration |
 | [`docs/CAPABILITY_DRIVEN.md`](docs/CAPABILITY_DRIVEN.md) | Discovery, cross-domain coupling, and eligibility |
 | [`docs/SOURCE_MAP.md`](docs/SOURCE_MAP.md) | Source tree layout |
 | [`docs/TUNING.md`](docs/TUNING.md) | Operator configuration reference |

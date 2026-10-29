@@ -1,4 +1,5 @@
 #include "coreflow/decision_agent.hpp"
+#include "coreflow/runtime_intelligence.hpp"
 
 #include <memory>
 #include <algorithm>
@@ -66,6 +67,24 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
     // Stage 3 — review every candidate against uncertainty and stress context.
     // Ranking may demote candidates but cannot make an ineligible candidate
     // eligible. A stressed context accepts only explicitly stabilizing actions.
+    RuntimeSample signals;
+    signals.confidence = obs.sample_confidence;
+    signals.thermal_available = obs.effect_ctx.thermal_available;
+    signals.throttling_detected = obs.effect_ctx.throttling_detected;
+    signals.throttle_ratio = obs.effect_ctx.throttle_ratio;
+    signals.psi_available = obs.effect_ctx.psi_available;
+    signals.psi_cpu_some_avg10 = obs.effect_ctx.psi_cpu;
+    signals.psi_memory_some_avg10 = obs.effect_ctx.psi_memory;
+    signals.psi_io_some_avg10 = obs.effect_ctx.psi_io;
+    signals.memory_stall_detected = obs.effect_ctx.memory_stall_detected;
+    signals.memory_stall_score = obs.effect_ctx.memory_stall_score;
+    signals.io_latency_available = obs.effect_ctx.io_latency_available;
+    signals.io_avg_latency_ms = obs.effect_ctx.io_avg_latency_ms;
+    signals.gpu_busy_available = obs.effect_ctx.gpu_busy_available;
+    signals.gpu_busy_ratio = obs.effect_ctx.gpu_busy_ratio;
+    signals.frame_jank_available = obs.effect_ctx.frame_jank_available;
+    signals.frame_jank_rate = obs.effect_ctx.frame_jank_rate;
+    const auto diagnosis = diagnoseRuntime(signals);
     std::vector<EffectScore> reviewed;
     reviewed.reserve(ranked.size());
     for (auto& candidate : ranked) {
@@ -87,6 +106,11 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
         const double evidence_confidence =
             std::min(candidate.confidence, obs.sample_confidence);
         candidate.utility -= (1.0 - evidence_confidence) * 0.04;
+        if (!candidate.stabilizing) {
+            candidate.utility -= unrelatedResourcePenalty(diagnosis, candidate.domain);
+            if (obs.effect_ctx.storage_health_caution && candidate.domain == ResourceDomain::Io)
+                candidate.utility -= 0.12;
+        }
         if (!std::isfinite(candidate.utility) || candidate.utility <= 0.0) {
             continue;
         }

@@ -246,6 +246,9 @@ struct RuntimeSample {
     bool gpu_busy_available{false};
     double gpu_busy_ratio{0.0};
     double frame_jank_rate{0.0};
+    bool frame_jank_available{false};
+    std::uint64_t frame_period_ns{0};
+    bool storage_health_caution{false};
     bool gaming_active{false};
 
     Trend thermal_trend{Trend::Unknown};

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "coreflow/high_capability.hpp"
+#include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/consultation.hpp"
 
 namespace coreflow {
@@ -28,6 +29,13 @@ struct EngineStatus {
     std::int64_t updated_epoch{0};
     int interval_s{0};
     bool running{true};
+    std::string runtime_pressure;
+    double diagnosis_confidence{0.0};
+    bool rendering_available{false};
+    double frame_jank_rate{0.0};
+    bool control_conflict{false};
+    StorageHealth storage_health;
+    std::size_t learned_candidates{0};
 
     // Device & ecosystem intelligence. These fields are observed identity and
     // discovered-interface facts, not inferred mutation permission.

@@ -115,6 +115,11 @@ else()
             set(_target "coreflow_${_stem}")
             add_executable(${_target} "${_test_src}")
             target_link_libraries(${_target} PRIVATE coreflow_core)
+            if(_stem STREQUAL "application_hint_tests")
+                target_include_directories(${_target} PRIVATE "${PROJECT_SOURCE_DIR}/tests/fixtures")
+                find_package(Threads REQUIRED)
+                target_link_libraries(${_target} PRIVATE Threads::Threads)
+            endif()
             target_compile_definitions(${_target}
                 PRIVATE
                     COREFLOW_HOST_TEST_FIXTURES=1

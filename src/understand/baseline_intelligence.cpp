@@ -97,6 +97,9 @@ BaselineIntelligence::BaselinePoint BaselineIntelligence::project(
     }
     point.io_latency_available = sample.io_latency_available;
     point.io_latency_ms = sample.io_avg_latency_ms;
+    point.rendering_available = sample.frame_jank_available;
+    point.frame_jank = sample.frame_jank_rate;
+    point.frame_period_ns = sample.frame_period_ns;
     return point;
 }
 
@@ -104,6 +107,12 @@ void BaselineIntelligence::accumulate(
     Aggregate& aggregate,
     const BaselinePoint& point) noexcept {
     ++aggregate.samples;
+    if (point.rendering_available && finite(point.frame_jank) &&
+        point.frame_jank >= 0.0 && point.frame_jank <= 1.0 && point.frame_period_ns > 0U) {
+        if (aggregate.frame_period_ns == 0U) aggregate.frame_period_ns = point.frame_period_ns;
+        else if (aggregate.frame_period_ns != point.frame_period_ns) aggregate.mixed_frame_periods = true;
+        accumulateMetric(aggregate.frame_jank, point.frame_jank);
+    }
 
     if (point.thermal) {
         accumulateMetric(aggregate.thermal_c, point.thermal_c);
@@ -480,6 +489,23 @@ BaselineIntelligence::evaluate() const noexcept {
         totalWeight += kIoLatencyWeight;
     }
 
+    // Rendering must be observed on both sides; unavailable is not zero jank.
+    if (baseline_.frame_jank.samples >= 2U && observation_.frame_jank.samples >= 2U) {
+        if (baseline_.mixed_frame_periods || observation_.mixed_frame_periods ||
+            baseline_.frame_period_ns != observation_.frame_period_ns) {
+            result.outcome = Outcome::Inconclusive;
+            result.context_compatible = false;
+            return result;
+        }
+        const double before = average(baseline_.frame_jank);
+        const double after = average(observation_.frame_jank);
+        result.rendering_score = lowerIsBetter(before, after);
+        result.rendering_regression = after > before + 0.02 && after > before * 1.25;
+        weightedScore += result.rendering_score * 0.20;
+        totalWeight += 0.20;
+        ++result.comparable_metrics;
+    }
+
     if (totalWeight <= 0.0) {
         result.outcome = Outcome::Inconclusive;
         return result;
@@ -497,7 +523,12 @@ BaselineIntelligence::evaluate() const noexcept {
 
     const double delta = result.overall_score - 0.5;
 
-    if (delta >= kBeneficialThreshold) {
+    if (result.rendering_regression) {
+        result.outcome = Outcome::Regression;
+        // Persisted experience must not label a rendering regression beneficial
+        // merely because CPU load or temperature fell.
+        result.overall_score = std::min(result.overall_score, 0.40);
+    } else if (delta >= kBeneficialThreshold) {
         result.outcome = Outcome::Beneficial;
     } else if (delta <= kRegressionThreshold) {
         result.outcome = Outcome::Regression;

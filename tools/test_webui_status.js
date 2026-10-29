@@ -143,5 +143,22 @@ check(p.ok, "garbage sub-objects do not throw");
 p = S.parse("NOW=1760000000\n" + JSON.stringify({ schema: 1, updated_epoch: 1760000000, blocker: "TOTALLY_NEW", eyes: {}, brain: {}, hands: {} }));
 check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unknown blocker code is reported, not hidden");
 
+
+
+// Integrated runtime diagnostics are additive and remain optional for older daemons.
+{
+  const j = JSON.parse(load("ready.json"));
+  j.intelligence = { pressure: "IO_STALL", confidence: 0.8,
+    control_conflict: true, rendering_available: true, frame_jank_rate: 0.1,
+    storage_available: true, storage_caution: true, ufs_life_a: 10,
+    ufs_life_b: 4, ufs_pre_eol: 2, learned_candidates: 7,
+    power_hal_backend: "vendor_profiles_and_continuity", adpf_backend: "application_integration_required" };
+  const q = S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j));
+  check(q.ok && q.data.intelligence.controlConflict && q.data.intelligence.pressure === "IO_STALL" &&
+      q.data.intelligence.storageCaution && q.data.intelligence.learnedCandidates === 7 &&
+      S.brainRows(q.data).some((r) => r[0] === "Control continuity" && /paused/.test(r[1])),
+      "integrated runtime evidence is parsed and displayed");
+}
+
 console.log("CoreFlow WebUI status contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

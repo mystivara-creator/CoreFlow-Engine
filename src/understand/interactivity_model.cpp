@@ -31,7 +31,7 @@ void InteractivityModel::onForegroundChanged(std::uint64_t now_ms) noexcept {
 InteractivitySnapshot InteractivityModel::evaluate(
     const InteractivitySample& sample) noexcept {
     InteractivitySnapshot out;
-    out.frame = analyzer_.snapshot();
+    if (sample.frame_fresh) out.frame = analyzer_.snapshot();
     out.gpu_busy_available = sample.gpu_busy_available;
     out.gpu_busy_ratio = sample.gpu_busy_ratio;
     out.io_full_avg10 = sample.io_full_avg10;
@@ -62,7 +62,7 @@ InteractivitySnapshot InteractivityModel::evaluate(
             want = InteractionState::Launching;
         } else if (stutter_ticks_ >= thresholds_.stutter_enter_ticks) {
             want = InteractionState::Stuttering;
-        } else if (state_ == InteractionState::Stuttering &&
+        } else if (out.frame.valid && state_ == InteractionState::Stuttering &&
                    clean_ticks_ < thresholds_.stutter_exit_clean_ticks) {
             want = InteractionState::Stuttering; // hysteresis exit
         } else if (out.frame.valid || sample.io_full_avg10 > 0.005) {

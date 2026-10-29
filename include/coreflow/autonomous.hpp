@@ -7,6 +7,7 @@
 
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/config.hpp"
+#include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/context.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/resource_model.hpp"
@@ -60,6 +61,10 @@ private:
     bool has_restored_{false};
     bool refresh_pending_{false};
     bool telemetry_recovery_pending_{false};
+    bool control_conflict_{false};
+    RuntimeDiagnosis runtime_diagnosis_;
+    StorageHealth storage_health_;
+    std::vector<std::string> storage_health_directories_;
     bool validateSample(const RuntimeSample&) const;
     void updateTrends(RuntimeSample&) const;
     double calculateConfidence(const RuntimeSample&) const;
