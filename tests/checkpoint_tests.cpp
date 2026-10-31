@@ -43,11 +43,28 @@ int main() {
     CHECK(!readBoundedPrivateFile((root/"link").string(),content));
     CHECK(!writeDurablePrivateFile(file,std::string(1024U*1024U+1U,'x')));
     ExperienceMemory memory; memory.setScope("device:kernel");
-    ExperienceMemory::Record r; r.candidate.key="candidate"; r.score=.8; r.confidence=.9; r.observations=4;
+    ExperienceMemory::Record r; r.candidate.key="candidate"; r.score=.8; r.confidence=.9; r.observations=4; r.variance=.123456789012345;
     r.outcome=BaselineIntelligence::Outcome::Beneficial;
     CHECK(memory.record(r)); CHECK(memory.flush(file)); CHECK(!memory.dirty());
     ExperienceMemory loaded; loaded.setScope("device:kernel"); CHECK(loaded.load(file)); CHECK(loaded.size() == 1U);
+    const auto* restored = loaded.find(r.candidate,r.context);
+    CHECK(restored && restored->variance == r.variance && restored->score == r.score);
     CHECK(readBoundedPrivateFile(file,content));
+    CHECK(content.starts_with("COREFLOW_EXPERIENCE_V3\n"));
+    auto bad_variance = content;
+    const auto variance_start = bad_variance.find_last_of('\t'); CHECK(variance_start != std::string::npos);
+    bad_variance.replace(variance_start + 1U, bad_variance.size() - variance_start - 2U, "0.9");
+    CHECK(writeDurablePrivateFile((root/"bad-variance").string(),bad_variance));
+    CHECK(!loaded.load((root/"bad-variance").string()));
+    CHECK(loaded.find(r.candidate,r.context)->variance == r.variance);
+    // Older V2 experience remains readable with the conservative default variance.
+    auto legacy = content;
+    legacy.replace(0, std::string("COREFLOW_EXPERIENCE_V3").size(), "COREFLOW_EXPERIENCE_V2");
+    const auto variance_tab = legacy.find_last_of('\t'); CHECK(variance_tab != std::string::npos);
+    legacy.erase(variance_tab, legacy.size() - variance_tab - 1U);
+    CHECK(writeDurablePrivateFile((root/"legacy").string(),legacy));
+    ExperienceMemory old; old.setScope("device:kernel"); CHECK(old.load((root/"legacy").string()));
+    CHECK(old.find(r.candidate,r.context) && old.find(r.candidate,r.context)->variance == .02);
     const auto score = content.find("0.8"); CHECK(score != std::string::npos);
     content.replace(score,3U,"0.8junk"); CHECK(writeDurablePrivateFile(file,content));
     CHECK(!loaded.load(file)); CHECK(loaded.size() == 1U); // Failed reads preserve the current advisory state.

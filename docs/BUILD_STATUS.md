@@ -33,7 +33,7 @@ A green run on a given SHA (for example `8af1984` on `refactor/source-consolidat
 - Authority boundaries: `scaling_governor` belongs exclusively to `MutationController`; `scaling_min_freq`, `scaling_max_freq`, and `scaling_cur_freq` remain PowerHAL/observe-only across `Consultation`, `TunableDiscovery`, `EcosystemKnowledge`, and `ResourceActuator`.
 - Journals / status files: exclusive temps where applicable; `EINTR`-safe writes; reject symlink and non-regular journal inputs.
 - Directory fsync for durable stores: `O_DIRECTORY | O_NOFOLLOW`.
-- Low-overhead daemon loop: single-timer signal-interruptible `clock_nanosleep` (zero slice-polling wakeups during deep sleep), exact interactivity boost-expiry wake clamping, zero-allocation `string_view` / `from_chars` / `to_chars` telemetry & status paths, and non-spinning arena-free ONNX Runtime CPU execution.
+- Low-overhead daemon loop: single-timer signal-interruptible `clock_nanosleep` (zero slice-polling wakeups during deep sleep), exact interactivity boost-expiry wake clamping, allocation-free numeric helpers and ASCII matching on selected telemetry/classification paths, and non-spinning arena-free ONNX Runtime CPU execution.
 - Installed configuration enables bounded optimization automatically. Uninitialized/invalid configuration still fails closed; capability, domain-grant, journal and safety-hold checks remain.
 
 ## Host reproduce
@@ -52,3 +52,11 @@ See [the checkpoint record](CHECKPOINT_3.1.0.md) for the exact local checks,
 persistence behavior, known environment limits and required device acceptance.
 Source checks are complete locally; a new Android CI run and on-phone acceptance
 for the final commit are still required before calling a binary release validated.
+
+
+## Native maintenance audit
+
+See [the native audit](NATIVE_AUDIT_2026-11.md) for allocation-failure boundaries,
+strict vendor parsing, ranking work reduction, advisory permission revocation and
+experience V3 compatibility. These changes require their own green Android CI run
+and device acceptance; earlier green commits do not validate the new tree.

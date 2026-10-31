@@ -16,6 +16,16 @@
 - Correct release metadata to describe implemented capabilities and prepare the
   maintenance checkpoint and device acceptance record.
 
+- Refresh the README with CoreFlow branding, practical setup and diagnostic guides.
+- Harden resource/agent/frame allocation-failure boundaries and revoke advisory
+  permissions when constraints or state updates fail.
+- Remove repeated classification string allocations and sort only requested ranking
+  results; require available frame evidence and strict numeric/CPU-list parsing.
+- Validate complete vendor JSON, declared hint values and bounded input/scanning.
+- Persist bandit variance with full-precision V3 experience and V2 read compatibility.
+- Harden bounded subprocess allocation/argument/descriptor handling and GPU directory
+  cleanup. See `docs/NATIVE_AUDIT_2026-11.md` for findings and checks.
+
 ## v3.0.2 — Automatic operation and scoped control recovery
 
 - Activate bounded optimization automatically during installation.

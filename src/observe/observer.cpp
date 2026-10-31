@@ -126,8 +126,8 @@ long readLongFd(const std::string& path, bool& ok) noexcept {
     errno = 0;
     const long val = std::strtol(buffer.data(), &end, 10);
     if (errno == 0 && end != buffer.data()) {
-        ok = true;
-        return val;
+        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+        if (*end == '\0') { ok = true; return val; }
     }
     return 0;
 }
@@ -140,8 +140,8 @@ bool readTrimmedLineFd(const std::string& path, std::string& out) noexcept {
     const std::size_t eol = view.find('\n');
     if (eol != std::string_view::npos) view = view.substr(0U, eol);
     if (!view.empty() && view.back() == '\r') view.remove_suffix(1U);
-    out.assign(view);
-    return true;
+    try { out.assign(view); return true; }
+    catch (...) { out.clear(); return false; }
 }
 
 bool parseLeadingNonNegativeDouble(std::string_view text, double& out) noexcept {

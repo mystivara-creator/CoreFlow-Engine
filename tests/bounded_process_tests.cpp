@@ -44,7 +44,9 @@ int testRelativeOrEmptyProgramIsRefused() {
     CHECK(!runBounded({"echo", "x"}, 1000U, 64U).started);  // no PATH lookup
     CHECK(!runBounded({}, 1000U, 64U).started);
     CHECK(!runBounded({"/bin/echo"}, 0U, 64U).started);       // zero timeout
-    CHECK(!runBounded({"/bin/echo"}, 1000U, 0U).started);     // zero output cap
+    CHECK(!runBounded({"/bin/echo"}, 1000U, 0U).started);
+    CHECK(!runBounded({std::string("/bin/echo\0hidden", 16U)}, 1000U, 64U).started);
+    CHECK(!runBounded({"/bin/echo", std::string("x\0y", 3U)}, 1000U, 64U).started);     // zero output cap
     return 0;
 }
 
@@ -87,6 +89,8 @@ int main() {
     failures += testRelativeOrEmptyProgramIsRefused() != 0;
     failures += testMissingProgramReportsExecFailure() != 0;
     failures += testHungChildIsKilledWithinTheTimeout() != 0;
+    const auto closed = runBounded({"/bin/sh", "-c", "exec 1>&-; exec /bin/sleep 30"}, 150U, 64U);
+    CHECK(closed.started && closed.timed_out);
     failures += testUnboundedOutputIsCappedAndChildKilled() != 0;
     if (failures != 0) {
         std::fprintf(stderr, "CoreFlow bounded process tests: FAIL (%d)\n", failures);

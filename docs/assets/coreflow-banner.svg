@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="260" viewBox="0 0 960 260" role="img" aria-labelledby="title desc">
+  <title id="title">CoreFlow System Framework</title>
+  <desc id="desc">A teal flow mark beside the CoreFlow name. Observe. Understand. Balance. Adapt.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0c1425"/><stop offset="1" stop-color="#102d36"/></linearGradient>
+    <linearGradient id="flow" x2="1" y2="0"><stop stop-color="#5eead4"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="958" height="258" rx="28" fill="url(#bg)" stroke="#28404e" stroke-width="2"/>
+  <g fill="none" stroke="#294653" stroke-width="2" opacity=".6">
+    <path d="M730 0v55l65 65v140M840 0v75l-65 65v120M960 72h-75l-65 65h-90"/>
+    <circle cx="795" cy="120" r="7"/><circle cx="820" cy="137" r="7"/>
+  </g>
+  <rect x="48" y="65" width="128" height="128" rx="34" fill="#0a202b" stroke="#235263" stroke-width="2"/>
+  <g fill="none" stroke="url(#flow)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M136 102a37 37 0 1 0 0 54"/>
+    <path d="M80 130h23l12-22 13 44 13-22h15"/>
+  </g>
+  <text x="213" y="124" fill="#f1f5f9" font-family="system-ui, sans-serif" font-size="66" font-weight="700" letter-spacing="-2">CoreFlow</text>
+  <text x="217" y="158" fill="#5eead4" font-family="system-ui, sans-serif" font-size="23" letter-spacing="3">SYSTEM FRAMEWORK</text>
+  <text x="217" y="200" fill="#b5cbd4" font-family="system-ui, sans-serif" font-size="21">Observe. Understand. Balance. Adapt.</text>
+</svg>

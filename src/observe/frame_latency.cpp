@@ -36,7 +36,7 @@ std::size_t splitFields(std::string_view line, std::string_view (&fields)[3]) no
 
 } // namespace
 
-FrameLatencyTrace parseSurfaceFlingerLatency(const std::string& text) noexcept {
+FrameLatencyTrace parseSurfaceFlingerLatency(const std::string& text) noexcept try {
     FrameLatencyTrace trace;
     if (text.size() > FrameLatencyTrace::kMaxInputBytes) return trace;
 
@@ -108,6 +108,6 @@ FrameLatencyTrace parseSurfaceFlingerLatency(const std::string& text) noexcept {
         trace.frame_intervals_ns.clear();
     }
     return trace;
-}
+} catch (...) { return {}; }
 
 } // namespace coreflow::graphics

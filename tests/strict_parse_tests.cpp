@@ -26,6 +26,19 @@ namespace {
 
 constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
 
+int testSignedDecimal() {
+    long long value = 0;
+    CHECK(integer_parse::parseSignedDecimal(" -9223372036854775808 ", value) && value == std::numeric_limits<long long>::min());
+    CHECK(integer_parse::parseSignedDecimal("+9223372036854775807", value) && value == std::numeric_limits<long long>::max());
+    CHECK(integer_parse::parseSignedDecimal("\n +60\t", value) && value == 60);
+    for (const char* invalid : {"9223372036854775808", "-9223372036854775809", "+-1", "--1", "1tail", "1 2", "+"}) {
+        CHECK(!integer_parse::parseSignedDecimal(invalid, value));
+        CHECK(value == 60);
+    }
+    CHECK(!integer_parse::parseSignedDecimal(std::string("1\0tail", 6U), value));
+    return 0;
+}
+
 int testUint64Accepts() {
     std::uint64_t v = 99;
     CHECK(parseUint64("0", v) && v == 0U);
@@ -128,6 +141,7 @@ int testLatencyRowsAreStrict() {
 
 int main() {
     int failures = 0;
+    failures += testSignedDecimal() != 0;
     failures += testUint64Accepts() != 0;
     failures += testUint64Rejects() != 0;
     failures += testUint64ListIsAllOrNothing() != 0;

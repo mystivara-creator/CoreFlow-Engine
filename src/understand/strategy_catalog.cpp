@@ -1,8 +1,11 @@
 // @coreflow-platform: any
 #include "coreflow/strategy_catalog.hpp"
+#include "coreflow/ascii.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include "coreflow/integer_parse.hpp"
 
 namespace coreflow {
 namespace {
@@ -16,21 +19,8 @@ bool endsWithToken(std::string_view value, std::string_view suffix) noexcept {
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-std::string toLowerAscii(std::string_view input) noexcept {
-    std::string out;
-    out.reserve(input.size());
-    for (const char raw : input) {
-        // Convert through unsigned char before inspecting a byte. The explicit
-        // conversion avoids -Wsign-conversion while keeping UTF-8 bytes intact.
-        auto byte = static_cast<unsigned char>(raw);
-        if (byte >= static_cast<unsigned char>('A') &&
-            byte <= static_cast<unsigned char>('Z')) {
-            byte = static_cast<unsigned char>(byte + ('a' - 'A'));
-        }
-        out.push_back(static_cast<char>(byte));
-    }
-    return out;
-}
+using ascii::equalsIgnoreCase;
+using ascii::containsIgnoreCase;
 
 bool isBackgroundCgroupPath(std::string_view path) noexcept {
     return containsToken(path, "/background/") ||
@@ -47,39 +37,30 @@ bool isForegroundCgroupPath(std::string_view path) noexcept {
 }
 
 std::size_t countCpuListSpan(std::string_view raw) noexcept {
-    std::size_t cpus = 0;
-    std::size_t i = 0;
-    while (i < raw.size()) {
-        while (i < raw.size() && (std::isspace(static_cast<unsigned char>(raw[i])) || raw[i] == ',')) {
-            ++i;
-        }
-        if (i >= raw.size() || !std::isdigit(static_cast<unsigned char>(raw[i]))) {
-            break;
-        }
-        unsigned long first = 0;
-        while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i]))) {
-            first = first * 10UL + static_cast<unsigned long>(raw[i] - '0');
-            ++i;
-        }
-        if (i < raw.size() && raw[i] == '-') {
-            ++i;
-            unsigned long second = 0;
-            bool has_second = false;
-            while (i < raw.size() && std::isdigit(static_cast<unsigned char>(raw[i]))) {
-                second = second * 10UL + static_cast<unsigned long>(raw[i] - '0');
-                has_second = true;
-                ++i;
-            }
-            if (has_second && second >= first) {
-                cpus += static_cast<std::size_t>(second - first + 1UL);
-            } else {
-                cpus += 1U;
-            }
-        } else {
-            cpus += 1U;
-        }
+    raw = integer_parse::trim(raw);
+    std::size_t count = 0;
+    std::uint64_t previous = 0;
+    bool have_previous = false;
+    while (!raw.empty()) {
+        const auto comma = raw.find(',');
+        const auto range = integer_parse::trim(raw.substr(0, comma));
+        const auto dash = range.find('-');
+        std::uint64_t first = 0, last = 0;
+        if (!integer_parse::parseUint64(range.substr(0, dash), first)) return 0;
+        last = first;
+        if (dash != std::string_view::npos &&
+            !integer_parse::parseUint64(range.substr(dash + 1U), last)) return 0;
+        if (last < first || (have_previous && first <= previous)) return 0;
+        const auto width = last - first;
+        if (width >= std::numeric_limits<std::size_t>::max() - count) return 0;
+        count += static_cast<std::size_t>(width) + 1U;
+        previous = last;
+        have_previous = true;
+        if (comma == std::string_view::npos) break;
+        raw = integer_parse::trim(raw.substr(comma + 1U));
+        if (raw.empty()) return 0;
     }
-    return cpus;
+    return count;
 }
 
 } // namespace
@@ -95,12 +76,12 @@ const char* strategyProfileName(StrategyProfile profile) noexcept {
     return "IDLE_CONSERVATION";
 }
 
-std::string StrategyCatalog::extractActiveToken(std::string_view raw) noexcept {
+std::string_view StrategyCatalog::extractActiveToken(std::string_view raw) noexcept {
     const auto open_bracket = raw.find('[');
     if (open_bracket != std::string_view::npos) {
         const auto close_bracket = raw.find(']', open_bracket + 1U);
         if (close_bracket != std::string_view::npos && close_bracket > open_bracket + 1U) {
-            return toLowerAscii(raw.substr(open_bracket + 1U, close_bracket - open_bracket - 1U));
+            return raw.substr(open_bracket + 1U, close_bracket - open_bracket - 1U);
         }
     }
     std::size_t start = 0;
@@ -111,15 +92,15 @@ std::string StrategyCatalog::extractActiveToken(std::string_view raw) noexcept {
     while (end < raw.size() && !std::isspace(static_cast<unsigned char>(raw[end]))) {
         ++end;
     }
-    return toLowerAscii(raw.substr(start, end - start));
+    return raw.substr(start, end - start);
 }
 
 IoSchedulerPosture StrategyCatalog::classifyIoScheduler(std::string_view token) noexcept {
     if (token.empty()) return IoSchedulerPosture::Unknown;
-    if (token == "none" || token == "noop") {
+    if (equalsIgnoreCase(token, "none") || equalsIgnoreCase(token, "noop")) {
         return IoSchedulerPosture::LowOverheadDirect;
     }
-    if (containsToken(token, "deadline") || containsToken(token, "kyber")) {
+    if (containsIgnoreCase(token, "deadline") || containsIgnoreCase(token, "kyber")) {
         return IoSchedulerPosture::DeadlineLatency;
     }
     return IoSchedulerPosture::FairThroughput;
@@ -127,14 +108,14 @@ IoSchedulerPosture StrategyCatalog::classifyIoScheduler(std::string_view token) 
 
 CpuGovernorPosture StrategyCatalog::classifyCpuGovernor(std::string_view token) noexcept {
     if (token.empty()) return CpuGovernorPosture::Unknown;
-    if (containsToken(token, "schedutil") || containsToken(token, "walt") ||
-        containsToken(token, "sugov") || containsToken(token, "interactive")) {
+    if (containsIgnoreCase(token, "schedutil") || containsIgnoreCase(token, "walt") ||
+        containsIgnoreCase(token, "sugov") || containsIgnoreCase(token, "interactive")) {
         return CpuGovernorPosture::EnergyAwareDynamic;
     }
-    if (token == "performance") {
+    if (equalsIgnoreCase(token, "performance")) {
         return CpuGovernorPosture::PerformancePinned;
     }
-    if (token == "powersave" || token == "conservative") {
+    if (equalsIgnoreCase(token, "powersave") || equalsIgnoreCase(token, "conservative")) {
         return CpuGovernorPosture::PowerSavePinned;
     }
     return CpuGovernorPosture::Unknown;
@@ -158,7 +139,7 @@ CouplingSnapshot StrategyCatalog::analyze(
     const bool gaming_signal =
         ctx.gaming_active ||
         (ctx.gpu_busy_available && ctx.gpu_busy_ratio >= 0.45) ||
-        (ctx.frame_jank_rate >= 0.04 &&
+        (ctx.frame_jank_available && ctx.frame_jank_rate >= 0.04 &&
          ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.35);
 
     const bool memory_pressure =
@@ -200,36 +181,23 @@ CouplingSnapshot StrategyCatalog::analyze(
             if (endsWithToken(res.path, "/vm/swappiness")) {
                 const auto it = baselines.find(res.path);
                 if (it != baselines.end()) {
-                    const std::string tok = extractActiveToken(it->second);
-                    if (!tok.empty()) {
-                        long val = 0;
-                        bool digits = true;
-                        for (const char ch : tok) {
-                            if (!std::isdigit(static_cast<unsigned char>(ch))) {
-                                digits = false;
-                                break;
-                            }
-                            val = val * 10L + static_cast<long>(ch - '0');
-                            if (val > 1000L) break;
-                        }
-                        if (digits && val >= 100L) {
-                            snap.zram_high_swappiness = true;
-                        }
-                    }
+                    std::uint64_t value = 0;
+                    if (integer_parse::parseUint64(it->second, value) && value >= 100U && value <= 200U)
+                        snap.zram_high_swappiness = true;
                 }
             } else if (endsWithToken(res.path, "/vm/page-cluster")) {
                 const auto it = baselines.find(res.path);
-                if (it != baselines.end() && extractActiveToken(it->second) == "0") {
+                if (it != baselines.end() && integer_parse::trim(it->second) == "0") {
                     snap.zram_zero_page_cluster = true;
                 }
             }
         }
         const auto base_it = baselines.find(res.path);
         if (base_it != baselines.end() && !snap.oem_performance_capped) {
-            const std::string base_tok = extractActiveToken(base_it->second);
+            const std::string_view base_tok = extractActiveToken(base_it->second);
             for (const auto& vv : res.vendor_values) {
                 if (vv.profile == VendorProfile::Performance &&
-                    extractActiveToken(vv.value) != base_tok) {
+                    !equalsIgnoreCase(extractActiveToken(vv.value), base_tok)) {
                     snap.oem_performance_capped = true;
                     break;
                 }
@@ -237,14 +205,9 @@ CouplingSnapshot StrategyCatalog::analyze(
             if (!snap.oem_performance_capped &&
                 (endsWithToken(res.path, "/walt_target_load") ||
                  endsWithToken(res.path, "/hispeed_load"))) {
-                long num = 0;
-                bool ok = !base_tok.empty();
-                for (const char ch : base_tok) {
-                    if (!std::isdigit(static_cast<unsigned char>(ch))) { ok = false; break; }
-                    num = num * 10L + static_cast<long>(ch - '0');
-                    if (num > 1000L) break;
-                }
-                if (ok && num >= 85L) snap.oem_performance_capped = true;
+                std::uint64_t value = 0;
+                if (integer_parse::parseUint64(base_it->second, value) && value >= 85U && value <= 100U)
+                    snap.oem_performance_capped = true;
             }
         }
         if (!res.mutation_ready && !(res.domain == ResourceDomain::CpuFreq &&
@@ -306,7 +269,7 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
     const bool has_live_render_signal =
         ctx.gaming_active ||
         (ctx.gpu_busy_available && ctx.gpu_busy_ratio > 0.0) ||
-        ctx.frame_jank_rate > 0.0;
+        (ctx.frame_jank_available && ctx.frame_jank_rate > 0.0);
     const bool has_coupled_anchors =
         snapshot.active_domain_count >= 2U &&
         (snapshot.io_posture != IoSchedulerPosture::Unknown ||
@@ -320,7 +283,7 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
     }
 
     const std::string_view path = capability.path;
-    const std::string cand_lower = toLowerAscii(candidate_value);
+    const std::string_view cand_lower = candidate_value;
 
     // 1. Warm Equilibrium (48-52C) & Sustained Gaming background containment:
     //    Trim background uclamp.max / cpuset span first so foreground clocks and
@@ -360,10 +323,10 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
                 !endsWithToken(path, "/min_pwrlevel") && direction == EffectDirection::Increase;
             const bool perf_governor_select =
                 direction == EffectDirection::Select &&
-                (containsToken(cand_lower, "msm-adreno-tz") ||
-                 containsToken(cand_lower, "simple_ondemand") ||
-                 containsToken(cand_lower, "bw_hwmon") ||
-                 containsToken(cand_lower, "performance"));
+                (containsIgnoreCase(cand_lower, "msm-adreno-tz") ||
+                 containsIgnoreCase(cand_lower, "simple_ondemand") ||
+                 containsIgnoreCase(cand_lower, "bw_hwmon") ||
+                 containsIgnoreCase(cand_lower, "performance"));
             if ((kgsl_pwrlevel_step || freq_floor_step || perf_governor_select) &&
                 !snapshot.warm_equilibrium) {
                 adj.benefit_delta += 0.14;
@@ -585,7 +548,7 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
         !snapshot.warm_equilibrium) {
         if (endsWithToken(path, "/net/ipv4/tcp_congestion_control") &&
             direction == EffectDirection::Select &&
-            (cand_lower == "bbr" || cand_lower == "bbr2" || cand_lower == "westwood")) {
+            (equalsIgnoreCase(cand_lower, "bbr") || equalsIgnoreCase(cand_lower, "bbr2") || equalsIgnoreCase(cand_lower, "westwood"))) {
             adj.benefit_delta += 0.08;
             adj.risk_delta -= 0.02;
             adj.coupling_tag = "coupled:tcp_low_latency_congestion";
@@ -594,8 +557,8 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
         if (snapshot.oem_performance_capped) {
             for (const auto& vv : capability.vendor_values) {
                 if (vv.profile == VendorProfile::Performance &&
-                    toLowerAscii(vv.value) == cand_lower &&
-                    toLowerAscii(baseline_value) != cand_lower) {
+                    equalsIgnoreCase(vv.value, cand_lower) &&
+                    !equalsIgnoreCase(baseline_value, cand_lower)) {
                     adj.benefit_delta += 0.09;
                     adj.risk_delta -= 0.03;
                     adj.coupling_tag = "coupled:oem_perf_cap_unlock";

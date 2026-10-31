@@ -92,7 +92,7 @@ public:
     ) noexcept;
 
 private:
-    static std::string extractActiveToken(std::string_view raw) noexcept;
+    static std::string_view extractActiveToken(std::string_view raw) noexcept;
     static IoSchedulerPosture classifyIoScheduler(std::string_view token) noexcept;
     static CpuGovernorPosture classifyCpuGovernor(std::string_view token) noexcept;
 };

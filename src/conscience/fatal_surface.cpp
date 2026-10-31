@@ -1,4 +1,5 @@
 #include "coreflow/fatal_surface.hpp"
+#include "coreflow/integer_parse.hpp"
 
 #include <cerrno>
 #include <cstdlib>
@@ -37,21 +38,7 @@ bool containsAny(std::string_view value,
 }
 
 bool parseSigned(std::string_view text, long long& out) noexcept {
-    std::string copy(text);
-    while (!copy.empty() && (copy.back() == ' ' || copy.back() == '\t' ||
-                             copy.back() == '\n' || copy.back() == '\r')) {
-        copy.pop_back();
-    }
-    std::size_t first = 0;
-    while (first < copy.size() && (copy[first] == ' ' || copy[first] == '\t')) ++first;
-    copy.erase(0, first);
-    if (copy.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
-    const long long value = std::strtoll(copy.c_str(), &end, 10);
-    if (errno != 0 || end == copy.c_str() || *end != '\0') return false;
-    out = value;
-    return true;
+    return integer_parse::parseSignedDecimal(text, out);
 }
 
 } // namespace

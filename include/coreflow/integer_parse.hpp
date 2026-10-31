@@ -10,7 +10,7 @@
 
 namespace coreflow::integer_parse {
 
-// Strict unsigned-decimal parsing for kernel tunables. Every helper rejects an
+// Strict decimal parsing for kernel tunables. Every helper rejects an
 // input it does not fully understand. None saturates silently, and none wraps.
 
 [[nodiscard]] constexpr bool isSpace(char c) noexcept {
@@ -33,6 +33,22 @@ namespace coreflow::integer_parse {
     const char* last = token.data() + token.size();
     const auto result = std::from_chars(first, last, value);
     if (result.ec != std::errc{} || result.ptr != last) return false;
+    out = value;
+    return true;
+}
+
+// Signed decimal, including an optional leading '+', with complete consumption.
+// This does not allocate, throw or accept an embedded NUL/trailing garbage.
+[[nodiscard]] inline bool parseSignedDecimal(std::string_view raw, long long& out) noexcept {
+    auto token = trim(raw);
+    if (token.empty()) return false;
+    if (token.front() == '+') {
+        token.remove_prefix(1);
+        if (token.empty() || token.front() == '-' || token.front() == '+') return false;
+    }
+    long long value = 0;
+    const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
+    if (result.ec != std::errc{} || result.ptr != token.data() + token.size()) return false;
     out = value;
     return true;
 }

@@ -111,3 +111,12 @@ Validated with host handoff/heartbeat regression checks, the WebUI build and
 contracts, safety contract and strict Android orchestrator syntax checking using
 an Android log stub. Device recovery behaviour and Android NDK CI still require
 validation after installation/publication.
+
+
+### Native audit and README follow-up
+
+The [native audit](NATIVE_AUDIT_2026-11.md) records this pass's findings and checks.
+Experience format V3 adds round-trip-precision score/confidence and bandit variance;
+V2 remains readable with variance 0.02. Mutation/retained journals and sample leases
+keep their existing formats. The README now presents CoreFlow's requirements,
+installation, diagnostics and documentation with its own authored SVG identity.

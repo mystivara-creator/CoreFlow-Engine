@@ -2,6 +2,8 @@
 #include "coreflow/durable_file.hpp"
 #include "coreflow/integer_parse.hpp"
 #include <limits>
+#include <iomanip>
+#include <locale>
 #include <stdexcept>
 
 #include <algorithm>
@@ -178,7 +180,9 @@ bool ExperienceMemory::load(const std::string& path) noexcept {
         if (!readBoundedPrivateFile(path, bytes) || bytes.empty() || bytes.back() != '\n') return false;
         std::istringstream file(bytes);
         std::string line;
-        if (!std::getline(file, line) || line != "COREFLOW_EXPERIENCE_V2") return false;
+        if (!std::getline(file, line) ||
+            (line != "COREFLOW_EXPERIENCE_V2" && line != "COREFLOW_EXPERIENCE_V3")) return false;
+        const bool has_variance = line == "COREFLOW_EXPERIENCE_V3";
 
         std::vector<Record> loaded;
         while (std::getline(file, line)) {
@@ -197,7 +201,9 @@ bool ExperienceMemory::load(const std::string& path) noexcept {
                 !std::getline(in, outcome, '\t') ||
                 !std::getline(in, score, '\t') ||
                 !std::getline(in, confidence, '\t') ||
-                !std::getline(in, observations)) continue;
+                !std::getline(in, observations, has_variance ? '\t' : '\n')) continue;
+            std::string variance;
+            if (has_variance && !std::getline(in, variance)) return false;
             if (!scope_.empty() && scope != scope_) continue;
             if (!safeToken(key)) continue;
 
@@ -224,6 +230,11 @@ bool ExperienceMemory::load(const std::string& path) noexcept {
             r.outcome = static_cast<BaselineIntelligence::Outcome>(parseInt(outcome, static_cast<int>(BaselineIntelligence::Outcome::Unknown), static_cast<int>(BaselineIntelligence::Outcome::Inconclusive)));
             r.score = parseRatio(score);
             r.confidence = parseRatio(confidence);
+            r.variance = 0.02; // V2 has no uncertainty column
+            if (has_variance) {
+                r.variance = parseRatio(variance);
+                if (r.variance > 0.25) return false;
+            }
             if (!integer_parse::parseUint64(observations, r.observations) || r.observations == 0U) return false;
             loaded.push_back(std::move(r));
             if (loaded.size() >= kMaxRecords) break;
@@ -240,7 +251,9 @@ bool ExperienceMemory::flush(const std::string& path) noexcept {
     if (!dirty_) return true;
     try {
         std::ostringstream file;
-        file << "COREFLOW_EXPERIENCE_V2\n";
+        file.imbue(std::locale::classic());
+        file << std::setprecision(std::numeric_limits<double>::max_digits10);
+        file << "COREFLOW_EXPERIENCE_V3\n";
         const std::string scope = safeToken(scope_) ? scope_ : "default";
         for (const Record& r : records_) {
             if (!safeToken(r.candidate.key)) continue;
@@ -253,7 +266,7 @@ bool ExperienceMemory::flush(const std::string& path) noexcept {
                  << enumValue(r.context.load_trend) << '\t'
                  << static_cast<int>(r.outcome) << '\t'
                  << r.score << '\t' << r.confidence << '\t'
-                 << r.observations << '\n';
+                 << r.observations << '\t' << r.variance << '\n';
         }
         if (!file.good() || !writeDurablePrivateFile(path, file.str())) return false;
         dirty_ = false;

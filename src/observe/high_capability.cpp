@@ -1,4 +1,5 @@
 #include "coreflow/high_capability.hpp"
+#include "coreflow/ascii.hpp"
 
 #include <algorithm>
 #include <array>
@@ -31,22 +32,11 @@ constexpr std::array<MatchRule, 15> kRules{{
     {ExpandedDomain::BatteryEnergy, {"ps.", "battery", "current_now", "voltage_now", "power_supply"}},
 }};
 
-std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
-}
-
-bool matches(const ResourceCapability& resource, const MatchRule& rule) {
-    const std::string name = lower(resource.name);
-    const std::string path = lower(resource.path);
+bool matches(const ResourceCapability& resource, const MatchRule& rule) noexcept {
     for (const char* token : rule.tokens) {
-        if (token == nullptr) continue;
-        const std::string needle(token);
-        if (name.find(needle) != std::string::npos ||
-            path.find(needle) != std::string::npos) {
-            return true;
-        }
+        if (token != nullptr &&
+            (ascii::containsIgnoreCase(resource.name, token) ||
+             ascii::containsIgnoreCase(resource.path, token))) return true;
     }
     return false;
 }

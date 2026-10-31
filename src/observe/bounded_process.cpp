@@ -47,6 +47,10 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
     }
 
     try {
+        for (const auto& arg : argv) if (arg.find('\0') != std::string::npos) return result;
+        // No string growth/allocation after fork: resource cleanup stays bounded
+        // even when the daemon is under memory pressure.
+        result.output.reserve(max_output_bytes);
         // Build every pointer before fork(). After fork, the child calls only
         // async-signal-safe functions until exec.
         std::vector<char*> args;
@@ -58,8 +62,10 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
         if (::pipe(pipe_fds) != 0) return result;
         int read_fd = pipe_fds[0];
         int write_fd = pipe_fds[1];
-        (void)::fcntl(read_fd, F_SETFD, FD_CLOEXEC);
-        (void)::fcntl(write_fd, F_SETFD, FD_CLOEXEC);
+        if (::fcntl(read_fd, F_SETFD, FD_CLOEXEC) != 0 ||
+            ::fcntl(write_fd, F_SETFD, FD_CLOEXEC) != 0) {
+            closeFd(read_fd); closeFd(write_fd); return result;
+        }
 
         const pid_t pid = ::fork();
         if (pid < 0) {
@@ -69,11 +75,11 @@ BoundedResult runBounded(const std::vector<std::string>& argv, std::uint32_t tim
         }
         if (pid == 0) {
             const int null_fd = ::open("/dev/null", O_RDWR | O_CLOEXEC);
-            if (null_fd >= 0) {
-                ::dup2(null_fd, STDIN_FILENO);
-                ::dup2(null_fd, STDERR_FILENO);
-            }
-            ::dup2(write_fd, STDOUT_FILENO);
+            if (null_fd < 0 || ::dup2(null_fd, STDIN_FILENO) < 0 ||
+                ::dup2(null_fd, STDERR_FILENO) < 0 ||
+                ::dup2(write_fd, STDOUT_FILENO) < 0 ||
+                ::fcntl(STDOUT_FILENO, F_SETFD, 0) != 0) ::_exit(127);
+            if (null_fd > STDERR_FILENO) ::close(null_fd);
             ::execv(args[0], args.data());
             ::_exit(127);
         }

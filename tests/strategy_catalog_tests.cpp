@@ -85,6 +85,11 @@ int main() {
     const CouplingSnapshot mem_snap = StrategyCatalog::analyze(mem_matrix, baselines, mem_ctx);
     CHECK(mem_snap.profile == StrategyProfile::MemoryRelief);
     CHECK(mem_snap.zram_high_swappiness);
+    for (const char* invalid : {"120 999", "120x", "9999999999999999999999999999", "201"}) {
+        auto malformed = baselines;
+        malformed[swap_cap.path] = invalid;
+        CHECK(!StrategyCatalog::analyze(mem_matrix, malformed, mem_ctx).zram_high_swappiness);
+    }
 
     const StrategyAdjustment swap_up_adj = StrategyCatalog::evaluateCandidate(
         swap_cap, "120", "135", EffectDirection::Increase, mem_snap, mem_ctx);
@@ -134,6 +139,24 @@ int main() {
         tcp_cc, "cubic", "bbr", EffectDirection::Select, game_snap, game_ctx);
     CHECK(tcp_bbr_adj.benefit_delta > 0.0 && tcp_bbr_adj.risk_delta < 0.0);
 
+
+    // A stale numeric value without an availability flag cannot claim gaming.
+    EffectContext unavailable_frame;
+    unavailable_frame.state = RuntimeState::Normal;
+    unavailable_frame.cpu_utilization_available = true;
+    unavailable_frame.cpu_utilization = 0.4;
+    unavailable_frame.frame_jank_rate = 0.5;
+    CHECK(StrategyCatalog::analyze({}, {}, unavailable_frame).profile == StrategyProfile::DailyMultitasking);
+    unavailable_frame.frame_jank_available = true;
+    CHECK(StrategyCatalog::analyze({}, {}, unavailable_frame).profile == StrategyProfile::SustainedGaming);
+    CouplingSnapshot warm;
+    warm.warm_equilibrium = true;
+    ResourceCapability background;
+    background.domain = ResourceDomain::CpuSet;
+    background.path = "/dev/cpuset/background/cpus";
+    for (const char* invalid : {"0-18446744073709551615", "0-1junk", "0-", "0-1,1-2", "0-1,"}) {
+        CHECK(StrategyCatalog::evaluateCandidate(background, invalid, "0", EffectDirection::Select, warm, context).coupling_tag == nullptr);
+    }
     if (failures != 0) {
         std::cerr << failures << " strategy catalog test(s) failed\n";
         return 1;

@@ -155,7 +155,7 @@ std::string formatProposalSummary(
 
 } // namespace
 
-AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const noexcept {
+AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const noexcept try {
     AgentProposal proposal;
     proposal.mode = AgentReasoningMode::ReActLite;
 
@@ -290,10 +290,11 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
     proposal.reasoning_summary = "observe → pareto+ucb → review → propose: " +
         formatProposalSummary(proposal.best, proposal.ranked.size(), pareto_weights);
     return proposal;
-}
+} catch (...) { return {}; }
 
 std::unique_ptr<IDecisionAgent> createDefaultDecisionAgent() noexcept {
-    return std::make_unique<ScoringDecisionAgent>();
+    try { return std::make_unique<ScoringDecisionAgent>(); }
+    catch (...) { return nullptr; }
 }
 
 const char* agentReasoningModeName(AgentReasoningMode mode) noexcept {

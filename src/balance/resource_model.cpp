@@ -3,24 +3,26 @@
 namespace coreflow {
 
 void ResourceStateModel::reset(const EnvironmentCapabilityMatrix& capabilities) noexcept {
-    states_.clear();
-    states_.reserve(capabilities.resources.size());
-    for (const auto& capability : capabilities.resources) {
-        ResourceState state;
-        state.domain = capability.domain;
-        state.name = capability.name;
-        state.path = capability.path;
-        state.readable = capability.readable;
-        state.writable = capability.writable;
-        state.runtime_verified = capability.runtime_verified;
-        // Discovery's mutation_ready flag describes a structurally admissible
-        // candidate, not permission to mutate. Permission is granted explicitly
-        // later by the policy/controller path after baseline and context checks.
-        state.mutation_permitted = false;
-        state.lifecycle = capability.exists || capability.readable || capability.writable
-                              ? ResourceLifecycle::Observed : ResourceLifecycle::Unknown;
-        states_.push_back(std::move(state));
-    }
+    try {
+        states_.clear();
+        states_.reserve(capabilities.resources.size());
+        for (const auto& capability : capabilities.resources) {
+            ResourceState state;
+            state.domain = capability.domain;
+            state.name = capability.name;
+            state.path = capability.path;
+            state.readable = capability.readable;
+            state.writable = capability.writable;
+            state.runtime_verified = capability.runtime_verified;
+            // Discovery's mutation_ready flag describes a structurally admissible
+            // candidate, not permission to mutate. Permission is granted explicitly
+            // later by the policy/controller path after baseline and context checks.
+            state.mutation_permitted = false;
+            state.lifecycle = capability.exists || capability.readable || capability.writable
+                                  ? ResourceLifecycle::Observed : ResourceLifecycle::Unknown;
+            states_.push_back(std::move(state));
+        }
+    } catch (...) { states_.clear(); }
 }
 
 ResourceState* ResourceStateModel::findInternal(ResourceDomain domain,
@@ -48,46 +50,80 @@ bool ResourceStateModel::observe(ResourceDomain domain, const std::string& name,
                                  const std::string& value) noexcept {
     auto* state = findInternal(domain, name);
     if (!state) return false;
-    state->observed = value;
-    state->lifecycle = ResourceLifecycle::Observed;
-    return true;
+    try {
+        state->observed = value;
+        state->lifecycle = ResourceLifecycle::Observed;
+        return true;
+    } catch (...) {
+        state->mutation_permitted = false;
+        state->lifecycle = ResourceLifecycle::RecoveryRequired;
+        return false;
+    }
 }
 
 bool ResourceStateModel::setBaseline(ResourceDomain domain, const std::string& name,
                                      const std::string& value) noexcept {
     auto* state = findInternal(domain, name);
     if (!state) return false;
-    state->baseline = value;
-    state->lifecycle = ResourceLifecycle::BaselineCaptured;
-    return true;
+    try {
+        state->baseline = value;
+        state->lifecycle = ResourceLifecycle::BaselineCaptured;
+        return true;
+    } catch (...) {
+        state->mutation_permitted = false;
+        state->lifecycle = ResourceLifecycle::RecoveryRequired;
+        return false;
+    }
 }
 
 bool ResourceStateModel::setDesired(ResourceDomain domain, const std::string& name,
                                     const std::string& value) noexcept {
     auto* state = findInternal(domain, name);
     if (!state) return false;
-    state->desired = value;
-    state->lifecycle = ResourceLifecycle::Desired;
-    return true;
+    try {
+        state->desired = value;
+        state->lifecycle = ResourceLifecycle::Desired;
+        return true;
+    } catch (...) {
+        state->mutation_permitted = false;
+        state->lifecycle = ResourceLifecycle::RecoveryRequired;
+        return false;
+    }
 }
 
 bool ResourceStateModel::setVerified(ResourceDomain domain, const std::string& name,
                                      const std::string& value) noexcept {
     auto* state = findInternal(domain, name);
     if (!state) return false;
-    state->verified = value;
-    state->runtime_verified = true;
-    state->lifecycle = ResourceLifecycle::Verified;
-    return true;
+    try {
+        state->verified = value;
+        state->runtime_verified = true;
+        state->lifecycle = ResourceLifecycle::Verified;
+        return true;
+    } catch (...) {
+        state->mutation_permitted = false;
+        state->lifecycle = ResourceLifecycle::RecoveryRequired;
+        return false;
+    }
 }
 
 bool ResourceStateModel::addConstraint(ResourceDomain domain, const std::string& name,
                                        ResourceConstraint constraint) noexcept {
     auto* state = findInternal(domain, name);
     if (!state) return false;
-    if (constraint.blocking) state->lifecycle = ResourceLifecycle::Constrained;
-    state->constraints.push_back(std::move(constraint));
-    return true;
+    try {
+        const bool blocking = constraint.blocking;
+        state->constraints.push_back(std::move(constraint));
+        if (blocking) {
+            state->mutation_permitted = false;
+            state->lifecycle = ResourceLifecycle::Constrained;
+        }
+        return true;
+    } catch (...) {
+        state->mutation_permitted = false;
+        state->lifecycle = ResourceLifecycle::RecoveryRequired;
+        return false;
+    }
 }
 
 bool ResourceStateModel::setMutationPermitted(ResourceDomain domain,
@@ -101,7 +137,8 @@ bool ResourceStateModel::setMutationPermitted(ResourceDomain domain,
         state->mutation_permitted = false;
         return true;
     }
-    if (!state->readable || !state->writable || !state->runtime_verified) return false;
+    if (state->lifecycle == ResourceLifecycle::RecoveryRequired ||
+        !state->readable || !state->writable || !state->runtime_verified) return false;
     for (const auto& constraint : state->constraints) {
         if (constraint.blocking) return false;
     }

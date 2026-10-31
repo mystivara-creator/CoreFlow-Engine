@@ -78,6 +78,8 @@ private:
     std::vector<VendorKnob> knobs_;
     std::unordered_map<std::string, std::size_t> index_;
     std::unordered_set<std::string> visited_;
+    static constexpr std::size_t kMaxScanEntries = 16384U;
+    std::size_t scan_entries_{0};
     std::size_t files_parsed_{0};
 };
 

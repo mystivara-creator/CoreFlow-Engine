@@ -9,6 +9,7 @@
 #include <cctype>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "coreflow/kernel_roots.hpp"
 
@@ -70,10 +71,10 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
             if (::access(load_path.c_str(), R_OK) == 0) roots_.push_back(path);
         }
 
-        DIR* dir = ::opendir(path.c_str());
+        std::unique_ptr<DIR, int (*)(DIR*)> dir(::opendir(path.c_str()), ::closedir);
         if (!dir) return;
         while (visited < kMaxDirectories) {
-            dirent* entry = ::readdir(dir);
+            dirent* entry = ::readdir(dir.get());
             if (!entry) break;
             const std::string name(entry->d_name);
             if (name == "." || name == "..") continue;
@@ -82,7 +83,6 @@ void GpuBusySource::discoverDefaultRoots() noexcept {
             if (::lstat(child.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) continue;
             self(self, child, depth + 1U);
         }
-        ::closedir(dir);
     };
 
     for (const auto& root : sysfs_roots) {

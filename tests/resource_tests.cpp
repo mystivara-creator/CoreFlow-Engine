@@ -1025,6 +1025,13 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     context.sample_confidence = 0.95;
     context.intervention = InterventionLevel::Low;
 
+    ResourceStateModel constrained_model;
+    constrained_model.reset(matrix);
+    CHECK(constrained_model.setMutationPermitted(known.domain, known.name, true));
+    CHECK(constrained_model.addConstraint(known.domain, known.name, {"safety", "blocked", true}));
+    CHECK(!constrained_model.find(known.domain, known.name)->mutation_permitted);
+    CHECK(!constrained_model.setMutationPermitted(known.domain, known.name, true));
+
     const auto ranked = model.rank(matrix, baselines, context, 4);
     // A memory-pressure label is not enough to justify arbitrary numeric steps.
     CHECK(ranked.empty());

@@ -3,6 +3,8 @@
 #include "coreflow/fatal_surface.hpp"
 #include "coreflow/pressure_limits.hpp"
 #include "coreflow/strategy_catalog.hpp"
+#include "coreflow/integer_parse.hpp"
+#include <charconv>
 
 #include <algorithm>
 #include <cmath>
@@ -37,17 +39,7 @@ std::string EffectModel::trim(std::string value) noexcept {
 }
 
 bool EffectModel::parseInteger(const std::string& value, long long& out) noexcept {
-    try {
-        const std::string cleaned = trim(value);
-        if (cleaned.empty()) return false;
-        std::size_t used = 0;
-        const long long parsed = std::stoll(cleaned, &used, 10);
-        if (used != cleaned.size()) return false;
-        out = parsed;
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return integer_parse::parseSignedDecimal(value, out);
 }
 
 double EffectModel::clamp01(double v) noexcept {
@@ -736,8 +728,8 @@ EffectScore EffectModel::evaluate(
     const EffectContext& ctx
 ) const noexcept {
     EffectScore best;
-    best.reason = "no candidate derivable from capability evidence";
     try {
+        best.reason = "no candidate derivable from capability evidence";
         for (auto& score : proposals(capability, baseline_value, ctx)) {
             score.utility = score.benefit * 0.65 - score.risk * 0.25 + score.confidence * 0.10;
             if (score.domain == ResourceDomain::Io &&
@@ -760,7 +752,8 @@ std::vector<EffectScore> EffectModel::rank(
     const std::unordered_map<std::string, std::string>& baselines,
     const EffectContext& ctx,
     std::size_t max_results
-) const noexcept {
+) const noexcept try {
+    if (max_results == 0U) return {};
     std::vector<EffectScore> ranked;
     ranked.reserve(matrix.resources.size());
     const CouplingSnapshot coupling = StrategyCatalog::analyze(matrix, baselines, ctx);
@@ -848,18 +841,22 @@ std::vector<EffectScore> EffectModel::rank(
         }
     }
 
-    std::stable_sort(ranked.begin(), ranked.end(),
-                     [](const EffectScore& lhs, const EffectScore& rhs) {
-                         if (lhs.utility != rhs.utility) return lhs.utility > rhs.utility;
-                         if (lhs.risk != rhs.risk) return lhs.risk < rhs.risk;
-                         if (lhs.confidence != rhs.confidence)
-                             return lhs.confidence > rhs.confidence;
-                         if (lhs.path != rhs.path) return lhs.path < rhs.path;
-                         return lhs.requested < rhs.requested;
-                     });
+    const auto order = [](const EffectScore& lhs, const EffectScore& rhs) {
+        if (lhs.utility != rhs.utility) return lhs.utility > rhs.utility;
+        if (lhs.risk != rhs.risk) return lhs.risk < rhs.risk;
+        if (lhs.confidence != rhs.confidence) return lhs.confidence > rhs.confidence;
+        if (lhs.path != rhs.path) return lhs.path < rhs.path;
+        return lhs.requested < rhs.requested;
+    };
 
-    if (ranked.size() > max_results) ranked.resize(max_results);
+    if (ranked.size() > max_results) {
+        const auto middle = ranked.begin() + static_cast<std::ptrdiff_t>(max_results);
+        std::partial_sort(ranked.begin(), middle, ranked.end(), order);
+        ranked.resize(max_results);
+    } else {
+        std::sort(ranked.begin(), ranked.end(), order);
+    }
     return ranked;
-}
+} catch (...) { return {}; }
 
 } // namespace coreflow

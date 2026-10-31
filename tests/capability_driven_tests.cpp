@@ -87,6 +87,22 @@ void testVendorParsers() {
     // Malformed JSON never throws or adds anything.
     VendorKnowledge broken;
     CHECK(broken.parsePowerHintJson("{\"Nodes\": [ {", "bad.json") == 0U);
+    CHECK(broken.parsePowerHintJson(std::string(json) + "garbage", "trailing.json") == 0U);
+    CHECK(broken.knobs().empty());
+    CHECK(broken.parsePowerHintJson(R"({"Nodes":[],"Nodes":[]})", "duplicate.json") == 0U);
+    CHECK(broken.parsePowerHintJson(R"({"Nodes":[],"unused":01})", "number.json") == 0U);
+    CHECK(broken.parsePowerHintJson(R"({"Nodes":[],"unused":"bad\q"})", "escape.json") == 0U);
+    CHECK(broken.parsePowerHintJson(R"({"Nodes":[],"unused":"\uD800"})", "surrogate.json") == 0U);
+    VendorKnowledge escaped;
+    CHECK(escaped.parsePowerHintJson(R"({"Nodes":[{"Name":"vm","Path":"\u002fproc/sys/vm/swappiness","Values":["60"],"DefaultIndex":0}],"Actions":[{"PowerHint":"LAUNCH","Node":"vm","Value":"999"}]})", "unicode.json") == 1U);
+    const auto* escaped_knob = escaped.find("/proc/sys/vm/swappiness");
+    CHECK(escaped_knob && escaped_knob->declaresWithProfile("60", VendorProfile::Default));
+    CHECK(escaped_knob && !escaped_knob->declares("999"));
+    VendorKnowledge nul;
+    CHECK(nul.parsePowerHintJson(R"({"Nodes":[{"Name":"vm","Path":"/proc/sys/vm/swappiness\u0000ignored","Values":["60"]}]})", "nul.json") == 0U);
+    CHECK(nul.knobs().empty());
+    CHECK(broken.parsePowerHintJson(std::string(VendorKnowledge::kMaxFileBytes + 1U, ' '), "large.json") == 0U);
+
 }
 
 void testFatalGuard() {
@@ -335,6 +351,17 @@ void testGenericDiscovery() {
     mapped_scheduler.path = "/sys/block/dm-0/queue/scheduler";
     mapped_scheduler.name = "dm-0:scheduler";
     CHECK(model.evaluate(mapped_scheduler, "mq-deadline", busy).eligible);
+
+    EnvironmentCapabilityMatrix ranking_matrix;
+    ranking_matrix.resources = {*custom, *iosched};
+    const std::unordered_map<std::string, std::string> ranking_baselines = {
+        {custom->path, "7"}, {iosched->path, "mq-deadline"}};
+    const auto full = model.rank(ranking_matrix, ranking_baselines, busy, 100U);
+    const auto top = model.rank(ranking_matrix, ranking_baselines, busy, 1U);
+    CHECK(full.size() > 1U && top.size() == 1U);
+    if (!full.empty() && !top.empty())
+        CHECK(top[0].path == full[0].path && top[0].requested == full[0].requested && top[0].utility == full[0].utility);
+    CHECK(model.rank(ranking_matrix, ranking_baselines, busy, 0U).empty());
 
     // Bounded numeric exploration must not overflow at signed integer limits.
     ResourceCapability edge_numeric = *custom;

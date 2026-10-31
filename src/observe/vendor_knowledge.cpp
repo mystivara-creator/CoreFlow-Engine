@@ -1,4 +1,6 @@
 #include "coreflow/vendor_knowledge.hpp"
+#include "coreflow/durable_file.hpp"
+#include "coreflow/integer_parse.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -59,7 +61,8 @@ std::vector<std::string> tokenize(std::string_view line) {
 bool literal(std::string_view v) noexcept {
     if (v.empty()) return false;
     for (const char c : v) {
-        if (c == '$' || c == '`' || c == '*' || c == '?' || c == '{' || c == '}') return false;
+        if (static_cast<unsigned char>(c) < 0x20U || c == 0x7f ||
+            c == '$' || c == '`' || c == '*' || c == '?' || c == '{' || c == '}') return false;
     }
     return true;
 }
@@ -92,7 +95,7 @@ struct Json {
 class JsonParser {
 public:
     explicit JsonParser(std::string_view text) : s_(text) {}
-    bool parse(Json& out) { ws(); return value(out, 0) && (ws(), true); }
+    bool parse(Json& out) { ws(); return value(out, 0) && (ws(), i_ == s_.size()); }
 
 private:
     bool value(Json& out, int depth) {
@@ -108,7 +111,26 @@ private:
         out.text = std::string(s_.substr(start, i_ - start));
         out.type = (out.text == "true" || out.text == "false") ? Json::Type::Bool
                  : out.text == "null" ? Json::Type::Null : Json::Type::Number;
-        return true;
+        if (out.type != Json::Type::Number) return true;
+        // Validate JSON number grammar, without converting or losing precision.
+        const std::string_view token = out.text;
+        std::size_t n = token.front() == '-' ? 1U : 0U;
+        const auto digit = [&](std::size_t at) { return at < token.size() && token[at] >= '0' && token[at] <= '9'; };
+        if (!digit(n)) return false;
+        if (token[n] == '0') ++n;
+        else while (digit(n)) ++n;
+        if (n < token.size() && token[n] == '.') {
+            ++n;
+            if (!digit(n)) return false;
+            while (digit(n)) ++n;
+        }
+        if (n < token.size() && (token[n] == 'e' || token[n] == 'E')) {
+            ++n;
+            if (n < token.size() && (token[n] == '+' || token[n] == '-')) ++n;
+            if (!digit(n)) return false;
+            while (digit(n)) ++n;
+        }
+        return n == token.size();
     }
     bool object(Json& out, int depth) {
         out.type = Json::Type::Object;
@@ -123,6 +145,7 @@ private:
             ++i_; ws();
             Json v;
             if (!value(v, depth + 1)) return false;
+            if (out.get(key) != nullptr) return false; // ambiguous duplicate key
             out.fields.emplace_back(std::move(key), std::move(v));
             ws();
             if (i_ < s_.size() && s_[i_] == ',') { ++i_; continue; }
@@ -147,22 +170,64 @@ private:
         }
         return false;
     }
+    bool hex4(std::uint32_t& code) {
+        if (s_.size() - i_ < 4U) return false;
+        code = 0;
+        for (unsigned n = 0; n < 4U; ++n) {
+            const char c = s_[i_++];
+            unsigned digit = 0;
+            if (c >= '0' && c <= '9') digit = static_cast<unsigned>(c - '0');
+            else if (c >= 'a' && c <= 'f') digit = static_cast<unsigned>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') digit = static_cast<unsigned>(c - 'A' + 10);
+            else return false;
+            code = (code << 4U) | digit;
+        }
+        return true;
+    }
     bool str(std::string& out) {
         ++i_;
         while (i_ < s_.size()) {
             const char c = s_[i_++];
             if (c == '"') return true;
-            if (c == '\\' && i_ < s_.size()) {
-                const char e = s_[i_++];
-                switch (e) {
-                    case 'n': out.push_back('\n'); break;
-                    case 't': out.push_back('\t'); break;
-                    case 'u': i_ = std::min(s_.size(), i_ + 4); break;  // not needed for paths
-                    default: out.push_back(e); break;
+            if (static_cast<unsigned char>(c) < 0x20U) return false;
+            if (c != '\\') { out.push_back(c); continue; }
+            if (i_ >= s_.size()) return false;
+            const char e = s_[i_++];
+            switch (e) {
+                case '"': case '\\': case '/': out.push_back(e); break;
+                case 'b': out.push_back('\b'); break;
+                case 'f': out.push_back('\f'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                case 'u': {
+                    std::uint32_t code = 0;
+                    if (!hex4(code)) return false;
+                    if (code >= 0xD800U && code <= 0xDBFFU) {
+                        if (s_.size() - i_ < 2U || s_[i_] != '\\' || s_[i_ + 1U] != 'u') return false;
+                        i_ += 2U;
+                        std::uint32_t low = 0;
+                        if (!hex4(low) || low < 0xDC00U || low > 0xDFFFU) return false;
+                        code = 0x10000U + ((code - 0xD800U) << 10U) + low - 0xDC00U;
+                    } else if (code >= 0xDC00U && code <= 0xDFFFU) return false;
+                    if (code <= 0x7FU) out.push_back(static_cast<char>(code));
+                    else if (code <= 0x7FFU) {
+                        out.push_back(static_cast<char>(0xC0U | (code >> 6U)));
+                        out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+                    } else if (code <= 0xFFFFU) {
+                        out.push_back(static_cast<char>(0xE0U | (code >> 12U)));
+                        out.push_back(static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
+                        out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+                    } else {
+                        out.push_back(static_cast<char>(0xF0U | (code >> 18U)));
+                        out.push_back(static_cast<char>(0x80U | ((code >> 12U) & 0x3FU)));
+                        out.push_back(static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
+                        out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+                    }
+                    break;
                 }
-                continue;
+                default: return false;
             }
-            out.push_back(c);
         }
         return false;
     }
@@ -216,6 +281,7 @@ void VendorKnowledge::clear() noexcept {
     index_.clear();
     visited_.clear();
     files_parsed_ = 0;
+    scan_entries_ = 0;
 }
 
 std::string VendorKnowledge::canonicalPath(std::string_view path) noexcept {
@@ -292,6 +358,7 @@ bool VendorKnowledge::add(std::string_view path, std::string_view value,
 }
 
 std::size_t VendorKnowledge::parseInitRc(std::string_view text, std::string_view source) noexcept {
+    if (text.size() > kMaxFileBytes) return 0;
     std::size_t added = 0;
     try {
         VendorProfile section = VendorProfile::Boot;
@@ -318,6 +385,7 @@ std::size_t VendorKnowledge::parseInitRc(std::string_view text, std::string_view
 }
 
 std::size_t VendorKnowledge::parseShell(std::string_view text, std::string_view source) noexcept {
+    if (text.size() > kMaxFileBytes) return 0;
     std::size_t added = 0;
     try {
         VendorProfile section = VendorProfile::Boot;
@@ -367,28 +435,33 @@ std::size_t VendorKnowledge::parseShell(std::string_view text, std::string_view 
 
 std::size_t VendorKnowledge::parsePowerHintJson(std::string_view text,
                                                 std::string_view source) noexcept {
+    if (text.size() > kMaxFileBytes) return 0;
     std::size_t added = 0;
     try {
         Json root;
         JsonParser parser(text);
         if (!parser.parse(root) || root.type != Json::Type::Object) return 0;
 
-        std::map<std::string, std::string> node_paths;
+        std::map<std::string, const Json*> node_paths;
         if (const Json* nodes = root.get("Nodes"); nodes && nodes->type == Json::Type::Array) {
             for (const auto& node : nodes->items) {
                 const Json* name = node.get("Name");
                 const Json* path = node.get("Path");
-                if (!name || !path) continue;
-                node_paths[name->scalar()] = path->scalar();
+                if (!name || !path || name->type != Json::Type::String ||
+                    path->type != Json::Type::String) continue;
+                node_paths.emplace(name->text, &node);
                 const Json* values = node.get("Values");
                 const Json* def = node.get("DefaultIndex");
-                const long def_index = def ? std::strtol(def->text.c_str(), nullptr, 10) : -1;
+                std::uint64_t def_index = 0;
+                const bool has_default = def && def->type == Json::Type::Number &&
+                    integer_parse::parseUint64(def->text, def_index);
                 if (values && values->type == Json::Type::Array) {
                     for (std::size_t i = 0; i < values->items.size(); ++i) {
-                        const VendorProfile p = static_cast<long>(i) == def_index
+                        const VendorProfile p = has_default && i == def_index
                                                     ? VendorProfile::Default
                                                     : VendorProfile::Boot;
-                        if (add(path->scalar(), values->items[i].scalar(), p, source)) ++added;
+                        if (values->items[i].type == Json::Type::String &&
+                            add(path->text, values->items[i].text, p, source)) ++added;
                     }
                 }
             }
@@ -398,11 +471,20 @@ std::size_t VendorKnowledge::parsePowerHintJson(std::string_view text,
                 const Json* hint = action.get("PowerHint");
                 const Json* node = action.get("Node");
                 const Json* value = action.get("Value");
-                if (!hint || !node || !value) continue;
+                if (!hint || !node || !value || hint->type != Json::Type::String ||
+                    node->type != Json::Type::String || value->type != Json::Type::String) continue;
+                const Json* type = action.get("Type");
+                if (type && type->text != "Node") continue;
                 const auto found = node_paths.find(node->scalar());
                 if (found == node_paths.end()) continue;
-                if (add(found->second, value->scalar(), profileFromLabel(hint->scalar()), source))
-                    ++added;
+                // libperfmgr Node actions name a value declared in Nodes.Values.
+                // Never invent an operating point from an unrecognized action.
+                const Json* values = found->second->get("Values");
+                const Json* path = found->second->get("Path");
+                if (!values || values->type != Json::Type::Array || !path) continue;
+                const bool declared = std::any_of(values->items.begin(), values->items.end(),
+                    [&](const Json& item) { return item.type == Json::Type::String && item.text == value->text; });
+                if (declared && add(path->text, value->text, profileFromLabel(hint->text), source)) ++added;
             }
         }
     } catch (...) {
@@ -417,6 +499,7 @@ std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
     // power_app_cfg.xml), and OEM perf/thermal XML tables read-only without
     // hardcoding any device path. Only literal kernel paths and literal values
     // pass VendorKnowledge::add().
+    if (text.size() > kMaxFileBytes) return 0;
     std::size_t added = 0;
     try {
         VendorProfile active_profile = VendorProfile::Boot;
@@ -556,11 +639,9 @@ std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
             static_cast<std::size_t>(st.st_size) > kMaxFileBytes) {
             return 0;
         }
-        std::ifstream file(path, std::ios::in | std::ios::binary);
-        if (!file) return 0;
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        const std::string text = buffer.str();
+        std::string text;
+        // Bound the actual read too: stat size alone does not cap a growing file.
+        if (!readBoundedPrivateFile(canonical, text)) return 0;
         ++files_parsed_;
 
         switch (kind) {
@@ -586,6 +667,8 @@ void VendorKnowledge::scan(const std::string& root, std::size_t depth) noexcept 
         if (!dir) return;
         std::vector<std::string> entries;
         while (const dirent* entry = ::readdir(dir.get())) {
+            if (scan_entries_ >= kMaxScanEntries) break;
+            ++scan_entries_;
             const std::string name = entry->d_name;
             if (name == "." || name == "..") continue;
             entries.push_back(root + "/" + name);
