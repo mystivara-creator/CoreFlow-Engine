@@ -14,6 +14,10 @@
   a false benefit or regression; preserve recovery obligations.
 - Filter interactivity boosts by measured pressure and enforce launch deadlines.
 - Correct the legacy frame parser to use actual presentation intervals.
+- Use only newly collected frames for each outcome sample, keeping interaction
+  hysteresis history separate from the before/after measurement.
+- Roll back inconclusive rendering trials when either comparison window has
+  fewer than two valid rendering samples; log both windows' rendering coverage.
 
 ## v3.0.1 — Closed-Loop Adaptive Coupling & Unattended Release Checkpoint
 

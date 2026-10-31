@@ -51,6 +51,8 @@ public:
         double confidence{0.0};
         std::size_t baseline_samples{0};
         std::size_t observation_samples{0};
+        std::size_t rendering_baseline_samples{0};
+        std::size_t rendering_observation_samples{0};
         bool thermal_available{false};
         bool load_available{false};
         bool cpu_available{false};

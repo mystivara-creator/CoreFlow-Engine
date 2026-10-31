@@ -389,6 +389,8 @@ BaselineIntelligence::evaluate() const noexcept {
     Evaluation result{};
     result.baseline_samples = baseline_.samples;
     result.observation_samples = observation_.samples;
+    result.rendering_baseline_samples = baseline_.frame_jank.samples;
+    result.rendering_observation_samples = observation_.frame_jank.samples;
 
     if (baseline_.samples < kBaselineSamples ||
         observation_.samples < kObservationSamples) {
@@ -489,8 +491,17 @@ BaselineIntelligence::evaluate() const noexcept {
         totalWeight += kIoLatencyWeight;
     }
 
-    // Rendering must be observed on both sides; unavailable is not zero jank.
-    if (baseline_.frame_jank.samples >= 2U && observation_.frame_jank.samples >= 2U) {
+    // Once rendering participates in either window, losing it cannot establish
+    // that a candidate is safe to retain. Otherwise falling CPU load can look
+    // beneficial precisely because the foreground stopped presenting frames.
+    // Non-rendering workloads remain measurable when both windows lack frames.
+    const bool rendering_observed = baseline_.frame_jank.samples > 0U ||
+                                    observation_.frame_jank.samples > 0U;
+    if (rendering_observed) {
+        if (baseline_.frame_jank.samples < 2U || observation_.frame_jank.samples < 2U) {
+            result.outcome = Outcome::Inconclusive;
+            return result;
+        }
         if (baseline_.mixed_frame_periods || observation_.mixed_frame_periods ||
             baseline_.frame_period_ns != observation_.frame_period_ns) {
             result.outcome = Outcome::Inconclusive;

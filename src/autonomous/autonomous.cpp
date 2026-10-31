@@ -869,10 +869,18 @@ void AutonomousEngine::tick() {
             const auto fresh_frames = frame_telemetry_.poll(ia_now_ms, ia_jank_recent);
             if (fresh_frames.empty()) interactivity_model_.clearFrames();
             if (previous_period != frame_telemetry_.lastRefreshPeriodNs()) interactivity_model_.reset();
+            // Interaction hysteresis uses a rolling history, but outcome
+            // measurement must contain only this poll's newly observed frames.
+            // Reusing that history lets pre-mutation frames leak into the
+            // candidate window when a poll supplies fewer than 120 frames.
+            graphics::FramePerformanceAnalyzer fresh_frame_analyzer;
             for (const std::uint64_t ia_duration_ns : fresh_frames) {
                 interactivity_model_.ingestFrame(
                     ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
+                (void)fresh_frame_analyzer.recordFrame(
+                    ia_duration_ns, frame_telemetry_.lastRefreshPeriodNs());
             }
+            const auto fresh_frame_snapshot = fresh_frame_analyzer.snapshot();
             understand::InteractivitySample ia_sample;
             ia_sample.frame_fresh = !fresh_frames.empty();
             ia_sample.now_ms = ia_now_ms;
@@ -887,10 +895,10 @@ void AutonomousEngine::tick() {
                 interactivity_model_.evaluate(ia_sample);
             sample.gpu_busy_available = ia_snap.gpu_busy_available;
             sample.gpu_busy_ratio = ia_snap.gpu_busy_ratio;
-            sample.frame_jank_available = ia_snap.frame.valid && !fresh_frames.empty();
+            sample.frame_jank_available = fresh_frame_snapshot.valid;
             sample.frame_period_ns = frame_telemetry_.lastRefreshPeriodNs();
             sample.frame_jank_rate =
-                ia_snap.frame.valid ? ia_snap.frame.deadline_miss_rate : 0.0;
+                fresh_frame_snapshot.valid ? fresh_frame_snapshot.deadline_miss_rate : 0.0;
             // A busy GPU also renders camera, browser and System UI workloads.
             // No verified game identity source is installed in this backend.
             sample.gaming_active = false;
@@ -1034,12 +1042,16 @@ void AutonomousEngine::tick() {
                 const auto& evaluation = baseline_intelligence_.result();
                 logInfo(
                     "EFFICIENCY_OUTCOME outcome=%d score=%.3f confidence=%.3f "
-                    "baseline=%zu observation=%zu",
+                    "baseline=%zu observation=%zu rendering=%zu/%zu "
+                    "rendering_regression=%s",
                     static_cast<int>(evaluation.outcome),
                     evaluation.overall_score,
                     evaluation.confidence,
                     evaluation.baseline_samples,
-                    evaluation.observation_samples);
+                    evaluation.observation_samples,
+                    evaluation.rendering_baseline_samples,
+                    evaluation.rendering_observation_samples,
+                    evaluation.rendering_regression ? "yes" : "no");
 
                 // STEP 10b: Persist the verified outcome as advisory experience,
                 // under the decision-time context captured at observation begin.
