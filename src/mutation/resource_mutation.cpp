@@ -879,18 +879,28 @@ MutationResult ResourceMutationController::apply(
     return apply(state, sample, profile, config, plan, permit);
 }
 
-bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept {
+bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std::string>& paths, std::string* failure) noexcept {
     try {
+        if (failure != nullptr) failure->clear();
         const auto owned = active_resources_cache_;
         for (const auto& setting : owned) {
             const std::string path = setting.first;
             std::string live;
-            if (!ResourceActuator::readComparable(path, live)) return false;
+            if (!ResourceActuator::readComparable(path, live)) {
+                if (failure != nullptr) *failure = "read_live: " + path;
+                return false;
+            }
             if (live == ResourceActuator::comparableValue(setting.second) && !paths.contains(path)) continue;
             paths.insert(path); // block all actuator classes before any durable handoff
-            if (retained_store_ != nullptr && !retained_store_->erasePath(path)) return false;
+            if (retained_store_ != nullptr && !retained_store_->erasePath(path)) {
+                if (failure != nullptr) *failure = "erase_retained: " + path;
+                return false;
+            }
             if (journal_committed_ && (journal_ == nullptr ||
-                !journal_->releaseExternallyControlledPath(path))) return false;
+                !journal_->releaseExternallyControlledPath(path))) {
+                if (failure != nullptr) *failure = "release_journal: " + path;
+                return false;
+            }
             dirty_resources_.erase(path);
             const auto baseline = baseline_.find(path);
             if (baseline != baseline_.end()) baseline->second.valid = false;

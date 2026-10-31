@@ -17,6 +17,7 @@
   // Must match blockerCodes() in src/status_snapshot.cpp (checked by tools/test_webui_status.js).
   var BLOCKERS = {
     STOPPED: { tone: "bad", title: "Engine stopped", detail: "The daemon is not running. It restores any change it made when it shuts down." },
+    RECOVERY_PENDING: { tone: "warn", title: "Engine recovery pending", detail: "Tuning is paused while ownership handoff or restoration completes. Displayed sensor values are from the last telemetry snapshot." },
     SAFETY_HOLD: { tone: "warn", title: "Safety hold active", detail: "The kill switch or SAFE_MODE is set, so mutation is disabled until it is cleared." },
     OBSERVE_MODE: { tone: "info", title: "Configuration blocked", detail: "The installed engine configuration does not enable tuning. Save Engine Settings and restart; recovery and operator stop markers remain authoritative." },
     NOT_ARMED: { tone: "warn", title: "Configuration incomplete", detail: "The compatibility activation fields are inconsistent. Save Engine Settings and restart; no extra operating mode needs to be selected." },
@@ -59,6 +60,9 @@
       pid: int(j.pid, 0),
       sample: int(j.sample, 0),
       updated: int(j.updated_epoch, 0),
+      telemetryUpdated: int(j.telemetry_epoch, int(j.updated_epoch, 0)),
+      recoveryPhase: str(j.recovery_phase, 40),
+      recoveryDetail: str(j.recovery_detail, 512),
       interval: int(j.interval_s, 5),
       running: j.running !== false,
       blocker: str(j.blocker, 40),
@@ -196,13 +200,23 @@
     if (d.blocker === "CONTEXT_LOW_CONFIDENCE" && d.eyes.confidence != null) detail += " Now " + Math.round(d.eyes.confidence * 100) + "%.";
     if (d.blocker === "OBSERVING_OUTCOME" && d.brain.observationTarget)
       detail += " Epoch " + d.brain.observationSamples + "/" + d.brain.observationTarget + ".";
-    if (d.brain.skipReason) detail += " · " + d.brain.skipReason;
+    if (d.blocker === "RECOVERY_PENDING") {
+      detail += " Heartbeat " + p.age + "s; telemetry " + (d.telemetryUpdated ? Math.max(0, p.now - d.telemetryUpdated) + "s old" : "unavailable") + ".";
+      if (d.recoveryDetail) detail += " " + d.recoveryDetail;
+    }
+    if (d.brain.skipReason && d.blocker !== "RECOVERY_PENDING") detail += " · " + d.brain.skipReason;
     return { tone: info.tone, title: info.title, detail: detail, code: d.blocker };
   }
 
   // The decision pipeline: where a change is stopped, stage by stage.
   function pipeline(d) {
     var b = d.brain, h = d.hands;
+    if (d.recoveryPhase) return [
+      { id: "context", label: "Context", tone: "warn", state: "Paused", note: "Telemetry snapshot predates this recovery heartbeat" },
+      { id: "policy", label: "Policy", tone: "warn", state: "Hold", note: "No new mutation while recovery is pending" },
+      { id: "authority", label: "Authority", tone: "bad", state: "Denied", note: "recovery pending" },
+      { id: "hands", label: "Actuators", tone: "warn", state: "Recovering", note: d.recoveryDetail || d.recoveryPhase }
+    ];
     var ctx;
     if (b.proactive) ctx = { tone: "ok", state: "Open", note: b.workload + " · full tuning allowed" };
     else if (b.stabilizing) ctx = { tone: "warn", state: "Stabilize only", note: "Under stress: small load-reducing changes only" };

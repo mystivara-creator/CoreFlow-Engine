@@ -151,24 +151,31 @@ void InteractivityBoostController::restoreAll() noexcept {
     if (handoff_pending) recovery_required_ = true;
 }
 
-bool InteractivityBoostController::reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept {
+bool InteractivityBoostController::reconcileExternalChanges(std::unordered_set<std::string>& paths, std::string* failure) noexcept {
     try {
+        if (failure != nullptr) failure->clear();
         for (auto it = active_.begin(); it != active_.end();) {
             if (it->second.restored) { ++it; continue; }
             std::string live;
-            if (it->second.requested.empty() || !ResourceActuator::readComparable(it->first, live)) return false;
+            if (it->second.requested.empty() || !ResourceActuator::readComparable(it->first, live)) {
+                if (failure != nullptr) *failure = "read_live: " + it->first;
+                return false;
+            }
             if (live == ResourceActuator::comparableValue(it->second.requested) && !paths.contains(it->first)) {
                 ++it; continue;
             }
             paths.insert(it->first);
             if (journal_ == nullptr || journal_untrusted_ ||
                 !journal_->releaseExternallyControlledPath(it->first)) {
+                if (failure != nullptr) *failure = "release_journal: " + it->first;
                 recovery_required_ = true;
                 return false;
             }
             it = active_.erase(it); // journal handoff completed; never restore the external value
         }
-        return settle();
+        const bool ok = settle();
+        if (!ok && failure != nullptr) *failure = "settle_boost_journal";
+        return ok;
     } catch (...) { recovery_required_ = true; return false; }
 }
 

@@ -149,6 +149,7 @@ function button(tree, label) {
     check(history.length === 300, 'repeated polls do not duplicate samples');
     check(D.appendNativeTelemetry(history, { PID: 2, Sample: 1 }).length === 1, 'daemon restart separates history');
     check(D.nativeTelemetryRecord({ ok: false }) === null, 'invalid snapshots cannot become CSV measurements');
+    check(D.nativeTelemetryRecord({ ok: true, data: { pid: 1, running: true, recoveryPhase: 'restore' } }) === null, 'recovery heartbeat cannot become a new CSV measurement');
     let tree = render();
     await button(tree, 'Reload').props.onClick();
     check(text(render()).includes('Journal and logcat refreshed.'), 'Reload displays completion feedback');

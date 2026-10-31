@@ -60,10 +60,15 @@ int cpuHandoff() {
         const auto c=config();CHECK(controller.captureBaseline(p));
         CHECK(controller.apply(RuntimeState::Normal,sample(),p,c)==MutationResult::Verified);
         if(retained)CHECK(controller.retainLastMutation(p));
+        std::string failure;
+        std::filesystem::remove(knob);
+        CHECK(!controller.reconcileExternalChanges(blocked, &failure));
+        CHECK(failure == "read_live: " + knob);
         write(knob,"performance");j.fail=true;
-        CHECK(!controller.reconcileExternalChanges(blocked));CHECK(blocked.contains(knob));
+        CHECK(!controller.reconcileExternalChanges(blocked, &failure));CHECK(blocked.contains(knob));
+        CHECK(failure == "release_journal: " + knob);
         CHECK(!controller.restoreAll());CHECK(read(knob)=="performance");CHECK(!j.entries.empty());
-        j.fail=false;CHECK(controller.reconcileExternalChanges(blocked));
+        j.fail=false;CHECK(controller.reconcileExternalChanges(blocked, &failure));CHECK(failure.empty());
         CHECK(read(knob)=="performance");CHECK(j.entries.empty());CHECK(!controller.hasPendingOutcome());
         CHECK(controller.restoreAll());CHECK(read(knob)=="performance");
         CHECK(controller.apply(RuntimeState::Normal,sample(),p,c)==MutationResult::Skipped);
@@ -89,7 +94,8 @@ int resourceHandoff() {
     CHECK(controller.apply(RuntimeState::Elevated,s,p,c)==MutationResult::Verified);
     const auto changed=controller.lastAppliedResources().front().first;
     CHECK(controller.retainLastMutation(p));write(changed,"77");
-    j.fail=true;CHECK(!controller.reconcileExternalChanges(blocked));CHECK(!controller.restoreAll());CHECK(read(changed)=="77");
+    std::string failure;
+    j.fail=true;CHECK(!controller.reconcileExternalChanges(blocked, &failure));CHECK(failure == "release_journal: " + changed);CHECK(!controller.restoreAll());CHECK(read(changed)=="77");
     j.fail=false;CHECK(controller.reconcileExternalChanges(blocked));CHECK(read(changed)=="77");CHECK(j.entries.empty());
     CHECK(controller.apply(RuntimeState::Elevated,s,p,c)==MutationResult::Verified);
     CHECK(controller.lastAppliedResources().front().first!=changed); // other resource remains eligible
@@ -103,7 +109,8 @@ int boostHandoff() {
     boost.setJournal(&j);boost.setTopAppUclampPath(knob);boost.setExternalControlPaths(&blocked);
     BoostIntent intent;intent.kind=BoostKind::TopAppUclampMin;intent.value=20;intent.window_ms=1000;
     const auto c=config();CHECK(boost.apply({intent},c,100U)==1U);write(knob,"35");
-    j.fail=true;CHECK(!boost.reconcileExternalChanges(blocked));boost.restoreAll();CHECK(read(knob)=="35");CHECK(!j.entries.empty());
+    std::string failure;
+    j.fail=true;CHECK(!boost.reconcileExternalChanges(blocked, &failure));CHECK(failure == "release_journal: " + knob);boost.restoreAll();CHECK(read(knob)=="35");CHECK(!j.entries.empty());
     j.fail=false;CHECK(boost.reconcileExternalChanges(blocked));CHECK(j.entries.empty());CHECK(boost.activeCount()==0U);
     boost.expire(2000U);boost.restoreAll();CHECK(read(knob)=="35");
     CHECK(boost.apply({intent},c,3000U)==0U);CHECK(read(knob)=="35");

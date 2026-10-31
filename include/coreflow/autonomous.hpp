@@ -59,6 +59,8 @@ private:
                        Decision, const SystemContext&, const PolicyPlan&, HoldReason,
                        MutationResult cpu, MutationResult resource) noexcept;
     void publishStoppedStatus() noexcept;
+    void publishRecoveryStatus(HoldReason hold) noexcept;
+    std::string recovery_detail_;
 
     bool has_restored_{false};
     bool refresh_pending_{false};

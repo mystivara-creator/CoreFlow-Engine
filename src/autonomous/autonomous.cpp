@@ -635,9 +635,13 @@ void AutonomousEngine::emitNotification(NotificationEvent event, const RuntimeSa
 bool AutonomousEngine::reconcileControlContinuity() {
     baseline_intelligence_.reset();
     history_.clear();
-    const bool boost_ok = boost_controller_.reconcileExternalChanges(external_control_paths_);
-    const bool cpu_ok = controller_.reconcileExternalChanges(external_control_paths_);
-    const bool resource_ok = resource_controller_.reconcileExternalChanges(external_control_paths_);
+    std::string boost_failure, cpu_failure, resource_failure;
+    const bool boost_ok = boost_controller_.reconcileExternalChanges(external_control_paths_, &boost_failure);
+    const bool cpu_ok = controller_.reconcileExternalChanges(external_control_paths_, &cpu_failure);
+    const bool resource_ok = resource_controller_.reconcileExternalChanges(external_control_paths_, &resource_failure);
+    recovery_detail_ = !boost_ok ? "boost: " + boost_failure :
+                       !cpu_ok ? "cpu: " + cpu_failure :
+                       !resource_ok ? "resource: " + resource_failure : "";
     if (!boost_ok || !cpu_ok || !resource_ok) return false;
     // Other pending candidates share contaminated telemetry, so discard those
     // measurements without learning a regression. Accepted settings stay owned.
@@ -669,6 +673,7 @@ void AutonomousEngine::tick() {
             continuity_recovery_pending_ = !reconcileControlContinuity();
             if (continuity_recovery_pending_) {
                 logWarn("External control handoff pending; new mutations paused");
+                publishRecoveryStatus(hold);
                 ++sample_count_;
                 return;
             }
@@ -685,6 +690,7 @@ void AutonomousEngine::tick() {
                 boost_controller_.recoveryRequired();
             if (telemetry_recovery_pending_) {
                 logWarn("Mutation recovery pending; tuning remains blocked");
+                publishRecoveryStatus(hold);
                 ++sample_count_;
                 return;
             }
@@ -727,6 +733,7 @@ void AutonomousEngine::tick() {
                 boost_controller_.activeCount() != 0U ||
                 boost_controller_.recoveryRequired();
             logWarn("Skipping tick: validation failed; owned mutations restore attempted");
+            if (telemetry_recovery_pending_) publishRecoveryStatus(hold);
             ++sample_count_;
             return;
         }
@@ -855,6 +862,7 @@ void AutonomousEngine::tick() {
                     boost_controller_.activeCount() != 0U || boost_controller_.recoveryRequired();
                 if (telemetry_recovery_pending_) {
                     logWarn("WORKLOAD_CHANGE recovery pending; new changes paused");
+                    publishRecoveryStatus(hold);
                     ++sample_count_;
                     return;
                 }
@@ -1722,6 +1730,7 @@ void AutonomousEngine::publishStatus(
         s.lifetime_sample_available = lifetime_sample_available_;
         s.sample_checkpoint_ok = sample_sequence_.healthy();
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
+        s.telemetry_epoch = s.updated_epoch;
         s.interval_s = config_.monitorIntervalSeconds();
         s.running = true;
 
@@ -1820,6 +1829,8 @@ void AutonomousEngine::publishStatus(
         // Human-readable why this cycle did not open a new mutation epoch.
         if (continuity_recovery_pending_) {
             s.skip_reason = "finishing durable handoff of externally controlled resources";
+        } else if (telemetry_recovery_pending_) {
+            s.skip_reason = "restoring owned mutations; tuning blocked";
         } else if (s.hold_active) {
             s.skip_reason = "safety hold active";
         } else if (s.observing) {
@@ -1861,6 +1872,10 @@ void AutonomousEngine::publishStatus(
         s.failed = status_failed_;
 
         last_status_ = s;
+        if (continuity_recovery_pending_ || telemetry_recovery_pending_) {
+            publishRecoveryStatus(hold);
+            return;
+        }
         // When Idle, throttle status.json writes to reduce storage wakeups
         // that would otherwise prevent deep sleep. Always write on the first
         // sample and every 3rd idle cycle thereafter; non-idle always writes.
@@ -1871,6 +1886,42 @@ void AutonomousEngine::publishStatus(
         }
     } catch (...) {
         // Status is advisory. Never let it disturb the control loop.
+    }
+}
+
+void AutonomousEngine::publishRecoveryStatus(const HoldReason hold) noexcept {
+    try {
+        // Reuse the last measured values, but NEVER advance their timestamp.
+        // Recovery must remain visible even when sampling cannot proceed.
+        const std::string phase = continuity_recovery_pending_ ? "external_handoff" : "restore";
+        const std::string detail = continuity_recovery_pending_ && !recovery_detail_.empty()
+            ? recovery_detail_ : "owned mutation restore incomplete; journals preserved";
+        EngineStatus s = recoveryHeartbeat(last_status_,
+            static_cast<std::int64_t>(std::time(nullptr)), phase, detail);
+        s.version = kCoreFlowVersion;
+        s.pid = static_cast<long>(::getpid());
+        s.running = true;
+        s.sample = sample_count_;
+        s.lifetime_sample = lifetime_sample_;
+        s.lifetime_sample_available = lifetime_sample_available_;
+        s.sample_checkpoint_ok = sample_sequence_.healthy();
+        s.interval_s = config_.monitorIntervalSeconds();
+        s.hold_active = hold != HoldReason::None;
+        s.safety_hold = holdReasonName(hold);
+        // Persist every recovery heartbeat, including when the last state was Idle.
+        (void)writeStatusFile(kPaths.status_json, statusToJson(s));
+        DecisionTraceContext context;
+        context.cycle = sample_count_;
+        context.previous_state = snapshot_.state;
+        context.state = snapshot_.state;
+        context.hold = hold;
+        context.mode = config_.mutationMode();
+        context.armed = config_.mutationArmed();
+        appendDecisionTraceEvent(context, {"recovery_pending", "recovery", "BLOCKED",
+            s.recovery_detail.c_str(), false, false, s.recovery_phase.c_str()});
+        last_status_ = std::move(s);
+    } catch (...) {
+        // Diagnostics cannot weaken recovery or ownership gates.
     }
 }
 
@@ -1938,12 +1989,20 @@ int AutonomousEngine::run() {
                 break;
         }
 
-        next_tick_time += std::chrono::seconds(sleep_seconds);
+        const bool recovering = continuity_recovery_pending_ || telemetry_recovery_pending_;
+        if (recovering) {
+            // Failed handoffs/restores must not spin on an expired boost deadline
+            // or catch up overdue ticks with repeated durable I/O.
+            next_tick_time = std::chrono::steady_clock::now() +
+                std::chrono::seconds(std::max(5, configured));
+        } else {
+            next_tick_time += std::chrono::seconds(sleep_seconds);
+        }
 
         // Honour bounded interactivity boost windows even when the steady-state
         // tick interval is longer than boost_window_ms.
         const std::uint64_t boost_deadline_ms = boost_controller_.earliestDeadlineMs();
-        if (boost_deadline_ms > 0U) {
+        if (boost_deadline_ms > 0U && !recovering) {
             const auto now_tp = std::chrono::steady_clock::now();
             const std::uint64_t now_ms = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(

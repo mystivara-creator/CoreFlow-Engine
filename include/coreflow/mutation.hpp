@@ -40,7 +40,8 @@ public:
         external_control_paths_ = paths;
     }
     // Withdraw only externally replaced targets, without writing their kernel nodes.
-    bool reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept;
+    bool reconcileExternalChanges(std::unordered_set<std::string>& paths,
+                                  std::string* failure = nullptr) noexcept;
 
     MutationController() = default;
 

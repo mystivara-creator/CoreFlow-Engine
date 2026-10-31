@@ -5,7 +5,7 @@ export type TelemetryRecord = Record<string, string | number | boolean | null>;
 
 export function nativeTelemetryRecord(parsed: ParsedEngineStatus): TelemetryRecord | null {
   const d = parsed.ok ? parsed.data : undefined;
-  if (!d || !d.running || d.pid <= 0) return null;
+  if (!d || !d.running || d.pid <= 0 || d.recoveryPhase || d.blocker === 'RECOVERY_PENDING') return null;
   return {
     Sample: d.sample, LifetimeSample: d.memory?.lifetimeSample ?? null, UpdatedEpoch: d.updated, PID: d.pid,
     'CPU(%)': d.eyes.cpu === null ? null : d.eyes.cpu * 100,

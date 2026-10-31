@@ -36,6 +36,7 @@ static_assert(sizeof(kConsultReasons) / sizeof(kConsultReasons[0]) == kConsultRe
 // Keep this list in sync with the WebUI (engine_status.js); a host check compares them.
 constexpr const char* kBlockerCodes[] = {
     "STOPPED",
+    "RECOVERY_PENDING",
     "SAFETY_HOLD",
     "OBSERVE_MODE",
     "NOT_ARMED",
@@ -172,8 +173,24 @@ const std::vector<std::string>& blockerCodes() {
     return codes;
 }
 
+EngineStatus recoveryHeartbeat(const EngineStatus& previous, const std::int64_t now,
+                               const std::string& phase, const std::string& detail) {
+    EngineStatus s = previous;
+    s.running = true;
+    s.updated_epoch = now;
+    s.recovery_phase = phase;
+    s.recovery_detail = detail;
+    s.skip_reason = detail;
+    s.permit_cpu = false;
+    s.permit_resource = false;
+    s.mutation_eligible = false;
+    s.observing = false;
+    return s;
+}
+
 std::string primaryBlocker(const EngineStatus& s) {
     if (!s.running) return "STOPPED";
+    if (!s.recovery_phase.empty()) return "RECOVERY_PENDING";
     if (s.hold_active) return "SAFETY_HOLD";
     // status.json / WebUI use config-style tokens: "adaptive" | "observe".
     // Logs historically used mutationModeName() → "ADAPTIVE"/"DISABLED".
@@ -208,6 +225,9 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"updated_epoch\":" << s.updated_epoch
         << ",\"interval_s\":" << s.interval_s << ",\"running\":";
     appendBool(out, s.running);
+    out << ",\"telemetry_epoch\":" << s.telemetry_epoch;
+    out << ",\"recovery_phase\":"; appendEscaped(out, s.recovery_phase);
+    out << ",\"recovery_detail\":"; appendEscaped(out, s.recovery_detail);
     out << ",\"blocker\":";
     appendEscaped(out, primaryBlocker(s));
 

@@ -81,6 +81,9 @@ export interface ParsedEngineStatus {
     pid: number;
     sample: number;
     updated: number;
+    telemetryUpdated?: number;
+    recoveryPhase?: string;
+    recoveryDetail?: string;
     interval: number;
     running: boolean;
     blocker: string;

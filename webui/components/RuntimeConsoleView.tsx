@@ -323,7 +323,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                 aria-hidden="true"
               />
               <span>
-                status.json blocker={statusSummary.code} · {parsedStatus?.stale ? 'STALE' : 'FRESH'}
+                status.json blocker={statusSummary.code} · {parsedStatus?.stale ? 'STALE' : d?.recoveryPhase ? 'HEARTBEAT ACTIVE · TELEMETRY PAUSED' : 'FRESH'}
               </span>
             </div>
             <div className="text-sm font-semibold text-slate-900">
@@ -389,7 +389,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
               </span>
             </div>
             <div className="mt-2 text-lg font-bold font-mono text-slate-900">
-              {d ? (d.brain.mode === 'adaptive' && d.brain.armed ? 'ACTIVE' : 'HELD') : pillarMode}
+              {d ? (d.recoveryPhase ? 'RECOVERING' : d.brain.mode === 'adaptive' && d.brain.armed ? 'ACTIVE' : 'HELD') : pillarMode}
             </div>
             <div className="mt-1.5 text-xs text-slate-500">
               <span>Plan: </span>

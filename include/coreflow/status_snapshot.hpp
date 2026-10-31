@@ -30,6 +30,9 @@ struct EngineStatus {
     bool lifetime_sample_available{false};
     bool sample_checkpoint_ok{false};
     std::int64_t updated_epoch{0};
+    std::int64_t telemetry_epoch{0}; // last telemetry snapshot, independent of heartbeat
+    std::string recovery_phase;
+    std::string recovery_detail;
     int interval_s{0};
     bool running{true};
     std::string runtime_pressure;
@@ -153,6 +156,10 @@ const std::vector<std::string>& blockerCodes();
 // One stable code answering "why is the engine not changing anything right now?".
 // Evaluated in a fixed order so the answer is the first thing that stops it.
 std::string primaryBlocker(const EngineStatus& status);
+
+// Refresh liveness during blocked recovery without refreshing the measurement time.
+EngineStatus recoveryHeartbeat(const EngineStatus& previous, std::int64_t now,
+                               const std::string& phase, const std::string& detail);
 
 // Strict JSON for the status. Non-finite numbers become null; strings are escaped.
 std::string statusToJson(const EngineStatus& status);

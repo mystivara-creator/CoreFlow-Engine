@@ -88,3 +88,26 @@ changing configuration. If behavior is abnormal, use Controls → Stop and allow
 graceful restoration. Preserve state/recovery files; do not force-delete journals
 or clear SAFE_MODE to hide a failure. Resume development from the exact commit,
 CI run and device observations recorded for this checkpoint.
+
+
+### Recovery heartbeat follow-up
+
+External ownership handoff and telemetry/workload recovery now publish a status
+heartbeat on every blocked retry, including Idle. `updated_epoch` describes
+liveness; `telemetry_epoch` remains the timestamp of the last measured snapshot.
+`RECOVERY_PENDING` blocks the displayed authority gate and reports the recovery
+phase, controller and failing handoff stage/path. Recovery heartbeats are excluded
+from native CSV telemetry history. A stopped heartbeat still becomes STALE.
+
+Handoff read, retained-store erase and journal-release failures remain fail-closed.
+They are recorded in the decision trace even when Android logcat is empty. Recovery
+uses at least the configured interval or five seconds between scheduled retries;
+normal boost expiry scheduling is unchanged. During failed recovery an expired
+boost deadline cannot trigger rapid disk retries; no restore bypasses the pending
+ownership handoff. Journals and external values are preserved. This fixes the missing heartbeat/diagnostics; the original device's
+handoff failure cannot be attributed to a specific stage from its supplied logs.
+
+Validated with host handoff/heartbeat regression checks, the WebUI build and
+contracts, safety contract and strict Android orchestrator syntax checking using
+an Android log stub. Device recovery behaviour and Android NDK CI still require
+validation after installation/publication.

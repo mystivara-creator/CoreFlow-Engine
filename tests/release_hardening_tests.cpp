@@ -544,6 +544,23 @@ void testStatusJsonIsStrictAndHostile() {
 }
 
 void testStatusJsonContractShape() {
+    EngineStatus recovering = adaptiveReady();
+    recovering.updated_epoch = 200;
+    recovering.telemetry_epoch = 24;
+    recovering.recovery_phase = "external_handoff";
+    recovering.recovery_detail = "release_journal: /sys/test";
+    CHECK(primaryBlocker(recovering) == "RECOVERY_PENDING");
+    CHECK(has(statusToJson(recovering), "\"telemetry_epoch\":24"));
+    CHECK(has(statusToJson(recovering), "\"updated_epoch\":200"));
+    const auto retry = recoveryHeartbeat(recovering, 205, "restore", "restore incomplete");
+    CHECK(retry.updated_epoch == 205 && retry.telemetry_epoch == 24);
+    CHECK(!retry.permit_cpu && !retry.permit_resource && !retry.mutation_eligible && !retry.observing);
+    const auto retry_again = recoveryHeartbeat(retry, 210, "restore", "still pending");
+    CHECK(retry_again.updated_epoch == 210 && retry_again.telemetry_epoch == 24);
+    CHECK(retry_again.thermal_c == recovering.thermal_c);
+    CHECK(primaryBlocker(retry_again) == "RECOVERY_PENDING");
+    recovering.running = false;
+    CHECK(primaryBlocker(recovering) == "STOPPED");
     const std::string json = statusToJson(adaptiveReady());
     CHECK(validJson(json));
     CHECK(has(json, "\"schema\":1"));
@@ -632,7 +649,7 @@ void testPrimaryBlockerOrder() {
 
 void testEveryBlockerIsListed() {
     const auto& codes = blockerCodes();
-    CHECK(codes.size() == 13);
+    CHECK(codes.size() == 14);
     EngineStatus s = adaptiveReady();
     auto listed = [&](const std::string& c) {
         for (const auto& k : codes) if (k == c) return true;

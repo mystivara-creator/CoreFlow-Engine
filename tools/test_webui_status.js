@@ -37,7 +37,7 @@ const raw = (name, nowDelta) => {
 const arr = /kBlockerCodes\[\]\s*=\s*\{([\s\S]*?)\};/.exec(cppSource);
 check(!!arr, "kBlockerCodes array found in C++ source");
 const cppCodes = arr ? [...arr[1].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]) : [];
-check(cppCodes.length === 13, "C++ lists 13 blocker codes");
+check(cppCodes.length === 14, "C++ lists 14 blocker codes");
 for (const c of cppCodes) check(Object.prototype.hasOwnProperty.call(S.BLOCKERS, c), "WebUI explains blocker " + c);
 for (const c of Object.keys(S.BLOCKERS)) check(cppCodes.includes(c), "WebUI has no code the engine never emits: " + c);
 
@@ -51,6 +51,25 @@ const emitted = keys(JSON.parse(load("stressed_holding.json")), new Set());
 for (const k of emitted) {
   if (["eyes", "brain", "hands"].includes(k)) continue;
   check(new RegExp("\\b" + k + "\\b").test(jsSource), "WebUI reads emitted field " + k);
+}
+
+// Recovery heartbeat must not refresh old telemetry or hide a later dead heartbeat.
+{
+  const j = JSON.parse(load("ready.json"));
+  j.blocker = "RECOVERY_PENDING";
+  j.telemetry_epoch = j.updated_epoch - 176;
+  j.recovery_phase = "external_handoff";
+  j.recovery_detail = "cpu: release_journal: /sys/test/scaling_governor";
+  const q = S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j));
+  check(q.ok && !q.stale, "recovery has a live heartbeat");
+  check(S.pipeline(q.data).find(x => x.id === "authority").state === "Denied", "recovery cannot advertise an open authority gate");
+  const summary = S.summary(q);
+  check(summary.code === "RECOVERY_PENDING" && summary.tone === "warn", "recovery is explicitly blocked");
+  check(summary.detail.includes("177s old") && summary.detail.includes(j.recovery_detail), "old telemetry and handoff failure are visible");
+  const dead = S.parse("NOW=" + (j.updated_epoch + 500) + "\n" + JSON.stringify(j));
+  check(S.summary(dead).code === "STALE", "recovery does not mask a stopped heartbeat");
+  j.telemetry_epoch = 0;
+  check(S.summary(S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j))).detail.includes("unavailable"), "no telemetry is not invented during startup recovery");
 }
 
 // ---- ready / adaptive ----

@@ -31,7 +31,8 @@ public:
         external_control_paths_ = paths;
     }
     // Withdraw only externally replaced targets, without writing their kernel nodes.
-    bool reconcileExternalChanges(std::unordered_set<std::string>& paths) noexcept;
+    bool reconcileExternalChanges(std::unordered_set<std::string>& paths,
+                                  std::string* failure = nullptr) noexcept;
 
     void setJournal(MutationJournal* journal) noexcept { journal_ = journal; }
     void setGpuMinFreqPath(std::string path) { gpu_min_freq_path_ = std::move(path); }
