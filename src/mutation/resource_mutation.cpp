@@ -376,24 +376,6 @@ bool ResourceMutationController::selectCandidate(
             if (external_control_paths_->contains(cap.path)) cap.mutation_ready = false;
     }
 
-    // The DecisionAgent is the proposal layer for resource candidates. It only
-    // ranks observed capabilities; this controller still independently enforces
-    // policy, intervention level, experience confidence, rejection cooldown,
-    // MutationAuthority, journaling, verification and rollback before any write.
-    AgentObservation agent_observation;
-    agent_observation.effect_ctx = ctx;
-    agent_observation.matrix = &effective_matrix;
-    agent_observation.baselines = &baseline_values;
-    agent_observation.state = state;
-    agent_observation.sample_confidence = sample.confidence;
-    agent_observation.mutation_allowed_by_context = !policy.stabilizing_only;
-    agent_observation.stabilizing_allowed_by_context = policy.stabilizing_only;
-    agent_observation.max_candidates = 16;
-    const AgentProposal proposal = decision_agent_.reason(agent_observation);
-    last_agent_reason_ = proposal.reasoning_summary;
-    if (!proposal.valid) return false;
-    const auto& ranked = proposal.ranked;
-
     ExperienceMemory::Context experience_context;
     experience_context.state = state;
     // Same classifier that produced the recorded experience context; a local
@@ -403,6 +385,26 @@ bool ResourceMutationController::selectCandidate(
     experience_context.thermal_trend = sample.thermal_trend;
     experience_context.memory_trend = sample.memory_trend;
     experience_context.load_trend = sample.load_trend;
+
+    // The DecisionAgent is the proposal layer for resource candidates. It only
+    // ranks observed capabilities; this controller still independently enforces
+    // policy, intervention level, experience confidence, rejection cooldown,
+    // MutationAuthority, journaling, verification and rollback before any write.
+    AgentObservation agent_observation;
+    agent_observation.effect_ctx = ctx;
+    agent_observation.matrix = &effective_matrix;
+    agent_observation.baselines = &baseline_values;
+    agent_observation.experience = experience_memory_;
+    agent_observation.experience_ctx = experience_context;
+    agent_observation.state = state;
+    agent_observation.sample_confidence = sample.confidence;
+    agent_observation.mutation_allowed_by_context = !policy.stabilizing_only;
+    agent_observation.stabilizing_allowed_by_context = policy.stabilizing_only;
+    agent_observation.max_candidates = 16;
+    const AgentProposal proposal = decision_agent_.reason(agent_observation);
+    last_agent_reason_ = proposal.reasoning_summary;
+    if (!proposal.valid) return false;
+    const auto& ranked = proposal.ranked;
 
     double best_utility = -1.0;
     Candidate best_candidate;

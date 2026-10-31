@@ -81,6 +81,10 @@ bool ExperienceMemory::record(const Record& input) noexcept {
         normalized.confidence = clamp01(normalized.confidence);
         normalized.observations = std::max<std::uint64_t>(normalized.observations, 1U);
 
+        normalized.variance = finite(normalized.variance)
+            ? std::clamp(normalized.variance, 0.0, 0.25)
+            : 0.02;
+
         for (Record& existing : records_) {
             if (!sameCandidate(existing.candidate, normalized.candidate) ||
                 !existing.context.compatibleWith(normalized.context)) continue;
@@ -88,8 +92,16 @@ bool ExperienceMemory::record(const Record& input) noexcept {
             const double oldWeight = static_cast<double>(existing.observations);
             const double newWeight = static_cast<double>(normalized.observations);
             const double totalWeight = oldWeight + newWeight;
-            existing.score = ((existing.score * oldWeight) +
-                              (normalized.score * newWeight)) / totalWeight;
+            const double deltaMean = normalized.score - existing.score;
+            const double combinedMean = ((existing.score * oldWeight) +
+                                         (normalized.score * newWeight)) / totalWeight;
+            const double parallelVar =
+                ((existing.variance * oldWeight) +
+                 (normalized.variance * newWeight) +
+                 (deltaMean * deltaMean * oldWeight * newWeight / totalWeight)) /
+                totalWeight;
+            existing.score = combinedMean;
+            existing.variance = std::clamp(parallelVar, 0.0, 0.25);
             existing.confidence = ((existing.confidence * oldWeight) +
                                    (normalized.confidence * newWeight)) / totalWeight;
             existing.outcome = normalized.outcome;
@@ -147,6 +159,17 @@ const ExperienceMemory::Record* ExperienceMemory::find(
              record.observations > best->observations)) best = &record;
     }
     return best;
+}
+
+std::uint64_t ExperienceMemory::totalObservations() const noexcept {
+    std::uint64_t total = 0;
+    for (const Record& r : records_) {
+        if (r.observations > std::numeric_limits<std::uint64_t>::max() - total) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        total += r.observations;
+    }
+    return total;
 }
 
 bool ExperienceMemory::load(const std::string& path) noexcept {

@@ -108,6 +108,22 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, true,
      "Utilization percentage threshold (1..100) before jumping to hispeed frequency.",
      "source.android.com/docs/core/power/values"},
+    {"cpufreq.governor.hispeed_freq", "dynamic:cpufreq-gov", ResourceDomain::Scheduler,
+     KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::BoundedTune, true,
+     "Advertised cluster OPP frequency jumped to when utilization crosses hispeed_load.",
+     "source.android.com/docs/core/power/values"},
+    {"walt.target_load", "dynamic:walt-sched", ResourceDomain::Scheduler,
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::BoundedTune, true,
+     "WALT scheduler per-cluster target load percentage (1..100); lower values unlock faster OPP ramp when OEM stock caps silicon responsiveness.",
+     "vendor:qualcomm-walt"},
+    {"walt.sched_upmigrate", "/proc/sys/walt/sched_upmigrate", ResourceDomain::Scheduler,
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::BoundedTune, true,
+     "WALT task upward cluster migration threshold; OEM mid-range profiles often inflate this to keep threads off performance cores.",
+     "vendor:qualcomm-walt"},
+    {"walt.sched_downmigrate", "/proc/sys/walt/sched_downmigrate", ResourceDomain::Scheduler,
+     KnowledgeLayer::VendorHAL, KnowledgeRisk::BoundedTune, true,
+     "WALT task downward cluster migration threshold paired with sched_upmigrate.",
+     "vendor:qualcomm-walt"},
     {"cpufreq.scaling_min_freq", "dynamic:cpufreq", ResourceDomain::CpuFreq,
      KnowledgeLayer::AndroidFramework, KnowledgeRisk::FrameworkOwned, false,
      "CPU frequency lower bound; managed by Power HAL and thermal mitigation.",
@@ -242,14 +258,18 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      "Dynamically discovered block queue attribute; semantics require classification.",
      "docs.kernel.org/block/queue-sysfs.html"},
 
-    // ---- GPU / devfreq / driver headroom (vendor + ACK) ----
+    // ---- GPU / devfreq / interconnect bus headroom (vendor + ACK) ----
     {"gpu.kgsl", "/sys/class/kgsl", ResourceDomain::Gpu,
      KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
      "Qualcomm KGSL Adreno GPU sysfs; power levels, clocks, and governors.",
      "vendor:qualcomm-kgsl"},
     {"gpu.devfreq", "/sys/class/devfreq", ResourceDomain::Gpu,
      KnowledgeLayer::AndroidCommonKernel, KnowledgeRisk::VendorVolatile, true,
-     "Generic devfreq devices (GPU/DDR/interconnect); advertised scales and governors.",
+     "Generic devfreq devices (GPU/DDR/LLCC/interconnect); advertised scales and governors.",
+     "docs.kernel.org/driver-api/devfreq.html"},
+    {"gpu.devfreq.polling_interval", "dynamic:devfreq", ResourceDomain::Gpu,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Devfreq governor sampling interval in milliseconds for GPU and DDR/bus bandwidth controllers.",
      "docs.kernel.org/driver-api/devfreq.html"},
     {"gpu.mali", "/sys/devices/platform/mali", ResourceDomain::Gpu,
      KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
@@ -259,6 +279,20 @@ constexpr EcosystemKnowledgeEntry kCatalog[] = {
      KnowledgeLayer::VendorHAL, KnowledgeRisk::VendorVolatile, true,
      "MediaTek GPU Extension Device (GED) DVFS headroom parameters.",
      "vendor:mediatek-ged"},
+
+    // ---- Network / TCP interactive latency stack ----
+    {"net.ipv4.tcp_congestion_control", "/proc/sys/net/ipv4/tcp_congestion_control", ResourceDomain::Vendor,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Kernel-advertised TCP congestion control selector (e.g. bbr, cubic) from tcp_available_congestion_control.",
+     "docs.kernel.org/networking/ip-sysctl.html"},
+    {"net.ipv4.tcp_fastopen", "/proc/sys/net/ipv4/tcp_fastopen", ResourceDomain::Vendor,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "TCP Fast Open bitmask (0..3) reducing round-trip handshake latency on interactive sessions.",
+     "docs.kernel.org/networking/ip-sysctl.html"},
+    {"net.ipv4.tcp_ecn", "/proc/sys/net/ipv4/tcp_ecn", ResourceDomain::Vendor,
+     KnowledgeLayer::LinuxKernel, KnowledgeRisk::BoundedTune, true,
+     "Explicit Congestion Notification mode (0..2) reducing packet-drop tail latency.",
+     "docs.kernel.org/networking/ip-sysctl.html"},
 
     // ---- Thermal ----
     {"thermal.zones", "/sys/class/thermal", ResourceDomain::Thermal,
@@ -338,12 +372,22 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
             return lookupEcosystemKnowledgeByKey("cpufreq.governor.rate_limit_us");
         if (hasSuffix("/hispeed_load"))
             return lookupEcosystemKnowledgeByKey("cpufreq.governor.hispeed_load");
+        if (hasSuffix("/hispeed_freq"))
+            return lookupEcosystemKnowledgeByKey("cpufreq.governor.hispeed_freq");
+        if (hasSuffix("/walt_target_load") || hasSuffix("/target_loads"))
+            return lookupEcosystemKnowledgeByKey("walt.target_load");
         if (hasSuffix("/scaling_min_freq"))
             return lookupEcosystemKnowledgeByKey("cpufreq.scaling_min_freq");
         if (hasSuffix("/scaling_max_freq"))
             return lookupEcosystemKnowledgeByKey("cpufreq.scaling_max_freq");
         if (hasSuffix("/scaling_cur_freq"))
             return lookupEcosystemKnowledgeByKey("cpufreq.scaling_cur_freq");
+    }
+
+    if (path.find("/devfreq/") != std::string::npos &&
+        path.size() >= 17U &&
+        path.compare(path.size() - 17U, 17U, "/polling_interval") == 0) {
+        return lookupEcosystemKnowledgeByKey("gpu.devfreq.polling_interval");
     }
 
     // Prefer the most-specific matching catalog path. Several entries may

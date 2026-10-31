@@ -17,6 +17,7 @@ import {
   Decision,
   DeviceHardwareProfile,
   EngineMode,
+  HybridBrainEvaluation,
   NotificationEvent,
   RuntimeSample,
   RuntimeState,
@@ -34,6 +35,7 @@ interface RuntimeConsoleViewProps {
   policyState: RuntimeState;
   decision: Decision;
   pillarMode: EngineMode;
+  hybridBrain?: HybridBrainEvaluation;
   lastNotification: NotificationEvent;
   effectiveSleepSec: number;
   sysfsNodes: SysfsNodeEntry[];
@@ -153,6 +155,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
   policyState,
   decision,
   pillarMode,
+  hybridBrain,
   lastNotification,
   effectiveSleepSec,
   sysfsNodes,
@@ -308,7 +311,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
           <div className="space-y-0.5">
             <div className="flex items-center gap-2 text-xs font-mono text-slate-500">
               <span
-                className={`inline-block w-2 h-2 rounded-full ${
+                className={`cf-live-dot inline-block w-2 h-2 rounded-full ${
                   statusSummary.tone === 'ok'
                     ? 'bg-emerald-500'
                     : statusSummary.tone === 'warn'
@@ -745,8 +748,20 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                           strokeWidth={1}
                         />
                       )}
-                      <circle cx={c.x} cy={c.yCpu} r={isFocused ? 4 : 2.5} fill="#2563EB" />
-                      <circle cx={c.x} cy={c.yTemp} r={isFocused ? 4.5 : 3} fill="#DC2626" />
+                      <circle
+                        cx={c.x}
+                        cy={c.yCpu}
+                        r={isFocused ? 4 : 2.5}
+                        fill="#2563EB"
+                        className="cf-svg-point"
+                      />
+                      <circle
+                        cx={c.x}
+                        cy={c.yTemp}
+                        r={isFocused ? 4.5 : 3}
+                        fill="#DC2626"
+                        className="cf-svg-point"
+                      />
                       <rect
                         x={c.x - 12}
                         y={padY}
@@ -1004,21 +1019,106 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         </details>
       )}
 
+      {/* Raw Silicon Envelope vs OEM Factory Throttling & Tier Audit (Preview) */}
+      {!isNativeBridge && (
+        <section className="cf-stagger-4 cf-card bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div>
+              <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span className="font-semibold text-slate-700">{profile.soc}</span>
+                <span aria-hidden="true">·</span>
+                <span>{profile.siliconArchitecture}</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono">{profile.oemRomLabel}</span>
+              </div>
+              <h2 className="mt-1 text-base font-semibold text-slate-900">
+                Raw Silicon Potential vs OEM Factory Baseline Fine-Tuning
+              </h2>
+            </div>
+
+            {hybridBrain && (
+              <div className="text-xs font-mono tabular-nums text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>
+                  Brain Arm:{' '}
+                  <strong className="text-blue-700">{hybridBrain.selectedArmLabel}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  Silicon Headroom Unlocked:{' '}
+                  <strong className="text-emerald-700">{hybridBrain.siliconGapPct}%</strong>
+                </span>
+              </div>
+            )}
+          </div>
+
+          {hybridBrain && (
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+              <div className="text-slate-700 font-mono leading-relaxed">
+                {hybridBrain.reasoningSummary}
+              </div>
+              <div className="w-full md:w-48 shrink-0">
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 mb-1">
+                  <span>Dynamic Silicon Drive</span>
+                  <span>{(hybridBrain.unlockDrive * 100).toFixed(0)}%</span>
+                </div>
+                <MiniSvgMeter
+                  ratio={hybridBrain.unlockDrive}
+                  color={hybridBrain.unlockDrive > 0 ? '#2563EB' : '#64748B'}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+            {profile.oemAuditItems.map((item) => (
+              <div
+                key={item.id}
+                className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-col justify-between space-y-2.5"
+              >
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-mono text-blue-700">
+                    {item.domain} · Reversible Kernel Layer
+                  </div>
+                  <h3 className="text-sm font-semibold text-slate-900">{item.title}</h3>
+                  <div className="space-y-1 text-slate-600 leading-relaxed pt-1">
+                    <div>
+                      <span className="font-semibold text-slate-700">OEM Factory Cap: </span>
+                      <span className="font-mono text-[11px]">{item.oemStockPosture}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-slate-700">Raw Silicon Spec: </span>
+                      <span>{item.rawSiliconCapability}</span>
+                    </div>
+                    <div>
+                      <span className="font-semibold text-emerald-700">CoreFlow Brain: </span>
+                      <span>{item.coreflowResolution}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-slate-200/80 text-[11px] font-mono text-slate-500">
+                  Safety: {item.reversibleMethod}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* CPU topology is preview-only until the native schema supplies it. */}
       {!isNativeBridge && (
         <section className="cf-stagger-4 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-base font-semibold text-slate-900">
-                CPUFreq Actuators &amp; Cluster Topology
+                CPUFreq Actuators &amp; Silicon Cluster Envelope
               </h2>
               <p className="text-xs text-slate-500">
-                Governor dikelola via <span className="font-mono">CpuFreqActuator</span>;{' '}
+                Governor &amp; rate-limits dikelola dinamis dari OPP perangkat;{' '}
                 <span className="font-mono">scaling_max_freq</span> diamati read-only (Power HAL owned).
               </p>
             </div>
             <span className="text-xs font-mono text-slate-500">
-              {profile.cpuPolicies.length} cpufreq policies
+              {profile.cpuPolicies.length} discovered cpufreq policies
             </span>
           </div>
           <div className="overflow-x-auto">
@@ -1027,30 +1127,41 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                 <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-600">
                   <th className="py-2.5 px-5">Cluster Policy</th>
                   <th className="py-2.5 px-4">Topology</th>
-                  <th className="py-2.5 px-4">Stock Governor</th>
+                  <th className="py-2.5 px-4">OEM Governor</th>
                   <th className="py-2.5 px-4">Active Governor</th>
-                  <th className="py-2.5 px-4 text-right">Min Freq</th>
-                  <th className="py-2.5 px-5 text-right">Observed Max Cap</th>
+                  <th className="py-2.5 px-4 text-right">OEM Boot Cap</th>
+                  <th className="py-2.5 px-5 text-right">Raw Silicon Spec</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-xs">
                 {profile.cpuPolicies.map((cluster) => {
-                  const govNode = sysfsNodes.find((n) =>
-                    n.path.includes(`policy${cluster.id}/scaling_governor`)
+                  const govNode = sysfsNodes.find(
+                    (n) => n.path === `${cluster.policyPath}/scaling_governor`
                   );
-                  const maxNode = sysfsNodes.find((n) =>
-                    n.path.includes(`policy${cluster.id}/scaling_max_freq`)
+                  const maxNode = sysfsNodes.find(
+                    (n) => n.path === `${cluster.policyPath}/scaling_max_freq`
                   );
                   const activeMaxKhz =
                     maxNode && maxNode.currentValue !== 'N/A'
                       ? Number(maxNode.currentValue)
                       : cluster.maxFreqKhz;
                   const activeGov = govNode?.currentValue ?? cluster.stockGovernor;
+                  const isOemCapped = activeMaxKhz < cluster.siliconMaxFreqKhz;
 
                   return (
                     <tr key={cluster.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-3 px-5 font-medium text-slate-900">{cluster.label}</td>
-                      <td className="py-3 px-4 text-slate-600">{cluster.cores}</td>
+                      <td className="py-3 px-5 font-medium text-slate-900">
+                        <div>{cluster.label}</div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          {cluster.policyPath}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-slate-600">
+                        <div>{cluster.cores}</div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          {cluster.oppTableKhz.length} hardware OPPs
+                        </div>
+                      </td>
                       <td className="py-3 px-4 font-mono text-slate-600">
                         {cluster.stockGovernor}
                       </td>
@@ -1065,11 +1176,13 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                           {activeGov}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-600 tabular-nums">
-                        {(cluster.minFreqKhz / 1_000_000).toFixed(2)} GHz
+                      <td className="py-3 px-4 text-right font-mono tabular-nums">
+                        <span className={isOemCapped ? 'text-amber-700 font-semibold' : 'text-slate-700'}>
+                          {(activeMaxKhz / 1_000_000).toFixed(2)} GHz
+                        </span>
                       </td>
-                      <td className="py-3 px-5 text-right font-mono text-slate-900 font-medium tabular-nums">
-                        {(activeMaxKhz / 1_000_000).toFixed(2)} GHz
+                      <td className="py-3 px-5 text-right font-mono text-emerald-700 font-semibold tabular-nums">
+                        {(cluster.siliconMaxFreqKhz / 1_000_000).toFixed(2)} GHz
                       </td>
                     </tr>
                   );

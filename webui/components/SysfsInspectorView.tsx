@@ -14,6 +14,7 @@ const SUBSYSTEMS: ('All' | SysfsSubsystem)[] = [
   'Block I/O',
   'VM / Sysctl',
   'GPU & DSP',
+  'Network',
   'Charging',
 ];
 
@@ -243,8 +244,13 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
               <tbody className="divide-y divide-slate-200 text-xs">
                 {filtered.map((node) => (
                   <tr key={node.path} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-2.5 px-5 font-mono text-slate-900 whitespace-nowrap">
-                      {node.path}
+                    <td className="py-2.5 px-5 whitespace-nowrap">
+                      <div className="font-mono text-slate-900">{node.path}</div>
+                      {node.domainEnvelope && (
+                        <div className="text-[11px] font-mono text-slate-400 mt-0.5">
+                          Domain: {node.domainEnvelope}
+                        </div>
+                      )}
                     </td>
                     <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
                       {node.subsystem}

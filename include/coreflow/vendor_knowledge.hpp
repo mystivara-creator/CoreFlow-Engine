@@ -37,6 +37,9 @@ struct VendorKnob {
 
     bool declares(std::string_view value) const noexcept;
     bool declaresWithProfile(std::string_view value, VendorProfile profile) const noexcept;
+    // True when the vendor firmware declares a distinct Performance operating
+    // point beyond the live Boot/Default baseline (evidence of OEM stock cap).
+    bool hasPerformanceHeadroom(std::string_view live_baseline) const noexcept;
 };
 
 class VendorKnowledge {
@@ -56,6 +59,7 @@ public:
     std::size_t parseInitRc(std::string_view text, std::string_view source) noexcept;
     std::size_t parseShell(std::string_view text, std::string_view source) noexcept;
     std::size_t parsePowerHintJson(std::string_view text, std::string_view source) noexcept;
+    std::size_t parseVendorPerfXml(std::string_view text, std::string_view source) noexcept;
 
     const VendorKnob* find(std::string_view path) const noexcept;
     const std::vector<VendorKnob>& knobs() const noexcept { return knobs_; }

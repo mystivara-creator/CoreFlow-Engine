@@ -2,6 +2,7 @@
 // tunable discovery and evidence-derived candidates.
 #include "coreflow/consultation.hpp"
 #include "coreflow/effect_model.hpp"
+#include "coreflow/experience.hpp"
 #include "coreflow/fatal_surface.hpp"
 #include "coreflow/tunable_discovery.hpp"
 #include "coreflow/vendor_knowledge.hpp"
@@ -470,6 +471,65 @@ void testUnclaimedAndSymlinks() {
     fs::remove_all(root);
 }
 
+void testSiliconHeadroomAndBandit() {
+    VendorKnowledge vk;
+    vk.parseVendorPerfXml(R"(
+        <ResourceConfigs>
+            <PerfResources>
+                <Config Target="parrot"
+                        SysfsNode="/sys/devices/system/cpu/cpufreq/policy4/walt/up_rate_limit_us"
+                        DefaultValue="5000"
+                        BoostValue="500" />
+                <Entry path="/sys/class/kgsl/kgsl-3d0/min_pwrlevel" value="2" profile="gaming" />
+            </PerfResources>
+        </ResourceConfigs>
+    )", "targetresourceconfigs.xml");
+
+    const auto* walt_knob = vk.find("/sys/devices/system/cpu/cpufreq/policy4/walt/up_rate_limit_us");
+    CHECK(walt_knob != nullptr);
+    if (walt_knob != nullptr) {
+        CHECK(walt_knob->hasPerformanceHeadroom("5000"));
+        CHECK(!walt_knob->hasPerformanceHeadroom("500"));
+    }
+    const auto* gpu_knob = vk.find("/sys/class/kgsl/kgsl-3d0/min_pwrlevel");
+    CHECK(gpu_knob != nullptr && gpu_knob->hasPerformanceHeadroom("5"));
+
+    // Sibling tcp_available_congestion_control & cluster OPP inheritance.
+    const fs::path root = fs::temp_directory_path() / "coreflow_capdrv_silicon";
+    fs::remove_all(root);
+    const std::string r = root.string();
+    writeFile(root / "proc/sys/net/ipv4/tcp_congestion_control", "cubic");
+    writeFile(root / "proc/sys/net/ipv4/tcp_available_congestion_control", "reno cubic bbr");
+    writeFile(root / "sys/devices/system/cpu/cpufreq/policy4/scaling_available_frequencies",
+              "691200 1401600 2016000 2400000");
+    writeFile(root / "sys/devices/system/cpu/cpufreq/policy4/walt/hispeed_freq", "1401600");
+    writeFile(root / "proc/mounts",
+              "none " + r + "/proc proc rw 0 0\n"
+              "none " + r + "/sys sysfs rw 0 0\n");
+
+    EnvironmentCapabilityMatrix matrix;
+    TunableDiscovery(r).discover(matrix, vk);
+    const auto* tcp = findCap(matrix, r + "/proc/sys/net/ipv4/tcp_congestion_control");
+    CHECK(tcp != nullptr && !tcp->ordered_scale && tcp->options.size() == 3U);
+    const auto* hispeed = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy4/walt/hispeed_freq");
+    CHECK(hispeed != nullptr && hispeed->ordered_scale && hispeed->options.size() == 4U);
+    fs::remove_all(root);
+
+    // Contextual UCB1-Tuned Bandit rewards novel/beneficial arms and suppresses regressions.
+    const double novel_ucb = contextualBanditScore(0.60, nullptr, 12U, 0.08);
+    CHECK(novel_ucb > 0.60 && novel_ucb <= 1.0);
+
+    ExperienceMemory::Record reg_rec{};
+    reg_rec.candidate.key = "resource:/test:bad";
+    reg_rec.outcome = BaselineIntelligence::Outcome::Regression;
+    reg_rec.score = 0.20;
+    reg_rec.confidence = 0.85;
+    reg_rec.variance = 0.02;
+    reg_rec.observations = 4U;
+    const double reg_ucb = contextualBanditScore(0.60, &reg_rec, 16U, 0.08);
+    CHECK(reg_ucb < 0.40);
+}
+
 } // namespace
 
 int main() {
@@ -480,6 +540,7 @@ int main() {
     testDiscoveryCapacityReportsTruncation();
     testDiscoveryInputAndDirectoryBounds();
     testUnclaimedAndSymlinks();
+    testSiliconHeadroomAndBandit();
     if (failures == 0) std::cout << "CoreFlow capability-driven contract: PASS\n";
     return failures == 0 ? 0 : 1;
 }

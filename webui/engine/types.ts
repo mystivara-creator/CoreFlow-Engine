@@ -69,12 +69,78 @@ export type DevicePresetId = 'kunzite_parrot' | 'universal_kalama' | 'restricted
 
 export interface CpuClusterSpec {
   id: number;
+  policyPath: string;
   label: string;
   cores: string;
+  coresRange: string;
+  role: 'efficiency' | 'performance' | 'prime';
   minFreqKhz: number;
   maxFreqKhz: number;
+  siliconMaxFreqKhz: number;
+  oppTableKhz: number[];
   stockGovernor: string;
   availableGovernors: string[];
+  governorSubdir: string;
+  oemUpRateLimitUs: number;
+  siliconMinUpRateLimitUs: number;
+  oemDownRateLimitUs: number;
+  siliconMaxDownRateLimitUs: number;
+  loadTunableLeaf?: string;
+  oemTargetLoad: number;
+  siliconOptimalLoad: number;
+  thermalClampLoad: number;
+}
+
+export interface StorageTopologySpec {
+  queuePath: string;
+  interfaceType: string;
+  minReadAheadKb: number;
+  stockReadAheadKb: number;
+  maxReadAheadKb: number;
+  stockNrRequests: number;
+  maxQueueDepth: number;
+  stockRqAffinity: number;
+  stockScheduler: string;
+  availableSchedulers: string[];
+}
+
+export interface GpuTopologySpec {
+  governorPath: string;
+  stockGovernor: string;
+  availableGovernors: string[];
+  minPwrlevelPath?: string;
+  oemDefaultPwrlevel?: number;
+  numPwrlevels?: number;
+  oppTableMhz: number[];
+  siliconPeakClockMhz: number;
+  oemSustainedCapMhz: number;
+}
+
+export interface CgroupTopologySpec {
+  topAppUclampMinPath: string;
+  oemTopAppUclampMin: number;
+  bgUclampMaxPath: string;
+  oemBgUclampMax: string;
+  bgCpusetPath: string;
+  oemBgCpus: string;
+}
+
+export interface NetworkTopologySpec {
+  congestionPath: string;
+  stockCongestion: string;
+  availableCongestion: string[];
+  fastOpenPath: string;
+  stockFastOpen: number;
+}
+
+export interface OemCapabilityAuditItem {
+  id: string;
+  domain: 'Silicon Envelope' | 'Encore Dynamic' | 'OEM Tier Audit';
+  title: string;
+  oemStockPosture: string;
+  rawSiliconCapability: string;
+  coreflowResolution: string;
+  reversibleMethod: string;
 }
 
 export interface ChargingValidationSpec {
@@ -106,6 +172,8 @@ export interface DeviceHardwareProfile {
   codename: string;
   board: string;
   soc: string;
+  siliconArchitecture: string;
+  oemRomLabel: string;
   gpu: string;
   abi: string;
   kernelRelease: string;
@@ -124,6 +192,11 @@ export interface DeviceHardwareProfile {
   discoveredResources: number;
   mutationReadyResources: number;
   cpuPolicies: CpuClusterSpec[];
+  storage: StorageTopologySpec;
+  gpuTopology: GpuTopologySpec;
+  cgroups: CgroupTopologySpec;
+  network: NetworkTopologySpec;
+  oemAuditItems: OemCapabilityAuditItem[];
   charging: ChargingValidationSpec;
 }
 
@@ -182,7 +255,13 @@ export interface RuntimeSample {
   confidence: number;
 }
 
-export type SysfsSubsystem = 'CPU & WALT' | 'Block I/O' | 'VM / Sysctl' | 'GPU & DSP' | 'Charging';
+export type SysfsSubsystem =
+  | 'CPU & WALT'
+  | 'Block I/O'
+  | 'VM / Sysctl'
+  | 'GPU & DSP'
+  | 'Network'
+  | 'Charging';
 
 export type SysfsNodeStatus = 'BASELINE' | 'MUTATED' | 'CLAMPED' | 'SKIPPED';
 
@@ -192,7 +271,45 @@ export interface SysfsNodeEntry {
   baselineValue: string;
   currentValue: string;
   status: SysfsNodeStatus;
+  domainEnvelope?: string;
   rationale: string;
+}
+
+export type BanditArmId =
+  | 'OEM_STOCK_CONSERVE'
+  | 'SILICON_RAW_UNLOCK'
+  | 'ENCORE_FRAME_PACING'
+  | 'HYPER_INTERACTIVE_RAMP'
+  | 'THERMAL_PARETO_RELIEF';
+
+export interface BanditArmState {
+  id: BanditArmId;
+  label: string;
+  description: string;
+  pulls: number;
+  meanReward: number;
+  variance: number;
+  ucbScore: number;
+  explorationBonus: number;
+}
+
+export interface ParetoObjectiveWeights {
+  throughput: number;
+  frameLatency: number;
+  thermalSafety: number;
+  powerEfficiency: number;
+}
+
+export interface HybridBrainEvaluation {
+  selectedArm: BanditArmId;
+  selectedArmLabel: string;
+  paretoWeights: ParetoObjectiveWeights;
+  arms: BanditArmState[];
+  unlockDrive: number; // 0..1 continuous silicon envelope activation
+  latencyDrive: number; // 0..1 continuous interactive ramp activation
+  containmentDrive: number; // 0..1 background / thermal containment activation
+  siliconGapPct: number; // % of OEM-throttled silicon headroom unlocked safely
+  reasoningSummary: string;
 }
 
 export interface PredictorFeatureRow {

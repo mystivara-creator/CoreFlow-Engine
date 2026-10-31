@@ -192,6 +192,16 @@ bool VendorKnob::declaresWithProfile(std::string_view value, VendorProfile profi
     return false;
 }
 
+bool VendorKnob::hasPerformanceHeadroom(std::string_view live_baseline) const noexcept {
+    const std::string_view base = trimView(live_baseline);
+    for (const auto& v : values) {
+        if (v.profile == VendorProfile::Performance && trimView(v.value) != base) {
+            return true;
+        }
+    }
+    return false;
+}
+
 const VendorKnob* VendorKnowledge::find(std::string_view path) const noexcept {
     try {
         const auto it = index_.find(std::string(path));
@@ -400,11 +410,113 @@ std::size_t VendorKnowledge::parsePowerHintJson(std::string_view text,
     return added;
 }
 
+std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
+                                                std::string_view source) noexcept {
+    // Harvests Qualcomm BoostFramework (targetresourceconfigs.xml /
+    // perfboostsconfig.xml), MediaTek PerfService (perfservscntbl.xml /
+    // power_app_cfg.xml), and OEM perf/thermal XML tables read-only without
+    // hardcoding any device path. Only literal kernel paths and literal values
+    // pass VendorKnowledge::add().
+    std::size_t added = 0;
+    try {
+        VendorProfile active_profile = VendorProfile::Boot;
+        std::size_t pos = 0;
+        while (pos < text.size()) {
+            const auto lt = text.find('<', pos);
+            if (lt == std::string_view::npos) break;
+            if (lt + 3U < text.size() && text.substr(lt, 4U) == "<!--") {
+                const auto end_comment = text.find("-->", lt + 4U);
+                if (end_comment == std::string_view::npos) break;
+                pos = end_comment + 3U;
+                continue;
+            }
+            const auto gt = text.find('>', lt + 1U);
+            if (gt == std::string_view::npos) break;
+            const std::string_view tag_body = trimView(text.substr(lt + 1U, gt - lt - 1U));
+            pos = gt + 1U;
+            if (tag_body.empty() || tag_body.front() == '?' || tag_body.front() == '!') continue;
+            if (tag_body.front() == '/') {
+                active_profile = VendorProfile::Boot;
+                continue;
+            }
+
+            // Parse XML attributes key="value" / key='value' inside this tag.
+            std::string attr_path;
+            std::string attr_val;
+            std::string attr_default;
+            std::string attr_label;
+            std::size_t i = 0;
+            while (i < tag_body.size() && !std::isspace(static_cast<unsigned char>(tag_body[i])) &&
+                   tag_body[i] != '/') {
+                ++i;
+            }
+            const std::string tag_name = upper(tag_body.substr(0, i));
+            while (i < tag_body.size()) {
+                while (i < tag_body.size() &&
+                       (std::isspace(static_cast<unsigned char>(tag_body[i])) || tag_body[i] == '/')) {
+                    ++i;
+                }
+                const std::size_t kstart = i;
+                while (i < tag_body.size() && tag_body[i] != '=' &&
+                       !std::isspace(static_cast<unsigned char>(tag_body[i]))) {
+                    ++i;
+                }
+                const std::string key = upper(tag_body.substr(kstart, i - kstart));
+                while (i < tag_body.size() && std::isspace(static_cast<unsigned char>(tag_body[i]))) ++i;
+                if (i >= tag_body.size() || tag_body[i] != '=') continue;
+                ++i;
+                while (i < tag_body.size() && std::isspace(static_cast<unsigned char>(tag_body[i]))) ++i;
+                if (i >= tag_body.size() || (tag_body[i] != '"' && tag_body[i] != '\'')) continue;
+                const char q = tag_body[i++];
+                const std::size_t vstart = i;
+                while (i < tag_body.size() && tag_body[i] != q) ++i;
+                const std::string_view val = tag_body.substr(vstart, i - vstart);
+                if (i < tag_body.size() && tag_body[i] == q) ++i;
+
+                if (key == "NODE" || key == "PATH" || key == "SYSFS" || key == "FILE") {
+                    attr_path = std::string(val);
+                } else if (key == "VALUE" || key == "PARAM" || key == "TARGETVALUE" ||
+                           key == "MAXVALUE" || key == "PERFVALUE") {
+                    attr_val = std::string(val);
+                } else if (key == "DEFAULTVALUE" || key == "DEFAULT" || key == "RESETVALUE") {
+                    attr_default = std::string(val);
+                } else if (key == "TYPE" || key == "NAME" || key == "SCENARIO" ||
+                           key == "HINT" || key == "PROFILE" || key == "MODE") {
+                    if (!attr_label.empty()) attr_label.push_back(' ');
+                    attr_label.append(val);
+                }
+            }
+
+            if (!attr_label.empty()) {
+                const VendorProfile derived = profileFromLabel(attr_label);
+                if (derived != VendorProfile::Boot) active_profile = derived;
+            } else {
+                const VendorProfile tag_derived = profileFromLabel(tag_name);
+                if (tag_derived != VendorProfile::Boot) active_profile = tag_derived;
+            }
+
+            if (!attr_path.empty()) {
+                if (!attr_default.empty()) {
+                    if (add(attr_path, attr_default, VendorProfile::Default, source)) ++added;
+                }
+                if (!attr_val.empty()) {
+                    const VendorProfile p = active_profile == VendorProfile::Boot
+                                                ? VendorProfile::Performance
+                                                : active_profile;
+                    if (add(attr_path, attr_val, p, source)) ++added;
+                }
+            }
+        }
+    } catch (...) {
+    }
+    return added;
+}
+
 std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
     try {
         if (files_parsed_ >= kMaxFiles) return 0;
         const std::string_view name = std::string_view(path).substr(path.rfind('/') + 1U);
-        enum class Kind { None, Rc, Shell, PowerHint } kind = Kind::None;
+        enum class Kind { None, Rc, Shell, PowerHint, PerfXml } kind = Kind::None;
         if (endsWith(name, ".rc")) kind = Kind::Rc;
         else if (endsWith(name, ".sh")) kind = Kind::Shell;
         else if (endsWith(name, ".json")) {
@@ -417,6 +529,15 @@ std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
                 uname.find("GPU") != std::string::npos ||
                 uname.find("POWER") != std::string::npos) {
                 kind = Kind::PowerHint;
+            }
+        } else if (endsWith(name, ".xml")) {
+            const std::string uname = upper(name);
+            if (uname.find("PERF") != std::string::npos ||
+                uname.find("BOOST") != std::string::npos ||
+                uname.find("TARGETRESOURCE") != std::string::npos ||
+                uname.find("POWER") != std::string::npos ||
+                uname.find("SCN") != std::string::npos) {
+                kind = Kind::PerfXml;
             }
         }
         if (kind == Kind::None) return 0;  // never read unrelated vendor files
@@ -440,6 +561,7 @@ std::size_t VendorKnowledge::parseFile(const std::string& path) noexcept {
             case Kind::Rc:        return parseInitRc(text, path);
             case Kind::Shell:     return parseShell(text, path);
             case Kind::PowerHint: return parsePowerHintJson(text, path);
+            case Kind::PerfXml:   return parseVendorPerfXml(text, path);
             case Kind::None:      break;
         }
     } catch (...) {

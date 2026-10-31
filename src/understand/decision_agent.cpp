@@ -10,7 +10,125 @@
 namespace coreflow {
 namespace {
 
-std::string formatProposalSummary(const EffectScore& best, std::size_t ranked_count) {
+struct ParetoWeights {
+    double perf{0.25};
+    double latency{0.25};
+    double thermal{0.25};
+    double power{0.25};
+};
+
+ParetoWeights deriveParetoWeights(const EffectContext& ctx, RuntimeState state) noexcept {
+    double w_perf = 0.22;
+    double w_lat = 0.22;
+    double w_therm = 0.30;
+    double w_pwr = 0.26;
+
+    if (state == RuntimeState::ThermalGuard ||
+        (ctx.thermal_available && ctx.thermal_c >= 52.0) ||
+        ctx.throttling_detected) {
+        w_therm += 0.45;
+        w_pwr += 0.15;
+        w_perf = 0.08;
+        w_lat = 0.12;
+    } else if (ctx.gaming_active ||
+               (ctx.gpu_busy_available && ctx.gpu_busy_ratio >= 0.45) ||
+               (ctx.frame_jank_available && ctx.frame_jank_rate >= 0.04)) {
+        w_perf += 0.24;
+        w_lat += 0.30;
+        if (ctx.thermal_available && ctx.thermal_c >= 48.0) {
+            w_therm += 0.14;
+        }
+        w_pwr = ctx.charging ? 0.10 : 0.16;
+    } else if (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.65) {
+        w_perf += 0.20;
+        w_lat += 0.18;
+    } else if (state == RuntimeState::Idle) {
+        w_pwr += 0.32;
+        w_therm += 0.18;
+        w_perf = 0.10;
+        w_lat = 0.12;
+    }
+
+    const double sum = std::max(1e-6, w_perf + w_lat + w_therm + w_pwr);
+    return ParetoWeights{w_perf / sum, w_lat / sum, w_therm / sum, w_pwr / sum};
+}
+
+double evaluateParetoAlignment(
+    const EffectScore& candidate,
+    const ParetoWeights& w,
+    const EnvironmentCapabilityMatrix& matrix,
+    const std::unordered_map<std::string, std::string>& baselines) noexcept {
+    double perf_axis = candidate.benefit;
+    double latency_axis = candidate.benefit;
+    double thermal_axis = candidate.stabilizing ? 0.85 : (1.0 - candidate.risk);
+    double power_axis = candidate.stabilizing ? 0.80 : (1.0 - candidate.risk * 0.85);
+
+    switch (candidate.domain) {
+        case ResourceDomain::UClamp:
+        case ResourceDomain::Scheduler:
+        case ResourceDomain::Gpu:
+            if (!candidate.stabilizing) {
+                latency_axis = std::clamp(latency_axis + 0.12, 0.0, 1.0);
+                perf_axis = std::clamp(perf_axis + 0.08, 0.0, 1.0);
+            }
+            break;
+        case ResourceDomain::CpuFreq:
+            if (!candidate.stabilizing) {
+                perf_axis = std::clamp(perf_axis + 0.10, 0.0, 1.0);
+                latency_axis = std::clamp(latency_axis + 0.08, 0.0, 1.0);
+            }
+            break;
+        case ResourceDomain::CpuSet:
+            thermal_axis = std::clamp(thermal_axis + 0.08, 0.0, 1.0);
+            power_axis = std::clamp(power_axis + 0.08, 0.0, 1.0);
+            break;
+        case ResourceDomain::Io:
+            latency_axis = std::clamp(latency_axis + 0.08, 0.0, 1.0);
+            break;
+        default:
+            break;
+    }
+
+    // Silicon Potential Gap detection: check if the hardware capability has a
+    // vendor Performance operating point or upper OPP scale currently capped by
+    // the OEM factory baseline.
+    double silicon_gap_bonus = 0.0;
+    if (!candidate.stabilizing &&
+        (candidate.source == CandidateSource::VendorPerformance ||
+         candidate.source == CandidateSource::OrderedScale ||
+         candidate.source == CandidateSource::BoundedStep)) {
+        const auto base_it = baselines.find(candidate.path);
+        if (base_it != baselines.end() && base_it->second != candidate.requested) {
+            for (const auto& cap : matrix.resources) {
+                if (cap.path != candidate.path) continue;
+                for (const auto& vv : cap.vendor_values) {
+                    if (vv.profile == VendorProfile::Performance &&
+                        vv.value != base_it->second) {
+                        silicon_gap_bonus = 0.025;
+                        break;
+                    }
+                }
+                if (silicon_gap_bonus == 0.0 && cap.ordered_scale && cap.options.size() >= 4U) {
+                    silicon_gap_bonus = 0.015;
+                }
+                break;
+            }
+        }
+    }
+
+    const double pareto =
+        w.perf * perf_axis +
+        w.latency * latency_axis +
+        w.thermal * thermal_axis +
+        w.power * power_axis;
+    // Small centered multi-objective refinement around EffectModel's base utility.
+    return (pareto - 0.50) * 0.06 + silicon_gap_bonus;
+}
+
+std::string formatProposalSummary(
+    const EffectScore& best,
+    std::size_t ranked_count,
+    const ParetoWeights& w) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
     out.precision(3);
@@ -27,7 +145,8 @@ std::string formatProposalSummary(const EffectScore& best, std::size_t ranked_co
     out << " | util=" << best.utility
         << " benefit=" << best.benefit
         << " risk=" << best.risk
-        << " conf=" << best.confidence;
+        << " conf=" << best.confidence
+        << " pareto(P=" << w.perf << ",L=" << w.latency << ",T=" << w.thermal << ")";
     if (best.stabilizing) out << " | stabilizing";
     if (ranked_count > 1) out << " | ranked=" << ranked_count;
     if (!best.reason.empty()) out << " | " << best.reason;
@@ -64,9 +183,13 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
         return proposal;
     }
 
-    // Stage 3 — review every candidate against uncertainty and stress context.
-    // Ranking may demote candidates but cannot make an ineligible candidate
-    // eligible. A stressed context accepts only explicitly stabilizing actions.
+    // Stage 3 — multi-objective Pareto + Contextual UCB1-Tuned Bandit + safety review.
+    // Ranking may demote candidates or refine ordering among already-eligible
+    // candidates, but NEVER makes an ineligible candidate eligible.
+    const ParetoWeights pareto_weights = deriveParetoWeights(obs.effect_ctx, obs.state);
+    const std::uint64_t total_exp_obs =
+        obs.experience != nullptr ? obs.experience->totalObservations() : 0U;
+
     RuntimeSample signals;
     signals.confidence = obs.sample_confidence;
     signals.thermal_available = obs.effect_ctx.thermal_available;
@@ -106,6 +229,18 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
         const double evidence_confidence =
             std::min(candidate.confidence, obs.sample_confidence);
         candidate.utility -= (1.0 - evidence_confidence) * 0.04;
+        candidate.utility += evaluateParetoAlignment(
+            candidate, pareto_weights, *obs.matrix, *obs.baselines);
+
+        if (obs.experience != nullptr && !obs.stabilizing_allowed_by_context) {
+            ExperienceMemory::CandidateIdentity id;
+            id.key = "resource:" + candidate.path + ":" + candidate.requested;
+            const auto* rec = obs.experience->find(id, obs.experience_ctx);
+            const double norm_prior = std::clamp((candidate.utility + 0.29) / 1.04, 0.0, 1.0);
+            const double ucb_norm = contextualBanditScore(norm_prior, rec, total_exp_obs, 0.065);
+            candidate.utility = ucb_norm * 1.04 - 0.29;
+        }
+
         if (!candidate.stabilizing) {
             candidate.utility -= unrelatedResourcePenalty(diagnosis, candidate.domain);
             if (obs.effect_ctx.storage_health_caution && candidate.domain == ResourceDomain::Io)
@@ -152,8 +287,8 @@ AgentProposal ScoringDecisionAgent::reason(const AgentObservation& obs) const no
     proposal.best = proposal.ranked.front();
     proposal.valid = proposal.best.eligible;
     proposal.overall_confidence = best_confidence;
-    proposal.reasoning_summary = "observe → hypothesize → review → propose: " +
-        formatProposalSummary(proposal.best, proposal.ranked.size());
+    proposal.reasoning_summary = "observe → pareto+ucb → review → propose: " +
+        formatProposalSummary(proposal.best, proposal.ranked.size(), pareto_weights);
     return proposal;
 }
 

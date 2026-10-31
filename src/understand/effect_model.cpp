@@ -262,9 +262,14 @@ bool kernelScalarBounds(const EcosystemKnowledgeEntry* knowledge,
         return true;
     }
     if (key == "vm.dirty_ratio" || key == "vm.dirty_background_ratio" ||
-        key == "cpufreq.governor.hispeed_load") {
+        key == "cpufreq.governor.hispeed_load" || key == "walt.target_load") {
         min_out = 1LL * scale;
         max_out = 100LL * scale;
+        return true;
+    }
+    if (key == "walt.sched_upmigrate" || key == "walt.sched_downmigrate") {
+        min_out = 1LL * scale;
+        max_out = 1024LL * scale;
         return true;
     }
     if (key == "vm.vfs_cache_pressure") {
@@ -282,9 +287,15 @@ bool kernelScalarBounds(const EcosystemKnowledgeEntry* knowledge,
         max_out = 8LL * scale;
         return true;
     }
-    if (key == "block.queue.rq_affinity" || key == "block.queue.nomerges") {
+    if (key == "block.queue.rq_affinity" || key == "block.queue.nomerges" ||
+        key == "net.ipv4.tcp_ecn") {
         min_out = 0LL;
         max_out = 2LL * scale;
+        return true;
+    }
+    if (key == "net.ipv4.tcp_fastopen") {
+        min_out = 0LL;
+        max_out = 3LL * scale;
         return true;
     }
     return false;
@@ -468,9 +479,12 @@ std::vector<EffectScore> EffectModel::proposals(
                 long long above = 0;
                 bool has_below = false;
                 bool has_above = false;
+                std::vector<long long> sorted_opps;
+                sorted_opps.reserve(capability.options.size());
                 for (const auto& option : capability.options) {
                     long long v = 0;
                     if (!parseInteger(option, v)) continue;
+                    sorted_opps.push_back(v);
                     if (v < base_num && (!has_below || v > below)) { below = v; has_below = true; }
                     if (v > base_num && (!has_above || v < above)) { above = v; has_above = true; }
                 }
@@ -489,6 +503,46 @@ std::vector<EffectScore> EffectModel::proposals(
                          kgsl_inverted_pwrlevel
                              ? "one step toward lower KGSL GPU power level"
                              : "one step up the advertised hardware scale");
+                }
+                // Demand-proportional raw silicon OPP target: when OEM stock baseline
+                // parks a capable chip at its lowest OPP (e.g. KGSL min_pwrlevel=N-1
+                // or conservative hispeed_freq) and real-time render/compute pressure
+                // is elevated with clean thermal headroom, index proportionally into
+                // the hardware's own advertised OPP vector instead of taking 1-OPP microsteps.
+                const bool high_interactive_demand =
+                    !situation.stressed() && !situation.warm_equilibrium &&
+                    sorted_opps.size() >= 4U &&
+                    (ctx.gaming_active ||
+                     (ctx.gpu_busy_available && ctx.gpu_busy_ratio >= 0.50) ||
+                     (ctx.frame_jank_available && ctx.frame_jank_rate >= 0.04) ||
+                     (ctx.cpu_utilization_available && ctx.cpu_utilization >= 0.75));
+                if (high_interactive_demand) {
+                    std::sort(sorted_opps.begin(), sorted_opps.end());
+                    sorted_opps.erase(std::unique(sorted_opps.begin(), sorted_opps.end()),
+                                      sorted_opps.end());
+                    if (sorted_opps.size() >= 4U) {
+                        const double demand_intensity = std::clamp(
+                            std::max({
+                                ctx.gaming_active ? 0.62 : 0.0,
+                                ctx.gpu_busy_available ? ctx.gpu_busy_ratio * 0.85 : 0.0,
+                                ctx.cpu_utilization_available ? ctx.cpu_utilization * 0.80 : 0.0,
+                                ctx.frame_jank_available ? std::min(0.75, ctx.frame_jank_rate * 8.0) : 0.0
+                            }),
+                            0.35, 0.75);
+                        const std::size_t max_idx = sorted_opps.size() - 1U;
+                        const std::size_t target_idx = kgsl_inverted_pwrlevel
+                            ? static_cast<std::size_t>(
+                                  std::llround(static_cast<double>(max_idx) * (1.0 - demand_intensity)))
+                            : static_cast<std::size_t>(
+                                  std::llround(static_cast<double>(max_idx) * demand_intensity));
+                        const long long opp_target = sorted_opps[std::min(target_idx, max_idx)];
+                        if ((kgsl_inverted_pwrlevel && opp_target < base_num && opp_target != below) ||
+                            (!kgsl_inverted_pwrlevel && opp_target > base_num && opp_target != above)) {
+                            emit(std::to_string(opp_target), CandidateSource::OrderedScale,
+                                 directionOf(std::to_string(opp_target)), false,
+                                 "demand-proportional silicon OPP target from hardware scale");
+                        }
+                    }
                 }
             } else if (!capability.ordered_scale) {
                 for (const auto& option : capability.options) {
@@ -606,6 +660,55 @@ std::vector<EffectScore> EffectModel::proposals(
                     emit(format(up), CandidateSource::BoundedStep,
                          EffectDirection::Increase, false,
                          "bounded exploration step up");
+                }
+                // Demand-scaled continuous fine-tuning candidate: when workload
+                // demand is elevated with clean thermal headroom, scale step size
+                // continuously from live pressure telemetry within verified bounds
+                // so conservative OEM factory baselines (e.g. slow governor ramp or
+                // high WALT target_load) converge proportionally without hardcoded constants.
+                if (!situation.stressed() && !situation.warm_equilibrium && situation.elevated) {
+                    const double demand_ratio = std::clamp(
+                        std::max({
+                            situation.severity,
+                            ctx.gaming_active ? 0.65 : 0.0,
+                            ctx.cpu_utilization_available ? ctx.cpu_utilization * 0.85 : 0.0,
+                            ctx.gpu_busy_available ? ctx.gpu_busy_ratio * 0.85 : 0.0
+                        }),
+                        0.25, 0.90);
+                    const long long adaptive_delta = std::max<long long>(
+                        step + 1LL,
+                        static_cast<long long>(
+                            std::llround(static_cast<double>(signed_magnitude) * (0.16 + 0.20 * demand_ratio))));
+                    const std::string_view kkey =
+                        (knowledge != nullptr && knowledge->key != nullptr)
+                            ? std::string_view(knowledge->key)
+                            : std::string_view{};
+                    if (kkey == "cpufreq.governor.up_rate_limit_us" ||
+                        kkey == "cpufreq.governor.hispeed_load" ||
+                        kkey == "walt.target_load" ||
+                        kkey == "walt.sched_upmigrate") {
+                        const long long adaptive_down = std::clamp(
+                            scaled < min + adaptive_delta ? min : scaled - adaptive_delta,
+                            lower_bound, upper_bound);
+                        if (adaptive_down != scaled && adaptive_down != down) {
+                            emit(format(adaptive_down), CandidateSource::BoundedStep,
+                                 EffectDirection::Decrease, false,
+                                 "demand-scaled silicon responsiveness fine-tune down");
+                        }
+                    } else if (kkey == "cpufreq.governor.down_rate_limit_us" ||
+                               kkey == "block.queue.read_ahead_kb" ||
+                               (cgroup_uclamp_percent && isPreferredForegroundPath(capability.path) &&
+                                endsWith(capability.path, "/cpu.uclamp.min"))) {
+                        const long long uclamp_cap = cgroup_uclamp_percent ? (35LL * scale) : upper_bound;
+                        const long long adaptive_up = std::clamp(
+                            scaled > max - adaptive_delta ? max : scaled + adaptive_delta,
+                            lower_bound, std::min(upper_bound, uclamp_cap));
+                        if (adaptive_up != scaled && adaptive_up != up) {
+                            emit(format(adaptive_up), CandidateSource::BoundedStep,
+                                 EffectDirection::Increase, false,
+                                 "demand-scaled silicon responsiveness fine-tune up");
+                        }
+                    }
                 }
             } else if (cgroup_uclamp_percent && scaled == 0 && !situation.stressed() &&
                        endsWith(capability.path, "/cpu.uclamp.min") &&

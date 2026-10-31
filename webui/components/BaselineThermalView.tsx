@@ -12,6 +12,7 @@ import {
   BaselineExperimentState,
   BaselineOutcome,
   DeviceHardwareProfile,
+  HybridBrainEvaluation,
   ThermalPrediction,
 } from '../engine/types';
 
@@ -20,6 +21,7 @@ interface BaselineThermalViewProps {
   profile: DeviceHardwareProfile;
   experiment: BaselineExperimentState;
   prediction: ThermalPrediction;
+  hybridBrain?: HybridBrainEvaluation;
   parsedStatus: ParsedEngineStatus | null;
   onSelectGovernor: (gov: string) => void;
   onToggleInjectRegression: (val: boolean) => void;
@@ -27,11 +29,51 @@ interface BaselineThermalViewProps {
   onResetExperiment: () => void;
 }
 
+function ParetoAxisBar({
+  label,
+  weight,
+  color,
+}: {
+  label: string;
+  weight: number;
+  color: string;
+}) {
+  const pct = Math.min(100, Math.max(0, Number((weight * 100).toFixed(1))));
+  return (
+    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium text-slate-700">{label}</span>
+        <span className="font-mono font-semibold text-slate-900 tabular-nums">
+          {pct.toFixed(1)}%
+        </span>
+      </div>
+      <svg
+        viewBox="0 0 100 4"
+        preserveAspectRatio="none"
+        className="w-full h-1.5 rounded-full overflow-hidden"
+        aria-hidden="true"
+      >
+        <rect x={0} y={0} width={100} height={4} rx={2} fill="#E2E8F0" />
+        <rect
+          x={0}
+          y={0}
+          width={pct}
+          height={4}
+          rx={2}
+          fill={color}
+          className="cf-svg-metric"
+        />
+      </svg>
+    </div>
+  );
+}
+
 export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
   isNativeBridge = false,
   profile,
   experiment,
   prediction,
+  hybridBrain,
   parsedStatus,
   onSelectGovernor,
   onToggleInjectRegression,
@@ -49,14 +91,14 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
       <div className="pb-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Baseline Intelligence &amp; 18-Feature Thermal Predictor
+            Hybrid AI Brain, Baseline Intelligence &amp; 18f ONNX Predictor
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Pre/post-mutation window verification (<span className="font-mono">src/mutation/mutation.cpp</span>) and frozen 18-feature ONNX horizon vector (<span className="font-mono">thermal_features.hpp</span>).
+            Contextual UCB1-Tuned Multi-Armed Bandit (<span className="font-mono">experience.hpp</span>), 4-Axis Pareto reasoning (<span className="font-mono">decision_agent.cpp</span>), and frozen 18-feature ONNX thermal horizon (<span className="font-mono">thermal_features.hpp</span>).
           </p>
         </div>
         <div className="text-xs font-mono text-slate-500 tabular-nums bg-white border border-slate-200 rounded-lg px-3 py-1.5 self-start sm:self-auto">
-          thermal_predictor.onnx · 18f v1.2
+          UCB1-Tuned · Pareto 4D · ONNX 18f v1.2
         </div>
       </div>
 
@@ -127,7 +169,107 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
           Live verification runs automatically in the daemon. Manual governor experiments and thermal forecasts are available only in browser preview.
         </p>
       ) : (
-        <div className="cf-stagger-2 grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+        <>
+          {hybridBrain && (
+            <section className="cf-stagger-2 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="p-5 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    On-Device Hybrid Decision Brain (Contextual UCB1-Tuned Bandit + 4D Pareto)
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Zero cloud calls, zero hardcoded parameters: learns empirical reward posteriors per workload context and balances 4 competing hardware objectives in real time.
+                  </p>
+                </div>
+                <div className="text-xs font-mono text-slate-600 tabular-nums">
+                  Selected: <strong className="text-blue-700">{hybridBrain.selectedArmLabel}</strong> · Silicon Unlock{' '}
+                  <strong className="text-emerald-700">{hybridBrain.siliconGapPct}%</strong>
+                </div>
+              </div>
+
+              <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 border-b border-slate-100">
+                <ParetoAxisBar
+                  label="Compute Throughput"
+                  weight={hybridBrain.paretoWeights.throughput}
+                  color="#2563EB"
+                />
+                <ParetoAxisBar
+                  label="Frame & I/O Latency"
+                  weight={hybridBrain.paretoWeights.frameLatency}
+                  color="#059669"
+                />
+                <ParetoAxisBar
+                  label="Thermal Horizon Safety"
+                  weight={hybridBrain.paretoWeights.thermalSafety}
+                  color="#DC2626"
+                />
+                <ParetoAxisBar
+                  label="Power Conservation"
+                  weight={hybridBrain.paretoWeights.powerEfficiency}
+                  color="#D97706"
+                />
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="py-2.5 px-5">Contextual Bandit Strategy Arm</th>
+                      <th className="py-2.5 px-4 text-right">Pulls (n)</th>
+                      <th className="py-2.5 px-4 text-right">Posterior Mean (μ)</th>
+                      <th className="py-2.5 px-4 text-right">Variance (σ²)</th>
+                      <th className="py-2.5 px-4 text-right">UCB Explore</th>
+                      <th className="py-2.5 px-5 text-right">UCB1-Tuned Score</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {hybridBrain.arms.map((arm) => {
+                      const isWinner = arm.id === hybridBrain.selectedArm;
+                      return (
+                        <tr
+                          key={arm.id}
+                          className={
+                            isWinner
+                              ? 'bg-blue-50/60 transition-colors'
+                              : 'hover:bg-slate-50/80 transition-colors'
+                          }
+                        >
+                          <td className="py-2.5 px-5">
+                            <div className="font-medium text-slate-900">
+                              {arm.label}
+                              {isWinner && (
+                                <span className="ml-2 font-mono text-[11px] text-blue-700 font-semibold">
+                                  · ACTIVE
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-500">{arm.description}</div>
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono tabular-nums text-slate-700">
+                            {arm.pulls}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono tabular-nums text-slate-700">
+                            {arm.meanReward.toFixed(3)}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono tabular-nums text-slate-500">
+                            {arm.variance.toFixed(4)}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono tabular-nums text-emerald-700">
+                            +{arm.explorationBonus.toFixed(3)}
+                          </td>
+                          <td className="py-2.5 px-5 text-right font-mono font-bold tabular-nums text-slate-900">
+                            {arm.ucbScore.toFixed(3)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          <div className="cf-stagger-2 grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
           {/* Left: Governor Verification Experiment */}
           <section className="xl:col-span-5 cf-card bg-white border border-slate-200 rounded-xl p-5 space-y-5">
             <div>
@@ -373,6 +515,7 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
             </div>
           </section>
         </div>
+        </>
       )}
     </div>
   );

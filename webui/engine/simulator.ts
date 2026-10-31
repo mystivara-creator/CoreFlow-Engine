@@ -1,5 +1,7 @@
 import {
   AppClass,
+  BanditArmId,
+  BanditArmState,
   BaselineAction,
   BaselineExperimentState,
   BaselineOutcome,
@@ -7,8 +9,10 @@ import {
   Decision,
   DeviceHardwareProfile,
   EngineMode,
+  HybridBrainEvaluation,
   LogcatEntry,
   NotificationEvent,
+  ParetoObjectiveWeights,
   PredictorFeatureRow,
   RuntimeSample,
   RuntimeState,
@@ -285,6 +289,297 @@ export function evaluateCoreFlowPillar(
   return EngineMode.ModeBalanced;
 }
 
+function clamp01(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
+}
+
+function lerpInt(a: number, b: number, t: number): number {
+  return Math.round(a + (b - a) * clamp01(t));
+}
+
+function quantizePowerOfTwo(value: number, minPow2: number, maxPow2: number): number {
+  const clamped = Math.min(maxPow2, Math.max(minPow2, value));
+  const exp = Math.round(Math.log2(Math.max(1, clamped)));
+  return Math.min(maxPow2, Math.max(minPow2, 2 ** exp));
+}
+
+export function createInitialBanditArms(): BanditArmState[] {
+  return [
+    {
+      id: 'OEM_STOCK_CONSERVE',
+      label: 'OEM Factory Conservation',
+      description: 'Maintains stock factory baselines & deep-sleep efficiency when demand is low.',
+      pulls: 4,
+      meanReward: 0.64,
+      variance: 0.012,
+      ucbScore: 0.72,
+      explorationBonus: 0.08,
+    },
+    {
+      id: 'SILICON_RAW_UNLOCK',
+      label: 'Raw Silicon Envelope Unlock',
+      description: 'Unlocks OEM-throttled WALT/schedutil rate limits & upper hardware OPPs under clean headroom.',
+      pulls: 3,
+      meanReward: 0.74,
+      variance: 0.018,
+      ucbScore: 0.84,
+      explorationBonus: 0.10,
+    },
+    {
+      id: 'ENCORE_FRAME_PACING',
+      label: 'Encore Dynamic Frame Lock',
+      description: 'Coordinates GPU OPP floor, foreground uclamp, A55 background isolation & BBR congestion.',
+      pulls: 3,
+      meanReward: 0.77,
+      variance: 0.016,
+      ucbScore: 0.87,
+      explorationBonus: 0.10,
+    },
+    {
+      id: 'HYPER_INTERACTIVE_RAMP',
+      label: 'Interactive Launch & I/O Ramp',
+      description: 'Accelerates foreground ramp & UFS read-ahead proportionally to transient CPU/I/O spikes.',
+      pulls: 3,
+      meanReward: 0.71,
+      variance: 0.015,
+      ucbScore: 0.81,
+      explorationBonus: 0.10,
+    },
+    {
+      id: 'THERMAL_PARETO_RELIEF',
+      label: 'Pareto Thermal & ZRAM Guard',
+      description: 'Preemptively trims background cgroups & governor residency before crossing 55.0 °C.',
+      pulls: 3,
+      meanReward: 0.73,
+      variance: 0.011,
+      ucbScore: 0.82,
+      explorationBonus: 0.09,
+    },
+  ];
+}
+
+export function computeParetoWeights(
+  inputs: WorkloadInputs,
+  sample: RuntimeSample,
+  policyState: RuntimeState,
+  prediction: ThermalPrediction
+): ParetoObjectiveWeights {
+  const tempC = sample.thermalMillidegrees / 1000;
+  const guardEnterC = THERMAL_GUARD_ENTER_MC / 1000;
+  const warmC = THERMAL_WARM_MC / 1000;
+
+  let throughput = 0.20 + (sample.cpuUsagePct / 100) * 0.28 + Math.min(0.18, sample.ioReadKbs / 10_000);
+  let frameLatency =
+    0.18 +
+    (inputs.foregroundApp === AppClass.Game ? 0.32 : inputs.screenOn ? 0.14 : 0.0) +
+    (sample.gpuBusyPct / 100) * 0.26;
+  let thermalSafety =
+    0.22 +
+    clamp01((Math.max(tempC, prediction.predictedTempC) - 36) / (guardEnterC - 36)) * 0.52 +
+    (policyState === RuntimeState.ThermalGuard || prediction.preemptiveTrigger ? 0.35 : 0);
+  let powerEfficiency =
+    0.20 +
+    (!inputs.screenOn ? 0.42 : 0) +
+    (!sample.charging ? clamp01((100 - sample.batteryPercent) / 100) * 0.22 : 0.04) +
+    (tempC < warmC && sample.cpuUsagePct < 20 ? 0.18 : 0);
+
+  if (policyState === RuntimeState.ThermalGuard || tempC >= guardEnterC) {
+    throughput *= 0.30;
+    frameLatency *= 0.40;
+  }
+
+  const total = Math.max(1e-6, throughput + frameLatency + thermalSafety + powerEfficiency);
+  return {
+    throughput: Number((throughput / total).toFixed(3)),
+    frameLatency: Number((frameLatency / total).toFixed(3)),
+    thermalSafety: Number((thermalSafety / total).toFixed(3)),
+    powerEfficiency: Number((powerEfficiency / total).toFixed(3)),
+  };
+}
+
+export function evaluateHybridBrain(
+  profile: DeviceHardwareProfile,
+  capabilities: CapabilityOverrides,
+  inputs: WorkloadInputs,
+  sample: RuntimeSample,
+  policyState: RuntimeState,
+  prediction: ThermalPrediction,
+  arms: BanditArmState[],
+  mutationArmed = true
+): HybridBrainEvaluation {
+  const paretoWeights = computeParetoWeights(inputs, sample, policyState, prediction);
+  const tempC = sample.thermalMillidegrees / 1000;
+  const guardEnterC = THERMAL_GUARD_ENTER_MC / 1000;
+  const warmC = THERMAL_WARM_MC / 1000;
+
+  const thermalHeadroom = clamp01((guardEnterC - Math.max(tempC, prediction.predictedTempC)) / (guardEnterC - 34));
+  const gpuDemand = capabilities.kgslAvailable ? sample.gpuBusyPct / 100 : 0;
+  const cpuDemand = sample.cpuUsagePct / 100;
+  const ioDemand = clamp01((sample.ioReadKbs + sample.ioWriteKbs) / 2400);
+
+  const isStressed =
+    policyState === RuntimeState.ThermalGuard ||
+    policyState === RuntimeState.Pressure ||
+    tempC >= guardEnterC ||
+    prediction.preemptiveTrigger;
+
+  const totalPulls = Math.max(
+    1,
+    arms.reduce((acc, arm) => acc + arm.pulls, 0)
+  );
+  const logTotal = Math.log(1 + totalPulls);
+
+  const scoredArms: BanditArmState[] = arms.map((arm) => {
+    let contextFit = 0.5;
+    switch (arm.id) {
+      case 'OEM_STOCK_CONSERVE':
+        contextFit =
+          paretoWeights.powerEfficiency * 0.95 +
+          (!inputs.screenOn || (cpuDemand < 0.24 && gpuDemand < 0.15) ? 0.34 : 0.06);
+        break;
+      case 'SILICON_RAW_UNLOCK':
+        contextFit = isStressed
+          ? 0.08
+          : (paretoWeights.throughput * 0.60 + paretoWeights.frameLatency * 0.40) *
+              (0.55 + 0.45 * thermalHeadroom) +
+            (cpuDemand >= 0.45 ? 0.20 : 0);
+        break;
+      case 'ENCORE_FRAME_PACING':
+        contextFit = isStressed
+          ? 0.10
+          : paretoWeights.frameLatency * 0.72 +
+            (inputs.foregroundApp === AppClass.Game || gpuDemand >= 0.42 ? 0.30 : 0.02) *
+              (0.50 + 0.50 * thermalHeadroom);
+        break;
+      case 'HYPER_INTERACTIVE_RAMP':
+        contextFit = isStressed
+          ? 0.10
+          : (paretoWeights.throughput * 0.48 + paretoWeights.frameLatency * 0.42) +
+            (inputs.screenOn && (ioDemand >= 0.28 || (cpuDemand >= 0.28 && cpuDemand <= 0.76)) ? 0.24 : 0.04);
+        break;
+      case 'THERMAL_PARETO_RELIEF':
+        contextFit =
+          paretoWeights.thermalSafety * 0.85 +
+          (isStressed || tempC >= warmC ? 0.38 : 0.04);
+        break;
+    }
+
+    const blendedMean = clamp01(arm.meanReward * 0.55 + clamp01(contextFit) * 0.45);
+    const vBound = Math.min(0.25, arm.variance + Math.sqrt((2 * logTotal) / (arm.pulls + 1)));
+    const explorationBonus = isStressed && arm.id !== 'THERMAL_PARETO_RELIEF'
+      ? 0
+      : Number((0.085 * Math.sqrt((logTotal / (arm.pulls + 1)) * vBound)).toFixed(3));
+    const ucbScore = Number(clamp01(blendedMean + explorationBonus).toFixed(3));
+    return {
+      ...arm,
+      ucbScore,
+      explorationBonus,
+    };
+  });
+
+  const sorted = [...scoredArms].sort((a, b) => b.ucbScore - a.ucbScore);
+  const bestArm = !mutationArmed
+    ? scoredArms.find((a) => a.id === 'OEM_STOCK_CONSERVE') ?? sorted[0]
+    : isStressed
+      ? scoredArms.find((a) => a.id === 'THERMAL_PARETO_RELIEF') ?? sorted[0]
+      : sorted[0];
+
+  const rawWorkloadIntensity = clamp01(Math.max(cpuDemand, gpuDemand * 1.08, ioDemand * 0.75));
+  const unlockDrive =
+    !mutationArmed || isStressed || !inputs.screenOn
+      ? 0
+      : bestArm.id === 'OEM_STOCK_CONSERVE'
+        ? 0
+        : Number(
+            clamp01(
+              rawWorkloadIntensity *
+                (0.45 + 0.55 * thermalHeadroom) *
+                (tempC >= warmC ? 0.65 : 1.0)
+            ).toFixed(3)
+          );
+
+  const latencyDrive =
+    !mutationArmed || isStressed || !inputs.screenOn
+      ? 0
+      : bestArm.id === 'ENCORE_FRAME_PACING' || bestArm.id === 'HYPER_INTERACTIVE_RAMP' || bestArm.id === 'SILICON_RAW_UNLOCK'
+        ? Number(
+            clamp01(
+              (paretoWeights.frameLatency * 1.15 + gpuDemand * 0.45 + ioDemand * 0.25) *
+                (0.50 + 0.50 * thermalHeadroom)
+            ).toFixed(3)
+          )
+        : 0;
+
+  const containmentDrive = !mutationArmed
+    ? 0
+    : Number(
+        clamp01(
+          isStressed
+            ? 0.92
+            : !inputs.screenOn
+              ? 0.75
+              : tempC >= warmC || inputs.foregroundApp === AppClass.Game
+                ? 0.58
+                : 0
+        ).toFixed(3)
+      );
+
+  // Measure hardware OEM throttling ratio across clusters & GPU and compute unlocked %
+  const perfCluster = profile.cpuPolicies[profile.cpuPolicies.length - 1];
+  const loadSpan = Math.max(1, perfCluster.oemTargetLoad - perfCluster.siliconOptimalLoad);
+  const rampSpan = Math.max(1, perfCluster.oemUpRateLimitUs - perfCluster.siliconMinUpRateLimitUs);
+  const unlockedLoadFrac = (loadSpan * unlockDrive) / loadSpan;
+  const unlockedRampFrac = (rampSpan * unlockDrive) / rampSpan;
+  const siliconGapPct = Math.round(((unlockedLoadFrac + unlockedRampFrac) * 0.5) * 100);
+
+  const reasoningSummary = !mutationArmed
+    ? 'Observe-only gate active: Hybrid Brain computes counterfactual Pareto + UCB scores without writing sysfs.'
+    : `${bestArm.label} (UCB=${bestArm.ucbScore.toFixed(2)}) | Pareto[P=${paretoWeights.throughput.toFixed(2)}, L=${paretoWeights.frameLatency.toFixed(2)}, T=${paretoWeights.thermalSafety.toFixed(2)}, E=${paretoWeights.powerEfficiency.toFixed(2)}] | Silicon unlock=${siliconGapPct}%`;
+
+  return {
+    selectedArm: bestArm.id,
+    selectedArmLabel: bestArm.label,
+    paretoWeights,
+    arms: scoredArms,
+    unlockDrive,
+    latencyDrive,
+    containmentDrive,
+    siliconGapPct,
+    reasoningSummary,
+  };
+}
+
+export function advanceBanditArms(
+  arms: BanditArmState[],
+  selectedArm: BanditArmId,
+  sample: RuntimeSample,
+  prediction: ThermalPrediction
+): BanditArmState[] {
+  const tempC = sample.thermalMillidegrees / 1000;
+  const guardC = THERMAL_GUARD_ENTER_MC / 1000;
+  const thermalPenalty = clamp01((Math.max(tempC, prediction.predictedTempC) - 44) / (guardC - 40)) * 0.28;
+  const throughputGain = clamp01((sample.cpuUsagePct * 0.55 + sample.gpuBusyPct * 0.45) / 100) * 0.24;
+  const memHealth = clamp01(sample.memAvailableRatio * 1.4) * 0.14;
+  const observedReward = clamp01(0.58 + throughputGain + memHealth - thermalPenalty);
+
+  return arms.map((arm) => {
+    if (arm.id !== selectedArm) return arm;
+    const nextPulls = arm.pulls + 1;
+    const delta = observedReward - arm.meanReward;
+    const nextMean = arm.meanReward + delta / nextPulls;
+    const nextVar = clamp01(
+      ((arm.pulls * arm.variance) + delta * (observedReward - nextMean)) / nextPulls
+    );
+    return {
+      ...arm,
+      pulls: nextPulls,
+      meanReward: Number(nextMean.toFixed(3)),
+      variance: Number(Math.min(0.25, Math.max(0.004, nextVar)).toFixed(4)),
+    };
+  });
+}
+
 export function computeSysfsNodes(
   profile: DeviceHardwareProfile,
   capabilities: CapabilityOverrides,
@@ -292,45 +587,48 @@ export function computeSysfsNodes(
   policyState: RuntimeState,
   sample: RuntimeSample,
   experiment: BaselineExperimentState,
-  mutationArmed = true
+  mutationArmed = true,
+  brain?: HybridBrainEvaluation
 ): SysfsNodeEntry[] {
   const sysOk = capabilities.sysAvailable;
   const procOk = capabilities.procAvailable && capabilities.vmSysctlWritable;
 
-  const isHighPerf =
-    mutationArmed &&
-    (mode === EngineMode.ModeGaming || mode === EngineMode.ModeBurst) &&
-    policyState !== RuntimeState.ThermalGuard &&
-    policyState !== RuntimeState.Pressure;
-
   const isThermalStabilizing =
     mutationArmed &&
-    (policyState === RuntimeState.ThermalGuard || sample.thermalMillidegrees >= THERMAL_GUARD_ENTER_MC);
+    (policyState === RuntimeState.ThermalGuard ||
+      sample.thermalMillidegrees >= THERMAL_GUARD_ENTER_MC);
 
-  const stockRa = String(profile.stockReadAheadKb);
-  const stockNr = String(profile.stockNrRequests);
-  const stockSwappiness = String(profile.stockSwappiness);
-  const stockVfs = String(profile.stockVfsCachePressure);
-  const stockPageCluster = String(profile.stockPageCluster);
+  const unlockDrive =
+    brain?.unlockDrive ??
+    (!mutationArmed || isThermalStabilizing || policyState === RuntimeState.Pressure
+      ? 0
+      : mode === EngineMode.ModeGaming
+        ? 0.78
+        : mode === EngineMode.ModeBurst
+          ? 0.48
+          : 0);
 
-  let activeRa = stockRa;
-  let activeNr = stockNr;
-  let activeRqAffinity = '2';
-  if (isThermalStabilizing) {
-    activeRa = String(Math.max(128, Math.floor(profile.stockReadAheadKb / 2)));
-    activeRqAffinity = '1';
-  } else if (mutationArmed && mode === EngineMode.ModeUltraIdle) {
-    activeRa = '256';
-  } else if (isHighPerf && mode === EngineMode.ModeGaming) {
-    activeRa = '1024';
-    activeNr = '128';
-  } else if (isHighPerf && mode === EngineMode.ModeBurst) {
-    activeRa = '1024';
-    activeNr = String(Math.min(128, profile.stockNrRequests * 2));
-  }
+  const latencyDrive =
+    brain?.latencyDrive ??
+    (!mutationArmed || isThermalStabilizing
+      ? 0
+      : mode === EngineMode.ModeGaming
+        ? 0.74
+        : mode === EngineMode.ModeBurst
+          ? 0.52
+          : 0);
 
-  const p0 = profile.cpuPolicies[0];
-  const p4 = profile.cpuPolicies[1];
+  const containmentDrive =
+    brain?.containmentDrive ??
+    (!mutationArmed
+      ? 0
+      : isThermalStabilizing || policyState === RuntimeState.Pressure
+        ? 0.90
+        : mode === EngineMode.ModeUltraIdle
+          ? 0.72
+          : mode === EngineMode.ModeGaming
+            ? 0.55
+            : 0);
 
   const expGovernorActive =
     experiment.active &&
@@ -338,264 +636,416 @@ export function computeSysfsNodes(
       experiment.action === BaselineAction.Keep ||
       experiment.action === BaselineAction.Hold);
 
-  const p0Gov = expGovernorActive ? experiment.candidateGovernor : p0.stockGovernor;
-  const p4Gov =
-    mutationArmed && mode === EngineMode.ModeUltraIdle
-      ? 'powersave'
-      : expGovernorActive
-        ? experiment.candidateGovernor
-        : p4.stockGovernor;
+  const nodes: SysfsNodeEntry[] = [];
 
-  let waltP0 = '80';
-  let waltP4 = '80';
-  if (isThermalStabilizing) {
-    waltP0 = '90';
-    waltP4 = '90';
-  } else if (mode === EngineMode.ModeGaming && isHighPerf) {
-    waltP0 = '70';
-    waltP4 = '65';
-  } else if (mode === EngineMode.ModeBurst && isHighPerf) {
-    waltP0 = '75';
-    waltP4 = '72';
-  } else if (mutationArmed && (mode === EngineMode.ModeIdle || mode === EngineMode.ModeUltraIdle)) {
-    waltP0 = '85';
-    waltP4 = '85';
+  // 1. Dynamic CPU Cluster Iteration (zero hardcoded policy0/policy4 paths or target loads)
+  for (const cluster of profile.cpuPolicies) {
+    const canPowersaveSleep =
+      mutationArmed &&
+      mode === EngineMode.ModeUltraIdle &&
+      cluster.role !== 'efficiency' &&
+      cluster.availableGovernors.includes('powersave');
+
+    const activeGov = canPowersaveSleep
+      ? 'powersave'
+      : expGovernorActive && cluster.availableGovernors.includes(experiment.candidateGovernor)
+        ? experiment.candidateGovernor
+        : cluster.stockGovernor;
+
+    nodes.push({
+      path: `${cluster.policyPath}/scaling_governor`,
+      subsystem: 'CPU & WALT',
+      baselineValue: cluster.stockGovernor,
+      currentValue: sysOk ? activeGov : 'N/A',
+      status: !sysOk ? 'SKIPPED' : activeGov !== cluster.stockGovernor ? 'MUTATED' : 'BASELINE',
+      domainEnvelope: cluster.availableGovernors.join(' | '),
+      rationale: canPowersaveSleep
+        ? 'Screen-off conservation selects advertised powersave governor on non-efficiency cluster'
+        : expGovernorActive
+          ? `CpuFreqActuator verifying candidate "${activeGov}" against 4-sample OEM baseline`
+          : mutationArmed
+            ? `Preserves kernel-advertised "${cluster.stockGovernor}" governor while fine-tuning sub-attributes`
+            : 'Observe mode active: read-only snapshot',
+    });
+
+    if (cluster.loadTunableLeaf) {
+      const stockLoadStr = String(cluster.oemTargetLoad);
+      const targetLoadNum = isThermalStabilizing
+        ? lerpInt(cluster.oemTargetLoad, cluster.thermalClampLoad, containmentDrive)
+        : unlockDrive > 0.05
+          ? lerpInt(cluster.oemTargetLoad, cluster.siliconOptimalLoad, unlockDrive)
+          : mode === EngineMode.ModeUltraIdle && mutationArmed
+            ? lerpInt(cluster.oemTargetLoad, cluster.thermalClampLoad, 0.5)
+            : cluster.oemTargetLoad;
+      const activeLoadStr = String(targetLoadNum);
+      const waltReady = sysOk && capabilities.waltAvailable;
+
+      nodes.push({
+        path: `${cluster.policyPath}/${cluster.loadTunableLeaf}`,
+        subsystem: 'CPU & WALT',
+        baselineValue: stockLoadStr,
+        currentValue: waltReady ? activeLoadStr : 'SKIPPED',
+        status: !waltReady
+          ? 'SKIPPED'
+          : isThermalStabilizing && activeLoadStr !== stockLoadStr
+            ? 'CLAMPED'
+            : activeLoadStr !== stockLoadStr
+              ? 'MUTATED'
+              : 'BASELINE',
+        domainEnvelope: `[1..100] · Silicon opt ${cluster.siliconOptimalLoad}`,
+        rationale: waltReady
+          ? isThermalStabilizing
+            ? `Stabilizing epoch raises target load (${stockLoadStr} -> ${activeLoadStr}) to shed die heat`
+            : activeLoadStr !== stockLoadStr
+              ? `Unlocks OEM-throttled OPP residency (${stockLoadStr} -> ${activeLoadStr}) via Pareto drive ${(unlockDrive * 100).toFixed(0)}%`
+              : `OEM factory load threshold (${stockLoadStr}) preserved`
+          : 'Kernel does not expose WALT target load attribute; skipped cleanly',
+      });
+    }
+
+    const stockUpRateStr = String(cluster.oemUpRateLimitUs);
+    const activeUpRateNum = isThermalStabilizing
+      ? Math.round(cluster.oemUpRateLimitUs * (1 + 0.5 * containmentDrive))
+      : unlockDrive > 0.05
+        ? lerpInt(cluster.oemUpRateLimitUs, cluster.siliconMinUpRateLimitUs, unlockDrive)
+        : cluster.oemUpRateLimitUs;
+    const activeUpRateStr = String(activeUpRateNum);
+
+    nodes.push({
+      path: `${cluster.policyPath}/${cluster.governorSubdir}/up_rate_limit_us`,
+      subsystem: 'CPU & WALT',
+      baselineValue: stockUpRateStr,
+      currentValue: sysOk ? activeUpRateStr : 'SKIPPED',
+      status: !sysOk
+        ? 'SKIPPED'
+        : isThermalStabilizing && activeUpRateStr !== stockUpRateStr
+          ? 'CLAMPED'
+          : activeUpRateStr !== stockUpRateStr
+            ? 'MUTATED'
+            : 'BASELINE',
+      domainEnvelope: `${cluster.siliconMinUpRateLimitUs}..${cluster.oemUpRateLimitUs * 2} µs`,
+      rationale: activeUpRateStr !== stockUpRateStr
+        ? isThermalStabilizing
+          ? `Slows upward DVFS ramp (${activeUpRateStr} µs) during ThermalGuard hysteresis`
+          : `Eliminates OEM ramp lag (${stockUpRateStr} -> ${activeUpRateStr} µs) toward raw silicon spec`
+        : `OEM governor upward transition rate (${stockUpRateStr} µs) preserved`,
+    });
+
+    const maxStockStr = String(cluster.maxFreqKhz);
+    const oemFreqCapped = cluster.maxFreqKhz < cluster.siliconMaxFreqKhz;
+    nodes.push({
+      path: `${cluster.policyPath}/scaling_max_freq`,
+      subsystem: 'CPU & WALT',
+      baselineValue: maxStockStr,
+      currentValue: sysOk ? maxStockStr : 'N/A',
+      status: !sysOk ? 'SKIPPED' : 'BASELINE',
+      domainEnvelope: `${(cluster.minFreqKhz / 1e6).toFixed(2)}..${(cluster.siliconMaxFreqKhz / 1e6).toFixed(2)} GHz (${cluster.oppTableKhz.length} OPPs)`,
+      rationale: oemFreqCapped
+        ? `FrameworkOwned (Power HAL): OEM caps boot max at ${(cluster.maxFreqKhz / 1e6).toFixed(2)} GHz vs ${(cluster.siliconMaxFreqKhz / 1e6).toFixed(2)} GHz silicon max; steered safely via WALT & uclamp`
+        : 'FrameworkOwned (Power HAL / thermal-engine): observed read-only to prevent HAL conflict',
+    });
   }
 
-  // Android Power HAL & thermal-engine own scaling_min_freq / scaling_max_freq (FrameworkOwned).
-  // CoreFlow observes them read-only and uses cgroup uclamp for bounded task steering instead.
-  const p0MaxStock = String(p0.maxFreqKhz);
-  const p4MaxStock = String(p4.maxFreqKhz);
+  // 2. Cgroup v2 uclamp & Encore-style Background Cpuset Containment
+  const cg = profile.cgroups;
+  const maxSafeUclampFloor = Math.round(
+    (profile.cpuPolicies[0].minFreqKhz / profile.cpuPolicies[profile.cpuPolicies.length - 1].siliconMaxFreqKhz) * 140
+  );
+  const activeTopUclampNum =
+    isThermalStabilizing || latencyDrive <= 0.08
+      ? cg.oemTopAppUclampMin
+      : lerpInt(cg.oemTopAppUclampMin, Math.min(32, Math.max(12, maxSafeUclampFloor)), latencyDrive);
+  const stockTopUclampStr = String(cg.oemTopAppUclampMin);
+  const activeTopUclampStr = String(activeTopUclampNum);
 
-  const topAppUclampMin = isThermalStabilizing
-    ? '0'
-    : isHighPerf && mode === EngineMode.ModeBurst
-      ? '15'
-      : isHighPerf && mode === EngineMode.ModeGaming
-        ? '10'
-        : '0';
+  nodes.push({
+    path: cg.topAppUclampMinPath,
+    subsystem: 'CPU & WALT',
+    baselineValue: stockTopUclampStr,
+    currentValue: sysOk ? activeTopUclampStr : 'SKIPPED',
+    status: !sysOk ? 'SKIPPED' : activeTopUclampStr !== stockTopUclampStr ? 'MUTATED' : 'BASELINE',
+    domainEnvelope: '[0..100 %]',
+    rationale:
+      activeTopUclampStr !== stockTopUclampStr
+        ? `Dynamic foreground uclamp floor (${activeTopUclampStr}%) scaled by Pareto frame-latency weight`
+        : 'Zero floor preserved when idle or thermal/observe gates hold proactive boost',
+  });
 
-  const bgUclampMax =
-    isThermalStabilizing || (mutationArmed && policyState === RuntimeState.Pressure)
-      ? '50'
-      : mutationArmed && mode === EngineMode.ModeUltraIdle
-        ? '40'
-        : 'max';
+  const activeBgUclampStr =
+    containmentDrive >= 0.50
+      ? String(lerpInt(80, 38, containmentDrive))
+      : cg.oemBgUclampMax;
 
-  // ZRAM-aware VM semantics (Linux 5.8+ range 0..200, OEM baseline commonly 100..160):
-  // Under memory-only pressure, EffectModel preserves OEM ZRAM swappiness rather than inflating blindly,
-  // and relieves reclaim via bounded vfs_cache_pressure step (+15%) while keeping page-cluster=0.
-  const activeVfs =
-    !procOk
+  nodes.push({
+    path: cg.bgUclampMaxPath,
+    subsystem: 'CPU & WALT',
+    baselineValue: cg.oemBgUclampMax,
+    currentValue: sysOk ? activeBgUclampStr : 'SKIPPED',
+    status: !sysOk
       ? 'SKIPPED'
-      : mutationArmed && policyState === RuntimeState.Pressure
-        ? String(Math.min(500, Math.round(profile.stockVfsCachePressure * 1.15)))
-        : isHighPerf
-          ? String(Math.max(50, Math.round(profile.stockVfsCachePressure * 0.9)))
-          : stockVfs;
+      : activeBgUclampStr !== cg.oemBgUclampMax
+        ? isThermalStabilizing || policyState === RuntimeState.Pressure
+          ? 'CLAMPED'
+          : 'MUTATED'
+        : 'BASELINE',
+    domainEnvelope: '[0..100 % | max]',
+    rationale:
+      activeBgUclampStr !== cg.oemBgUclampMax
+        ? `Contains background daemons (${activeBgUclampStr}%) to protect foreground thermal/cache budget`
+        : 'Default cgroup background ceiling preserved',
+  });
 
-  const activeSwappiness = !procOk
+  const effCores = profile.cpuPolicies[0].coresRange;
+  const activeBgCpus =
+    containmentDrive >= 0.55 && cg.oemBgCpus !== effCores ? effCores : cg.oemBgCpus;
+  nodes.push({
+    path: cg.bgCpusetPath,
+    subsystem: 'CPU & WALT',
+    baselineValue: cg.oemBgCpus,
+    currentValue: sysOk ? activeBgCpus : 'SKIPPED',
+    status: !sysOk
+      ? 'SKIPPED'
+      : activeBgCpus !== cg.oemBgCpus
+        ? isThermalStabilizing
+          ? 'CLAMPED'
+          : 'MUTATED'
+        : 'BASELINE',
+    domainEnvelope: `Online ${cg.oemBgCpus} -> Eff ${effCores}`,
+    rationale:
+      activeBgCpus !== cg.oemBgCpus
+        ? `Encore-style L2 cache isolation: pins background tasks to efficiency cores (${effCores})`
+        : `OEM background CPU mask (${cg.oemBgCpus}) preserved`,
+  });
+
+  // 3. Discovered Storage Queue Topology (zero hardcoded /sys/block/sda or 1024 literals)
+  const st = profile.storage;
+  const stockRaStr = String(st.stockReadAheadKb);
+  const ioThroughputRatio = clamp01((sample.ioReadKbs + sample.ioWriteKbs) / 2200);
+  const desiredRa = isThermalStabilizing
+    ? quantizePowerOfTwo(st.stockReadAheadKb / 2, st.minReadAheadKb, st.maxReadAheadKb)
+    : mutationArmed && mode === EngineMode.ModeUltraIdle
+      ? quantizePowerOfTwo(st.minReadAheadKb * 2, st.minReadAheadKb, st.stockReadAheadKb)
+      : unlockDrive > 0.12
+        ? quantizePowerOfTwo(
+            lerpInt(st.stockReadAheadKb, st.maxReadAheadKb, clamp01(unlockDrive * 0.65 + ioThroughputRatio * 0.45)),
+            st.minReadAheadKb,
+            st.maxReadAheadKb
+          )
+        : st.stockReadAheadKb;
+  const activeRaStr = String(desiredRa);
+
+  const stockNrStr = String(st.stockNrRequests);
+  const activeNrStr =
+    unlockDrive > 0.25 && !isThermalStabilizing
+      ? String(lerpInt(st.stockNrRequests, st.maxQueueDepth, unlockDrive))
+      : stockNrStr;
+
+  const stockRqStr = String(st.stockRqAffinity);
+  const activeRqStr = isThermalStabilizing
+    ? String(Math.max(0, st.stockRqAffinity - 1))
+    : stockRqStr;
+
+  nodes.push({
+    path: `${st.queuePath}/read_ahead_kb`,
+    subsystem: 'Block I/O',
+    baselineValue: stockRaStr,
+    currentValue: sysOk ? activeRaStr : 'N/A',
+    status: !sysOk
+      ? 'SKIPPED'
+      : isThermalStabilizing && activeRaStr !== stockRaStr
+        ? 'CLAMPED'
+        : activeRaStr !== stockRaStr
+          ? 'MUTATED'
+          : 'BASELINE',
+    domainEnvelope: `${st.minReadAheadKb}..${st.maxReadAheadKb} KB (${st.interfaceType})`,
+    rationale: mutationArmed
+      ? `Throughput-quantized read-ahead (${activeRaStr} KB) derived from [${st.minReadAheadKb}..${st.maxReadAheadKb}]`
+      : 'Observe mode active: factory read-ahead preserved',
+  });
+
+  nodes.push({
+    path: `${st.queuePath}/nr_requests`,
+    subsystem: 'Block I/O',
+    baselineValue: stockNrStr,
+    currentValue: sysOk ? activeNrStr : 'N/A',
+    status: !sysOk ? 'SKIPPED' : activeNrStr !== stockNrStr ? 'MUTATED' : 'BASELINE',
+    domainEnvelope: `4..${st.maxQueueDepth} tags`,
+    rationale: `Capability-verified ${st.interfaceType} queue depth scaled by workload intensity`,
+  });
+
+  nodes.push({
+    path: `${st.queuePath}/rq_affinity`,
+    subsystem: 'Block I/O',
+    baselineValue: stockRqStr,
+    currentValue: sysOk ? activeRqStr : 'N/A',
+    status: !sysOk ? 'SKIPPED' : activeRqStr !== stockRqStr ? 'CLAMPED' : 'BASELINE',
+    domainEnvelope: '[0..2]',
+    rationale:
+      activeRqStr !== stockRqStr
+        ? 'Relaxes originating-CPU completion affinity during ThermalGuard to spread IRQ load'
+        : 'Kernel domain [0..2] strict originating-CPU completion preserved',
+  });
+
+  // 4. Linux 5.8+ ZRAM-Aware VM Sysctls
+  const stockSwapStr = String(profile.stockSwappiness);
+  const activeSwapStr = !procOk
     ? 'SKIPPED'
     : isThermalStabilizing && profile.stockSwappiness > 100
-      ? String(Math.max(100, Math.round(profile.stockSwappiness * 0.9)))
-      : stockSwappiness;
+      ? String(lerpInt(profile.stockSwappiness, 100, containmentDrive * 0.5))
+      : stockSwapStr;
 
-  return [
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy0/scaling_governor',
-      subsystem: 'CPU & WALT',
-      baselineValue: p0.stockGovernor,
-      currentValue: sysOk ? p0Gov : 'N/A',
-      status: !sysOk ? 'SKIPPED' : p0Gov !== p0.stockGovernor ? 'MUTATED' : 'BASELINE',
-      rationale: expGovernorActive
-        ? `CpuFreqActuator testing verified candidate "${p0Gov}"`
-        : mutationArmed
-          ? 'Preserves OEM efficiency cluster scaling governor'
-          : 'Observe mode active: read-only snapshot',
-    },
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy4/scaling_governor',
-      subsystem: 'CPU & WALT',
-      baselineValue: p4.stockGovernor,
-      currentValue: sysOk ? p4Gov : 'N/A',
-      status: !sysOk ? 'SKIPPED' : p4Gov !== p4.stockGovernor ? 'MUTATED' : 'BASELINE',
-      rationale:
-        mutationArmed && mode === EngineMode.ModeUltraIdle
-          ? 'Deep-sleep policy switches performance cluster to powersave'
-          : expGovernorActive
-            ? `CpuFreqActuator testing verified candidate "${p4Gov}"`
-            : 'Preserves OEM performance cluster scaling governor',
-    },
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy0/walt_target_load',
-      subsystem: 'CPU & WALT',
-      baselineValue: '80',
-      currentValue: sysOk && capabilities.waltAvailable ? waltP0 : 'SKIPPED',
-      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : isThermalStabilizing ? 'CLAMPED' : waltP0 !== '80' ? 'MUTATED' : 'BASELINE',
-      rationale: capabilities.waltAvailable
-        ? isThermalStabilizing
-          ? 'ThermalGuard (>=55°C) raises WALT target load to reduce OPP residence'
-          : 'WALT scheduler target load threshold (ResourceActuator)'
-        : 'Kernel does not expose WALT tunables; skipped by CapabilityRegistry',
-    },
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy4/walt_target_load',
-      subsystem: 'CPU & WALT',
-      baselineValue: '80',
-      currentValue: sysOk && capabilities.waltAvailable ? waltP4 : 'SKIPPED',
-      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : isThermalStabilizing ? 'CLAMPED' : waltP4 !== '80' ? 'MUTATED' : 'BASELINE',
-      rationale: capabilities.waltAvailable
-        ? isThermalStabilizing
-          ? 'Stabilizing epoch raises target load under >=55°C ThermalGuard'
-          : 'Bounded adjustment under armed Burst/Gaming with pre-write journal'
-        : 'Kernel does not expose WALT tunables; skipped by CapabilityRegistry',
-    },
-    {
-      path: '/dev/cpuctl/top-app/cpu.uclamp.min',
-      subsystem: 'CPU & WALT',
-      baselineValue: '0',
-      currentValue: sysOk ? topAppUclampMin : 'SKIPPED',
-      status: !sysOk ? 'SKIPPED' : topAppUclampMin !== '0' ? 'MUTATED' : 'BASELINE',
-      rationale:
-        topAppUclampMin !== '0'
-          ? 'Bounded interactivity uclamp.min floor for foreground render thread'
-          : 'Zero floor preserved when thermal/idle gates hold proactive boost',
-    },
-    {
-      path: '/dev/cpuctl/background/cpu.uclamp.max',
-      subsystem: 'CPU & WALT',
-      baselineValue: 'max',
-      currentValue: sysOk ? bgUclampMax : 'SKIPPED',
-      status:
-        !sysOk
-          ? 'SKIPPED'
-          : bgUclampMax !== 'max'
-            ? isThermalStabilizing || policyState === RuntimeState.Pressure
-              ? 'CLAMPED'
-              : 'MUTATED'
-            : 'BASELINE',
-      rationale:
-        bgUclampMax !== 'max'
-          ? 'Contains background cgroup CPU utilization during stress or deep sleep'
-          : 'Default cgroup background ceiling preserved',
-    },
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq',
-      subsystem: 'CPU & WALT',
-      baselineValue: p0MaxStock,
-      currentValue: sysOk ? p0MaxStock : 'N/A',
-      status: !sysOk ? 'SKIPPED' : 'BASELINE',
-      rationale:
-        'FrameworkOwned (Power HAL / thermal-engine): observed read-only to prevent HAL conflict',
-    },
-    {
-      path: '/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq',
-      subsystem: 'CPU & WALT',
-      baselineValue: p4MaxStock,
-      currentValue: sysOk ? p4MaxStock : 'N/A',
-      status: !sysOk ? 'SKIPPED' : 'BASELINE',
-      rationale:
-        'FrameworkOwned (Power HAL / thermal-engine): observed read-only to prevent HAL conflict',
-    },
-    {
-      path: '/sys/block/sda/queue/read_ahead_kb',
-      subsystem: 'Block I/O',
-      baselineValue: stockRa,
-      currentValue: sysOk ? activeRa : 'N/A',
-      status: !sysOk ? 'SKIPPED' : isThermalStabilizing && activeRa !== stockRa ? 'CLAMPED' : activeRa !== stockRa ? 'MUTATED' : 'BASELINE',
-      rationale: mutationArmed
-        ? `Bounded UFS read-ahead (${activeRa} KB) via ResourceActuator`
-        : 'Observe mode active: factory read-ahead preserved',
-    },
-    {
-      path: '/sys/block/sda/queue/nr_requests',
-      subsystem: 'Block I/O',
-      baselineValue: stockNr,
-      currentValue: sysOk ? activeNr : 'N/A',
-      status: !sysOk ? 'SKIPPED' : activeNr !== stockNr ? 'MUTATED' : 'BASELINE',
-      rationale: 'Capability-verified UFS block queue depth with rollback baseline',
-    },
-    {
-      path: '/sys/block/sda/queue/rq_affinity',
-      subsystem: 'Block I/O',
-      baselineValue: '2',
-      currentValue: sysOk ? activeRqAffinity : 'N/A',
-      status: !sysOk ? 'SKIPPED' : activeRqAffinity !== '2' ? 'CLAMPED' : 'BASELINE',
-      rationale:
-        activeRqAffinity !== '2'
-          ? 'Relaxed completion affinity [0..2] during ThermalGuard to spread IRQ heat'
-          : 'Kernel domain [0..2] strict originating-CPU completion preserved',
-    },
-    {
-      path: '/proc/sys/vm/swappiness',
-      subsystem: 'VM / Sysctl',
-      baselineValue: stockSwappiness,
-      currentValue: activeSwappiness,
-      status:
-        !procOk
-          ? 'SKIPPED'
-          : activeSwappiness !== stockSwappiness
-            ? 'CLAMPED'
-            : 'BASELINE',
-      rationale:
-        policyState === RuntimeState.Pressure
-          ? `Linux 5.8+ ZRAM domain [0..200]: OEM baseline ${stockSwappiness} preserved (avoids ZRAM kswapd thrash)`
-          : activeSwappiness !== stockSwappiness
-            ? `Stabilizing thermal relief trims ZRAM compression CPU (${stockSwappiness} -> ${activeSwappiness})`
-            : `OEM ZRAM factory posture (${stockSwappiness} / 200, ${profile.zramSizeMb} MB zram0) respected`,
-    },
-    {
-      path: '/proc/sys/vm/vfs_cache_pressure',
-      subsystem: 'VM / Sysctl',
-      baselineValue: stockVfs,
-      currentValue: activeVfs,
-      status:
-        !procOk
-          ? 'SKIPPED'
-          : activeVfs !== stockVfs
-            ? policyState === RuntimeState.Pressure
-              ? 'CLAMPED'
-              : 'MUTATED'
-            : 'BASELINE',
-      rationale:
-        policyState === RuntimeState.Pressure && mutationArmed
-          ? 'Bounded +15% dentry/inode reclaim relief under RAM <10% pressure [10..500]'
-          : 'Kernel domain [10..500] VFS slab cache balance with durable rollback journal',
-    },
-    {
-      path: '/proc/sys/vm/page-cluster',
-      subsystem: 'VM / Sysctl',
-      baselineValue: stockPageCluster,
-      currentValue: procOk ? stockPageCluster : 'SKIPPED',
-      status: !procOk ? 'SKIPPED' : 'BASELINE',
-      rationale:
-        'Single-page ZRAM decompression (0 = 2^0 pages) preserved to avoid latency spikes [0..8]',
-    },
-    {
-      path: '/sys/class/kgsl/kgsl-3d0/devfreq/governor',
+  const memDeficit = clamp01((0.22 - sample.memAvailableRatio) / 0.16);
+  const stockVfsStr = String(profile.stockVfsCachePressure);
+  const activeVfsStr = !procOk
+    ? 'SKIPPED'
+    : mutationArmed && policyState === RuntimeState.Pressure
+      ? String(Math.min(500, Math.round(profile.stockVfsCachePressure * (1 + 0.12 + 0.18 * memDeficit))))
+      : unlockDrive > 0.25
+        ? String(Math.max(50, Math.round(profile.stockVfsCachePressure * (1 - 0.14 * unlockDrive))))
+        : stockVfsStr;
+
+  const stockPageClusterStr = String(profile.stockPageCluster);
+
+  nodes.push({
+    path: '/proc/sys/vm/swappiness',
+    subsystem: 'VM / Sysctl',
+    baselineValue: stockSwapStr,
+    currentValue: activeSwapStr,
+    status: !procOk ? 'SKIPPED' : activeSwapStr !== stockSwapStr ? 'CLAMPED' : 'BASELINE',
+    domainEnvelope: `[0..200] · ${profile.zramSizeMb} MB ZRAM`,
+    rationale:
+      policyState === RuntimeState.Pressure
+        ? `Linux 5.8+ ZRAM domain [0..200]: OEM baseline ${stockSwapStr} preserved (never assumes desktop 60)`
+        : activeSwapStr !== stockSwapStr
+          ? `Stabilizing thermal relief trims ZRAM compression CPU (${stockSwapStr} -> ${activeSwapStr})`
+          : `OEM ZRAM factory posture (${stockSwapStr}/200) respected`,
+  });
+
+  nodes.push({
+    path: '/proc/sys/vm/vfs_cache_pressure',
+    subsystem: 'VM / Sysctl',
+    baselineValue: stockVfsStr,
+    currentValue: activeVfsStr,
+    status: !procOk
+      ? 'SKIPPED'
+      : activeVfsStr !== stockVfsStr
+        ? policyState === RuntimeState.Pressure
+          ? 'CLAMPED'
+          : 'MUTATED'
+        : 'BASELINE',
+    domainEnvelope: '[10..500]',
+    rationale:
+      policyState === RuntimeState.Pressure && mutationArmed
+        ? `Demand-scaled dentry/inode reclaim (${activeVfsStr}) proportional to RAM deficit`
+        : 'Kernel domain [10..500] VFS slab cache balance with durable rollback journal',
+  });
+
+  nodes.push({
+    path: '/proc/sys/vm/page-cluster',
+    subsystem: 'VM / Sysctl',
+    baselineValue: stockPageClusterStr,
+    currentValue: procOk ? stockPageClusterStr : 'SKIPPED',
+    status: !procOk ? 'SKIPPED' : 'BASELINE',
+    domainEnvelope: '[0..8] (2^N pages)',
+    rationale: 'Single-page random ZRAM read (0 = 1 page) preserved to prevent swap latency spikes',
+  });
+
+  // 5. GPU & KGSL / Devfreq OPP Topology
+  const gt = profile.gpuTopology;
+  const gpuReady = sysOk && (gt.governorPath.includes('kgsl') ? capabilities.kgslAvailable : true);
+  nodes.push({
+    path: gt.governorPath,
+    subsystem: 'GPU & DSP',
+    baselineValue: gt.stockGovernor,
+    currentValue: gpuReady ? gt.stockGovernor : 'SKIPPED',
+    status: !gpuReady ? 'SKIPPED' : 'BASELINE',
+    domainEnvelope: gt.availableGovernors.join(' | '),
+    rationale: gpuReady
+      ? `Hardware GPU devfreq governor (${gt.oppTableMhz[0]}..${gt.siliconPeakClockMhz} MHz)`
+      : 'GPU sysfs tree absent or disabled in capability matrix; skipped',
+  });
+
+  if (gt.minPwrlevelPath != null && gt.oemDefaultPwrlevel != null && gt.numPwrlevels != null) {
+    const stockPwrStr = String(gt.oemDefaultPwrlevel);
+    const maxSafeFloorStep = Math.max(1, Math.floor((gt.numPwrlevels - 1) * 0.55));
+    const gpuFloorDrive =
+      !gpuReady || isThermalStabilizing || mode !== EngineMode.ModeGaming
+        ? 0
+        : clamp01(latencyDrive * 0.65 + (sample.gpuBusyPct / 100) * 0.35);
+    const activePwrNum = Math.max(
+      gt.oemDefaultPwrlevel - maxSafeFloorStep,
+      Math.round(gt.oemDefaultPwrlevel - maxSafeFloorStep * gpuFloorDrive)
+    );
+    const activePwrStr = String(activePwrNum);
+    const floorClockMhz =
+      gt.oppTableMhz[Math.min(gt.oppTableMhz.length - 1, gt.oppTableMhz.length - 1 - activePwrNum)] ??
+      gt.oppTableMhz[0];
+
+    nodes.push({
+      path: gt.minPwrlevelPath,
       subsystem: 'GPU & DSP',
-      baselineValue: 'msm-adreno-tz',
-      currentValue: sysOk && capabilities.kgslAvailable ? 'msm-adreno-tz' : 'SKIPPED',
-      status: !sysOk || !capabilities.kgslAvailable ? 'SKIPPED' : 'BASELINE',
-      rationale: capabilities.kgslAvailable
-        ? 'Qualcomm KGSL Adreno devfreq observable via gpu_busy_source'
-        : 'Non-KGSL GPU architecture; falls back to devfreq/GED signals',
-    },
-    {
-      path: profile.charging.chargeControlLimitPath,
-      subsystem: 'Charging',
-      baselineValue: String(profile.charging.chargeControlLimitValue),
-      currentValue:
-        sysOk && capabilities.chargeControlNodePresent && profile.charging.hasChargeControlLimit
-          ? `${profile.charging.chargeControlLimitValue} (READ-ONLY)`
-          : 'SKIPPED',
-      status: 'SKIPPED',
-      rationale:
-        capabilities.chargeControlNodePresent && profile.charging.hasChargeControlLimit
-          ? 'Fatal-surface / unvalidated charging semantics: read-only by safety contract'
-          : 'Node absent on this power_supply driver; skipped',
-    },
-  ];
+      baselineValue: stockPwrStr,
+      currentValue: gpuReady ? activePwrStr : 'SKIPPED',
+      status: !gpuReady ? 'SKIPPED' : activePwrStr !== stockPwrStr ? 'MUTATED' : 'BASELINE',
+      domainEnvelope: `KGSL [0=${gt.siliconPeakClockMhz}MHz .. ${gt.oemDefaultPwrlevel}=${gt.oppTableMhz[0]}MHz]`,
+      rationale: !gpuReady
+        ? 'KGSL power level interface unavailable; skipped'
+        : activePwrStr !== stockPwrStr
+          ? `Event-driven gaming OPP floor (${floorClockMhz} MHz, pwrlevel ${activePwrStr}); reverts to ${stockPwrStr} on exit`
+          : `OEM idle GPU floor (pwrlevel ${stockPwrStr} / ${gt.oppTableMhz[0]} MHz) preserved for zero idle drain`,
+    });
+  }
+
+  // 6. Encore-Inspired Low-Latency TCP Congestion Control
+  const net = profile.network;
+  const preferredLowLatCongestion = net.availableCongestion.find(
+    (alg) => alg === 'bbr' || alg === 'bbr2' || alg === 'westwood'
+  );
+  const activeCongestion =
+    !procOk
+      ? 'SKIPPED'
+      : latencyDrive >= 0.35 && preferredLowLatCongestion
+        ? preferredLowLatCongestion
+        : net.stockCongestion;
+
+  nodes.push({
+    path: net.congestionPath,
+    subsystem: 'Network',
+    baselineValue: net.stockCongestion,
+    currentValue: activeCongestion,
+    status: !procOk
+      ? 'SKIPPED'
+      : activeCongestion !== net.stockCongestion
+        ? 'MUTATED'
+        : 'BASELINE',
+    domainEnvelope: net.availableCongestion.join(' | '),
+    rationale: !procOk
+      ? 'Network sysctl read-only; skipped'
+      : activeCongestion !== net.stockCongestion
+        ? `Selects kernel-advertised "${activeCongestion}" pacing for low-jitter interactive sessions`
+        : `OEM default TCP congestion ("${net.stockCongestion}") preserved`,
+  });
+
+  // 7. Fatal-Surface / Unvalidated Charging Guard
+  nodes.push({
+    path: profile.charging.chargeControlLimitPath,
+    subsystem: 'Charging',
+    baselineValue: String(profile.charging.chargeControlLimitValue),
+    currentValue:
+      sysOk && capabilities.chargeControlNodePresent && profile.charging.hasChargeControlLimit
+        ? `${profile.charging.chargeControlLimitValue} (READ-ONLY)`
+        : 'SKIPPED',
+    status: 'SKIPPED',
+    domainEnvelope: profile.charging.hasChargeControlLimit
+      ? `[${profile.charging.chargeControlLimitMin}..${profile.charging.chargeControlLimitMax}]`
+      : 'absent',
+    rationale:
+      capabilities.chargeControlNodePresent && profile.charging.hasChargeControlLimit
+        ? 'Fatal-surface / unvalidated charging semantics: read-only by safety contract'
+        : 'Node absent on this power_supply driver; skipped',
+  });
+
+  return nodes;
 }
 
 // Frozen 18-feature contract matching include/coreflow/thermal_features.hpp

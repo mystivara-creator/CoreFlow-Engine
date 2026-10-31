@@ -25,18 +25,22 @@ import {
   SCENARIO_PRESETS,
 } from './engine/presets';
 import {
+  advanceBanditArms,
   advanceBaselineExperiment,
   buildRuntimeSample,
   computeSysfsNodes,
   computeThermalPrediction,
+  createInitialBanditArms,
   decidePolicyAction,
   evaluateAdaptivePolicy,
   evaluateCoreFlowPillar,
+  evaluateHybridBrain,
   formatStartupLogs,
   HISTORY_WINDOW_SIZE,
   selectNotificationEvent,
 } from './engine/simulator';
 import {
+  BanditArmState,
   BaselineAction,
   BaselineExperimentState,
   BaselineOutcome,
@@ -172,6 +176,9 @@ export const App: React.FC = () => {
   const [lastNotification, setLastNotification] = useState<NotificationEvent>(
     NotificationEvent.None
   );
+  const [banditArms, setBanditArms] = useState<BanditArmState[]>(() =>
+    createInitialBanditArms()
+  );
   const [experiment, setExperiment] = useState<BaselineExperimentState>(() =>
     createInitialExperiment(HARDWARE_PROFILES.kunzite_parrot.cpuPolicies[0].stockGovernor)
   );
@@ -196,6 +203,11 @@ export const App: React.FC = () => {
     [inputs, currentSample, capabilities]
   );
 
+  const prediction = useMemo(
+    () => computeThermalPrediction(currentSample, history, inputs.monitorIntervalSec),
+    [currentSample, history, inputs.monitorIntervalSec]
+  );
+
   const mutationArmed = useMemo(() => {
     if (isNativeBridge) {
       return Boolean(nativeParsedStatus?.data?.brain?.armed);
@@ -211,6 +223,30 @@ export const App: React.FC = () => {
     );
   }, [isNativeBridge, nativeParsedStatus, mirrorStore]);
 
+  const hybridBrain = useMemo(
+    () =>
+      evaluateHybridBrain(
+        profile,
+        capabilities,
+        inputs,
+        currentSample,
+        policyState,
+        prediction,
+        banditArms,
+        mutationArmed
+      ),
+    [
+      profile,
+      capabilities,
+      inputs,
+      currentSample,
+      policyState,
+      prediction,
+      banditArms,
+      mutationArmed,
+    ]
+  );
+
   const mirrorSysfsNodes: SysfsNodeEntry[] = useMemo(
     () =>
       computeSysfsNodes(
@@ -220,9 +256,19 @@ export const App: React.FC = () => {
         policyState,
         currentSample,
         experiment,
-        mutationArmed
+        mutationArmed,
+        hybridBrain
       ),
-    [profile, capabilities, pillarMode, policyState, currentSample, experiment, mutationArmed]
+    [
+      profile,
+      capabilities,
+      pillarMode,
+      policyState,
+      currentSample,
+      experiment,
+      mutationArmed,
+      hybridBrain,
+    ]
   );
 
   const sysfsNodes: SysfsNodeEntry[] = useMemo(() => {
@@ -242,11 +288,13 @@ export const App: React.FC = () => {
       for (const r of d.hands.resourceApplied) {
         const sub = r.key.includes('/vm/')
           ? 'VM / Sysctl'
-          : r.key.includes('/queue/')
-            ? 'Block I/O'
-            : r.key.includes('kgsl') || r.key.includes('devfreq')
-              ? 'GPU & DSP'
-              : 'CPU & WALT';
+          : r.key.includes('/net/')
+            ? 'Network'
+            : r.key.includes('/queue/')
+              ? 'Block I/O'
+              : r.key.includes('kgsl') || r.key.includes('devfreq') || r.key.includes('mali')
+                ? 'GPU & DSP'
+                : 'CPU & WALT';
         liveRows.push({
           path: r.key,
           subsystem: sub,
@@ -325,11 +373,6 @@ export const App: React.FC = () => {
     return status.brain.mode === 'adaptive' && status.brain.armed && !status.brain.holdActive
       ? 'adaptive' : 'held';
   }, [parsedStatus, probe?.running]);
-
-  const prediction = useMemo(
-    () => computeThermalPrediction(currentSample, history, inputs.monitorIntervalSec),
-    [currentSample, history, inputs.monitorIntervalSec]
-  );
 
   const effectiveSleepSec = useMemo(() => {
     const base = Number(policyForm.monitor_interval) || inputs.monitorIntervalSec || 5;
@@ -554,7 +597,7 @@ export const App: React.FC = () => {
                 scope: 'cpu_freq_coarse',
                 result: isRollback ? 'ROLLED_BACK' : 'VERIFIED',
                 reason: logMessage,
-                target: '/sys/devices/system/cpu/cpufreq/policy0/scaling_governor',
+                target: `${profile.cpuPolicies[0].policyPath}/scaling_governor`,
                 requested: prevExp.candidateGovernor,
                 baseline_value: profile.cpuPolicies[0].stockGovernor,
               }),
@@ -564,9 +607,36 @@ export const App: React.FC = () => {
         return next;
       });
 
+      const nextPred = computeThermalPrediction(
+        nextSample,
+        prevHistory,
+        inputs.monitorIntervalSec
+      );
+      setBanditArms((prevArms) => {
+        const evalStep = evaluateHybridBrain(
+          profile,
+          capabilities,
+          inputs,
+          nextSample,
+          evaluateAdaptivePolicy(nextSample, policyState),
+          nextPred,
+          prevArms,
+          mutationArmed
+        );
+        return advanceBanditArms(prevArms, evalStep.selectedArm, nextSample, nextPred);
+      });
+
       return [...prevHistory.slice(-(HISTORY_WINDOW_SIZE - 1)), nextSample];
     });
-  }, [isNativeBridge, effectiveSleepSec, inputs, profile, capabilities]);
+  }, [
+    isNativeBridge,
+    effectiveSleepSec,
+    inputs,
+    profile,
+    capabilities,
+    policyState,
+    mutationArmed,
+  ]);
 
   useEffect(() => {
     if (isNativeBridge || !isRunning || !mirrorStore.running) return;
@@ -750,6 +820,7 @@ export const App: React.FC = () => {
     const nextCaps = DEFAULT_CAPABILITIES_FOR_PRESET[nextId];
     setDeviceId(nextId);
     setCapabilities(nextCaps);
+    setBanditArms(createInitialBanditArms());
     setExperiment(createInitialExperiment(nextProf.cpuPolicies[0].stockGovernor));
     const initial = buildRuntimeSample(1, 120, inputs, nextProf, nextCaps, [], 0);
     setHistory([initial]);
@@ -773,6 +844,7 @@ export const App: React.FC = () => {
     setMirrorStore(freshStore);
     setRawConfigText(freshStore.configRaw);
     setPolicyForm(getDefaultForm());
+    setBanditArms(createInitialBanditArms());
     const initial = buildRuntimeSample(1, 120, inputs, profile, capabilities, [], 0);
     setHistory([initial]);
     setPolicyState(RuntimeState.Normal);
@@ -836,6 +908,7 @@ export const App: React.FC = () => {
               policyState={policyState}
               decision={decision}
               pillarMode={pillarMode}
+              hybridBrain={hybridBrain}
               lastNotification={lastNotification}
               effectiveSleepSec={effectiveSleepSec}
               sysfsNodes={sysfsNodes}
@@ -871,6 +944,7 @@ export const App: React.FC = () => {
               profile={profile}
               experiment={experiment}
               prediction={prediction}
+              hybridBrain={hybridBrain}
               parsedStatus={parsedStatus}
               onSelectGovernor={(gov) =>
                 setExperiment((prev) => ({ ...prev, candidateGovernor: gov }))

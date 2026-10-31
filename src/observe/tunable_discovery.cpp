@@ -414,13 +414,14 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 continue;
             }
 
-            // 2) Sibling available_* / driver frequency table / KGSL pwrlevel / CPPC bounds.
+            // 2) Sibling available_* / driver frequency table / KGSL pwrlevel / TCP congestion.
             const std::string dir(dirOf(cap.path));
             const std::string leaf(leafOf(cap.path));
             const bool governor_like = containsText(leaf, "governor") || containsText(leaf, "policy");
+            const bool congestion_like = containsText(leaf, "congestion_control");
             const bool scale_like = containsText(leaf, "freq") || containsText(leaf, "clk");
             const bool pwrlevel_like = containsText(leaf, "pwrlevel");
-            if (!governor_like && !scale_like && !pwrlevel_like) continue;
+            if (!governor_like && !congestion_like && !scale_like && !pwrlevel_like) continue;
             bool siblings_truncated = false;
             const auto siblings = listDir(dir, TunableDiscovery::kMaxDirectoryEntries, siblings_truncated);
             if (siblings_truncated) continue;  // incomplete option inventories are not evidence
@@ -441,6 +442,7 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 continue;
             }
 
+            bool matched_in_dir = false;
             for (const auto& sibling : siblings) {
                 if (sibling == leaf) continue;
                 const bool gpu_table_alias =
@@ -448,9 +450,10 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 if (!containsText(sibling, "available") && !gpu_table_alias) continue;
                 const bool match_governor = governor_like && (containsText(sibling, "governor") ||
                                                               containsText(sibling, "polic"));
+                const bool match_congestion = congestion_like && containsText(sibling, "congestion_control");
                 const bool match_scale = scale_like && (containsText(sibling, "freq") ||
                                                         containsText(sibling, "clk"));
-                if (!match_governor && !match_scale) continue;
+                if (!match_governor && !match_congestion && !match_scale) continue;
                 std::string list(TunableDiscovery::kMaxOptionListBytes + 1U, '\0');
                 {
                     std::ifstream file(dir + "/" + sibling);
@@ -484,7 +487,36 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                 } else {
                     cap.options = opts;
                 }
+                matched_in_dir = true;
                 break;
+            }
+
+            // Governor subdirectories (e.g. policy4/walt/hispeed_freq) inherit
+            // their cluster's advertised OPP table from parent policy4/scaling_available_frequencies.
+            if (!matched_in_dir && scale_like && containsText(dir, "/cpufreq/")) {
+                const std::string parent_dir(dirOf(dir));
+                std::string list(TunableDiscovery::kMaxOptionListBytes + 1U, '\0');
+                std::ifstream file(parent_dir + "/scaling_available_frequencies");
+                if (file) {
+                    file.read(list.data(), static_cast<std::streamsize>(list.size()));
+                    const std::streamsize count = file.gcount();
+                    if (count > 0 && static_cast<std::size_t>(count) <= TunableDiscovery::kMaxOptionListBytes) {
+                        list.resize(static_cast<std::size_t>(count));
+                        std::vector<long long> nums;
+                        for (const auto& o : words(list)) {
+                            char* end = nullptr;
+                            const long long v = std::strtoll(o.c_str(), &end, 10);
+                            if (end != o.c_str() && *end == '\0' && v > 0LL) nums.push_back(v);
+                        }
+                        if (nums.size() >= 2U) {
+                            std::sort(nums.begin(), nums.end());
+                            nums.erase(std::unique(nums.begin(), nums.end()), nums.end());
+                            cap.options.clear();
+                            for (const auto v : nums) cap.options.push_back(std::to_string(v));
+                            cap.ordered_scale = true;
+                        }
+                    }
+                }
             }
         } catch (...) {
         }

@@ -55,12 +55,14 @@ struct CouplingSnapshot {
     bool warm_equilibrium{false};       // 48.0C <= thermal < 52.0C: trim background first
     bool zram_high_swappiness{false};   // OEM vm.swappiness >= 100 (Linux 5.8+ ZRAM baseline, e.g. 120)
     bool zram_zero_page_cluster{false}; // OEM vm.page-cluster == 0 (single-page random ZRAM read)
+    bool oem_performance_capped{false}; // OEM stock baseline sits below vendor Performance / silicon OPP capability
     bool has_io_domain{false};
     bool has_cpufreq_domain{false};
     bool has_uclamp_domain{false};
     bool has_cpuset_domain{false};
     bool has_gpu_domain{false};
     bool has_memory_domain{false};
+    bool has_network_domain{false};
     std::size_t active_domain_count{0};
 };
 

@@ -96,6 +96,44 @@ int main() {
         vfs_cap, "100", "112", EffectDirection::Increase, mem_snap, mem_ctx);
     CHECK(vfs_up_adj.benefit_delta > 0.0 && vfs_up_adj.risk_delta < 0.0);
 
+    // OEM-throttled WALT target_load=90 and low-latency BBR congestion coupling.
+    EnvironmentCapabilityMatrix game_matrix{};
+    ResourceCapability walt_load{};
+    walt_load.exists = walt_load.mutation_ready = true;
+    walt_load.domain = ResourceDomain::Scheduler;
+    walt_load.name = "walt.target_load";
+    walt_load.path = "/sys/devices/system/cpu/cpufreq/policy4/walt_target_load";
+    game_matrix.resources.push_back(walt_load);
+
+    ResourceCapability tcp_cc{};
+    tcp_cc.exists = tcp_cc.mutation_ready = true;
+    tcp_cc.domain = ResourceDomain::Vendor;
+    tcp_cc.name = "net.ipv4.tcp_congestion_control";
+    tcp_cc.path = "/proc/sys/net/ipv4/tcp_congestion_control";
+    game_matrix.resources.push_back(tcp_cc);
+
+    EffectContext game_ctx{};
+    game_ctx.gaming_active = true;
+    game_ctx.thermal_available = true;
+    game_ctx.thermal_c = 44.0;
+    const std::unordered_map<std::string, std::string> game_baselines = {
+        {"/sys/devices/system/cpu/cpufreq/policy4/walt_target_load", "90"},
+        {"/proc/sys/net/ipv4/tcp_congestion_control", "cubic"},
+    };
+    const CouplingSnapshot game_snap = StrategyCatalog::analyze(
+        game_matrix, game_baselines, game_ctx);
+    CHECK(game_snap.profile == StrategyProfile::SustainedGaming);
+    CHECK(game_snap.oem_performance_capped);
+    CHECK(game_snap.has_network_domain);
+
+    const StrategyAdjustment walt_unlock_adj = StrategyCatalog::evaluateCandidate(
+        walt_load, "90", "70", EffectDirection::Decrease, game_snap, game_ctx);
+    CHECK(walt_unlock_adj.benefit_delta > 0.0 && walt_unlock_adj.risk_delta < 0.0);
+
+    const StrategyAdjustment tcp_bbr_adj = StrategyCatalog::evaluateCandidate(
+        tcp_cc, "cubic", "bbr", EffectDirection::Select, game_snap, game_ctx);
+    CHECK(tcp_bbr_adj.benefit_delta > 0.0 && tcp_bbr_adj.risk_delta < 0.0);
+
     if (failures != 0) {
         std::cerr << failures << " strategy catalog test(s) failed\n";
         return 1;

@@ -9,6 +9,7 @@
 
 #include "coreflow/effect_model.hpp"
 #include "coreflow/environment.hpp"
+#include "coreflow/experience.hpp"
 #include "coreflow/resource_model.hpp"
 #include "coreflow/types.hpp"
 
@@ -48,6 +49,8 @@ struct AgentObservation {
     const EnvironmentCapabilityMatrix* matrix{nullptr};
     const std::unordered_map<std::string, std::string>* baselines{nullptr};
     const ResourceStateModel* resources{nullptr};
+    const ExperienceMemory* experience{nullptr};
+    ExperienceMemory::Context experience_ctx{};
     RuntimeState state{RuntimeState::Idle};
     double sample_confidence{0.0};
     bool mutation_allowed_by_context{false};

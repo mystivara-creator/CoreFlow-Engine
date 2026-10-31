@@ -184,9 +184,33 @@
 
 .cf-svg-metric {
   transition:
-    width 360ms var(--ease-fluid),
-    stroke-dashoffset 380ms var(--ease-fluid),
-    opacity 220ms ease;
+    width 420ms var(--ease-fluid),
+    x 420ms var(--ease-fluid),
+    y 420ms var(--ease-fluid),
+    stroke-dashoffset 420ms var(--ease-fluid),
+    opacity 240ms ease;
+}
+
+.cf-svg-point {
+  transition:
+    cx 320ms var(--ease-fluid),
+    cy 320ms var(--ease-fluid),
+    r 180ms var(--ease-snappy);
+}
+
+@keyframes cf-pulse-ring {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.62;
+    transform: scale(0.88);
+  }
+}
+
+.cf-live-dot {
+  animation: cf-pulse-ring 2.4s var(--ease-fluid) infinite;
 }
 
 /* Dark theme precision surface mapping — keeps white button text crisp */

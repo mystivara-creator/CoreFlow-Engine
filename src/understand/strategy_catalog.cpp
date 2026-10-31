@@ -224,9 +224,35 @@ CouplingSnapshot StrategyCatalog::analyze(
                 }
             }
         }
+        const auto base_it = baselines.find(res.path);
+        if (base_it != baselines.end() && !snap.oem_performance_capped) {
+            const std::string base_tok = extractActiveToken(base_it->second);
+            for (const auto& vv : res.vendor_values) {
+                if (vv.profile == VendorProfile::Performance &&
+                    extractActiveToken(vv.value) != base_tok) {
+                    snap.oem_performance_capped = true;
+                    break;
+                }
+            }
+            if (!snap.oem_performance_capped &&
+                (endsWithToken(res.path, "/walt_target_load") ||
+                 endsWithToken(res.path, "/hispeed_load"))) {
+                long num = 0;
+                bool ok = !base_tok.empty();
+                for (const char ch : base_tok) {
+                    if (!std::isdigit(static_cast<unsigned char>(ch))) { ok = false; break; }
+                    num = num * 10L + static_cast<long>(ch - '0');
+                    if (num > 1000L) break;
+                }
+                if (ok && num >= 85L) snap.oem_performance_capped = true;
+            }
+        }
         if (!res.mutation_ready && !(res.domain == ResourceDomain::CpuFreq &&
                                      endsWithToken(res.path, "/scaling_governor"))) {
             continue;
+        }
+        if (containsToken(res.path, "/net/ipv4/tcp_")) {
+            snap.has_network_domain = true;
         }
         switch (res.domain) {
             case ResourceDomain::Io:
@@ -259,7 +285,8 @@ CouplingSnapshot StrategyCatalog::analyze(
         (snap.has_uclamp_domain ? 1U : 0U) +
         (snap.has_cpuset_domain ? 1U : 0U) +
         (snap.has_gpu_domain ? 1U : 0U) +
-        (snap.has_memory_domain ? 1U : 0U);
+        (snap.has_memory_domain ? 1U : 0U) +
+        (snap.has_network_domain ? 1U : 0U);
 
     return snap;
 }
@@ -286,6 +313,7 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
           snapshot.cpu_posture != CpuGovernorPosture::Unknown ||
           snapshot.warm_equilibrium ||
           snapshot.zram_high_swappiness ||
+          snapshot.oem_performance_capped ||
           snapshot.profile == StrategyProfile::MemoryRelief);
     if (!has_coupled_anchors && !has_live_render_signal) {
         return adj;
@@ -370,6 +398,25 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
                 adj.benefit_delta += 0.09;
                 adj.risk_delta -= 0.03;
                 adj.coupling_tag = "coupled:cpufreq_fast_frame_ramp";
+                return adj;
+            }
+            if ((endsWithToken(path, "/walt_target_load") ||
+                 endsWithToken(path, "/target_loads") ||
+                 endsWithToken(path, "/hispeed_load") ||
+                 endsWithToken(path, "/sched_upmigrate")) &&
+                direction == EffectDirection::Decrease &&
+                !snapshot.warm_equilibrium) {
+                adj.benefit_delta += 0.11;
+                adj.risk_delta -= 0.03;
+                adj.coupling_tag = "coupled:silicon_walt_headroom_unlock";
+                return adj;
+            }
+            if (endsWithToken(path, "/hispeed_freq") &&
+                direction == EffectDirection::Increase &&
+                !snapshot.warm_equilibrium) {
+                adj.benefit_delta += 0.10;
+                adj.risk_delta -= 0.03;
+                adj.coupling_tag = "coupled:silicon_hispeed_opp_unlock";
                 return adj;
             }
         }
@@ -517,6 +564,44 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
             adj.risk_delta -= 0.02;
             adj.coupling_tag = "coupled:daily_governor_ramp";
             return adj;
+        }
+        if ((capability.domain == ResourceDomain::CpuFreq ||
+             capability.domain == ResourceDomain::Scheduler) &&
+            (endsWithToken(path, "/walt_target_load") ||
+             endsWithToken(path, "/hispeed_load")) &&
+            direction == EffectDirection::Decrease &&
+            snapshot.oem_performance_capped &&
+            !snapshot.warm_equilibrium) {
+            adj.benefit_delta += 0.07;
+            adj.risk_delta -= 0.02;
+            adj.coupling_tag = "coupled:oem_walt_cap_relief";
+            return adj;
+        }
+    }
+
+    // 6. Low-Latency Network & OEM Performance Cap Unlock (Encore / Silicon Envelope):
+    if ((snapshot.profile == StrategyProfile::SustainedGaming ||
+         snapshot.profile == StrategyProfile::DailyMultitasking) &&
+        !snapshot.warm_equilibrium) {
+        if (endsWithToken(path, "/net/ipv4/tcp_congestion_control") &&
+            direction == EffectDirection::Select &&
+            (cand_lower == "bbr" || cand_lower == "bbr2" || cand_lower == "westwood")) {
+            adj.benefit_delta += 0.08;
+            adj.risk_delta -= 0.02;
+            adj.coupling_tag = "coupled:tcp_low_latency_congestion";
+            return adj;
+        }
+        if (snapshot.oem_performance_capped) {
+            for (const auto& vv : capability.vendor_values) {
+                if (vv.profile == VendorProfile::Performance &&
+                    toLowerAscii(vv.value) == cand_lower &&
+                    toLowerAscii(baseline_value) != cand_lower) {
+                    adj.benefit_delta += 0.09;
+                    adj.risk_delta -= 0.03;
+                    adj.coupling_tag = "coupled:oem_perf_cap_unlock";
+                    return adj;
+                }
+            }
         }
     }
 
