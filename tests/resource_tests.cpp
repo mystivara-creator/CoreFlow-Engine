@@ -1228,6 +1228,15 @@ void test_selector_value_comparable_form() {
     CHECK(ResourceActuator::comparableValue("none") == "none");
     CHECK(ResourceActuator::comparableValue("  128 \n") == "128");
     CHECK(ResourceActuator::comparableValue("performance") == "performance");
+    CHECK(ResourceActuator::comparableValue("1110000\t0\t0  0\n") == "1110000 0 0 0");
+    const auto journal_path = fs::temp_directory_path() / "coreflow-vector-journal";
+    FileMutationJournal journal(journal_path.string());
+    const auto normalized = ResourceActuator::comparableValue("1110000\t0\t0  0");
+    CHECK(journal.commit({{"/proc/sys/walt/input_boost_freq", normalized}}));
+    MutationJournal::Entries loaded;
+    CHECK(journal.load(loaded) == MutationJournal::LoadState::Pending);
+    CHECK(loaded.size() == 1U && loaded[0].second == "1110000 0 0 0");
+    CHECK(journal.clear());
     CHECK(ResourceActuator::comparableValue("") == "");
 }
 

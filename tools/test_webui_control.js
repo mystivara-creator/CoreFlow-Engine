@@ -113,7 +113,7 @@ check(C.splitSnapshot("garbage").probe === "", "incomplete bridge output yields 
 
 // ---- decision journal ----
 const trace = [
-  "{\"event\":\"actuator_apply_completed\",\"result\":\"OK\",\"reason\":\"<img src=x>\",\"timestamp\":\"t1\",\"state\":\"Normal\",\"decision\":\"Apply\",\"safety_hold\":\"NONE\"}",
+  "{\"event\":\"actuator_apply_completed\",\"result\":\"OK\",\"writes_verified\":1,\"reason\":\"<img src=x>\",\"timestamp\":\"t1\",\"state\":\"Normal\",\"decision\":\"Apply\",\"safety_hold\":\"NONE\"}",
   "not json at all",
   "{\"event\":\"scope_gate_checked\",\"result\":\"DENY\",\"reason\":\"cpu_governor_opt_in_disabled\",\"timestamp\":\"t2\",\"safety_hold\":\"NONE\"}",
   "{\"event\":\"thermal_guard\",\"result\":\"HOLD\",\"reason\":\"hot\",\"timestamp\":\"t3\",\"safety_hold\":\"THERMAL\"}",

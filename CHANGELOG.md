@@ -19,6 +19,16 @@
 - Roll back inconclusive rendering trials when either comparison window has
   fewer than two valid rendering samples; log both windows' rendering coverage.
 
+- Repair KernelSU-native log/CSV saving to Download with explicit completion and
+  failure feedback, bounded private staging, and non-overwriting exports.
+- Refresh actual tagged daemon logcat separately from supervisor output; make
+  journal reload failures visible without overwriting unsaved engine settings.
+- Correct journal filters, preserve diagnostic values and use readable mobile cards.
+- Keep measured native telemetry/history separate from preview data and simulated
+  controls; preserve unavailable readings and prevent duplicate sample exports.
+- Normalize procfs vector separators before durable journaling, retaining strict
+  journal validation and pre-write recovery guarantees.
+
 ## v3.0.1 — Closed-Loop Adaptive Coupling & Unattended Release Checkpoint
 
 - **Cross-domain StrategyCatalog (`src/understand/strategy_catalog.cpp`)**: Added zero-I/O multi-domain coupling across I/O scheduler posture (`LowLatencyNone`, `DeadlineFair`, `BudgetFair`), CPUFreq governor posture (`EnergyAwareDynamic` `schedutil`/`walt`/`sugov`), foreground `cpu.uclamp.min`, GPU floor (`kgsl` / `devfreq` / `mali` / `ged`), and VM pressure under `DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, and `ThermalStabilization` regimes.

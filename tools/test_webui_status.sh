@@ -18,3 +18,6 @@ TRACE_EOF
 node "$ROOT/tools/test_webui_status.js" "$TMP/out"
 node "$ROOT/tools/test_webui_render.js" "$TMP/out"
 node "$ROOT/tools/test_webui_control.js"
+
+# TypeScript bridge and real React action handlers with a sandboxed KernelSU transport.
+node "$ROOT/tools/test_webui_diagnostics.cjs"

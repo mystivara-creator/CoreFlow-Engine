@@ -25,7 +25,7 @@
     CHANGE_HELD: { tone: "ok", title: "A verified change is in place", detail: "It is held for a short window, then restored so the next experiment starts from the original state." },
     COOLDOWN: { tone: "info", title: "Cooling down after the last outcome", detail: "A pause between changes keeps each measurement attributable to one change." },
     CONTEXT_IDLE: { tone: "info", title: "Device is idle", detail: "Nothing is worth optimizing right now." },
-    CONTEXT_LOW_CONFIDENCE: { tone: "warn", title: "Telemetry confidence too low", detail: "Readings are not trustworthy enough to act on safely (needs 70% or more)." },
+    CONTEXT_LOW_CONFIDENCE: { tone: "warn", title: "Telemetry confidence too low", detail: "Readings are below the configured confidence threshold." },
     CONTEXT_NO_HEADROOM: { tone: "warn", title: "No headroom to tune", detail: "Thermal, memory or battery headroom is missing, and no stress-reducing change applies." },
     NO_CANDIDATES: { tone: "info", title: "No resource qualifies", detail: "No discovered, writable resource is justified under the current plan." },
     READY: { tone: "ok", title: "Ready to act", detail: "The engine will apply a change as soon as its model finds one justified." }
@@ -315,7 +315,7 @@
     var rows = [];
     h.cpuApplied.forEach(function (x) { rows.push(["CPU governor", x.value || x.key, x.key]); });
     h.resourceApplied.forEach(function (x) { rows.push(["Resource", x.value, x.key]); });
-    if (!rows.length) rows.push(["Changes held", "none", "the device is at its original settings"]);
+    if (!rows.length) rows.push(["Changes held", "none", "no engine-owned changes reported"]);
     rows.push(["Verified / rolled back / failed", h.verified + " / " + h.rolledBack + " / " + h.failed, "since daemon start"]);
     rows.push(["Last change", h.lastKind ? (h.lastKind + " " + h.lastResult) : "none yet", h.lastKind ? "sample " + h.lastSample : ""]);
     return rows;

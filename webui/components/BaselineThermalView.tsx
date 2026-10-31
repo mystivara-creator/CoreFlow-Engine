@@ -16,6 +16,7 @@ import {
 } from '../engine/types';
 
 interface BaselineThermalViewProps {
+  isNativeBridge?: boolean;
   profile: DeviceHardwareProfile;
   experiment: BaselineExperimentState;
   prediction: ThermalPrediction;
@@ -27,6 +28,7 @@ interface BaselineThermalViewProps {
 }
 
 export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
+  isNativeBridge = false,
   profile,
   experiment,
   prediction,
@@ -118,7 +120,7 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
         </section>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+      {isNativeBridge ? <p className="p-4 bg-white border border-slate-200 rounded-lg text-sm text-slate-600">Live verification runs automatically in the daemon. Manual governor experiments and thermal forecasts are available only in browser preview.</p> : <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Left: Governor Verification Experiment */}
         <section className="xl:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-5">
           <div>
@@ -329,7 +331,7 @@ export const BaselineThermalView: React.FC<BaselineThermalViewProps> = ({
             </table>
           </div>
         </section>
-      </div>
+      </div>}
     </div>
   );
 };

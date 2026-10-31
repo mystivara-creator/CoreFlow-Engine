@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ShieldAlert,
 } from 'lucide-react';
+import type { TelemetryRecord } from '../bridge/diagnostics';
 import { ParsedEngineStatus, PipelineStage } from '../bridge/daemonBridge';
 import {
   CapabilityOverrides,
@@ -21,6 +22,8 @@ import {
 } from '../engine/types';
 
 interface RuntimeConsoleViewProps {
+  isNativeBridge?: boolean;
+  nativeHistory?: TelemetryRecord[];
   profile: DeviceHardwareProfile;
   capabilities: CapabilityOverrides;
   currentSample: RuntimeSample;
@@ -103,6 +106,8 @@ function renderTrendInline(trend: string) {
 }
 
 export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
+  isNativeBridge = false,
+  nativeHistory = [],
   profile,
   capabilities,
   currentSample,
@@ -120,6 +125,22 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
   onOpenPolicy,
 }) => {
   const d = parsedStatus?.data;
+  const measured = nativeHistory.slice(-60);
+  const temperatures = measured.map(row => row['Thermal(C)']).filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const minTemperature = temperatures.length ? Math.floor(Math.min(...temperatures) - 2) : 0;
+  const maxTemperature = temperatures.length ? Math.ceil(Math.max(...temperatures) + 2) : 1;
+  const measuredPath = (key: string, min: number, max: number) => {
+    let connected = false;
+    return measured.map((row, index) => {
+      const value = row[key];
+      if (typeof value !== 'number' || !Number.isFinite(value)) { connected = false; return ''; }
+      const x = measured.length === 1 ? 340 : 40 + index * 600 / (measured.length - 1);
+      const y = 170 - Math.min(1, Math.max(0, (value - min) / (max - min))) * 150;
+      const segment = `${connected ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+      connected = true;
+      return segment;
+    }).join(' ');
+  };
   const activeState = d?.brain.state || policyState;
   const stateMeta = getStateSemantic(activeState);
   const StateIcon = stateMeta.Icon;
@@ -196,13 +217,13 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
             <span>
               {d?.device.present
                 ? `${d.device.manufacturer} ${d.device.model} (Android ${d.device.androidRelease})`
-                : `Android ${profile.androidRelease}`}
+                : isNativeBridge ? 'Device identity unavailable' : `Android ${profile.androidRelease}`}
             </span>
             <span className="mx-1.5" aria-hidden="true">·</span>
-            <span className="font-mono">{d?.device.abi || profile.abi}</span>
+            <span className="font-mono">{d?.device.abi || (isNativeBridge ? 'ABI unavailable' : profile.abi)}</span>
             <span className="mx-1.5" aria-hidden="true">·</span>
             <span className="font-mono">
-              kernel {d?.device.kernelRelease || profile.kernelRelease}
+              kernel {d?.device.kernelRelease || (isNativeBridge ? 'unavailable' : profile.kernelRelease)}
             </span>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
@@ -253,7 +274,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
             <StateIcon className="w-5 h-5 shrink-0" aria-hidden="true" />
             <span>{activeState}</span>
           </div>
-          <div className="mt-1.5 text-xs text-slate-500">{stateMeta.note}</div>
+          <div className="mt-1.5 text-xs text-slate-500">{isNativeBridge ? d?.brain.skipReason || d?.brain.planReason || 'See daemon policy and safety hold details.' : stateMeta.note}</div>
         </div>
 
         <div className="p-5">
@@ -272,10 +293,10 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         <div className="p-5">
           <div className="text-xs font-medium text-slate-500">Primary &amp; Hottest Thermal</div>
           <div className="mt-2 text-lg font-bold font-mono text-slate-900 tabular-nums">
-            {displayThermal.toFixed(1)} °C
+            {isNativeBridge && d?.eyes.thermal == null ? 'unavailable' : `${displayThermal.toFixed(1)} °C`}
             <span className="mx-1.5 text-slate-300 font-normal">/</span>
             <span className="text-sm font-semibold text-slate-600">
-              {displayHottest.toFixed(1)} °C peak
+              {isNativeBridge && d?.eyes.hottest == null ? 'unavailable' : `${displayHottest.toFixed(1)} °C peak`}
             </span>
           </div>
           <div className="mt-1.5 text-xs text-slate-500 flex items-center gap-1.5">
@@ -287,9 +308,9 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         <div className="p-5">
           <div className="text-xs font-medium text-slate-500">Confidence &amp; Hands Ledger</div>
           <div className="mt-2 text-lg font-bold font-mono text-slate-900 tabular-nums">
-            {(displayConfidence * 100).toFixed(0)}%
+            {isNativeBridge && d?.eyes.confidence == null ? 'unavailable' : `${(displayConfidence * 100).toFixed(0)}%`}
             <span className="ml-2 text-xs font-normal text-slate-500">
-              ({displayConfidence.toFixed(2)} / 1.00)
+              {isNativeBridge && d?.eyes.confidence == null ? '' : `(${displayConfidence.toFixed(2)} / 1.00)`}
             </span>
           </div>
           <div className="mt-1.5 text-xs text-slate-500 font-mono tabular-nums">
@@ -328,7 +349,33 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
       )}
 
       {/* Telemetry Horizon & Signal Trends Grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
+      {isNativeBridge && d ? <section className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
+        <div className="p-4 space-y-3">
+          <h2 className="font-semibold">Measured daemon telemetry</h2>
+          <p className="text-xs text-slate-500">Recent measured snapshots; gaps indicate unavailable readings.</p>
+          <svg viewBox="0 0 680 200" className="w-full h-48" role="img" aria-label="Measured daemon temperature and CPU history">
+            <line x1="40" y1="170" x2="640" y2="170" stroke="#CBD5E1" />
+            {temperatures.length > 0 && <>
+              <text x="3" y="24" fontSize="11" fill="#DC2626">{maxTemperature}°C</text>
+              <text x="3" y="170" fontSize="11" fill="#DC2626">{minTemperature}°C</text>
+              <path d={measuredPath('Thermal(C)', minTemperature, maxTemperature)} fill="none" stroke="#DC2626" strokeWidth="2" />
+            </>}
+            <text x="643" y="24" fontSize="11" fill="#2563EB">100%</text>
+            <text x="643" y="170" fontSize="11" fill="#2563EB">0%</text>
+            <path d={measuredPath('CPU(%)', 0, 100)} fill="none" stroke="#2563EB" strokeWidth="2" />
+            <text x="40" y="192" fontSize="11" fill="#64748B">{measured.length ? new Date(Number(measured[0].UpdatedEpoch) * 1000).toLocaleTimeString() : 'No measured samples'}</text>
+            <text x="640" y="192" textAnchor="end" fontSize="11" fill="#64748B">{measured.length ? new Date(Number(measured[measured.length - 1].UpdatedEpoch) * 1000).toLocaleTimeString() : ''}</text>
+          </svg>
+          <div className="flex flex-wrap gap-4 text-xs"><span className="text-red-700">Temperature · left axis</span><span className="text-blue-700">CPU · right axis</span></div>
+        </div>
+        {(window.CoreFlowStatus?.eyesRows(d) ?? []).map(([name, value, detail]) => (
+          <div key={name} className="p-4 text-xs space-y-1 break-words [overflow-wrap:anywhere]">
+            <div className="font-medium text-slate-500">{name}</div>
+            <div className="font-mono text-slate-900">{value}</div>
+            {detail && <div className="text-slate-500">{detail}</div>}
+          </div>
+        ))}
+      </section> : <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
         <section className="xl:col-span-7 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <div>
@@ -496,7 +543,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                   {d?.eyes.cpu != null
                     ? `${(d.eyes.cpu * 100).toFixed(1)}%`
                     : `${currentSample.cpuUsagePct.toFixed(1)}%`}{' '}
-                  · GPU {capabilities.kgslAvailable ? `${currentSample.gpuBusyPct}%` : 'SKIP'}
+                  · GPU {isNativeBridge ? 'unavailable' : capabilities.kgslAvailable ? `${currentSample.gpuBusyPct}%` : 'SKIP'}
                 </div>
                 <div className="text-slate-500">
                   load1={(d?.eyes.load ?? currentSample.load1).toFixed(2)}
@@ -568,10 +615,10 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
             </div>
           </div>
         </section>
-      </div>
+      </div>}
 
-      {/* CPU Cluster Hardware Topology Table */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      {/* CPU topology is preview-only until the native schema supplies it. */}
+      {!isNativeBridge && <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200">
           <h2 className="text-base font-semibold text-slate-900">
             CPUFreq Actuators &amp; Cluster Frequency Bounds
@@ -640,7 +687,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
             </tbody>
           </table>
         </div>
-      </section>
+      </section>}
     </div>
   );
 };

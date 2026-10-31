@@ -115,6 +115,12 @@ export interface ParsedEngineStatus {
       }>;
       blockQueueMutationsQuarantined: boolean;
     };
+    intelligence?: {
+      renderingAvailable: boolean;
+      frameJankRate: number;
+      foregroundProcess: string;
+      renderingLayer: string;
+    };
     eyes: {
       thermal: number | null;
       hottest: number | null;
@@ -322,7 +328,7 @@ export function execNativeKsuShell(cmd: string, timeoutMs = 12000): Promise<Shel
       window.clearTimeout(timer);
       delete win[cbName];
       resolve({
-        errno: typeof errno === 'number' ? errno : 0,
+        errno: (typeof errno === 'number' || typeof errno === 'string') && /^-?\d+$/.test(String(errno)) && Number.isSafeInteger(Number(errno)) ? Number(errno) : 1,
         stdout: typeof stdout === 'string' ? stdout : '',
         stderr: typeof stderr === 'string' ? stderr : '',
       });

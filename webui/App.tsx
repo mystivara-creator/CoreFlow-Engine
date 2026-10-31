@@ -11,6 +11,7 @@ import {
   PolicyFormValues,
   VirtualDaemonStore,
 } from './bridge/daemonBridge';
+import { appendNativeTelemetry, nativeTelemetryRecord, TelemetryRecord } from './bridge/diagnostics';
 import { BaselineThermalView } from './components/BaselineThermalView';
 import { ControlSidebar } from './components/ControlSidebar';
 import { LogcatStreamView } from './components/LogcatStreamView';
@@ -48,7 +49,6 @@ import {
   RuntimeSample,
   RuntimeState,
   SysfsNodeEntry,
-  ThermalSource,
   Trend,
   WorkloadInputs,
 } from './engine/types';
@@ -93,14 +93,6 @@ function getDefaultForm(): PolicyFormValues {
     boost_gpu_steps: '1',
     boost_window_ms: '3000',
   };
-}
-
-function mapTrendFromEngine(raw: string): Trend {
-  const u = (raw || '').toUpperCase();
-  if (u.includes('RISING')) return Trend.Rising;
-  if (u.includes('FALLING')) return Trend.Falling;
-  if (u.includes('STABLE')) return Trend.Stable;
-  return Trend.Unknown;
 }
 
 function mapStateFromEngine(raw: string): RuntimeState {
@@ -148,6 +140,16 @@ export const App: React.FC = () => {
   const [nativeLogLines, setNativeLogLines] = useState<string[]>([]);
   const [daemonBusy, setDaemonBusy] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const [nativeHistory, setNativeHistory] = useState<TelemetryRecord[]>([]);
+  const [nativeConfigReady, setNativeConfigReady] = useState(!isNativeBridge);
+  const [configReadError, setConfigReadError] = useState<string | null>(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsRefreshedAt, setLogsRefreshedAt] = useState<number | null>(null);
+  const [nativeSyncError, setNativeSyncError] = useState<string | null>(null);
+  const logsInFlight = useRef<Promise<void> | null>(null);
+  const snapshotInFlight = useRef<Promise<void> | null>(null);
 
   // Telemetry state
   const profile = HARDWARE_PROFILES[deviceId];
@@ -254,11 +256,9 @@ export const App: React.FC = () => {
             : `Verified resource tunable (${d.hands.lastResource || 'VERIFIED'})`,
         });
       }
-      if (liveRows.length > 0) {
-        return liveRows;
-      }
+      return liveRows;
     }
-    return mirrorSysfsNodes;
+    return isNativeBridge ? [] : mirrorSysfsNodes;
   }, [isNativeBridge, nativeParsedStatus, mirrorSysfsNodes]);
 
   // Pure synchronous derivation of Mirror snapshot via control_logic.js + engine_status.js
@@ -347,107 +347,100 @@ export const App: React.FC = () => {
     return window.CoreFlowStatus.pipeline(parsedStatus.data);
   }, [parsedStatus]);
 
+  const refreshNativeLogs = useCallback(async () => {
+    if (!isNativeBridge) return;
+    if (logsInFlight.current) return logsInFlight.current;
+    const C = window.CoreFlowControl;
+    if (!C) throw new Error('WebUI control module is unavailable.');
+    const work = (async () => {
+      setLogsLoading(true); setLogsError(null);
+      try {
+        const [trace, log] = await Promise.all([
+          execNativeKsuShell(C.readTraceCmd()), execNativeKsuShell(C.readLogCmd()),
+        ]);
+        const errors: string[] = [];
+        if (trace.errno === 0) setNativeTraceRows(C.parseTrace(trace.stdout, 400));
+        else errors.push(`Journal: ${trace.stderr || trace.stdout || `exit ${trace.errno}`}`);
+        if (log.errno === 0) setNativeLogLines(log.stdout.split(/\r?\n/).filter(Boolean));
+        else errors.push(`Logcat: ${log.stderr || log.stdout || `exit ${log.errno}`}`);
+        if (errors.length) throw new Error(errors.join(' · '));
+        setLogsRefreshedAt(Date.now());
+      } catch (err) {
+        setLogsError(err instanceof Error ? err.message : String(err));
+        throw err;
+      } finally { setLogsLoading(false); }
+    })();
+    logsInFlight.current = work;
+    try { await work; } finally { logsInFlight.current = null; }
+  }, [isNativeBridge]);
+
   // Native KernelSU polling & sync
   const syncFromNativeDaemon = useCallback(
     async (includeConfigAndLogs = false) => {
       const C = window.CoreFlowControl;
       const S = window.CoreFlowStatus;
       if (!isNativeBridge || !C || !S) return;
-
-      const snapRes = await execNativeKsuShell(C.snapshotCmd());
-      if (snapRes.errno === 0 && snapRes.stdout) {
-        const parts = C.splitSnapshot(snapRes.stdout);
-        const nextProbe = C.parseProbe(parts.probe);
-        const nextParsed = S.parse(parts.status);
-        setNativeProbe(nextProbe);
-        setNativeParsedStatus(nextParsed);
-
-        if (nextParsed.ok && nextParsed.data) {
-          const d = nextParsed.data;
-          const mappedState = mapStateFromEngine(d.brain.state);
-          setPrevPolicyState(mapStateFromEngine(d.brain.previous));
-          setPolicyState(mappedState);
-
-          setHistory((prev) => {
-            const last = prev[prev.length - 1];
-            const memPct = d.eyes.mem !== null ? d.eyes.mem * 100 : 50;
-            const totalKb = 8_388_608;
-            const nextSample: RuntimeSample = {
-              sampleIndex: d.sample || last.sampleIndex + 1,
-              uptimeSeconds: last.uptimeSeconds + (d.interval || 5),
-              cpuUsagePct: d.eyes.cpu !== null ? Number((d.eyes.cpu * 100).toFixed(1)) : 0,
-              gpuBusyPct: 0,
-              load1: d.eyes.load ?? 0,
-              memTotalKb: totalKb,
-              memAvailableKb: Math.round((totalKb * memPct) / 100),
-              memAvailableRatio: d.eyes.mem ?? 0.5,
-              thermalAvailable: d.eyes.thermal !== null,
-              thermalMillidegrees:
-                d.eyes.thermal !== null ? Math.round(d.eyes.thermal * 1000) : 0,
-              hottestThermalMillidegrees:
-                d.eyes.hottest !== null
-                  ? Math.round(d.eyes.hottest * 1000)
-                  : d.eyes.thermal !== null
-                    ? Math.round(d.eyes.thermal * 1000)
-                    : 0,
-              thermalSource: d.eyes.thermal !== null ? ThermalSource.Primary : ThermalSource.Unknown,
-              charging: d.eyes.charging,
-              chargingTelemetryAvailable: d.eyes.battery !== null,
-              batteryPercent: d.eyes.battery ?? 0,
-              batteryTempMillidegrees:
-                d.eyes.thermal !== null ? Math.round((d.eyes.thermal - 2.0) * 1000) : 32_000,
-              batteryCurrentMicroamps: d.eyes.charging ? 2_000_000 : -400_000,
-              batteryVoltageMicrovolts: 3_950_000,
-              ioReadKbs: d.eyes.ioRead ?? 0,
-              ioWriteKbs: d.eyes.ioWrite ?? 0,
-              thermalTrend: mapTrendFromEngine(d.eyes.thermalTrend),
-              memoryTrend: mapTrendFromEngine(d.eyes.memTrend),
-              loadTrend: mapTrendFromEngine(d.eyes.loadTrend),
-              confidence: d.eyes.confidence ?? 0,
-            };
-            if (last.sampleIndex === nextSample.sampleIndex && prev.length > 1) {
-              return [...prev.slice(0, -1), nextSample];
-            }
-            return [...prev.slice(-(HISTORY_WINDOW_SIZE - 1)), nextSample];
-          });
-        }
+      while (snapshotInFlight.current) {
+        await snapshotInFlight.current;
+        if (!includeConfigAndLogs) return;
       }
+      const work = (async () => {
+        const snapRes = await execNativeKsuShell(C.snapshotCmd());
+        if (snapRes.errno === 0 && snapRes.stdout) {
+          const parts = C.splitSnapshot(snapRes.stdout);
+          const nextProbe = C.parseProbe(parts.probe);
+          const nextParsed = S.parse(parts.status);
+          setNativeProbe(nextProbe);
+          setNativeParsedStatus(nextParsed);
+          setNativeSyncError(nextParsed.ok ? null : nextParsed.error || 'Daemon status is unavailable.');
+          const record = nativeTelemetryRecord(nextParsed);
+          if (record && !nextParsed.stale) setNativeHistory(prev => appendNativeTelemetry(prev, record));
 
-      if (includeConfigAndLogs) {
-        const [cfgRes, traceRes, logRes] = await Promise.all([
-          execNativeKsuShell(C.readConfigCmd()),
-          execNativeKsuShell(C.readTraceCmd()),
-          execNativeKsuShell(C.readLogCmd()),
-        ]);
-        if (cfgRes.errno === 0) {
-          setRawConfigText(cfgRes.stdout);
-          const parsedCfg = C.parseIni(cfgRes.stdout);
-          setPolicyForm(C.formFromConfig({ ...C.DEFAULTS, ...parsedCfg }));
+          if (nextParsed.ok && nextParsed.data) {
+            const d = nextParsed.data;
+            const mappedState = mapStateFromEngine(d.brain.state);
+            setPrevPolicyState(mapStateFromEngine(d.brain.previous));
+            setPolicyState(mappedState);
+          }
+        } else {
+          setNativeSyncError(snapRes.stderr || snapRes.stdout || `Status read failed (exit ${snapRes.errno}).`);
         }
-        if (traceRes.errno === 0) {
-          setNativeTraceRows(C.parseTrace(traceRes.stdout, 120));
+
+        if (includeConfigAndLogs) {
+          const cfgRes = await execNativeKsuShell(C.readConfigCmd());
+          if (cfgRes.errno === 0 && cfgRes.stdout.trim()) {
+            setNativeConfigReady(true); setConfigReadError(null);
+            setRawConfigText(cfgRes.stdout);
+            const parsedCfg = C.parseIni(cfgRes.stdout);
+            setPolicyForm(C.formFromConfig({ ...C.DEFAULTS, ...parsedCfg }));
+          } else {
+            setNativeConfigReady(false);
+            setConfigReadError(cfgRes.stderr || 'Unable to read config.ini. Use Sync before saving settings.');
+          }
+          await refreshNativeLogs().catch(() => {});
         }
-        if (logRes.errno === 0) {
-          setNativeLogLines(
-            logRes.stdout
-              .split(/\r?\n/)
-              .map((s) => s.trim())
-              .filter(Boolean)
-          );
-        }
-      }
+      })();
+      snapshotInFlight.current = work;
+      try { await work; } finally { snapshotInFlight.current = null; }
     },
-    [isNativeBridge]
+    [isNativeBridge, refreshNativeLogs]
   );
 
   useEffect(() => {
     if (!isNativeBridge) return;
-    syncFromNativeDaemon(true);
+    syncFromNativeDaemon(true).catch(err => setNativeSyncError(String(err)));
     const id = window.setInterval(() => {
-      syncFromNativeDaemon(false);
+      syncFromNativeDaemon(false).catch(err => setNativeSyncError(String(err)));
     }, 3000);
     return () => window.clearInterval(id);
   }, [isNativeBridge, syncFromNativeDaemon]);
+
+  useEffect(() => {
+    if (!isNativeBridge || activeTab !== 'logcat') return;
+    refreshNativeLogs().catch(() => {});
+    const id = window.setInterval(() => refreshNativeLogs().catch(() => {}), 5000);
+    return () => window.clearInterval(id);
+  }, [isNativeBridge, activeTab, refreshNativeLogs]);
 
   // Step 1 deterministic tick in Mirror mode
   const stepEngineTick = useCallback(() => {
@@ -670,6 +663,7 @@ export const App: React.FC = () => {
     error?: string;
     saved?: boolean;
   }> => {
+    if (isNativeBridge && !nativeConfigReady) return { error: configReadError || 'Read the current config using Sync before saving.' };
     const C = window.CoreFlowControl;
     if (!C) {
       return { error: 'CoreFlowControl contract module is not loaded.' };
@@ -820,9 +814,13 @@ export const App: React.FC = () => {
           onResetEngine={handleResetEngine}
         />
 
-        <main className="flex-1 min-w-0 p-6 lg:p-8 max-w-7xl">
-          {activeTab === 'console' && (
+        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl">
+          {isNativeBridge && nativeSyncError && <div role="alert" className="mb-4 p-3 bg-red-50 text-red-800 text-xs break-words">{nativeSyncError} · Displayed status may be stale; use Sync to retry.</div>}
+          {isNativeBridge && !nativeParsedStatus?.ok && ['console', 'sysfs', 'baseline'].includes(activeTab) && <div role="status" className="p-5 bg-white border border-slate-200 rounded-lg text-sm">Waiting for live daemon data. Use Sync to retry.</div>}
+          {activeTab === 'console' && (!isNativeBridge || nativeParsedStatus?.ok) && (
             <RuntimeConsoleView
+              isNativeBridge={isNativeBridge}
+              nativeHistory={nativeHistory}
               profile={profile}
               capabilities={capabilities}
               currentSample={currentSample}
@@ -841,10 +839,11 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeTab === 'sysfs' && (
+          {activeTab === 'sysfs' && (!isNativeBridge || nativeParsedStatus?.ok) && (
             <SysfsInspectorView nodes={sysfsNodes} parsedStatus={parsedStatus} />
           )}
 
+          {activeTab === 'policy' && configReadError && <div role="alert" className="p-3 mb-3 text-xs bg-red-50 text-red-800">{configReadError}</div>}
           {activeTab === 'policy' && (
             <PolicyConfigView
               form={policyForm}
@@ -857,8 +856,9 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeTab === 'baseline' && (
+          {activeTab === 'baseline' && (!isNativeBridge || nativeParsedStatus?.ok) && (
             <BaselineThermalView
+              isNativeBridge={isNativeBridge}
               profile={profile}
               experiment={experiment}
               prediction={prediction}
@@ -892,7 +892,11 @@ export const App: React.FC = () => {
               nativeLogLines={nativeLogLines}
               isNativeBridge={isNativeBridge}
               history={history}
-              onRefreshLogs={() => syncFromNativeDaemon(true)}
+              nativeHistory={nativeHistory}
+              loading={logsLoading}
+              readError={logsError}
+              refreshedAt={logsRefreshedAt}
+              onRefreshLogs={refreshNativeLogs}
               onClearLogs={() => setLogs([])}
             />
           )}

@@ -240,11 +240,17 @@
   }
 
   function readTraceCmd() {
-    return "tail -n 400 " + q(PATHS.trace) + " 2>/dev/null";
+    return "if [ ! -e " + q(PATHS.trace) + " ]; then exit 0; fi; " +
+      "[ -r " + q(PATHS.trace) + " ] || { echo 'Decision trace is not readable' >&2; exit 1; }; " +
+      "DATA=$(tail -c 131072 " + q(PATHS.trace) + ") || exit $?; printf '%s\\n' \"$DATA\" | tail -n 400";
   }
 
   function readLogCmd() {
-    return "tail -n 500 " + q(PATHS.log) + " 2>/dev/null";
+    return "printf '%s\\n' '=== Supervisor stdout/stderr ==='; " +
+      "if [ -e " + q(PATHS.log) + " ]; then DATA=$(tail -c 65536 " + q(PATHS.log) + ") || exit $?; printf '%s\\n' \"$DATA\" | tail -n 150; fi; " +
+      "printf '%s\\n' '=== Android daemon logcat ==='; " +
+      "DATA=$(logcat -d -v threadtime -t 500 -s CoreFlowAutonomous:V CoreFlowConscience:V '*:S') || exit $?; " +
+      "printf '%s\\n' \"$DATA\" | tail -c 131072";
   }
 
   function stopBody() {
@@ -339,9 +345,11 @@
     var r = (String(o.result || "") + " " + String(o.event || "")).toUpperCase();
     if (/FAIL|ERROR|FAULT/.test(r)) return "error";
     if (/DENY|DENIED|REJECT|BLOCK/.test(r)) return "block";
-    if (/MUTAT|APPL|VERIF|ROLLBACK|RESTORE/.test(r)) return "change";
     var hold = String(o.safety_hold || "");
-    if (hold && !/^(NONE|NO_HOLD)?$/i.test(hold)) return "safety";
+    if (/ROLLBACK|ROLLED_BACK|RESTORE|SAFETY/.test(r) || (hold && !/^(NONE|NO_HOLD)?$/i.test(hold))) return "safety";
+    if (String(o.event || "") === "actuator_apply_completed" &&
+        typeof o.writes_verified === "number" && o.writes_verified > 0) return "change";
+    if (String(o.result || "").toUpperCase() === "VERIFIED") return "change";
     return "event";
   }
 
@@ -376,14 +384,14 @@
         event: str(o.event, 80),
         scope: str(o.scope, 40),
         result: str(o.result, 60),
-        reason: str(o.reason, 160),
+        reason: str(o.reason, 2048),
         state: str(o.state, 40),
         decision: str(o.decision, 60),
         kind: classify(o),
-        target: str(o.target, 300),
-        requested: str(o.requested, 200),
-        currentValue: str(o.current_value, 200),
-        baselineValue: str(o.baseline_value, 200),
+        target: str(o.target, 4096),
+        requested: str(o.requested, 4096),
+        currentValue: str(o.current_value, 4096),
+        baselineValue: str(o.baseline_value, 4096),
         actuatorStatus: str(o.actuator_status, 60),
         writesAttempted: typeof o.writes_attempted === "number" ? o.writes_attempted : null,
         writesVerified: typeof o.writes_verified === "number" ? o.writes_verified : null
@@ -393,6 +401,9 @@
   }
 
   function filterTrace(rows, filter) {
+    if (filter === "change") return rows.filter(function (r) { return r.kind === "change" || r.writesVerified > 0; });
+    if (filter === "safety") return rows.filter(function (r) { return r.kind === "safety" || /ROLLBACK|ROLLED_BACK|RESTOR/i.test(r.event + " " + r.result); });
+    if (["block", "error"].indexOf(filter) >= 0) return rows.filter(function (r) { return r.kind === filter; });
     if (filter === "changes") return rows.filter(function (r) { return r.kind === "change"; });
     if (filter === "errors") return rows.filter(function (r) {
       return r.kind === "error" || r.kind === "block" || r.kind === "safety";

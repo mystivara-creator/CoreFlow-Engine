@@ -101,12 +101,18 @@ std::string ResourceActuator::comparableValue(std::string_view raw) {
     const std::string text = trimmed(raw);
     std::istringstream stream(text);
     std::string part;
+    std::string normalized;
     while (stream >> part) {
         if (part.size() >= 3 && part.front() == '[' && part.back() == ']') {
             return part.substr(1, part.size() - 2);
         }
+        if (!normalized.empty()) normalized.push_back(' ');
+        normalized += part;
     }
-    return text;
+    // Kernel scalar/vector whitespace is a separator. Canonical spaces make
+    // tab-separated procfs arrays comparable and journalable without relaxing
+    // the journal's rejection of field/record delimiters.
+    return normalized;
 }
 
 bool ResourceActuator::read(std::string_view path, std::string& value) noexcept {
