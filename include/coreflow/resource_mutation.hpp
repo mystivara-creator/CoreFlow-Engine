@@ -21,12 +21,12 @@ namespace coreflow {
 
 struct DecisionTraceContext;
 
-// Autonomous tuning for *discovered* VM/I/O/Scheduler resources.
+// Autonomous tuning for discovered VM/I/O/scheduler/GPU/cgroup resources.
 // Candidate generation is capability-driven via EffectModel — not a fixed
 // allow-list of resource names. Discovery decides what exists and is writable;
 // EffectModel scores whether a bounded change improves stability; this
-// controller applies at most one verified mutation per cycle with journal
-// and rollback.
+// controller applies one bounded, coordinated cohort per cycle with journal
+// and rollback for every member.
 enum class ResourceMutationFailureStage : std::uint8_t {
     None = 0,
     Recovery,
@@ -88,7 +88,11 @@ public:
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
     bool restoreAll() noexcept;
+    bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
+    const std::vector<ResourceCapability>& discoveredCapabilities() const noexcept { return supplemental_; }
+    bool admitNewBaselines(const DeviceProfile& profile) noexcept;
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    bool acceptCoordinatedMutation() noexcept;
     RetainedStateFailureStage lastRetainedStateFailureStage() const noexcept {
         return last_retained_state_failure_stage_;
     }
@@ -127,6 +131,10 @@ public:
         return last_actuator_status_;
     }
 
+    static constexpr std::size_t kMaxCohortWrites = 3U;
+    // CPU-governor follow-ups may select only candidates with coupling evidence.
+    void setCoupledOnly(bool value) noexcept { coupled_only_ = value; }
+
     // Last DecisionAgent reasoning summary for this cycle (empty if none).
     const std::string& lastAgentReason() const noexcept { return last_agent_reason_; }
     // True when every change currently held was made under a stabilizing-only
@@ -144,6 +152,7 @@ public:
     }
 
 private:
+    std::vector<std::pair<std::string, std::string>> accepted_resources_;
     const std::unordered_set<std::string>* external_control_paths_{nullptr};
 
     struct Baseline {
@@ -172,7 +181,7 @@ private:
         const DeviceProfile& profile,
         const PolicyPlan& policy,
         const UserGrants& grants,
-        Candidate& out) const noexcept;
+        Candidate& out, bool companion = false) const noexcept;
     MutationResult applyCandidate(const Candidate& candidate,
                                   RuntimeState state,
                                   double confidence,
@@ -184,6 +193,16 @@ private:
                               const std::string& token,
                               std::string& resolved) const noexcept;
 
+    struct PendingChange {
+        std::string path, target, previous;
+        bool was_dirty{false};
+        bool from_retained{false};
+    };
+    std::vector<PendingChange> pending_changes_;
+    std::vector<std::string> write_order_;
+    std::vector<ResourceCapability> supplemental_;
+    bool rollbackSingleMutation() noexcept;
+    bool coupled_only_{false};
     MutationJournal* journal_{nullptr};
     RetainedStateStore* retained_store_{nullptr};
     RetainedStateStore::Entries retained_entries_;
@@ -196,7 +215,7 @@ private:
     std::unordered_map<std::string, Baseline> baseline_;
     std::unordered_set<std::string> dirty_resources_;
     std::vector<std::pair<std::string, std::string>> last_applied_resources_;
-    bool recovery_pending_{false};
+    bool recovery_pending_{true};
     bool baseline_captured_{false};
     bool journal_committed_{false};
     bool mutated_{false};

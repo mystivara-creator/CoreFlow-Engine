@@ -332,6 +332,16 @@ void TunableDiscovery::walkTree(EnvironmentCapabilityMatrix& matrix, const Vendo
     }
 }
 
+TunableDiscoveryStats TunableDiscovery::discoverWithin(EnvironmentCapabilityMatrix& matrix,
+                                                       const VendorKnowledge& vendor,
+                                                       const std::string& root) const noexcept {
+    TunableDiscoveryStats stats;
+    if (root.empty() || root.front() != '/') return stats;
+    walkTree(matrix, vendor, root, 2U, acceptAllDirs, stats);
+    enrich(matrix, vendor);
+    return stats;
+}
+
 TunableDiscoveryStats TunableDiscovery::discover(EnvironmentCapabilityMatrix& matrix,
                                                  const VendorKnowledge& vendor) const noexcept {
     TunableDiscoveryStats stats;

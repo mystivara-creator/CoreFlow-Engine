@@ -313,9 +313,9 @@ int main() {
         e = in;  e.resource_epoch_stabilizing = false;
         CHECK(shouldRestoreEpochNow(e));
         e = in;  e.plan_stabilizing_only = false;
-        CHECK(shouldRestoreEpochNow(e));
-        e = in;  e.plan_mutation_eligible = false;   // e.g. confidence dropped
-        CHECK(shouldRestoreEpochNow(e));
+        CHECK(!shouldRestoreEpochNow(e));
+        e = in;  e.plan_mutation_eligible = false;   // no new writes, keep verified cooling
+        CHECK(!shouldRestoreEpochNow(e));
         e = in;  e.armed = false;                    // disarmed / kill switch
         CHECK(shouldRestoreEpochNow(e));
         e = in;  e.mode_adaptive = false;            // SAFE_MODE disables the config

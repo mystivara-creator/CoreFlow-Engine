@@ -8,6 +8,10 @@ required_files="
 CMakeLists.txt
 package.json
 package-lock.json
+include/coreflow/coordinated_plan.hpp
+src/balance/coordinated_plan.cpp
+tests/coordinated_plan_tests.cpp
+docs/COORDINATED_THERMAL_PLANS.md
 include/coreflow/sample_sequence.hpp
 src/conscience/sample_sequence.cpp
 include/coreflow/durable_file.hpp

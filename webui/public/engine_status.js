@@ -17,13 +17,14 @@
   // Must match blockerCodes() in src/status_snapshot.cpp (checked by tools/test_webui_status.js).
   var BLOCKERS = {
     STOPPED: { tone: "bad", title: "Engine stopped", detail: "The daemon is not running. It restores any change it made when it shuts down." },
+    THERMAL_STABILIZING: { tone: "warn", title: "Thermal stabilization", detail: "Performance boosts are withdrawn. The engine can apply verified, load-reducing plans from available kernel capabilities; existing cooling settings stay active while the next plan is measured." },
     RECOVERY_PENDING: { tone: "warn", title: "Engine recovery pending", detail: "Tuning is paused while ownership handoff or restoration completes. Displayed sensor values are from the last telemetry snapshot." },
     SAFETY_HOLD: { tone: "warn", title: "Safety hold active", detail: "The kill switch or SAFE_MODE is set, so mutation is disabled until it is cleared." },
     OBSERVE_MODE: { tone: "info", title: "Configuration blocked", detail: "The installed engine configuration does not enable tuning. Save Engine Settings and restart; recovery and operator stop markers remain authoritative." },
     NOT_ARMED: { tone: "warn", title: "Configuration incomplete", detail: "The compatibility activation fields are inconsistent. Save Engine Settings and restart; no extra operating mode needs to be selected." },
     BASELINE_CAPTURE: { tone: "info", title: "Measuring factory behaviour", detail: "The engine first records how the device behaves untouched, so it can tell later whether a change helped." },
     OBSERVING_OUTCOME: { tone: "info", title: "Measuring the effect of a change", detail: "A change was applied. The engine is checking whether it helped, and will roll it back if it did not." },
-    CHANGE_HELD: { tone: "ok", title: "A verified change is in place", detail: "It is held for a short window, then restored so the next experiment starts from the original state." },
+    CHANGE_HELD: { tone: "ok", title: "A verified change is in place", detail: "It stays active while further justified plans are evaluated against the current configuration. Stop, recovery or a safety transition restores the settings when required." },
     COOLDOWN: { tone: "info", title: "Cooling down after the last outcome", detail: "A pause between changes keeps each measurement attributable to one change." },
     CONTEXT_IDLE: { tone: "info", title: "Device is idle", detail: "Nothing is worth optimizing right now." },
     CONTEXT_LOW_CONFIDENCE: { tone: "warn", title: "Telemetry confidence too low", detail: "Readings are below the configured confidence threshold." },
@@ -61,6 +62,8 @@
       sample: int(j.sample, 0),
       updated: int(j.updated_epoch, 0),
       telemetryUpdated: int(j.telemetry_epoch, int(j.updated_epoch, 0)),
+      cohortIdentity: str(j.cohort_identity, 512),
+      cohortMembers: int(j.cohort_members, 0),
       recoveryPhase: str(j.recovery_phase, 40),
       recoveryDetail: str(j.recovery_detail, 512),
       interval: int(j.interval_s, 5),
@@ -195,6 +198,9 @@
     var info = BLOCKERS[d.blocker];
     if (!info) return { tone: "info", title: "Unrecognized status", detail: "The engine reported a code this page does not know: " + d.blocker, code: d.blocker };
     var detail = info.detail;
+    if (d.blocker === "THERMAL_STABILIZING" && !d.brain.baselineReady)
+      detail += " Capturing a matched thermal baseline " + d.brain.baselineSamples + "/" + d.brain.baselineTarget + ".";
+    if (d.cohortMembers > 1) detail += " Last coordinated plan: " + d.cohortMembers + " targets.";
     if (d.blocker === "BASELINE_CAPTURE" && d.brain.baselineTarget) detail += " (" + d.brain.baselineSamples + "/" + d.brain.baselineTarget + " samples)";
     if (d.blocker === "COOLDOWN") detail += " " + d.brain.cooldown + " sample(s) left.";
     if (d.blocker === "CONTEXT_LOW_CONFIDENCE" && d.eyes.confidence != null) detail += " Now " + Math.round(d.eyes.confidence * 100) + "%.";
@@ -318,6 +324,7 @@
       ["Decision agent", b.agentMode || "ScoringOnly", b.agentReason || "no proposal this cycle"],
       ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
       ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],
+      ["Last plan", (d.cohortMembers || 0) + " target(s)", d.cohortIdentity || "—"],
       ["Skip / wait reason", b.skipReason || "—", b.cooldown ? (b.cooldown + " cooldown left") : ""],
       ["Safety hold", b.holdActive ? b.hold : "none", ""],
       ["Consultation ledger", Object.keys(b.consultation.reasons).length ? Object.keys(b.consultation.reasons).map(function (k) { return k + " " + b.consultation.reasons[k]; }).join(" · ") : "not supplied by this daemon", "cumulative since daemon start"],

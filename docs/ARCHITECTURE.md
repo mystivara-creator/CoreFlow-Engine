@@ -4,7 +4,7 @@
 
 1. **Observe (`Device & Runtime Discovery` -> `Capability Registry` -> `Telemetry & Context`):** discover mounted `procfs`, `cgroup`, and `sysfs` interfaces, harvest vendor PowerHAL/perf profiles, and sample thermal, PSI, memory, CPU, GPU busy, and dynamic refresh-period frame telemetry.
 2. **Understand (`Baseline Intelligence` -> `Outcome Evaluator` -> `Strategy Catalog` -> `Effect Model & Candidate Ranking`):** maintain rolling pre-mutation baselines, classify workload regimes (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`), couple dependent domains (I/O scheduler <-> queue depth/readahead <-> CPU governor/rate-limit <-> foreground UClamp <-> GPU floor), and rank candidates strictly from live capability evidence.
-3. **Balance (`Policy Authority` -> `Safety Gate`):** evaluate headroom, cooperative Power HAL / Performance Hint posture, `SAFE_MODE` / `DISABLE` / thermal guard holds, and issue target-bound `MutationPermit` tokens (or route to `Keep configuration / Explain hold`).
+3. **Balance (`Policy Authority` -> `Safety Gate`):** evaluate headroom, cooperative Power HAL / Performance Hint posture, `SAFE_MODE` / `DISABLE` holds and stabilizing-only thermal plans, and issue target-bound `MutationPermit` tokens (or route to `Keep configuration / Explain hold`).
 4. **Adapt (`Mutation Transaction` -> `Durable Mutation Journal` -> `Resource Actuator`):** commit pre-write baselines to the checksummed v2 journal before writing through a single `O_NOFOLLOW` + `fstat` kernel-FS descriptor.
 5. **Verify (`Read-back Verification` -> `Outcome Measurement` -> `Experience & Model Update` / `Rollback & Recovery`):** verify live read-back immediately, measure multi-sample runtime outcomes, retain verified beneficial or stable zero-harm improvements, and roll back regressions or crash leftovers deterministically.
 
@@ -25,3 +25,13 @@ A plan should be based on current telemetry and the current discovered capabilit
 ## Release boundary
 
 Passing host tests does not establish Android ABI/link correctness, vendor-kernel compatibility, or device-level safety. Those require a successful Android ARM64 build and staged device validation, including recovery behavior.
+
+
+## Coordinated execution
+
+Resource-first planning replaces fixed CPU-first execution. Up to three resource
+members, or a governor fallback plus justified companions, share one outcome
+identity. Live coupling and bounded subtree rediscovery follow anchor changes.
+Reverse-order resource journals settle dependents before CPU recovery. Verified
+cooling can remain active during ThermalGuard; confidence dips block new writes.
+[Detailed semantics and acceptance scope](COORDINATED_THERMAL_PLANS.md).

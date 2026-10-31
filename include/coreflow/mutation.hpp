@@ -78,6 +78,7 @@ public:
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
+    bool acceptCoordinatedMutation() noexcept;
     RetainedStateFailureStage lastRetainedStateFailureStage() const noexcept {
         return last_retained_state_failure_stage_;
     }
@@ -97,6 +98,7 @@ public:
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
 
 private:
+    std::vector<std::pair<std::string, std::string>> accepted_governors_;
     const std::unordered_set<std::string>* external_control_paths_{nullptr};
 
     struct Baseline {

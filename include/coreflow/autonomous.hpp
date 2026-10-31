@@ -65,6 +65,9 @@ private:
     bool has_restored_{false};
     bool refresh_pending_{false};
     bool telemetry_recovery_pending_{false};
+    bool observation_cohort_{false};
+    std::string observation_identity_;
+    std::size_t observation_members_{0};
     bool continuity_recovery_pending_{false};
     std::unordered_set<std::string> external_control_paths_;
     bool reconcileControlContinuity();

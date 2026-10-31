@@ -91,6 +91,7 @@ bool MutationController::captureBaseline(const DeviceProfile& profile) noexcept 
 
     baseline_.clear();
     dirty_governors_.clear();
+    accepted_governors_.clear();
     last_applied_governors_.clear();
     rejected_.clear();
     for (const CpuPolicy& policy : profile.cpu_policies) {
@@ -236,6 +237,7 @@ bool MutationController::ensureRecovered(const DeviceProfile& profile) noexcept 
     recovered_factory_ = std::move(entries);
     recovery_pending_ = false;
     dirty_governors_.clear();
+    accepted_governors_.clear();
     retained_active_governors_.clear();
     active_governors_cache_.clear();
     mutated_ = false;
@@ -424,8 +426,9 @@ bool MutationController::buildPlan(
                     experienceRecordFor(candidate) != nullptr) {
                     continue;
                 }
-                bootstrap = candidate;
-                break;
+                const double candidate_score = adjustedScore(candidate);
+                if (candidate_score < currentScore || candidate_score < 0.0) continue;
+                if (bootstrap.empty() || candidate_score > adjustedScore(bootstrap)) bootstrap = candidate;
             }
 
             if (bootstrap.empty()) continue;
@@ -715,6 +718,7 @@ MutationResult MutationController::restoreGovernors() noexcept {
 
     journal_committed_ = false;
     dirty_governors_.clear();
+    accepted_governors_.clear();
     retained_active_governors_.clear();
     active_governors_cache_.clear();
     mutated_ = false;
@@ -729,6 +733,27 @@ MutationResult MutationController::restoreGovernors() noexcept {
 
     return restoredAny ? MutationResult::RolledBack
                        : MutationResult::Skipped;
+}
+
+bool MutationController::acceptCoordinatedMutation() noexcept {
+    if (!pending_outcome_ || last_applied_governors_.empty()) return false;
+    try {
+        auto accepted = accepted_governors_;
+        for (const auto& applied : last_applied_governors_) {
+            std::string live;
+            if (!readLiveGovernor(governorPathOf(applied.first), live) || live != applied.second) return false;
+            accepted.erase(std::remove_if(accepted.begin(), accepted.end(),
+                [&](const auto& current) { return current.first == applied.first; }), accepted.end());
+            accepted.push_back(applied);
+        }
+        accepted_governors_.swap(accepted);
+        pending_outcome_ = false;
+        last_applied_governors_.clear();
+        last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
+        last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
+        refreshRetainedActiveCache();
+        return true;
+    } catch (...) { return false; }
 }
 
 bool MutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
@@ -788,6 +813,9 @@ bool MutationController::retainLastMutation(const DeviceProfile& profile) noexce
     }
 
     retained_entries_.swap(updated_entries);
+    for (const auto& applied : last_applied_governors_)
+        accepted_governors_.erase(std::remove_if(accepted_governors_.begin(), accepted_governors_.end(),
+            [&](const auto& current) { return current.first == applied.first; }), accepted_governors_.end());
     pending_outcome_ = false;
     last_applied_governors_.clear();
     refreshRetainedActiveCache();
@@ -903,6 +931,11 @@ void MutationController::refreshRetainedActiveCache() noexcept {
 void MutationController::refreshActiveSettingsCache() noexcept {
     try {
         active_governors_cache_ = retained_active_governors_;
+        for (const auto& accepted : accepted_governors_) {
+            active_governors_cache_.erase(std::remove_if(active_governors_cache_.begin(), active_governors_cache_.end(),
+                [&](const auto& current) { return current.first == accepted.first; }), active_governors_cache_.end());
+            active_governors_cache_.push_back(accepted);
+        }
         if (!pending_outcome_) return;
         for (const auto& candidate : last_applied_governors_) {
             const auto same_path = std::find_if(active_governors_cache_.begin(),
@@ -921,9 +954,10 @@ void MutationController::refreshActiveSettingsCache() noexcept {
 }
 
 void MutationController::rejectLastMutation() noexcept {
-    for (const auto& entry : last_applied_governors_) {
-        rejected_[entry.first][entry.second] = decision_cycle_;
-    }
+    try {
+        for (const auto& entry : last_applied_governors_)
+            rejected_[entry.first][entry.second] = decision_cycle_;
+    } catch (...) { /* rejection memory is advisory; rollback remains mandatory */ }
     last_applied_governors_.clear();
 }
 
@@ -1049,6 +1083,8 @@ bool MutationController::reconcileExternalChanges(std::unordered_set<std::string
                 return false;
             }
             dirty_governors_.erase(path);
+            accepted_governors_.erase(std::remove_if(accepted_governors_.begin(), accepted_governors_.end(),
+                [&](const auto& current) { return governorPathOf(current.first) == path; }), accepted_governors_.end());
             const auto baseline = baseline_.find(path);
             if (baseline != baseline_.end()) baseline->second.valid = false;
             retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),

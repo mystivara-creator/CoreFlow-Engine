@@ -5,6 +5,7 @@
 #include "coreflow/thermal_predictor.hpp"
 #include "coreflow/decision_trace.hpp"
 #include "coreflow/decision_agent.hpp"
+#include "coreflow/coordinated_plan.hpp"
 #include "coreflow/frame_telemetry.hpp"
 #include "coreflow/foreground_tracker.hpp"
 #include "coreflow/gpu_busy_source.hpp"
@@ -280,8 +281,8 @@ AutonomousEngine::~AutonomousEngine() {
         // Prevents calling restore twice if already restored
         if (!has_restored_) {
             boost_controller_.restoreAll();
-            const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
+            const bool cpu_restored = resource_restored && controller_.restoreAll();
             has_restored_ = cpu_restored && resource_restored &&
                             !boost_controller_.recoveryRequired();
         }
@@ -361,11 +362,11 @@ bool AutonomousEngine::initialize() {
         return false;
     }
 
-    if (!controller_.captureBaseline(snapshot_.profile)) {
-        logWarn("Factory baseline not established; mutation stays blocked until recovery succeeds");
-    }
     if (!resource_controller_.captureBaseline(snapshot_.profile)) {
         logWarn("Resource baseline not established; ecosystem mutation stays blocked");
+    }
+    if (!resource_controller_.recoveryReady() || !controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Factory baseline not established; mutation stays blocked until recovery succeeds");
     } else {
         (void)resource_controller_.syncPolicyModel(resource_model_);
     }
@@ -407,8 +408,8 @@ bool AutonomousEngine::refreshEnvironment() {
     // Refresh must never re-baseline a mutated system. If the factory restore
     // is incomplete, keep the current profile and retry on the next cycle.
     boost_controller_.restoreAll();
-    const bool cpu_restored = controller_.restoreAll();
     const bool resource_restored = resource_controller_.restoreAll();
+    const bool cpu_restored = resource_restored && controller_.restoreAll();
     if (!cpu_restored || !resource_restored || boost_controller_.recoveryRequired()) {
         refresh_pending_ = true;
         logWarn("Refresh deferred: owned mutation restore incomplete, will retry");
@@ -450,11 +451,11 @@ bool AutonomousEngine::refreshEnvironment() {
             ml_ready ? "READY" : "FALLBACK",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
-    if (!controller_.captureBaseline(snapshot_.profile)) {
-        logWarn("Factory baseline not re-established after refresh; mutation blocked");
-    }
     if (!resource_controller_.captureBaseline(snapshot_.profile)) {
         logWarn("Resource baseline not re-established after refresh; ecosystem mutation blocked");
+    }
+    if (!resource_controller_.recoveryReady() || !controller_.captureBaseline(snapshot_.profile)) {
+        logWarn("Factory baseline not re-established after refresh; mutation blocked");
     } else {
         (void)resource_controller_.syncPolicyModel(resource_model_);
     }
@@ -645,10 +646,8 @@ bool AutonomousEngine::reconcileControlContinuity() {
     if (!boost_ok || !cpu_ok || !resource_ok) return false;
     // Other pending candidates share contaminated telemetry, so discard those
     // measurements without learning a regression. Accepted settings stay owned.
-    const bool cpu_rolled = !controller_.hasPendingOutcome() || controller_.rollbackLastMutation();
-    const bool resource_rolled = !resource_controller_.hasPendingOutcome() ||
-                                 resource_controller_.rollbackLastMutation();
-    telemetry_recovery_pending_ = telemetry_recovery_pending_ || !cpu_rolled || !resource_rolled;
+    const bool rolled = rollbackCoordinatedPlan(controller_, resource_controller_);
+    telemetry_recovery_pending_ = telemetry_recovery_pending_ || !rolled;
     return true;
 }
 
@@ -683,8 +682,8 @@ void AutonomousEngine::tick() {
         // discovery refresh, even if the next sample would be valid.
         if (telemetry_recovery_pending_) {
             boost_controller_.restoreAll();
-            const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
+            const bool cpu_restored = resource_restored && controller_.restoreAll();
             telemetry_recovery_pending_ = !cpu_restored || !resource_restored ||
                 boost_controller_.activeCount() != 0U ||
                 boost_controller_.recoveryRequired();
@@ -724,8 +723,8 @@ void AutonomousEngine::tick() {
             // operator has just asserted DISABLE/SAFE_MODE. Preserve journals
             // on failure and retry without opening another mutation epoch.
             boost_controller_.restoreAll();
-            const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
+            const bool cpu_restored = resource_restored && controller_.restoreAll();
             baseline_intelligence_.reset();
             history_.clear();
             thermal_guard_state_ = ThermalGuardState{};
@@ -852,10 +851,10 @@ void AutonomousEngine::tick() {
                 // Cross-workload measurements cannot establish causality. Drop
                 // pending trials without learning a success or a regression.
                 boost_controller_.restoreAll();
-                const bool cpu_settled = !controller_.hasPendingOutcome() ||
-                    controller_.rollbackLastMutation();
                 const bool resource_settled = !resource_controller_.hasPendingOutcome() ||
                     resource_controller_.rollbackLastMutation();
+                const bool cpu_settled = resource_settled && (!controller_.hasPendingOutcome() ||
+                    controller_.rollbackLastMutation());
                 baseline_intelligence_.reset();
                 history_.clear();
                 telemetry_recovery_pending_ = !cpu_settled || !resource_settled ||
@@ -998,6 +997,40 @@ void AutonomousEngine::tick() {
             last_notification_sample_ = sample_count_;
         }
 
+        // Settle unsafe performance epochs BEFORE outcome measurement or new
+        // planning. Cooling resources remain active through a confidence dip.
+        const bool stress = next == RuntimeState::ThermalGuard || next == RuntimeState::Pressure;
+        const bool authority_lost = config_.mutationMode() != MutationMode::Adaptive || !config_.mutationArmed();
+        const bool restore_cpu = controller_.mutated() &&
+            (authority_lost || next == RuntimeState::Idle || stress);
+        const bool restore_resources = resource_controller_.mutated() &&
+            (authority_lost || next == RuntimeState::Idle ||
+             (stress && !resource_controller_.stabilizingEpoch()));
+        if (restore_cpu || restore_resources) {
+            // Resource dependents must be unwound before their governor anchor.
+            const bool resources_ok = !restore_resources || resource_controller_.restoreAll();
+            const bool cpu_ok = resources_ok && (!restore_cpu || controller_.restoreAll());
+            baseline_intelligence_.reset();
+            observation_cohort_ = false; observation_identity_.clear(); observation_members_ = 0;
+            mutation_cooldown_until_sample_ = sample_count_; // stabilization is not a performance cooldown
+            telemetry_recovery_pending_ = !cpu_ok || !resources_ok;
+            DecisionTraceContext recovery_trace;
+            recovery_trace.cycle = sample_count_; recovery_trace.state = next;
+            appendDecisionTraceEvent(recovery_trace, {"safety_transition_settled", "cohort",
+                telemetry_recovery_pending_ ? "FAILED" : "RESTORED",
+                "unsafe_performance_settings_restored_cooling_settings_preserved"});
+            if (telemetry_recovery_pending_) {
+                publishStatus(sample, previous, next, Decision::ReduceIntervention, context,
+                    ecosystem_plan, hold, MutationResult::Failed, MutationResult::Failed);
+                ++sample_count_; return;
+            }
+        }
+
+        if (stress && previous != next && !baseline_intelligence_.observing()) {
+            baseline_intelligence_.reset();
+            mutation_cooldown_until_sample_ = sample_count_;
+        }
+
         // STEP 9: Maintain the rolling efficiency baseline. It is refreshed with
         // every sample while no candidate is pending, so the next candidate is
         // always compared with the workload immediately before it (not with a
@@ -1074,29 +1107,10 @@ void AutonomousEngine::tick() {
                 // under the decision-time context captured at observation begin.
                 const ExperienceMemory::Context experience_context = observation_context_;
 
-                for (const auto& applied : controller_.lastAppliedGovernors()) {
-                    ExperienceMemory::CandidateIdentity candidate;
-                    candidate.key = "cpufreq:" + applied.first + ":" + applied.second;
-
-                    if (experience_memory_.recordEvaluation(
-                            candidate,
-                            experience_context,
-                            evaluation)) {
-                        logInfo(
-                            "EXPERIENCE_RECORDED candidate=%s score=%.3f "
-                            "confidence=%.3f observations=%llu",
-                            candidate.key.c_str(),
-                            evaluation.overall_score,
-                            evaluation.confidence,
-                            static_cast<unsigned long long>(
-                                evaluation.observation_samples));
-                    }
-                }
-                for (const auto& applied : resource_controller_.lastAppliedResources()) {
-                    ExperienceMemory::CandidateIdentity candidate;
-                    candidate.key = "resource:" + applied.first + ":" + applied.second;
-                    (void)experience_memory_.recordEvaluation(
-                        candidate, experience_context, evaluation);
+                if (!observation_identity_.empty()) {
+                    ExperienceMemory::CandidateIdentity identity;
+                    identity.key = observation_identity_;
+                    (void)experience_memory_.recordEvaluation(identity, experience_context, evaluation);
                 }
 
                 // Outcomes are rare (one per baseline+observation epoch), so
@@ -1104,45 +1118,33 @@ void AutonomousEngine::tick() {
                 // matched and left experience only in RAM until shutdown.
                 if (!experience_memory_.flush(kPaths.experience_db)) logWarn("Experience checkpoint failed; retrying at next outcome/shutdown");
 
+                const auto acceptOutcome = [&]() {
+                    const bool cpu_pending = controller_.hasPendingOutcome();
+                    const bool resource_pending = resource_controller_.hasPendingOutcome();
+                    if (!cpu_pending && !resource_pending) return false;
+                    if (observation_cohort_) {
+                        // Group evidence is not per-node proof. Keep the cohort
+                        // journaled in this session, without persisting misleading
+                        // individual retained preferences across a reboot.
+                        const bool resource_ok = !resource_pending || resource_controller_.acceptCoordinatedMutation();
+                        const bool cpu_ok = !cpu_pending || controller_.acceptCoordinatedMutation();
+                        if (resource_ok && cpu_ok) return true;
+                        const bool resource_restored = resource_controller_.restoreAll();
+                        const bool cpu_restored = resource_restored && controller_.restoreAll();
+                        telemetry_recovery_pending_ = !resource_restored || !cpu_restored;
+                        return false;
+                    }
+                    return cpu_pending ? controller_.retainLastMutation(snapshot_.profile)
+                                       : resource_controller_.retainLastMutation(snapshot_.profile);
+                };
+
                 switch (evaluation.outcome) {
                     case BaselineIntelligence::Outcome::Beneficial: {
                         mutation_cooldown_until_sample_ =
                             sample_count_ + kOutcomeHoldSamples + 1U;
-                        // Both controllers may hold a pending candidate from the
-                        // same observation epoch. Handle each independently so a
-                        // dual-pending window never leaves one controller active
-                        // while the other is retained or rolled back.
                         const bool cpu_pending = controller_.hasPendingOutcome();
-                        const bool resource_pending =
-                            resource_controller_.hasPendingOutcome();
-                        // A single observation score cannot attribute benefit to
-                        // two actuator classes. Dual-pending violates the
-                        // one-actuator-per-epoch invariant, so do not retain either
-                        // candidate based on ambiguous evidence.
-                        if (cpu_pending && resource_pending) {
-                            bool rolled_back = controller_.rollbackLastMutation();
-                            if (!resource_controller_.rollbackLastMutation()) {
-                                rolled_back = false;
-                            }
-                            if (!rolled_back) {
-                                const bool cpu_recovered = controller_.restoreAll();
-                                const bool resource_recovered = resource_controller_.restoreAll();
-                                rolled_back = cpu_recovered && resource_recovered;
-                            }
-                            refresh_pending_ = !rolled_back;
-                            mutation = rolled_back ? MutationResult::RolledBack
-                                                   : MutationResult::Failed;
-                            logError("DUAL_PENDING_OUTCOME action=ROLLBACK result=%s",
-                                     rolled_back ? "verified" : "failed");
-                            break;
-                        }
-                        bool retained = false;
-                        if (cpu_pending) {
-                            retained = controller_.retainLastMutation(snapshot_.profile);
-                        } else if (resource_pending) {
-                            retained = resource_controller_.retainLastMutation(
-                                snapshot_.profile);
-                        }
+                        const bool resource_pending = resource_controller_.hasPendingOutcome();
+                        const bool retained = acceptOutcome();
                         if ((cpu_pending || resource_pending) && !retained) {
                             const bool cpu_retention_failed = cpu_pending;
                             const RetainedStateFailureStage retention_stage =
@@ -1161,20 +1163,10 @@ void AutonomousEngine::tick() {
 
                             // Never leave a candidate active as "beneficial" if
                             // its durable retained record could not be committed.
-                            bool rolled_back = true;
-                            if (controller_.hasPendingOutcome()) {
-                                if (!controller_.rollbackLastMutation()) {
-                                    rolled_back = false;
-                                }
-                            }
-                            if (resource_controller_.hasPendingOutcome()) {
-                                if (!resource_controller_.rollbackLastMutation()) {
-                                    rolled_back = false;
-                                }
-                            }
+                            bool rolled_back = rollbackCoordinatedPlan(controller_, resource_controller_);
                             if (!rolled_back) {
-                                const bool cpu_recovered = controller_.restoreAll();
                                 const bool resource_recovered = resource_controller_.restoreAll();
+                                const bool cpu_recovered = resource_recovered && controller_.restoreAll();
                                 const bool recovered = cpu_recovered && resource_recovered;
                                 refresh_pending_ = !recovered;
                                 rolled_back = recovered;
@@ -1198,17 +1190,17 @@ void AutonomousEngine::tick() {
                         const bool cpu_pending = controller_.hasPendingOutcome();
                         const bool resource_pending =
                             resource_controller_.hasPendingOutcome();
-                        const bool single_pending =
-                            (cpu_pending || resource_pending) &&
-                            !(cpu_pending && resource_pending);
+                        const bool valid_pending = (cpu_pending || resource_pending) &&
+                            (observation_cohort_ || !(cpu_pending && resource_pending));
                         // Fine-tuning changes such as I/O scheduler alignment,
                         // governor rate_limit_us, or KGSL min_pwrlevel often improve
                         // micro-latency / frame pacing while scoring Neutral (>= 0.50)
-                        // on coarse 4-sample averages. Retain single-target Neutral
+                        // on coarse 4-sample averages. Accept coherent Neutral
                         // candidates when stability and thermal scores show zero harm;
-                        // roll back anything noisy, dual-pending, or below 0.50.
+                        // A coordinated cohort is evaluated as one unit; noisy
+                        // or below-neutral measurements are rolled back.
                         const bool neutral_safe_to_retain =
-                            single_pending &&
+                            valid_pending &&
                             evaluation.valid &&
                             evaluation.context_compatible &&
                             evaluation.overall_score >= 0.50 &&
@@ -1216,13 +1208,7 @@ void AutonomousEngine::tick() {
                             (!evaluation.thermal_available ||
                              evaluation.thermal_score >= 0.48);
                         if (neutral_safe_to_retain) {
-                            bool retained = false;
-                            if (cpu_pending) {
-                                retained = controller_.retainLastMutation(snapshot_.profile);
-                            } else if (resource_pending) {
-                                retained = resource_controller_.retainLastMutation(
-                                    snapshot_.profile);
-                            }
+                            const bool retained = acceptOutcome();
                             if (retained) {
                                 logInfo("EFFICIENCY_NEUTRAL action=RETAINED score=%.3f "
                                         "hold_until_sample=%llu",
@@ -1234,23 +1220,13 @@ void AutonomousEngine::tick() {
                         }
                         const bool had_pending_candidate =
                             cpu_pending || resource_pending;
-                        bool rolled_back = true;
-                        if (cpu_pending) {
-                            if (!controller_.rollbackLastMutation()) {
-                                rolled_back = false;
-                            }
-                        }
-                        if (resource_pending) {
-                            if (!resource_controller_.rollbackLastMutation()) {
-                                rolled_back = false;
-                            }
-                        }
+                        bool rolled_back = rollbackCoordinatedPlan(controller_, resource_controller_);
                         if (!had_pending_candidate) {
                             rolled_back = false;
                         }
                         if (!rolled_back) {
-                            const bool cpu_recovered = controller_.restoreAll();
                             const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool cpu_recovered = resource_recovered && controller_.restoreAll();
                             const bool recovered = cpu_recovered && resource_recovered;
                             refresh_pending_ = !recovered;
                             rolled_back = recovered;
@@ -1275,23 +1251,13 @@ void AutonomousEngine::tick() {
                             resource_controller_.hasPendingOutcome();
                         const bool had_pending_candidate =
                             cpu_pending || resource_pending;
-                        bool rolled_back = true;
-                        if (cpu_pending) {
-                            if (!controller_.rollbackLastMutation()) {
-                                rolled_back = false;
-                            }
-                        }
-                        if (resource_pending) {
-                            if (!resource_controller_.rollbackLastMutation()) {
-                                rolled_back = false;
-                            }
-                        }
+                        bool rolled_back = rollbackCoordinatedPlan(controller_, resource_controller_);
                         if (!had_pending_candidate) {
                             rolled_back = false;
                         }
                         if (!rolled_back) {
-                            const bool cpu_recovered = controller_.restoreAll();
                             const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool cpu_recovered = resource_recovered && controller_.restoreAll();
                             const bool recovered = cpu_recovered && resource_recovered;
                             refresh_pending_ = !recovered;
                             rolled_back = recovered;
@@ -1315,25 +1281,15 @@ void AutonomousEngine::tick() {
                             resource_controller_.hasPendingOutcome();
                         const bool had_pending_candidate =
                             cpu_pending || resource_pending;
-                        bool restored = true;
-                        if (cpu_pending) {
-                            controller_.rejectLastMutation();
-                            if (!controller_.rollbackLastMutation()) {
-                                restored = false;
-                            }
-                        }
-                        if (resource_pending) {
-                            resource_controller_.rejectLastMutation();
-                            if (!resource_controller_.rollbackLastMutation()) {
-                                restored = false;
-                            }
-                        }
+                        if (resource_pending) resource_controller_.rejectLastMutation();
+                        if (cpu_pending) controller_.rejectLastMutation();
+                        bool restored = rollbackCoordinatedPlan(controller_, resource_controller_);
                         if (!had_pending_candidate) {
                             restored = false;
                         }
                         if (!restored) {
-                            const bool cpu_recovered = controller_.restoreAll();
                             const bool resource_recovered = resource_controller_.restoreAll();
+                            const bool cpu_recovered = resource_recovered && controller_.restoreAll();
                             const bool recovered = cpu_recovered && resource_recovered;
                             refresh_pending_ = !recovered;
                             restored = recovered;
@@ -1380,205 +1336,45 @@ void AutonomousEngine::tick() {
                     "outcome_resolved", "pending_mutation_epoch",
                     mutationResultName(mutation), outcome_reason});
             }
-        } else if (baseline_intelligence_.baselineReady() &&
-                   boost_controller_.activeCount() == 0U &&
-                   !boost_controller_.recoveryRequired()) {
-            const bool mutationCooldownActive =
-                sample_count_ < mutation_cooldown_until_sample_;
-
-            if (!mutationCooldownActive && !controller_.hasPendingOutcome() &&
-                !resource_controller_.hasPendingOutcome()) {
-                const char* cpu_gate_reason = mutationPermitBlockReason(
-                    ecosystem_plan, config_, next, sample.confidence,
-                    MutationPermit::Scope::CpuFreq);
-                const MutationPermit cpu_permit = mutation_authority_.authorize(
-                    ecosystem_plan, config_, next, sample.confidence,
-                    MutationPermit::Scope::CpuFreq);
-                appendDecisionTraceEvent(trace_context, {
-                    "scope_gate_checked", "cpu_freq_coarse",
-                    cpu_permit.valid() ? "ALLOW" : "DENY",
-                    cpu_permit.valid()
-                        ? "coarse_scope_passed_target_capability_still_required"
-                        : cpu_gate_reason,
-                    true, cpu_permit.valid()});
-                mutation = controller_.apply(
-                    next, sample, snapshot_.profile, config_, ecosystem_plan, cpu_permit,
-                    &trace_context);
-                cpu_mutation_for_trace = mutation;
-                trace_context.cpu_mutation = cpu_mutation_for_trace;
-                trace_context.cpu_mutation_known = true;
-                appendDecisionTraceEvent(trace_context, {
-                    "mutation_controller_returned", "cpu_freq",
-                    mutationResultName(mutation), mutationTraceOutcomeReason(mutation)});
-            } else {
-                const char* held_reason = mutationCooldownActive
-                    ? "mutation_cooldown_active"
-                    : "pending_outcome_blocks_new_cpu_candidate";
-                appendDecisionTraceEvent(trace_context, {
-                    "mutation_held", "cpu_freq", "HELD", held_reason});
-                logInfo(
-                    "EFFICIENCY_MUTATION_HELD until_sample=%llu",
-                    static_cast<unsigned long long>(mutation_cooldown_until_sample_));
-            }
-
-            if (mutation == MutationResult::Verified) {
-                if (baseline_intelligence_.beginObservation()) {
-                    observation_context_ = decisionContext();
-                    appendDecisionTraceEvent(trace_context, {
-                        "observation_window_started", "cpu_freq", "STARTED",
-                        "verified_mutation_has_measurement_window"});
-                    logInfo("EFFICIENCY_OBSERVATION_BEGIN samples=%zu",
-                            BaselineIntelligence::kObservationSamples);
-                } else {
-                    // A verified write without a measurable observation window
-                    // would leave pending_outcome stuck and block all later
-                    // candidates. Roll back immediately (fail-closed).
-                    appendDecisionTraceEvent(trace_context, {
-                        "observation_window_failed", "cpu_freq", "FAILED",
-                        "verified_mutation_could_not_open_observation_window"});
-                    const bool rolled = controller_.rollbackLastMutation() ||
-                                       controller_.restoreAll();
-                    mutation = rolled ? MutationResult::RolledBack
-                                     : MutationResult::Failed;
-                    cpu_mutation_for_trace = mutation;
-                    trace_context.cpu_mutation = cpu_mutation_for_trace;
-                    trace_context.cpu_mutation_known = true;
-                    appendDecisionTraceEvent(trace_context, {
-                        "rollback_completed", "cpu_freq", mutationResultName(mutation),
-                        rolled ? "observation_window_failure_rollback_succeeded"
-                               : "observation_window_failure_rollback_failed"});
-                    logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED action=ROLLBACK "
-                             "result=%s",
-                             rolled ? "verified" : "failed");
-                }
-            }
-        } else {
-            appendDecisionTraceEvent(trace_context, {
-                "mutation_held", "cpu_freq", "HELD", "baseline_capture_not_ready"});
         }
 
-        // Accepted settings persist until a real safety/authority transition.
-        // Cooldown throttles new candidates only; it never expires an accepted
-        // mutation merely because a number of samples elapsed.
-        const bool mutation_epoch_active =
-            controller_.mutated() || resource_controller_.mutated();
-        EpochRestoreInputs epoch_inputs;
-        epoch_inputs.state = next;
-        epoch_inputs.mode_adaptive = config_.mutationMode() == MutationMode::Adaptive;
-        epoch_inputs.armed = config_.mutationArmed();
-        epoch_inputs.cpu_mutated = controller_.mutated();
-        epoch_inputs.resource_epoch_stabilizing = resource_controller_.stabilizingEpoch();
-        epoch_inputs.plan_stabilizing_only = ecosystem_plan.stabilizing_only;
-        epoch_inputs.plan_mutation_eligible = ecosystem_plan.mutation_eligible;
-        const bool safety_restore = shouldRestoreEpochNow(epoch_inputs);
-        if (mutation_epoch_active && safety_restore) {
-            const bool cpu_restored = controller_.restoreAll();
-            const bool resource_restored = resource_controller_.restoreAll();
-            trace_context.cpu_mutation = cpu_mutation_for_trace;
-            appendDecisionTraceEvent(trace_context, {
-                "safety_restore_completed", "mutation_epoch",
-                (cpu_restored && resource_restored) ? "RESTORED" : "FAILED",
-                cpu_restored
-                    ? (resource_restored ? "cpu_restore_ok_resource_restore_ok"
-                                         : "cpu_restore_ok_resource_restore_failed")
-                    : (resource_restored ? "cpu_restore_failed_resource_restore_ok"
-                                         : "cpu_restore_failed_resource_restore_failed")});
-            if (!cpu_restored || !resource_restored) {
-                logError("MUTATION_EPOCH_RESTORE_FAILED cpu=%s resource=%s",
-                         cpu_restored ? "ok" : "failed",
-                         resource_restored ? "ok" : "failed");
-                refresh_pending_ = true;
-            } else {
-                baseline_intelligence_.reset();
-                logInfo("MUTATION_EPOCH_RESTORED reason=safety");
-            }
-        }
-
-        // Exactly one actuator class may mutate in a decision cycle. This keeps
-        // the efficiency measurement causal and attributable to one candidate.
         MutationResult resource_mutation = MutationResult::Skipped;
-        const bool resource_mutation_cooldown = sample_count_ < mutation_cooldown_until_sample_;
-        // A candidate may only be applied when its outcome can be measured: a
-        // resource write without a ready baseline could never begin observation,
-        // stayed pending forever and blocked every later candidate.
-        if (!resource_mutation_cooldown && mutation != MutationResult::Verified &&
-            boost_controller_.activeCount() == 0U &&
-            !boost_controller_.recoveryRequired() &&
-            baseline_intelligence_.baselineReady() &&
+        const bool cycle_consumed = mutation != MutationResult::Skipped;
+        const bool cooldown = sample_count_ < mutation_cooldown_until_sample_;
+        if (!cycle_consumed && !cooldown && baseline_intelligence_.baselineReady() &&
             !baseline_intelligence_.observing() && !controller_.hasPendingOutcome() &&
-            !resource_controller_.hasPendingOutcome()) {
-            const char* resource_gate_reason = mutationPermitBlockReason(
-                ecosystem_plan, config_, next, sample.confidence,
-                MutationPermit::Scope::Resource);
-            const MutationPermit resource_permit = mutation_authority_.authorize(
-                ecosystem_plan, config_, next, sample.confidence,
-                MutationPermit::Scope::Resource);
-            appendDecisionTraceEvent(trace_context, {
-                "scope_gate_checked", "resource_coarse",
-                resource_permit.valid() ? "ALLOW" : "DENY",
-                resource_permit.valid()
-                    ? "coarse_scope_passed_target_capability_still_required"
-                    : resource_gate_reason,
-                true, resource_permit.valid()});
-            resource_mutation = resource_controller_.apply(
-                next, sample, snapshot_.profile, config_, ecosystem_plan, resource_permit,
-                &trace_context);
-            trace_context.resource_mutation = resource_mutation;
-            trace_context.resource_mutation_known = true;
-            appendDecisionTraceEvent(trace_context, {
-                "mutation_controller_returned", "resource",
-                mutationResultName(resource_mutation),
-                (resource_mutation == MutationResult::Failed ||
-                 resource_mutation == MutationResult::RolledBack)
-                    ? resourceMutationFailureStageName(resource_controller_.lastFailureStage())
-                    : mutationTraceOutcomeReason(resource_mutation),
-                false, false,
-                resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
-                actuatorStatusCString(resource_controller_.lastActuatorStatus())});
-            if (resource_mutation == MutationResult::Verified) {
+            !resource_controller_.hasPendingOutcome() && boost_controller_.activeCount() == 0U &&
+            !boost_controller_.recoveryRequired()) {
+            const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
+            const auto result = executeCoordinatedPlan(controller_, resource_controller_, next,
+                sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);
+            mutation = result.cpu;
+            cpu_mutation_for_trace = result.cpu;
+            resource_mutation = result.resource;
+            if (snapshot_.profile.capabilities.resources.size() != inventory_before)
+                resource_model_.reset(snapshot_.profile.capabilities);
+            trace_context.cpu_mutation = result.cpu;
+            trace_context.resource_mutation = result.resource;
+            trace_context.cpu_mutation_known = trace_context.resource_mutation_known = true;
+            if (result.verified()) {
+                observation_identity_ = result.identity;
+                observation_cohort_ = result.members > 1U;
+                observation_members_ = result.members;
                 if (baseline_intelligence_.beginObservation()) {
                     observation_context_ = decisionContext();
-                    appendDecisionTraceEvent(trace_context, {
-                        "observation_window_started", "resource", "STARTED",
-                        "verified_mutation_has_measurement_window"});
-                    logInfo("EFFICIENCY_OBSERVATION_BEGIN resource samples=%zu",
-                            BaselineIntelligence::kObservationSamples);
+                    appendDecisionTraceEvent(trace_context, {"observation_window_started", "cohort",
+                        "STARTED", observation_identity_.c_str()});
                 } else {
-                    // Same fail-closed rule as CPU: never leave a verified
-                    // resource write without an observation epoch.
-                    appendDecisionTraceEvent(trace_context, {
-                        "observation_window_failed", "resource", "FAILED",
-                        "verified_mutation_could_not_open_observation_window"});
-                    const bool rolled =
-                        resource_controller_.rollbackLastMutation() ||
-                        resource_controller_.restoreAll();
-                    resource_mutation = rolled ? MutationResult::RolledBack
-                                               : MutationResult::Failed;
-                    trace_context.resource_mutation = resource_mutation;
-                    appendDecisionTraceEvent(trace_context, {
-                        "rollback_completed", "resource", mutationResultName(resource_mutation),
-                        rolled ? "observation_window_failure_rollback_succeeded"
-                               : "observation_window_failure_rollback_failed",
-                        false, false,
-                        resourceMutationFailureStageName(resource_controller_.lastFailureStage()),
-                        actuatorStatusCString(resource_controller_.lastActuatorStatus())});
-                    logError("EFFICIENCY_OBSERVATION_BEGIN_FAILED resource "
-                             "action=ROLLBACK result=%s",
-                             rolled ? "verified" : "failed");
+                    const bool rolled = rollbackCoordinatedPlan(controller_, resource_controller_) ||
+                        restoreCoordinatedPlan(controller_, resource_controller_);
+                    telemetry_recovery_pending_ = !rolled;
+                    mutation = resource_mutation = telemetry_recovery_pending_
+                        ? MutationResult::Failed : MutationResult::RolledBack;
                 }
             }
         } else {
-            const char* held_reason = !baseline_intelligence_.baselineReady()
-                ? "baseline_capture_not_ready"
-                : baseline_intelligence_.observing()
-                    ? "baseline_outcome_observation_active"
-                    : resource_mutation_cooldown
-                        ? "mutation_cooldown_active"
-                        : mutation == MutationResult::Verified
-                            ? "cpu_mutation_already_verified_this_cycle"
-                            : "pending_outcome_blocks_new_resource_candidate";
-            appendDecisionTraceEvent(trace_context, {
-                "mutation_held", "resource", "HELD", held_reason});
+            appendDecisionTraceEvent(trace_context, {"mutation_held", "cohort", "HELD",
+                cooldown ? "mutation_cooldown_active" : "measurement_or_recovery_window_active"});
         }
         if (resource_mutation != MutationResult::Skipped) {
             logInfo("RESOURCE_AUTONOMOUS result=%s",
@@ -1731,6 +1527,8 @@ void AutonomousEngine::publishStatus(
         s.sample_checkpoint_ok = sample_sequence_.healthy();
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
         s.telemetry_epoch = s.updated_epoch;
+        s.cohort_identity = observation_identity_;
+        s.cohort_members = observation_members_;
         s.interval_s = config_.monitorIntervalSeconds();
         s.running = true;
 
@@ -1833,12 +1631,14 @@ void AutonomousEngine::publishStatus(
             s.skip_reason = "restoring owned mutations; tuning blocked";
         } else if (s.hold_active) {
             s.skip_reason = "safety hold active";
+        } else if (s.stabilizing_epoch && next == RuntimeState::ThermalGuard) {
+            s.skip_reason = "verified cooling configuration held; measuring and ranking stabilizing follow-ups";
         } else if (s.observing) {
             s.skip_reason = "observing outcome epoch " +
                 std::to_string(s.observation_samples) + "/" +
                 std::to_string(s.observation_target);
         } else if (s.cpu_mutated || s.resource_mutated) {
-            s.skip_reason = "change held; one mutation epoch at a time";
+            s.skip_reason = "accepted configuration held; next coordinated plan requires a fresh outcome window";
         } else if (s.cooldown_remaining > 0) {
             s.skip_reason = "outcome/regression cooldown " +
                 std::to_string(s.cooldown_remaining) + " sample(s) left";
@@ -2052,8 +1852,8 @@ int AutonomousEngine::run() {
         if (!has_restored_) {
             // Keep either journal if restore is incomplete: the next start recovers it.
             boost_controller_.restoreAll();
-            const bool cpu_restored = controller_.restoreAll();
             const bool resource_restored = resource_controller_.restoreAll();
+            const bool cpu_restored = resource_restored && controller_.restoreAll();
             has_restored_ = cpu_restored && resource_restored &&
                             !boost_controller_.recoveryRequired();
         }

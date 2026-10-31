@@ -37,7 +37,7 @@ const raw = (name, nowDelta) => {
 const arr = /kBlockerCodes\[\]\s*=\s*\{([\s\S]*?)\};/.exec(cppSource);
 check(!!arr, "kBlockerCodes array found in C++ source");
 const cppCodes = arr ? [...arr[1].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]) : [];
-check(cppCodes.length === 14, "C++ lists 14 blocker codes");
+check(cppCodes.length === 15, "C++ lists 15 blocker codes");
 for (const c of cppCodes) check(Object.prototype.hasOwnProperty.call(S.BLOCKERS, c), "WebUI explains blocker " + c);
 for (const c of Object.keys(S.BLOCKERS)) check(cppCodes.includes(c), "WebUI has no code the engine never emits: " + c);
 
@@ -70,6 +70,16 @@ for (const k of emitted) {
   check(S.summary(dead).code === "STALE", "recovery does not mask a stopped heartbeat");
   j.telemetry_epoch = 0;
   check(S.summary(S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j))).detail.includes("unavailable"), "no telemetry is not invented during startup recovery");
+}
+
+// A thermal plan is explicitly cooling work, not a stopped engine.
+{
+  const j = JSON.parse(load("ready.json"));
+  j.blocker = "THERMAL_STABILIZING"; j.cohort_identity = "cohort:test"; j.cohort_members = 3;
+  const q = S.parse("NOW=" + (j.updated_epoch + 1) + "\n" + JSON.stringify(j));
+  check(S.summary(q).code === "THERMAL_STABILIZING", "thermal stabilization has its own status");
+  check(S.summary(q).detail.includes("3 targets"), "coupled plan size is visible");
+  check(S.brainRows(q.data).some(row => row[0] === "Last plan" && row[1] === "3 target(s)"), "last coordinated plan is visible in diagnostics");
 }
 
 // ---- ready / adaptive ----
@@ -106,7 +116,7 @@ check(/configuration/.test(pipe.find((x) => x.id === "authority").note), "author
 // ---- stressed + holding a stabilizing change ----
 p = S.parse(raw("stressed_holding.json"));
 sum = S.summary(p);
-check(sum.code === "CHANGE_HELD" && sum.tone === "ok", "holding summary");
+check(sum.code === "THERMAL_STABILIZING" && sum.tone === "warn", "verified cooling stays active during thermal guard");
 pipe = S.pipeline(p.data);
 check(pipe.find((x) => x.id === "context").state === "Stabilize only", "context shows stabilize-only");
 check(pipe.find((x) => x.id === "hands").state === "Holding", "hands holding");

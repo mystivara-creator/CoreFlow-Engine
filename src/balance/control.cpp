@@ -7,7 +7,7 @@ namespace coreflow {
 PolicyPlan PolicyEngine::evaluate(
     const SystemContext& context,
     const ResourceStateModel& resources
-) const noexcept {
+) const noexcept try {
     PolicyPlan plan;
 
     // Policy is advisory for ordinary operating conditions. It may report
@@ -92,7 +92,7 @@ PolicyPlan PolicyEngine::evaluate(
     }
 
     return plan;
-}
+} catch (...) { return {}; }
 
 const char* mutationPermitBlockReason(const PolicyPlan& plan,
                                       const EngineConfig& config,
@@ -175,8 +175,7 @@ bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept {
     const bool stress =
         in.state == RuntimeState::Pressure || in.state == RuntimeState::ThermalGuard;
     if (!stress) return false;
-    const bool keep = !in.cpu_mutated && in.resource_epoch_stabilizing &&
-                      in.plan_stabilizing_only && in.plan_mutation_eligible;
+    const bool keep = !in.cpu_mutated && in.resource_epoch_stabilizing;
     return !keep;
 }
 

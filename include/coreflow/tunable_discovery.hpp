@@ -55,6 +55,11 @@ public:
     TunableDiscoveryStats discover(EnvironmentCapabilityMatrix& matrix,
                                    const VendorKnowledge& vendor) const noexcept;
 
+    // Bounded read-only refresh after a governor exposes a new attribute tree.
+    TunableDiscoveryStats discoverWithin(EnvironmentCapabilityMatrix& matrix,
+                                        const VendorKnowledge& vendor,
+                                        const std::string& root) const noexcept;
+
     // Attach kernel-advertised options and vendor values to every tunable
     // already present in the matrix (including ones added by other probes).
     void enrich(EnvironmentCapabilityMatrix& matrix,

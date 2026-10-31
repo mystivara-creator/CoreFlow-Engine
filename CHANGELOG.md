@@ -26,6 +26,14 @@
 - Harden bounded subprocess allocation/argument/descriptor handling and GPU directory
   cleanup. See `docs/NATIVE_AUDIT_2026-11.md` for findings and checks.
 
+- Replace fixed CPU-first scheduling with coordinated resource plans and justified
+  governor companions, using live settings and bounded subtree rediscovery.
+- Keep verified cooling active through thermal confidence dips; allow stabilizing
+  DVFS-demand steps without performance boosts or thermal-protection overrides.
+- Preserve ordered recovery journals and unwind dependents before their anchors;
+  measure each cohort under one outcome identity without per-component credit.
+- Expose thermal stabilization and plan membership in the WebUI.
+
 ## v3.0.2 — Automatic operation and scoped control recovery
 
 - Activate bounded optimization automatically during installation.

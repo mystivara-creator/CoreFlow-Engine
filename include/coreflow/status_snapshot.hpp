@@ -31,6 +31,8 @@ struct EngineStatus {
     bool sample_checkpoint_ok{false};
     std::int64_t updated_epoch{0};
     std::int64_t telemetry_epoch{0}; // last telemetry snapshot, independent of heartbeat
+    std::string cohort_identity;
+    std::size_t cohort_members{0};
     std::string recovery_phase;
     std::string recovery_detail;
     int interval_s{0};

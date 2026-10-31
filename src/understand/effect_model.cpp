@@ -316,7 +316,7 @@ std::vector<EffectScore> EffectModel::proposals(
             !isCpuSetCpusLeaf(capability)) {
             return out;
         }
-        const std::string base_text = trim(baseline_value);
+        std::string base_text = trim(baseline_value);
         if (base_text.empty() || ctx.intervention == InterventionLevel::ObserveOnly) return out;
 
         const Situation situation = classify(ctx);
@@ -346,7 +346,7 @@ std::vector<EffectScore> EffectModel::proposals(
             }
         }
         if (!situation.stressed() && !situation.elevated && !situation.calm_explore &&
-            !(block_scheduler && situation.io_pressure)) return out;
+            !(capability.domain == ResourceDomain::Io && situation.io_pressure)) return out;
 
         // The standard cgroup cpu.uclamp.{min,max} interface is expressed as a
         // percentage (0..100). Do not extend that range to arbitrary vendor paths
@@ -358,6 +358,8 @@ std::vector<EffectScore> EffectModel::proposals(
              capability.path.rfind("/sys/fs/cgroup/", 0U) == 0U) &&
             (endsWith(capability.path, "/cpu.uclamp.min") ||
              endsWith(capability.path, "/cpu.uclamp.max"));
+        if (cgroup_uclamp_percent && endsWith(capability.path, "/cpu.uclamp.max") && base_text == "max")
+            base_text = "100";
         const bool semantic_numeric_bounds = cgroup_uclamp_percent ||
             (knowledge != nullptr &&
              (knowledge->risk == KnowledgeRisk::BoundedTune ||
@@ -605,7 +607,9 @@ std::vector<EffectScore> EffectModel::proposals(
         // generate +/- steps for a catalogued, bounded interface (or an exact
         // VendorVolatile leaf); unfamiliar nodes need kernel-advertised options,
         // vendor operating points, or measured evidence instead of guessed bounds.
-        if (numeric && capability.options.empty() && semantic_numeric_bounds) {
+        const bool frequency_needs_scale = knowledge != nullptr && knowledge->key != nullptr &&
+            std::string_view(knowledge->key) == "cpufreq.governor.hispeed_freq";
+        if (numeric && capability.options.empty() && semantic_numeric_bounds && !frequency_needs_scale) {
             const unsigned long long magnitude = scaled < 0
                 ? static_cast<unsigned long long>(-(scaled + 1LL)) + 1ULL
                 : static_cast<unsigned long long>(scaled);
@@ -641,17 +645,24 @@ std::vector<EffectScore> EffectModel::proposals(
                 const long long raw_up = scaled > max - step ? max : scaled + step;
                 const long long down = std::clamp(raw_down, lower_bound, upper_bound);
                 const long long up = std::clamp(raw_up, lower_bound, upper_bound);
-                const bool clamp = isUtilizationClamp(capability) &&
-                                    (situation.thermal || situation.throttling);
+                const bool thermal_relief = situation.thermal || situation.throttling;
+                const std::string_view key = knowledge != nullptr && knowledge->key != nullptr
+                    ? std::string_view(knowledge->key) : std::string_view{};
+                const bool down_relief = thermal_relief &&
+                    (isUtilizationClamp(capability) || key == "cpufreq.governor.hispeed_freq" ||
+                     key == "cpufreq.governor.down_rate_limit_us");
+                const bool up_relief = thermal_relief &&
+                    (key == "cpufreq.governor.up_rate_limit_us" ||
+                     key == "cpufreq.governor.hispeed_load" || key == "walt.target_load");
                 if (down != scaled) {
                     emit(format(down), CandidateSource::BoundedStep,
-                         EffectDirection::Decrease, clamp,
-                         clamp ? "lower utilization clamp" : "bounded exploration step down");
+                         EffectDirection::Decrease, down_relief,
+                         down_relief ? "reduce live DVFS demand" : "bounded exploration step down");
                 }
                 if (up != scaled) {
                     emit(format(up), CandidateSource::BoundedStep,
-                         EffectDirection::Increase, false,
-                         "bounded exploration step up");
+                         EffectDirection::Increase, up_relief,
+                         up_relief ? "reduce live DVFS boost aggressiveness" : "bounded exploration step up");
                 }
                 // Demand-scaled continuous fine-tuning candidate: when workload
                 // demand is elevated with clean thermal headroom, scale step size

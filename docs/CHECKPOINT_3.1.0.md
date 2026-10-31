@@ -120,3 +120,14 @@ Experience format V3 adds round-trip-precision score/confidence and bandit varia
 V2 remains readable with variance 0.02. Mutation/retained journals and sample leases
 keep their existing formats. The README now presents CoreFlow's requirements,
 installation, diagnostics and documentation with its own authored SVG identity.
+
+
+### Coordinated/thermal execution follow-up
+
+[Coordinated thermal plans](COORDINATED_THERMAL_PLANS.md) replace CPU-first
+single-controller scheduling. Resource plans, live coupling, scoped post-anchor
+discovery, grouped outcome identities and reverse dependency recovery are part of
+this source checkpoint. Group settings remain journaled for the running session;
+reboot restores and measures afresh instead of promoting jointly measured settings
+as independent retained preferences. This change needs its own Android CI and
+on-device acceptance, including thermal transitions and interrupted recovery.

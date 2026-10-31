@@ -23,3 +23,13 @@ interactivity assistance; the main optimizer remains active. Faster observation
 uses 2 seconds and 65% confidence, without increasing boost amplitudes. Neither is
 an FPS/thermal guarantee. Existing authority, capability, journaling and recovery
 gates remain mandatory. See [checkpoint scope](CHECKPOINT_3.1.0.md).
+
+
+## ThermalGuard and coordinated plans
+
+ThermalGuard withdraws performance boosts while permitting measured,
+stabilizing-only resource plans. Existing verified cooling is held through a
+confidence dip; no new write bypasses the configured threshold. Kernel options,
+live values and reviewed ABI bounds define candidate steps, with a cumulative
+factory-relative budget for cgroup capping. There is no fixed scheduler/governor
+pairing preset. [Execution and recovery rules](COORDINATED_THERMAL_PLANS.md).

@@ -60,3 +60,11 @@ See [the native audit](NATIVE_AUDIT_2026-11.md) for allocation-failure boundarie
 strict vendor parsing, ranking work reduction, advisory permission revocation and
 experience V3 compatibility. These changes require their own green Android CI run
 and device acceptance; earlier green commits do not validate the new tree.
+
+
+## Coordinated thermal plans
+
+The [coordinated plan record](COORDINATED_THERMAL_PLANS.md) defines the new
+resource-first execution, thermal stabilization, dependency recovery and group
+learning boundaries. Validate this commit's CI and phone behavior independently
+of the preceding native maintenance audit.

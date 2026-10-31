@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <sstream>
 #include <utility>
+#include <optional>
 
 namespace coreflow {
 namespace {
@@ -52,6 +53,7 @@ bool interventionAllows(InterventionLevel have, InterventionLevel need) noexcept
 
 void ResourceMutationController::setJournal(MutationJournal* journal) noexcept {
     journal_ = journal;
+    recovery_pending_ = true;
 }
 
 void ResourceMutationController::setRetainedStateStore(RetainedStateStore* store) noexcept {
@@ -67,6 +69,8 @@ void ResourceMutationController::setExperienceMemory(
 }
 
 bool ResourceMutationController::recoverIfNeeded() noexcept {
+    // Our own in-flight journal is not a crash from a previous process.
+    if (!recovery_pending_) return journal_ != nullptr;
     // Without a journal we cannot prove that a previous process left no
     // in-flight mutation. Failing closed here prevents baseline capture from
     // silently adopting an unknown post-crash value as the factory baseline.
@@ -88,7 +92,8 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
     }
 
     bool restored = true;
-    for (const auto& entry : entries) {
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+        const auto& entry = *it;
         // Do not silently skip missing paths: restore() reports the read
         // failure, and the pending journal remains available for diagnosis.
         const ActuatorResult result =
@@ -107,6 +112,7 @@ bool ResourceMutationController::recoverIfNeeded() noexcept {
                 last_actuator_status_ = result.status;
             }
             restored = false;
+            break; // keep governor/scheduler anchors until dependents restore
         } else if (restored) {
             last_actuator_status_ = result.status;
         }
@@ -134,12 +140,15 @@ bool ResourceMutationController::captureBaseline(
     if (!recoverIfNeeded() || mutated_) return false;
 
     baseline_captured_ = false;
+    pending_changes_.clear();
     retained_entries_.clear();
     retained_active_resources_.clear();
     active_resources_cache_.clear();
     pending_outcome_ = false;
     baseline_.clear();
     dirty_resources_.clear();
+    write_order_.clear();
+    accepted_resources_.clear();
     last_applied_resources_.clear();
 
     for (const auto& cap : profile.capabilities.resources) {
@@ -206,6 +215,21 @@ bool ResourceMutationController::captureBaseline(
     return baseline_captured_;
 }
 
+bool ResourceMutationController::admitNewBaselines(const DeviceProfile& profile) noexcept {
+    try {
+        for (const auto& cap : profile.capabilities.resources) {
+            if (baseline_.contains(cap.path) || !cap.mutation_ready || !cap.policy_authorized ||
+                !cap.permission_granted || !cap.runtime_verified || !cap.readable || !cap.writable ||
+                !fallbackPolicyAuthorized(cap.domain, cap.name, cap.path)) continue;
+            std::string live;
+            if (!ResourceActuator::readComparable(cap.path, live) || !ResourceActuator::writable(cap.path)) continue;
+            baseline_.emplace(cap.path, Baseline{cap.domain, cap.name, cap.path, live, true});
+        }
+        baseline_captured_ = !baseline_.empty();
+        return baseline_captured_;
+    } catch (...) { return false; }
+}
+
 bool ResourceMutationController::verifySchedulerToken(
     const std::string& path,
     const std::string& token,
@@ -237,8 +261,8 @@ bool ResourceMutationController::selectCandidate(
     const DeviceProfile& profile,
     const PolicyPlan& policy,
     const UserGrants& grants,
-    Candidate& out
-) const noexcept {
+    Candidate& out, bool companion
+) const noexcept try {
     if (!baseline_captured_ || baseline_.empty()) return false;
     if (!policy.mutation_eligible || policy.candidates.empty()) return false;
     if (policy.action != PolicyAction::Candidate) {
@@ -302,17 +326,12 @@ bool ResourceMutationController::selectCandidate(
             baseline_values[item.first] = item.second.value;
         }
     }
-    // When an I/O scheduler was already transitioned (A -> B), let StrategyCatalog
-    // observe the live active scheduler B so coupled block-queue / governor /
-    // uclamp tunables align with B, while baseline_ retains factory A for rollback.
-    for (const std::string& dirty_path : dirty_resources_) {
-        if (dirty_path.size() >= 16U &&
-            dirty_path.compare(dirty_path.size() - 16U, 16U, "/queue/scheduler") == 0) {
-            std::string live_sched;
-            if (ResourceActuator::readComparable(dirty_path, live_sched) && !live_sched.empty()) {
-                baseline_values[dirty_path] = live_sched;
-            }
-        }
+    // Rank against the actual accepted/current cohort configuration. Factory
+    // baselines remain separate and are used only for durable restoration.
+    for (const auto& path : dirty_resources_) {
+        std::string live;
+        if (!ResourceActuator::readComparable(path, live)) return false;
+        baseline_values[path] = std::move(live);
     }
     // Expose active CPUFreq scaling_governor posture so StrategyCatalog can
     // couple governor rate_limit_us / uclamp / queue parameters to the live governor.
@@ -333,6 +352,30 @@ bool ResourceMutationController::selectCandidate(
     // the same path, and only because captureBaseline already verified both
     // readability and writability for that adapter.
     EnvironmentCapabilityMatrix effective_matrix = profile.capabilities;
+    // A read-only governor anchor is useful even when its write interface was
+    // excluded from the generic resource inventory.
+    for (const auto& cpu : profile.cpu_policies) {
+        const std::string path = cpu.path + "/scaling_governor";
+        if (baseline_values.contains(path) && std::none_of(effective_matrix.resources.begin(), effective_matrix.resources.end(),
+            [&](const auto& cap) { return cap.path == path; })) {
+            ResourceCapability anchor;
+            anchor.domain = ResourceDomain::CpuFreq; anchor.path = path; anchor.name = path;
+            anchor.exists = anchor.readable = true;
+            effective_matrix.resources.push_back(std::move(anchor));
+        }
+        const auto current = baseline_values.find(path);
+        if (current == baseline_values.end()) continue;
+        const std::string prefix = cpu.path + "/";
+        for (auto& cap : effective_matrix.resources) {
+            if (!cap.path.starts_with(prefix)) continue;
+            const std::string_view suffix(cap.path.data() + prefix.size(), cap.path.size() - prefix.size());
+            const auto slash = suffix.find('/');
+            if (slash == std::string_view::npos) continue;
+            const auto owner = suffix.substr(0, slash);
+            if (owner != current->second && std::find(cpu.available_governors.begin(), cpu.available_governors.end(), owner) != cpu.available_governors.end())
+                cap.mutation_ready = false;
+        }
+    }
     EnvironmentCapabilityMatrix legacy_matrix;
     for (const auto& item : baseline_) {
         if (!item.second.valid) continue;
@@ -371,9 +414,10 @@ bool ResourceMutationController::selectCandidate(
 
     // Exclude shared externally controlled paths before top-N ranking, so
     // contested candidates cannot crowd out otherwise eligible resources.
-    if (external_control_paths_ != nullptr) {
-        for (auto& cap : effective_matrix.resources)
-            if (external_control_paths_->contains(cap.path)) cap.mutation_ready = false;
+    for (auto& cap : effective_matrix.resources) {
+        if ((external_control_paths_ != nullptr && external_control_paths_->contains(cap.path)) ||
+            std::any_of(pending_changes_.begin(), pending_changes_.end(),
+                [&](const PendingChange& change) { return change.path == cap.path; })) cap.mutation_ready = false;
     }
 
     ExperienceMemory::Context experience_context;
@@ -425,6 +469,8 @@ bool ResourceMutationController::selectCandidate(
         // A stressed context accepts only changes that respond to the stress by
         // reducing load. Everything else waits for headroom.
         if (policy.stabilizing_only && !scored.stabilizing) continue;
+        if ((companion || coupled_only_) && !policy.stabilizing_only &&
+            scored.reason.find("[coupled:") == std::string::npos) continue;
 
         // Consultation: the eye reports facts, the brain decides. A Defer or
         // Deny drops only this candidate. The cycle continues, and nothing is
@@ -468,6 +514,40 @@ bool ResourceMutationController::selectCandidate(
             std::string live;
             if (!ResourceActuator::readComparable(path, live)) continue;
             if (live == requested) continue;
+        }
+
+        if (bit->second.domain == ResourceDomain::UClamp &&
+            (path.ends_with("/cpu.uclamp.min") || path.ends_with("/cpu.uclamp.max"))) {
+            const bool is_min = path.ends_with("/cpu.uclamp.min");
+            const auto slash = path.find_last_of('/');
+            const auto percentage = [](const std::string& value, double& ratio) noexcept {
+                try {
+                    if (value == "max") { ratio = 100.; return true; }
+                    std::size_t used = 0;
+                    ratio = std::stod(value, &used);
+                    return used == value.size() && std::isfinite(ratio) && ratio >= 0. && ratio <= 100.;
+                } catch (...) { return false; }
+            };
+            double target = 0.;
+            if (!percentage(requested,target)) continue;
+            // Bound cumulative capping against this device's factory ceiling,
+            // not against an ever-decreasing last step.
+            if (!is_min && policy.stabilizing_only) {
+                double factory = 0.;
+                if (!percentage(bit->second.value,factory) || target < factory / 2.) continue;
+            }
+            std::string sibling;
+            if (ResourceActuator::readComparable(path.substr(0, slash) +
+                    (is_min ? "/cpu.uclamp.max" : "/cpu.uclamp.min"), sibling)) {
+                double peer = 0.;
+                if (!percentage(sibling,peer) || (is_min ? target > peer : target < peer)) continue;
+            }
+        }
+
+        if (path.ends_with("/queue/scheduler")) {
+            const auto prefix = path.substr(0,path.find_last_of('/')) + "/iosched/";
+            if (std::any_of(dirty_resources_.begin(),dirty_resources_.end(),
+                    [&](const auto& owned) { return owned.starts_with(prefix); })) continue;
         }
 
         if (isRejected(path, requested)) continue;
@@ -518,13 +598,14 @@ bool ResourceMutationController::selectCandidate(
         return true;
     }
     return false;
-}
+} catch (...) { return false; }
 
 MutationJournal::Entries
 ResourceMutationController::factorySnapshot() const {
     MutationJournal::Entries entries;
     entries.reserve(dirty_resources_.size() + 1);
-    for (const auto& path : dirty_resources_) {
+    for (const auto& path : write_order_) {
+        if (!dirty_resources_.contains(path)) continue;
         const auto it = baseline_.find(path);
         if (it != baseline_.end() && it->second.valid) {
             entries.emplace_back(path, it->second.value);
@@ -540,7 +621,7 @@ MutationResult ResourceMutationController::applyCandidate(
     const EngineConfig& config,
     const PolicyPlan& policy,
     const DecisionTraceContext* trace_context
-) noexcept {
+) noexcept try {
     if (journal_ == nullptr) {
         last_failure_stage_ = ResourceMutationFailureStage::JournalUnavailable;
         if (trace_context != nullptr) {
@@ -625,6 +706,12 @@ MutationResult ResourceMutationController::applyCandidate(
             return retained.path == candidate.path && retained.target == candidate.requested;
         });
 
+    PendingChange change{candidate.path, candidate.requested, previous_value,
+                         was_dirty_before, from_retained};
+    std::pair<std::string, std::string> applied_entry{candidate.path, candidate.requested};
+    std::string ordered_path = candidate.path;
+    write_order_.reserve(write_order_.size() + 1U);
+
     // Durability before the write. The journal holds factory values for every
     // resource this controller has changed, plus the candidate about to change.
     MutationJournal::Entries entries = factorySnapshot();
@@ -667,6 +754,13 @@ MutationResult ResourceMutationController::applyCandidate(
         event.baseline_value = candidate.baseline.c_str();
         appendDecisionTraceEvent(*trace_context, event);
     }
+    // Allocate ownership bookkeeping before a privileged write can land.
+    if (!dirty_resources_.contains(candidate.path)) {
+        dirty_resources_.insert(candidate.path);
+        write_order_.erase(std::remove(write_order_.begin(), write_order_.end(), candidate.path), write_order_.end());
+        write_order_.push_back(std::move(ordered_path));
+    }
+    mutated_ = true;
     const ActuatorResult result = actuator_.apply(mutation, permit);
     last_actuator_status_ = result.status;
     if (trace_context != nullptr) {
@@ -716,10 +810,8 @@ MutationResult ResourceMutationController::applyCandidate(
 
     // Any attempted write may have landed, even if verification failed, so the
     // path is tracked as dirty until an explicit rollback clears it.
-    if (result.writes_attempted != 0 && result.status != ActuatorStatus::RolledBack) {
-        mutated_ = true;
-        dirty_resources_.insert(candidate.path);
-    }
+    if (result.writes_attempted == 0U && !was_dirty_before) dirty_resources_.erase(candidate.path);
+    mutated_ = !dirty_resources_.empty();
 
     if (result.status == ActuatorStatus::RolledBack) {
         if (!was_dirty_before) dirty_resources_.erase(candidate.path);
@@ -740,8 +832,8 @@ MutationResult ResourceMutationController::applyCandidate(
     }
 
     if (result.changed()) {
-        last_applied_resources_.clear();
-        last_applied_resources_.emplace_back(candidate.path, candidate.requested);
+        pending_changes_.push_back(std::move(change));
+        last_applied_resources_.push_back(std::move(applied_entry));
         pending_outcome_ = true;
         last_mutation_path_ = candidate.path;
         last_mutation_target_ = candidate.requested;
@@ -768,6 +860,9 @@ MutationResult ResourceMutationController::applyCandidate(
     // NoChange means the kernel already holds the requested value. Nothing was
     // applied, so report Skipped rather than a verified mutation.
     if (result.status == ActuatorStatus::NoChange) return MutationResult::Skipped;
+    return MutationResult::Failed;
+} catch (...) {
+    last_failure_stage_ = ResourceMutationFailureStage::ActuatorOther;
     return MutationResult::Failed;
 }
 
@@ -819,7 +914,6 @@ MutationResult ResourceMutationController::apply(
     }
     if (pending_outcome_) return MutationResult::Skipped;
 
-    Candidate candidate;
     UserGrants grants;
     grants.memory = config.grantMemory();
     grants.block_queue = config.grantBlockQueue();
@@ -828,29 +922,64 @@ MutationResult ResourceMutationController::apply(
     grants.cgroup = config.grantCgroup();
     grants.cpufreq = config.grantCpuFreq();
     grants.kernel = config.grantKernel();
-    if (!selectCandidate(state, sample, profile, policy, grants, candidate)) {
-        return MutationResult::Skipped;
-    }
-
-    const bool was_clean = !mutated_;
-    const MutationResult applied = applyCandidate(
-        candidate, state, sample.confidence, config, policy, trace_context);
-    if (applied == MutationResult::Verified) {
+    try {
+        pending_changes_.reserve(kMaxCohortWrites);
+        supplemental_.clear();
+        last_applied_resources_.clear();
+        last_applied_resources_.reserve(kMaxCohortWrites);
+        const bool was_clean = !mutated_;
+        std::optional<DeviceProfile> refreshed;
+        PolicyPlan working_policy = policy;
+        const DeviceProfile* view = &profile;
+        for (std::size_t i = 0; i < kMaxCohortWrites; ++i) {
+            Candidate candidate;
+            if (!selectCandidate(state, sample, *view, working_policy, grants, candidate, i != 0U)) break;
+            const MutationResult applied = applyCandidate(
+                candidate, state, sample.confidence, config, working_policy, trace_context);
+            if (applied == MutationResult::Verified) {
+                if (candidate.domain == ResourceDomain::Io && candidate.path.ends_with("/queue/scheduler")) {
+                    refreshed.emplace(profile);
+                    (void)TunableDiscovery{}.discoverWithin(refreshed->capabilities, VendorKnowledge{},
+                        candidate.path.substr(0,candidate.path.find_last_of('/')) + "/iosched");
+                    if (!admitNewBaselines(*refreshed))
+                        return rollbackLastMutation() ? MutationResult::RolledBack : MutationResult::Failed;
+                    for (const auto& cap : refreshed->capabilities.resources) {
+                        if (std::none_of(profile.capabilities.resources.begin(),profile.capabilities.resources.end(),
+                                [&](const auto& previous) { return previous.path == cap.path; })) supplemental_.push_back(cap);
+                        if (cap.mutation_ready && cap.readable && cap.writable &&
+                            !working_policy.allows(cap.domain,cap.name))
+                            working_policy.candidates.push_back({cap.domain,cap.name,{},sample.confidence,1.,PolicyAction::Candidate});
+                    }
+                    view = &*refreshed;
+                }
+                continue;
+            }
+            if (applied == MutationResult::Skipped && i == 0U) return applied;
+            if (!pending_outcome_ && !mutated_ && !restore_failed_) return applied;
+            // Never measure a partially failed cohort as successful.
+            const bool rolled = pending_outcome_ && rollbackLastMutation();
+            if (!rolled && (mutated_ || restore_failed_)) {
+                if (!restoreAll()) return MutationResult::Failed;
+            }
+            return MutationResult::RolledBack;
+        }
+        if (pending_changes_.empty()) return MutationResult::Skipped;
+        for (const auto& change : pending_changes_) {
+            std::string live;
+            if (!ResourceActuator::readComparable(change.path, live) || live != change.target) {
+                rejectLastMutation();
+                return rollbackLastMutation() ? MutationResult::RolledBack : MutationResult::Failed;
+            }
+        }
         stabilizing_epoch_ = was_clean ? policy.stabilizing_only
-                                       : (stabilizing_epoch_ && policy.stabilizing_only);
+                                      : (stabilizing_epoch_ && policy.stabilizing_only);
         return MutationResult::Verified;
-    }
-    if (applied == MutationResult::Skipped) return MutationResult::Skipped;
-    if (applied == MutationResult::RolledBack) return MutationResult::RolledBack;
-    if (mutated_ || restore_failed_) {
-        if (restoreAll()) return MutationResult::RolledBack;
-        last_failure_stage_ = ResourceMutationFailureStage::Rollback;
+    } catch (...) {
+        if (pending_outcome_ && rollbackLastMutation()) return MutationResult::RolledBack;
+        if (mutated_ || restore_failed_) return restoreAll() ? MutationResult::RolledBack : MutationResult::Failed;
         return MutationResult::Failed;
     }
-    if (last_failure_stage_ == ResourceMutationFailureStage::None) {
-        last_failure_stage_ = ResourceMutationFailureStage::ActuatorOther;
-    }
-    return MutationResult::Failed;
+
 }
 
 MutationResult ResourceMutationController::apply(
@@ -902,6 +1031,8 @@ bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std
                 return false;
             }
             dirty_resources_.erase(path);
+            accepted_resources_.erase(std::remove_if(accepted_resources_.begin(), accepted_resources_.end(),
+                [&](const auto& current) { return current.first == path; }), accepted_resources_.end());
             const auto baseline = baseline_.find(path);
             if (baseline != baseline_.end()) baseline->second.valid = false;
             retained_entries_.erase(std::remove_if(retained_entries_.begin(), retained_entries_.end(),
@@ -912,8 +1043,10 @@ bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std
                 [&setting](const auto& entry) { return entry.first == setting.first; }), active_resources_cache_.end());
             last_applied_resources_.erase(std::remove_if(last_applied_resources_.begin(), last_applied_resources_.end(),
                 [&setting](const auto& entry) { return entry.first == setting.first; }), last_applied_resources_.end());
+            pending_changes_.erase(std::remove_if(pending_changes_.begin(), pending_changes_.end(),
+                [&](const auto& change) { return change.path == path; }), pending_changes_.end());
+            pending_outcome_ = !pending_changes_.empty();
             if (last_mutation_path_ == path) {
-                pending_outcome_ = false;
                 last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
                 last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
             }
@@ -926,12 +1059,17 @@ bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std
 }
 
 bool ResourceMutationController::restoreAll() noexcept {
+    // A failed startup recovery owns a durable journal, not an initialized RAM
+    // dirty set. Never clear that journal by "restoring" an empty RAM inventory.
+    if (recovery_pending_ && journal_ != nullptr) return recoverIfNeeded();
     if (!mutated_ && !restore_failed_) return true;
 
     bool ok = true;
-    for (const auto& path : dirty_resources_) {
+    for (auto it = write_order_.rbegin(); it != write_order_.rend(); ++it) {
+        const auto& path = *it;
+        if (!dirty_resources_.contains(path)) continue;
         if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) {
-            ok = false; continue;
+            ok = false; break;
         }
         const auto item = baseline_.find(path);
         std::error_code path_error;
@@ -939,7 +1077,7 @@ bool ResourceMutationController::restoreAll() noexcept {
         if (item == baseline_.end() || !item->second.valid ||
             path_error || !path_exists) {
             ok = false;
-            continue;
+            break;
         }
         const ActuatorResult result =
             actuator_.restore(path, item->second.value);
@@ -947,6 +1085,7 @@ bool ResourceMutationController::restoreAll() noexcept {
               result.status == ActuatorStatus::NoChange ||
               result.status == ActuatorStatus::Ok)) {
             ok = false;
+            break;
         }
     }
     if (!ok) {
@@ -965,10 +1104,13 @@ bool ResourceMutationController::restoreAll() noexcept {
     restore_failed_ = false;
     mutated_ = false;
     dirty_resources_.clear();
+    write_order_.clear();
+    accepted_resources_.clear();
     retained_active_resources_.clear();
     active_resources_cache_.clear();
     last_applied_resources_.clear();
     stabilizing_epoch_ = false;
+    pending_changes_.clear();
     pending_outcome_ = false;
     last_mutation_path_.clear();
     last_mutation_target_.clear();
@@ -978,76 +1120,103 @@ bool ResourceMutationController::restoreAll() noexcept {
     return true;
 }
 
-bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
-    last_retained_state_failure_stage_ = RetainedStateFailureStage::None;
-
-    if (!pending_outcome_ || retained_store_ == nullptr ||
-        last_mutation_path_.empty() || last_mutation_target_.empty()) {
-        last_retained_state_failure_stage_ = RetainedStateFailureStage::Precondition;
-        return false;
-    }
-
-    const auto baseline = baseline_.find(last_mutation_path_);
-    if (baseline == baseline_.end() || !baseline->second.valid ||
-        baseline->second.value == last_mutation_target_) {
-        last_retained_state_failure_stage_ = RetainedStateFailureStage::BaselineInvalid;
-        return false;
-    }
-
-    std::string live;
-    if (!ResourceActuator::readComparable(last_mutation_path_, live)) {
-        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveReadFailed;
-        return false;
-    }
-    if (live != last_mutation_target_) {
-        last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveTargetMismatch;
-        return false;
-    }
-
-    RetainedStateEntry entry;
-    RetainedStateStore::Entries updated_entries;
+bool ResourceMutationController::acceptCoordinatedMutation() noexcept {
+    if (!pending_outcome_ || last_applied_resources_.empty()) return false;
     try {
-        entry.scope = retainedScopeFor(profile);
-        entry.path = last_mutation_path_;
-        entry.baseline = baseline->second.value;
-        entry.target = last_mutation_target_;
+        auto accepted = accepted_resources_;
+        for (const auto& applied : last_applied_resources_) {
+            std::string live;
+            if (!ResourceActuator::readComparable(applied.first, live) || live != applied.second) return false;
+            accepted.erase(std::remove_if(accepted.begin(), accepted.end(),
+                [&](const auto& current) { return current.first == applied.first; }), accepted.end());
+            accepted.push_back(applied);
+        }
+        accepted_resources_.swap(accepted);
+        pending_outcome_ = false;
+        pending_changes_.clear();
+        last_applied_resources_.clear();
+        last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
+        last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
+        refreshRetainedActiveCache();
+        return true;
+    } catch (...) { return false; }
+}
 
-        updated_entries = retained_entries_;
-        updated_entries.erase(std::remove_if(updated_entries.begin(), updated_entries.end(),
-            [&entry](const RetainedStateEntry& current) { return current.path == entry.path; }),
-            updated_entries.end());
-        updated_entries.push_back(entry);
+bool ResourceMutationController::retainLastMutation(const DeviceProfile& profile) noexcept {
+    if (pending_changes_.size() > 1U) return acceptCoordinatedMutation();
+    last_retained_state_failure_stage_ = RetainedStateFailureStage::None;
+    try {
+        if (!pending_outcome_ || pending_changes_.empty() || retained_store_ == nullptr) {
+            last_retained_state_failure_stage_ = RetainedStateFailureStage::Precondition;
+            return false;
+        }
+        auto updated = retained_entries_;
+        const std::string scope = retainedScopeFor(profile);
+        for (const auto& change : pending_changes_) {
+            const auto base = baseline_.find(change.path);
+            if (base == baseline_.end() || !base->second.valid || base->second.value == change.target) {
+                last_retained_state_failure_stage_ = RetainedStateFailureStage::BaselineInvalid;
+                return false;
+            }
+            std::string live;
+            if (!ResourceActuator::readComparable(change.path, live)) {
+                last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveReadFailed;
+                return false;
+            }
+            if (live != change.target) {
+                last_retained_state_failure_stage_ = RetainedStateFailureStage::LiveTargetMismatch;
+                return false;
+            }
+            updated.erase(std::remove_if(updated.begin(), updated.end(),
+                [&](const auto& entry) { return entry.path == change.path; }), updated.end());
+            updated.push_back({scope, change.path, base->second.value, change.target});
+        }
+        if (!retained_store_->commit(updated)) {
+            last_retained_state_failure_stage_ = RetainedStateFailureStage::StoreUpsertFailed;
+            if (!retained_store_->commit(retained_entries_))
+                last_retained_state_failure_stage_ = RetainedStateFailureStage::RecoveryCommitFailed;
+            return false;
+        }
+        retained_entries_.swap(updated);
+        for (const auto& change : pending_changes_)
+            accepted_resources_.erase(std::remove_if(accepted_resources_.begin(), accepted_resources_.end(),
+                [&](const auto& current) { return current.first == change.path; }), accepted_resources_.end());
+        pending_changes_.clear();
+        pending_outcome_ = false;
+        last_applied_resources_.clear();
+        last_mutation_path_.clear(); last_mutation_target_.clear(); last_previous_value_.clear();
+        last_path_was_dirty_before_ = false; last_candidate_from_retained_ = false;
+        refreshRetainedActiveCache();
+        return true;
     } catch (...) {
         last_retained_state_failure_stage_ = RetainedStateFailureStage::AllocationFailed;
         return false;
     }
+}
 
-    if (!retained_store_->upsert(entry)) {
-        // A rename may have succeeded even if the final directory sync failed.
-        // Best-effort restore the last known-good ledger so an unaccepted
-        // candidate cannot become a retained preference after restart.
-        last_retained_state_failure_stage_ = RetainedStateFailureStage::StoreUpsertFailed;
-        if (!retained_store_->commit(retained_entries_)) {
-            last_retained_state_failure_stage_ =
-                RetainedStateFailureStage::RecoveryCommitFailed;
+bool ResourceMutationController::rollbackLastMutation() noexcept {
+    if (!pending_outcome_ || pending_changes_.empty()) return false;
+    try {
+        // Reverse dependency order. Keep failed/unprocessed members retryable.
+        while (!pending_changes_.empty()) {
+            const auto& change = pending_changes_.back();
+            last_mutation_path_ = change.path;
+            last_mutation_target_ = change.target;
+            last_previous_value_ = change.previous;
+            last_path_was_dirty_before_ = change.was_dirty;
+            last_candidate_from_retained_ = change.from_retained;
+            pending_outcome_ = true;
+            if (!rollbackSingleMutation()) { pending_outcome_ = true; return false; }
+            pending_changes_.pop_back();
         }
-        return false;
-    }
-
-    retained_entries_.swap(updated_entries);
-    pending_outcome_ = false;
-    last_applied_resources_.clear();
-    refreshRetainedActiveCache();
-    last_mutation_path_.clear();
-    last_mutation_target_.clear();
-    last_previous_value_.clear();
-    last_path_was_dirty_before_ = false;
-    last_candidate_from_retained_ = false;
-    return true;
+        pending_outcome_ = false;
+        refreshRetainedActiveCache();
+        return true;
+    } catch (...) { restore_failed_ = true; return false; }
 }
 
 
-bool ResourceMutationController::rollbackLastMutation() noexcept {
+bool ResourceMutationController::rollbackSingleMutation() noexcept {
     if (!pending_outcome_ || last_mutation_path_.empty() || last_previous_value_.empty()) {
         return false;
     }
@@ -1072,8 +1241,10 @@ bool ResourceMutationController::rollbackLastMutation() noexcept {
         // Do not overwrite a value changed externally after the candidate write.
         external_override = true;
         const auto baseline = baseline_.find(last_mutation_path_);
-        if (baseline != baseline_.end()) baseline->second.value = live;
+        if (baseline != baseline_.end()) baseline->second.valid = false;
         dirty_resources_.erase(last_mutation_path_);
+        accepted_resources_.erase(std::remove_if(accepted_resources_.begin(), accepted_resources_.end(),
+            [&](const auto& current) { return current.first == last_mutation_path_; }), accepted_resources_.end());
         if (retained_store_ != nullptr) {
             storage_ok = retained_store_->erasePath(last_mutation_path_);
         }
@@ -1144,6 +1315,11 @@ void ResourceMutationController::refreshRetainedActiveCache() noexcept {
 void ResourceMutationController::refreshActiveSettingsCache() noexcept {
     try {
         active_resources_cache_ = retained_active_resources_;
+        for (const auto& accepted : accepted_resources_) {
+            active_resources_cache_.erase(std::remove_if(active_resources_cache_.begin(), active_resources_cache_.end(),
+                [&](const auto& current) { return current.first == accepted.first; }), active_resources_cache_.end());
+            active_resources_cache_.push_back(accepted);
+        }
         if (!pending_outcome_) return;
         for (const auto& candidate : last_applied_resources_) {
             const auto same_path = std::find_if(active_resources_cache_.begin(),

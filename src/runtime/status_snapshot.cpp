@@ -40,6 +40,7 @@ constexpr const char* kBlockerCodes[] = {
     "SAFETY_HOLD",
     "OBSERVE_MODE",
     "NOT_ARMED",
+    "THERMAL_STABILIZING",
     "BASELINE_CAPTURE",
     "OBSERVING_OUTCOME",
     "CHANGE_HELD",
@@ -202,6 +203,7 @@ std::string primaryBlocker(const EngineStatus& s) {
     const bool adaptive = (modeLower == "adaptive");
     if (!adaptive) return "OBSERVE_MODE";
     if (!s.armed) return "NOT_ARMED";
+    if (s.state == "THERMAL_GUARD" && s.stabilizing_allowed) return "THERMAL_STABILIZING";
     if (!s.baseline_ready) return "BASELINE_CAPTURE";
     if (s.observing) return "OBSERVING_OUTCOME";
     if (s.cpu_mutated || s.resource_mutated) return "CHANGE_HELD";
@@ -226,6 +228,8 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"interval_s\":" << s.interval_s << ",\"running\":";
     appendBool(out, s.running);
     out << ",\"telemetry_epoch\":" << s.telemetry_epoch;
+    out << ",\"cohort_identity\":"; appendEscaped(out, s.cohort_identity);
+    out << ",\"cohort_members\":" << s.cohort_members;
     out << ",\"recovery_phase\":"; appendEscaped(out, s.recovery_phase);
     out << ",\"recovery_detail\":"; appendEscaped(out, s.recovery_detail);
     out << ",\"blocker\":";

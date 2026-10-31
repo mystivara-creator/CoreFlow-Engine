@@ -69,7 +69,8 @@ struct EpochRestoreInputs {
 // its observation/outcome window. Idle, a disarmed config (this includes the
 // kill switch and SAFE_MODE, which disable the config) and any CPU governor change
 // under stress always restore. Under thermal/memory stress a held change is kept
-// only if it is a stabilizing resource write and the current plan still permits one.
+// only if it is a stabilizing resource write. A transient confidence/plan change
+// blocks new writes without automatically raising already-reduced demand.
 bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept;
 
 // Returns the first gate that denies coarse mutation authorization, or nullptr

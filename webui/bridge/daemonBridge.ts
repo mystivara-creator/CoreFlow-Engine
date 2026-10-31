@@ -82,6 +82,8 @@ export interface ParsedEngineStatus {
     sample: number;
     updated: number;
     telemetryUpdated?: number;
+    cohortIdentity?: string;
+    cohortMembers?: number;
     recoveryPhase?: string;
     recoveryDetail?: string;
     interval: number;

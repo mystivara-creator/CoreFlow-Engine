@@ -649,7 +649,7 @@ void testPrimaryBlockerOrder() {
 
 void testEveryBlockerIsListed() {
     const auto& codes = blockerCodes();
-    CHECK(codes.size() == 14);
+    CHECK(codes.size() == 15);
     EngineStatus s = adaptiveReady();
     auto listed = [&](const std::string& c) {
         for (const auto& k : codes) if (k == c) return true;

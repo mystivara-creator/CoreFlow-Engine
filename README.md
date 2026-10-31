@@ -40,7 +40,8 @@ measured on that device. The engine runs locally without a cloud account or API 
 | --- | --- |
 | **Runtime awareness** | CPU/load, memory, I/O, PSI, thermal and optional GPU/render telemetry inform the current context. Missing signals remain unavailable. |
 | **Capability-based tuning** | CPU governor, memory, block queue, scheduler, GPU and cgroup candidates require supported interfaces, domain grants and safety admission. Discovery alone grants no write access. |
-| **Measured adaptation** | Fresh baselines, bounded experiments, read-back checks, outcome windows and scoped experience guide later ranking. |
+| **Coordinated adaptation** | Resource-first planning couples justified targets into a bounded cohort. Fresh baselines, per-target verification and one shared outcome window evaluate the whole plan. |
+| **Thermal stabilization** | ThermalGuard can apply load-reducing resource plans and keep verified cooling settings active, while withdrawing performance boosts. |
 | **Durable recovery** | Mutation journals precede writes. Ownership checks prevent recovery from overwriting a detected external change. Failed handoffs keep tuning blocked. |
 | **Memory across boots** | Lifetime sample IDs, retained candidate records and scoped experience persist on disk. Each boot still rebuilds a fresh measurement baseline. |
 | **Offline WebUI** | Live runtime console, system/light/dark appearance, explained settings, journal filters, daemon logs and downloadable diagnostics. |
@@ -104,6 +105,7 @@ have stopped arriving; it does not identify the underlying cause by itself.
 
 | Read this | For |
 | --- | --- |
+| [Coordinated & thermal plans](docs/COORDINATED_THERMAL_PLANS.md) | Live coupling, cooling behavior, cohort learning and recovery order |
 | [Settings & tradeoffs](docs/TUNING.md) | Cadence, confidence, grants and bounded interactivity settings |
 | [Checkpoint v3.1.0](docs/CHECKPOINT_3.1.0.md) | Persistence behaviour, release scope and device acceptance |
 | [Build status](docs/BUILD_STATUS.md) | What local checks and CI can establish |

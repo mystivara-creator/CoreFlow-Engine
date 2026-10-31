@@ -359,6 +359,13 @@ const EcosystemKnowledgeEntry* lookupEcosystemKnowledgeByPath(
         return lookupEcosystemKnowledgeByKey("block.queue.attribute");
     }
 
+    // Standard cgroup ABI applies beneath discovered task groups, including
+    // alternate mount/fixture roots; group-prefixed names are not I/O queues.
+    if (path.find("/cpuctl/") != std::string::npos || path.find("/cgroup/") != std::string::npos) {
+        if (path.ends_with("/cpu.uclamp.min")) return lookupEcosystemKnowledgeByKey("cgroup.cpu.uclamp.min");
+        if (path.ends_with("/cpu.uclamp.max")) return lookupEcosystemKnowledgeByKey("cgroup.cpu.uclamp.max");
+    }
+
     if (path.find("/cpufreq/") != std::string::npos) {
         const auto hasSuffix = [&path](const char* suffix) noexcept {
             const std::size_t n = std::strlen(suffix);
