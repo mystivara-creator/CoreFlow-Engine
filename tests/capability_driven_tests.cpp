@@ -353,6 +353,30 @@ void testGenericDiscovery() {
     CHECK(!model.evaluate(toggle, "1", busy).eligible);
     CHECK(!model.evaluate(toggle, "0", busy).eligible);
 
+    // Modern Android ZRAM OEM swappiness (e.g. 120 on Linux 5.8+ 0..200 scale)
+    // is a valid baseline and never steps past the kernel's 200 ceiling.
+    const auto swap120 = model.proposals(*swap, "120", busy);
+    CHECK(!swap120.empty());
+    for (const auto& cand : swap120) {
+        const long long v = std::stoll(cand.requested);
+        CHECK(v >= 0LL && v <= 200LL);
+    }
+    const auto swap195 = model.proposals(*swap, "195", busy);
+    for (const auto& cand : swap195) {
+        const long long v = std::stoll(cand.requested);
+        CHECK(v >= 0LL && v <= 200LL);
+    }
+
+    // Block queue rq_affinity is bounded to {0, 1, 2}; baseline 2 never proposes 3.
+    ResourceCapability rq_aff{};
+    rq_aff.exists = rq_aff.readable = rq_aff.writable = rq_aff.mutation_ready = true;
+    rq_aff.permission_granted = rq_aff.policy_authorized = rq_aff.runtime_verified = true;
+    rq_aff.domain = ResourceDomain::Io;
+    rq_aff.name = "sda:rq_affinity";
+    rq_aff.path = r + "/sys/block/sda/queue/rq_affinity";
+    const auto rq_cands = model.proposals(rq_aff, "2", busy);
+    CHECK(rq_cands.size() == 1U && rq_cands[0].requested == "1");
+
     fs::remove_all(root);
 }
 

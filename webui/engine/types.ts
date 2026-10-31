@@ -112,6 +112,11 @@ export interface DeviceHardwareProfile {
   androidRelease: string;
   sdkLevel: string;
   memTotalKb: number;
+  zramSizeMb: number;
+  stockSwappiness: number;
+  stockVfsCachePressure: number;
+  stockPageCluster: number;
+  displayRefreshHz: number;
   stockReadAheadKb: number;
   stockNrRequests: number;
   thermalZonesCount: number;

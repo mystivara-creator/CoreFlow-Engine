@@ -22,8 +22,12 @@ import {
 export const HISTORY_WINDOW_SIZE = 6;
 export const NOTIFICATION_COOLDOWN_SAMPLES = 12;
 
-export const THERMAL_GUARD_ENTER_MC = 43_000;
-export const THERMAL_GUARD_EXIT_MC = 40_000;
+// Synchronized with include/coreflow/policy.hpp & src/balance/policy.cpp:
+// SoC sensors normally operate in 42–52 °C under sustained mobile load;
+// ThermalGuard enters at 55.0 °C and releases at <= 52.0 °C (Warm band >= 48.0 °C).
+export const THERMAL_GUARD_ENTER_MC = 55_000;
+export const THERMAL_GUARD_EXIT_MC = 52_000;
+export const THERMAL_WARM_MC = 48_000;
 export const MEMORY_PRESSURE_ENTER = 0.10;
 export const MEMORY_PRESSURE_EXIT = 0.15;
 export const ELEVATED_LOAD_THRESHOLD = 1.50;
@@ -50,12 +54,15 @@ export function encodeTrendValue(trend: Trend): number {
   }
 }
 
-export function calculateConfidence(sample: RuntimeSample): number {
+// Synchronized with src/autonomous/autonomous.cpp::calculateConfidence:
+// thermal(0.30) + mem(0.20) + cpu(0.15) + charging(0.15) + uptime(0.05) + thermalTrend(0.10) + memTrend(0.05) = 1.00
+export function calculateConfidence(sample: RuntimeSample, cpuAvailable = true): number {
   let score = 0.0;
-  if (sample.thermalAvailable) score += 0.35;
-  if (sample.memTotalKb > 0) score += 0.25;
-  if (sample.uptimeSeconds > 0) score += 0.10;
+  if (sample.thermalAvailable) score += 0.30;
+  if (sample.memTotalKb > 0) score += 0.20;
+  if (cpuAvailable && Number.isFinite(sample.cpuUsagePct)) score += 0.15;
   if (sample.chargingTelemetryAvailable) score += 0.15;
+  if (sample.uptimeSeconds > 0) score += 0.05;
   if (sample.thermalTrend !== Trend.Unknown) score += 0.10;
   if (sample.memoryTrend !== Trend.Unknown) score += 0.05;
   return Math.min(1.0, Number(score.toFixed(2)));
@@ -146,10 +153,11 @@ export function buildRuntimeSample(
     sample.loadTrend = calculateTrend(oldest.load1, sample.load1, 0.20);
   }
 
-  sample.confidence = calculateConfidence(sample);
+  sample.confidence = calculateConfidence(sample, capabilities.procAvailable);
   return sample;
 }
 
+// Synchronized with src/balance/policy.cpp::PolicyEngine::evaluateState
 export function evaluateAdaptivePolicy(
   sample: RuntimeSample,
   previous: RuntimeState
@@ -163,9 +171,6 @@ export function evaluateAdaptivePolicy(
     }
     if (sample.thermalMillidegrees >= THERMAL_GUARD_ENTER_MC) {
       return RuntimeState.ThermalGuard;
-    }
-    if (sample.thermalMillidegrees > THERMAL_GUARD_EXIT_MC) {
-      return RuntimeState.Warming;
     }
   }
 
@@ -181,11 +186,24 @@ export function evaluateAdaptivePolicy(
     }
   }
 
+  if (sample.thermalAvailable) {
+    if (
+      sample.thermalMillidegrees >= THERMAL_GUARD_EXIT_MC ||
+      (sample.thermalMillidegrees >= THERMAL_WARM_MC && sample.thermalTrend === Trend.Rising)
+    ) {
+      return RuntimeState.Warming;
+    }
+  }
+
   if (sample.load1 >= ELEVATED_LOAD_THRESHOLD) {
     return RuntimeState.Elevated;
   }
 
-  if (sample.load1 < IDLE_LOAD_THRESHOLD) {
+  if (
+    sample.load1 < IDLE_LOAD_THRESHOLD &&
+    sample.thermalTrend !== Trend.Rising &&
+    (!sample.thermalAvailable || sample.thermalMillidegrees < THERMAL_WARM_MC)
+  ) {
     return RuntimeState.Idle;
   }
 
@@ -212,7 +230,7 @@ export function selectNotificationEvent(
   state: RuntimeState,
   previous: RuntimeState
 ): NotificationEvent {
-  if (state == RuntimeState.ThermalGuard) {
+  if (state === RuntimeState.ThermalGuard) {
     if (previous !== RuntimeState.ThermalGuard) {
       return NotificationEvent.ThermalGuard;
     }
@@ -223,10 +241,10 @@ export function selectNotificationEvent(
   }
 
   if (sample.thermalAvailable && sample.thermalTrend === Trend.Rising) {
-    if (sample.thermalMillidegrees >= 42_000) {
+    if (sample.thermalMillidegrees >= THERMAL_GUARD_EXIT_MC) {
       return NotificationEvent.ThermalWarning;
     }
-    if (sample.thermalMillidegrees >= 40_000) {
+    if (sample.thermalMillidegrees >= THERMAL_WARM_MC) {
       return NotificationEvent.ThermalWarming;
     }
   }
@@ -285,25 +303,30 @@ export function computeSysfsNodes(
     policyState !== RuntimeState.ThermalGuard &&
     policyState !== RuntimeState.Pressure;
 
-  const batteryTempC = sample.batteryTempMillidegrees / 1000;
-  const thermalCoolingClamp =
+  const isThermalStabilizing =
     mutationArmed &&
-    (policyState === RuntimeState.ThermalGuard || sample.thermalMillidegrees >= 43_000);
-  const smartChargingClamp = mutationArmed && sample.charging && batteryTempC > 40.0;
+    (policyState === RuntimeState.ThermalGuard || sample.thermalMillidegrees >= THERMAL_GUARD_ENTER_MC);
 
   const stockRa = String(profile.stockReadAheadKb);
   const stockNr = String(profile.stockNrRequests);
+  const stockSwappiness = String(profile.stockSwappiness);
+  const stockVfs = String(profile.stockVfsCachePressure);
+  const stockPageCluster = String(profile.stockPageCluster);
 
   let activeRa = stockRa;
   let activeNr = stockNr;
-  if (mutationArmed && mode === EngineMode.ModeUltraIdle) {
+  let activeRqAffinity = '2';
+  if (isThermalStabilizing) {
+    activeRa = String(Math.max(128, Math.floor(profile.stockReadAheadKb / 2)));
+    activeRqAffinity = '1';
+  } else if (mutationArmed && mode === EngineMode.ModeUltraIdle) {
     activeRa = '256';
   } else if (isHighPerf && mode === EngineMode.ModeGaming) {
-    activeRa = '2048';
-    activeNr = '256';
-  } else if (isHighPerf && mode === EngineMode.ModeBurst) {
     activeRa = '1024';
     activeNr = '128';
+  } else if (isHighPerf && mode === EngineMode.ModeBurst) {
+    activeRa = '1024';
+    activeNr = String(Math.min(128, profile.stockNrRequests * 2));
   }
 
   const p0 = profile.cpuPolicies[0];
@@ -325,21 +348,57 @@ export function computeSysfsNodes(
 
   let waltP0 = '80';
   let waltP4 = '80';
-  if (mode === EngineMode.ModeGaming && isHighPerf) {
-    waltP0 = '60';
-    waltP4 = '55';
-  } else if (mode === EngineMode.ModeBurst && isHighPerf) {
+  if (isThermalStabilizing) {
+    waltP0 = '90';
+    waltP4 = '90';
+  } else if (mode === EngineMode.ModeGaming && isHighPerf) {
     waltP0 = '70';
-    waltP4 = '70';
+    waltP4 = '65';
+  } else if (mode === EngineMode.ModeBurst && isHighPerf) {
+    waltP0 = '75';
+    waltP4 = '72';
   } else if (mutationArmed && (mode === EngineMode.ModeIdle || mode === EngineMode.ModeUltraIdle)) {
     waltP0 = '85';
     waltP4 = '85';
   }
 
+  // Android Power HAL & thermal-engine own scaling_min_freq / scaling_max_freq (FrameworkOwned).
+  // CoreFlow observes them read-only and uses cgroup uclamp for bounded task steering instead.
   const p0MaxStock = String(p0.maxFreqKhz);
   const p4MaxStock = String(p4.maxFreqKhz);
-  const p0MaxActive = thermalCoolingClamp ? '1400000' : p0MaxStock;
-  const p4MaxActive = thermalCoolingClamp || smartChargingClamp ? '1800000' : p4MaxStock;
+
+  const topAppUclampMin = isThermalStabilizing
+    ? '0'
+    : isHighPerf && mode === EngineMode.ModeBurst
+      ? '15'
+      : isHighPerf && mode === EngineMode.ModeGaming
+        ? '10'
+        : '0';
+
+  const bgUclampMax =
+    isThermalStabilizing || (mutationArmed && policyState === RuntimeState.Pressure)
+      ? '50'
+      : mutationArmed && mode === EngineMode.ModeUltraIdle
+        ? '40'
+        : 'max';
+
+  // ZRAM-aware VM semantics (Linux 5.8+ range 0..200, OEM baseline commonly 100..160):
+  // Under memory-only pressure, EffectModel preserves OEM ZRAM swappiness rather than inflating blindly,
+  // and relieves reclaim via bounded vfs_cache_pressure step (+15%) while keeping page-cluster=0.
+  const activeVfs =
+    !procOk
+      ? 'SKIPPED'
+      : mutationArmed && policyState === RuntimeState.Pressure
+        ? String(Math.min(500, Math.round(profile.stockVfsCachePressure * 1.15)))
+        : isHighPerf
+          ? String(Math.max(50, Math.round(profile.stockVfsCachePressure * 0.9)))
+          : stockVfs;
+
+  const activeSwappiness = !procOk
+    ? 'SKIPPED'
+    : isThermalStabilizing && profile.stockSwappiness > 100
+      ? String(Math.max(100, Math.round(profile.stockSwappiness * 0.9)))
+      : stockSwappiness;
 
   return [
     {
@@ -372,9 +431,11 @@ export function computeSysfsNodes(
       subsystem: 'CPU & WALT',
       baselineValue: '80',
       currentValue: sysOk && capabilities.waltAvailable ? waltP0 : 'SKIPPED',
-      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : waltP0 !== '80' ? 'MUTATED' : 'BASELINE',
+      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : isThermalStabilizing ? 'CLAMPED' : waltP0 !== '80' ? 'MUTATED' : 'BASELINE',
       rationale: capabilities.waltAvailable
-        ? 'WALT scheduler target load threshold (ResourceActuator)'
+        ? isThermalStabilizing
+          ? 'ThermalGuard (>=55°C) raises WALT target load to reduce OPP residence'
+          : 'WALT scheduler target load threshold (ResourceActuator)'
         : 'Kernel does not expose WALT tunables; skipped by CapabilityRegistry',
     },
     {
@@ -382,41 +443,68 @@ export function computeSysfsNodes(
       subsystem: 'CPU & WALT',
       baselineValue: '80',
       currentValue: sysOk && capabilities.waltAvailable ? waltP4 : 'SKIPPED',
-      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : waltP4 !== '80' ? 'MUTATED' : 'BASELINE',
+      status: !sysOk || !capabilities.waltAvailable ? 'SKIPPED' : isThermalStabilizing ? 'CLAMPED' : waltP4 !== '80' ? 'MUTATED' : 'BASELINE',
       rationale: capabilities.waltAvailable
-        ? 'Lowered under armed Burst/Gaming with verified prewrite journal'
+        ? isThermalStabilizing
+          ? 'Stabilizing epoch raises target load under >=55°C ThermalGuard'
+          : 'Bounded adjustment under armed Burst/Gaming with pre-write journal'
         : 'Kernel does not expose WALT tunables; skipped by CapabilityRegistry',
+    },
+    {
+      path: '/dev/cpuctl/top-app/cpu.uclamp.min',
+      subsystem: 'CPU & WALT',
+      baselineValue: '0',
+      currentValue: sysOk ? topAppUclampMin : 'SKIPPED',
+      status: !sysOk ? 'SKIPPED' : topAppUclampMin !== '0' ? 'MUTATED' : 'BASELINE',
+      rationale:
+        topAppUclampMin !== '0'
+          ? 'Bounded interactivity uclamp.min floor for foreground render thread'
+          : 'Zero floor preserved when thermal/idle gates hold proactive boost',
+    },
+    {
+      path: '/dev/cpuctl/background/cpu.uclamp.max',
+      subsystem: 'CPU & WALT',
+      baselineValue: 'max',
+      currentValue: sysOk ? bgUclampMax : 'SKIPPED',
+      status:
+        !sysOk
+          ? 'SKIPPED'
+          : bgUclampMax !== 'max'
+            ? isThermalStabilizing || policyState === RuntimeState.Pressure
+              ? 'CLAMPED'
+              : 'MUTATED'
+            : 'BASELINE',
+      rationale:
+        bgUclampMax !== 'max'
+          ? 'Contains background cgroup CPU utilization during stress or deep sleep'
+          : 'Default cgroup background ceiling preserved',
     },
     {
       path: '/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq',
       subsystem: 'CPU & WALT',
       baselineValue: p0MaxStock,
-      currentValue: sysOk ? p0MaxActive : 'N/A',
-      status: !sysOk ? 'SKIPPED' : p0MaxActive !== p0MaxStock ? 'CLAMPED' : 'BASELINE',
-      rationale: thermalCoolingClamp
-        ? 'ThermalGuard stabilizing clamp active (>=43°C): 1.40 GHz'
-        : 'Uncapped factory maximum cluster frequency',
+      currentValue: sysOk ? p0MaxStock : 'N/A',
+      status: !sysOk ? 'SKIPPED' : 'BASELINE',
+      rationale:
+        'FrameworkOwned (Power HAL / thermal-engine): observed read-only to prevent HAL conflict',
     },
     {
       path: '/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq',
       subsystem: 'CPU & WALT',
       baselineValue: p4MaxStock,
-      currentValue: sysOk ? p4MaxActive : 'N/A',
-      status: !sysOk ? 'SKIPPED' : p4MaxActive !== p4MaxStock ? 'CLAMPED' : 'BASELINE',
-      rationale: thermalCoolingClamp
-        ? 'ThermalGuard stabilizing clamp active (>=43°C): 1.80 GHz'
-        : smartChargingClamp
-          ? 'Charging thermal protection (>40°C): 1.80 GHz'
-          : 'Uncapped factory maximum cluster frequency',
+      currentValue: sysOk ? p4MaxStock : 'N/A',
+      status: !sysOk ? 'SKIPPED' : 'BASELINE',
+      rationale:
+        'FrameworkOwned (Power HAL / thermal-engine): observed read-only to prevent HAL conflict',
     },
     {
       path: '/sys/block/sda/queue/read_ahead_kb',
       subsystem: 'Block I/O',
       baselineValue: stockRa,
       currentValue: sysOk ? activeRa : 'N/A',
-      status: !sysOk ? 'SKIPPED' : activeRa !== stockRa ? 'MUTATED' : 'BASELINE',
+      status: !sysOk ? 'SKIPPED' : isThermalStabilizing && activeRa !== stockRa ? 'CLAMPED' : activeRa !== stockRa ? 'MUTATED' : 'BASELINE',
       rationale: mutationArmed
-        ? `Bounded UFS read-ahead (${activeRa} KB) via ResourceMutationController`
+        ? `Bounded UFS read-ahead (${activeRa} KB) via ResourceActuator`
         : 'Observe mode active: factory read-ahead preserved',
     },
     {
@@ -425,32 +513,63 @@ export function computeSysfsNodes(
       baselineValue: stockNr,
       currentValue: sysOk ? activeNr : 'N/A',
       status: !sysOk ? 'SKIPPED' : activeNr !== stockNr ? 'MUTATED' : 'BASELINE',
-      rationale: 'Block queue depth scaled only with explicit grant_block_queue permit',
+      rationale: 'Capability-verified UFS block queue depth with rollback baseline',
     },
     {
-      path: '/proc/sys/vm/vfs_cache_pressure',
-      subsystem: 'VM / Sysctl',
-      baselineValue: '100',
-      currentValue: procOk ? (mutationArmed && !isHighPerf ? '130' : '100') : 'SKIPPED',
-      status: !procOk ? 'SKIPPED' : mutationArmed && !isHighPerf ? 'MUTATED' : 'BASELINE',
-      rationale: 'Controlled by grant_memory VmSysctl actuator with durable rollback journal',
+      path: '/sys/block/sda/queue/rq_affinity',
+      subsystem: 'Block I/O',
+      baselineValue: '2',
+      currentValue: sysOk ? activeRqAffinity : 'N/A',
+      status: !sysOk ? 'SKIPPED' : activeRqAffinity !== '2' ? 'CLAMPED' : 'BASELINE',
+      rationale:
+        activeRqAffinity !== '2'
+          ? 'Relaxed completion affinity [0..2] during ThermalGuard to spread IRQ heat'
+          : 'Kernel domain [0..2] strict originating-CPU completion preserved',
     },
     {
       path: '/proc/sys/vm/swappiness',
       subsystem: 'VM / Sysctl',
-      baselineValue: '60',
-      currentValue:
-        procOk && mutationArmed && policyState === RuntimeState.Pressure ? '90' : procOk ? '60' : 'SKIPPED',
+      baselineValue: stockSwappiness,
+      currentValue: activeSwappiness,
       status:
         !procOk
           ? 'SKIPPED'
-          : mutationArmed && policyState === RuntimeState.Pressure
-            ? 'MUTATED'
+          : activeSwappiness !== stockSwappiness
+            ? 'CLAMPED'
+            : 'BASELINE',
+      rationale:
+        policyState === RuntimeState.Pressure
+          ? `Linux 5.8+ ZRAM domain [0..200]: OEM baseline ${stockSwappiness} preserved (avoids ZRAM kswapd thrash)`
+          : activeSwappiness !== stockSwappiness
+            ? `Stabilizing thermal relief trims ZRAM compression CPU (${stockSwappiness} -> ${activeSwappiness})`
+            : `OEM ZRAM factory posture (${stockSwappiness} / 200, ${profile.zramSizeMb} MB zram0) respected`,
+    },
+    {
+      path: '/proc/sys/vm/vfs_cache_pressure',
+      subsystem: 'VM / Sysctl',
+      baselineValue: stockVfs,
+      currentValue: activeVfs,
+      status:
+        !procOk
+          ? 'SKIPPED'
+          : activeVfs !== stockVfs
+            ? policyState === RuntimeState.Pressure
+              ? 'CLAMPED'
+              : 'MUTATED'
             : 'BASELINE',
       rationale:
         policyState === RuntimeState.Pressure && mutationArmed
-          ? 'Stabilizing-only VM reclaim adjustment during memory pressure'
-          : 'OEM default ZRAM swap aggressiveness preserved',
+          ? 'Bounded +15% dentry/inode reclaim relief under RAM <10% pressure [10..500]'
+          : 'Kernel domain [10..500] VFS slab cache balance with durable rollback journal',
+    },
+    {
+      path: '/proc/sys/vm/page-cluster',
+      subsystem: 'VM / Sysctl',
+      baselineValue: stockPageCluster,
+      currentValue: procOk ? stockPageCluster : 'SKIPPED',
+      status: !procOk ? 'SKIPPED' : 'BASELINE',
+      rationale:
+        'Single-page ZRAM decompression (0 = 2^0 pages) preserved to avoid latency spikes [0..8]',
     },
     {
       path: '/sys/class/kgsl/kgsl-3d0/devfreq/governor',
@@ -644,7 +763,7 @@ export function computeThermalPrediction(
   const chargeHeatContribution = sample.charging ? 0.45 : -0.10;
   const spreadContribution = spreadTempC * 0.12;
   const momentumContribution = thermalDeltaC * 1.5 + (tTrendVal > 0.5 ? 0.35 : 0);
-  const ambientCooling = currentTempC > 34 ? -0.06 * (currentTempC - 34) : 0;
+  const ambientCooling = currentTempC > 34 ? -0.05 * (currentTempC - 34) : 0;
 
   const deltaHorizonC = Number(
     (
@@ -656,7 +775,8 @@ export function computeThermalPrediction(
     ).toFixed(2)
   );
   const predictedTempC = Number(Math.max(22, currentTempC + deltaHorizonC).toFixed(2));
-  const preemptiveTrigger = predictedTempC >= 43.0 && currentTempC < 43.0;
+  const guardEnterC = THERMAL_GUARD_ENTER_MC / 1000;
+  const preemptiveTrigger = predictedTempC >= guardEnterC && currentTempC < guardEnterC;
 
   return {
     features,
@@ -677,7 +797,7 @@ export function computeSampleEfficiencyScore(
 ): number {
   const tempC = sample.thermalMillidegrees / 1000;
   const workDelivered = sample.cpuUsagePct * 0.55 + sample.gpuBusyPct * 0.45 + 15;
-  const thermalCost = Math.max(1, (tempC - 26) * 1.8);
+  const thermalCost = Math.max(1, (tempC - 26) * 1.45);
   const loadOverhead = 1 + sample.load1 * 0.14;
 
   let baseScore = (workDelivered / (thermalCost * loadOverhead)) * 22;
@@ -857,7 +977,7 @@ export function formatStartupLogs(
       timeFormatted,
       level: 'I',
       tag: 'CoreFlowAutonomous',
-      message: `CoreFlow Autonomous v3.0.2 | abi=${profile.abi} kernel=${profile.kernelRelease} discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
+      message: `CoreFlow Autonomous v3.1.0 | abi=${profile.abi} kernel=${profile.kernelRelease} vm.swappiness=${profile.stockSwappiness} zram=${profile.zramSizeMb}MB discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
     },
     {
       id: `boot-2-${nonce}`,
@@ -865,7 +985,7 @@ export function formatStartupLogs(
       timeFormatted,
       level: 'I',
       tag: 'CoreFlowConscience',
-      message: `SafetyFoundation verified: mutation_journal=READY fatal_surface=ENFORCED default_mode=OBSERVE`,
+      message: `SafetyFoundation verified: mutation_journal=READY fatal_surface=ENFORCED automatic_mode=ADAPTIVE guard_enter=55.0C guard_exit=52.0C`,
     },
     {
       id: `boot-3-${nonce}`,
@@ -944,4 +1064,3 @@ export function exportHistoryToCsv(history: RuntimeSample[]): string {
 
   return [headers.join(','), ...rows.map((r) => r.map(escapeCsv).join(','))].join('\n');
 }
-

@@ -52,7 +52,9 @@ struct CouplingSnapshot {
     StrategyProfile profile{StrategyProfile::IdleConservation};
     IoSchedulerPosture io_posture{IoSchedulerPosture::Unknown};
     CpuGovernorPosture cpu_posture{CpuGovernorPosture::Unknown};
-    bool warm_equilibrium{false};   // 48.0C <= thermal < 52.0C: trim background first
+    bool warm_equilibrium{false};       // 48.0C <= thermal < 52.0C: trim background first
+    bool zram_high_swappiness{false};   // OEM vm.swappiness >= 100 (Linux 5.8+ ZRAM baseline, e.g. 120)
+    bool zram_zero_page_cluster{false}; // OEM vm.page-cluster == 0 (single-page random ZRAM read)
     bool has_io_domain{false};
     bool has_cpufreq_domain{false};
     bool has_uclamp_domain{false};

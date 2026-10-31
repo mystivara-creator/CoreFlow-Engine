@@ -21,30 +21,30 @@ function renderStatusCell(status: SysfsNodeStatus) {
   switch (status) {
     case 'MUTATED':
       return (
-        <span className="inline-flex items-center gap-1.5 font-mono font-semibold text-blue-700">
-          <Sliders className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border bg-blue-50 border-blue-200 font-mono text-[11px] font-semibold text-blue-800">
+          <Sliders className="w-3 h-3 shrink-0" aria-hidden="true" />
           MUTATED
         </span>
       );
     case 'CLAMPED':
       return (
-        <span className="inline-flex items-center gap-1.5 font-mono font-semibold text-red-700">
-          <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border bg-amber-50 border-amber-200 font-mono text-[11px] font-semibold text-amber-800">
+          <ShieldAlert className="w-3 h-3 shrink-0" aria-hidden="true" />
           CLAMPED
         </span>
       );
     case 'SKIPPED':
       return (
-        <span className="inline-flex items-center gap-1.5 font-mono text-slate-500">
-          <Slash className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border bg-slate-100 border-slate-200 font-mono text-[11px] text-slate-600">
+          <Slash className="w-3 h-3 shrink-0" aria-hidden="true" />
           SKIPPED
         </span>
       );
     case 'BASELINE':
     default:
       return (
-        <span className="inline-flex items-center gap-1.5 font-mono text-emerald-700">
-          <Check className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border bg-emerald-50 border-emerald-200 font-mono text-[11px] font-medium text-emerald-800">
+          <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
           BASELINE
         </span>
       );
@@ -64,6 +64,10 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
     ...(d?.hands.cpuApplied.map((x) => ({ path: x.key, value: x.value, kind: 'CpuFreqActuator' })) ?? []),
     ...(d?.hands.resourceApplied.map((x) => ({ path: x.key, value: x.value, kind: 'ResourceActuator' })) ?? []),
   ];
+
+  const mutatedTotal = nodes.filter((n) => n.status === 'MUTATED').length;
+  const clampedTotal = nodes.filter((n) => n.status === 'CLAMPED').length;
+  const baselineTotal = nodes.filter((n) => n.status === 'BASELINE').length;
 
   const filtered = nodes.filter((node) => {
     if (subsystem !== 'All' && node.subsystem !== subsystem) return false;
@@ -86,22 +90,44 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
       <div className="pb-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
           <div className="text-xs text-slate-500">
-            TunableDiscovery &rarr; MutationPermit &rarr; Pre-Write Journal &rarr; Read-Back Verify
+            TunableDiscovery &rarr; Kernel Domain Bounds &rarr; Pre-Write Journal &rarr; Read-Back Verify
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
             Kernel Resources &amp; Sysfs Inspector
           </h1>
         </div>
-        <div className="text-xs font-mono text-slate-600 tabular-nums">
+        <div className="text-xs font-mono text-slate-600 tabular-nums bg-white border border-slate-200 rounded-lg px-3 py-1.5 self-start sm:self-auto">
           {d
             ? `${d.device.discoveredResources} discovered · ${d.device.mutationReadyResources} policy-ready`
             : `Showing ${filtered.length} of ${nodes.length} nodes`}
         </div>
       </div>
 
+      {/* Node posture summary strip when nodes exist */}
+      {nodes.length > 0 && (
+        <div className="cf-stagger-1 grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums text-xs">
+          <div className="p-3.5 bg-white border border-slate-200 rounded-xl">
+            <div className="font-sans text-slate-500">Inspected Paths</div>
+            <div className="text-lg font-bold text-slate-900 mt-0.5">{nodes.length}</div>
+          </div>
+          <div className="p-3.5 bg-white border border-slate-200 rounded-xl">
+            <div className="font-sans text-slate-500">OEM Baseline Kept</div>
+            <div className="text-lg font-bold text-emerald-700 mt-0.5">{baselineTotal}</div>
+          </div>
+          <div className="p-3.5 bg-white border border-slate-200 rounded-xl">
+            <div className="font-sans text-slate-500">Proactive Tuned</div>
+            <div className="text-lg font-bold text-blue-700 mt-0.5">{mutatedTotal}</div>
+          </div>
+          <div className="p-3.5 bg-white border border-slate-200 rounded-xl">
+            <div className="font-sans text-slate-500">Stabilizing Clamped</div>
+            <div className="text-lg font-bold text-amber-700 mt-0.5">{clampedTotal}</div>
+          </div>
+        </div>
+      )}
+
       {/* Live C++ Hands Applied Mutations (if any held by coreflowd) */}
       {liveApplied.length > 0 && (
-        <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <section className="cf-stagger-1 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-900">
               Active Mutations Held by C++ ActuatorManager
@@ -112,7 +138,10 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
           </div>
           <div className="divide-y divide-slate-200 text-xs font-mono">
             {liveApplied.map((item, idx) => (
-              <div key={`${item.path}-${idx}`} className="px-5 py-2.5 flex items-center justify-between gap-4">
+              <div
+                key={`${item.path}-${idx}`}
+                className="px-5 py-2.5 flex items-center justify-between gap-4 hover:bg-slate-50/70"
+              >
                 <span className="text-slate-900 truncate">{item.path}</span>
                 <span className="text-slate-500 shrink-0">
                   {item.kind} &rarr; <strong className="text-blue-700">{item.value}</strong>
@@ -124,14 +153,14 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
       )}
 
       {/* Interactive Filter Toolbar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
+      <div className="cf-stagger-2 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-1 p-1 bg-slate-100 border border-slate-200/80 rounded-xl overflow-x-auto">
           {SUBSYSTEMS.map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => setSubsystem(tab)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 ${
                 subsystem === tab
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -171,26 +200,32 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
       </div>
 
       {/* Sysfs Data Grid */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <section className="cf-stagger-3 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
-          <div className="p-12 text-center space-y-3">
+          <div className="p-10 text-center space-y-3">
             <div className="text-sm font-semibold text-slate-900">
-              No kernel nodes match the current filter
+              {nodes.length === 0
+                ? 'No active kernel overrides held by coreflowd right now'
+                : 'No kernel nodes match the current filter'}
             </div>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Clear your search query or disable the Active Mutations filter to inspect preserved OEM factory baseline parameters.
+            <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+              {nodes.length === 0
+                ? 'All discovered resources remain at their untouched OEM factory baseline values. Active verified writes appear here automatically whenever ActuatorManager holds an experiment.'
+                : 'Clear your search query or disable the Active Mutations filter to inspect preserved OEM factory baseline parameters.'}
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSubsystem('All');
-                setSearchQuery('');
-                setOnlyModified(false);
-              }}
-              className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Reset Node Filters
-            </button>
+            {(subsystem !== 'All' || searchQuery !== '' || onlyModified) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSubsystem('All');
+                  setSearchQuery('');
+                  setOnlyModified(false);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+              >
+                Reset Node Filters
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -202,7 +237,7 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
                   <th className="py-2.5 px-4 text-right">OEM Baseline</th>
                   <th className="py-2.5 px-4 text-right">Active Value</th>
                   <th className="py-2.5 px-4">State</th>
-                  <th className="py-2.5 px-5">Engine Rationale</th>
+                  <th className="py-2.5 px-5">Engine Rationale &amp; Domain Bounds</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-xs">
@@ -223,7 +258,7 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
                     <td className="py-2.5 px-4 whitespace-nowrap">
                       {renderStatusCell(node.status)}
                     </td>
-                    <td className="py-2.5 px-5 text-slate-600 min-w-[240px]">
+                    <td className="py-2.5 px-5 text-slate-600 min-w-[260px] leading-relaxed">
                       {node.rationale}
                     </td>
                   </tr>
@@ -236,11 +271,20 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
 
       {/* C++ Expanded Kernel Discovery Domains (ADR-0008) */}
       {d && d.device.expandedDomains.length > 0 && (
-        <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200">
-            <h2 className="text-base font-semibold text-slate-900">
-              C++ Dynamic Kernel Resource Discovery Domains (ADR-0008)
-            </h2>
+        <section className="cf-stagger-4 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">
+                C++ Dynamic Kernel Resource Discovery Domains (ADR-0008)
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Runtime sysfs &amp; procfs capability probe; writability never implies unilateral mutation permission.
+              </p>
+            </div>
+            <span className="text-xs font-mono text-slate-500 tabular-nums">
+              {d.device.expandedDomains.filter((x) => x.evidence !== 'unavailable').length} /{' '}
+              {d.device.expandedDomains.length} detected
+            </span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -255,7 +299,7 @@ export const SysfsInspectorView: React.FC<SysfsInspectorViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200 text-xs">
                 {d.device.expandedDomains.map((dom) => (
-                  <tr key={dom.id} className="hover:bg-slate-50/80">
+                  <tr key={dom.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-2.5 px-5 font-medium text-slate-900">
                       {EXPANDED_DOMAIN_NAMES[dom.id] || `Domain #${dom.id}`}
                     </td>

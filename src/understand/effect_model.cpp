@@ -244,6 +244,52 @@ bool hasPositiveExperience(const EffectContext& ctx) noexcept {
            ctx.experience_score >= 0.60;
 }
 
+// Kernel-enforced numeric domain bounds for reviewed Linux/Android sysctl and
+// queue interfaces. Prevents proposing out-of-range scalars (such as
+// vm.swappiness > 200 on ZRAM kernels where OEM baseline is 120..180,
+// dirty_ratio > 100, or rq_affinity/nomerges > 2) that fail with EINVAL.
+bool kernelScalarBounds(const EcosystemKnowledgeEntry* knowledge,
+                        long long scale,
+                        long long& min_out,
+                        long long& max_out) noexcept {
+    if (knowledge == nullptr || knowledge->key == nullptr || scale <= 0LL) {
+        return false;
+    }
+    const std::string_view key(knowledge->key);
+    if (key == "vm.swappiness") {
+        min_out = 0LL;
+        max_out = 200LL * scale;
+        return true;
+    }
+    if (key == "vm.dirty_ratio" || key == "vm.dirty_background_ratio" ||
+        key == "cpufreq.governor.hispeed_load") {
+        min_out = 1LL * scale;
+        max_out = 100LL * scale;
+        return true;
+    }
+    if (key == "vm.vfs_cache_pressure") {
+        min_out = 10LL * scale;
+        max_out = 500LL * scale;
+        return true;
+    }
+    if (key == "vm.watermark_scale_factor") {
+        min_out = 1LL * scale;
+        max_out = 1000LL * scale;
+        return true;
+    }
+    if (key == "vm.page-cluster") {
+        min_out = 0LL;
+        max_out = 8LL * scale;
+        return true;
+    }
+    if (key == "block.queue.rq_affinity" || key == "block.queue.nomerges") {
+        min_out = 0LL;
+        max_out = 2LL * scale;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 std::vector<EffectScore> EffectModel::proposals(
@@ -529,15 +575,26 @@ std::vector<EffectScore> EffectModel::proposals(
                 const long long max = std::numeric_limits<long long>::max();
                 const long long scale = decimals > 0
                     ? static_cast<long long>(std::pow(10.0, decimals)) : 1LL;
-                const long long lower_bound = cgroup_uclamp_percent ? 0LL :
+                long long lower_bound = cgroup_uclamp_percent ? 0LL :
                     (scaled > 0 ? std::max<long long>(1, scaled / 2)
                                 : (scaled < min / 2 ? min : scaled * 2));
-                const long long upper_bound = cgroup_uclamp_percent ? 100LL * scale :
+                long long upper_bound = cgroup_uclamp_percent ? 100LL * scale :
                     (scaled > 0 ? (scaled > max / 2 ? max : scaled * 2) : scaled / 2);
+                long long domain_min = 0LL;
+                long long domain_max = 0LL;
+                if (!cgroup_uclamp_percent &&
+                    kernelScalarBounds(knowledge, scale, domain_min, domain_max)) {
+                    lower_bound = std::max(lower_bound, domain_min);
+                    upper_bound = std::min(upper_bound, domain_max);
+                }
+                if (lower_bound > upper_bound) {
+                    lower_bound = std::min(scaled, domain_max);
+                    upper_bound = std::max(scaled, domain_min);
+                }
                 const long long raw_down = scaled < min + step ? min : scaled - step;
                 const long long raw_up = scaled > max - step ? max : scaled + step;
-                const long long down = std::max(lower_bound, raw_down);
-                const long long up = std::min(upper_bound, raw_up);
+                const long long down = std::clamp(raw_down, lower_bound, upper_bound);
+                const long long up = std::clamp(raw_up, lower_bound, upper_bound);
                 const bool clamp = isUtilizationClamp(capability) &&
                                     (situation.thermal || situation.throttling);
                 if (down != scaled) {
@@ -615,6 +672,39 @@ std::vector<EffectScore> EffectModel::rank(
 
         std::vector<EffectScore> local = proposals(cap, baseline->second, ctx);
         for (auto& score : local) {
+            // Enforce Linux VM writeback watermark invariant:
+            // vm.dirty_background_ratio must never exceed vm.dirty_ratio.
+            if (cap.domain == ResourceDomain::Memory) {
+                long long cand_val = 0;
+                if (endsWith(cap.path, "/vm/dirty_background_ratio") &&
+                    parseInteger(score.requested, cand_val)) {
+                    const std::string sibling =
+                        cap.path.substr(0, cap.path.size() - 22U) + "dirty_ratio";
+                    const auto sib_it = baselines.find(sibling);
+                    long long dirty_ratio_val = 0;
+                    if (sib_it != baselines.end() &&
+                        parseInteger(sib_it->second, dirty_ratio_val) &&
+                        cand_val > dirty_ratio_val) {
+                        score.eligible = false;
+                        score.utility = -1.0;
+                        continue;
+                    }
+                } else if (endsWith(cap.path, "/vm/dirty_ratio") &&
+                           parseInteger(score.requested, cand_val)) {
+                    const std::string sibling =
+                        cap.path.substr(0, cap.path.size() - 11U) + "dirty_background_ratio";
+                    const auto sib_it = baselines.find(sibling);
+                    long long bg_ratio_val = 0;
+                    if (sib_it != baselines.end() &&
+                        parseInteger(sib_it->second, bg_ratio_val) &&
+                        cand_val < bg_ratio_val) {
+                        score.eligible = false;
+                        score.utility = -1.0;
+                        continue;
+                    }
+                }
+            }
+
             const StrategyAdjustment adj = StrategyCatalog::evaluateCandidate(
                 cap, baseline->second, score.requested, score.direction, coupling, ctx);
             score.benefit = clamp01(score.benefit + adj.benefit_delta);

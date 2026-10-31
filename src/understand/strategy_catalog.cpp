@@ -196,6 +196,34 @@ CouplingSnapshot StrategyCatalog::analyze(
                 snap.cpu_posture = classifyCpuGovernor(extractActiveToken(it->second));
             }
         }
+        if (res.domain == ResourceDomain::Memory) {
+            if (endsWithToken(res.path, "/vm/swappiness")) {
+                const auto it = baselines.find(res.path);
+                if (it != baselines.end()) {
+                    const std::string tok = extractActiveToken(it->second);
+                    if (!tok.empty()) {
+                        long val = 0;
+                        bool digits = true;
+                        for (const char ch : tok) {
+                            if (!std::isdigit(static_cast<unsigned char>(ch))) {
+                                digits = false;
+                                break;
+                            }
+                            val = val * 10L + static_cast<long>(ch - '0');
+                            if (val > 1000L) break;
+                        }
+                        if (digits && val >= 100L) {
+                            snap.zram_high_swappiness = true;
+                        }
+                    }
+                }
+            } else if (endsWithToken(res.path, "/vm/page-cluster")) {
+                const auto it = baselines.find(res.path);
+                if (it != baselines.end() && extractActiveToken(it->second) == "0") {
+                    snap.zram_zero_page_cluster = true;
+                }
+            }
+        }
         if (!res.mutation_ready && !(res.domain == ResourceDomain::CpuFreq &&
                                      endsWithToken(res.path, "/scaling_governor"))) {
             continue;
@@ -255,8 +283,10 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
     const bool has_coupled_anchors =
         snapshot.active_domain_count >= 2U &&
         (snapshot.io_posture != IoSchedulerPosture::Unknown ||
-         snapshot.cpu_posture != CpuGovernorPosture::Unknown ||
-         snapshot.warm_equilibrium);
+          snapshot.cpu_posture != CpuGovernorPosture::Unknown ||
+          snapshot.warm_equilibrium ||
+          snapshot.zram_high_swappiness ||
+          snapshot.profile == StrategyProfile::MemoryRelief);
     if (!has_coupled_anchors && !has_live_render_signal) {
         return adj;
     }
@@ -397,7 +427,67 @@ StrategyAdjustment StrategyCatalog::evaluateCandidate(
         }
     }
 
-    // 4. Daily Multitasking CPU Governor <-> UClamp & Memory coordination:
+    // 4. MemoryRelief & ZRAM-Aware VM Coupling (Linux 5.8+ 0..200 swappiness):
+    //    Modern Android kernels with in-RAM ZRAM ship OEM vm.swappiness at
+    //    100..160 (commonly 120) and vm.page-cluster at 0. Respect that factory
+    //    ZRAM posture instead of assuming legacy desktop Linux swappiness=60:
+    //    avoid blindly inflating an already high ZRAM swappiness (>=100) or
+    //    enabling multi-page swap readahead on random compressed RAM pages.
+    if (capability.domain == ResourceDomain::Memory) {
+        if (endsWithToken(path, "/vm/swappiness")) {
+            if (snapshot.zram_high_swappiness && direction == EffectDirection::Increase) {
+                adj.benefit_delta -= 0.04;
+                adj.risk_delta += 0.06;
+                adj.coupling_tag = "coupled:zram_oem_swappiness_saturated";
+                return adj;
+            }
+            if (!snapshot.zram_high_swappiness &&
+                snapshot.profile == StrategyProfile::MemoryRelief &&
+                direction == EffectDirection::Increase) {
+                adj.benefit_delta += 0.07;
+                adj.risk_delta -= 0.02;
+                adj.coupling_tag = "coupled:zram_anon_reclaim_relief";
+                return adj;
+            }
+        }
+        if (endsWithToken(path, "/vm/page-cluster")) {
+            if (snapshot.zram_high_swappiness && direction == EffectDirection::Increase) {
+                adj.benefit_delta -= 0.05;
+                adj.risk_delta += 0.08;
+                adj.coupling_tag = "coupled:zram_random_swap_no_readahead";
+                return adj;
+            }
+            if (snapshot.zram_high_swappiness && direction == EffectDirection::Decrease) {
+                adj.benefit_delta += 0.08;
+                adj.risk_delta -= 0.03;
+                adj.coupling_tag = "coupled:zram_single_page_latency";
+                return adj;
+            }
+        }
+        if (snapshot.profile == StrategyProfile::MemoryRelief) {
+            if ((endsWithToken(path, "/vm/vfs_cache_pressure") ||
+                 endsWithToken(path, "/vm/watermark_scale_factor")) &&
+                direction == EffectDirection::Increase) {
+                adj.benefit_delta += 0.08;
+                adj.risk_delta -= 0.02;
+                adj.coupling_tag = "coupled:memory_relief_reclaim_headroom";
+                return adj;
+            }
+        }
+    }
+
+    if (snapshot.profile == StrategyProfile::MemoryRelief &&
+        capability.domain == ResourceDomain::UClamp &&
+        isBackgroundCgroupPath(path) &&
+        endsWithToken(path, "uclamp.max") &&
+        direction == EffectDirection::Decrease) {
+        adj.benefit_delta += 0.08;
+        adj.risk_delta -= 0.03;
+        adj.coupling_tag = "coupled:memory_relief_bg_containment";
+        return adj;
+    }
+
+    // 5. Daily Multitasking CPU Governor <-> UClamp & Memory coordination:
     if (snapshot.profile == StrategyProfile::DailyMultitasking) {
         if (capability.domain == ResourceDomain::CpuFreq &&
             endsWithToken(path, "/scaling_governor") &&

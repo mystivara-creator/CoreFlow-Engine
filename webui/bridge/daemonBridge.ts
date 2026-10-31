@@ -64,7 +64,8 @@ export interface ConscienceTraceRow {
 
 export interface PipelineStage {
   id: string;
-  name: string;
+  label: string;
+  name?: string;
   state: string;
   note: string;
   tone: 'ok' | 'info' | 'warn' | 'bad';
@@ -115,13 +116,35 @@ export interface ParsedEngineStatus {
       }>;
       blockQueueMutationsQuarantined: boolean;
     };
-    memory?: { lifetimeSample: number | null; sampleCheckpointOk: boolean; baselineRestartsAfterBoot: boolean };
+    memory?: {
+      lifetimeSample: number | null;
+      sampleCheckpointOk: boolean;
+      baselineRestartsAfterBoot: boolean;
+    };
     intelligence?: {
-      learnedCandidates?: number;
-      renderingAvailable: boolean;
-      frameJankRate: number;
+      pressure?: string;
+      confidence?: number | null;
+      foregroundAvailable?: boolean;
       foregroundProcess: string;
       renderingLayer: string;
+      renderingAvailability?: string;
+      interactionState?: string;
+      renderingMetric?: string;
+      launchMetric?: string;
+      artBackend?: string;
+      framePacingBackend?: string;
+      renderingAvailable: boolean;
+      frameJankRate: number | null;
+      controlConflict?: boolean;
+      externalControlPaths?: number;
+      learnedCandidates?: number;
+      storageAvailable?: boolean;
+      storageCaution?: boolean;
+      lifeA?: number;
+      lifeB?: number;
+      preEol?: number;
+      powerHalBackend?: string;
+      adpfBackend?: string;
     };
     eyes: {
       thermal: number | null;
@@ -171,6 +194,10 @@ export interface ParsedEngineStatus {
       skipReason: string;
       observing: boolean;
       cooldown: number;
+      consultation?: {
+        reasons: Record<string, number>;
+        namespaces: Record<string, { reason: string; need: boolean }>;
+      };
     };
     hands: {
       cpuMutated: boolean;
@@ -330,7 +357,12 @@ export function execNativeKsuShell(cmd: string, timeoutMs = 12000): Promise<Shel
       window.clearTimeout(timer);
       delete win[cbName];
       resolve({
-        errno: (typeof errno === 'number' || typeof errno === 'string') && /^-?\d+$/.test(String(errno)) && Number.isSafeInteger(Number(errno)) ? Number(errno) : 1,
+        errno:
+          (typeof errno === 'number' || typeof errno === 'string') &&
+          /^-?\d+$/.test(String(errno)) &&
+          Number.isSafeInteger(Number(errno))
+            ? Number(errno)
+            : 1,
         stdout: typeof stdout === 'string' ? stdout : '',
         stderr: typeof stderr === 'string' ? stderr : '',
       });
@@ -382,7 +414,7 @@ export function createInitialVirtualDaemonStore(): VirtualDaemonStore {
         event: 'policy_evaluated',
         scope: 'balance',
         result: 'ACTIVE',
-        reason: 'Engine starts automatically with bounded optimization enabled.',
+        reason: 'Engine starts automatically with bounded optimization enabled (ZRAM & 55C thermal hysteresis calibrated).',
         state: 'NORMAL',
         decision: 'NO_ACTION',
       }),
@@ -412,7 +444,9 @@ export function buildMirrorStatusSnapshot(
   observationSamplesCount: number
 ): string {
   const C = window.CoreFlowControl;
-  const parsedCfg = C ? C.parseIni(store.configRaw) : { mutation_mode: 'observe', mutation_armed: 'false', monitor_interval: '5' };
+  const parsedCfg = C
+    ? C.parseIni(store.configRaw)
+    : { mutation_mode: 'observe', mutation_armed: 'false', monitor_interval: '5' };
   const isAdaptive = parsedCfg.mutation_mode === 'adaptive';
   const isArmed = parsedCfg.mutation_armed === 'true' && !store.safeMode && !store.disableMarker;
   const nowEpoch = Math.floor(Date.now() / 1000);
@@ -425,15 +459,37 @@ export function buildMirrorStatusSnapshot(
     .filter((n) => n.status === 'MUTATED' && n.path.includes('scaling_governor'))
     .map((n) => ({ key: n.path, value: n.currentValue }));
 
+  const minConf = Number(parsedCfg.min_confidence || 0.6);
+
   let blocker = 'READY';
   if (!store.running) blocker = 'STOPPED';
-  else if (store.safeMode || store.disableMarker && isAdaptive) blocker = 'SAFETY_HOLD';
+  else if (store.safeMode || (store.disableMarker && isAdaptive)) blocker = 'SAFETY_HOLD';
   else if (!isAdaptive) blocker = 'OBSERVE_MODE';
   else if (!isArmed) blocker = 'NOT_ARMED';
-  else if (sample.confidence < Number(parsedCfg.min_confidence || 0.6)) blocker = 'CONTEXT_LOW_CONFIDENCE';
+  else if (sample.confidence < minConf) blocker = 'CONTEXT_LOW_CONFIDENCE';
   else if (policyState === RuntimeState.Idle) blocker = 'CONTEXT_IDLE';
   else if (observationSamplesCount > 0 && observationSamplesCount < 4) blocker = 'OBSERVING_OUTCOME';
   else if (mutatedResources.length > 0 || mutatedCpu.length > 0) blocker = 'CHANGE_HELD';
+
+  const pressureClass =
+    policyState === RuntimeState.ThermalGuard
+      ? 'THERMAL_CONSTRAINED'
+      : policyState === RuntimeState.Pressure
+        ? 'MEMORY_CONSTRAINED'
+        : sample.cpuUsagePct > 70
+          ? 'COMPUTE_BOUND'
+          : sample.ioReadKbs + sample.ioWriteKbs > 1200
+            ? 'IO_CONTENDED'
+            : 'BALANCED';
+
+  const jankRate =
+    workload === 'MODE_GAMING'
+      ? 0.024
+      : workload === 'MODE_BURST'
+        ? 0.038
+        : workload === 'MODE_ULTRA_IDLE'
+          ? 0.0
+          : 0.009;
 
   const statusObj = {
     schema: 1,
@@ -444,6 +500,11 @@ export function buildMirrorStatusSnapshot(
     interval_s: Number(parsedCfg.monitor_interval || 5),
     running: store.running,
     blocker,
+    memory: {
+      lifetime_sample: 1400 + sample.sampleIndex,
+      sample_checkpoint_ok: true,
+      baseline_restarts_after_boot: true,
+    },
     device: {
       manufacturer: profile.manufacturer,
       model: profile.model,
@@ -466,12 +527,12 @@ export function buildMirrorStatusSnapshot(
       devfreq_available: profile.board !== 'mt6897',
       discovered_resources: profile.discoveredResources,
       mutation_ready_resources: profile.mutationReadyResources,
-      expanded_domains: Array.from({ length: 10 }, (_, idx) => ({
+      expanded_domains: Array.from({ length: 15 }, (_, idx) => ({
         id: idx,
         evidence: idx === 6 && profile.board === 'mt6897' ? 'detected' : 'observable',
         matched: idx === 0 ? 6 : idx === 4 ? 8 : 4,
         readable: idx === 0 ? 6 : idx === 4 ? 8 : 4,
-        mutation_authorized: isAdaptive && isArmed && idx !== 7 && idx !== 8,
+        mutation_authorized: isAdaptive && isArmed && idx !== 7 && idx !== 8 && idx !== 9,
       })),
       block_queue_mutations_quarantined: false,
     },
@@ -482,24 +543,65 @@ export function buildMirrorStatusSnapshot(
       thermal_trend: sample.thermalTrend,
       mem_available_ratio: Number(sample.memAvailableRatio.toFixed(4)),
       memory_trend: sample.memoryTrend,
-      cpu_available: true,
       cpu_utilization: Number((sample.cpuUsagePct / 100).toFixed(3)),
       load_available: true,
       load1: sample.load1,
       load_trend: sample.loadTrend,
-      io_available: true,
       io_read_kbs: sample.ioReadKbs,
       io_write_kbs: sample.ioWriteKbs,
       battery_percent: sample.batteryPercent,
       charging: sample.charging,
       confidence: sample.confidence,
     },
+    intelligence: {
+      pressure: pressureClass,
+      confidence: sample.confidence,
+      foreground_available: workload !== 'MODE_ULTRA_IDLE',
+      foreground_process:
+        workload === 'MODE_GAMING'
+          ? 'com.miHoYo.GenshinImpact'
+          : workload === 'MODE_BURST'
+            ? 'com.instagram.android'
+            : workload === 'MODE_IDLE' || workload === 'MODE_ULTRA_IDLE'
+              ? 'com.miui.home'
+              : 'com.android.chrome',
+      rendering_layer:
+        workload === 'MODE_ULTRA_IDLE'
+          ? ''
+          : `SurfaceView[${profile.displayRefreshHz}Hz]#0`,
+      rendering_availability:
+        workload === 'MODE_ULTRA_IDLE'
+          ? 'display blanked'
+          : `SurfaceFlinger ${profile.displayRefreshHz}Hz vsync window`,
+      interaction_state:
+        workload === 'MODE_BURST'
+          ? 'LAUNCH_ACTIVE'
+          : workload === 'MODE_GAMING'
+            ? 'SUSTAINED_RENDER'
+            : 'STEADY',
+      rendering_metric: 'dumpsys_surfaceflinger_timestats',
+      launch_metric: 'cgroup_top_app_pid_transition',
+      art_backend: 'platform_bg_dexopt_observed',
+      frame_pacing_backend: 'surfaceflinger_display_period',
+      rendering_available: workload !== 'MODE_ULTRA_IDLE',
+      frame_jank_rate: jankRate,
+      control_conflict: false,
+      external_control_paths: 0,
+      learned_candidates: store.verifiedCount,
+      storage_available: true,
+      storage_caution: false,
+      ufs_life_a: 1,
+      ufs_life_b: 1,
+      ufs_pre_eol: 1,
+      power_hal_backend: 'aidl_power_hal_framework_owned',
+      adpf_backend: 'platform_hint_manager',
+    },
     brain: {
       state: policyState,
       previous_state: prevPolicyState,
       decision,
       workload,
-      thermal_headroom: policyState !== RuntimeState.ThermalGuard && policyState !== RuntimeState.Warming,
+      thermal_headroom: sample.thermalMillidegrees < 52_000,
       memory_headroom: policyState !== RuntimeState.Pressure,
       power_headroom: sample.batteryPercent > 20 || sample.charging,
       proactive_allowed:
@@ -513,16 +615,18 @@ export function buildMirrorStatusSnapshot(
         ? 'OBSERVE_ONLY'
         : policyState === RuntimeState.ThermalGuard
           ? 'STABILIZE_THERMAL'
-          : mutatedResources.length > 0
-            ? 'APPLY_BOUNDED'
-            : 'HOLD_BASELINE',
+          : policyState === RuntimeState.Pressure
+            ? 'RELIEVE_MEMORY'
+            : mutatedResources.length > 0
+              ? 'APPLY_BOUNDED'
+              : 'HOLD_BASELINE',
       intervention:
         policyState === RuntimeState.ThermalGuard || policyState === RuntimeState.Pressure
           ? 'STABILIZING'
           : isAdaptive && isArmed
             ? 'BOUNDED'
             : 'NONE',
-      mutation_eligible: isAdaptive && isArmed && sample.confidence >= 0.6,
+      mutation_eligible: isAdaptive && isArmed && sample.confidence >= minConf,
       stabilizing_only:
         policyState === RuntimeState.ThermalGuard || policyState === RuntimeState.Pressure,
       candidates: isAdaptive && isArmed ? mutatedResources.length + mutatedCpu.length : 0,
@@ -530,9 +634,9 @@ export function buildMirrorStatusSnapshot(
         ? 'mutation_mode=observe in config.ini; observing telemetry without kernel writes'
         : store.safeMode
           ? 'SAFE_MODE marker active; all mutations suppressed'
-          : 'Capability-verified candidates evaluated against factory baseline',
+          : `Capability-verified candidates evaluated against OEM baseline (vm.swappiness=${profile.stockSwappiness})`,
       agent_mode: isAdaptive ? 'ADAPTIVE_GUARDED' : 'PASSIVE_OBSERVER',
-      agent_reason: 'Evidence-driven control loop synchronized with 18-feature predictor',
+      agent_reason: 'ZRAM-aware EffectModel & 55C/52C thermal hysteresis synchronized with 18f predictor',
       hold_active: store.safeMode || (isAdaptive && store.disableMarker),
       safety_hold: store.safeMode ? 'SAFE_MODE' : store.disableMarker && !isAdaptive ? 'DISABLE_MARKER' : 'NONE',
       mode: isAdaptive ? 'adaptive' : 'observe',
@@ -548,6 +652,31 @@ export function buildMirrorStatusSnapshot(
       skip_reason: !isAdaptive ? 'observe_mode_default' : '',
       observing: observationSamplesCount > 0 && observationSamplesCount < 4,
       cooldown_remaining: 0,
+      consultation: {
+        by_reason: {
+          ALLOWED: mutatedResources.length + mutatedCpu.length,
+          SURFACE_DENIED: 3,
+          NO_NEED: Math.max(0, 8 - mutatedResources.length),
+        },
+        by_namespace: {
+          VM_SYSCTL: {
+            last_reason: policyState === RuntimeState.Pressure ? 'ALLOWED' : 'NO_NEED',
+            need_present: policyState === RuntimeState.Pressure,
+          },
+          BLOCK_QUEUE: {
+            last_reason: mutatedResources.some((r) => r.path.includes('/queue/')) ? 'ALLOWED' : 'NO_NEED',
+            need_present: workload === 'MODE_BURST' || workload === 'MODE_GAMING',
+          },
+          CGROUP: {
+            last_reason: isAdaptive && isArmed ? 'ALLOWED' : 'AWAITING_USER_GRANT',
+            need_present: workload !== 'MODE_BALANCED',
+          },
+          BUILD_PROP: {
+            last_reason: 'SURFACE_DENIED',
+            need_present: false,
+          },
+        },
+      },
     },
     hands: {
       cpu_mutated: isAdaptive && isArmed && mutatedCpu.length > 0,
@@ -560,7 +689,12 @@ export function buildMirrorStatusSnapshot(
       resource_applied: isAdaptive && isArmed ? mutatedResources.slice(0, 8) : [],
       last_cpu_result: mutatedCpu.length > 0 && isArmed ? 'VERIFIED' : 'IDLE',
       last_resource_result: mutatedResources.length > 0 && isArmed ? 'VERIFIED' : 'IDLE',
-      last_change_kind: mutatedResources.length > 0 && isArmed ? 'resource' : mutatedCpu.length > 0 && isArmed ? 'cpufreq' : '',
+      last_change_kind:
+        mutatedResources.length > 0 && isArmed
+          ? 'resource'
+          : mutatedCpu.length > 0 && isArmed
+            ? 'cpufreq'
+            : '',
       last_change_result: (mutatedResources.length > 0 || mutatedCpu.length > 0) && isArmed ? 'VERIFIED' : '',
       last_change_sample: sample.sampleIndex,
       verified: store.verifiedCount,

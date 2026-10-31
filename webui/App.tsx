@@ -822,9 +822,9 @@ export const App: React.FC = () => {
           onResetEngine={handleResetEngine}
         />
 
-        <main key={activeTab} className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl">
-          {isNativeBridge && nativeSyncError && <div role="alert" className="mb-4 p-3 bg-red-50 text-red-800 text-xs break-words">{nativeSyncError} · Displayed status may be stale; use Sync to retry.</div>}
-          {isNativeBridge && !nativeParsedStatus?.ok && ['console', 'sysfs', 'baseline'].includes(activeTab) && <div role="status" className="p-5 bg-white border border-slate-200 rounded-lg text-sm">Waiting for live daemon data. Use Sync to retry.</div>}
+        <main key={activeTab} className="cf-view-stage flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl">
+          {isNativeBridge && nativeSyncError && <div role="alert" className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs break-words">{nativeSyncError} · Displayed status may be stale; use Sync to retry.</div>}
+          {isNativeBridge && !nativeParsedStatus?.ok && ['console', 'sysfs', 'baseline'].includes(activeTab) && <div role="status" className="p-5 bg-white border border-slate-200 rounded-xl text-sm">Waiting for live daemon data. Use Sync to retry.</div>}
           {activeTab === 'console' && (!isNativeBridge || nativeParsedStatus?.ok) && (
             <RuntimeConsoleView
               isNativeBridge={isNativeBridge}
