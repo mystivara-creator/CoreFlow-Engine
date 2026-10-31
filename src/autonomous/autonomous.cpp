@@ -285,7 +285,9 @@ AutonomousEngine::~AutonomousEngine() {
             has_restored_ = cpu_restored && resource_restored &&
                             !boost_controller_.recoveryRequired();
         }
-        (void)experience_memory_.flush(kPaths.experience_db);
+        if (!experience_memory_.flush(kPaths.experience_db)) logWarn("Experience checkpoint failed");
+        if (sample_sequence_.healthy() && !sample_sequence_.checkpoint())
+            logWarn("Sample sequence checkpoint failed; lifetime continuity unavailable");
     } catch (const std::exception& e) {
         logError("Exception during destructor: %s", e.what());
     } catch (...) {
@@ -330,7 +332,9 @@ bool AutonomousEngine::initialize() {
     has_restored_ = false;
     baseline_intelligence_.reset();
     std::error_code mkdir_error;
-    std::filesystem::create_directories("/data/adb/coreflow", mkdir_error);
+    std::filesystem::create_directories(kPaths.root, mkdir_error);
+    if (!sample_sequence_.initialize())
+        logWarn("Sample sequence unavailable; session counting remains active");
     experience_memory_.clear();
     const std::string scope = snapshot_.profile.environment.manufacturer + ":" +
                               snapshot_.profile.environment.device + ":" +
@@ -423,18 +427,22 @@ bool AutonomousEngine::refreshEnvironment() {
             snapshot_.profile.tunables_fatal_skipped);
     snapshot_.state = RuntimeState::Idle;
     history_.clear();
-    sample_count_ = 0;
     last_notification_sample_ = 0;
     last_notification_ = NotificationEvent::None;
     has_restored_ = false;
     baseline_intelligence_.reset();
-    experience_memory_.clear();
     const std::string scope = snapshot_.profile.environment.manufacturer + ":" +
                               snapshot_.profile.environment.device + ":" +
                               snapshot_.profile.environment.soc_model + ":" +
                               snapshot_.profile.kernel_release;
-    experience_memory_.setScope(scope);
-    (void)experience_memory_.load(kPaths.experience_db);
+    // A discovery refresh must not discard dirty in-memory outcomes if a disk
+    // write failed. Invalidate experience only when the environment scope changed.
+    if (scope != experience_memory_.scope()) {
+        if (!experience_memory_.flush(kPaths.experience_db)) logWarn("Experience checkpoint failed during scope change");
+        experience_memory_.clear();
+        experience_memory_.setScope(scope);
+        (void)experience_memory_.load(kPaths.experience_db);
+    }
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kPaths.thermal_model.c_str());
@@ -642,6 +650,7 @@ bool AutonomousEngine::reconcileControlContinuity() {
 
 void AutonomousEngine::tick() {
     try {
+        lifetime_sample_available_ = sample_sequence_.next(lifetime_sample_);
         // SAFETY HOLD: an operator kill switch or a guard-raised SAFE_MODE forces
         // observe-only behaviour. Restores happen through the normal relax path,
         // so only a governor this daemon itself changed is ever written back.
@@ -1085,7 +1094,7 @@ void AutonomousEngine::tick() {
                 // Outcomes are rare (one per baseline+observation epoch), so
                 // persist each one. Gating on sample_count_ % N here almost never
                 // matched and left experience only in RAM until shutdown.
-                (void)experience_memory_.flush(kPaths.experience_db);
+                if (!experience_memory_.flush(kPaths.experience_db)) logWarn("Experience checkpoint failed; retrying at next outcome/shutdown");
 
                 switch (evaluation.outcome) {
                     case BaselineIntelligence::Outcome::Beneficial: {
@@ -1709,6 +1718,9 @@ void AutonomousEngine::publishStatus(
         s.learned_candidates = experience_memory_.size();
         s.pid = static_cast<long>(::getpid());
         s.sample = sample_count_;
+        s.lifetime_sample = lifetime_sample_;
+        s.lifetime_sample_available = lifetime_sample_available_;
+        s.sample_checkpoint_ok = sample_sequence_.healthy();
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
         s.interval_s = config_.monitorIntervalSeconds();
         s.running = true;

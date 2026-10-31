@@ -26,6 +26,9 @@ struct EngineStatus {
     std::string version;
     long pid{0};
     std::uint64_t sample{0};
+    std::uint64_t lifetime_sample{0};
+    bool lifetime_sample_available{false};
+    bool sample_checkpoint_ok{false};
     std::int64_t updated_epoch{0};
     int interval_s{0};
     bool running{true};

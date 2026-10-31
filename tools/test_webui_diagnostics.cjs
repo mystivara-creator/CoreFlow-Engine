@@ -17,8 +17,9 @@ const react = { ...req('react'), useMemo: fn => fn(), useCallback: fn => fn, use
   return hooks[index];
 }, useState: initial => {
   const index = hookIndex++;
-  if (!(index in hooks)) hooks[index] = typeof initial === 'function' ? initial() : initial;
-  return [hooks[index], next => { hooks[index] = typeof next === 'function' ? next(hooks[index]) : next; }];
+  const state = hooks;
+  if (!(index in state)) state[index] = typeof initial === 'function' ? initial() : initial;
+  return [state[index], next => { state[index] = typeof next === 'function' ? next(state[index]) : next; }];
 } };
 const cache = new Map();
 function load(file) {
@@ -101,7 +102,7 @@ function button(tree, label) {
 }
 (async () => {
   try {
-    for (const name of ['control_logic.js', 'engine_status.js']) check(fs.readFileSync(path.join(root, 'webui/public', name), 'utf8') === fs.readFileSync(path.join(root, 'module/webroot', name), 'utf8'), `${name} is synchronized with the packaged helper`);
+    for (const name of ['control_logic.js', 'engine_status.js', 'appearance.js']) check(fs.readFileSync(path.join(root, 'webui/public', name), 'utf8') === fs.readFileSync(path.join(root, 'module/webroot', name), 'utf8'), `${name} is synchronized with the packaged helper`);
     for (const kind of ['block', 'change', 'safety', 'error']) check(C.filterTrace(rows, kind).length === 1, `exact ${kind} filter`);
     check(C.filterTrace(rows, 'change')[0].event === 'actuator_apply_completed', 'only verified writes classified as changes');
     const longReason = 'x'.repeat(900);
@@ -205,6 +206,47 @@ function button(tree, label) {
     component(renderApp(), 'TopNav').props.onSelectTab('policy');
     const blockedSave = await component(renderApp(), 'PolicyConfigView').props.onCommitConfig();
     check(blockedSave.error?.includes('config.ini'), 'failed config reads prevent saving invented defaults');
+    const appearance = load(path.join(root, 'webui/bridge/appearance.ts'));
+    const storage = new Map();
+    window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+    window.matchMedia = () => ({ matches: true });
+    window.dispatchEvent = () => true;
+    global.document = { documentElement: { dataset: {} } };
+    check(appearance.readAppearance().theme === 'system', 'appearance defaults to system');
+    check(appearance.saveAppearance({ theme: 'dark', reduceMotion: true }), 'display preferences persist');
+    check(appearance.readAppearance().theme === 'dark' && document.documentElement.dataset.motion === 'reduce', 'dark and reduced-motion choices are restored');
+    appearance.applyAppearance({ theme: 'light', reduceMotion: false });
+    check(document.documentElement.dataset.theme === 'light', 'explicit light overrides a dark system');
+    appearance.applyAppearance({ theme: 'system', reduceMotion: false });
+    check(document.documentElement.dataset.theme === 'dark', 'system appearance follows the OS');
+    window.localStorage.setItem = () => { throw new Error('storage denied'); };
+    check(!appearance.saveAppearance({ theme: 'light', reduceMotion: true }) && document.documentElement.dataset.theme === 'light', 'denied storage still applies this session choice');
+    storage.set(appearance.APPEARANCE_KEY, 'malformed');
+    check(appearance.readAppearance().theme === 'system', 'corrupt preferences fail to the system default');
+    const startupDocument = { documentElement: { dataset: {} } };
+    vm.runInNewContext(fs.readFileSync(path.join(root, 'module/webroot/appearance.js'), 'utf8'), { localStorage: { getItem: () => JSON.stringify({ theme: 'dark', reduceMotion: true }) }, window, document: startupDocument });
+    check(startupDocument.documentElement.dataset.theme === 'dark' && startupDocument.documentElement.dataset.motion === 'reduce', 'packaged startup script applies appearance before app paint');
+    const guide = load(path.join(root, 'webui/engine/settingsGuide.ts'));
+    const defaults = C.formFromConfig(C.DEFAULTS);
+    check(C.NUMERIC.every(spec => guide.SETTINGS_GUIDE[spec.key]?.purpose && guide.SETTINGS_GUIDE[spec.key]?.tradeoff), 'every numeric setting has purpose and tradeoff guidance');
+    const original = JSON.stringify(defaults);
+    const quiet = guide.settingsPreset('quiet', defaults);
+    check(quiet.monitor_interval === '8' && quiet.interactivity_mode === 'observe' && JSON.stringify(defaults) === original, 'quiet draft preserves base defaults and disables only temporary assistance');
+    check(['balanced', 'quiet', 'responsive'].every(id => C.validate(guide.settingsPreset(id, defaults)).ok), 'all draft choices satisfy actual config validation');
+    const { PolicyConfigView } = load(path.join(root, 'webui/components/PolicyConfigView.tsx'));
+    let draft;
+    const policyProps = { form: defaults, savedForm: defaults, numericSpecs: C.NUMERIC, probe: null, currentDaemonMode: 'adaptive', onUpdateForm: value => { draft = value; }, onCommitConfig: async () => ({ saved: true }), onRestartDaemon: () => {} };
+    const renderPolicy = props => { hooks = []; hookIndex = 0; return PolicyConfigView(props); };
+    const invalidPolicy = renderPolicy({ ...policyProps, form: { ...defaults, monitor_interval: '0' } });
+    check(button(invalidPolicy, 'Periksa & simpan').props.disabled === true, 'invalid values cannot be saved from settings');
+    check(all(invalidPolicy, n => n.props?.id === 'cfg-monitor_interval')[0].props['aria-invalid'] === true, 'invalid setting is identified accessibly');
+    const callsBeforeDraft = commands.length;
+    await button(renderPolicy(policyProps), 'Lebih tenang').props.onClick();
+    check(draft.monitor_interval === '8' && commands.length === callsBeforeDraft, 'draft choice never writes device config immediately');
+    const changedPolicy = renderPolicy({ ...policyProps, form: { ...defaults, monitor_interval: '8' } });
+    check(text(changedPolicy).includes('1 perubahan'), 'settings review identifies changed fields');
+    await button(changedPolicy, 'Batalkan perubahan draf').props.onClick();
+    check(JSON.stringify(draft) === original, 'discard restores last loaded settings');
     console.log(`CoreFlow WebUI diagnostics: ${checks}/${checks} checks passed`);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });

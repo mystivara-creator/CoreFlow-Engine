@@ -115,7 +115,9 @@ export interface ParsedEngineStatus {
       }>;
       blockQueueMutationsQuarantined: boolean;
     };
+    memory?: { lifetimeSample: number | null; sampleCheckpointOk: boolean; baselineRestartsAfterBoot: boolean };
     intelligence?: {
+      learnedCandidates?: number;
       renderingAvailable: boolean;
       frameJankRate: number;
       foregroundProcess: string;
@@ -435,7 +437,7 @@ export function buildMirrorStatusSnapshot(
 
   const statusObj = {
     schema: 1,
-    version: '3.0.2',
+    version: '3.1.0',
     pid: store.running ? store.pid : 0,
     sample: sample.sampleIndex,
     updated_epoch: nowEpoch,

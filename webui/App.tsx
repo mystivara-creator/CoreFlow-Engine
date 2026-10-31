@@ -133,6 +133,8 @@ export const App: React.FC = () => {
   );
   const [policyForm, setPolicyForm] = useState<PolicyFormValues>(() => getDefaultForm());
 
+  const [savedPolicyForm, setSavedPolicyForm] = useState<PolicyFormValues>(() => getDefaultForm());
+
   // Native KernelSU live probe & status states (populated only when isNativeBridge is true)
   const [nativeProbe, setNativeProbe] = useState<DaemonProbe | null>(null);
   const [nativeParsedStatus, setNativeParsedStatus] = useState<ParsedEngineStatus | null>(null);
@@ -412,7 +414,9 @@ export const App: React.FC = () => {
             setNativeConfigReady(true); setConfigReadError(null);
             setRawConfigText(cfgRes.stdout);
             const parsedCfg = C.parseIni(cfgRes.stdout);
-            setPolicyForm(C.formFromConfig({ ...C.DEFAULTS, ...parsedCfg }));
+            const loadedForm = C.formFromConfig({ ...C.DEFAULTS, ...parsedCfg });
+            setPolicyForm(loadedForm);
+            setSavedPolicyForm(loadedForm);
           } else {
             setNativeConfigReady(false);
             setConfigReadError(cfgRes.stderr || 'Unable to read config.ini. Use Sync before saving settings.');
@@ -702,10 +706,14 @@ export const App: React.FC = () => {
         };
       }
       setRawConfigText(updatedIni);
+      setSavedPolicyForm(C.formFromConfig({ ...C.DEFAULTS, ...validation.values }));
       await syncFromNativeDaemon(true);
       return { saved: true };
     }
 
+    const savedDraft = C.formFromConfig({ ...C.DEFAULTS, ...validation.values });
+    setSavedPolicyForm(savedDraft);
+    setPolicyForm(savedDraft);
     // Mirror mode: apply updated config.ini and clear/set DISABLE marker identically to writeConfigCmd()
     const ts = formatClockTime();
     setRawConfigText(updatedIni);
@@ -814,7 +822,7 @@ export const App: React.FC = () => {
           onResetEngine={handleResetEngine}
         />
 
-        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl">
+        <main key={activeTab} className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl">
           {isNativeBridge && nativeSyncError && <div role="alert" className="mb-4 p-3 bg-red-50 text-red-800 text-xs break-words">{nativeSyncError} · Displayed status may be stale; use Sync to retry.</div>}
           {isNativeBridge && !nativeParsedStatus?.ok && ['console', 'sysfs', 'baseline'].includes(activeTab) && <div role="status" className="p-5 bg-white border border-slate-200 rounded-lg text-sm">Waiting for live daemon data. Use Sync to retry.</div>}
           {activeTab === 'console' && (!isNativeBridge || nativeParsedStatus?.ok) && (
@@ -847,6 +855,7 @@ export const App: React.FC = () => {
           {activeTab === 'policy' && (
             <PolicyConfigView
               form={policyForm}
+              savedForm={savedPolicyForm}
               numericSpecs={numericSpecs}
               probe={probe}
               currentDaemonMode={currentDaemonMode}

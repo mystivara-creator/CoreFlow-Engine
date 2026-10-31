@@ -22,3 +22,46 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+@layer base {
+  html { color-scheme: light; }
+  html[data-theme="dark"] { color-scheme: dark; background: #0b1220; }
+  button, input, select, summary, a {
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(.2,.8,.2,1);
+  }
+  button:enabled:active { transform: scale(.97); }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
+  main { animation: coreflow-enter 220ms cubic-bezier(.2,.8,.2,1); }
+  details[open] > :not(summary) { animation: coreflow-enter 180ms ease; }
+}
+@keyframes coreflow-enter { from { opacity: .3; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@media (hover: hover) { button:enabled:hover { transform: translateY(-1px); } }
+/* Keep literal utility colors scoped to their roles; white button text remains white. */
+html[data-theme="dark"] :is(.bg-white, .bg-white\/70) { background-color: #111c2e; }
+html[data-theme="dark"] :is(.bg-slate-50, .bg-slate-50\/70) { background-color: #0b1220; }
+html[data-theme="dark"] :is(.bg-slate-100, .bg-slate-100\/70) { background-color: #1c2a40; }
+html[data-theme="dark"] :is(.text-slate-900, .text-slate-800) { color: #e5edf9; }
+html[data-theme="dark"] .text-slate-700 { color: #c4d0e3; }
+html[data-theme="dark"] :is(.text-slate-600, .text-slate-500) { color: #a5b4cc; }
+html[data-theme="dark"] :is(.border-slate-100, .border-slate-200, .border-slate-300) { border-color: #2d3e59; }
+html[data-theme="dark"] :is(.divide-slate-100, .divide-slate-200) > :not(:last-child) { border-color: #2d3e59; }
+html[data-theme="dark"] :is(.bg-blue-50, .bg-blue-50\/70) { background-color: #132b4d; }
+html[data-theme="dark"] :is(.bg-emerald-50, .bg-emerald-100) { background-color: #0c302c; }
+html[data-theme="dark"] :is(.bg-amber-50, .bg-amber-100) { background-color: #392c16; }
+html[data-theme="dark"] :is(.bg-red-50, .bg-red-100) { background-color: #3b1d2a; }
+html[data-theme="dark"] :is(.text-blue-600, .text-blue-700, .text-blue-800, .text-blue-900) { color: #93c5fd; }
+html[data-theme="dark"] :is(.text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-900) { color: #6ee7b7; }
+html[data-theme="dark"] :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900) { color: #fcd34d; }
+html[data-theme="dark"] :is(.text-red-600, .text-red-700, .text-red-800, .text-red-900) { color: #fca5a5; }
+html[data-theme="dark"] :is(.border-blue-200, .border-emerald-200, .border-amber-200, .border-red-200) { border-color: #405676; }
+@media (hover: hover) {
+  html[data-theme="dark"] :is(.hover\:bg-slate-50:hover, .hover\:bg-slate-100:hover, .hover\:bg-slate-50\/80:hover) { background-color: #22334b; }
+}
+html[data-motion="reduce"] *, html[data-motion="reduce"] *::before, html[data-motion="reduce"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  button:enabled:active, button:enabled:hover { transform: none !important; }
+}
+html[data-motion="reduce"] button { transform: none !important; }

@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Menu, Pause, Play, RefreshCw, X } from 'lucide-react';
 
+import { AppearanceControls } from './AppearanceControls';
+
 export type ActiveTab = 'console' | 'sysfs' | 'policy' | 'baseline' | 'logcat';
 
 interface TopNavProps {
@@ -105,7 +107,7 @@ export const TopNav: React.FC<TopNavProps> = ({
         </div>
 
         {/* Desktop / landscape inline navigation (lg+) */}
-        <nav aria-label="Primary sections" className="hidden lg:flex items-center gap-6">
+        <nav aria-label="Primary sections" className="hidden lg:flex items-center gap-3 xl:gap-6">
           {NAV_ITEMS.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -113,7 +115,7 @@ export const TopNav: React.FC<TopNavProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`py-1.5 text-sm font-medium transition-colors whitespace-nowrap shrink-0 border-b-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                className={`py-1.5 text-xs xl:text-sm font-medium transition-colors whitespace-nowrap shrink-0 border-b-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
                   isActive
                     ? 'border-blue-600 text-slate-900'
                     : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'
@@ -126,6 +128,7 @@ export const TopNav: React.FC<TopNavProps> = ({
         </nav>
 
         <div className="flex items-center shrink-0">
+          <AppearanceControls compact />
           {isNativeBridge ? (
             <button
               type="button"

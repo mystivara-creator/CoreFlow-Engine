@@ -1,3 +1,21 @@
+## v3.1.0 — Persistence & usability checkpoint
+
+- Add a durable lifetime sample sequence beside session counters, with batched
+  ID reservations, clean-shutdown checkpoints and fail-visible corruption handling.
+- Keep fresh baseline/outcome windows after boot while reloading scoped experience
+  and revalidating retained candidates through the existing safety gates.
+- Make experience writes exclusive, private, atomic and fsync-backed; bound reads,
+  reject malformed numeric records and preserve dirty state on failed writes.
+- Preserve experience and session counting across discovery-only refreshes.
+- Add persistent system/light/dark appearance and reduced-motion controls with
+  accessible, short interaction and page transitions.
+- Explain each engine setting, its default, units and tradeoffs; add draft-only
+  settings choices, inline validation, change review and discard controls.
+- Distinguish lifetime/session samples and memory continuity in the live console;
+  include lifetime IDs in native CSV without merging daemon sessions.
+- Correct release metadata to describe implemented capabilities and prepare the
+  maintenance checkpoint and device acceptance record.
+
 ## v3.0.2 — Automatic operation and scoped control recovery
 
 - Activate bounded optimization automatically during installation.

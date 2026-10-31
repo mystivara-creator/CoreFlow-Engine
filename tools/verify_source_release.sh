@@ -6,6 +6,15 @@ VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES C
 
 required_files="
 CMakeLists.txt
+include/coreflow/sample_sequence.hpp
+src/conscience/sample_sequence.cpp
+include/coreflow/durable_file.hpp
+src/conscience/durable_file.cpp
+module/webroot/appearance.js
+webui/bridge/appearance.ts
+webui/components/AppearanceControls.tsx
+webui/engine/settingsGuide.ts
+docs/CHECKPOINT_3.1.0.md
 module/module.prop
 module/update.json
 .github/workflows/release-update-feed.yml

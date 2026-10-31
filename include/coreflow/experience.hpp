@@ -15,7 +15,7 @@
 namespace coreflow {
 
 /**
- * Lightweight in-memory experience store for verified runtime outcomes.
+ * Bounded, disk-backed advisory experience for verified runtime outcomes.
  *
  * Experience is advisory only. A historical record never replaces a fresh
  * observation window or the safety decisions owned by the runtime engine.
@@ -58,6 +58,7 @@ public:
     bool load(const std::string& path) noexcept;
     bool flush(const std::string& path) noexcept;
     bool dirty() const noexcept { return dirty_; }
+    const std::string& scope() const noexcept { return scope_; }
 
     bool recordEvaluation(
         const CandidateIdentity& candidate,
@@ -69,7 +70,7 @@ public:
                        const Context& context) const noexcept;
 
     std::size_t size() const noexcept { return records_.size(); }
-    void clear() noexcept { records_.clear(); }
+    void clear() noexcept { records_.clear(); dirty_ = false; }
 
 private:
     static bool sameCandidate(const CandidateIdentity& lhs,

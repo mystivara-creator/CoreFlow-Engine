@@ -231,9 +231,10 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
           </h1>
         </div>
         <div className="text-xs text-slate-600 font-mono tabular-nums">
-          <span>Sample #{d?.sample ?? currentSample.sampleIndex}</span>
+          <span>Sample #{d?.memory?.lifetimeSample ?? d?.sample ?? currentSample.sampleIndex}</span>
+          {isNativeBridge && <span className="ml-2 text-slate-500">(sesi #{d?.sample ?? 0})</span>}
           <span className="mx-2" aria-hidden="true">·</span>
-          <span>CoreFlow v{d?.version || '3.0.2'}</span>
+          <span>CoreFlow v{d?.version || '3.1.0'}</span>
           <span className="mx-2" aria-hidden="true">·</span>
           <span>Poll {d?.interval ?? effectiveSleepSec}s</span>
         </div>
@@ -347,6 +348,8 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
           ))}
         </section>
       )}
+
+      {isNativeBridge && d && <section className="p-5 bg-white border border-slate-200 rounded-2xl space-y-2"><h2 className="font-semibold">Memori &amp; kelanjutan</h2><p className="text-sm text-slate-700">ID lintas restart: <strong>{d.memory?.lifetimeSample ?? 'belum tersedia'}</strong> · Sesi ini: {d.sample} · Pengalaman: {d.intelligence?.learnedCandidates ?? 0} kandidat</p><p className="text-xs text-slate-500">{d.memory?.sampleCheckpointOk ? 'Penghitung lintas restart tersimpan dengan reservasi ID. Reboot mendadak dapat melewati sebagian nomor agar ID tidak dipakai ulang.' : 'Kelanjutan penghitung belum terkonfirmasi. Periksa log sebelum mengandalkan ID lintas restart.'} Pengalaman dan konfigurasi tersimpan di disk; baseline pengujian selalu diambil ulang setelah boot.</p></section>}
 
       {/* Telemetry Horizon & Signal Trends Grid */}
       {isNativeBridge && d ? <section className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">

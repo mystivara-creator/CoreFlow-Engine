@@ -2,11 +2,15 @@
 
 **Observe. Understand. Balance. Adapt.**
 
-Capability-driven C++20 system optimization and fine-tuning engine for Android. Refines stock OEM/vendor kernel configurations dynamically across I/O, CPUFreq, UClamp, CpuSet, GPU/KGSL/Mali/GED rendering headroom, and VM pressure — cooperating with Android Power HAL and Performance Hint API without hardcoded tunable values.
+Capability-driven C++20 optimization for Android: observe actual conditions, admit
+supported targets, apply bounded changes, verify outcomes, retain useful settings
+and restore when required. Vendor cooperation is based on observed capabilities
+and ownership; cross-app ADPF, Vulkan driver acceleration and universal performance
+gains are not claimed.
 
 | | |
 |---|---|
-| Version | `v3.0.2` (`versionCode` 3020) |
+| Version | `v3.1.0` (`versionCode` 3100) |
 | Language | C++20 |
 | ABI | `arm64-v8a` |
 | Min API | 34 |
@@ -48,13 +52,19 @@ flowchart TD
 
 ---
 
-## Key Capabilities (`v3.0.2`)
+## Key Capabilities (`v3.1.0`)
 
 - **Zero hardcoded tunable values** — every candidate comes from kernel-advertised options (`scaling_available_governors`, `/queue/scheduler`, `available_frequencies`, KGSL `num_pwrlevels`, CPPC bounds), harvested vendor configs (`powerhint*.json`, `init*.rc`, perf XML/JSON), or bounded steps on catalogued interfaces.
 - **Cross-domain StrategyCatalog coupling** — changing an I/O scheduler (`A -> B`), CPU governor, or workload regime (`DailyMultitasking`, `SustainedGaming`, `MemoryRelief`, `ThermalStabilization`) automatically re-ranks coupled block-queue (`nr_requests`, `read_ahead_kb`, `rq_affinity`, `wbt_lat_usec`), governor (`rate_limit_us`), foreground `uclamp.min`, and GPU floor candidates.
-- **GPU & rendering headroom** — discovers Qualcomm Adreno KGSL (`min_pwrlevel`, `gpuclk`, `bus_split`, `force_bus_on`), Mali/arm-gpufreq/devfreq `min_freq`, and MediaTek GED surfaces; tracks live display refresh period (`60/90/120/144Hz`) to eliminate frame drops and micro-stutter while holding warm equilibrium (`48–52°C`) below thermal throttling.
-- **Unattended multi-week safety** — starts automatically after boot; every Adaptive write commits a CRC32 v2 journal before opening the descriptor, verifies read-back, retains beneficial or verified zero-harm neutral improvements, and rolls back regressions or crash leftovers automatically.
-- **Portrait-first KernelSU WebUI** — offline native WebUI (`module/webroot/`) with compact hamburger navigation for portrait phones, daemon lifecycle controls, live telemetry, and validated `config.ini` gating.
+- **Rendering evidence** — package-scoped SurfaceFlinger presentation intervals,
+  observed display period and pressure signals guide bounded assistance when the
+  corresponding hardware interfaces are admitted. Missing telemetry stays unavailable;
+  fewer frame drops or lower heat must be established on device.
+- **Recovery and persistence** — journal before writes, verify read-back, revalidate
+  retained candidates, reload scoped experience and resume a durable lifetime sample
+  identity. New boot sessions still measure a fresh baseline. This is a source safety
+  design, not a certification of multi-week unattended operation on every phone.
+- **Offline KernelSU WebUI** — persistent system/light/dark appearance, reduced-motion support, explained settings with draft review, tagged logs, diagnostic exports and measured telemetry. Browser preview is explicitly separate from native data.
 
 ---
 
@@ -75,6 +85,8 @@ are normal engine activities, not passive operating modes.
 ## Build & Verify
 
 ```sh
+npm ci --no-audit --no-fund
+npm run build
 cmake -S . -B /tmp/coreflow-build -DCORE_FLOW_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build /tmp/coreflow-build -j$(nproc)
 ctest --test-dir /tmp/coreflow-build --output-on-failure
@@ -90,7 +102,8 @@ Android ARM64 release ZIPs (`coreflowd` + `libonnxruntime.so` + WebUI) are built
 
 | Document | Scope |
 |----------|-------|
-| [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.0.2` checkpoint) |
+| [`docs/CHECKPOINT_3.1.0.md`](docs/CHECKPOINT_3.1.0.md) | Freeze scope, persistence and release/device acceptance |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history (`v3.1.0` checkpoint) |
 | [`SECURITY.md`](SECURITY.md) | Mutation safety invariants |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Closed-loop pipeline & authority boundaries |
 | [`docs/INTEGRATED_RUNTIME.md`](docs/INTEGRATED_RUNTIME.md) | Runtime diagnosis, hardware health, continuity, rendering outcomes & app ADPF integration |

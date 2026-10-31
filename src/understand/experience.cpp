@@ -1,4 +1,8 @@
 #include "coreflow/experience.hpp"
+#include "coreflow/durable_file.hpp"
+#include "coreflow/integer_parse.hpp"
+#include <limits>
+#include <stdexcept>
 
 #include <algorithm>
 #include <cmath>
@@ -44,7 +48,7 @@ double ExperienceMemory::clamp01(double value) noexcept {
 }
 
 bool ExperienceMemory::safeToken(const std::string& value) noexcept {
-    return !value.empty() && value.find_first_of("\t\r\n") == std::string::npos;
+    return !value.empty() && value.size() <= 4096U && value.find_first_of("\t\r\n") == std::string::npos && value.find('\0') == std::string::npos;
 }
 
 int ExperienceMemory::enumValue(RuntimeState value) noexcept {
@@ -71,40 +75,43 @@ bool ExperienceMemory::record(const Record& input) noexcept {
     if (!input.candidate.valid() || !safeToken(input.candidate.key) ||
         !finite(input.score) || !finite(input.confidence)) return false;
 
-    Record normalized = input;
-    normalized.score = clamp01(normalized.score);
-    normalized.confidence = clamp01(normalized.confidence);
-    normalized.observations = std::max<std::uint64_t>(normalized.observations, 1U);
+    try {
+        Record normalized = input;
+        normalized.score = clamp01(normalized.score);
+        normalized.confidence = clamp01(normalized.confidence);
+        normalized.observations = std::max<std::uint64_t>(normalized.observations, 1U);
 
-    for (Record& existing : records_) {
-        if (!sameCandidate(existing.candidate, normalized.candidate) ||
-            !existing.context.compatibleWith(normalized.context)) continue;
+        for (Record& existing : records_) {
+            if (!sameCandidate(existing.candidate, normalized.candidate) ||
+                !existing.context.compatibleWith(normalized.context)) continue;
 
-        const double oldWeight = static_cast<double>(existing.observations);
-        const double newWeight = static_cast<double>(normalized.observations);
-        const double totalWeight = oldWeight + newWeight;
-        existing.score = ((existing.score * oldWeight) +
-                          (normalized.score * newWeight)) / totalWeight;
-        existing.confidence = ((existing.confidence * oldWeight) +
-                               (normalized.confidence * newWeight)) / totalWeight;
-        existing.outcome = normalized.outcome;
-        existing.observations += normalized.observations;
+            const double oldWeight = static_cast<double>(existing.observations);
+            const double newWeight = static_cast<double>(normalized.observations);
+            const double totalWeight = oldWeight + newWeight;
+            existing.score = ((existing.score * oldWeight) +
+                              (normalized.score * newWeight)) / totalWeight;
+            existing.confidence = ((existing.confidence * oldWeight) +
+                                   (normalized.confidence * newWeight)) / totalWeight;
+            existing.outcome = normalized.outcome;
+            existing.observations = normalized.observations > std::numeric_limits<std::uint64_t>::max() - existing.observations
+                ? std::numeric_limits<std::uint64_t>::max() : existing.observations + normalized.observations;
+            dirty_ = true;
+            return true;
+        }
+
+        records_.push_back(normalized);
+        if (records_.size() > kMaxRecords) {
+            std::stable_sort(records_.begin(), records_.end(),
+                             [](const Record& a, const Record& b) {
+                                 if (a.confidence != b.confidence)
+                                     return a.confidence > b.confidence;
+                                 return a.observations > b.observations;
+                             });
+            records_.resize(kMaxRecords);
+        }
         dirty_ = true;
         return true;
-    }
-
-    records_.push_back(normalized);
-    if (records_.size() > kMaxRecords) {
-        std::stable_sort(records_.begin(), records_.end(),
-                         [](const Record& a, const Record& b) {
-                             if (a.confidence != b.confidence)
-                                 return a.confidence > b.confidence;
-                             return a.observations > b.observations;
-                         });
-        records_.resize(kMaxRecords);
-    }
-    dirty_ = true;
-    return true;
+    } catch (...) { return false; }
 }
 
 bool ExperienceMemory::recordEvaluation(
@@ -115,14 +122,16 @@ bool ExperienceMemory::recordEvaluation(
         !std::isfinite(evaluation.overall_score) ||
         !std::isfinite(evaluation.confidence)) return false;
 
-    Record record;
-    record.candidate = candidate;
-    record.context = context;
-    record.outcome = evaluation.outcome;
-    record.score = evaluation.overall_score;
-    record.confidence = evaluation.confidence;
-    record.observations = evaluation.observation_samples;
-    return this->record(record);
+    try {
+        Record record;
+        record.candidate = candidate;
+        record.context = context;
+        record.outcome = evaluation.outcome;
+        record.score = evaluation.overall_score;
+        record.confidence = evaluation.confidence;
+        record.observations = evaluation.observation_samples;
+        return this->record(record);
+    } catch (...) { return false; }
 }
 
 const ExperienceMemory::Record* ExperienceMemory::find(
@@ -142,8 +151,9 @@ const ExperienceMemory::Record* ExperienceMemory::find(
 
 bool ExperienceMemory::load(const std::string& path) noexcept {
     try {
-        std::ifstream file(path);
-        if (!file) return false;
+        std::string bytes;
+        if (!readBoundedPrivateFile(path, bytes) || bytes.empty() || bytes.back() != '\n') return false;
+        std::istringstream file(bytes);
         std::string line;
         if (!std::getline(file, line) || line != "COREFLOW_EXPERIENCE_V2") return false;
 
@@ -168,22 +178,30 @@ bool ExperienceMemory::load(const std::string& path) noexcept {
             if (!scope_.empty() && scope != scope_) continue;
             if (!safeToken(key)) continue;
 
+            const auto parseInt = [](const std::string& text, int low, int high) {
+                std::size_t used = 0;
+                const int value = std::stoi(text, &used);
+                if (used != text.size() || value < low || value > high) throw std::invalid_argument("invalid experience enum");
+                return value;
+            };
+            const auto parseRatio = [](const std::string& text) {
+                std::size_t used = 0;
+                const double value = std::stod(text, &used);
+                if (used != text.size() || !std::isfinite(value) || value < 0.0 || value > 1.0) throw std::invalid_argument("invalid experience ratio");
+                return value;
+            };
             Record r;
             r.candidate.key = key;
-            r.context.state = runtimeStateFromInt(std::stoi(state));
-            const int workloadValue = std::stoi(workload);
-            r.context.workload = workloadValue >= static_cast<int>(WorkloadClass::Unknown) &&
-                                  workloadValue <= static_cast<int>(WorkloadClass::PowerConstrained)
-                                      ? static_cast<WorkloadClass>(workloadValue)
-                                      : WorkloadClass::Unknown;
-            r.context.charging = std::stoi(charging) != 0;
-            r.context.thermal_trend = trendFromInt(std::stoi(thermal));
-            r.context.memory_trend = trendFromInt(std::stoi(memory));
-            r.context.load_trend = trendFromInt(std::stoi(load));
-            r.outcome = static_cast<BaselineIntelligence::Outcome>(std::stoi(outcome));
-            r.score = clamp01(std::stod(score));
-            r.confidence = clamp01(std::stod(confidence));
-            r.observations = std::max<std::uint64_t>(1U, std::stoull(observations));
+            r.context.state = static_cast<RuntimeState>(parseInt(state, enumValue(RuntimeState::Idle), enumValue(RuntimeState::ThermalGuard)));
+            r.context.workload = static_cast<WorkloadClass>(parseInt(workload, static_cast<int>(WorkloadClass::Unknown), static_cast<int>(WorkloadClass::PowerConstrained)));
+            r.context.charging = parseInt(charging, 0, 1) != 0;
+            r.context.thermal_trend = static_cast<Trend>(parseInt(thermal, enumValue(Trend::Unknown), enumValue(Trend::Falling)));
+            r.context.memory_trend = static_cast<Trend>(parseInt(memory, enumValue(Trend::Unknown), enumValue(Trend::Falling)));
+            r.context.load_trend = static_cast<Trend>(parseInt(load, enumValue(Trend::Unknown), enumValue(Trend::Falling)));
+            r.outcome = static_cast<BaselineIntelligence::Outcome>(parseInt(outcome, static_cast<int>(BaselineIntelligence::Outcome::Unknown), static_cast<int>(BaselineIntelligence::Outcome::Inconclusive)));
+            r.score = parseRatio(score);
+            r.confidence = parseRatio(confidence);
+            if (!integer_parse::parseUint64(observations, r.observations) || r.observations == 0U) return false;
             loaded.push_back(std::move(r));
             if (loaded.size() >= kMaxRecords) break;
         }
@@ -198,9 +216,7 @@ bool ExperienceMemory::load(const std::string& path) noexcept {
 bool ExperienceMemory::flush(const std::string& path) noexcept {
     if (!dirty_) return true;
     try {
-        const std::string tmp = path + ".tmp";
-        std::ofstream file(tmp, std::ios::out | std::ios::trunc);
-        if (!file) return false;
+        std::ostringstream file;
         file << "COREFLOW_EXPERIENCE_V2\n";
         const std::string scope = safeToken(scope_) ? scope_ : "default";
         for (const Record& r : records_) {
@@ -216,10 +232,7 @@ bool ExperienceMemory::flush(const std::string& path) noexcept {
                  << r.score << '\t' << r.confidence << '\t'
                  << r.observations << '\n';
         }
-        file.flush();
-        if (!file.good()) return false;
-        file.close();
-        if (std::rename(tmp.c_str(), path.c_str()) != 0) return false;
+        if (!file.good() || !writeDurablePrivateFile(path, file.str())) return false;
         dirty_ = false;
         return true;
     } catch (...) {

@@ -62,6 +62,7 @@
       interval: int(j.interval_s, 5),
       running: j.running !== false,
       blocker: str(j.blocker, 40),
+      memory: { lifetimeSample: isObj(j.memory) && Number.isSafeInteger(j.memory.lifetime_sample) && j.memory.lifetime_sample >= 0 ? j.memory.lifetime_sample : null, baselineRestartsAfterBoot: isObj(j.memory) && bool(j.memory.baseline_restarts_after_boot), sampleCheckpointOk: isObj(j.memory) && bool(j.memory.sample_checkpoint_ok) },
       device: {
         present: isObj(j.device),
         manufacturer: str(v.manufacturer, 96), model: str(v.model, 96),

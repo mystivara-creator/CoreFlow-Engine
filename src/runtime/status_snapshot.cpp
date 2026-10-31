@@ -211,6 +211,11 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"blocker\":";
     appendEscaped(out, primaryBlocker(s));
 
+    out << ",\"memory\":{\"lifetime_sample\":";
+    if (s.lifetime_sample_available) out << s.lifetime_sample; else out << "null";
+    out << ",\"sample_checkpoint_ok\":"; appendBool(out, s.sample_checkpoint_ok);
+    out << ",\"baseline_restarts_after_boot\":true}";
+
     out << ",\"intelligence\":{\"pressure\":";
     appendEscaped(out, s.runtime_pressure);
     out << ",\"confidence\":"; appendNumber(out, s.diagnosis_confidence);

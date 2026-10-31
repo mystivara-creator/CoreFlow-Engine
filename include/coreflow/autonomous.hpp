@@ -18,6 +18,7 @@
 #include "coreflow/mutation.hpp"
 #include "coreflow/mutation_journal.hpp"
 #include "coreflow/retained_state.hpp"
+#include "coreflow/sample_sequence.hpp"
 #include "coreflow/safety_hold.hpp"
 #include "coreflow/status_snapshot.hpp"
 #include "coreflow/observer.hpp"
@@ -96,6 +97,9 @@ private:
     ResourceStateModel resource_model_;
     EngineSnapshot snapshot_;
     std::uint64_t sample_count_{0};
+    SampleSequence sample_sequence_{"/data/adb/coreflow/sample_sequence.journal"};
+    std::uint64_t lifetime_sample_{0};
+    bool lifetime_sample_available_{false};
     std::deque<RuntimeSample> history_;
     std::uint64_t last_notification_sample_{0};
     NotificationEvent last_notification_{NotificationEvent::None};

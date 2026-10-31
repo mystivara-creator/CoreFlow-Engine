@@ -7,7 +7,7 @@ export function nativeTelemetryRecord(parsed: ParsedEngineStatus): TelemetryReco
   const d = parsed.ok ? parsed.data : undefined;
   if (!d || !d.running || d.pid <= 0) return null;
   return {
-    Sample: d.sample, UpdatedEpoch: d.updated, PID: d.pid,
+    Sample: d.sample, LifetimeSample: d.memory?.lifetimeSample ?? null, UpdatedEpoch: d.updated, PID: d.pid,
     'CPU(%)': d.eyes.cpu === null ? null : d.eyes.cpu * 100,
     Load1: d.eyes.load, MemAvailableRatio: d.eyes.mem,
     'Thermal(C)': d.eyes.thermal, 'HottestThermal(C)': d.eyes.hottest,
