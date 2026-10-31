@@ -437,7 +437,7 @@ int main() {
         CHECK(!proposal.best.stabilizing);
         CHECK(proposal.best.requested == "53" || proposal.best.requested == "67");
         CHECK(proposal.reasoning_summary.find(
-                  "observe → hypothesize → review → propose") != std::string::npos);
+                  "observe → pareto+ucb → review → propose") != std::string::npos);
 
         // Generic Memory-domain candidates are not automatically stabilizing
         // under pressure just because the runtime allows stabilizing actions.

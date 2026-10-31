@@ -6,6 +6,8 @@ VERSION="$(sed -n 's/^project(CoreFlowAutonomous VERSION \([0-9.]*\) LANGUAGES C
 
 required_files="
 CMakeLists.txt
+package.json
+package-lock.json
 include/coreflow/sample_sequence.hpp
 src/conscience/sample_sequence.cpp
 include/coreflow/durable_file.hpp

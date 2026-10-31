@@ -249,7 +249,7 @@
       ["Load (1m)", fix(e.load, 2), e.loadTrend],
       ["Storage I/O", io, ""],
       ["Battery", e.battery == null ? "n/a" : e.battery + "%" + (e.charging ? " · charging" : ""), ""],
-      ["Confidence", pct(e.confidence), e.confidence != null && e.confidence < 0.7 ? "below 70% gate" : ""]
+      ["Confidence", pct(e.confidence), e.confidence != null && e.confidence < 0.6 ? "below 60% default gate" : ""]
     ];
   }
 

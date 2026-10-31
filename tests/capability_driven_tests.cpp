@@ -359,13 +359,13 @@ void testGenericDiscovery() {
     const auto swap120 = model.proposals(*swap, "120", busy);
     CHECK(!swap120.empty());
     for (const auto& cand : swap120) {
-        const long long v = std::stoll(cand.requested);
-        CHECK(v >= 0LL && v <= 200LL);
+        const long long requested_value = std::stoll(cand.requested);
+        CHECK(requested_value >= 0LL && requested_value <= 200LL);
     }
     const auto swap195 = model.proposals(*swap, "195", busy);
     for (const auto& cand : swap195) {
-        const long long v = std::stoll(cand.requested);
-        CHECK(v >= 0LL && v <= 200LL);
+        const long long requested_value = std::stoll(cand.requested);
+        CHECK(requested_value >= 0LL && requested_value <= 200LL);
     }
 
     // Block queue rq_affinity is bounded to {0, 1, 2}; baseline 2 never proposes 3.

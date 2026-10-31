@@ -238,7 +238,7 @@ VendorProfile VendorKnowledge::profileFromLabel(std::string_view label) noexcept
             if (u.find(k) != std::string::npos) return VendorProfile::Efficiency;
         }
         for (const char* k : {"LAUNCH", "INTERACTION", "INTERACTIVE", "BOOST", "PERFORMANCE",
-                              "GAME", "RENDERING", "CAMERA", "AUDIO_LOW_LATENCY", "TOUCH",
+                              "GAME", "GAMING", "RENDERING", "CAMERA", "AUDIO_LOW_LATENCY", "TOUCH",
                               "FLING", "SCROLL", "ADPF", "LOAD_UP",
                               "DISPLAY_UPDATE_IMMINENT", "EARLY_WAKEUP"}) {
             if (u.find(k) != std::string::npos) return VendorProfile::Performance;
@@ -444,6 +444,7 @@ std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
             std::string attr_path;
             std::string attr_val;
             std::string attr_default;
+            std::string attr_boost;
             std::string attr_label;
             std::size_t i = 0;
             while (i < tag_body.size() && !std::isspace(static_cast<unsigned char>(tag_body[i])) &&
@@ -473,11 +474,13 @@ std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
                 const std::string_view val = tag_body.substr(vstart, i - vstart);
                 if (i < tag_body.size() && tag_body[i] == q) ++i;
 
-                if (key == "NODE" || key == "PATH" || key == "SYSFS" || key == "FILE") {
+                if (key == "NODE" || key == "PATH" || key == "SYSFS" || key == "SYSFSNODE" || key == "FILE") {
                     attr_path = std::string(val);
                 } else if (key == "VALUE" || key == "PARAM" || key == "TARGETVALUE" ||
                            key == "MAXVALUE" || key == "PERFVALUE") {
                     attr_val = std::string(val);
+                } else if (key == "BOOSTVALUE") {
+                    attr_boost = std::string(val);
                 } else if (key == "DEFAULTVALUE" || key == "DEFAULT" || key == "RESETVALUE") {
                     attr_default = std::string(val);
                 } else if (key == "TYPE" || key == "NAME" || key == "SCENARIO" ||
@@ -490,7 +493,9 @@ std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
             if (!attr_label.empty()) {
                 const VendorProfile derived = profileFromLabel(attr_label);
                 if (derived != VendorProfile::Boot) active_profile = derived;
-            } else {
+            } else if (tag_name != "RESOURCECONFIGS" && tag_name != "PERFRESOURCES") {
+                // Structural container names are not profile labels ("ECO" in
+                // ResourceConfigs must not turn all children into efficiency hints).
                 const VendorProfile tag_derived = profileFromLabel(tag_name);
                 if (tag_derived != VendorProfile::Boot) active_profile = tag_derived;
             }
@@ -499,6 +504,7 @@ std::size_t VendorKnowledge::parseVendorPerfXml(std::string_view text,
                 if (!attr_default.empty()) {
                     if (add(attr_path, attr_default, VendorProfile::Default, source)) ++added;
                 }
+                if (!attr_boost.empty() && add(attr_path, attr_boost, VendorProfile::Performance, source)) ++added;
                 if (!attr_val.empty()) {
                     const VendorProfile p = active_profile == VendorProfile::Boot
                                                 ? VendorProfile::Performance
