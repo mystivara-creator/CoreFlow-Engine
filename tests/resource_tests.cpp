@@ -1051,16 +1051,25 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     const EffectScore unknown_score = model.evaluate(unknown, "100", headroom);
     CHECK(!unknown_score.eligible);
     CHECK(unknown_score.requested.empty());
+    unknown.options={"50","100","150"};
+    unknown.ordered_scale=true;
+    unknown.vendor_values.push_back({"150",VendorProfile::Performance,"vendor-config"});
+    // Legal value syntax and a vendor recommendation are not effect semantics.
+    CHECK(model.proposals(unknown,"100",headroom).empty());
 
-    // A newly discovered scalar may still be tuned when the kernel supplies an
-    // explicit ordered range. Candidate values must come from that live range.
+
+    // A kernel-advertised range constrains legal syntax; unknown effect
+    // semantics still forbid a proposal.
     ResourceCapability unknown_with_range = unknown;
     unknown_with_range.options = {"80", "100", "120"};
     unknown_with_range.ordered_scale = true;
     const EffectScore advertised_score =
         model.evaluate(unknown_with_range, "100", headroom);
-    CHECK(advertised_score.eligible);
-    CHECK(advertised_score.requested == "80" || advertised_score.requested == "120");
+    CHECK(!advertised_score.eligible && advertised_score.requested.empty());
+    ResourceCapability reviewed_range=known;
+    reviewed_range.options={"80","100","120"}; reviewed_range.ordered_scale=true;
+    const auto reviewed_score=model.evaluate(reviewed_range,"100",headroom);
+    CHECK(reviewed_score.eligible && (reviewed_score.requested=="80" || reviewed_score.requested=="120"));
 
     ResourceCapability notAuthorized = known;
     notAuthorized.policy_authorized = false;
@@ -1151,15 +1160,17 @@ void test_effect_model_structured_rank_and_unknown_semantics() {
     fatal.path = "/proc/sys/vm/drop_caches";
     CHECK(!model.evaluate(fatal, "3", context).eligible);
 
-    // Vendor knowledge outranks blind exploration.
+    // Vendor values preserve inventory but cannot invent missing semantics.
     ResourceCapability vendor = known;
     vendor.name = "vm.vendor_knob";
     vendor.path = "/proc/sys/vm/vendor_knob";
     vendor.vendor_values.push_back(VendorValue{"40", VendorProfile::Efficiency, "test.rc"});
     const EffectScore vendor_score = model.evaluate(vendor, "100", context);
-    CHECK(vendor_score.eligible && vendor_score.stabilizing);
-    CHECK(vendor_score.requested == "40");
-    CHECK(vendor_score.source == CandidateSource::VendorEfficiency);
+    CHECK(!vendor_score.eligible && vendor_score.requested.empty());
+    vendor.name=known.name; vendor.path=known.path;
+    const auto reviewed_vendor=model.evaluate(vendor,"100",context);
+    CHECK(reviewed_vendor.eligible && reviewed_vendor.stabilizing);
+    CHECK(reviewed_vendor.requested=="40" && reviewed_vendor.source==CandidateSource::VendorEfficiency);
 }
 
 void test_block_queue_mutation_targets_are_admitted_for_physical() {

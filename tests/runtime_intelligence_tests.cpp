@@ -80,6 +80,9 @@ int main() {
         EffectContext ctx; ctx.state=RuntimeState::Normal; ctx.intervention=InterventionLevel::Low;
         ctx.sample_confidence=1.; ctx.cpu_utilization_available=true; ctx.cpu_utilization=.8;
         ctx.thermal_available=ctx.memory_available=true; ctx.thermal_c=35.; ctx.mem_available_ratio=.5;
+        CHECK(EffectModel{}.proposals(cap,"100",ctx).empty());
+        cap.name="cpufreq.governor.up_rate_limit_us";
+        cap.path="/sys/devices/system/cpu/cpufreq/policy0/schedutil/up_rate_limit_us";
         const auto options=EffectModel{}.proposals(cap,"100",ctx);
         CHECK(!options.empty());
         CHECK(options[0].source==CandidateSource::VendorPerformance);

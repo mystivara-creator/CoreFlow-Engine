@@ -330,6 +330,12 @@ std::vector<EffectScore> EffectModel::proposals(
         if (knowledge == nullptr) {
             knowledge = lookupEcosystemKnowledgeByKey(capability.name);
         }
+        const bool known_placement=isCpuSetCpusLeaf(capability) &&
+            (capability.path.find("/cpuset/")!=std::string::npos ||
+             capability.path.find("/cgroup/")!=std::string::npos);
+        // Advertised syntax and vendor operating values cannot supply missing
+        // effect semantics. Keep unclassified controls observable without trials.
+        if (knowledge==nullptr && !known_placement && !block_scheduler) return out;
         if (knowledge != nullptr) {
             switch (knowledge->risk) {
                 case KnowledgeRisk::ObserveOnly:
