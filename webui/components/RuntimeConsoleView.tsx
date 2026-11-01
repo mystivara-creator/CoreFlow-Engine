@@ -1140,6 +1140,26 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         </section>
       )}
 
+      {isNativeBridge && d && (
+        <details aria-label="Detailed autonomous decision and inference" className="cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <summary className="px-5 py-4 cursor-pointer text-base font-semibold text-slate-900">Autonomous Engine · Detailed Decision &amp; Active Configuration</summary>
+          <div className="px-5 pb-5 text-xs text-slate-600 space-y-2">
+            <p>Thermal prediction: {d.intelligence?.onnxSessionReady ? 'ONNX session loaded' : 'heuristic fallback (ONNX unavailable)'} · model inferences {d.intelligence?.onnxInferences ?? 0} · heuristic {d.intelligence?.heuristicFallbacks ?? 0} · last source {(d.intelligence?.onnxInferences ?? 0) + (d.intelligence?.heuristicFallbacks ?? 0) === 0 ? 'no inference yet' : d.intelligence?.onnxLastInference ? 'ONNX' : 'heuristic'}</p>
+            <p>Selection {d.selection?.current ? 'CURRENT' : 'last known'}: {d.selection?.winner || 'not available'} · {d.selection?.reason || 'not assessed'} · utility CPU {d.selection?.cpuUtility?.toFixed(3) ?? '—'} / resource {d.selection?.resourceUtility?.toFixed(3) ?? '—'}</p>
+            <p>Candidate funnel: {d.selection?.discovered ?? 0} discovered · {d.selection?.baseline ?? 0} baselined · {d.selection?.granted ?? 0} granted · {d.selection?.relevant ?? 0} relevant · {d.selection?.selectable ?? 0} selectable · {d.selection?.historyHeld ?? 0} held by trial history</p>
+            <p>Memory: {d.trialHistory?.ready ? 'ready' : 'checkpoint unavailable'} · {d.trialHistory?.records ?? 0} stored trials · last cohort {d.cohortMembers ?? 0} member(s) · {d.cohortIdentity || 'none active'}</p>
+            <p>Outcome: {d.outcomeReason || 'not measured'} · recovery: {d.recoveryPhase ? d.recoveryPhase + ' / ' + d.recoveryDetail : 'no pending recovery'}</p>
+            <div className="border-t border-slate-200 pt-2 space-y-1 font-mono">
+              <p className="font-semibold">Engine-owned settings (not inferred vendor values)</p>
+              {d.hands.cpuApplied.map((entry) => <p className="break-all" key={'cpu:'+entry.key}>CPU {entry.key} = {entry.value}</p>)}
+              {d.hands.resourceApplied.map((entry) => <p className="break-all" key={'res:'+entry.key}>Resource {entry.key} = {entry.value}</p>)}
+              {!d.hands.cpuApplied.length && !d.hands.resourceApplied.length && <p>No active engine-owned mutations reported.</p>}
+            </div>
+            <p className="text-slate-500">Model/selection scores are predictions, not proof of per-parameter benefit. A multi-member cohort receives one measured outcome; stop, external override, and thermal recovery retain authority.</p>
+          </div>
+        </details>
+      )}
+
       {isNativeBridge && d?.lastEvaluation && (
         <details className="cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
           <summary className="px-5 py-4 cursor-pointer text-sm font-semibold text-slate-900">Last Measured Outcome · {d.lastEvaluation.reason}</summary>

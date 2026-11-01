@@ -164,6 +164,10 @@ export interface ParsedEngineStatus {
       controlConflict?: boolean;
       externalControlPaths?: number;
       learnedCandidates?: number;
+      onnxSessionReady?: boolean;
+      onnxLastInference?: boolean;
+      onnxInferences?: number;
+      heuristicFallbacks?: number;
       storageAvailable?: boolean;
       storageCaution?: boolean;
       lifeA?: number;

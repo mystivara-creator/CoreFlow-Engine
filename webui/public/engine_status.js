@@ -156,6 +156,8 @@
         artBackend: str(insight.art_backend, 64), framePacingBackend: str(insight.frame_pacing_backend, 64),
         renderingAvailable: bool(insight.rendering_available), frameJankRate: num(insight.frame_jank_rate),
         controlConflict: bool(insight.control_conflict), externalControlPaths: int(insight.external_control_paths, 0), learnedCandidates: int(insight.learned_candidates, 0),
+        onnxSessionReady: bool(insight.onnx_session_ready), onnxLastInference: bool(insight.onnx_last_inference),
+        onnxInferences: int(insight.onnx_inferences, 0), heuristicFallbacks: int(insight.heuristic_fallbacks, 0),
         storageAvailable: bool(insight.storage_available), storageCaution: bool(insight.storage_caution),
         lifeA: int(insight.ufs_life_a, 0), lifeB: int(insight.ufs_life_b, 0), preEol: int(insight.ufs_pre_eol, 0),
         powerHalBackend: str(insight.power_hal_backend, 64), adpfBackend: str(insight.adpf_backend, 64)
@@ -378,6 +380,9 @@
       ["Frame pacing", i.framePacingBackend || "not supplied", "in-app integration required for Swappy"],
       ["Storage health", i.storageAvailable ? (i.storageCaution ? "caution" : "no warning reported") : "unavailable", "UFS descriptor codes; not an exact remaining lifetime"],
       ["Learning", String(i.learnedCandidates || 0) + " candidates", "measured local experience"],
+      ["Thermal model", i.onnxSessionReady ? "ONNX session loaded" : "heuristic only", "session load alone is not inference"],
+      ["Thermal inference", i.onnxInferences + " ONNX / " + i.heuristicFallbacks + " heuristic", i.onnxInferences + i.heuristicFallbacks ? (i.onnxLastInference ? "last prediction: model" : "last prediction: heuristic") : "no predictions yet"],
+
       ["State", b.state, b.previous && b.previous !== b.state ? "was " + b.previous : ""],
       ["Workload", b.workload, ""],
       ["Policy decision", b.decision, "State-policy recommendation; actuator activity is reported separately"],
