@@ -32,7 +32,11 @@ boost may write from the runtime loop. Each trial has exactly one member.
    scalar targets wait for materially changed evidence; categorical alternatives
    can compete independently. V1 history remains readable; new writes use V2.
 6. An accepted configuration survives ordinary cycles. After sustained workload
-   change with no measured need, one accepted resource is restored at a time;
+   change with no measured need in that setting's domain, one accepted resource
+   is restored at a time, even while another domain still needs tuning. Missing
+   telemetry cannot prove the old demand disappeared. Per-setting accepted trial
+   conditions, rather than the most recently accepted unrelated setting, establish
+   that a relevant change occurred;
    iosched children precede the scheduler anchor. Resource settings settle before
    CPU governors. Each release resets measurement and requires a fresh baseline
    and cooldown before another change. Emergency recovery and authority loss can

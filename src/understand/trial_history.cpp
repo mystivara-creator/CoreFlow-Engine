@@ -133,6 +133,16 @@ const char* TrialHistory::blockReason(std::string_view path,std::string_view cur
     }
     return nullptr;
 }
+bool TrialHistory::acceptedContextChanged(std::string_view path,std::string_view active,ResourceDomain domain,
+                                          const TrialConditions& now) const noexcept {
+    if (!ready()) return false;
+    for (auto it=entries_.rbegin();it!=entries_.rend();++it) {
+        if (!it->accepted || it->member.path!=path || it->member.target!=active || it->member.domain!=domain) continue;
+        auto comparison=now; comparison.configuration=it->when.configuration;
+        return materiallyChanged(it->when,comparison,domain);
+    }
+    return false;
+}
 bool TrialHistory::remember(const std::vector<TrialMember>& members,const TrialConditions& when,
                             BaselineIntelligence::Outcome outcome,bool accepted,std::string_view group) noexcept {
     if (!healthy_ || members.empty()) return false;

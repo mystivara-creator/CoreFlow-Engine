@@ -40,6 +40,8 @@ public:
                                    bool tuning_needed,unsigned& samples) noexcept;
     const char* blockReason(std::string_view path,std::string_view current,ResourceDomain,
                             const TrialConditions&,std::string_view requested={}) const noexcept;
+    bool acceptedContextChanged(std::string_view path,std::string_view active,ResourceDomain,
+                                const TrialConditions&) const noexcept;
     bool remember(const std::vector<TrialMember>&,const TrialConditions&,
                   BaselineIntelligence::Outcome,bool accepted,std::string_view group) noexcept;
 private:

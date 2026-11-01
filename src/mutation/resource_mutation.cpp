@@ -5,6 +5,7 @@
 #include "coreflow/integer_parse.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <filesystem>
 #include <sstream>
@@ -1189,12 +1190,31 @@ bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std
     } catch (...) { return false; }
 }
 
-bool ResourceMutationController::restoreOneRetained() noexcept {
+std::string ResourceMutationController::irrelevantRetainedPath(const RuntimeSample& sample,RuntimeState state) const noexcept {
+    if (!trial_history_ || pending_outcome_ || !recoveryReady()) return {};
+    try {
+        const auto now=trial_history_->conditions(sample,state);
+        for (const auto& setting:active_resources_cache_) {
+            const auto base=baseline_.find(setting.first);
+            if (base==baseline_.end() || !base->second.valid) continue;
+            const auto domain=base->second.domain;
+            if (domainDemandObservable(sample,domain) && !domainNeedsTuning(sample,state,domain) &&
+                trial_history_->acceptedContextChanged(setting.first,setting.second,domain,now)) return setting.first;
+        }
+    } catch (...) {}
+    return {};
+}
+
+bool ResourceMutationController::restoreOneRetained(const std::string& preferred) noexcept {
     if (pending_outcome_ || !recoveryReady()) return false;
     if (!mutated_) return true;
     try {
         if (active_resources_cache_.empty()) return false;
-        auto setting = active_resources_cache_.back();
+        auto selected=preferred.empty() ? std::prev(active_resources_cache_.end()) :
+            std::find_if(active_resources_cache_.begin(),active_resources_cache_.end(),
+                [&](const auto& entry) { return entry.first==preferred; });
+        if (selected==active_resources_cache_.end()) return false;
+        auto setting = *selected;
         // Restore iosched children before their scheduler anchor, regardless of
         // cache insertion order (retained and session settings have separate stores).
         if (setting.first.ends_with("/queue/scheduler")) {

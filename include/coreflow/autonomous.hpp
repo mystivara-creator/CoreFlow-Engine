@@ -122,6 +122,7 @@ private:
     TrialConditions accepted_conditions_{};
     bool accepted_conditions_available_{false};
     unsigned unneeded_samples_{0};
+    std::string quiet_release_path_;
     // Context in which the currently observed candidate was chosen.
     ExperienceMemory::Context observation_context_{};
     ThermalPredictor thermal_predictor_;

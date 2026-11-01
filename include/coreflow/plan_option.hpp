@@ -40,6 +40,23 @@ inline bool domainNeedsTuning(const RuntimeSample& s, RuntimeState state, Resour
         default: return memory || io || cpu || rendering;
     }
 }
+inline bool domainDemandObservable(const RuntimeSample& s,ResourceDomain domain) noexcept {
+    const auto fraction=[](double v) { return std::isfinite(v) && v>=0. && v<=1.; };
+    switch (domain) {
+        case ResourceDomain::Io:
+            return (s.psi_available && fraction(s.psi_io_some_avg10)) ||
+                (s.io_latency_available && std::isfinite(s.io_avg_latency_ms) && s.io_avg_latency_ms>=0.);
+        case ResourceDomain::Memory:
+            return (s.mem_total_kb>0U && fraction(s.mem_available_ratio)) ||
+                (s.psi_available && fraction(s.psi_memory_some_avg10));
+        case ResourceDomain::CpuFreq: case ResourceDomain::Scheduler:
+        case ResourceDomain::UClamp: case ResourceDomain::CpuSet:
+            return (s.cpu_utilization_available && fraction(s.cpu_utilization)) ||
+                (s.load_available && std::isfinite(s.load1) && s.load1>=0.) ||
+                (s.psi_available && fraction(s.psi_cpu_some_avg10));
+        default: return false;
+    }
+}
 inline bool measuredTuningNeed(const RuntimeSample& s, RuntimeState state) noexcept {
     return state == RuntimeState::ThermalGuard || domainNeedsTuning(s,state,ResourceDomain::Memory) ||
         domainNeedsTuning(s,state,ResourceDomain::Io) || domainNeedsTuning(s,state,ResourceDomain::CpuFreq) ||

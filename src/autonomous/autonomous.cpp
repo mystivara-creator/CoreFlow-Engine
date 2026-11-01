@@ -1007,14 +1007,36 @@ void AutonomousEngine::tick() {
         const bool authority_lost = config_.mutationMode() != MutationMode::Adaptive || !config_.mutationArmed();
         const bool pending_trial=controller_.hasPendingOutcome() || resource_controller_.hasPendingOutcome();
         const auto current_conditions=trial_history_.conditions(sample,next);
-        const bool release_unneeded=accepted_conditions_available_ && !pending_trial &&
-            sample_count_>=mutation_cooldown_until_sample_ &&
-            TrialHistory::updateQuietRelease(accepted_conditions_,current_conditions,measuredTuningNeed(sample,next),unneeded_samples_);
-        if (!accepted_conditions_available_ || pending_trial) unneeded_samples_=0;
+        const bool governor_dependents=std::any_of(resource_controller_.activeResourceSettings().begin(),
+            resource_controller_.activeResourceSettings().end(),[](const auto& entry) {
+                return entry.first.find("/cpufreq/")!=std::string::npos;
+            });
+        std::string release_resource,release_cpu;
+        bool release_unneeded=false;
+        if (!pending_trial && !stress && !authority_lost && std::isfinite(sample.confidence) &&
+            sample.confidence>=config_.minConfidence() && sample_count_>=mutation_cooldown_until_sample_) {
+            release_resource=resource_controller_.irrelevantRetainedPath(sample,next);
+            if (release_resource.empty() && !governor_dependents &&
+                domainDemandObservable(sample,ResourceDomain::CpuFreq) && !domainNeedsTuning(sample,next,ResourceDomain::CpuFreq)) {
+                for (const auto& setting:controller_.activeGovernorSettings())
+                    if (trial_history_.acceptedContextChanged(setting.first+"/scaling_governor",setting.second,
+                            ResourceDomain::CpuFreq,current_conditions)) { release_cpu=setting.first; break; }
+            }
+            const auto& selected=release_resource.empty() ? release_cpu : release_resource;
+            if (selected!=quiet_release_path_) { quiet_release_path_=selected; unneeded_samples_=0; }
+            if (!selected.empty()) {
+                unneeded_samples_=std::min(unneeded_samples_,2U)+1U;
+                release_unneeded=unneeded_samples_>=3U;
+            } else if (accepted_conditions_available_) {
+                release_unneeded=TrialHistory::updateQuietRelease(accepted_conditions_,current_conditions,
+                    measuredTuningNeed(sample,next),unneeded_samples_);
+            }
+        } else { unneeded_samples_=0; quiet_release_path_.clear(); }
+        const bool targeted_release=!release_resource.empty() || !release_cpu.empty();
         const bool restore_cpu = controller_.mutated() &&
-            (authority_lost || release_unneeded || (next == RuntimeState::Idle && controller_.hasPendingOutcome()) || stress);
+            (authority_lost || (release_unneeded && (!targeted_release || !release_cpu.empty())) || (next == RuntimeState::Idle && controller_.hasPendingOutcome()) || stress);
         const bool restore_resources = resource_controller_.mutated() &&
-            (authority_lost || release_unneeded || (next == RuntimeState::Idle && resource_controller_.hasPendingOutcome()) ||
+            (authority_lost || (restore_cpu && governor_dependents) || (release_unneeded && (!targeted_release || !release_resource.empty())) || (next == RuntimeState::Idle && resource_controller_.hasPendingOutcome()) ||
              (stress && !resource_controller_.stabilizingEpoch()));
         if (restore_cpu || restore_resources) {
             if (pending_trial && baseline_intelligence_.observing()) {
@@ -1022,16 +1044,16 @@ void AutonomousEngine::tick() {
                     BaselineIntelligence::Outcome::Inconclusive,false,observation_identity_);
                 if (!trial_history_.flush()) logWarn("Canceled trial checkpoint pending");
             }
-            unneeded_samples_=0;
+            unneeded_samples_=0; quiet_release_path_.clear();
             const bool selective=release_unneeded && !authority_lost && !stress;
             if (!selective) accepted_conditions_available_=false;
             // Resource dependents must be unwound before their governor anchor.
-            const bool resources_owned=resource_controller_.mutated();
+            const bool resources_changed=restore_resources && resource_controller_.mutated();
             const bool resources_ok = !restore_resources || (selective
-                ? resource_controller_.restoreOneRetained() : resource_controller_.restoreAll());
+                ? resource_controller_.restoreOneRetained(release_resource) : resource_controller_.restoreAll());
             // A governor anchor cannot leave while any resource dependent remains.
             const bool cpu_ok = resources_ok && (!restore_cpu || (selective
-                ? (resources_owned || controller_.restoreOneRetained()) : controller_.restoreAll()));
+                ? (resources_changed || controller_.restoreOneRetained(release_cpu)) : controller_.restoreAll()));
             if (!controller_.mutated() && !resource_controller_.mutated()) accepted_conditions_available_=false;
             baseline_intelligence_.reset();
             observation_cohort_ = false; observation_identity_.clear(); observation_members_ = 0;
@@ -1048,6 +1070,13 @@ void AutonomousEngine::tick() {
                     ecosystem_plan, hold, MutationResult::Failed, MutationResult::Failed);
                 ++sample_count_; return;
             }
+            // This sample predates the restore. Start post-rollback measurement
+            // on the next tick, never contaminate a fresh baseline with it.
+            publishStatus(sample,previous,next,Decision::ReduceIntervention,context,ecosystem_plan,hold,
+                restore_cpu && (!selective || !resources_changed) ? MutationResult::RolledBack : MutationResult::Skipped,
+                restore_resources ? MutationResult::RolledBack : MutationResult::Skipped);
+            ++sample_count_;
+            return;
         }
 
         if (stress && previous != next && !baseline_intelligence_.observing()) {

@@ -86,7 +86,7 @@ public:
     bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
     bool restoreAll() noexcept;
     // Re-evaluate one accepted change; caller must settle dependent controllers first.
-    bool restoreOneRetained() noexcept;
+    bool restoreOneRetained(const std::string& preferred = {}) noexcept;
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
     bool retainLastMutation(const DeviceProfile& profile) noexcept;

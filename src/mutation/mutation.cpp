@@ -6,6 +6,7 @@
 #include "coreflow/policy.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -1201,12 +1202,16 @@ bool MutationController::reconcileExternalChanges(std::unordered_set<std::string
     } catch (...) { return false; }
 }
 
-bool MutationController::restoreOneRetained() noexcept {
+bool MutationController::restoreOneRetained(const std::string& preferred) noexcept {
     if (pending_outcome_ || !recoveryReady()) return false;
     if (!mutated_) return true;
     try {
         if (active_governors_cache_.empty() || journal_==nullptr) return false;
-        const auto setting=active_governors_cache_.back();
+        const auto selected=preferred.empty() ? std::prev(active_governors_cache_.end()) :
+            std::find_if(active_governors_cache_.begin(),active_governors_cache_.end(),
+                [&](const auto& entry) { return entry.first==preferred; });
+        if (selected==active_governors_cache_.end()) return false;
+        const auto setting=*selected;
         const auto path=governorPathOf(setting.first);
         const auto base=baseline_.find(path);
         if (base==baseline_.end() || !base->second.valid) return false;

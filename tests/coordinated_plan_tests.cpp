@@ -308,6 +308,8 @@ int selectiveAcceptedRollback() {
     f.profile.capabilities.resources.back().vendor_values.push_back({"mq-deadline",VendorProfile::Default,"firmware"});
     FileRetainedStateStore cpu_store((f.root/"cpu-retained").string()), resource_store((f.root/"resource-retained").string());
     f.cpu.setRetainedStateStore(&cpu_store); f.resources.setRetainedStateStore(&resource_store);
+    TrialHistory history; CHECK(history.initialize((f.root/"accepted-history").string(),"device:kernel"));
+    f.cpu.setTrialHistory(&history); f.resources.setTrialHistory(&history);
     CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
     auto s=sample(false); s.psi_available=true; s.psi_io_some_avg10=.3;
     const auto p=plan(f.profile,s,RuntimeState::Elevated);
@@ -316,9 +318,18 @@ int selectiveAcceptedRollback() {
         CHECK(r.members==1U);
         CHECK(r.cpu==MutationResult::Verified ? !f.cpu.restoreOneRetained() : !f.resources.restoreOneRetained()); // pending trial holds release
         CHECK(r.cpu==MutationResult::Verified ? f.cpu.retainLastMutation(f.profile) : f.resources.retainLastMutation(f.profile));
+        CHECK(history.remember(r.trials,history.conditions(s,RuntimeState::Elevated),BaselineIntelligence::Outcome::Beneficial,true,r.identity));
+        CHECK(history.flush());
     }
     CHECK(f.read(policy+"/scaling_governor")=="walt" && f.read(io)=="mq-deadline");
-    CHECK(f.resources.restoreOneRetained());
+    CHECK(f.resources.irrelevantRetainedPath(s,RuntimeState::Elevated).empty());
+    s.psi_available=false; s.io_latency_available=false;
+    CHECK(f.resources.irrelevantRetainedPath(s,RuntimeState::Elevated).empty()); // missing evidence is not no demand
+    s.psi_available=true; s.psi_io_some_avg10=0.;
+    CHECK(domainNeedsTuning(s,RuntimeState::Elevated,ResourceDomain::CpuFreq));
+    CHECK(f.resources.irrelevantRetainedPath(s,RuntimeState::Elevated)==io); // I/O releases while CPU demand continues
+    CHECK(!f.resources.restoreOneRetained("/not-owned"));
+    CHECK(f.resources.restoreOneRetained(io));
     CHECK(f.read(io)=="cfq" && f.read(policy+"/scaling_governor")=="walt");
     CHECK(!f.resources.mutated() && f.cpu.mutated());
     RetainedStateStore::Entries entries; CHECK(resource_store.load(entries)!=RetainedStateStore::LoadState::Corrupt && entries.empty());
@@ -326,6 +337,34 @@ int selectiveAcceptedRollback() {
     CHECK(f.read(policy+"/scaling_governor")=="powersave" && !f.cpu.mutated());
     CHECK(cpu_store.load(entries)!=RetainedStateStore::LoadState::Corrupt && entries.empty());
     CHECK(f.cpu_journal.entries.empty() && f.resource_journal.entries.empty());
+    return 0;
+}
+
+int retainedGovernorDependencyRecovery() {
+    Fixture f; const auto policy=f.governor();
+    CHECK(f.cpu.captureBaseline(f.profile)); auto s=sample(false);
+    PolicyPlan p; p.action=PolicyAction::Candidate; p.mutation_eligible=true;
+    p.intervention=InterventionLevel::Moderate;
+    const auto anchor=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(anchor.cpu==MutationResult::Verified && anchor.members==1U);
+    CHECK(f.cpu.acceptCoordinatedMutation());
+    const auto dependent=f.add(ResourceDomain::Scheduler,"cpufreq.governor.up_rate_limit_us",
+        "cpufreq/policy0/walt/up_rate_limit_us","2000");
+    CHECK(f.resources.admitNewBaselines(f.profile));
+    p.candidates.push_back({ResourceDomain::Scheduler,"cpufreq.governor.up_rate_limit_us",{},1.,.2,PolicyAction::Candidate});
+    const auto child=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(child.resource==MutationResult::Verified && child.cpu==MutationResult::Skipped && child.members==1U);
+    CHECK(f.resources.acceptCoordinatedMutation());
+    const auto review=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(review.cpu==MutationResult::Skipped);
+    CHECK(review.cpu_reason=="owned_governor_dependencies_must_settle_before_switch");
+    CHECK(rollbackCoordinatedPlan(f.cpu,f.resources)); // cancel only a possible new child trial
+    f.resource_journal.fail_clear=true;
+    CHECK(!restoreCoordinatedPlan(f.cpu,f.resources));
+    CHECK(f.read(policy+"/scaling_governor")=="walt"); // anchor survives failed dependent cleanup
+    f.resource_journal.fail_clear=false;
+    CHECK(restoreCoordinatedPlan(f.cpu,f.resources));
+    CHECK(f.read(dependent)=="2000" && f.read(policy+"/scaling_governor")=="powersave");
     return 0;
 }
 
@@ -435,7 +474,7 @@ int distinctGovernorMayCompeteAfterFailedTrial() {
 
 }
 int main() {
-    const int result=selectiveAcceptedRollback() || contextualHistoryPreventsRepeatAndDrift() || distinctGovernorMayCompeteAfterFailedTrial() || cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
+    const int result=retainedGovernorDependencyRecovery() || selectiveAcceptedRollback() || contextualHistoryPreventsRepeatAndDrift() || distinctGovernorMayCompeteAfterFailedTrial() || cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
         dependentRollbackFailurePreservesGovernor() || externalMemberWithdrawn() || ioSchedulerCompanions() || incompleteCrashRecoveryKeepsJournal() || crashRestoresWholeCohort();
     if (!result) std::puts("CoreFlow coordinated and thermal plans: PASS");
     return result;
