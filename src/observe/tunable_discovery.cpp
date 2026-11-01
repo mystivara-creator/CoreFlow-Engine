@@ -401,7 +401,9 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                               const VendorKnowledge& vendor) const noexcept {
     for (auto& cap : matrix.resources) {
         try {
-            if (!cap.mutation_ready || cap.path.empty() || cap.path.front() != '/') continue;
+            // Inventory remains useful even when semantic authorization denies writes.
+            // Do not conflate observation with mutation readiness.
+            if (!cap.readable || cap.path.empty() || cap.path.front() != '/') continue;
 
             // Vendor values: look up by canonical path first, then as written.
             if (cap.vendor_values.empty()) {
