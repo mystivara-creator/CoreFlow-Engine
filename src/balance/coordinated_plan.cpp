@@ -93,6 +93,14 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
             event.target=selected.path.c_str(); event.requested=selected.requested.c_str();
             appendDecisionTraceEvent(*trace,event);
         }
+        // Single-variable causal trial: never write a governor and a resource
+        // in the same outcome window. A read-back verifies the value, not its
+        // performance benefit. Re-observe and measure the winner in the next
+        // epoch before admitting any dependent mutation.
+        if (cpu_option.valid && resource_option.valid) {
+            if (cpu_wins) resource_option.valid = false;
+            else cpu_option.valid = false;
+        }
         resources.setConditionDriven(true);
         PolicyPlan execution_plan=plan;
         // A chosen governor is an anchor, so its writes precede dependent files.
@@ -139,13 +147,9 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
                 if (result.cpu==MutationResult::Verified) recover();
                 return result;
             }
-        } else if (result.cpu==MutationResult::Verified) {
-            resources.setCoupledOnly(true);
-            result.resource=resources.apply(state,sample,profile,config,execution_plan,resource_permit,trace);
-            if (result.resource!=MutationResult::Verified && result.resource!=MutationResult::Skipped) {
-                result.decision_reason="dependent_plan_failed"; recover(); return result;
-            }
         }
+        // Governor-only trial. Dependent resource tuning must wait for
+        // verified measured outcome and a fresh device sample.
         if (result.resource==MutationResult::Verified)
             for (const auto& cap:resources.discoveredCapabilities())
                 if (std::none_of(profile.capabilities.resources.begin(),profile.capabilities.resources.end(),
