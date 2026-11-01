@@ -596,6 +596,10 @@ void testStatusJsonContractShape() {
     inventory.vendor_files_parsed = 5;
     inventory.vendor_knobs = 18;
     inventory.discovery_truncated = true;
+    inventory.onnx_session_ready = true;
+    inventory.onnx_last_inference = true;
+    inventory.onnx_inferences = 4U;
+    inventory.heuristic_fallbacks = 2U;
     const auto live_json = statusToJson(inventory);
     CHECK(validJson(live_json));
     CHECK(has(live_json, "\"hardware_min_khz\":691200"));
@@ -603,6 +607,10 @@ void testStatusJsonContractShape() {
     CHECK(has(live_json, "\"available_frequencies_khz\":[691200,1200000,1804800,2400000]"));
     CHECK(has(live_json, "\"related_cpus\":\"4-7\""));
     CHECK(has(live_json, "\"discovery_truncated\":true"));
+    CHECK(has(live_json, "\"onnx_session_ready\":true"));
+    CHECK(has(live_json, "\"onnx_last_inference\":true"));
+    CHECK(has(live_json, "\"onnx_inferences\":4"));
+    CHECK(has(live_json, "\"heuristic_fallbacks\":2"));
 }
 
 void testStatusJsonIsBounded() {

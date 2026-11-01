@@ -288,6 +288,12 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         c.uptime_seconds = 1005;  // +3 C in 5 s is a genuine fast rise
         const double fast = predictor.predict(history, c, 3);
         CHECK(fast > 52.0);
+        // Host builds have no ONNX runtime. Session readiness and successful
+        // inference counts must never be inferred from heuristic predictions.
+        CHECK(predictor.isReady() && !predictor.usingModel());
+        CHECK(predictor.successfulModelInferences() == 0U);
+        CHECK(predictor.heuristicFallbacks() == 2U);
+        CHECK(!predictor.lastPredictionUsedModel());
     }
 
 

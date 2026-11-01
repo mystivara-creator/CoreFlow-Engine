@@ -226,12 +226,20 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
   enriched.device.vendor_files_parsed = 5;
   enriched.device.vendor_knobs = 18;
   enriched.device.discovery_truncated = true;
+  enriched.intelligence = enriched.intelligence || {};
+  enriched.intelligence.onnx_session_ready = true;
+  enriched.intelligence.onnx_last_inference = true;
+  enriched.intelligence.onnx_inferences = 4;
+  enriched.intelligence.heuristic_fallbacks = 2;
   const liveParsed = S.parse("NOW="+(enriched.updated_epoch+1)+"\n"+JSON.stringify(enriched));
   check(liveParsed.ok && liveParsed.data.cpuPolicies[0].hardwareMaxKhz === 2400000 &&
     liveParsed.data.cpuPolicies[0].availableFrequenciesKhz.length === 3 &&
     liveParsed.data.cpuPolicies[0].relatedCpus === "4-7", "kernel CPU policy capability provenance roundtrips");
   check(liveParsed.data.device.discoveryTruncated && liveParsed.data.device.vendorKnobs === 18,
     "device capability discovery completeness is visible");
+  check(liveParsed.data.intelligence.onnxSessionReady && liveParsed.data.intelligence.onnxLastInference &&
+    liveParsed.data.intelligence.onnxInferences === 4 && liveParsed.data.intelligence.heuristicFallbacks === 2,
+    "ONNX session and inference evidence remain separate from heuristic fallback");
 
   check(d.selection.cpuReason === "no_higher_scoring_governor_than_current", "CPU selection has an explicit no-write reason");
   check(d.lastEvaluation.reason === "weighted_metrics_regressed" && d.lastEvaluation.metrics.psi_fraction.before === 0 && d.lastEvaluation.metrics.psi_fraction.after === .3, "actual native evaluation preserves zero-to-stall metrics");
