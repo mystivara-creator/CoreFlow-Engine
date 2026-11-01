@@ -261,6 +261,15 @@ std::string statusToJson(const EngineStatus& s) {
         out << ",\"current_khz\":"; if (p.current_khz) out << p.current_khz; else out << "null";
         out << ",\"min_khz\":"; if (p.min_khz) out << p.min_khz; else out << "null";
         out << ",\"max_khz\":"; if (p.max_khz) out << p.max_khz; else out << "null";
+        out << ",\"hardware_min_khz\":"; if (p.hardware_min_khz) out << p.hardware_min_khz; else out << "null";
+        out << ",\"hardware_max_khz\":"; if (p.hardware_max_khz) out << p.hardware_max_khz; else out << "null";
+        out << ",\"related_cpus\":"; appendEscaped(out,p.related_cpus);
+        out << ",\"available_frequencies_khz\":[";
+        for (std::size_t i=0;i<std::min<std::size_t>(p.available_frequencies.size(),64U);++i) {
+            if (i) out << ',';
+            out << p.available_frequencies[i];
+        }
+        out << ']';
         out << ",\"available_governors\":[";
         for (std::size_t i=0;i<std::min<std::size_t>(p.available_governors.size(),32U);++i) {
             if (i) out << ',';
@@ -320,6 +329,8 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"soc_model\":"; appendEscaped(out, s.soc_model);
     out << ",\"android_release\":"; appendEscaped(out, s.android_release);
     out << ",\"sdk_level\":"; appendEscaped(out, s.sdk_level);
+    out << ",\"security_patch\":"; appendEscaped(out, s.security_patch);
+    out << ",\"firmware_incremental\":"; appendEscaped(out, s.firmware_incremental);
     out << ",\"kernel_release\":"; appendEscaped(out, s.kernel_release);
     out << ",\"abi\":"; appendEscaped(out, s.abi);
     out << ",\"proc_available\":"; appendBool(out, s.proc_available);
@@ -331,6 +342,9 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"devfreq_available\":"; appendBool(out, s.devfreq_available);
     out << ",\"discovered_resources\":" << s.discovered_resources;
     out << ",\"mutation_ready_resources\":" << s.mutation_ready_resources;
+    out << ",\"vendor_files_parsed\":" << s.vendor_files_parsed;
+    out << ",\"vendor_knobs\":" << s.vendor_knobs;
+    out << ",\"discovery_truncated\":"; appendBool(out, s.discovery_truncated);
     out << ",\"expanded_domains\":[";
     for (std::size_t i = 0; i < s.expanded_domains.size(); ++i) {
         if (i != 0U) out << ',';

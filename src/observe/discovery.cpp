@@ -5,6 +5,7 @@
 #include "coreflow/kernel_roots.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cerrno>
 #include <cstdlib>
 #include <dirent.h>
@@ -211,6 +212,38 @@ void EnvironmentDiscovery::discoverCpuPolicies(DeviceProfile& profile) const {
         std::string governors;
         if (readText(policy.path + "/scaling_available_governors", governors))
             policy.available_governors = splitWords(governors);
+
+        // Read-only, bounded OPP inventory. Reject unverified, incomplete and
+        // out-of-policy tables instead of inferring new clock capabilities.
+        std::string advertised;
+        if (readText(policy.path + "/scaling_available_frequencies", advertised) &&
+            advertised.size() <= 8192U) {
+            const auto entries = splitWords(advertised);
+            if (!entries.empty() && entries.size() <= 64U &&
+                policy.hardware_min_frequency > 0U &&
+                policy.hardware_max_frequency >= policy.hardware_min_frequency) {
+                bool valid = true;
+                for (const auto& token : entries) {
+                    std::uint64_t khz = 0;
+                    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), khz);
+                    if (parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size() ||
+                        khz < policy.hardware_min_frequency || khz > policy.hardware_max_frequency) {
+                        valid = false;
+                        break;
+                    }
+                    policy.available_frequencies.push_back(khz);
+                }
+                if (valid) {
+                    std::sort(policy.available_frequencies.begin(), policy.available_frequencies.end());
+                    policy.available_frequencies.erase(
+                        std::unique(policy.available_frequencies.begin(),
+                                    policy.available_frequencies.end()),
+                        policy.available_frequencies.end());
+                } else {
+                    policy.available_frequencies.clear();
+                }
+            }
+        }
 
         policy.energy_performance_available =
             readText(policy.path + "/energy_performance_preference",

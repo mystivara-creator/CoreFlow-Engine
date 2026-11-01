@@ -77,6 +77,8 @@ struct CpuPolicy {
     bool energy_performance_available{false};
     std::string energy_performance_preference;
     bool boost_available{false};
+    // Bounded, kernel-advertised CPU policy OPPs; empty means unavailable.
+    std::vector<std::uint64_t> available_frequencies;
 };
 
 struct ThermalZone {

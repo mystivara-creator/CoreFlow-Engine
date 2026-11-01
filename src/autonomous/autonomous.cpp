@@ -1609,6 +1609,10 @@ void AutonomousEngine::publishStatus(
             };
             row.current_khz=frequency("scaling_cur_freq");
             row.min_khz=frequency("scaling_min_freq"); row.max_khz=frequency("scaling_max_freq");
+            row.hardware_min_khz=frequency("cpuinfo_min_freq");
+            row.hardware_max_khz=frequency("cpuinfo_max_freq");
+            row.related_cpus=policy.related_cpus;
+            row.available_frequencies=policy.available_frequencies;
             s.cpu_policies.push_back(std::move(row));
         }
         s.selection_reason=last_plan_selection_.decision_reason;
@@ -1635,6 +1639,8 @@ void AutonomousEngine::publishStatus(
         s.soc_model = env.soc_model;
         s.android_release = env.release;
         s.sdk_level = env.sdk_level;
+        s.security_patch = env.security_patch;
+        s.firmware_incremental = env.incremental;
         s.kernel_release = env.kernel_release;
         s.abi = env.abi;
         s.proc_available = snapshot_.profile.proc_available;
@@ -1646,6 +1652,9 @@ void AutonomousEngine::publishStatus(
         s.devfreq_available = env.devfreq_available;
         s.discovered_resources = snapshot_.profile.capabilities.resources.size();
         s.mutation_ready_resources = snapshot_.profile.capabilities.mutationReadyCount();
+        s.vendor_files_parsed = snapshot_.profile.vendor_files_parsed;
+        s.vendor_knobs = snapshot_.profile.vendor_knobs;
+        s.discovery_truncated = snapshot_.profile.tunables_truncated;
         s.expanded_domains = snapshot_.profile.expanded_domains;
         // Scheduler tokens remain quarantined; read_ahead/nr_requests on real
         // devices are now BoundedTune. Flag reflects residual scheduler quarantine.

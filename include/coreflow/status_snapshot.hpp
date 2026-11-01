@@ -28,6 +28,9 @@ struct CpuPolicyStatus {
     std::vector<std::string> available_governors;
     bool governor_readable{false}, governor_writable{false};
     std::uint64_t current_khz{0}, min_khz{0}, max_khz{0};
+    std::uint64_t hardware_min_khz{0}, hardware_max_khz{0};
+    std::string related_cpus;
+    std::vector<std::uint64_t> available_frequencies;
 };
 
 struct EngineStatus {
@@ -82,6 +85,8 @@ struct EngineStatus {
     std::string soc_model;
     std::string android_release;
     std::string sdk_level;
+    std::string security_patch;
+    std::string firmware_incremental;
     std::string kernel_release;
     std::string abi;
     bool proc_available{false};
@@ -93,6 +98,9 @@ struct EngineStatus {
     bool devfreq_available{false};
     std::size_t discovered_resources{0};
     std::size_t mutation_ready_resources{0};
+    std::size_t vendor_files_parsed{0};
+    std::size_t vendor_knobs{0};
+    bool discovery_truncated{false};
     std::vector<ExpandedDomainStatus> expanded_domains;
     bool block_queue_mutations_quarantined{false};
 
