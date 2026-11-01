@@ -120,7 +120,17 @@ void testFatalGuard() {
              "/sys/fs/selinux/enforce", "/sys/kernel/debug/x", "/dev/cpuctl/top-app/cgroup.procs",
              "/dev/cpuctl/cpu.rt_runtime_us", "/dev/cpuset/top-app/mems",
              "/sys/fs/cgroup/memory.max", "/sys/bus/platform/drivers/x/unbind",
-             "/dev/block/sda", "/data/adb/x"}) {
+             "/dev/block/sda", "/data/adb/x",
+             // Incident regression: these must NEVER be considered tunables.
+             "/sys/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/card0/card0-DSI-1/status",
+             "/sys/class/drm/card0-DSI-1/status",
+             "/sys/devices/platform/soc/1d84000.ufshc/auto_hibern8",
+             "/sys/devices/platform/soc/1d84000.ufshc/clkgate_enable",
+             "/sys/devices/platform/soc/1d84000.ufshc/block/sda/queue/nr_requests",
+             "/sys/devices/system/cpu/cpu0/core_ctl/not_preferred",
+             "/sys/devices/system/cpu/cpu0/core_ctl/enable",
+             "/sys/class/backlight/panel0-backlight/brightness",
+             "/sys/class/graphics/fb0/blank"}) {
         if (!isFatalSurface(p)) { ++failures; std::cerr << "FAIL: not fatal " << p << "\n"; }
     }
     // Ordinary tunables across every capability domain.
@@ -129,7 +139,7 @@ void testFatalGuard() {
              "/proc/sys/kernel/sched_util_clamp_min", "/proc/sys/walt/sched_boost",
              "/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq",
              "/sys/devices/system/cpu/cpufreq/policy0/schedutil/rate_limit_us",
-             "/sys/devices/system/cpu/cpu4/core_ctl/min_cpus", "/sys/block/sda/queue/scheduler",
+             "/sys/block/sda/queue/scheduler",
              "/sys/block/sda/queue/iosched/fifo_batch", "/sys/class/devfreq/gpu/governor",
              "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq", "/dev/cpuctl/top-app/cpu.uclamp.max",
              "/dev/stune/top-app/schedtune.boost", "/dev/cpuset/background/cpus"}) {
