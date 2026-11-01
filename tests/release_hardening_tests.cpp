@@ -539,7 +539,10 @@ void testStatusJsonIsStrictAndHostile() {
     CHECK(has(json, "\"load1\":null"));
     CHECK(has(json, "\"mem_available_ratio\":0.4217"));
     CHECK(!has(json, "nan"));
-    CHECK(!has(json, "inf"));
+    // JSON field names such as onnx_inferences contain "inf" as text.
+    // Reject invalid numeric literals, not substrings of legitimate keys.
+    CHECK(!has(json, "\"thermal_c\":inf"));
+    CHECK(!has(json, "\"hottest_c\":inf"));
     CHECK(!has(json, "\x01"));
 }
 
