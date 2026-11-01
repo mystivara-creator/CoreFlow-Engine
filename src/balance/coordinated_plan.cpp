@@ -95,7 +95,10 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
         if (cpu_option.valid) {
             result.cpu=cpu.applySelected(cpu_option,state,sample,profile,config,plan,cpu_permit,trace);
             if (result.cpu!=MutationResult::Verified) {
-                result.decision_reason="selected_cpu_proposal_changed_or_failed"; return result;
+                result.decision_reason="selected_cpu_proposal_changed_or_failed";
+                if (result.cpu!=MutationResult::Skipped)
+                    result.trials.push_back({ResourceDomain::CpuFreq,cpu_option.path,cpu_option.current,cpu_option.requested});
+                return result;
             }
             // Refresh governor-dependent inventory only after measured acceptance.
         }
@@ -104,7 +107,8 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
                 plan,resource_permit,trace);
             if (result.resource!=MutationResult::Verified) {
                 result.decision_reason="selected_resource_proposal_changed_or_failed";
-                if (result.cpu==MutationResult::Verified) recover();
+                if (result.resource!=MutationResult::Skipped)
+                    result.trials.push_back({resource_option.domain,resource_option.path,resource_option.current,resource_option.requested});
                 return result;
             }
         }

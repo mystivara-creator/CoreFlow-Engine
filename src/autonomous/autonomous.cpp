@@ -1384,6 +1384,13 @@ void AutonomousEngine::tick() {
             const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
             auto planned = executeCoordinatedPlan(controller_, resource_controller_, next,
                 sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);
+            if (!planned.verified() && !planned.trials.empty()) {
+                // Write/journal/read-back failures have no outcome epoch, but
+                // still need persistent context suppression, not a timer retry.
+                (void)trial_history_.remember(planned.trials,trial_history_.conditions(sample,next),
+                    BaselineIntelligence::Outcome::Inconclusive,false,planned.decision_reason);
+                if (!trial_history_.flush()) logWarn("Failed trial checkpoint pending; new trials held");
+            }
             if (!planned.verified() && (!selection_available_ ||
                 planned.decision_reason!=last_plan_selection_.decision_reason ||
                 planned.cpu_reason!=last_plan_selection_.cpu_reason ||

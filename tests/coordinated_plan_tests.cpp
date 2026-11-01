@@ -129,13 +129,27 @@ int thermalCohort() {
 }
 int failedCompanionRollsBack() {
     Fixture f; f.governor("walt"); std::vector<std::string> paths; thermalNodes(f,paths);
+    // Isolate one candidate: history suppresses the failed target, not unrelated alternatives.
+    f.profile.capabilities.resources.erase(f.profile.capabilities.resources.begin(),f.profile.capabilities.resources.begin()+2);
     CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
+    TrialHistory history; CHECK(history.initialize((f.root/"failed-trials").string(),"device:kernel"));
+    f.cpu.setTrialHistory(&history); f.resources.setTrialHistory(&history);
     f.resource_journal.fail_on = 1U;
     const auto s = sample(true); const auto p = plan(f.profile,s,RuntimeState::ThermalGuard);
     const auto result = executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p);
     CHECK(!result.verified()); CHECK(!f.resources.hasPendingOutcome());
     CHECK(f.read(paths[0]) == "1200" && f.read(paths[1]) == "1200" && f.read(paths[2]) == "max");
     CHECK(f.resource_journal.entries.empty());
+    CHECK(result.trials.size()==1U);
+    CHECK(history.remember(result.trials,history.conditions(s,RuntimeState::ThermalGuard),
+        BaselineIntelligence::Outcome::Inconclusive,false,result.decision_reason));
+    CHECK(history.flush());
+    const auto commits=f.resource_journal.commits;
+    for (unsigned i=0;i<250U;++i) {
+        const auto retry=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p);
+        CHECK(!retry.verified());
+    }
+    CHECK(f.resource_journal.commits==commits);
     return 0;
 }
 int governorAndDiscoveredTunables() {
