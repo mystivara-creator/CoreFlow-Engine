@@ -93,7 +93,8 @@ export interface ParsedEngineStatus {
     selection?: { current: boolean; reason: string; winner: string; cpuReason?: string; resourceReason?: string; cpuUtility: number | null; resourceUtility: number | null;
       assessed: boolean; discovered: number; structural: number; baseline: number; granted: number; relevant: number; ranked: number; selectable: number; historyHeld?: number };
     cpuPolicies?: Array<{ path: string; currentGovernor: string; availableGovernors: string[];
-      governorReadable: boolean; governorWritable: boolean; currentKhz: number | null; minKhz: number | null; maxKhz: number | null }>;
+      governorReadable: boolean; governorWritable: boolean; currentKhz: number | null; minKhz: number | null; maxKhz: number | null;
+      hardwareMinKhz: number | null; hardwareMaxKhz: number | null; relatedCpus: string; availableFrequenciesKhz: number[] }>;
     outcomeReason?: string;
     lastEvaluation?: OutcomeEvaluation | null;
     trialHistory?: { available: boolean; ready: boolean; records: number };
@@ -116,6 +117,8 @@ export interface ParsedEngineStatus {
       socModel: string;
       androidRelease: string;
       sdkLevel: string;
+      securityPatch: string;
+      firmwareIncremental: string;
       kernelRelease: string;
       abi: string;
       procAvailable: boolean;
@@ -127,6 +130,9 @@ export interface ParsedEngineStatus {
       devfreq: boolean;
       discoveredResources: number;
       mutationReadyResources: number;
+      vendorFilesParsed: number;
+      vendorKnobs: number;
+      discoveryTruncated: boolean;
       expandedDomains: Array<{
         id: number;
         evidence: 'unavailable' | 'detected' | 'observable';

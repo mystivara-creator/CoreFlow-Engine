@@ -1119,12 +1119,24 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
                   <span className="font-semibold text-slate-900">Governor: {policy.governorReadable ? policy.currentGovernor || 'unavailable' : 'unavailable'}</span>
                   <span className="text-slate-500">{policy.governorWritable ? 'OS-writable · izin tuning diperiksa terpisah' : 'Governor write unavailable'}</span>
                 </div>
-                <div className="text-slate-600">Advertised (discovery): {policy.availableGovernors.join(', ') || 'unavailable'}</div>
-                <div className="font-mono text-slate-500">Current {policy.currentKhz == null ? '—' : policy.currentKhz + ' kHz'} · min {policy.minKhz == null ? '—' : policy.minKhz + ' kHz'} · max {policy.maxKhz == null ? '—' : policy.maxKhz + ' kHz'}</div>
+                <div className="text-slate-600">CPU topology (kernel): {policy.relatedCpus || 'unavailable'} · governors: {policy.availableGovernors.join(', ') || 'unavailable'}</div>
+                <div className="font-mono text-slate-500">Current {policy.currentKhz == null ? '—' : policy.currentKhz + ' kHz'} · policy min {policy.minKhz == null ? '—' : policy.minKhz + ' kHz'} · policy max {policy.maxKhz == null ? '—' : policy.maxKhz + ' kHz'}</div>
+                <div className="font-mono text-slate-500">Kernel hardware min {policy.hardwareMinKhz == null ? 'unavailable' : policy.hardwareMinKhz + ' kHz'} · max {policy.hardwareMaxKhz == null ? 'unavailable' : policy.hardwareMaxKhz + ' kHz'}</div>
+                <div className="font-mono text-slate-500 break-words">Kernel OPPs ({policy.availableFrequenciesKhz.length}): {policy.availableFrequenciesKhz.length ? policy.availableFrequenciesKhz.join(', ') + ' kHz' : 'not advertised; no inferred frequencies'}</div>
               </div>
             ))}
             {!(d.cpuPolicies || []).length && <p className="px-5 py-4 text-xs text-slate-500">Inventaris CPUFreq belum tersedia dari daemon. Tidak memakai data preview sebagai pengganti.</p>}
           </div>
+        </section>
+      )}
+
+      {isNativeBridge && d && (
+        <section aria-label="Device capability provenance" className="cf-card bg-white border border-slate-200 rounded-xl px-5 py-4 text-xs space-y-2">
+          <h2 className="text-base font-semibold text-slate-900">Device Capability · Evidence</h2>
+          <p className="text-slate-600">Observed: {d.device.manufacturer || 'unknown'} {d.device.model || 'unknown'} · SoC {d.device.socModel || 'unavailable'} · Android {d.device.androidRelease || 'unavailable'} (API {d.device.sdkLevel || '?'})</p>
+          <p className="text-slate-600">Kernel {d.device.kernelRelease || 'unavailable'} · Security patch {d.device.securityPatch || 'unavailable'} · Firmware {d.device.firmwareIncremental || 'unavailable'}</p>
+          <p className="text-slate-600">Vendor evidence: {d.device.vendorFilesParsed} files / {d.device.vendorKnobs} tunables · discovery {d.device.discoveryTruncated ? 'INCOMPLETE (bounded budget)' : 'complete within discovery budget'}</p>
+          <p className="text-slate-500">Informasi berasal dari device/kernel aktif, bukan profil chipset generik. Kernel OPP yang tidak tersedia tidak dianggap aman untuk ditulis. Mutasi tetap memerlukan izin, evidence, dan pemeriksaan seluruh konfigurasi.</p>
         </section>
       )}
 

@@ -102,3 +102,13 @@ constraints or end-to-end checkpoint acceptance have been completed.
 The existing v3.1.2 scoped trial holds, accepted-configuration retention, and
 group outcome attribution remain mandatory. Android ARM64 CI and on-device
 acceptance are still needed before this checkpoint can be called stable.
+
+## Device-aware diagnostic evidence (post-v3.1.2 source checkpoint)
+
+Read-only CPUFreq inventory exposes each policy's related CPUs, live scaling
+limits, live cpuinfo hardware bounds and the optional *complete, bounded*
+`scaling_available_frequencies` table. Missing/out-of-range/oversized tables
+are reported as unavailable rather than extrapolated. The status also exposes
+observed firmware incremental/security patch, vendor file/knob counts and
+whether tunable discovery reached a budget cap. These diagnostic fields never
+authorize mutations or supersede OEM Power HAL and thermal limits.

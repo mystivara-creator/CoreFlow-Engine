@@ -87,6 +87,10 @@
         return { path: str(p.path,4096), currentGovernor: str(p.current_governor,96),
           governorReadable: bool(p.governor_readable), governorWritable: bool(p.governor_writable),
           currentKhz: num(p.current_khz), minKhz: num(p.min_khz), maxKhz: num(p.max_khz),
+          hardwareMinKhz: num(p.hardware_min_khz), hardwareMaxKhz: num(p.hardware_max_khz),
+          relatedCpus: str(p.related_cpus,128),
+          availableFrequenciesKhz: (Array.isArray(p.available_frequencies_khz) ? p.available_frequencies_khz : [])
+            .slice(0,64).filter(function(v) { return Number.isSafeInteger(v) && v > 0; }),
           availableGovernors: (Array.isArray(p.available_governors) ? p.available_governors : []).slice(0,32).filter(function(t) { return typeof t === "string"; }).map(function(t) { return str(t,96); }) };
       }),
       trialHistory: { available: isObj(j.trial_history), ready: isObj(j.trial_history) ? bool(j.trial_history.ready) : true,
@@ -108,12 +112,15 @@
         board: str(v.board, 96), hardware: str(v.hardware, 96),
         socManufacturer: str(v.soc_manufacturer, 96), socModel: str(v.soc_model, 96),
         androidRelease: str(v.android_release, 32), sdkLevel: str(v.sdk_level, 16),
+        securityPatch: str(v.security_patch, 40), firmwareIncremental: str(v.firmware_incremental, 80),
         kernelRelease: str(v.kernel_release, 128), abi: str(v.abi, 32),
         procAvailable: bool(v.proc_available), sysAvailable: bool(v.sys_available),
         cgroupV2: bool(v.cgroup_v2), cpuset: bool(v.cpuset_available),
         uclamp: bool(v.uclamp_available), schedulerControls: bool(v.scheduler_controls_available),
         devfreq: bool(v.devfreq_available), discoveredResources: int(v.discovered_resources, 0),
         mutationReadyResources: int(v.mutation_ready_resources, 0),
+        vendorFilesParsed: int(v.vendor_files_parsed, 0), vendorKnobs: int(v.vendor_knobs, 0),
+        discoveryTruncated: bool(v.discovery_truncated),
         expandedDomains: (function () {
           var out = [];
           if (!Array.isArray(v.expanded_domains)) return out;
