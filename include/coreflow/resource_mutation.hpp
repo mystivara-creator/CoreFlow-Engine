@@ -140,7 +140,8 @@ public:
         return last_actuator_status_;
     }
 
-    static constexpr std::size_t kMaxCohortWrites = 3U;
+    // Only one independently measurable resource change per outcome epoch.
+    static constexpr std::size_t kMaxCohortWrites = 1U;
     // CPU-governor follow-ups may select only candidates with coupling evidence.
     void setCoupledOnly(bool value) noexcept { coupled_only_ = value; }
     void setConditionDriven(bool value) noexcept { condition_driven_ = value; }
