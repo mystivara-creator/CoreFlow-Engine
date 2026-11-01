@@ -1573,7 +1573,77 @@ void test_resource_actuator_rejects_scope_only_permit() {
     fs::remove_all(root);
 }
 
+
+void test_semantic_bounds_cover_all_candidate_origins() {
+    EffectModel model;
+    ResourceCapability cap;
+    cap.domain = ResourceDomain::Memory;
+    cap.name = "vm.swappiness";
+    cap.path = "/proc/sys/vm/swappiness";
+    cap.exists = true;
+    cap.readable = true;
+    cap.writable = true;
+    cap.permission_granted = true;
+    cap.policy_authorized = true;
+    cap.runtime_verified = true;
+    cap.mutation_ready = true;
+
+    EffectContext context;
+    context.state = RuntimeState::Elevated;
+    context.mem_available_ratio = 0.50;
+    context.sample_confidence = 1.0;
+    context.intervention = InterventionLevel::Moderate;
+    context.cpu_utilization = 0.85;
+    context.cpu_utilization_available = true;
+
+    cap.vendor_values = {
+        {"201", VendorProfile::Performance, "invalid_vendor_range"},
+        {"-1", VendorProfile::Performance, "invalid_vendor_negative"},
+        {"160", VendorProfile::Performance, "valid_vendor_value"}
+    };
+    cap.options = {"120", "220", "160"};
+    cap.ordered_scale = true;
+    for (const auto& score : model.proposals(cap, "120", context)) {
+        CHECK(score.requested != "201");
+        CHECK(score.requested != "-1");
+        CHECK(score.requested != "220");
+    }
+    // A valid vendor value must not be suppressed by invalid siblings.
+    const auto accepted_swappiness = model.proposals(cap, "120", context);
+    CHECK(std::any_of(accepted_swappiness.begin(), accepted_swappiness.end(),
+                      [](const EffectScore& score) { return score.requested == "160"; }));
+
+    cap.domain = ResourceDomain::UClamp;
+    cap.name = "cpu.uclamp.min";
+    cap.path = "/sys/fs/cgroup/top-app/cpu.uclamp.min";
+    cap.options.clear();
+    cap.ordered_scale = false;
+    cap.vendor_values = {
+        {"101.00", VendorProfile::Performance, "out_of_range"},
+        {"max", VendorProfile::Performance, "min_cannot_be_max"},
+        {"25.00", VendorProfile::Performance, "valid_percentage"}
+    };
+    const auto clamp_candidates = model.proposals(cap, "10.00", context);
+    for (const auto& score : clamp_candidates) {
+        CHECK(score.requested != "101.00");
+        CHECK(score.requested != "max");
+    }
+
+    cap.domain = ResourceDomain::CpuFreq;
+    cap.name = "cpufreq.governor.hispeed_freq";
+    cap.path = "/sys/devices/system/cpu/cpufreq/policy4/schedutil/hispeed_freq";
+    cap.vendor_values = {{"2400001", VendorProfile::Performance, "beyond_table"}};
+    cap.options.clear();
+    cap.ordered_scale = false;
+    CHECK(model.proposals(cap, "691200", context).empty());
+    cap.ordered_scale = true;
+    cap.options = {"691200", "1804800", "2400000"};
+    for (const auto& score : model.proposals(cap, "691200", context))
+        CHECK(score.requested != "2400001");
+}
+
 int main() {
+    test_semantic_bounds_cover_all_candidate_origins();
     test_resource_actuator_rejects_scope_only_permit();
     test_journal_commit_failure_is_diagnosed();
     test_file_journal_clear_reports_directory_sync_failure();

@@ -82,3 +82,23 @@ History is separate from restore journals and advisory experience, scoped to the
 device/firmware/kernel, and bounded to 128 member records. A reserve prevents a
 full same-context cache from rotating old failures out just to repeat them.
 See [checkpoint v3.1.2](CHECKPOINT_3.1.2.md).
+
+## Adaptive value admission hardening (post-v3.1.2, unreleased)
+
+Candidate values from vendor hints, kernel-advertised options, and bounded steps
+must all obey reviewed Linux/Android numeric bounds. Standard cgroup uclamp
+percentages use 0..100, and `max` is accepted only on `cpu.uclamp.max`.
+Discrete hardware frequency and level proposals must be members of the live
+advertised OPP/option list. If a governor frequency has no verified scale,
+CoreFlow defers that candidate instead of guessing a GHz target or overclocking.
+
+Immediately before a resource write, the controller re-reads coupled sibling
+values. `vm.dirty_background_ratio` must not exceed `vm.dirty_ratio`;
+`cpu.uclamp.min` must not exceed `cpu.uclamp.max`. A stale/conflicting
+proposal is skipped before journaling or touching a kernel node. This is a
+conservative incremental change, not a claim that all device-specific ABI
+constraints or end-to-end checkpoint acceptance have been completed.
+
+The existing v3.1.2 scoped trial holds, accepted-configuration retention, and
+group outcome attribution remain mandatory. Android ARM64 CI and on-device
+acceptance are still needed before this checkpoint can be called stable.

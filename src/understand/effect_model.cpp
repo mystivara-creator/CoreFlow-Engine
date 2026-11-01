@@ -374,6 +374,49 @@ std::vector<EffectScore> EffectModel::proposals(
                         EffectDirection direction, bool stabilizing, const char* reason, const std::string* origin=nullptr) {
             if (requested.empty() || requested == base_text) return;
             if (isFatalValue(base_text, requested)) return;
+            // Enforce reviewed ABI bounds for EVERY proposal origin, including
+            // vendor profiles and kernel-advertised choices. Bounded-step
+            // generation is not the only source of candidate numbers.
+            if (semantic_numeric_bounds) {
+                if (cgroup_uclamp_percent) {
+                    if (requested == "max") {
+                        if (!endsWith(capability.path, "/cpu.uclamp.max")) return;
+                    } else {
+                        const std::size_t dot = requested.find('.');
+                        if (dot != std::string::npos &&
+                            (dot == 0U || dot + 1U == requested.size() ||
+                             requested.find('.', dot + 1U) != std::string::npos ||
+                             requested.size() - dot - 1U > 6U)) return;
+                        const std::string digits = dot == std::string::npos
+                            ? requested : requested.substr(0, dot) + requested.substr(dot + 1U);
+                        if (digits.empty() || !std::all_of(digits.begin(), digits.end(),
+                            [](char ch) { return ch >= '0' && ch <= '9'; })) return;
+                        long long value = 0;
+                        if (!parseInteger(digits, value)) return;
+                        long long scale = 1LL;
+                        if (dot != std::string::npos)
+                            for (std::size_t i = dot + 1U; i < requested.size(); ++i) scale *= 10LL;
+                        if (value < 0LL || value > 100LL * scale) return;
+                    }
+                } else {
+                    long long domain_min = 0, domain_max = 0;
+                    if (kernelScalarBounds(knowledge, 1LL, domain_min, domain_max)) {
+                        long long numeric = 0;
+                        if (!parseInteger(requested, numeric) ||
+                            numeric < domain_min || numeric > domain_max) return;
+                    }
+                }
+            }
+            // An ordered hardware scale is discrete. Vendor hints cannot
+            // authorize an OPP absent from the active kernel's own table.
+            if (capability.ordered_scale && !capability.options.empty() &&
+                std::find(capability.options.begin(), capability.options.end(), requested) ==
+                    capability.options.end()) return;
+            // A CPU governor frequency without the live OPP list cannot be
+            // validated against this policy; never guess a frequency or overclock.
+            if (knowledge != nullptr && knowledge->key != nullptr &&
+                std::string_view(knowledge->key) == "cpufreq.governor.hispeed_freq" &&
+                (!capability.ordered_scale || capability.options.empty())) return;
             bool evidence_stabilizing = stabilizing;
             if (block_scheduler && situation.stressed()) {
                 // Scheduler changes are relevant to an I/O bottleneck, not a

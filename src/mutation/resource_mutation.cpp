@@ -2,6 +2,7 @@
 #include "coreflow/context.hpp"
 #include "coreflow/decision_trace.hpp"
 #include "coreflow/tunable_discovery.hpp"
+#include "coreflow/integer_parse.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,6 +27,50 @@ std::string trim(std::string value) {
     }
     if (first != 0) value.erase(0, first);
     return value;
+}
+
+
+bool liveDependentBoundsAllow(ResourceDomain domain, const std::string& path,
+                              const std::string& requested) noexcept {
+    // Recheck siblings against the LIVE configuration immediately before the
+    // first privileged write. Earlier ranking may have observed older values,
+    // including after another member of a coordinated cohort changed them.
+    if (domain == ResourceDomain::Memory &&
+        (path.ends_with("/dirty_ratio") || path.ends_with("/dirty_background_ratio"))) {
+        const bool background = path.ends_with("/dirty_background_ratio");
+        const std::string_view leaf = background ? "/dirty_background_ratio" : "/dirty_ratio";
+        const std::string peer_path = path.substr(0, path.size() - leaf.size()) +
+            (background ? "/dirty_ratio" : "/dirty_background_ratio");
+        std::string peer;
+        long long target_value = 0, peer_value = 0;
+        if (!ResourceActuator::readComparable(peer_path, peer) ||
+            !integer_parse::parseSignedDecimal(requested, target_value) ||
+            !integer_parse::parseSignedDecimal(peer, peer_value)) return false;
+        return background ? target_value <= peer_value : target_value >= peer_value;
+    }
+    if (domain == ResourceDomain::UClamp &&
+        (path.ends_with("/cpu.uclamp.min") || path.ends_with("/cpu.uclamp.max"))) {
+        const bool minimum = path.ends_with("/cpu.uclamp.min");
+        const auto slash = path.find_last_of('/');
+        if (slash == std::string::npos) return false;
+        std::string peer;
+        if (!ResourceActuator::readComparable(path.substr(0, slash) +
+            (minimum ? "/cpu.uclamp.max" : "/cpu.uclamp.min"), peer)) return false;
+        const auto parse_percent = [](const std::string& text, double& value) noexcept {
+            if (text == "max") { value = 100.0; return true; }
+            try {
+                std::size_t consumed = 0;
+                value = std::stod(text, &consumed);
+                return consumed == text.size() && std::isfinite(value) &&
+                       value >= 0.0 && value <= 100.0;
+            } catch (...) { return false; }
+        };
+        double target = 0.0, other = 0.0;
+        if ((minimum && requested == "max") ||
+            !parse_percent(requested, target) || !parse_percent(peer, other)) return false;
+        return minimum ? target <= other : target >= other;
+    }
+    return true;
 }
 
 bool isMutableDomain(ResourceDomain domain) noexcept {
@@ -736,6 +781,18 @@ MutationResult ResourceMutationController::applyCandidate(
     if (!prewrite_read_ok) {
         last_failure_stage_ = ResourceMutationFailureStage::BaselineRead;
         return MutationResult::Failed;
+    }
+    if (!liveDependentBoundsAllow(candidate.domain, candidate.path,
+                                  candidate.requested)) {
+        if (trace_context != nullptr) {
+            DecisionTraceEvent event{"mutation_preflight_failed", "resource", "SKIPPED",
+                                     "live_sibling_configuration_constraint"};
+            event.target = candidate.path.c_str();
+            event.requested = candidate.requested.c_str();
+            event.current_value = previous_value.c_str();
+            appendDecisionTraceEvent(*trace_context, event);
+        }
+        return MutationResult::Skipped;
     }
     const bool was_dirty_before = dirty_resources_.find(candidate.path) != dirty_resources_.end();
     const bool from_retained = std::any_of(retained_entries_.begin(), retained_entries_.end(),
