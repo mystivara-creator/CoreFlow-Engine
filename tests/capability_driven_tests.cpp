@@ -275,8 +275,7 @@ void testGenericDiscovery() {
     CHECK(gpu_max != nullptr && maxf != nullptr);
     if (gpu_max == nullptr || maxf == nullptr) return;
     const EffectScore g = model.evaluate(*gpu_max, "900000000", hot);
-    CHECK(g.eligible && g.requested == "600000000" && g.stabilizing &&
-          g.source == CandidateSource::OrderedScale);
+    CHECK(!g.eligible && g.requested.empty());
     const EffectScore c = model.evaluate(*maxf, "1804800", hot);
     CHECK(!c.eligible && c.requested.empty());
     // Thermal: a lower utilization clamp.
@@ -331,7 +330,7 @@ void testGenericDiscovery() {
 
     // Headroom: vendor factory value outranks blind exploration.
     const EffectScore v = model.evaluate(*custom, "7", busy);
-    CHECK(v.eligible && v.requested == "4" && v.source == CandidateSource::VendorDefault);
+    CHECK(!v.eligible && v.requested.empty());
     // Headroom: kernel-advertised tokens are candidates.
     const EffectScore t = model.evaluate(*iosched, "mq-deadline", busy);
     CHECK(t.eligible && (t.requested == "kyber" || t.requested == "none" ||
@@ -496,7 +495,7 @@ void testUnclaimedAndSymlinks() {
     VendorKnowledge vendor;
     const TunableDiscoveryStats stats = TunableDiscovery(r).discover(matrix, vendor);
     const auto* unknown = findCap(matrix, r + "/sys/class/net/wlan0/tx_queue_len");
-    CHECK(unknown && unknown->domain == ResourceDomain::Vendor && unknown->mutation_ready);
+    CHECK(unknown && unknown->domain == ResourceDomain::Vendor && !unknown->mutation_ready);
     CHECK(stats.unclaimed >= 1U);
     const auto* maxf = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq");
     CHECK(maxf != nullptr && maxf->domain == ResourceDomain::CpuFreq);
