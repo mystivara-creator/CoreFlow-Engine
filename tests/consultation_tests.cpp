@@ -222,7 +222,7 @@ void testSurfaceClassification() {
     CHECK(classifySurface(ResourceDomain::Scheduler, "kernel.sched_latency_ns",
                           "/proc/sys/kernel/sched_latency_ns") == SurfaceClass::Admissible);
     CHECK(classifySurface(ResourceDomain::Gpu, "/sys/class/kgsl/kgsl-3d0/max_gpuclk",
-                          "/sys/class/kgsl/kgsl-3d0/max_gpuclk") == SurfaceClass::Admissible);
+                          "/sys/class/kgsl/kgsl-3d0/max_gpuclk") == SurfaceClass::OutOfClass);
     CHECK(classifySurface(ResourceDomain::UClamp, "/dev/cpuctl/top-app/cpu.uclamp.min",
                           "/dev/cpuctl/top-app/cpu.uclamp.min") == SurfaceClass::Admissible);
     // Fatal classes and the governor / PowerHAL cpufreq authority boundary.
