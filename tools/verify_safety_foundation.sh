@@ -44,9 +44,9 @@ $writers
 EOFWR
 
 # The new durable helper is private advisory storage, never a second actuator.
-# Keep its production caller confined to experience persistence.
-if grep -RIn 'writeDurablePrivateFile(' "$ROOT/src" --include='*.cpp' | grep -v 'src/conscience/durable_file.cpp' | grep -v 'src/understand/experience.cpp'; then
-  echo "error: durable private writes are confined to advisory experience" >&2; exit 1
+# Keep production callers confined to advisory experience/trial-admission stores.
+if grep -RIn 'writeDurablePrivateFile(' "$ROOT/src" --include='*.cpp' | grep -v 'src/conscience/durable_file.cpp' | grep -v 'src/understand/experience.cpp' | grep -v 'src/understand/trial_history.cpp'; then
+  echo "error: durable private writes are confined to advisory experience and trial history" >&2; exit 1
 fi
 
 # Direct kernel-control paths must remain read-only outside the actuator.

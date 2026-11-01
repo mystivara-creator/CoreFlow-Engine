@@ -8,6 +8,7 @@ struct CoordinatedResult {
     MutationResult resource{MutationResult::Skipped};
     std::string identity;
     std::size_t members{0};
+    std::vector<TrialMember> trials;
     std::string decision_reason, winner, cpu_reason, resource_reason;
     double cpu_utility{0.0}, resource_utility{0.0};
     CandidateFunnel funnel;

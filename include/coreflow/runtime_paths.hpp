@@ -13,6 +13,7 @@ struct RuntimePaths final {
     std::string retained_cpu;
     std::string retained_resource;
     std::string experience_db;
+    std::string trial_history;
     std::string kill_switch;
     std::string safe_mode;
     std::string status_json;
@@ -26,6 +27,7 @@ struct RuntimePaths final {
         p.retained_cpu = p.root + "/retained_cpufreq.db";
         p.retained_resource = p.root + "/retained_resource.db";
         p.experience_db = p.root + "/experience.db";
+        p.trial_history = p.root + "/trial_history.db";
         p.kill_switch = p.root + "/DISABLE";
         p.safe_mode = p.root + "/SAFE_MODE";
         p.status_json = p.root + "/status.json";

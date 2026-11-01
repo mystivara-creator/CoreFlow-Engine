@@ -48,6 +48,8 @@ struct EngineStatus {
     bool selection_current{false};
     double selection_cpu_utility{0.0}, selection_resource_utility{0.0};
     CandidateFunnel selection_funnel;
+    bool trial_history_ready{true};
+    std::size_t trial_history_records{0};
     std::string cohort_identity;
     std::size_t cohort_members{0};
     std::string recovery_phase;

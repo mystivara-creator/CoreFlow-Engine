@@ -288,6 +288,7 @@ AutonomousEngine::~AutonomousEngine() {
                             !boost_controller_.recoveryRequired();
         }
         if (!experience_memory_.flush(kPaths.experience_db)) logWarn("Experience checkpoint failed");
+        if (!trial_history_.flush()) logWarn("Trial history checkpoint failed");
         if (sample_sequence_.healthy() && !sample_sequence_.checkpoint())
             logWarn("Sample sequence checkpoint failed; lifetime continuity unavailable");
     } catch (const std::exception& e) {
@@ -307,6 +308,7 @@ bool AutonomousEngine::initialize() {
     resource_controller_.setRetainedStateStore(&resource_retained_store_);
     controller_.setExperienceMemory(&experience_memory_);
     resource_controller_.setExperienceMemory(&experience_memory_);
+    controller_.setTrialHistory(&trial_history_); resource_controller_.setTrialHistory(&trial_history_);
     logInfo("CoreFlowInitializeEnter version=%s", kCoreFlowVersion);
 
     if (!config_.load(kPaths.config_ini)) {
@@ -344,6 +346,8 @@ bool AutonomousEngine::initialize() {
                               snapshot_.profile.kernel_release;
     experience_memory_.setScope(scope);
     (void)experience_memory_.load(kPaths.experience_db);
+    if (!trial_history_.initialize(kPaths.trial_history,scope+":"+snapshot_.profile.environment.fingerprint)) logWarn("Trial history unavailable; new trials held");
+    accepted_conditions_available_=false; unneeded_samples_=0;
     mutation_cooldown_until_sample_ = 0;
 
     const bool ml_ready = thermal_predictor_.initialize(kPaths.thermal_model.c_str());
@@ -402,6 +406,7 @@ bool AutonomousEngine::refreshEnvironment() {
     resource_controller_.setRetainedStateStore(&resource_retained_store_);
     controller_.setExperienceMemory(&experience_memory_);
     resource_controller_.setExperienceMemory(&experience_memory_);
+    controller_.setTrialHistory(&trial_history_); resource_controller_.setTrialHistory(&trial_history_);
     if (!config_.runtimeRefreshEnabled()) return false;
 
     logInfo("Runtime discovery refresh requested");
@@ -444,6 +449,8 @@ bool AutonomousEngine::refreshEnvironment() {
         experience_memory_.clear();
         experience_memory_.setScope(scope);
         (void)experience_memory_.load(kPaths.experience_db);
+        if (!trial_history_.initialize(kPaths.trial_history,scope+":"+snapshot_.profile.environment.fingerprint)) logWarn("Trial history scope reload unavailable");
+        accepted_conditions_available_=false; unneeded_samples_=0;
     }
     mutation_cooldown_until_sample_ = 0;
 
@@ -696,6 +703,8 @@ void AutonomousEngine::tick() {
             }
         }
 
+        if (trial_history_.dirty() && !trial_history_.flush()) logWarn("Trial history checkpoint pending; new trials held");
+
         // STEP 1: Sample runtime environment
         RuntimeSample sample = observer_.sample(snapshot_.profile);
 
@@ -851,6 +860,11 @@ void AutonomousEngine::tick() {
             if (foreground_tracker_.poll(ia_foreground_package)) {
                 // Cross-workload measurements cannot establish causality. Drop
                 // pending trials without learning a success or a regression.
+                if (baseline_intelligence_.observing() && !last_plan_selection_.trials.empty()) {
+                    (void)trial_history_.remember(last_plan_selection_.trials,observation_conditions_,
+                        BaselineIntelligence::Outcome::Inconclusive,false,observation_identity_);
+                    if (!trial_history_.flush()) logWarn("Interrupted trial checkpoint pending");
+                }
                 boost_controller_.restoreAll();
                 const bool resource_settled = !resource_controller_.hasPendingOutcome() ||
                     resource_controller_.rollbackLastMutation();
@@ -955,6 +969,9 @@ void AutonomousEngine::tick() {
             }
         }
 
+        trial_history_.setForeground(foreground_tracker_.available() ?
+            std::string_view(foreground_tracker_.identity()) : std::string_view{});
+
         // v1.9 foundation: classify context and build a plan without granting
         // an actuator permit. MutationController remains the only owner of the
         // final mutation gate.
@@ -1002,12 +1019,23 @@ void AutonomousEngine::tick() {
         // planning. Cooling resources remain active through a confidence dip.
         const bool stress = next == RuntimeState::ThermalGuard || next == RuntimeState::Pressure;
         const bool authority_lost = config_.mutationMode() != MutationMode::Adaptive || !config_.mutationArmed();
+        const bool pending_trial=controller_.hasPendingOutcome() || resource_controller_.hasPendingOutcome();
+        const auto current_conditions=trial_history_.conditions(sample,next);
+        const bool release_unneeded=accepted_conditions_available_ && !pending_trial &&
+            TrialHistory::updateQuietRelease(accepted_conditions_,current_conditions,measuredTuningNeed(sample,next),unneeded_samples_);
+        if (!accepted_conditions_available_ || pending_trial) unneeded_samples_=0;
         const bool restore_cpu = controller_.mutated() &&
-            (authority_lost || (next == RuntimeState::Idle && controller_.hasPendingOutcome()) || stress);
+            (authority_lost || release_unneeded || (next == RuntimeState::Idle && controller_.hasPendingOutcome()) || stress);
         const bool restore_resources = resource_controller_.mutated() &&
-            (authority_lost || (next == RuntimeState::Idle && resource_controller_.hasPendingOutcome()) ||
+            (authority_lost || release_unneeded || (next == RuntimeState::Idle && resource_controller_.hasPendingOutcome()) ||
              (stress && !resource_controller_.stabilizingEpoch()));
         if (restore_cpu || restore_resources) {
+            if (pending_trial && baseline_intelligence_.observing()) {
+                (void)trial_history_.remember(last_plan_selection_.trials,observation_conditions_,
+                    BaselineIntelligence::Outcome::Inconclusive,false,observation_identity_);
+                if (!trial_history_.flush()) logWarn("Canceled trial checkpoint pending");
+            }
+            accepted_conditions_available_=false; unneeded_samples_=0;
             // Resource dependents must be unwound before their governor anchor.
             const bool resources_ok = !restore_resources || resource_controller_.restoreAll();
             const bool cpu_ok = resources_ok && (!restore_cpu || controller_.restoreAll());
@@ -1019,6 +1047,7 @@ void AutonomousEngine::tick() {
             recovery_trace.cycle = sample_count_; recovery_trace.state = next;
             appendDecisionTraceEvent(recovery_trace, {"safety_transition_settled", "cohort",
                 telemetry_recovery_pending_ ? "FAILED" : "RESTORED",
+                release_unneeded ? "accepted_context_changed_need_absent_for_three_samples" :
                 "unsafe_performance_settings_restored_cooling_settings_preserved"});
             if (telemetry_recovery_pending_) {
                 publishStatus(sample, previous, next, Decision::ReduceIntervention, context,
@@ -1282,8 +1311,8 @@ void AutonomousEngine::tick() {
                             resource_controller_.hasPendingOutcome();
                         const bool had_pending_candidate =
                             cpu_pending || resource_pending;
-                        if (resource_pending) resource_controller_.rejectLastMutation();
-                        if (cpu_pending) controller_.rejectLastMutation();
+                        // Context history below suppresses the measured trial;
+                        // a fixed per-target timer must not block a genuinely new context.
                         bool restored = rollbackCoordinatedPlan(controller_, resource_controller_);
                         if (!had_pending_candidate) {
                             restored = false;
@@ -1308,6 +1337,22 @@ void AutonomousEngine::tick() {
                     }
 
                 }
+
+                const bool accepted=mutation==MutationResult::Skipped &&
+                    (evaluation.outcome==BaselineIntelligence::Outcome::Beneficial ||
+                     evaluation.outcome==BaselineIntelligence::Outcome::Neutral);
+                // A durable-retention failure is not performance evidence against
+                // the candidate; existing recovery gates handle that failure.
+                if (accepted || evaluation.outcome!=BaselineIntelligence::Outcome::Beneficial) {
+                    const bool remembered=trial_history_.remember(last_plan_selection_.trials,observation_conditions_,
+                        evaluation.outcome,accepted,observation_identity_);
+                    const bool checkpointed=trial_history_.flush();
+                    appendDecisionTraceEvent(trace_context,{"trial_memory_recorded","cohort",
+                        remembered && checkpointed ? "STORED" : "CHECKPOINT_PENDING",
+                        accepted ? "accepted_plan_held_while_conditions_match" : "retry_requires_material_conditions_change"});
+                    if (!remembered || !checkpointed) logWarn("Trial admission memory unavailable; new trials held");
+                }
+                if (accepted) { accepted_conditions_=observation_conditions_; accepted_conditions_available_=true; }
 
                 const char* outcome_reason = "observation_outcome_unknown";
                 switch (evaluation.outcome) {
@@ -1350,17 +1395,18 @@ void AutonomousEngine::tick() {
             !resource_controller_.hasPendingOutcome() && boost_controller_.activeCount() == 0U &&
             !boost_controller_.recoveryRequired()) {
             const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
-            const auto result = executeCoordinatedPlan(controller_, resource_controller_, next,
+            auto planned = executeCoordinatedPlan(controller_, resource_controller_, next,
                 sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);
-            if (!result.verified() && (!selection_available_ ||
-                result.decision_reason!=last_plan_selection_.decision_reason ||
-                result.cpu_reason!=last_plan_selection_.cpu_reason ||
-                result.resource_reason!=last_plan_selection_.resource_reason)) {
-                const std::string reason=result.decision_reason+"; CPUFreq="+result.cpu_reason+
-                    "; resources="+result.resource_reason;
+            if (!planned.verified() && (!selection_available_ ||
+                planned.decision_reason!=last_plan_selection_.decision_reason ||
+                planned.cpu_reason!=last_plan_selection_.cpu_reason ||
+                planned.resource_reason!=last_plan_selection_.resource_reason)) {
+                const std::string reason=planned.decision_reason+"; CPUFreq="+planned.cpu_reason+
+                    "; resources="+planned.resource_reason;
                 appendDecisionTraceEvent(trace_context,{"plan_selection_reviewed","planner","HELD",reason.c_str()});
             }
-            last_plan_selection_=result;
+            last_plan_selection_=std::move(planned);
+            const auto& result=last_plan_selection_;
             last_selection_sample_=sample_count_; selection_available_=true;
             mutation = result.cpu;
             cpu_mutation_for_trace = result.cpu;
@@ -1371,9 +1417,10 @@ void AutonomousEngine::tick() {
             trace_context.resource_mutation = result.resource;
             trace_context.cpu_mutation_known = trace_context.resource_mutation_known = true;
             if (result.verified()) {
-                observation_identity_ = result.identity;
+                observation_identity_.swap(last_plan_selection_.identity);
                 observation_cohort_ = result.members > 1U;
                 observation_members_ = result.members;
+                observation_conditions_=trial_history_.conditions(sample,next);
                 if (baseline_intelligence_.beginObservation()) {
                     observation_context_ = decisionContext();
                     appendDecisionTraceEvent(trace_context, {"observation_window_started", "cohort",
@@ -1382,6 +1429,9 @@ void AutonomousEngine::tick() {
                     const bool rolled = rollbackCoordinatedPlan(controller_, resource_controller_) ||
                         restoreCoordinatedPlan(controller_, resource_controller_);
                     telemetry_recovery_pending_ = !rolled;
+                    (void)trial_history_.remember(last_plan_selection_.trials,observation_conditions_,
+                        BaselineIntelligence::Outcome::Inconclusive,false,observation_identity_);
+                    if (!trial_history_.flush()) logWarn("Unstarted trial checkpoint pending");
                     mutation = resource_mutation = telemetry_recovery_pending_
                         ? MutationResult::Failed : MutationResult::RolledBack;
                 }
@@ -1566,6 +1616,7 @@ void AutonomousEngine::publishStatus(
         s.selection_cpu_utility=last_plan_selection_.cpu_utility;
         s.selection_resource_utility=last_plan_selection_.resource_utility;
         s.selection_funnel=last_plan_selection_.funnel;
+        s.trial_history_ready=trial_history_.ready(); s.trial_history_records=trial_history_.size();
         s.outcome_reason=last_outcome_reason_;
         s.outcome_available=outcome_available_; s.outcome=last_outcome_evaluation_;
         s.cohort_identity = observation_identity_;

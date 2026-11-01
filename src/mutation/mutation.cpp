@@ -298,8 +298,9 @@ bool MutationController::buildPlan(
     std::vector<MutationPlanEntry>& plan
 ) const noexcept try {
     plan.clear();
+    const auto trial_conditions=trial_history_ ? trial_history_->conditions(sample,state) : TrialConditions{};
     plan_reason_ = "no_admissible_cpu_policy";
-    std::size_t live_policies=0, alternatives=0, rejected=0;
+    std::size_t live_policies=0, alternatives=0, rejected=0, history_held=0;
     bool measured_hold=false;
 
     for (const CpuPolicy& policy : profile.cpu_policies) {
@@ -317,6 +318,8 @@ bool MutationController::buildPlan(
         std::string current;
         if (!readLiveGovernor(governorPath, current)) continue;
         ++live_policies;
+        if (trial_history_ && trial_history_->blockReason(governorPath,current,ResourceDomain::CpuFreq,
+            trial_conditions)) { ++history_held; continue; }
         for (const auto& token:policy.available_governors) {
             if (!validGovernorToken(token) || token==current) continue;
             ++alternatives;
@@ -382,6 +385,8 @@ bool MutationController::buildPlan(
 
         for (const std::string& governor : policy.available_governors) {
             if (governor.empty() || isRejected(policy.path, governor)) continue;
+            if (trial_history_ && governor!=current && trial_history_->blockReason(governorPath,current,
+                ResourceDomain::CpuFreq,trial_conditions,governor)) { ++history_held; continue; }
 
             const double score = adjustedScore(governor);
             if (score < 0.0) continue;
@@ -433,7 +438,9 @@ bool MutationController::buildPlan(
             for (const std::string& candidate : policy.available_governors) {
                 if (!validGovernorToken(candidate) || candidate == current ||
                     isRejected(policy.path, candidate) ||
-                    experienceRecordFor(candidate) != nullptr) {
+                    experienceRecordFor(candidate) != nullptr ||
+                    (trial_history_ && trial_history_->blockReason(governorPath,current,ResourceDomain::CpuFreq,
+                        trial_conditions,candidate))) {
                     continue;
                 }
                 const double candidate_score = adjustedScore(candidate);
@@ -463,6 +470,7 @@ bool MutationController::buildPlan(
     if (!plan.empty()) plan_reason_="higher_scoring_advertised_governor";
     else if (profile.cpu_policies.empty()) plan_reason_="no_discovered_cpufreq_policy";
     else if (live_policies==0U) plan_reason_="no_live_writable_baselined_cpu_policy";
+    else if (history_held>0U) plan_reason_="cpu_trial_held_until_material_conditions_change";
     else if (alternatives==0U) plan_reason_="no_advertised_governor_alternative";
     else if (measured_hold) plan_reason_="measured_current_governor_held";
     else if (rejected==alternatives) plan_reason_="all_governor_alternatives_in_rejection_cooldown";
@@ -475,6 +483,7 @@ PlanOption MutationController::preview(RuntimeState state, const RuntimeSample& 
     ++decision_cycle_; // cooldowns age even when keeping the current configuration
     try {
         PlanOption best;
+        if (trial_history_ && !trial_history_->ready()) { best.reason="trial_history_checkpoint_unavailable"; return best; }
         if (profile.cpu_policies.empty()) { best.reason="no_discovered_cpufreq_policy"; return best; }
         if (!recoveryReady() || !baseline_captured_ || pending_outcome_) {
             best.reason="cpu_baseline_recovery_or_measurement_pending"; return best;
@@ -1028,6 +1037,13 @@ void MutationController::refreshActiveSettingsCache() noexcept {
     } catch (...) {
         active_governors_cache_.clear();
     }
+}
+
+bool MutationController::appendPendingTrials(std::vector<TrialMember>& out) const noexcept {
+    try {
+        if (pending_outcome_) out.push_back({ResourceDomain::CpuFreq,last_mutation_path_,last_previous_value_,last_mutation_target_});
+        return true;
+    } catch (...) { return false; }
 }
 
 void MutationController::rejectLastMutation() noexcept {

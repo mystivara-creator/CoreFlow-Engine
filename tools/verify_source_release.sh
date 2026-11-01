@@ -8,6 +8,9 @@ required_files="
 CMakeLists.txt
 package.json
 package-lock.json
+include/coreflow/trial_history.hpp
+src/understand/trial_history.cpp
+tests/trial_history_tests.cpp
 include/coreflow/outcome_diagnostics.hpp
 include/coreflow/plan_option.hpp
 include/coreflow/coordinated_plan.hpp
@@ -24,6 +27,7 @@ webui/components/AppearanceControls.tsx
 webui/engine/settingsGuide.ts
 docs/CHECKPOINT_3.1.0.md
 docs/CHECKPOINT_3.1.1.md
+docs/CHECKPOINT_3.1.2.md
 module/module.prop
 module/update.json
 .github/workflows/release-update-feed.yml

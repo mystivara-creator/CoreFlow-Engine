@@ -117,6 +117,11 @@ private:
     NotificationEvent last_notification_{NotificationEvent::None};
     BaselineIntelligence baseline_intelligence_;
     ExperienceMemory experience_memory_;
+    TrialHistory trial_history_;
+    TrialConditions observation_conditions_{};
+    TrialConditions accepted_conditions_{};
+    bool accepted_conditions_available_{false};
+    unsigned unneeded_samples_{0};
     // Context in which the currently observed candidate was chosen.
     ExperienceMemory::Context observation_context_{};
     ThermalPredictor thermal_predictor_;

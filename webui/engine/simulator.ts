@@ -1427,7 +1427,7 @@ export function formatStartupLogs(
       timeFormatted,
       level: 'I',
       tag: 'CoreFlowAutonomous',
-      message: `CoreFlow Autonomous v3.1.1 | abi=${profile.abi} kernel=${profile.kernelRelease} vm.swappiness=${profile.stockSwappiness} zram=${profile.zramSizeMb}MB discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
+      message: `CoreFlow Autonomous v3.1.2 | abi=${profile.abi} kernel=${profile.kernelRelease} vm.swappiness=${profile.stockSwappiness} zram=${profile.zramSizeMb}MB discovered=${profile.discoveredResources} ready=${profile.mutationReadyResources}`,
     },
     {
       id: `boot-2-${nonce}`,

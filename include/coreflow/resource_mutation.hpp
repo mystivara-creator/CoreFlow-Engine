@@ -1,4 +1,5 @@
 #pragma once
+#include "coreflow/trial_history.hpp"
 
 #include <cstdint>
 #include <string>
@@ -87,6 +88,8 @@ public:
     // enabled; scheduler tokens remain out-of-class. Legacy journal restore is
     // still permitted for recovery.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
+    void setTrialHistory(const TrialHistory* history) noexcept { trial_history_=history; }
+    bool appendPendingTrials(std::vector<TrialMember>& out) const noexcept;
 
     PlanOption preview(RuntimeState state, const RuntimeSample& sample, const DeviceProfile& profile,
                        const EngineConfig& config, const PolicyPlan& policy) noexcept;
@@ -224,6 +227,7 @@ private:
     std::vector<std::pair<std::string, std::string>> retained_active_resources_;
     std::vector<std::pair<std::string, std::string>> active_resources_cache_;
     const ExperienceMemory* experience_memory_{nullptr};
+    const TrialHistory* trial_history_{nullptr};
     ResourceActuator actuator_;
     ScoringDecisionAgent decision_agent_;
     std::unordered_map<std::string, Baseline> baseline_;

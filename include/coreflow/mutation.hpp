@@ -1,4 +1,5 @@
 #pragma once
+#include "coreflow/trial_history.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -53,6 +54,8 @@ public:
     // Returns false when no trustworthy baseline exists (pending journal not
     // recovered, or governors still mutated). Callers must not mutate then.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
+    void setTrialHistory(const TrialHistory* history) noexcept { trial_history_=history; }
+    bool appendPendingTrials(std::vector<TrialMember>& out) const noexcept;
 
     MutationResult apply(
         RuntimeState state,
@@ -151,6 +154,7 @@ private:
     // policy_path -> governor -> decision cycle at which it was rejected
     std::unordered_map<std::string, std::unordered_map<std::string, std::uint64_t>> rejected_;
     const ExperienceMemory* experience_memory_{nullptr};
+    const TrialHistory* trial_history_{nullptr};
     MutationJournal* journal_{nullptr};
     RetainedStateStore* retained_store_{nullptr};
     RetainedStateStore::Entries retained_entries_;

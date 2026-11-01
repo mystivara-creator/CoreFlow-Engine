@@ -340,9 +340,58 @@ int cpuReviewExplainsNoWrite() {
     return 0;
 }
 
+int contextualHistoryPreventsRepeatAndDrift() {
+    Fixture f; f.governor("walt");
+    const auto clamp=f.add(ResourceDomain::UClamp,"top-app:cpu.uclamp.min","dev/cpuctl/top-app/cpu.uclamp.min","0.00");
+    TrialHistory history; CHECK(history.initialize((f.root/"trial-history").string(),"device:kernel"));
+    f.cpu.setTrialHistory(&history); f.resources.setTrialHistory(&history);
+    CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
+    auto s=sample(false); const auto p=plan(f.profile,s,RuntimeState::Elevated);
+    const auto first=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(first.resource==MutationResult::Verified && first.trials.size()==1U);
+    CHECK(first.trials[0].previous=="0.00" && first.trials[0].path==clamp);
+    CHECK(history.remember(first.trials,history.conditions(s,RuntimeState::Elevated),BaselineIntelligence::Outcome::Neutral,false,first.identity));
+    CHECK(history.flush()); CHECK(rollbackCoordinatedPlan(f.cpu,f.resources));
+    const auto commits=f.resource_journal.commits;
+    for (unsigned i=0;i<250U;++i) {
+        const auto retry=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+        CHECK(!retry.verified() && retry.funnel.history_held>0U);
+    }
+    CHECK(f.resource_journal.commits==commits && f.read(clamp)=="0.00");
+    s.charging=true; // a relevant power/workload condition changed, not an expired timer
+    const auto next=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(next.resource==MutationResult::Verified);
+    CHECK(history.remember(next.trials,history.conditions(s,RuntimeState::Elevated),BaselineIntelligence::Outcome::Beneficial,true,next.identity));
+    CHECK(history.flush()); CHECK(f.resources.acceptCoordinatedMutation());
+    const auto accepted=f.read(clamp); const auto held_commits=f.resource_journal.commits;
+    for (unsigned i=0;i<150U;++i) CHECK(!executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p).verified());
+    CHECK(f.read(clamp)==accepted && f.resource_journal.commits==held_commits);
+    CHECK(restoreCoordinatedPlan(f.cpu,f.resources)); return 0;
+}
+int distinctGovernorMayCompeteAfterFailedTrial() {
+    Fixture f; const auto policy=f.governor(); f.profile.cpu_policies[0].available_governors={"powersave","walt","schedutil"};
+    TrialHistory history; CHECK(history.initialize((f.root/"trial-history").string(),"device:kernel"));
+    f.cpu.setTrialHistory(&history); f.resources.setTrialHistory(&history);
+    CHECK(f.cpu.captureBaseline(f.profile)); auto s=sample(false);
+    PolicyPlan p; p.action=PolicyAction::Candidate; p.intervention=InterventionLevel::Moderate; p.mutation_eligible=true;
+    const auto first=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(first.cpu==MutationResult::Verified && first.trials.size()==1U);
+    CHECK(f.read(policy+"/scaling_governor")=="walt");
+    CHECK(history.remember(first.trials,history.conditions(s,RuntimeState::Elevated),BaselineIntelligence::Outcome::Regression,false,first.identity));
+    CHECK(history.flush()); CHECK(rollbackCoordinatedPlan(f.cpu,f.resources));
+    const auto next=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+    CHECK(next.cpu==MutationResult::Verified && f.read(policy+"/scaling_governor")=="schedutil");
+    CHECK(history.remember(next.trials,history.conditions(s,RuntimeState::Elevated),BaselineIntelligence::Outcome::Regression,false,next.identity));
+    CHECK(history.flush()); CHECK(rollbackCoordinatedPlan(f.cpu,f.resources));
+    const auto commits=f.cpu_journal.commits;
+    for (unsigned i=0;i<250U;++i) CHECK(!executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p).verified());
+    CHECK(f.cpu_journal.commits==commits && f.read(policy+"/scaling_governor")=="powersave");
+    CHECK(restoreCoordinatedPlan(f.cpu,f.resources)); return 0;
+}
+
 }
 int main() {
-    const int result=cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
+    const int result=contextualHistoryPreventsRepeatAndDrift() || distinctGovernorMayCompeteAfterFailedTrial() || cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
         dependentRollbackFailurePreservesGovernor() || externalMemberWithdrawn() || ioSchedulerCompanions() || incompleteCrashRecoveryKeepsJournal() || crashRestoresWholeCohort();
     if (!result) std::puts("CoreFlow coordinated and thermal plans: PASS");
     return result;

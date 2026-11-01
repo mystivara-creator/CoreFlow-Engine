@@ -1,3 +1,22 @@
+## v3.1.2 — Context-aware trial retention
+
+- Persist bounded trial-admission history per device/firmware/kernel scope. An
+  elapsed cooldown alone no longer reopens an unsuccessful measured trial.
+- Defer regressing, neutral-unretained and inconclusive trials until relevant
+  conditions or the live starting configuration materially change.
+- Suppress nearby scalar variants on a failed surface without claiming that each
+  member of a failed cohort independently caused regression. Distinct categorical
+  alternatives can still compete through normal capability and safety gates.
+- Hold accepted live settings against repeated fine-tuning in matching conditions;
+  release an unneeded accepted configuration only after a material change and
+  three consecutive no-need samples. Existing immediate safety recovery remains.
+- Use measured thermal/CPU/memory/PSI/latency/render changes, foreground identity,
+  display period, and known charging transitions; ignore transient trend labels
+  and lost telemetry as reasons to retry.
+- Preserve trial metadata before observation, move verified plans into their owner
+  without copying, and make failed persistence visible while holding new trials.
+- Expose trial-memory readiness, record counts and proposal holds in the WebUI.
+
 ## v3.1.1 — Native CPU visibility & outcome evidence checkpoint
 
 - Keep native CPUFreq policies visible even without an active CPU write. Publish

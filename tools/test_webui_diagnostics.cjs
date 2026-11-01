@@ -173,12 +173,16 @@ function button(tree, label) {
     const renderApp = () => { hookIndex = 0; return App(); };
     const component = (tree, name) => all(tree, n => n.type?.name === name)[0];
     const now = Math.floor(Date.now() / 1000);
-    fs.writeFileSync(path.join(state, 'status.json'), JSON.stringify({ schema: 1, version: '3.0.2', pid: 1234, sample: 9, updated_epoch: now, interval_s: 5, running: true, blocker: 'READY', eyes: { thermal_available: false, cpu_utilization: null, battery_percent: null }, brain: { mode: 'adaptive', armed: true }, hands: {} }));
+    fs.writeFileSync(path.join(state, 'status.json'), JSON.stringify({ schema: 1, version: '3.0.2', pid: 1234, sample: 9, updated_epoch: now, interval_s: 5, running: true, blocker: 'READY', eyes: { thermal_available: false, cpu_utilization: null, battery_percent: null }, brain: { mode: 'adaptive', armed: true }, hands: {cpu_applied:[{key:'/real/cpufreq/policy0',value:'walt'}],last_cpu_result:'SKIPPED'} }));
     fs.writeFileSync(path.join(state, 'config.ini'), 'monitor_interval=5\nmin_confidence=0.60\nmutation_mode=adaptive\nmutation_armed=true\n');
     await component(renderApp(), 'TopNav').props.onRefreshNative();
     let appTree = renderApp();
     check(component(appTree, 'RuntimeConsoleView').props.isNativeBridge === true, 'live console is explicitly scoped to native data');
     const consoleNode = component(appTree, 'RuntimeConsoleView');
+    check(consoleNode.props.sysfsNodes[0].path === '/real/cpufreq/policy0/scaling_governor', 'CPU inspector identifies the governor file, not a policy directory');
+    check(/Held verified governor; no new CPU write/.test(consoleNode.props.sysfsNodes[0].rationale), 'held values are not presented as repeated writes');
+    const clearedStatus=JSON.parse(fs.readFileSync(path.join(state,'status.json'),'utf8'));
+    clearedStatus.hands={}; fs.writeFileSync(path.join(state,'status.json'),JSON.stringify(clearedStatus));
     const runtimeView = consoleNode.type({ ...consoleNode.props, nativeHistory: [
       { UpdatedEpoch: now - 10, 'CPU(%)': 10, 'Thermal(C)': 35 },
       { UpdatedEpoch: now - 5, 'CPU(%)': null, 'Thermal(C)': null },

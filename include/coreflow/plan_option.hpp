@@ -10,7 +10,7 @@
 namespace coreflow {
 struct CandidateFunnel {
     bool assessed{false};
-    std::size_t discovered{0}, structural{0}, baseline{0}, granted{0}, relevant{0}, ranked{0}, selectable{0};
+    std::size_t discovered{0}, structural{0}, baseline{0}, granted{0}, relevant{0}, ranked{0}, selectable{0}, history_held{0};
 };
 struct PlanOption {
     bool valid{false};

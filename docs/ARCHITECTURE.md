@@ -49,3 +49,16 @@ scores for seven dimensions. Zero-origin pressure is measurable, noise below
 an absolute or combined-standard-error threshold is neutral, and changed charging
 context is inconclusive. These are bounded short-window comparisons, not a causal
 benchmark. See [the checkpoint](CHECKPOINT_3.1.1.md).
+
+
+## Context-aware trial admission (v3.1.2)
+
+`TrialHistory` is a separate bounded, private, atomically replaced admission store.
+It is never a restore journal or per-member causal benefit record. Each verified
+plan snapshots member paths, pre-write values and targets before observation.
+Resolved and interrupted trials record decision-time conditions, not a context
+chosen after the result. New plans consult history before ranking, with a second
+per-target check for categorical alternatives. A timer alone cannot reopen a
+failed trial; accepted values cannot continuously drift under the same conditions.
+Missing/corrupt history or a pending durable checkpoint holds new trials while
+mandatory recovery remains available. [Acceptance and limits](CHECKPOINT_3.1.2.md).

@@ -264,6 +264,7 @@ bool ResourceMutationController::selectCandidate(
     Candidate& out, bool companion, bool condition_driven
 ) const noexcept try {
     if (!baseline_captured_ || baseline_.empty()) return false;
+    const auto trial_conditions=trial_history_ ? trial_history_->conditions(sample,state) : TrialConditions{};
     if (!policy.mutation_eligible || policy.candidates.empty()) return false;
     if (policy.action != PolicyAction::Candidate) {
         // ReduceIntervention means stop/recover, never start a new resource write.
@@ -427,6 +428,13 @@ bool ResourceMutationController::selectCandidate(
         if (baseline_ok && granted) ++candidate_funnel_.granted;
         const bool relevant = !condition_driven || domainNeedsTuning(sample,state,cap.domain);
         if (baseline_ok && granted && relevant) ++candidate_funnel_.relevant;
+        if (trial_history_) {
+            const auto live=baseline_values.find(cap.path);
+            if (baseline_ok && live!=baseline_values.end() &&
+                trial_history_->blockReason(cap.path,live->second,cap.domain,trial_conditions)) {
+                cap.mutation_ready=false; ++candidate_funnel_.history_held;
+            }
+        }
         if (condition_driven && (!baseline_ok || !granted || !relevant ||
             !policy.allows(cap.domain,cap.name) || !fallbackPolicyAuthorized(cap.domain,cap.name,cap.path)))
             cap.mutation_ready = false;
@@ -531,6 +539,9 @@ bool ResourceMutationController::selectCandidate(
         if (requested.empty() || requested == bit->second.value) continue;
         std::string current;
         if (!ResourceActuator::readComparable(path,current) || current == requested) continue;
+        if (trial_history_ && trial_history_->blockReason(path,current,scored.domain,trial_conditions,requested)) {
+            ++candidate_funnel_.history_held; continue;
+        }
 
         if (bit->second.domain == ResourceDomain::UClamp &&
             (path.ends_with("/cpu.uclamp.min") || path.ends_with("/cpu.uclamp.max"))) {
@@ -897,6 +908,8 @@ PlanOption ResourceMutationController::preview(RuntimeState state, const Runtime
     ++cycle_; // rejecting every proposal must not freeze rejection cooldowns
     candidate_funnel_={}; candidate_funnel_.discovered=profile.capabilities.resources.size();
     try {
+        if (trial_history_ && !trial_history_->ready())
+            return {false,ResourceDomain::Vendor,{},{},{},{},"trial_history_checkpoint_unavailable"};
         if (!recoveryReady() || pending_outcome_ || !baseline_captured_)
             return {false,ResourceDomain::Vendor,{},{},{},{},"resource_baseline_recovery_or_measurement_pending"};
         if (const char* gate=mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::Resource))
@@ -1408,6 +1421,17 @@ bool ResourceMutationController::isRejected(
     } catch (...) {
         return true;  // fail closed: treat an unreadable record as rejected
     }
+}
+
+bool ResourceMutationController::appendPendingTrials(std::vector<TrialMember>& out) const noexcept {
+    try {
+        for (const auto& change:pending_changes_) {
+            const auto base=baseline_.find(change.path);
+            if (base==baseline_.end()) return false;
+            out.push_back({base->second.domain,change.path,change.previous,change.target});
+        }
+        return true;
+    } catch (...) { return false; }
 }
 
 void ResourceMutationController::rejectLastMutation() noexcept {

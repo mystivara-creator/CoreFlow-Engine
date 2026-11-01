@@ -277,12 +277,16 @@ export const App: React.FC = () => {
       const liveRows: SysfsNodeEntry[] = [];
       for (const c of d.hands.cpuApplied) {
         liveRows.push({
-          path: c.key,
+          path: c.key.endsWith('/scaling_governor') ? c.key : c.key + '/scaling_governor',
           subsystem: 'CPU & WALT',
           baselineValue: 'stock',
           currentValue: c.value,
           status: 'MUTATED',
-          rationale: `Verified CPUFreq write by coreflowd (${d.hands.lastCpu || 'VERIFIED'})`,
+          rationale: d.brain.observing
+            ? 'Owned verified governor; measuring the prior write'
+            : d.hands.lastCpu === 'SKIPPED'
+              ? 'Held verified governor; no new CPU write this cycle'
+              : `Owned verified governor; latest controller outcome: ${d.hands.lastCpu || 'not supplied'}`,
         });
       }
       for (const r of d.hands.resourceApplied) {
@@ -302,8 +306,12 @@ export const App: React.FC = () => {
           currentValue: r.value,
           status: d.hands.stabilizingEpoch ? 'CLAMPED' : 'MUTATED',
           rationale: d.hands.stabilizingEpoch
-            ? 'Stabilizing epoch clamp enforced by PolicyEngine'
-            : `Verified resource tunable (${d.hands.lastResource || 'VERIFIED'})`,
+            ? 'Held stabilizing value; new writes require a justified cooling plan'
+            : d.brain.observing
+              ? 'Owned verified resource; measuring the prior write'
+              : d.hands.lastResource === 'SKIPPED'
+                ? 'Held verified resource; no new resource write this cycle'
+                : `Owned verified resource; latest controller outcome: ${d.hands.lastResource || 'not supplied'}`,
         });
       }
       return liveRows;

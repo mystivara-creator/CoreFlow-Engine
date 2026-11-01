@@ -58,3 +58,27 @@ The relative scale has a finite floor for zero-origin measurements. Existing
 rendering-regression and stress recovery rules remain. Short windows cannot
 separate every workload change from a tuning effect; inspect evidence before
 claiming an improvement. See [acceptance requirements](CHECKPOINT_3.1.1.md).
+
+
+## v3.1.2 trial admission and retention
+
+Write/read-back verification proves that the requested value landed; it does not
+prove that it improved the workload. Accepted outcome configurations are held
+while their context matches. An unsuccessful/unproven measured trial defers the
+same categorical target or scalar surface, including nearby numeric variants.
+A different governor/scheduler token may still compete; no fixed domain turns
+are introduced. The hold is not a timer. Material comparisons use absolute
+changes of 4 C, CPU/GPU 0.20, memory 0.10, PSI 0.10, jank 0.05, and load1 1.0
+or 50%, latency 10 ms or 50%. Only dimensions relevant to the resource count.
+Known foreground/charging/mode transitions and changed display period for render
+or CPU-related resources also count. Lost data and trend label jitter do not.
+These thresholds are heuristics; new trials still require fresh baselines and
+all existing authority, safety and outcome checks.
+
+An accepted configuration with no remaining measured tuning need is released
+only after a material context change and three consecutive quiet samples.
+Thermal/pressure safety transitions, disarm and stop retain immediate recovery.
+History is separate from restore journals and advisory experience, scoped to the
+device/firmware/kernel, and bounded to 128 member records. A reserve prevents a
+full same-context cache from rotating old failures out just to repeat them.
+See [checkpoint v3.1.2](CHECKPOINT_3.1.2.md).

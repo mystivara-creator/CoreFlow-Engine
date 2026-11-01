@@ -240,5 +240,24 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
   }
 }
 
+{
+  const j=JSON.parse(load("ready.json"));
+  j.blocker="NO_CANDIDATES"; j.selection={current:true,winner:"KEEP_CURRENT",reason:"measured_need_but_no_admissible_gain",history_held:3};
+  j.trial_history={ready:true,records:12};
+  let p=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(p.data.trialHistory.ready && p.data.trialHistory.records===12 && p.data.selection.historyHeld===3,"context-aware trial admission is parsed");
+  check(S.summary(p).title === "Previous trials held for current conditions","history deferrals are distinct from missing capability or no demand");
+  check(S.brainRows(p.data).some(r=>r[0]==="Trial memory" && /12 records/.test(r[2])),"trial memory count and holds are visible");
+  j.trial_history.ready=false;
+  p=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(S.summary(p).title === "Trial memory checkpoint pending","failed memory persistence cannot silently reopen trials");
+  j.blocker="SAFETY_HOLD";
+  p=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(S.summary(p).code === "SAFETY_HOLD","trial memory cannot override a safety hold");
+  delete j.trial_history;
+  p=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(!p.data.trialHistory.available,"older snapshots do not claim new trial memory exists");
+}
+
 console.log("CoreFlow WebUI status contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

@@ -355,6 +355,7 @@
 
   // Plain-language meaning of each journal event, in the order a cycle runs.
   var EVENT_HELP = {
+    trial_memory_recorded: "Hasil percobaan disimpan untuk menahan pengulangan pada kondisi yang sama; bukan kredit manfaat tiap anggota grup.",
     plan_selection_reviewed: "Penilaian CPUFreq dan resource; alasan tidak menulis dicatat saat berubah.",
     resource_candidate_selected: "Kandidat resource, sumber nilai dan risiko prediksi sebelum write; belum membuktikan manfaat.",
     global_plan_selected: "Perbandingan kandidat lintas domain sebelum write; skor ini prediksi, bukan hasil pengukuran.",

@@ -120,7 +120,7 @@ export const TopNav: React.FC<TopNavProps> = ({
                 {activeItem.label}
               </span>
               <span className="hidden lg:block text-[11px] font-mono text-slate-500 truncate">
-                {isNativeBridge ? 'KernelSU Native Runtime' : 'v3.1.1 · Closed-Loop System Engine'}
+                {isNativeBridge ? 'KernelSU Native Runtime' : 'v3.1.2 · Closed-Loop System Engine'}
               </span>
             </span>
           </a>

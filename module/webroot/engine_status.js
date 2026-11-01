@@ -82,13 +82,15 @@
       selection: { current: bool(sel.current), reason: str(sel.reason, 160), winner: str(sel.winner, 64), cpuReason: str(sel.cpu_reason, 200), resourceReason: str(sel.resource_reason, 200),
         cpuUtility: num(sel.cpu_utility), resourceUtility: num(sel.resource_utility), assessed: bool(sel.assessed),
         discovered: int(sel.discovered, 0), structural: int(sel.structural, 0), baseline: int(sel.baseline, 0),
-        granted: int(sel.granted, 0), relevant: int(sel.relevant, 0), ranked: int(sel.ranked, 0), selectable: int(sel.selectable, 0) },
+        granted: int(sel.granted, 0), relevant: int(sel.relevant, 0), ranked: int(sel.ranked, 0), selectable: int(sel.selectable, 0), historyHeld: int(sel.history_held,0) },
       cpuPolicies: (Array.isArray(j.cpu_policies) ? j.cpu_policies : []).slice(0,16).filter(isObj).map(function(p) {
         return { path: str(p.path,4096), currentGovernor: str(p.current_governor,96),
           governorReadable: bool(p.governor_readable), governorWritable: bool(p.governor_writable),
           currentKhz: num(p.current_khz), minKhz: num(p.min_khz), maxKhz: num(p.max_khz),
           availableGovernors: (Array.isArray(p.available_governors) ? p.available_governors : []).slice(0,32).filter(function(t) { return typeof t === "string"; }).map(function(t) { return str(t,96); }) };
       }),
+      trialHistory: { available: isObj(j.trial_history), ready: isObj(j.trial_history) ? bool(j.trial_history.ready) : true,
+        records: isObj(j.trial_history) ? int(j.trial_history.records,0) : 0 },
       lastEvaluation: evaluationSnapshot(j.last_evaluation),
       outcomeReason: str(j.outcome_reason, 200),
       cohortIdentity: str(j.cohort_identity, 512),
@@ -224,9 +226,14 @@
     if (p.stale) {
       return { tone: "bad", title: "Engine not responding", detail: "No update for " + p.age + "s. The daemon may have stalled or been killed; check the log.", code: "STALE" };
     }
+    if (d.trialHistory.available && !d.trialHistory.ready &&
+        ["NO_CANDIDATES","READY","CHANGE_HELD"].indexOf(d.blocker)!==-1)
+      return { tone: "warn", title: "Trial memory checkpoint pending", detail: "New trials are held until admission history is available. Existing accepted settings and recovery obligations are preserved.", code: d.blocker };
     if (d.selection.current && d.blocker === "NO_CANDIDATES") {
       if (d.selection.reason === "no_measured_tuning_need_keep_current")
         return { tone: "ok", title: "No measured tuning need", detail: "Current telemetry does not justify a new experiment. The current configuration is kept; this does not prove it is globally optimal.", code: "NO_CANDIDATES" };
+      if (d.selection.historyHeld > 0 && d.selection.reason === "measured_need_but_no_admissible_gain")
+        return { tone: "info", title: "Previous trials held for current conditions", detail: "Recorded trials or accepted settings hold " + d.selection.historyHeld + " proposal(s). A material workload or device-condition change is required; elapsed cooldown alone does not reopen them.", code: "NO_CANDIDATES" };
       if (d.selection.reason === "measured_need_but_no_admissible_gain")
         return { tone: "warn", title: "Tuning need detected; no admissible plan", detail: "Inventory " + d.selection.discovered + "; granted baselines " + d.selection.granted + "; relevant " + d.selection.relevant + "; selectable reviewed proposals " + d.selection.selectable + ". Capability discovery alone does not justify a write.", code: "NO_CANDIDATES" };
     }
@@ -377,6 +384,7 @@
       ["Resource selection", d.selection.resourceReason || "not assessed", "Requires per-domain evidence and authority"],
       ["Predicted net gain", "CPU " + fix(d.selection.cpuUtility, 3) + " · resources " + fix(d.selection.resourceUtility, 3), "relative to keeping the current configuration"],
       ["Candidate review", d.selection.assessed ? (d.selection.selectable + " selectable / " + d.selection.ranked + " reviewed") : "not assessed", d.selection.discovered + " inventory; " + d.selection.granted + " granted baselines; " + d.selection.relevant + " relevant"],
+      ["Trial memory", !d.trialHistory.available ? "not supplied" : d.trialHistory.ready ? "ready" : "checkpoint pending", d.trialHistory.records + " records; " + d.selection.historyHeld + " proposal holds"],
       ["Last outcome", d.outcomeReason || "—", "Measured result; separate from predicted selection scores"],
       ["Last plan", (d.cohortMembers || 0) + " target(s)", d.cohortIdentity || "—"],
       ["Skip / wait reason", b.skipReason || "—", b.cooldown ? (b.cooldown + " cooldown left") : ""],

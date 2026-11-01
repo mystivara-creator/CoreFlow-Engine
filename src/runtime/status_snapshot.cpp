@@ -245,7 +245,10 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"granted\":" << s.selection_funnel.granted
         << ",\"relevant\":" << s.selection_funnel.relevant
         << ",\"ranked\":" << s.selection_funnel.ranked
-        << ",\"selectable\":" << s.selection_funnel.selectable << '}';
+        << ",\"selectable\":" << s.selection_funnel.selectable
+        << ",\"history_held\":" << s.selection_funnel.history_held << '}';
+    out << ",\"trial_history\":{\"ready\":"; appendBool(out,s.trial_history_ready);
+    out << ",\"records\":" << s.trial_history_records << '}';
     out << ",\"cpu_policies\":[";
     std::size_t policy_count=0;
     for (const auto& p:s.cpu_policies) {

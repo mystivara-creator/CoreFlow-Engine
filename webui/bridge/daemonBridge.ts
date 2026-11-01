@@ -91,11 +91,12 @@ export interface ParsedEngineStatus {
     updated: number;
     telemetryUpdated?: number;
     selection?: { current: boolean; reason: string; winner: string; cpuReason?: string; resourceReason?: string; cpuUtility: number | null; resourceUtility: number | null;
-      assessed: boolean; discovered: number; structural: number; baseline: number; granted: number; relevant: number; ranked: number; selectable: number };
+      assessed: boolean; discovered: number; structural: number; baseline: number; granted: number; relevant: number; ranked: number; selectable: number; historyHeld?: number };
     cpuPolicies?: Array<{ path: string; currentGovernor: string; availableGovernors: string[];
       governorReadable: boolean; governorWritable: boolean; currentKhz: number | null; minKhz: number | null; maxKhz: number | null }>;
     outcomeReason?: string;
     lastEvaluation?: OutcomeEvaluation | null;
+    trialHistory?: { available: boolean; ready: boolean; records: number };
     cohortIdentity?: string;
     cohortMembers?: number;
     recoveryPhase?: string;
@@ -513,7 +514,7 @@ export function buildMirrorStatusSnapshot(
 
   const statusObj = {
     schema: 1,
-    version: '3.1.1',
+    version: '3.1.2',
     pid: store.running ? store.pid : 0,
     sample: sample.sampleIndex,
     updated_epoch: nowEpoch,

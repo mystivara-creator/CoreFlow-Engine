@@ -299,7 +299,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
           <span>Sample #{d?.memory?.lifetimeSample ?? d?.sample ?? currentSample.sampleIndex}</span>
           {isNativeBridge && <span className="ml-1.5 text-slate-500">(sesi #{d?.sample ?? 0})</span>}
           <span className="mx-2 text-slate-300" aria-hidden="true">|</span>
-          <span>v{d?.version || '3.1.1'}</span>
+          <span>v{d?.version || '3.1.2'}</span>
           <span className="mx-2 text-slate-300" aria-hidden="true">|</span>
           <span>Poll {d?.interval ?? effectiveSleepSec}s</span>
         </div>

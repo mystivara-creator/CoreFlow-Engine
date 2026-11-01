@@ -4,6 +4,7 @@
 #include <algorithm>
 
 namespace coreflow {
+static_assert(1U+ResourceMutationController::kMaxCohortWrites<=4U,"Trial history reservation must cover every cohort member");
 bool rollbackCoordinatedPlan(MutationController& cpu, ResourceMutationController& resources) noexcept {
     if (resources.hasPendingOutcome() && !resources.rollbackLastMutation()) return false;
     return !cpu.hasPendingOutcome() || cpu.rollbackLastMutation();
@@ -19,7 +20,7 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
     const auto recover = [&]() noexcept {
         const bool rolled = rollbackCoordinatedPlan(cpu,resources) || restoreCoordinatedPlan(cpu,resources);
         result.resource = result.cpu = rolled ? MutationResult::RolledBack : MutationResult::Failed;
-        result.identity.clear(); result.members = 0;
+        result.identity.clear(); result.members = 0; result.trials.clear();
         resources.setCoupledOnly(false);
     };
     struct SelectionScope {
@@ -133,6 +134,10 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
                 if (std::none_of(profile.capabilities.resources.begin(),profile.capabilities.resources.end(),
                     [&](const auto& existing) { return existing.path==cap.path; })) profile.capabilities.resources.push_back(cap);
         if (!result.verified()) return result;
+        result.trials.reserve(1U+ResourceMutationController::kMaxCohortWrites);
+        if (!cpu.appendPendingTrials(result.trials) || !resources.appendPendingTrials(result.trials)) {
+            result.decision_reason="trial_metadata_capture_failed"; recover(); return result;
+        }
         std::vector<std::string> identities;
         if (result.cpu==MutationResult::Verified) for (const auto& setting : cpu.lastAppliedGovernors())
             identities.push_back("cpufreq:" + setting.first + ":" + setting.second);
@@ -140,7 +145,7 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
             identities.push_back("resource:" + setting.first + ":" + setting.second);
         std::sort(identities.begin(), identities.end());
         result.members = identities.size();
-        if (identities.empty()) { recover(); return result; }
+        if (identities.empty() || identities.size()!=result.trials.size()) { recover(); return result; }
         if (identities.size() == 1U) result.identity = identities.front();
         else {
             result.identity = "cohort";
