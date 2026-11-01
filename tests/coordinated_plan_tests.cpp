@@ -149,6 +149,8 @@ int governorAndDiscoveredTunables() {
     const auto result = executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
     CHECK(result.cpu == MutationResult::Verified); CHECK(f.read(cpu+"/scaling_governor") == "walt");
     CHECK(f.profile.capabilities.resources.empty()); // no dependent discovery until acceptance
+    CHECK(f.resources.admitNewBaselines(f.profile)); // empty refresh is not a recovery failure
+    CHECK(f.resources.baselineSize()==0U);
     CHECK(result.resource == MutationResult::Skipped && result.members == 1U);
     CHECK(f.resources.lastAppliedResources().size() <= ResourceMutationController::kMaxCohortWrites);
     CHECK(!f.resources.hasPendingOutcome()); CHECK(f.cpu.rollbackLastMutation());

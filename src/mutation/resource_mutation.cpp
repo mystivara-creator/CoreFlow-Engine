@@ -271,7 +271,9 @@ bool ResourceMutationController::admitNewBaselines(const DeviceProfile& profile)
             baseline_.emplace(cap.path, Baseline{cap.domain, cap.name, cap.path, live, true});
         }
         baseline_captured_ = !baseline_.empty();
-        return baseline_captured_;
+        // Empty discovery is a successful refresh with no eligible resources,
+        // not a failed recovery of a measured governor transition.
+        return true;
     } catch (...) { return false; }
 }
 
