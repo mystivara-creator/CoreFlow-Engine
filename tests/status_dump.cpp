@@ -94,6 +94,18 @@ int main(int argc, char** argv) {
     const std::string dir = argv[1];
 
     emit(dir, "ready.json", base());
+    auto cpu_status=base();
+    cpu_status.cpu_policies.push_back({"/sys/devices/system/cpu/cpufreq/policy0","walt",{"walt","schedutil"},true,true,800000,300000,2400000});
+    cpu_status.selection_cpu_reason="no_higher_scoring_governor_than_current";
+    BaselineIntelligence measured;
+    RuntimeSample before; before.thermal_available=true; before.hottest_thermal_millidegrees=40000;
+    before.mem_total_kb=1000; before.mem_available_ratio=.5;
+    before.psi_available=true; before.io_latency_available=true;
+    for (unsigned i=0;i<4U;++i) (void)measured.captureBaseline(before);
+    (void)measured.beginObservation(); before.psi_io_some_avg10=.30; before.io_avg_latency_ms=50.;
+    for (unsigned i=0;i<4U;++i) (void)measured.observe(before);
+    cpu_status.outcome_available=true; cpu_status.outcome=measured.result();
+    emit(dir,"cpu_outcome.json",cpu_status);
 
     EngineStatus selection = base();
     selection.selection_current = true;

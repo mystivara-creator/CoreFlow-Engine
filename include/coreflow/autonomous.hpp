@@ -70,6 +70,8 @@ private:
     std::uint64_t last_selection_sample_{0};
     bool selection_available_{false};
     std::string last_outcome_reason_;
+    BaselineIntelligence::Evaluation last_outcome_evaluation_;
+    bool outcome_available_{false};
     bool observation_cohort_{false};
     std::string observation_identity_;
     std::size_t observation_members_{0};

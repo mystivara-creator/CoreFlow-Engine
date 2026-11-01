@@ -1,4 +1,5 @@
 #include "coreflow/status_snapshot.hpp"
+#include "coreflow/outcome_diagnostics.hpp"
 
 #include <array>
 #include <cerrno>
@@ -233,6 +234,8 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"selection\":{\"current\":"; appendBool(out,s.selection_current);
     out << ",\"reason\":"; appendEscaped(out,s.selection_reason);
     out << ",\"winner\":"; appendEscaped(out,s.selection_winner);
+    out << ",\"cpu_reason\":"; appendEscaped(out,s.selection_cpu_reason);
+    out << ",\"resource_reason\":"; appendEscaped(out,s.selection_resource_reason);
     out << ",\"cpu_utility\":"; appendNumber(out,s.selection_cpu_utility);
     out << ",\"resource_utility\":"; appendNumber(out,s.selection_resource_utility);
     out << ",\"assessed\":"; appendBool(out,s.selection_funnel.assessed);
@@ -243,7 +246,29 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"relevant\":" << s.selection_funnel.relevant
         << ",\"ranked\":" << s.selection_funnel.ranked
         << ",\"selectable\":" << s.selection_funnel.selectable << '}';
+    out << ",\"cpu_policies\":[";
+    std::size_t policy_count=0;
+    for (const auto& p:s.cpu_policies) {
+        if (policy_count>=16U) break;
+        if (policy_count++!=0U) out << ',';
+        out << "{\"path\":"; appendEscaped(out,p.path);
+        out << ",\"current_governor\":"; appendEscaped(out,p.current_governor);
+        out << ",\"governor_readable\":"; appendBool(out,p.governor_readable);
+        out << ",\"governor_writable\":"; appendBool(out,p.governor_writable);
+        out << ",\"current_khz\":"; if (p.current_khz) out << p.current_khz; else out << "null";
+        out << ",\"min_khz\":"; if (p.min_khz) out << p.min_khz; else out << "null";
+        out << ",\"max_khz\":"; if (p.max_khz) out << p.max_khz; else out << "null";
+        out << ",\"available_governors\":[";
+        for (std::size_t i=0;i<std::min<std::size_t>(p.available_governors.size(),32U);++i) {
+            if (i) out << ',';
+            appendEscaped(out,p.available_governors[i]);
+        }
+        out << "]}";
+    }
+    out << ']';
     out << ",\"outcome_reason\":"; appendEscaped(out,s.outcome_reason);
+    out << ",\"last_evaluation\":";
+    if (s.outcome_available) out << outcomeEvaluationJson(s.outcome); else out << "null";
     out << ",\"cohort_identity\":"; appendEscaped(out, s.cohort_identity);
     out << ",\"cohort_members\":" << s.cohort_members;
     out << ",\"recovery_phase\":"; appendEscaped(out, s.recovery_phase);

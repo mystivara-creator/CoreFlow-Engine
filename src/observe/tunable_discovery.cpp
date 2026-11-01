@@ -3,6 +3,8 @@
 #include "coreflow/consultation.hpp"
 #include "coreflow/fatal_surface.hpp"
 #include "coreflow/kernel_roots.hpp"
+#include "coreflow/integer_parse.hpp"
+#include <limits>
 
 #include <algorithm>
 #include <cstdlib>
@@ -439,9 +441,8 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
             if (pwrlevel_like) {
                 std::string num_levels_text;
                 if (readFirstLine(dir + "/num_pwrlevels", num_levels_text)) {
-                    char* end = nullptr;
-                    const long long n = std::strtoll(num_levels_text.c_str(), &end, 10);
-                    if (end != num_levels_text.c_str() && *end == '\0' && n >= 2LL && n <= 32LL) {
+                    long long n=0;
+                    if (integer_parse::parseSignedDecimal(num_levels_text,n) && n>=2LL && n<=32LL) {
                         cap.options.clear();
                         for (long long idx = 0; idx < n; ++idx) {
                             cap.options.push_back(std::to_string(idx));
@@ -482,10 +483,10 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                                                  live.size() >= 7U) ? 1000000LL : 1LL;
                     std::vector<long long> nums;
                     for (const auto& o : opts) {
-                        char* end = nullptr;
-                        const long long v = std::strtoll(o.c_str(), &end, 10);
-                        if (end != o.c_str() && *end == '\0' && v > 0LL) {
-                            nums.push_back(v * unit_mult);
+                        long long v=0;
+                        if (integer_parse::parseSignedDecimal(o,v) && v>0LL &&
+                            v<=std::numeric_limits<long long>::max()/unit_mult) {
+                            nums.push_back(v*unit_mult);
                         }
                     }
                     if (nums.size() < 2U) continue;
@@ -514,9 +515,8 @@ void TunableDiscovery::enrich(EnvironmentCapabilityMatrix& matrix,
                         list.resize(static_cast<std::size_t>(count));
                         std::vector<long long> nums;
                         for (const auto& o : words(list)) {
-                            char* end = nullptr;
-                            const long long v = std::strtoll(o.c_str(), &end, 10);
-                            if (end != o.c_str() && *end == '\0' && v > 0LL) nums.push_back(v);
+                            long long v=0;
+                            if (integer_parse::parseSignedDecimal(o,v) && v>0LL) nums.push_back(v);
                         }
                         if (nums.size() >= 2U) {
                             std::sort(nums.begin(), nums.end());

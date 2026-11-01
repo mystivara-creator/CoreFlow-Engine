@@ -2,6 +2,8 @@
 #include "coreflow/presentation_window.hpp"
 #include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/interactivity_model.hpp"
+#include "coreflow/outcome_diagnostics.hpp"
+#include "coreflow/effect_model.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -27,6 +29,63 @@ struct Directory {
 };
 }
 int main() {
+    const auto evaluate=[](const RuntimeSample& before,const RuntimeSample& after) {
+        BaselineIntelligence b;
+        for (std::size_t i=0;i<BaselineIntelligence::kBaselineSamples;++i) (void)b.captureBaseline(before);
+        (void)b.beginObservation();
+        for (std::size_t i=0;i<BaselineIntelligence::kObservationSamples;++i) (void)b.observe(after);
+        return b.result();
+    };
+    {
+        auto before=measured(), after=before;
+        before.psi_available=after.psi_available=true;
+        before.io_latency_available=after.io_latency_available=true;
+        after.psi_io_some_avg10=.30; after.io_avg_latency_ms=50.;
+        const auto e=evaluate(before,after);
+        CHECK(e.valid && e.outcome==BaselineIntelligence::Outcome::Regression);
+        CHECK(e.psi_score<.5 && e.io_latency_score<.5);
+        CHECK(e.metrics[4].before==0. && e.metrics[4].after==.30);
+        CHECK(e.metrics[5].before_samples==4U && e.metrics[5].after_samples==4U);
+        CHECK(outcomeEvaluationJson(e).find("weighted_metrics_regressed")!=std::string::npos);
+        after=before; after.cpu_utilization+=.005; after.load1+=.05;
+        const auto noisy=evaluate(before,after);
+        CHECK(noisy.valid && noisy.cpu_score==.5 && noisy.load_score==.5);
+        CHECK(noisy.outcome==BaselineIntelligence::Outcome::Neutral);
+        before.charging_telemetry_available=after.charging_telemetry_available=true;
+        after.charging=true;
+        const auto changed=evaluate(before,after);
+        CHECK(!changed.valid && !changed.context_compatible);
+        CHECK(changed.outcome==BaselineIntelligence::Outcome::Inconclusive);
+        CHECK(changed.reason==BaselineIntelligence::EvaluationReason::ContextChanged);
+        BaselineIntelligence sparse;
+        for (unsigned i=0;i<4U;++i) {
+            RuntimeSample sample; sample.psi_available=sample.io_latency_available=i==0U;
+            (void)sparse.captureBaseline(sample);
+        }
+        CHECK(sparse.beginObservation());
+        for (unsigned i=0;i<4U;++i) {
+            RuntimeSample sample; sample.psi_available=sample.io_latency_available=i==0U;
+            sample.psi_io_some_avg10=.5; sample.io_avg_latency_ms=100.;
+            (void)sparse.observe(sample);
+        }
+        CHECK(!sparse.result().valid && sparse.result().comparable_metrics==0U);
+        CHECK(sparse.result().outcome==BaselineIntelligence::Outcome::Inconclusive);
+        CHECK(outcomeEvaluationJson(sparse.result()).find("\"score\":null")!=std::string::npos);
+    }
+    {
+        ResourceCapability cap; cap.domain=ResourceDomain::Scheduler;
+        cap.name="walt.walt_low_latency_task_threshold"; cap.path="/proc/sys/walt/walt_low_latency_task_threshold";
+        cap.exists=cap.readable=cap.writable=cap.permission_granted=cap.policy_authorized=cap.runtime_verified=cap.mutation_ready=true;
+        cap.vendor_values.push_back({"325",VendorProfile::Performance,"fixture:powerhint.json"});
+        EffectContext ctx; ctx.state=RuntimeState::Normal; ctx.intervention=InterventionLevel::Low;
+        ctx.sample_confidence=1.; ctx.cpu_utilization_available=true; ctx.cpu_utilization=.8;
+        ctx.thermal_available=ctx.memory_available=true; ctx.thermal_c=35.; ctx.mem_available_ratio=.5;
+        const auto options=EffectModel{}.proposals(cap,"100",ctx);
+        CHECK(!options.empty());
+        CHECK(options[0].source==CandidateSource::VendorPerformance);
+        CHECK(options[0].requested=="325");
+        CHECK(options[0].reason.find("fixture:powerhint.json")!=std::string::npos);
+    }
     auto s=measured();
     CHECK(diagnoseRuntime(RuntimeSample{}).dominant==RuntimePressure::Unknown);
     s.gpu_busy_available=true; s.gpu_busy_ratio=.95;

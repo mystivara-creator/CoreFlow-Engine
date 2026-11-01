@@ -12,8 +12,8 @@
 namespace coreflow {
 
 // EffectModel is the capability-driven brain of autonomous resource mutation.
-// It contains no parameter tables. Every candidate value is derived from
-// evidence the device itself provides:
+// Values come from observed capabilities and reviewed interface semantics.
+// Device evidence includes:
 //
 //   1. Vendor configuration   values the vendor's init / power HAL writes to
 //                             this node, tagged boot/default/efficiency/

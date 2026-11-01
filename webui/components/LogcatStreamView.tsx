@@ -334,6 +334,10 @@ export const LogcatStreamView: React.FC<LogcatStreamViewProps> = ({
                     <div className="text-slate-500 break-all">Scope: {row.scope || 'runtime'}</div>
                     <div className="break-words [overflow-wrap:anywhere] text-slate-700">
                       {row.reason || '—'}
+                      {row.evaluation && <div className="mt-2 text-xs text-slate-500 break-words">
+                        {row.evaluation.reason} · score {row.evaluation.score?.toFixed(3) ?? '—'} · confidence {row.evaluation.confidence?.toFixed(3) ?? '—'}
+                        {Object.entries(row.evaluation.metrics).map(([name, metric]) => <div key={name} className="font-mono">{name}: {metric.before ?? '—'} → {metric.after ?? '—'} (n={metric.beforeSamples}/{metric.afterSamples})</div>)}
+                      </div>}
                     </div>
                     {(row.target || row.requested || row.baselineValue || row.currentValue) && (
                       <details className="text-slate-600">
@@ -406,7 +410,11 @@ export const LogcatStreamView: React.FC<LogcatStreamViewProps> = ({
                             {row.result}
                           </td>
                           <td className="py-2.5 px-4 text-slate-700 space-y-0.5 break-all min-w-64">
-                            <div>{row.reason || '—'}</div>
+                            <div>{row.reason || '—'}
+                      {row.evaluation && <div className="mt-2 text-xs text-slate-500 break-words">
+                        {row.evaluation.reason} · score {row.evaluation.score?.toFixed(3) ?? '—'} · confidence {row.evaluation.confidence?.toFixed(3) ?? '—'}
+                        {Object.entries(row.evaluation.metrics).map(([name, metric]) => <div key={name} className="font-mono">{name}: {metric.before ?? '—'} → {metric.after ?? '—'} (n={metric.beforeSamples}/{metric.afterSamples})</div>)}
+                      </div>}</div>
                             {row.target && (
                               <div className="font-mono text-[11px] text-slate-500">
                                 {row.target}

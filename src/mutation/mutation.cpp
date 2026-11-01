@@ -298,6 +298,9 @@ bool MutationController::buildPlan(
     std::vector<MutationPlanEntry>& plan
 ) const noexcept try {
     plan.clear();
+    plan_reason_ = "no_admissible_cpu_policy";
+    std::size_t live_policies=0, alternatives=0, rejected=0;
+    bool measured_hold=false;
 
     for (const CpuPolicy& policy : profile.cpu_policies) {
         if (policy.path.empty() || !policy.readable || !policy.governor_writable) {
@@ -313,6 +316,12 @@ bool MutationController::buildPlan(
         // first mutation and must never drive hysteresis or "already set" checks.
         std::string current;
         if (!readLiveGovernor(governorPath, current)) continue;
+        ++live_policies;
+        for (const auto& token:policy.available_governors) {
+            if (!validGovernorToken(token) || token==current) continue;
+            ++alternatives;
+            if (isRejected(policy.path,token)) ++rejected;
+        }
 
         // Workload classification must match the classifier used when the
         // experience was recorded (ContextEngine), otherwise lookups miss.
@@ -413,6 +422,7 @@ bool MutationController::buildPlan(
             if (state == RuntimeState::ThermalGuard || currentRetained ||
                 (currentRecord != nullptr &&
                  currentRecord->outcome == BaselineIntelligence::Outcome::Beneficial)) {
+                measured_hold=true;
                 continue;
             }
 
@@ -450,19 +460,34 @@ bool MutationController::buildPlan(
         plan.push_back({governorPath, bestGovernor, baseline->second.value});
     }
 
+    if (!plan.empty()) plan_reason_="higher_scoring_advertised_governor";
+    else if (profile.cpu_policies.empty()) plan_reason_="no_discovered_cpufreq_policy";
+    else if (live_policies==0U) plan_reason_="no_live_writable_baselined_cpu_policy";
+    else if (alternatives==0U) plan_reason_="no_advertised_governor_alternative";
+    else if (measured_hold) plan_reason_="measured_current_governor_held";
+    else if (rejected==alternatives) plan_reason_="all_governor_alternatives_in_rejection_cooldown";
+    else plan_reason_="no_higher_scoring_governor_than_current";
     return !plan.empty();
-} catch (...) { plan.clear(); return false; }
+} catch (...) { plan_reason_="cpu_proposal_allocation_or_read_failure"; plan.clear(); return false; }
 
 PlanOption MutationController::preview(RuntimeState state, const RuntimeSample& sample,
     const DeviceProfile& profile, const EngineConfig& config, const PolicyPlan& policy) noexcept {
     ++decision_cycle_; // cooldowns age even when keeping the current configuration
     try {
         PlanOption best;
-        if (!recoveryReady() || !baseline_captured_ || pending_outcome_ ||
-            !domainNeedsTuning(sample,state,ResourceDomain::CpuFreq) ||
-            mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::CpuFreq)) return best;
+        if (profile.cpu_policies.empty()) { best.reason="no_discovered_cpufreq_policy"; return best; }
+        if (!recoveryReady() || !baseline_captured_ || pending_outcome_) {
+            best.reason="cpu_baseline_recovery_or_measurement_pending"; return best;
+        }
+        if (const char* gate=mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::CpuFreq)) {
+            best.reason=gate; return best;
+        }
+        if (!domainNeedsTuning(sample,state,ResourceDomain::CpuFreq)) {
+            best.reason="no_measured_cpu_or_render_demand"; return best;
+        }
         std::vector<MutationPlanEntry> candidates;
-        if (!buildPlan(state,sample,profile,candidates)) return best;
+        if (!buildPlan(state,sample,profile,candidates)) { best.reason=plan_reason_; return best; }
+        best.reason="governor_gain_below_admission_margin";
         for (const auto& entry : candidates) {
             std::string current;
             if (!readLiveGovernor(entry.path,current)) continue;

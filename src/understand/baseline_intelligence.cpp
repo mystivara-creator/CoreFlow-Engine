@@ -163,40 +163,6 @@ void BaselineIntelligence::rebuildBaseline() noexcept {
     }
 }
 
-double BaselineIntelligence::lowerIsBetter(
-    double baseline,
-    double candidate) noexcept {
-    if (!finite(baseline) || !finite(candidate)) {
-        return 0.5;
-    }
-    // Relative change needs a positive baseline. A non-positive baseline
-    // (e.g. zero load) cannot form a ratio; treat as neutral rather than
-    // inventing an improvement or regression.
-    if (baseline <= 0.0) {
-        return 0.5;
-    }
-
-    const double relativeChange = (baseline - candidate) / baseline;
-    return clamp01(0.5 + (relativeChange * 2.0));
-}
-
-double BaselineIntelligence::higherIsBetter(
-    double baseline,
-    double candidate) noexcept {
-    if (!finite(baseline) || !finite(candidate)) {
-        return 0.5;
-    }
-    // Memory available ratio can legitimately be 0.0 (fully used). A relative
-    // ratio is undefined then; score a clear absolute recovery modestly and
-    // stay neutral otherwise so a zero baseline cannot force Beneficial.
-    if (baseline <= 0.0) {
-        return (candidate > 0.0) ? 0.60 : 0.5;
-    }
-
-    const double relativeChange = (candidate - baseline) / baseline;
-    return clamp01(0.5 + (relativeChange * 2.0));
-}
-
 double BaselineIntelligence::stabilityScore(
     const MetricAggregate& baseline,
     const MetricAggregate& candidate) noexcept {
@@ -401,9 +367,32 @@ BaselineIntelligence::evaluate() const noexcept {
     result.context_compatible =
         contextCompatible(baseline_, observation_);
 
+    const std::array<const MetricAggregate*,7> before_metrics{&baseline_.thermal_c,&baseline_.load,&baseline_.cpu,
+        &baseline_.memory,&baseline_.psi_pressure,&baseline_.io_latency_ms,&baseline_.frame_jank};
+    const std::array<const MetricAggregate*,7> after_metrics{&observation_.thermal_c,&observation_.load,&observation_.cpu,
+        &observation_.memory,&observation_.psi_pressure,&observation_.io_latency_ms,&observation_.frame_jank};
+    for (std::size_t i=0;i<result.metrics.size();++i) {
+        result.metrics[i]={average(*before_metrics[i]),average(*after_metrics[i]),.5,
+            before_metrics[i]->samples,after_metrics[i]->samples};
+    }
+    if (!result.context_compatible) {
+        result.reason=EvaluationReason::ContextChanged;
+        result.outcome=Outcome::Inconclusive; return result;
+    }
+    // Suppress changes smaller than the combined standard error or sensor noise.
+    // A zero baseline still detects a real new stall/latency, with a finite scale.
+    const auto measured_score=[&](std::size_t i,double floor,double noise,bool higher=false) noexcept {
+        const auto& before=*before_metrics[i]; const auto& after=*after_metrics[i];
+        const double b=average(before), c=average(after), delta=c-b;
+        const double se=std::sqrt(variance(before)/static_cast<double>(std::max<std::size_t>(before.samples,1U))+
+            variance(after)/static_cast<double>(std::max<std::size_t>(after.samples,1U)));
+        const double score=std::abs(delta)<=std::max(noise,2.*se) ? .5 :
+            clamp01(.5+(higher ? delta : -delta)*2./std::max(std::abs(b),floor));
+        result.metrics[i].score=score; return score;
+    };
     const auto paired = [](const MetricAggregate& before,
                            const MetricAggregate& after) noexcept {
-        return before.samples > 0U && after.samples > 0U;
+        return before.samples >= 2U && after.samples >= 2U;
     };
     result.load_available = paired(baseline_.load, observation_.load);
     result.comparable_metrics =
@@ -418,41 +407,29 @@ BaselineIntelligence::evaluate() const noexcept {
     double weightedScore = 0.0;
     double totalWeight = 0.0;
 
-    if (baseline_.thermal_c.samples > 0U &&
-        observation_.thermal_c.samples > 0U &&
+    if (paired(baseline_.thermal_c, observation_.thermal_c) &&
         result.context_compatible) {
-        result.thermal_score = lowerIsBetter(
-            average(baseline_.thermal_c),
-            average(observation_.thermal_c));
+        result.thermal_score = measured_score(0U,5.,.3);
         result.thermal_available = true;
         weightedScore += result.thermal_score * kThermalWeight;
         totalWeight += kThermalWeight;
     }
 
-    if (baseline_.load.samples > 0U &&
-        observation_.load.samples > 0U) {
-        result.load_score = lowerIsBetter(
-            average(baseline_.load),
-            average(observation_.load));
+    if (paired(baseline_.load, observation_.load)) {
+        result.load_score = measured_score(1U,.5,.10);
         weightedScore += result.load_score * kLoadWeight;
         totalWeight += kLoadWeight;
     }
 
-    if (baseline_.cpu.samples > 0U &&
-        observation_.cpu.samples > 0U) {
-        result.cpu_score = lowerIsBetter(
-            average(baseline_.cpu),
-            average(observation_.cpu));
+    if (paired(baseline_.cpu, observation_.cpu)) {
+        result.cpu_score = measured_score(2U,.10,.02);
         result.cpu_available = true;
         weightedScore += result.cpu_score * kCpuWeight;
         totalWeight += kCpuWeight;
     }
 
-    if (baseline_.memory.samples > 0U &&
-        observation_.memory.samples > 0U) {
-        result.memory_score = higherIsBetter(
-            average(baseline_.memory),
-            average(observation_.memory));
+    if (paired(baseline_.memory, observation_.memory)) {
+        result.memory_score = measured_score(3U,.10,.01,true);
         result.memory_available = true;
         weightedScore += result.memory_score * kMemoryWeight;
         totalWeight += kMemoryWeight;
@@ -471,21 +448,15 @@ BaselineIntelligence::evaluate() const noexcept {
         totalWeight += kStabilityWeight;
     }
 
-    if (baseline_.psi_pressure.samples > 0U &&
-        observation_.psi_pressure.samples > 0U) {
-        result.psi_score = lowerIsBetter(
-            average(baseline_.psi_pressure),
-            average(observation_.psi_pressure));
+    if (paired(baseline_.psi_pressure, observation_.psi_pressure)) {
+        result.psi_score = measured_score(4U,.05,.01);
         result.psi_available = true;
         weightedScore += result.psi_score * kPsiWeight;
         totalWeight += kPsiWeight;
     }
 
-    if (baseline_.io_latency_ms.samples > 0U &&
-        observation_.io_latency_ms.samples > 0U) {
-        result.io_latency_score = lowerIsBetter(
-            average(baseline_.io_latency_ms),
-            average(observation_.io_latency_ms));
+    if (paired(baseline_.io_latency_ms, observation_.io_latency_ms)) {
+        result.io_latency_score = measured_score(5U,1.,1.);
         result.io_latency_available = true;
         weightedScore += result.io_latency_score * kIoLatencyWeight;
         totalWeight += kIoLatencyWeight;
@@ -499,6 +470,7 @@ BaselineIntelligence::evaluate() const noexcept {
                                     observation_.frame_jank.samples > 0U;
     if (rendering_observed) {
         if (baseline_.frame_jank.samples < 2U || observation_.frame_jank.samples < 2U) {
+            result.reason=EvaluationReason::RenderingMissing;
             result.outcome = Outcome::Inconclusive;
             return result;
         }
@@ -506,11 +478,12 @@ BaselineIntelligence::evaluate() const noexcept {
             baseline_.frame_period_ns != observation_.frame_period_ns) {
             result.outcome = Outcome::Inconclusive;
             result.context_compatible = false;
+            result.reason=EvaluationReason::RefreshRateChanged;
             return result;
         }
         const double before = average(baseline_.frame_jank);
         const double after = average(observation_.frame_jank);
-        result.rendering_score = lowerIsBetter(before, after);
+        result.rendering_score = measured_score(6U,.05,.005);
         result.rendering_regression = after > before + 0.02 && after > before * 1.25;
         weightedScore += result.rendering_score * 0.20;
         totalWeight += 0.20;
@@ -518,6 +491,7 @@ BaselineIntelligence::evaluate() const noexcept {
     }
 
     if (totalWeight <= 0.0) {
+        result.reason=EvaluationReason::InsufficientEvidence;
         result.outcome = Outcome::Inconclusive;
         return result;
     }
@@ -528,6 +502,7 @@ BaselineIntelligence::evaluate() const noexcept {
     result.valid = result.confidence >= 0.50 && result.comparable_metrics >= 2U;
 
     if (!result.valid) {
+        result.reason=EvaluationReason::InsufficientEvidence;
         result.outcome = Outcome::Inconclusive;
         return result;
     }
@@ -535,15 +510,19 @@ BaselineIntelligence::evaluate() const noexcept {
     const double delta = result.overall_score - 0.5;
 
     if (result.rendering_regression) {
+        result.reason=EvaluationReason::RenderingRegression;
         result.outcome = Outcome::Regression;
         // Persisted experience must not label a rendering regression beneficial
         // merely because CPU load or temperature fell.
         result.overall_score = std::min(result.overall_score, 0.40);
     } else if (delta >= kBeneficialThreshold) {
+        result.reason=EvaluationReason::ScoreImproved;
         result.outcome = Outcome::Beneficial;
     } else if (delta <= kRegressionThreshold) {
+        result.reason=EvaluationReason::ScoreRegressed;
         result.outcome = Outcome::Regression;
     } else {
+        result.reason=EvaluationReason::WithinNoise;
         result.outcome = Outcome::Neutral;
     }
 

@@ -1,3 +1,21 @@
+## v3.1.1 — Native CPU visibility & outcome evidence checkpoint
+
+- Keep native CPUFreq policies visible even without an active CPU write. Publish
+  live governors, advertised alternatives and read-only current/min/max frequency.
+- Explain CPU no-write decisions separately from resource proposals, including
+  missing alternatives, equal/worse scores, grants, baselines and held dependencies.
+- Show execution activity instead of a policy NO_ACTION badge during measurement;
+  identify interactivity state separately from the optimization plan.
+- Carry the last measured outcome, reason, raw before/after means, sample counts
+  and metric scores through native status, the journal view and exported trace.
+- Detect new PSI/latency pressure from zero baselines, suppress changes within
+  sensor/noise limits, require per-metric paired coverage, and make charging-context mismatches inconclusive.
+- Trace resource proposal evidence and vendor origin instead of treating a
+  firmware operating point as an unexplained numeric step.
+- Reject overflowing advertised OPP values before MHz conversion.
+- Preserve per-target authority, journal/read-back, dependency rollback and
+  persistent sample/experience formats. CPU writes are never forced for display.
+
 ## v3.1.0 — Persistence & usability checkpoint
 
 - Add a durable lifetime sample sequence beside session counters, with batched

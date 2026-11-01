@@ -1,4 +1,5 @@
 #include "coreflow/decision_trace.hpp"
+#include "coreflow/outcome_diagnostics.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -419,6 +420,7 @@ void appendDecisionTraceEvent(const DecisionTraceContext& context,
         out << ",\"writes_verified\":";
         if (event.write_counts_known) out << event.writes_verified;
         else out << "null";
+        if (event.evaluation) out << ",\"evaluation\":" << outcomeEvaluationJson(*event.evaluation);
         out << ",\"cpu_mutation\":";
         if (context.cpu_mutation_known) {
             out << "\"" << mutationResultTraceName(context.cpu_mutation) << "\"";

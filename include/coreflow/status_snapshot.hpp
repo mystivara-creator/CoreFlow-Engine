@@ -8,6 +8,7 @@
 
 #include "coreflow/high_capability.hpp"
 #include "coreflow/plan_option.hpp"
+#include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/consultation.hpp"
 
@@ -22,6 +23,13 @@ namespace coreflow {
 // control: callers must treat every function here as best-effort.
 inline constexpr int kStatusSchemaVersion = 1;
 
+struct CpuPolicyStatus {
+    std::string path, current_governor;
+    std::vector<std::string> available_governors;
+    bool governor_readable{false}, governor_writable{false};
+    std::uint64_t current_khz{0}, min_khz{0}, max_khz{0};
+};
+
 struct EngineStatus {
     // identity / liveness
     std::string version;
@@ -33,6 +41,10 @@ struct EngineStatus {
     std::int64_t updated_epoch{0};
     std::int64_t telemetry_epoch{0}; // last telemetry snapshot, independent of heartbeat
     std::string selection_reason, selection_winner, outcome_reason;
+    std::string selection_cpu_reason, selection_resource_reason;
+    std::vector<CpuPolicyStatus> cpu_policies;
+    bool outcome_available{false};
+    BaselineIntelligence::Evaluation outcome;
     bool selection_current{false};
     double selection_cpu_utility{0.0}, selection_resource_utility{0.0};
     CandidateFunnel selection_funnel;

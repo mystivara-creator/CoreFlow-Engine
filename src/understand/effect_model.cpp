@@ -371,7 +371,7 @@ std::vector<EffectScore> EffectModel::proposals(
         const bool base_numeric = parseInteger(base_text, base_num);
 
         auto emit = [&](const std::string& requested, CandidateSource source,
-                        EffectDirection direction, bool stabilizing, const char* reason) {
+                        EffectDirection direction, bool stabilizing, const char* reason, const std::string* origin=nullptr) {
             if (requested.empty() || requested == base_text) return;
             if (isFatalValue(base_text, requested)) return;
             bool evidence_stabilizing = stabilizing;
@@ -422,7 +422,9 @@ std::vector<EffectScore> EffectModel::proposals(
             score.risk = clamp01(risk);
             score.eligible = score.benefit >= kMinBenefit && score.risk <= kMaxRisk &&
                              score.confidence >= kMinConfidence;
-            score.reason = reason;
+            score.reason = std::string(reason)+" [source:"+candidateSourceName(source);
+            if (origin && !origin->empty()) score.reason+=" origin:"+origin->substr(0,512);
+            score.reason+="]";
             score.resource_name = capability.name;
             score.path = capability.path;
             score.domain = capability.domain;
@@ -444,16 +446,16 @@ std::vector<EffectScore> EffectModel::proposals(
             switch (vendor.profile) {
                 case VendorProfile::Efficiency:
                     emit(value, CandidateSource::VendorEfficiency, dir, true,
-                         "vendor efficiency profile value");
+                         "vendor efficiency profile value", &vendor.source);
                     break;
                 case VendorProfile::Performance:
                     emit(value, CandidateSource::VendorPerformance, dir, false,
-                         "vendor performance profile value");
+                         "vendor performance profile value", &vendor.source);
                     break;
                 case VendorProfile::Default:
                 case VendorProfile::Boot:
                     emit(value, CandidateSource::VendorDefault, dir, false,
-                         "vendor factory configuration value");
+                         "vendor factory configuration value", &vendor.source);
                     break;
             }
         }

@@ -530,6 +530,8 @@ void testSiliconHeadroomAndBandit() {
     writeFile(root / "sys/devices/system/cpu/cpufreq/policy4/scaling_available_frequencies",
               "691200 1401600 2016000 2400000");
     writeFile(root / "sys/devices/system/cpu/cpufreq/policy4/walt/hispeed_freq", "1401600");
+    writeFile(root / "sys/class/devfreq/gpu/min_freq", "300000000");
+    writeFile(root / "sys/class/devfreq/gpu/freq_table_mhz", "300 600 9223372036854775807 9999999999999999999999");
     writeFile(root / "proc/mounts",
               "none " + r + "/proc proc rw 0 0\n"
               "none " + r + "/sys sysfs rw 0 0\n");
@@ -540,6 +542,11 @@ void testSiliconHeadroomAndBandit() {
     CHECK(tcp != nullptr && !tcp->ordered_scale && tcp->options.size() == 3U);
     const auto* hispeed = findCap(matrix, r + "/sys/devices/system/cpu/cpufreq/policy4/walt/hispeed_freq");
     CHECK(hispeed != nullptr && hispeed->ordered_scale && hispeed->options.size() == 4U);
+    const auto* scaled_gpu=findCap(matrix,r+"/sys/class/devfreq/gpu/min_freq");
+    CHECK(scaled_gpu!=nullptr && scaled_gpu->ordered_scale && scaled_gpu->options.size()==2U);
+    if (scaled_gpu && scaled_gpu->options.size()==2U) {
+        CHECK(scaled_gpu->options[0]=="300000000" && scaled_gpu->options[1]=="600000000");
+    }
     fs::remove_all(root);
 
     // Contextual UCB1-Tuned Bandit rewards novel/beneficial arms and suppresses regressions.

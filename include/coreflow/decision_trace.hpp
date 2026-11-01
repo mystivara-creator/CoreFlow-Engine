@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "coreflow/config.hpp"
+#include "coreflow/baseline_intelligence.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/safety_hold.hpp"
 #include "coreflow/context.hpp"
@@ -81,6 +82,7 @@ struct DecisionTraceEvent {
     bool write_counts_known{false};
     unsigned writes_attempted{0U};
     unsigned writes_verified{0U};
+    const BaselineIntelligence::Evaluation* evaluation{nullptr};
 };
 
 void appendDecisionTraceEvent(const DecisionTraceContext& context,

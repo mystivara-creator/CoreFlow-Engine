@@ -299,7 +299,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
           <span>Sample #{d?.memory?.lifetimeSample ?? d?.sample ?? currentSample.sampleIndex}</span>
           {isNativeBridge && <span className="ml-1.5 text-slate-500">(sesi #{d?.sample ?? 0})</span>}
           <span className="mx-2 text-slate-300" aria-hidden="true">|</span>
-          <span>v{d?.version || '3.1.0'}</span>
+          <span>v{d?.version || '3.1.1'}</span>
           <span className="mx-2 text-slate-300" aria-hidden="true">|</span>
           <span>Poll {d?.interval ?? effectiveSleepSec}s</span>
         </div>
@@ -351,9 +351,9 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         <div className="p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-slate-500">Adaptive Policy State</span>
+              <span className="text-xs font-medium text-slate-500">Engine State &amp; Activity</span>
               <span className={`px-2 py-0.5 text-[10px] font-mono font-semibold border rounded ${stateMeta.badgeClass}`}>
-                {d?.brain.decision || decision}
+                {d && window.CoreFlowStatus ? window.CoreFlowStatus.activity(d) : decision}
               </span>
             </div>
             <div className={`mt-2 flex items-center gap-2 text-lg font-bold font-mono ${stateMeta.colorClass}`}>
@@ -362,7 +362,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
             </div>
             <div className="mt-1.5 text-xs text-slate-500">
               {isNativeBridge
-                ? d?.brain.skipReason || d?.brain.planReason || 'See daemon policy and safety hold details.'
+                ? d?.selection?.current && d.selection.winner === 'KEEP_CURRENT' ? statusSummary?.title || d.selection.reason : d?.brain.skipReason || d?.brain.planReason || 'See daemon policy and safety hold details.'
                 : stateMeta.note}
             </div>
           </div>
@@ -398,7 +398,7 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
               </span>
               {d?.intelligence?.interactionState && (
                 <span className="ml-1.5 font-mono text-slate-400">
-                  · {d.intelligence.interactionState}
+                  · Interaction: {d.intelligence.interactionState}
                 </span>
               )}
             </div>
@@ -1104,7 +1104,48 @@ export const RuntimeConsoleView: React.FC<RuntimeConsoleViewProps> = ({
         </section>
       )}
 
-      {/* CPU topology is preview-only until the native schema supplies it. */}
+      {isNativeBridge && d && (
+        <section aria-label="Live CPUFreq policies" className="cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200">
+            <h2 className="text-base font-semibold text-slate-900">CPUFreq · Live Kernel Policies</h2>
+            <p className="mt-1 text-xs text-slate-500">Governor dan frekuensi tetap ditampilkan meski tidak ada mutasi; batas frekuensi hanya diamati.</p>
+            <p className="mt-2 text-xs font-mono text-slate-600 break-words">{'Last assessment: ' + (d.selection?.cpuReason || 'Belum ada penilaian CPUFreq pada snapshot ini.')}</p>
+          </div>
+          <div className="divide-y divide-slate-200">
+            {(d.cpuPolicies || []).map((policy) => (
+              <div key={policy.path} className="px-5 py-4 text-xs space-y-2">
+                <div className="font-mono text-slate-600 break-all">{policy.path}</div>
+                <div className="flex flex-wrap justify-between gap-2">
+                  <span className="font-semibold text-slate-900">Governor: {policy.governorReadable ? policy.currentGovernor || 'unavailable' : 'unavailable'}</span>
+                  <span className="text-slate-500">{policy.governorWritable ? 'OS-writable · izin tuning diperiksa terpisah' : 'Governor write unavailable'}</span>
+                </div>
+                <div className="text-slate-600">Advertised (discovery): {policy.availableGovernors.join(', ') || 'unavailable'}</div>
+                <div className="font-mono text-slate-500">Current {policy.currentKhz == null ? '—' : policy.currentKhz + ' kHz'} · min {policy.minKhz == null ? '—' : policy.minKhz + ' kHz'} · max {policy.maxKhz == null ? '—' : policy.maxKhz + ' kHz'}</div>
+              </div>
+            ))}
+            {!(d.cpuPolicies || []).length && <p className="px-5 py-4 text-xs text-slate-500">Inventaris CPUFreq belum tersedia dari daemon. Tidak memakai data preview sebagai pengganti.</p>}
+          </div>
+        </section>
+      )}
+
+      {isNativeBridge && d?.lastEvaluation && (
+        <details className="cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <summary className="px-5 py-4 cursor-pointer text-sm font-semibold text-slate-900">Last Measured Outcome · {d.lastEvaluation.reason}</summary>
+          <div className="px-5 pb-4 text-xs text-slate-600">
+            <p>Score {d.lastEvaluation.score?.toFixed(3) ?? '—'} · confidence {d.lastEvaluation.confidence?.toFixed(3) ?? '—'} · {d.lastEvaluation.baselineSamples}/{d.lastEvaluation.observationSamples} samples · {d.lastEvaluation.valid ? 'comparable' : 'inconclusive'}</p>
+            <p className="mt-1">Perbandingan sebelum → sesudah; ketersediaan sensor dan jumlah sampel tetap ditampilkan.</p>
+            <div className="mt-3 space-y-2 font-mono">
+              {Object.entries(d.lastEvaluation.metrics).map(([metric, value]) => (
+                <div key={metric} className="flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-2">
+                  <span>{metric}</span><span>{value.before?.toFixed(3) ?? '—'} → {value.after?.toFixed(3) ?? '—'} · n={value.beforeSamples}/{value.afterSamples} · score {value.score?.toFixed(3) ?? '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </details>
+      )}
+
+      {/* Illustrative topology is preview-only; native policies are observed above. */}
       {!isNativeBridge && (
         <section className="cf-stagger-4 cf-card bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">

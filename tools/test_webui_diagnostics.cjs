@@ -187,6 +187,14 @@ function button(tree, label) {
     const cpuPath = all(runtimeView, n => n.type === 'path' && n.props.stroke === '#2563EB')[0].props.d;
     check((cpuPath.match(/M/g) || []).length === 2 && !cpuPath.includes('NaN'), 'native chart breaks the line across unavailable readings');
     check(!text(runtimeView).includes('43.0') && !text(runtimeView).includes('Stock Governor'), 'live view excludes illustrative thresholds and preview hardware');
+    const liveStatus=window.CoreFlowStatus.parse('NOW='+now+'\n'+JSON.stringify({schema:1,updated_epoch:now,running:true,
+      cpu_policies:[{path:'/sys/real/policy0',current_governor:'vendor_live',available_governors:['vendor_live','schedutil'],governor_readable:true,governor_writable:true,current_khz:800000}],
+      selection:{cpu_reason:'no_higher_scoring_governor_than_current'},
+      brain:{mode:'adaptive',armed:true,observing:true,decision:'NO_ACTION'},hands:{}}));
+    const liveView=consoleNode.type({...consoleNode.props,parsedStatus:liveStatus});
+    check(text(liveView).includes('vendor_live') && text(liveView).includes('/sys/real/policy0'), 'native CPU inventory renders without any applied CPU mutation');
+    check(text(liveView).includes('800000 kHz') && text(liveView).includes('no_higher_scoring_governor_than_current'), 'native CPU telemetry and actual selection reason are visible');
+    check(text(liveView).includes('MEASURING'), 'console activity reports observation despite a policy NO_ACTION decision');
     component(appTree, 'TopNav').props.onSelectTab('policy');
     appTree = renderApp();
     const policy = component(appTree, 'PolicyConfigView');

@@ -44,3 +44,17 @@ measured demand without an admissible gain is a separate diagnostic. Selection
 scores are priors, and measured outcomes decide retention/rollback. Accepted
 settings survive Idle while an unfinished Idle trial is canceled. See the
 [selection details](COORDINATED_THERMAL_PLANS.md).
+
+
+## v3.1.1 outcome interpretation
+
+The native CPU table reports current kernel values; OS writability is not a
+mutation grant. Current/min/max frequency telemetry does not authorize frequency
+limit writes. Last evaluation displays raw units in its metric keys (Celsius,
+load1, fractions and milliseconds), per-side coverage and normalized scores.
+Changes below max(absolute noise, twice combined standard error) score neutral:
+thermal 0.3 C, load1 0.10, CPU 0.02, memory 0.01, PSI 0.01, latency 1 ms, jank 0.005.
+The relative scale has a finite floor for zero-origin measurements. Existing
+rendering-regression and stress recovery rules remain. Short windows cannot
+separate every workload change from a tuning effect; inspect evidence before
+claiming an improvement. See [acceptance requirements](CHECKPOINT_3.1.1.md).

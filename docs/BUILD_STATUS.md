@@ -1,4 +1,4 @@
-# CoreFlow v3.1.0 — Release checkpoint validation status
+# CoreFlow v3.1.1 — Release checkpoint validation status
 
 Honest status for this source tree. Prefer CI logs and device evidence over marketing language.
 
@@ -6,7 +6,7 @@ Honest status for this source tree. Prefer CI logs and device evidence over mark
 
 | Item | Value |
 |------|--------|
-| Version | `v3.1.0` (`versionCode=3100`) |
+| Version | `v3.1.1` (`versionCode=3110`) |
 | Language | C++20 |
 | Min Android API | 34 |
 | Installed operation | Automatic bounded optimization after boot |
@@ -46,9 +46,9 @@ ctest --test-dir /tmp/coreflow-build --output-on-failure
 
 Keep build trees and NDK/ONNX caches outside the source package.
 
-## v3.1.0 maintenance candidate
+## v3.1.1 maintenance candidate
 
-See [the checkpoint record](CHECKPOINT_3.1.0.md) for the exact local checks,
+See [the checkpoint record](CHECKPOINT_3.1.1.md) for the exact local checks,
 persistence behavior, known environment limits and required device acceptance.
 Source checks are complete locally; a new Android CI run and on-phone acceptance
 for the final commit are still required before calling a binary release validated.

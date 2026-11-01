@@ -355,6 +355,9 @@
 
   // Plain-language meaning of each journal event, in the order a cycle runs.
   var EVENT_HELP = {
+    plan_selection_reviewed: "Penilaian CPUFreq dan resource; alasan tidak menulis dicatat saat berubah.",
+    resource_candidate_selected: "Kandidat resource, sumber nilai dan risiko prediksi sebelum write; belum membuktikan manfaat.",
+    global_plan_selected: "Perbandingan kandidat lintas domain sebelum write; skor ini prediksi, bukan hasil pengukuran.",
     policy_evaluated: "Policy menilai kondisi sistem dan menentukan tingkat intervensi serta jumlah kandidat perubahan.",
     scope_gate_checked: "Gerbang cakupan: kandidat harus berada di area yang diizinkan. Ini belum berarti sudah ditulis.",
     target_permit_checked: "Izin dikeluarkan untuk satu target dan satu nilai saja. Izin tidak berlaku untuk target lain.",
@@ -373,6 +376,22 @@
   }
 
   // Newest first. Non-JSON or non-object lines are skipped, never rendered as HTML.
+  function evaluationSnapshot(v) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+    function n(x) { return typeof x === "number" && isFinite(x) ? x : null; }
+    function count(x) { return typeof x === "number" && isFinite(x) && x >= 0 ? Math.floor(x) : 0; }
+    var metrics = {}, source = v.metrics && typeof v.metrics === "object" ? v.metrics : {};
+    ["thermal_c","load1","cpu_fraction","memory_fraction","psi_fraction","io_latency_ms","jank_fraction"].forEach(function(key) {
+      var m = source[key]; if (!m || typeof m !== "object" || Array.isArray(m)) return;
+      metrics[key] = { before: n(m.before), after: n(m.after), score: n(m.score),
+        beforeSamples: count(m.before_samples), afterSamples: count(m.after_samples) };
+    });
+    return { reason: typeof v.reason === "string" ? v.reason.slice(0,100) : "unknown",
+      outcome: count(v.outcome), valid: v.valid === true, score: n(v.score), confidence: n(v.confidence),
+      contextCompatible: v.context_compatible === true, comparableMetrics: count(v.comparable_metrics),
+      baselineSamples: count(v.baseline_samples), observationSamples: count(v.observation_samples), metrics: metrics };
+  }
+
   function parseTrace(text, limit) {
     var rows = [];
     String(text || "").split(/\r?\n/).filter(Boolean).slice(-(limit || 300)).forEach(function (line) {
@@ -381,6 +400,10 @@
       if (!o || typeof o !== "object" || Array.isArray(o)) return;
       rows.push({
         time: str(o.timestamp, 40),
+        sessionId: str(o.session_id, 160),
+        cycle: Number.isSafeInteger(o.cycle) && o.cycle >= 0 ? o.cycle : null,
+        eventSeq: Number.isSafeInteger(o.event_seq) && o.event_seq >= 0 ? o.event_seq : null,
+        decisionReason: str(o.decision_reason, 100),
         event: str(o.event, 80),
         scope: str(o.scope, 40),
         result: str(o.result, 60),
@@ -394,7 +417,8 @@
         baselineValue: str(o.baseline_value, 4096),
         actuatorStatus: str(o.actuator_status, 60),
         writesAttempted: typeof o.writes_attempted === "number" ? o.writes_attempted : null,
-        writesVerified: typeof o.writes_verified === "number" ? o.writes_verified : null
+        writesVerified: typeof o.writes_verified === "number" ? o.writes_verified : null,
+        evaluation: evaluationSnapshot(o.evaluation)
       });
     });
     return rows.reverse();

@@ -8,6 +8,7 @@
 #include "coreflow/coordinated_plan.hpp"
 #include "coreflow/frame_telemetry.hpp"
 #include "coreflow/foreground_tracker.hpp"
+#include "coreflow/integer_parse.hpp"
 #include "coreflow/gpu_busy_source.hpp"
 #include "coreflow/interactivity_boost.hpp"
 #include "coreflow/interactivity_model.hpp"
@@ -1333,9 +1334,11 @@ void AutonomousEngine::tick() {
                         break;
                 }
                 last_outcome_reason_=outcome_reason;
-                appendDecisionTraceEvent(trace_context, {
-                    "outcome_resolved", "pending_mutation_epoch",
-                    mutationResultName(mutation), outcome_reason});
+                last_outcome_evaluation_=evaluation; outcome_available_=true;
+                DecisionTraceEvent resolved{"outcome_resolved", "pending_mutation_epoch",
+                    mutationResultName(mutation), outcome_reason};
+                resolved.evaluation=&evaluation;
+                appendDecisionTraceEvent(trace_context,resolved);
             }
         }
 
@@ -1349,6 +1352,14 @@ void AutonomousEngine::tick() {
             const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
             const auto result = executeCoordinatedPlan(controller_, resource_controller_, next,
                 sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);
+            if (!result.verified() && (!selection_available_ ||
+                result.decision_reason!=last_plan_selection_.decision_reason ||
+                result.cpu_reason!=last_plan_selection_.cpu_reason ||
+                result.resource_reason!=last_plan_selection_.resource_reason)) {
+                const std::string reason=result.decision_reason+"; CPUFreq="+result.cpu_reason+
+                    "; resources="+result.resource_reason;
+                appendDecisionTraceEvent(trace_context,{"plan_selection_reviewed","planner","HELD",reason.c_str()});
+            }
             last_plan_selection_=result;
             last_selection_sample_=sample_count_; selection_available_=true;
             mutation = result.cpu;
@@ -1531,12 +1542,32 @@ void AutonomousEngine::publishStatus(
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
         s.telemetry_epoch = s.updated_epoch;
         s.selection_current=selection_available_ && last_selection_sample_==sample_count_;
+        s.selection_cpu_reason=last_plan_selection_.cpu_reason;
+        s.selection_resource_reason=last_plan_selection_.resource_reason;
+        for (const auto& policy:snapshot_.profile.cpu_policies) {
+            if (s.cpu_policies.size()>=16U) break;
+            CpuPolicyStatus row; row.path=policy.path;
+            const auto governor=policy.path+"/scaling_governor";
+            row.governor_readable=ResourceActuator::readComparable(governor,row.current_governor);
+            row.governor_writable=row.governor_readable && ResourceActuator::writable(governor);
+            row.available_governors=policy.available_governors;
+            const auto frequency=[&](const char* leaf) {
+                std::string value; std::uint64_t parsed=0;
+                if (!ResourceActuator::readComparable(policy.path+"/"+leaf,value) ||
+                    !integer_parse::parseUint64(value,parsed)) return std::uint64_t{0};
+                return parsed;
+            };
+            row.current_khz=frequency("scaling_cur_freq");
+            row.min_khz=frequency("scaling_min_freq"); row.max_khz=frequency("scaling_max_freq");
+            s.cpu_policies.push_back(std::move(row));
+        }
         s.selection_reason=last_plan_selection_.decision_reason;
         s.selection_winner=last_plan_selection_.winner;
         s.selection_cpu_utility=last_plan_selection_.cpu_utility;
         s.selection_resource_utility=last_plan_selection_.resource_utility;
         s.selection_funnel=last_plan_selection_.funnel;
         s.outcome_reason=last_outcome_reason_;
+        s.outcome_available=outcome_available_; s.outcome=last_outcome_evaluation_;
         s.cohort_identity = observation_identity_;
         s.cohort_members = observation_members_;
         s.interval_s = config_.monitorIntervalSeconds();
@@ -1656,6 +1687,8 @@ void AutonomousEngine::publishStatus(
             s.skip_reason = "baseline capture " +
                 std::to_string(s.baseline_samples) + "/" +
                 std::to_string(s.baseline_target);
+        } else if (s.selection_current && !s.selection_reason.empty()) {
+            s.skip_reason=s.selection_reason;
         } else if (!s.mutation_eligible) {
             s.skip_reason = s.plan_reason.empty() ? "policy not eligible" : s.plan_reason;
         } else if (s.candidates == 0) {

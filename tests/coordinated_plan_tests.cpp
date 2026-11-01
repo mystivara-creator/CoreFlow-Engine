@@ -323,9 +323,26 @@ int stalePreviewsCannotOverwrite() {
     return 0;
 }
 
+int cpuReviewExplainsNoWrite() {
+    Fixture f; const auto policy=f.governor("walt");
+    f.profile.cpu_policies[0].available_governors={"walt","schedutil"};
+    CHECK(f.cpu.captureBaseline(f.profile));
+    auto s=sample(false); PolicyPlan p; p.action=PolicyAction::Candidate; p.mutation_eligible=true;
+    p.intervention=InterventionLevel::Moderate;
+    const auto review=f.cpu.preview(RuntimeState::Normal,s,f.profile,config(),p);
+    CHECK(!review.valid && review.reason=="no_higher_scoring_governor_than_current");
+    CHECK(f.read(policy+"/scaling_governor")=="walt" && f.cpu_journal.commits==0U);
+    s.cpu_utilization=.2;
+    const auto calm=f.cpu.preview(RuntimeState::Normal,s,f.profile,config(),p);
+    CHECK(!calm.valid && calm.reason=="no_measured_cpu_or_render_demand");
+    s.cpu_utilization=.8; f.profile.cpu_policies[0].available_governors={"walt"};
+    CHECK(f.cpu.preview(RuntimeState::Normal,s,f.profile,config(),p).reason=="no_advertised_governor_alternative");
+    return 0;
+}
+
 }
 int main() {
-    const int result=conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
+    const int result=cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
         dependentRollbackFailurePreservesGovernor() || externalMemberWithdrawn() || ioSchedulerCompanions() || incompleteCrashRecoveryKeepsJournal() || crashRestoresWholeCohort();
     if (!result) std::puts("CoreFlow coordinated and thermal plans: PASS");
     return result;

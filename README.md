@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/source-v3.1.0-14b8a6?style=flat-square" alt="Source version v3.1.0"></a>
+  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/source-v3.1.1-14b8a6?style=flat-square" alt="Source version v3.1.1"></a>
   <a href="https://github.com/mystivara-creator/CoreFlow-Engine/actions/workflows/build.yml"><img src="https://github.com/mystivara-creator/CoreFlow-Engine/actions/workflows/build.yml/badge.svg?branch=main" alt="Build and checks"></a>
   <img src="https://img.shields.io/badge/Android-14%2B-38bdf8?style=flat-square" alt="Android 14 or newer">
   <img src="https://img.shields.io/badge/ABI-arm64--v8a-64748b?style=flat-square" alt="ARM64 ABI">
@@ -107,7 +107,7 @@ have stopped arriving; it does not identify the underlying cause by itself.
 | --- | --- |
 | [Coordinated & thermal plans](docs/COORDINATED_THERMAL_PLANS.md) | Live coupling, cooling behavior, cohort learning and recovery order |
 | [Settings & tradeoffs](docs/TUNING.md) | Cadence, confidence, grants and bounded interactivity settings |
-| [Checkpoint v3.1.0](docs/CHECKPOINT_3.1.0.md) | Persistence behaviour, release scope and device acceptance |
+| [Checkpoint v3.1.1](docs/CHECKPOINT_3.1.1.md) | Persistence behaviour, release scope and device acceptance |
 | [Build status](docs/BUILD_STATUS.md) | What local checks and CI can establish |
 | [Device validation](docs/DEVICE_VALIDATION.md) | Testing behaviour, recovery and outcomes on a phone |
 | [Native audit notes](docs/NATIVE_AUDIT_2026-11.md) | Confirmed findings, fixes and verification limits |

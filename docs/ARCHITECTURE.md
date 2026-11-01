@@ -37,3 +37,15 @@ identity. Live coupling and bounded subtree rediscovery follow anchor changes.
 Reverse-order resource journals settle dependents before CPU recovery. Verified
 cooling can remain active during ThermalGuard; confidence dips block new writes.
 [Detailed semantics and acceptance scope](COORDINATED_THERMAL_PLANS.md).
+
+
+## v3.1.1 diagnostic and measurement boundary
+
+Native CPU inventory is independent from applied/owned settings. A governor can
+be fully visible without a justified replacement; per-class selection reasons
+explain the difference. The console displays actuator activity separately from
+state-policy recommendations. Outcome evidence includes means, coverage and
+scores for seven dimensions. Zero-origin pressure is measurable, noise below
+an absolute or combined-standard-error threshold is neutral, and changed charging
+context is inconclusive. These are bounded short-window comparisons, not a causal
+benchmark. See [the checkpoint](CHECKPOINT_3.1.1.md).

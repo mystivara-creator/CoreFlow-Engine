@@ -105,6 +105,7 @@ public:
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
 
 private:
+    mutable const char* plan_reason_{"not_assessed"};
     const PlanOption* selected_primary_{nullptr};
     std::vector<std::pair<std::string, std::string>> accepted_governors_;
     const std::unordered_set<std::string>* external_control_paths_{nullptr};

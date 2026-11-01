@@ -39,6 +39,22 @@
   function str(v, max) { return typeof v === "string" ? v.slice(0, max || 160) : ""; }
   function bool(v) { return v === true; }
 
+  function evaluationSnapshot(v) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+    function n(x) { return typeof x === "number" && isFinite(x) ? x : null; }
+    function count(x) { return typeof x === "number" && isFinite(x) && x >= 0 ? Math.floor(x) : 0; }
+    var metrics = {}, source = v.metrics && typeof v.metrics === "object" ? v.metrics : {};
+    ["thermal_c","load1","cpu_fraction","memory_fraction","psi_fraction","io_latency_ms","jank_fraction"].forEach(function(key) {
+      var m = source[key]; if (!m || typeof m !== "object" || Array.isArray(m)) return;
+      metrics[key] = { before: n(m.before), after: n(m.after), score: n(m.score),
+        beforeSamples: count(m.before_samples), afterSamples: count(m.after_samples) };
+    });
+    return { reason: typeof v.reason === "string" ? v.reason.slice(0,100) : "unknown",
+      outcome: count(v.outcome), valid: v.valid === true, score: n(v.score), confidence: n(v.confidence),
+      contextCompatible: v.context_compatible === true, comparableMetrics: count(v.comparable_metrics),
+      baselineSamples: count(v.baseline_samples), observationSamples: count(v.observation_samples), metrics: metrics };
+  }
+
   function pairs(v, keyName) {
     var out = [];
     if (!Array.isArray(v)) return out;
@@ -63,10 +79,17 @@
       sample: int(j.sample, 0),
       updated: int(j.updated_epoch, 0),
       telemetryUpdated: int(j.telemetry_epoch, int(j.updated_epoch, 0)),
-      selection: { current: bool(sel.current), reason: str(sel.reason, 160), winner: str(sel.winner, 64),
+      selection: { current: bool(sel.current), reason: str(sel.reason, 160), winner: str(sel.winner, 64), cpuReason: str(sel.cpu_reason, 200), resourceReason: str(sel.resource_reason, 200),
         cpuUtility: num(sel.cpu_utility), resourceUtility: num(sel.resource_utility), assessed: bool(sel.assessed),
         discovered: int(sel.discovered, 0), structural: int(sel.structural, 0), baseline: int(sel.baseline, 0),
         granted: int(sel.granted, 0), relevant: int(sel.relevant, 0), ranked: int(sel.ranked, 0), selectable: int(sel.selectable, 0) },
+      cpuPolicies: (Array.isArray(j.cpu_policies) ? j.cpu_policies : []).slice(0,16).filter(isObj).map(function(p) {
+        return { path: str(p.path,4096), currentGovernor: str(p.current_governor,96),
+          governorReadable: bool(p.governor_readable), governorWritable: bool(p.governor_writable),
+          currentKhz: num(p.current_khz), minKhz: num(p.min_khz), maxKhz: num(p.max_khz),
+          availableGovernors: (Array.isArray(p.available_governors) ? p.available_governors : []).slice(0,32).filter(function(t) { return typeof t === "string"; }).map(function(t) { return str(t,96); }) };
+      }),
+      lastEvaluation: evaluationSnapshot(j.last_evaluation),
       outcomeReason: str(j.outcome_reason, 200),
       cohortIdentity: str(j.cohort_identity, 512),
       cohortMembers: int(j.cohort_members, 0),
@@ -315,6 +338,19 @@
     ];
   }
 
+  function activity(d) {
+    if (d.recoveryPhase) return "RECOVERING";
+    if (d.brain.holdActive || d.brain.mode !== "adaptive" || !d.brain.armed) return "HELD";
+    if (d.brain.observing) return "MEASURING";
+    if (d.hands.lastCpu === "FAILED" || d.hands.lastResource === "FAILED") return "FAILED";
+    if (d.hands.lastCpu === "ROLLED_BACK" || d.hands.lastResource === "ROLLED_BACK") return "ROLLED_BACK";
+    if (d.hands.cpuMutated || d.hands.resourceMutated) return "HOLDING";
+    if (d.brain.cooldown) return "COOLDOWN";
+    if (!d.brain.baselineReady) return "BASELINE";
+    if (d.selection.current && d.selection.winner === "KEEP_CURRENT") return "KEEP_CURRENT";
+    return "ASSESSING";
+  }
+
   function brainRows(d) {
     var b = d.brain;
     var i = d.intelligence || {};
@@ -330,13 +366,15 @@
       ["Learning", String(i.learnedCandidates || 0) + " candidates", "measured local experience"],
       ["State", b.state, b.previous && b.previous !== b.state ? "was " + b.previous : ""],
       ["Workload", b.workload, ""],
-      ["Decision", b.decision, ""],
+      ["Policy decision", b.decision, "State-policy recommendation; actuator activity is reported separately"],
       ["Plan", b.planAction + " · " + b.intervention, b.stabilizingOnly ? "stabilizing only" : ""],
-      ["Operation", b.mode === "adaptive" && b.armed ? "active" : "held", b.allowCpu ? "CPU governor allowed" : "CPU governor off"],
+      ["Operation", b.mode === "adaptive" && b.armed ? "active" : "held", b.permitCpu ? "CPU scope gate open" : "CPU scope gate held"],
       ["Decision agent", b.agentMode || "ScoringOnly", b.agentReason || "no proposal this cycle"],
       ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
       ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],
       ["Last selection", d.selection.winner || "—", d.selection.reason || "—"],
+      ["CPUFreq selection", d.selection.cpuReason || "not assessed", "Advertised alternatives compete with the live governor"],
+      ["Resource selection", d.selection.resourceReason || "not assessed", "Requires per-domain evidence and authority"],
       ["Predicted net gain", "CPU " + fix(d.selection.cpuUtility, 3) + " · resources " + fix(d.selection.resourceUtility, 3), "relative to keeping the current configuration"],
       ["Candidate review", d.selection.assessed ? (d.selection.selectable + " selectable / " + d.selection.ranked + " reviewed") : "not assessed", d.selection.discovered + " inventory; " + d.selection.granted + " granted baselines; " + d.selection.relevant + " relevant"],
       ["Last outcome", d.outcomeReason || "—", "Measured result; separate from predicted selection scores"],
@@ -362,7 +400,7 @@
   var api = {
     SCHEMA: SCHEMA, MAX_BYTES: MAX_BYTES, BLOCKERS: BLOCKERS,
     parse: parse, summary: summary, pipeline: pipeline,
-    eyesRows: eyesRows, deviceRows: deviceRows, brainRows: brainRows, handsRows: handsRows
+    activity: activity, eyesRows: eyesRows, deviceRows: deviceRows, brainRows: brainRows, handsRows: handsRows
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CoreFlowStatus = api;

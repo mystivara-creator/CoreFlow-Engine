@@ -211,5 +211,34 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
   check(malformed.ok && malformed.data.selection.cpuUtility === null && malformed.data.selection.resourceUtility === null && malformed.data.selection.discovered === 0, "malformed selection numbers are unavailable");
 }
 
+{
+  const parsed=S.parse(raw("cpu_outcome.json")), d=parsed.data;
+  check(parsed.ok && d.cpuPolicies.length === 1, "live CPU policies exist even without an owned CPU write");
+  check(d.cpuPolicies[0].currentGovernor === "walt" && d.cpuPolicies[0].availableGovernors.includes("schedutil"), "live and advertised governors roundtrip");
+  check(d.cpuPolicies[0].currentKhz === 800000 && d.cpuPolicies[0].maxKhz === 2400000, "frequency telemetry remains read-only data");
+  check(d.selection.cpuReason === "no_higher_scoring_governor_than_current", "CPU selection has an explicit no-write reason");
+  check(d.lastEvaluation.reason === "weighted_metrics_regressed" && d.lastEvaluation.metrics.psi_fraction.before === 0 && d.lastEvaluation.metrics.psi_fraction.after === .3, "actual native evaluation preserves zero-to-stall metrics");
+  check(d.lastEvaluation.metrics.io_latency_ms.afterSamples === 4 && d.lastEvaluation.metrics.io_latency_ms.score < .5, "metric coverage and scores survive JSON roundtrip");
+  const traceParser=loadUmd(path.join(root,"module/webroot/control_logic.js"));
+  const evaluation=JSON.parse(load("cpu_outcome.json")).last_evaluation;
+  const rows=traceParser.parseTrace(JSON.stringify({event:"outcome_resolved",result:"ROLLED_BACK",session_id:"live-test",cycle:42,event_seq:17,decision_reason:"MUTATION_ROLLED_BACK",evaluation}));
+  check(rows[0].evaluation.metrics.io_latency_ms.after === 50, "trace export retains the measured evaluation instead of dropping it");
+  check(rows[0].sessionId === "live-test" && rows[0].cycle === 42 && rows[0].eventSeq === 17, "trace export preserves session and sample correlation");
+  check(rows[0].decisionReason === "MUTATION_ROLLED_BACK", "policy decision and actual mutation reason remain separate");
+  check(JSON.parse(JSON.stringify(rows))[0].evaluation.reason === d.lastEvaluation.reason, "downloaded trace JSON retains the exact outcome cause");
+  const j=JSON.parse(load("cpu_outcome.json")); j.brain.observing=true; j.brain.decision="NO_ACTION";
+  let q=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(S.activity(q.data) === "MEASURING", "real measurement overrides the policy NO_ACTION badge");
+  j.brain.hold_active=true;
+  q=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(S.activity(q.data) === "HELD", "authority loss takes priority over activity");
+  j.cpu_policies=[{path:"/test",available_governors:[null,{},"walt"],current_khz:"oops"}];
+  q=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(q.data.cpuPolicies[0].availableGovernors.length===1 && q.data.cpuPolicies[0].currentKhz===null, "hostile CPU inventory cannot masquerade as live telemetry");
+  for (const k of keys(JSON.parse(load("cpu_outcome.json")),new Set())) {
+    check(new RegExp("\\b"+k+"\\b").test(jsSource),"WebUI consumes new native diagnostic field "+k);
+  }
+}
+
 console.log("CoreFlow WebUI status contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

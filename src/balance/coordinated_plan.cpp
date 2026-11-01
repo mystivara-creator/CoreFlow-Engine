@@ -36,27 +36,29 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
         if (!cpu.recoveryReady()) (void)cpu.captureBaseline(profile);
         if (!cpu.recoveryReady()) { result.decision_reason="cpu_recovery_pending"; return result; }
         result.funnel.discovered=profile.capabilities.resources.size();
-        if (!measuredTuningNeed(sample,state)) {
-            result.winner="KEEP_CURRENT";
-            result.decision_reason="no_measured_tuning_need_keep_current";
-            return result;
-        }
         const MutationAuthority authority;
         const auto resource_permit=authority.authorize(plan,config,state,sample.confidence,MutationPermit::Scope::Resource);
         const auto cpu_permit=authority.authorize(plan,config,state,sample.confidence,MutationPermit::Scope::CpuFreq);
-        if (!resource_permit.valid() && !cpu_permit.valid()) {
-            result.decision_reason="authority_or_confidence_blocks_tuning"; return result;
-        }
         // Both options are read and scored before either controller may write.
         resources.setCoupledOnly(false);
         auto resource_option=resources.preview(state,sample,profile,config,plan);
         auto cpu_option=cpu.preview(state,sample,profile,config,plan);
         result.funnel=resources.candidateFunnel();
+        result.cpu_reason=cpu_option.reason; result.resource_reason=resource_option.reason;
+        if (!measuredTuningNeed(sample,state)) {
+            result.winner="KEEP_CURRENT";
+            result.decision_reason="no_measured_tuning_need_keep_current"; return result;
+        }
+        if (!resource_permit.valid() && !cpu_permit.valid()) {
+            result.decision_reason="authority_or_confidence_blocks_tuning"; return result;
+        }
         const bool owns_governor_dependencies=std::any_of(resources.activeResourceSettings().begin(),
             resources.activeResourceSettings().end(),[](const auto& setting) {
                 return setting.first.find("/cpufreq/")!=std::string::npos;
             });
-        if (owns_governor_dependencies) cpu_option.valid=false;
+        if (owns_governor_dependencies) {
+            cpu_option.valid=false; result.cpu_reason="owned_governor_dependencies_must_settle_before_switch";
+        }
         result.cpu_utility=cpu_option.valid ? cpu_option.utility : 0.;
         result.resource_utility=resource_option.valid ? resource_option.utility : 0.;
         if (!cpu_option.valid && !resource_option.valid) {

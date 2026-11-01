@@ -1,7 +1,7 @@
 id=coreflow_autonomous
 name=CoreFlow System Framework
-version=v3.1.0
-versionCode=3100
+version=v3.1.1
+versionCode=3110
 author=Mystivara
 description=Evidence-driven Android optimization with bounded native tuning, verified rollback, persistent experience and a diagnostic WebUI.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

@@ -44,8 +44,15 @@ export interface DaemonProbe {
   bootAttempts: string;
 }
 
+export interface OutcomeEvaluation {
+  reason: string; outcome: number; valid: boolean; score: number | null; confidence: number | null;
+  contextCompatible: boolean; comparableMetrics: number; baselineSamples: number; observationSamples: number;
+  metrics: Record<string, { before: number | null; after: number | null; score: number | null; beforeSamples: number; afterSamples: number }>;
+}
+
 export interface ConscienceTraceRow {
   time: string;
+  sessionId?: string; cycle?: number | null; eventSeq?: number | null; decisionReason?: string;
   event: string;
   scope: string;
   result: string;
@@ -53,6 +60,7 @@ export interface ConscienceTraceRow {
   state: string;
   decision: string;
   kind: 'error' | 'block' | 'change' | 'safety' | 'event';
+  evaluation?: OutcomeEvaluation | null;
   target: string;
   requested: string;
   currentValue: string;
@@ -82,9 +90,12 @@ export interface ParsedEngineStatus {
     sample: number;
     updated: number;
     telemetryUpdated?: number;
-    selection?: { current: boolean; reason: string; winner: string; cpuUtility: number | null; resourceUtility: number | null;
+    selection?: { current: boolean; reason: string; winner: string; cpuReason?: string; resourceReason?: string; cpuUtility: number | null; resourceUtility: number | null;
       assessed: boolean; discovered: number; structural: number; baseline: number; granted: number; relevant: number; ranked: number; selectable: number };
+    cpuPolicies?: Array<{ path: string; currentGovernor: string; availableGovernors: string[];
+      governorReadable: boolean; governorWritable: boolean; currentKhz: number | null; minKhz: number | null; maxKhz: number | null }>;
     outcomeReason?: string;
+    lastEvaluation?: OutcomeEvaluation | null;
     cohortIdentity?: string;
     cohortMembers?: number;
     recoveryPhase?: string;
@@ -278,6 +289,7 @@ export interface CoreFlowStatusGlobal {
   pipeline: (data: NonNullable<ParsedEngineStatus['data']>) => PipelineStage[];
   eyesRows: (data: NonNullable<ParsedEngineStatus['data']>) => Array<[string, string, string?]>;
   deviceRows: (data: NonNullable<ParsedEngineStatus['data']>) => Array<[string, string, string?]>;
+  activity: (data: NonNullable<ParsedEngineStatus['data']>) => string;
   brainRows: (data: NonNullable<ParsedEngineStatus['data']>) => Array<[string, string, string?]>;
   handsRows: (data: NonNullable<ParsedEngineStatus['data']>) => Array<[string, string, string?]>;
 }
@@ -501,7 +513,7 @@ export function buildMirrorStatusSnapshot(
 
   const statusObj = {
     schema: 1,
-    version: '3.1.0',
+    version: '3.1.1',
     pid: store.running ? store.pid : 0,
     sample: sample.sampleIndex,
     updated_epoch: nowEpoch,

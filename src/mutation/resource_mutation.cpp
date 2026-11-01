@@ -706,6 +706,12 @@ MutationResult ResourceMutationController::applyCandidate(
     const bool prewrite_read_ok = ResourceActuator::readComparable(
         candidate.path, previous_value);
     if (trace_context != nullptr) {
+        const std::string rationale=candidate.reason+" benefit="+std::to_string(candidate.benefit)+
+            " risk="+std::to_string(candidate.risk)+" confidence="+std::to_string(candidate.confidence);
+        DecisionTraceEvent selected{"resource_candidate_selected","resource","SELECTED",rationale.c_str()};
+        selected.target=candidate.path.c_str(); selected.requested=candidate.requested.c_str();
+        selected.current_value=prewrite_read_ok ? previous_value.c_str() : nullptr;
+        selected.baseline_value=candidate.baseline.c_str(); appendDecisionTraceEvent(*trace_context,selected);
         DecisionTraceEvent event{"prewrite_read_completed", "resource",
                                  prewrite_read_ok ? "READ" : "FAILED",
                                  prewrite_read_ok ? "live_resource_value_read"
@@ -891,13 +897,18 @@ PlanOption ResourceMutationController::preview(RuntimeState state, const Runtime
     ++cycle_; // rejecting every proposal must not freeze rejection cooldowns
     candidate_funnel_={}; candidate_funnel_.discovered=profile.capabilities.resources.size();
     try {
-        if (!recoveryReady() || pending_outcome_ || !baseline_captured_ ||
-            mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::Resource)) return {};
+        if (!recoveryReady() || pending_outcome_ || !baseline_captured_)
+            return {false,ResourceDomain::Vendor,{},{},{},{},"resource_baseline_recovery_or_measurement_pending"};
+        if (const char* gate=mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::Resource))
+            return {false,ResourceDomain::Vendor,{},{},{},{},gate};
+        if (!measuredTuningNeed(sample,state))
+            return {false,ResourceDomain::Vendor,{},{},{},{},"no_measured_resource_demand"};
         UserGrants grants;
         grants.memory=config.grantMemory(); grants.block_queue=config.grantBlockQueue(); grants.scheduler=config.grantScheduler();
         grants.gpu=config.grantGpu(); grants.cgroup=config.grantCgroup(); grants.cpufreq=config.grantCpuFreq(); grants.kernel=config.grantKernel();
         Candidate candidate;
-        if (!selectCandidate(state,sample,profile,policy,grants,candidate,false,true)) return {};
+        if (!selectCandidate(state,sample,profile,policy,grants,candidate,false,true))
+            return {false,ResourceDomain::Vendor,{},{},{},{},"no_admissible_resource_gain_after_grants_and_ranking"};
         if (candidate.utility <= .05) return {};
         return {true,candidate.domain,candidate.name,candidate.path,candidate.current,candidate.requested,candidate.reason,
             candidate.benefit,candidate.risk,candidate.confidence,candidate.utility - .05};

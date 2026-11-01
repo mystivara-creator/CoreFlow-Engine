@@ -38,7 +38,18 @@ public:
         Inconclusive
     };
 
+    struct Comparison {
+        double before{0.0}, after{0.0}, score{0.5};
+        std::size_t before_samples{0}, after_samples{0};
+    };
+    enum class EvaluationReason {
+        InsufficientSamples, ContextChanged, RenderingMissing, RefreshRateChanged,
+        InsufficientEvidence, RenderingRegression, ScoreImproved, ScoreRegressed, WithinNoise
+    };
     struct Evaluation {
+        EvaluationReason reason{EvaluationReason::InsufficientSamples};
+        // thermal C, load1, CPU fraction, memory fraction, PSI fraction, latency ms, jank fraction
+        std::array<Comparison,7> metrics{};
         Outcome outcome{Outcome::Unknown};
         double overall_score{0.0};
         double thermal_score{0.0};
@@ -168,10 +179,6 @@ private:
     static double variance(const MetricAggregate&) noexcept;
     static double standardDeviation(const MetricAggregate&) noexcept;
 
-    static double lowerIsBetter(double baseline,
-                                double candidate) noexcept;
-    static double higherIsBetter(double baseline,
-                                 double candidate) noexcept;
     static double stabilityScore(const MetricAggregate& baseline,
                                  const MetricAggregate& candidate) noexcept;
     static double calculateStabilityScore(const Aggregate& baseline,
