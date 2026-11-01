@@ -216,6 +216,23 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
   check(parsed.ok && d.cpuPolicies.length === 1, "live CPU policies exist even without an owned CPU write");
   check(d.cpuPolicies[0].currentGovernor === "walt" && d.cpuPolicies[0].availableGovernors.includes("schedutil"), "live and advertised governors roundtrip");
   check(d.cpuPolicies[0].currentKhz === 800000 && d.cpuPolicies[0].maxKhz === 2400000, "frequency telemetry remains read-only data");
+  const enriched = JSON.parse(load("cpu_outcome.json"));
+  enriched.cpu_policies[0].related_cpus = "4-7";
+  enriched.cpu_policies[0].hardware_min_khz = 691200;
+  enriched.cpu_policies[0].hardware_max_khz = 2400000;
+  enriched.cpu_policies[0].available_frequencies_khz = [691200, 1200000, 2400000];
+  enriched.device.security_patch = "2026-10-01";
+  enriched.device.firmware_incremental = "OS3.0.304.0";
+  enriched.device.vendor_files_parsed = 5;
+  enriched.device.vendor_knobs = 18;
+  enriched.device.discovery_truncated = true;
+  const liveParsed = S.parse("NOW="+(enriched.updated_epoch+1)+"\n"+JSON.stringify(enriched));
+  check(liveParsed.ok && liveParsed.data.cpuPolicies[0].hardwareMaxKhz === 2400000 &&
+    liveParsed.data.cpuPolicies[0].availableFrequenciesKhz.length === 3 &&
+    liveParsed.data.cpuPolicies[0].relatedCpus === "4-7", "kernel CPU policy capability provenance roundtrips");
+  check(liveParsed.data.device.discoveryTruncated && liveParsed.data.device.vendorKnobs === 18,
+    "device capability discovery completeness is visible");
+
   check(d.selection.cpuReason === "no_higher_scoring_governor_than_current", "CPU selection has an explicit no-write reason");
   check(d.lastEvaluation.reason === "weighted_metrics_regressed" && d.lastEvaluation.metrics.psi_fraction.before === 0 && d.lastEvaluation.metrics.psi_fraction.after === .3, "actual native evaluation preserves zero-to-stall metrics");
   check(d.lastEvaluation.metrics.io_latency_ms.afterSamples === 4 && d.lastEvaluation.metrics.io_latency_ms.score < .5, "metric coverage and scores survive JSON roundtrip");

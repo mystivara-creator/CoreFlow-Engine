@@ -581,6 +581,28 @@ void testStatusJsonContractShape() {
     CHECK(has(off_json, "\"cpu_utilization\":null"));
     CHECK(has(off_json, "\"io_read_kbs\":null"));
     CHECK(has(off_json, "\"battery_percent\":null"));
+
+    EngineStatus inventory = adaptiveReady();
+    CpuPolicyStatus policy;
+    policy.path = "/sys/devices/system/cpu/cpufreq/policy4";
+    policy.related_cpus = "4-7";
+    policy.current_governor = "schedutil";
+    policy.hardware_min_khz = 691200;
+    policy.hardware_max_khz = 2400000;
+    policy.available_frequencies = {691200, 1200000, 1804800, 2400000};
+    inventory.cpu_policies.push_back(policy);
+    inventory.security_patch = "2026-10-01";
+    inventory.firmware_incremental = "OS3.0.304.0";
+    inventory.vendor_files_parsed = 5;
+    inventory.vendor_knobs = 18;
+    inventory.discovery_truncated = true;
+    const auto live_json = statusToJson(inventory);
+    CHECK(validJson(live_json));
+    CHECK(has(live_json, "\"hardware_min_khz\":691200"));
+    CHECK(has(live_json, "\"hardware_max_khz\":2400000"));
+    CHECK(has(live_json, "\"available_frequencies_khz\":[691200,1200000,1804800,2400000]"));
+    CHECK(has(live_json, "\"related_cpus\":\"4-7\""));
+    CHECK(has(live_json, "\"discovery_truncated\":true"));
 }
 
 void testStatusJsonIsBounded() {
