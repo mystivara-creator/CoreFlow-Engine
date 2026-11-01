@@ -109,6 +109,7 @@ have stopped arriving; it does not identify the underlying cause by itself.
 | [Coordinated & thermal plans](docs/COORDINATED_THERMAL_PLANS.md) | Live coupling, cooling behavior, cohort learning and recovery order |
 | [Settings & tradeoffs](docs/TUNING.md) | Cadence, confidence, grants and bounded interactivity settings |
 | [Checkpoint v3.1.2](docs/CHECKPOINT_3.1.2.md) | Persistence behaviour, release scope and device acceptance |
+| [v3.2.0 source checkpoint candidate](docs/CHECKPOINT_3.2.0_SOURCE_CANDIDATE.md) | Contextual value admission, device provenance, ONNX inference evidence and release gates |
 | [Build status](docs/BUILD_STATUS.md) | What local checks and CI can establish |
 | [Device validation](docs/DEVICE_VALIDATION.md) | Testing behaviour, recovery and outcomes on a phone |
 | [Native audit notes](docs/NATIVE_AUDIT_2026-11.md) | Confirmed findings, fixes and verification limits |
