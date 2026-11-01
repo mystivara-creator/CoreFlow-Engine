@@ -95,7 +95,20 @@ int main(int argc, char** argv) {
 
     emit(dir, "ready.json", base());
     auto cpu_status=base();
-    cpu_status.cpu_policies.push_back({"/sys/devices/system/cpu/cpufreq/policy0","walt",{"walt","schedutil"},true,true,800000,300000,2400000});
+    CpuPolicyStatus cpu_row;
+    cpu_row.path="/sys/devices/system/cpu/cpufreq/policy0";
+    cpu_row.current_governor="walt";
+    cpu_row.available_governors={"walt","schedutil"};
+    cpu_row.governor_readable=true;
+    cpu_row.governor_writable=true;
+    cpu_row.current_khz=800000;
+    cpu_row.min_khz=300000;
+    cpu_row.max_khz=2400000;
+    cpu_row.hardware_min_khz=300000;
+    cpu_row.hardware_max_khz=2400000;
+    cpu_row.related_cpus="0-3";
+    cpu_row.available_frequencies={300000,800000,2400000};
+    cpu_status.cpu_policies.push_back(std::move(cpu_row));
     cpu_status.selection_cpu_reason="no_higher_scoring_governor_than_current";
     BaselineIntelligence measured;
     RuntimeSample before; before.thermal_available=true; before.hottest_thermal_millidegrees=40000;
