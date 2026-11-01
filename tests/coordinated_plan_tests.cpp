@@ -87,6 +87,9 @@ void thermalNodes(Fixture& f, std::vector<std::string>& paths) {
         "cpufreq/policy0/walt/hispeed_freq","1200",{"400","800","1200"}));
     paths.push_back(f.add(ResourceDomain::Gpu,"gpu.minimum",
         "devfreq/gpu/min_freq","1200",{"400","800","1200"}));
+    // A real cgroup exposes paired uclamp controls. Live sibling checks
+    // intentionally fail closed when the fixture omits the other half.
+    f.write(f.root/"dev/cpuctl/background/cpu.uclamp.min","0");
     paths.push_back(f.add(ResourceDomain::UClamp,"background:cpu.uclamp.max",
         "dev/cpuctl/background/cpu.uclamp.max","max"));
 }
@@ -342,6 +345,7 @@ int cpuReviewExplainsNoWrite() {
 
 int contextualHistoryPreventsRepeatAndDrift() {
     Fixture f; f.governor("walt");
+    f.write(f.root/"dev/cpuctl/top-app/cpu.uclamp.max","max");
     const auto clamp=f.add(ResourceDomain::UClamp,"top-app:cpu.uclamp.min","dev/cpuctl/top-app/cpu.uclamp.min","0.00");
     TrialHistory history; CHECK(history.initialize((f.root/"trial-history").string(),"device:kernel"));
     f.cpu.setTrialHistory(&history); f.resources.setTrialHistory(&history);
