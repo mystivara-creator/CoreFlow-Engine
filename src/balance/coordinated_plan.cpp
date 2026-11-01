@@ -114,6 +114,23 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
                     !execution_plan.allows(cap.domain,cap.name))
                     execution_plan.candidates.push_back({cap.domain,cap.name,{},sample.confidence,1.,PolicyAction::Candidate});
         }
+        // A governor transition changes the active CPU policy and may expose
+        // new dependent controls. Never replay a resource choice scored against
+        // the old governor: re-preview the COMPLETE live configuration after
+        // refreshing capabilities and baselines. If the same value is no longer
+        // the best admissible option, defer it; a later epoch can evaluate it
+        // without attributing the old estimate to the new configuration.
+        if (result.cpu == MutationResult::Verified && resource_option.valid) {
+            const auto revised = resources.preview(state,sample,profile,config,execution_plan);
+            if (!revised.valid || revised.path != resource_option.path ||
+                revised.requested != resource_option.requested ||
+                revised.current != resource_option.current) {
+                resource_option.valid = false;
+                result.resource_reason = "resource_preselection_stale_after_governor_transition";
+            } else {
+                resource_option = revised;
+            }
+        }
         if (resource_option.valid) {
             result.resource=resources.applySelected(resource_option,state,sample,profile,config,
                 execution_plan,resource_permit,trace);
