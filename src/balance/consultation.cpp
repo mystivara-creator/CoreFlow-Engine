@@ -91,7 +91,28 @@ SurfaceClass classifySurface(ResourceDomain domain, const std::string& name,
     // generic resource actuator's authority.
     if (namespaceOf(domain, name) == ControlNamespace::CpuFreq) return SurfaceClass::OutOfClass;
     if (isReservedCpuFreqSurface(path)) return SurfaceClass::OutOfClass;
-    // Capability-driven: every other discovered kernel tunable is a candidate.
+    // Semantic admission is separate from discovery. A writable attribute is
+    // only a *capability*, not evidence that a runtime write is safe. The
+    // cc87642 incident demonstrated this with DRM and UFS host controls.
+    // Unknown vendor controls and GPU driver controls have no generic
+    // cross-device safety contract: inventory them, never mutate them.
+    if (domain == ResourceDomain::Vendor || domain == ResourceDomain::Gpu)
+        return SurfaceClass::OutOfClass;
+
+    // Storage policy is limited to block queue/iosched interfaces. Host power
+    // management and controller internals must never be inferred as I/O tuning.
+    if (domain == ResourceDomain::Io &&
+        path.find("/queue/") == std::string::npos)
+        return SurfaceClass::OutOfClass;
+
+    // A named scheduler or CPU frequency control without an identified
+    // subsystem is not automatically safe to write.
+    if (domain == ResourceDomain::Scheduler &&
+        path.find("/cpufreq/") == std::string::npos &&
+        path.find("/proc/sys/kernel/sched") == std::string::npos &&
+        path.find("/proc/sys/walt/") == std::string::npos)
+        return SurfaceClass::OutOfClass;
+
     return SurfaceClass::Admissible;
 }
 
