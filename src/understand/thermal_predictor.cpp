@@ -261,6 +261,9 @@ struct ThermalPredictor::Impl {
     OnnxSession session;
 #endif
     bool model_loaded{false};
+    std::uint64_t model_inferences{0};
+    std::uint64_t heuristic_fallbacks{0};
+    bool last_used_model{false};
 };
 
 ThermalPredictor::ThermalPredictor()
@@ -273,6 +276,9 @@ bool ThermalPredictor::initialize(const char* model_path) {
         return false;
     }
     impl_->model_loaded = false;
+    impl_->model_inferences = 0;
+    impl_->heuristic_fallbacks = 0;
+    impl_->last_used_model = false;
 
 #if defined(CORE_FLOW_ANDROID)
     if (model_path != nullptr && model_path[0] != '\0') {
@@ -303,12 +309,20 @@ double ThermalPredictor::predict(
         if (features.complete) {
             const double model_pred = impl_->session.run(features, steps_ahead);
             if (std::isfinite(model_pred)) {
+                impl_->last_used_model = true;
+                if (impl_->model_inferences < std::numeric_limits<std::uint64_t>::max())
+                    ++impl_->model_inferences;
                 return model_pred;
             }
         }
     }
 #endif
 
+    if (impl_) {
+        impl_->last_used_model = false;
+        if (impl_->heuristic_fallbacks < std::numeric_limits<std::uint64_t>::max())
+            ++impl_->heuristic_fallbacks;
+    }
     return heuristicPredict(history, current_sample, steps_ahead);
 }
 
@@ -323,6 +337,18 @@ bool ThermalPredictor::usingModel() const noexcept {
 #else
     return false;
 #endif
+}
+
+std::uint64_t ThermalPredictor::successfulModelInferences() const noexcept {
+    return impl_ ? impl_->model_inferences : 0U;
+}
+
+std::uint64_t ThermalPredictor::heuristicFallbacks() const noexcept {
+    return impl_ ? impl_->heuristic_fallbacks : 0U;
+}
+
+bool ThermalPredictor::lastPredictionUsedModel() const noexcept {
+    return impl_ && impl_->last_used_model && impl_->model_inferences > 0U;
 }
 
 }  // namespace coreflow

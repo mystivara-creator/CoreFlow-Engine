@@ -72,6 +72,12 @@ struct EngineStatus {
     std::size_t external_control_paths{0};
     StorageHealth storage_health;
     std::size_t learned_candidates{0};
+    // ONNX session loading != successful inference. Heuristic fallback is
+    // separately counted; no estimate is presented as model evidence.
+    bool onnx_session_ready{false};
+    bool onnx_last_inference{false};
+    std::uint64_t onnx_inferences{0};
+    std::uint64_t heuristic_fallbacks{0};
 
     // Device & ecosystem intelligence. These fields are observed identity and
     // discovered-interface facts, not inferred mutation permission.

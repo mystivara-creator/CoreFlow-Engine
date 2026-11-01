@@ -26,6 +26,10 @@ public:
 
     bool isReady() const noexcept;
     bool usingModel() const noexcept;
+    // Diagnostic counters since daemon start; independent of model loading.
+    std::uint64_t successfulModelInferences() const noexcept;
+    std::uint64_t heuristicFallbacks() const noexcept;
+    bool lastPredictionUsedModel() const noexcept;
 
 private:
     struct Impl;

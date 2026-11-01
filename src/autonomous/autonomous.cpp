@@ -350,9 +350,11 @@ bool AutonomousEngine::initialize() {
     accepted_conditions_available_=false; unneeded_samples_=0;
     mutation_cooldown_until_sample_ = 0;
 
-    const bool ml_ready = thermal_predictor_.initialize(kPaths.thermal_model.c_str());
+    (void)thermal_predictor_.initialize(kPaths.thermal_model.c_str());
+    // initialize() also succeeds when the *heuristic* fallback is available.
+    // Do not report ONNX READY until an actual ONNX session was loaded.
     logInfo("THERMAL_ML status=%s backend=%s",
-            ml_ready ? "READY" : "FALLBACK",
+            thermal_predictor_.usingModel() ? "MODEL_READY" : "HEURISTIC_ONLY",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
     // Recover bounded boosts before any controller captures its factory baseline.
@@ -454,9 +456,11 @@ bool AutonomousEngine::refreshEnvironment() {
     }
     mutation_cooldown_until_sample_ = 0;
 
-    const bool ml_ready = thermal_predictor_.initialize(kPaths.thermal_model.c_str());
+    (void)thermal_predictor_.initialize(kPaths.thermal_model.c_str());
+    // initialize() also succeeds when the *heuristic* fallback is available.
+    // Do not report ONNX READY until an actual ONNX session was loaded.
     logInfo("THERMAL_ML status=%s backend=%s",
-            ml_ready ? "READY" : "FALLBACK",
+            thermal_predictor_.usingModel() ? "MODEL_READY" : "HEURISTIC_ONLY",
             thermal_predictor_.usingModel() ? "ONNX" : "HEURISTIC");
 
     if (!resource_controller_.captureBaseline(snapshot_.profile)) {
@@ -1584,6 +1588,10 @@ void AutonomousEngine::publishStatus(
         s.external_control_paths = external_control_paths_.size();
         s.storage_health = storage_health_;
         s.learned_candidates = experience_memory_.size();
+        s.onnx_session_ready = thermal_predictor_.usingModel();
+        s.onnx_last_inference = thermal_predictor_.lastPredictionUsedModel();
+        s.onnx_inferences = thermal_predictor_.successfulModelInferences();
+        s.heuristic_fallbacks = thermal_predictor_.heuristicFallbacks();
         s.pid = static_cast<long>(::getpid());
         s.sample = sample_count_;
         s.lifetime_sample = lifetime_sample_;

@@ -310,6 +310,10 @@ std::string statusToJson(const EngineStatus& s) {
     out << ",\"control_conflict\":"; appendBool(out, s.control_conflict);
     out << ",\"external_control_paths\":" << s.external_control_paths;
     out << ",\"learned_candidates\":" << s.learned_candidates;
+    out << ",\"onnx_session_ready\":"; appendBool(out, s.onnx_session_ready);
+    out << ",\"onnx_last_inference\":"; appendBool(out, s.onnx_last_inference);
+    out << ",\"onnx_inferences\":" << s.onnx_inferences;
+    out << ",\"heuristic_fallbacks\":" << s.heuristic_fallbacks;
     out << ",\"storage_available\":"; appendBool(out, s.storage_health.available);
     out << ",\"storage_caution\":"; appendBool(out, s.storage_health.caution);
     out << ",\"ufs_life_a\":" << s.storage_health.life_a
