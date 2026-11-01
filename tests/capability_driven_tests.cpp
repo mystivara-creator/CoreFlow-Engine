@@ -245,9 +245,9 @@ void testGenericDiscovery() {
           unknown_queue_knob->name == "mmcblk0:extra_queue_knob" && unknown_queue_knob->mutation_ready);
 
     const auto* gpu_gov = findCap(matrix, r + "/sys/class/devfreq/gpu/governor");
-    CHECK(gpu_gov && gpu_gov->domain == ResourceDomain::Gpu && gpu_gov->options.size() == 3U);
+    CHECK(gpu_gov && gpu_gov->domain == ResourceDomain::Gpu && !gpu_gov->mutation_ready && gpu_gov->options.size() == 3U);
     const auto* gpu_max = findCap(matrix, r + "/sys/class/devfreq/gpu/max_freq");
-    CHECK(gpu_max && gpu_max->ordered_scale && gpu_max->options.front() == "300000000");
+    CHECK(gpu_max && !gpu_max->mutation_ready && gpu_max->ordered_scale && gpu_max->options.front() == "300000000");
 
     const auto* clamp = findCap(matrix, r + "/dev/cpuctl/top-app/cpu.uclamp.min");
     CHECK(clamp && clamp->domain == ResourceDomain::UClamp && clamp->mutation_ready);
@@ -256,7 +256,7 @@ void testGenericDiscovery() {
 
     // A node no walker covers is discovered because the vendor configures it.
     const auto* custom = findCap(matrix, r + "/vendor_only/custom_knob");
-    CHECK(custom && custom->mutation_ready && custom->domain == ResourceDomain::Vendor &&
+    CHECK(custom && !custom->mutation_ready && custom->domain == ResourceDomain::Vendor &&
           !custom->vendor_values.empty());
     CHECK(stats.vendor_paths >= 1U);
 
