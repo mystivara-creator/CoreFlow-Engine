@@ -68,6 +68,27 @@ FatalClass classifyFatalSurface(std::string_view path) noexcept {
 
     const std::string_view leaf = leafOf(path);
 
+    // INCIDENT HARD STOP (cc87642, 2026-11-01): an autonomous write was
+    // attempted on DRM connector status, and UFS host power-management
+    // attributes were changed. Read-back is not evidence that a node is a
+    // safe tunable. Block these entire control surfaces, including nested
+    // platform-device paths, BEFORE discovery, planning or actuator writes.
+    // Do not narrow this to the exact observed device paths.
+    if (containsAny(path, {"/drm/", "/graphics/", "/fb0/", "/mdss",
+                           "/dsi", "/DSI", "/display/", "/panel/",
+                           "/backlight/", "/ufshc/", ".ufshc/",
+                           "/ufs/", "/scsi_host/", "/scsi_device/"})) {
+        return FatalClass::RawInterface;
+    }
+    // Platform host controls and vendor CPU hotplug policy are not generic
+    // scalar tuning interfaces. Their legal value syntax does not establish
+    // safe runtime mutation semantics.
+    if (contains(path, "/core_ctl/") ||
+        containsAny(path, {"/auto_hibern8", "/clkgate_enable",
+                           "/clock_gating", "/runtime_pm/"})) {
+        return FatalClass::HardLimit;
+    }
+
     // ---- Raw / privileged interfaces ----
     if (startsWith(path, "/sys/kernel/debug") || startsWith(path, "/sys/kernel/tracing") ||
         startsWith(path, "/sys/kernel/security") || startsWith(path, "/sys/fs/selinux") ||
