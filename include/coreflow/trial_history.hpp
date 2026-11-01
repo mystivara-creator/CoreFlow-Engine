@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace coreflow {
 struct TrialMember {
@@ -18,7 +19,7 @@ struct TrialConditions {
     std::uint32_t available{0};
     unsigned mode{0}; // performance, thermal stabilization, memory stabilization
     bool charging_known{false}, charging{false};
-    std::uint64_t foreground{0}, frame_period_ns{0};
+    std::uint64_t foreground{0}, frame_period_ns{0}, configuration{0};
 };
 // Admission history, not independent component benefit attribution or a restore journal.
 // A trial may involve a coherent group; these entries only prevent unchanged
@@ -31,6 +32,8 @@ public:
     bool dirty() const noexcept { return dirty_; }
     std::size_t size() const noexcept { return entries_.size(); }
     void setForeground(std::string_view identity) noexcept;
+    void setConfiguration(const std::vector<std::pair<std::string,std::string>>& cpu,
+                          const std::vector<std::pair<std::string,std::string>>& resources) noexcept;
     TrialConditions conditions(const RuntimeSample&,RuntimeState) const noexcept;
     static bool materiallyChanged(const TrialConditions&,const TrialConditions&,ResourceDomain) noexcept;
     static bool updateQuietRelease(const TrialConditions& accepted,const TrialConditions& now,
@@ -44,7 +47,7 @@ private:
     static constexpr std::size_t kMaxEntries=128;
     std::string path_,scope_;
     std::vector<Entry> entries_;
-    std::uint64_t foreground_{0};
+    std::uint64_t foreground_{0}, configuration_{0};
     bool healthy_{false},dirty_{false};
 };
 } // namespace coreflow

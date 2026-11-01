@@ -35,8 +35,21 @@ bool field(std::string_view value,std::size_t limit=1024U) noexcept {
 }
 }
 void TrialHistory::setForeground(std::string_view identity) noexcept { foreground_=fingerprint(identity); }
+void TrialHistory::setConfiguration(const std::vector<std::pair<std::string,std::string>>& cpu,
+                                    const std::vector<std::pair<std::string,std::string>>& resources) noexcept {
+    // Order-independent, allocation-free identity of the accepted configuration.
+    configuration_=14695981039346656037ULL;
+    const auto add=[&](const auto& entries) {
+        for (const auto& entry:entries) {
+            const auto path=fingerprint(entry.first), value=fingerprint(entry.second);
+            configuration_^=path ^ ((value<<1U)|(value>>63U));
+        }
+    };
+    add(cpu); add(resources);
+    if (!configuration_) configuration_=1U;
+}
 TrialConditions TrialHistory::conditions(const RuntimeSample& s,RuntimeState state) const noexcept {
-    TrialConditions c; c.mode=state==RuntimeState::ThermalGuard ? 1U : state==RuntimeState::Pressure ? 2U : 0U;
+    TrialConditions c; c.configuration=configuration_; c.mode=state==RuntimeState::ThermalGuard ? 1U : state==RuntimeState::Pressure ? 2U : 0U;
     c.charging_known=s.charging_telemetry_available; c.charging=s.charging; c.foreground=foreground_;
     c.frame_period_ns=s.frame_period_ns<=1000000000ULL ? s.frame_period_ns : 0U;
     const auto set=[&](std::size_t i,bool available,double value,double max) {
@@ -53,6 +66,7 @@ TrialConditions TrialHistory::conditions(const RuntimeSample& s,RuntimeState sta
     set(9,s.load_available,s.load1,1.e6); return c;
 }
 bool TrialHistory::materiallyChanged(const TrialConditions& a,const TrialConditions& b,ResourceDomain domain) noexcept {
+    if (a.configuration && b.configuration && a.configuration!=b.configuration) return true;
     if (a.mode!=b.mode || (a.charging_known && b.charging_known && a.charging!=b.charging) ||
         (a.foreground && b.foreground && a.foreground!=b.foreground)) return true;
     if (domain!=ResourceDomain::Memory && domain!=ResourceDomain::Io && a.frame_period_ns && b.frame_period_ns &&
@@ -85,7 +99,9 @@ bool TrialHistory::materiallyChanged(const TrialConditions& a,const TrialConditi
 }
 bool TrialHistory::updateQuietRelease(const TrialConditions& accepted,const TrialConditions& now,
                                      bool tuning_needed,unsigned& samples) noexcept {
-    if (tuning_needed || !materiallyChanged(accepted,now,ResourceDomain::Vendor)) samples=0;
+    auto before=accepted, after=now;
+    before.configuration=after.configuration=0U; // our own acceptance is not workload drift
+    if (tuning_needed || !materiallyChanged(before,after,ResourceDomain::Vendor)) samples=0;
     else samples=std::min(samples,2U)+1U;
     return samples>=3U;
 }
@@ -96,7 +112,13 @@ const char* TrialHistory::blockReason(std::string_view path,std::string_view cur
         return materiallyChanged(e.when,now,e.member.domain);
     })) return "trial_history_budget_waits_for_changed_conditions";
     for (auto it=entries_.rbegin();it!=entries_.rend();++it) {
-        if (it->member.path!=path || it->member.domain!=domain || materiallyChanged(it->when,now,domain)) continue;
+        if (it->member.path!=path || it->member.domain!=domain) continue;
+        auto comparison=now;
+        // Accepted scalar settings cannot ratchet merely because another
+        // independent setting was retained. Relevance still needs workload,
+        // thermal/pressure or foreground evidence, not our own configuration write.
+        if (it->accepted) comparison.configuration=it->when.configuration;
+        if (materiallyChanged(it->when,comparison,domain)) continue;
         if (it->accepted) {
             if (current==it->member.target) return "accepted_configuration_held_for_matching_conditions";
         } else if (current==it->member.previous || current==it->member.target) {
@@ -152,7 +174,7 @@ bool TrialHistory::initialize(std::string path,std::string scope) noexcept {
         if (!readBoundedPrivateFile(path_,bytes) || bytes.empty() || bytes.back()!='\n') return false;
         std::istringstream in(bytes); in.imbue(std::locale::classic());
         std::string header,scope_read;
-        if (!std::getline(in,header) || header!="COREFLOW_TRIAL_HISTORY_V1" || !(in>>std::quoted(scope_read)) || !field(scope_read,4096U)) return false;
+        if (!std::getline(in,header) || (header!="COREFLOW_TRIAL_HISTORY_V1" && header!="COREFLOW_TRIAL_HISTORY_V2") || !(in>>std::quoted(scope_read)) || !field(scope_read,4096U)) return false;
         std::vector<Entry> parsed; std::string marker;
         while (in>>marker) {
             if (marker=="END") { in>>std::ws; if (!in.eof()) return false; healthy_=true;
@@ -162,6 +184,7 @@ bool TrialHistory::initialize(std::string path,std::string scope) noexcept {
             if (marker!="T" || parsed.size()>=kMaxEntries) return false;
             Entry e; unsigned domain=0,accepted=0,known=0,charging=0;
             if (!(in>>domain>>accepted>>e.outcome>>e.group>>e.when.mode>>known>>charging>>e.when.foreground>>e.when.frame_period_ns>>e.when.available)) return false;
+            if (header=="COREFLOW_TRIAL_HISTORY_V2" && !(in>>e.when.configuration)) return false;
             if (domain>static_cast<unsigned>(ResourceDomain::Vendor) || accepted>1U || e.outcome>4U || e.when.mode>2U || known>1U || charging>1U || e.when.available>1023U || e.when.frame_period_ns>1000000000ULL) return false;
             e.member.domain=static_cast<ResourceDomain>(domain); e.accepted=accepted!=0U;
             e.when.charging_known=known!=0U; e.when.charging=charging!=0U;
@@ -183,10 +206,10 @@ bool TrialHistory::flush() noexcept {
     if (!dirty_) return true;
     try {
         std::ostringstream out; out.imbue(std::locale::classic()); out<<std::setprecision(std::numeric_limits<double>::max_digits10);
-        out<<"COREFLOW_TRIAL_HISTORY_V1\n"<<std::quoted(scope_)<<'\n';
+        out<<"COREFLOW_TRIAL_HISTORY_V2\n"<<std::quoted(scope_)<<'\n';
         for (const auto& e:entries_) {
             out<<"T "<<static_cast<unsigned>(e.member.domain)<<' '<<e.accepted<<' '<<e.outcome<<' '<<e.group<<' '<<e.when.mode<<' '
-                <<e.when.charging_known<<' '<<e.when.charging<<' '<<e.when.foreground<<' '<<e.when.frame_period_ns<<' '<<e.when.available;
+                <<e.when.charging_known<<' '<<e.when.charging<<' '<<e.when.foreground<<' '<<e.when.frame_period_ns<<' '<<e.when.available<<' '<<e.when.configuration;
             for (const double v:e.when.values) out<<' '<<v;
             out<<' '<<std::quoted(e.member.path)<<' '<<std::quoted(e.member.previous)<<' '<<std::quoted(e.member.target)<<'\n';
         }

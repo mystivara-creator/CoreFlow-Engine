@@ -6,6 +6,7 @@
 #include "coreflow/decision_trace.hpp"
 #include "coreflow/decision_agent.hpp"
 #include "coreflow/coordinated_plan.hpp"
+#include "coreflow/tunable_discovery.hpp"
 #include "coreflow/frame_telemetry.hpp"
 #include "coreflow/foreground_tracker.hpp"
 #include "coreflow/integer_parse.hpp"
@@ -947,30 +948,11 @@ void AutonomousEngine::tick() {
 
             if (next == RuntimeState::ThermalGuard || hold != HoldReason::None) {
                 boost_controller_.restoreAll();
-            } else if (boost_controller_.authorized(config_) &&
-                       !controller_.mutated() && !resource_controller_.mutated() &&
-                       !controller_.hasPendingOutcome() &&
-                       !resource_controller_.hasPendingOutcome() &&
-                       !baseline_intelligence_.observing()) {
-                InteractivityPolicy::BoostConfig ia_boost_config;
-                ia_boost_config.boost_window_ms =
-                    static_cast<std::uint64_t>(config_.boostWindowMs());
-                ia_boost_config.uclamp_launch = config_.boostUclampLaunch();
-                ia_boost_config.uclamp_jank = config_.boostUclampJank();
-                ia_boost_config.readahead_kb = config_.boostReadaheadKb();
-                ia_boost_config.gpu_steps = config_.boostGpuSteps();
-                interactivity_policy_.setConfig(ia_boost_config);
-                const std::size_t ia_boosted = boost_controller_.apply(
-                    interactivity_policy_.evaluate(ia_snap, ia_now_ms),
-                    config_, ia_now_ms);
-                if (ia_boosted > 0U) {
-                    // Boost and measured epochs share actuator paths. Rebuild
-                    // the measurement baseline only after all boosts settle.
-                    baseline_intelligence_.reset();
-                    logInfo("INTERACTIVITY_BOOST applied=%zu state=%s",
-                            ia_boosted, understand::interactionStateName(ia_snap.state));
-                }
             }
+            // Interactivity remains an observation input to the global planner.
+            // Legacy boosts have no outcome measurement and cannot own a second
+            // autonomous write path; keep their recovery/expiry handling only.
+
         }
 
         trial_history_.setForeground(foreground_tracker_.available() ?
@@ -1026,6 +1008,7 @@ void AutonomousEngine::tick() {
         const bool pending_trial=controller_.hasPendingOutcome() || resource_controller_.hasPendingOutcome();
         const auto current_conditions=trial_history_.conditions(sample,next);
         const bool release_unneeded=accepted_conditions_available_ && !pending_trial &&
+            sample_count_>=mutation_cooldown_until_sample_ &&
             TrialHistory::updateQuietRelease(accepted_conditions_,current_conditions,measuredTuningNeed(sample,next),unneeded_samples_);
         if (!accepted_conditions_available_ || pending_trial) unneeded_samples_=0;
         const bool restore_cpu = controller_.mutated() &&
@@ -1039,19 +1022,26 @@ void AutonomousEngine::tick() {
                     BaselineIntelligence::Outcome::Inconclusive,false,observation_identity_);
                 if (!trial_history_.flush()) logWarn("Canceled trial checkpoint pending");
             }
-            accepted_conditions_available_=false; unneeded_samples_=0;
+            unneeded_samples_=0;
+            const bool selective=release_unneeded && !authority_lost && !stress;
+            if (!selective) accepted_conditions_available_=false;
             // Resource dependents must be unwound before their governor anchor.
-            const bool resources_ok = !restore_resources || resource_controller_.restoreAll();
-            const bool cpu_ok = resources_ok && (!restore_cpu || controller_.restoreAll());
+            const bool resources_owned=resource_controller_.mutated();
+            const bool resources_ok = !restore_resources || (selective
+                ? resource_controller_.restoreOneRetained() : resource_controller_.restoreAll());
+            // A governor anchor cannot leave while any resource dependent remains.
+            const bool cpu_ok = resources_ok && (!restore_cpu || (selective
+                ? (resources_owned || controller_.restoreOneRetained()) : controller_.restoreAll()));
+            if (!controller_.mutated() && !resource_controller_.mutated()) accepted_conditions_available_=false;
             baseline_intelligence_.reset();
             observation_cohort_ = false; observation_identity_.clear(); observation_members_ = 0;
-            mutation_cooldown_until_sample_ = sample_count_; // stabilization is not a performance cooldown
+            mutation_cooldown_until_sample_ = sample_count_ + (selective ? 4U : 0U);
             telemetry_recovery_pending_ = !cpu_ok || !resources_ok;
             DecisionTraceContext recovery_trace;
             recovery_trace.cycle = sample_count_; recovery_trace.state = next;
             appendDecisionTraceEvent(recovery_trace, {"safety_transition_settled", "cohort",
                 telemetry_recovery_pending_ ? "FAILED" : "RESTORED",
-                release_unneeded ? "accepted_context_changed_need_absent_for_three_samples" :
+                release_unneeded ? "one_accepted_setting_restored_new_baseline_window_required" :
                 "unsafe_performance_settings_restored_cooling_settings_preserved"});
             if (telemetry_recovery_pending_) {
                 publishStatus(sample, previous, next, Decision::ReduceIntervention, context,
@@ -1168,8 +1158,19 @@ void AutonomousEngine::tick() {
                         telemetry_recovery_pending_ = !resource_restored || !cpu_restored;
                         return false;
                     }
-                    return cpu_pending ? controller_.retainLastMutation(snapshot_.profile)
-                                       : resource_controller_.retainLastMutation(snapshot_.profile);
+                    const bool retained=cpu_pending ? controller_.retainLastMutation(snapshot_.profile)
+                        : resource_controller_.retainLastMutation(snapshot_.profile);
+                    if (retained && cpu_pending) {
+                        for (const auto& setting:controller_.activeGovernorSettings()) {
+                            (void)TunableDiscovery{}.discoverWithin(snapshot_.profile.capabilities,VendorKnowledge{},setting.first+"/"+setting.second);
+                            const auto slash=setting.first.find_last_of('/');
+                            if (slash!=std::string::npos)
+                                (void)TunableDiscovery{}.discoverWithin(snapshot_.profile.capabilities,VendorKnowledge{},setting.first.substr(0,slash)+"/"+setting.second);
+                        }
+                        if (!resource_controller_.admitNewBaselines(snapshot_.profile)) telemetry_recovery_pending_=true;
+                        resource_model_.reset(snapshot_.profile.capabilities);
+                    }
+                    return retained;
                 };
 
                 switch (evaluation.outcome) {
@@ -1224,34 +1225,8 @@ void AutonomousEngine::tick() {
                         const bool cpu_pending = controller_.hasPendingOutcome();
                         const bool resource_pending =
                             resource_controller_.hasPendingOutcome();
-                        const bool valid_pending = (cpu_pending || resource_pending) &&
-                            (observation_cohort_ || !(cpu_pending && resource_pending));
-                        // Fine-tuning changes such as I/O scheduler alignment,
-                        // governor rate_limit_us, or KGSL min_pwrlevel often improve
-                        // micro-latency / frame pacing while scoring Neutral (>= 0.50)
-                        // on coarse 4-sample averages. Accept coherent Neutral
-                        // candidates when stability and thermal scores show zero harm;
-                        // A coordinated cohort is evaluated as one unit; noisy
-                        // or below-neutral measurements are rolled back.
-                        const bool neutral_safe_to_retain =
-                            valid_pending &&
-                            evaluation.valid &&
-                            evaluation.context_compatible &&
-                            evaluation.overall_score >= 0.50 &&
-                            evaluation.stability_score >= 0.48 &&
-                            (!evaluation.thermal_available ||
-                             evaluation.thermal_score >= 0.48);
-                        if (neutral_safe_to_retain) {
-                            const bool retained = acceptOutcome();
-                            if (retained) {
-                                logInfo("EFFICIENCY_NEUTRAL action=RETAINED score=%.3f "
-                                        "hold_until_sample=%llu",
-                                        evaluation.overall_score,
-                                        static_cast<unsigned long long>(
-                                            mutation_cooldown_until_sample_));
-                                break;
-                            }
-                        }
+                        // A neutral score proves no benefit. Restore this one
+                        // candidate and preserve earlier measured settings.
                         const bool had_pending_candidate =
                             cpu_pending || resource_pending;
                         bool rolled_back = rollbackCoordinatedPlan(controller_, resource_controller_);
@@ -1343,12 +1318,19 @@ void AutonomousEngine::tick() {
                 }
 
                 const bool accepted=mutation==MutationResult::Skipped &&
-                    (evaluation.outcome==BaselineIntelligence::Outcome::Beneficial ||
-                     evaluation.outcome==BaselineIntelligence::Outcome::Neutral);
+                    evaluation.outcome==BaselineIntelligence::Outcome::Beneficial;
+                auto remembered_conditions=observation_conditions_;
+                if (accepted) {
+                    // Failure admission uses the pre-trial configuration; a
+                    // retained value must match its POST-acceptance configuration
+                    // or its own new fingerprint would immediately unlock drift.
+                    trial_history_.setConfiguration(controller_.activeGovernorSettings(),resource_controller_.activeResourceSettings());
+                    remembered_conditions.configuration=trial_history_.conditions(sample,next).configuration;
+                }
                 // A durable-retention failure is not performance evidence against
                 // the candidate; existing recovery gates handle that failure.
                 if (accepted || evaluation.outcome!=BaselineIntelligence::Outcome::Beneficial) {
-                    const bool remembered=trial_history_.remember(last_plan_selection_.trials,observation_conditions_,
+                    const bool remembered=trial_history_.remember(last_plan_selection_.trials,remembered_conditions,
                         evaluation.outcome,accepted,observation_identity_);
                     const bool checkpointed=trial_history_.flush();
                     appendDecisionTraceEvent(trace_context,{"trial_memory_recorded","cohort",
@@ -1398,6 +1380,7 @@ void AutonomousEngine::tick() {
             !baseline_intelligence_.observing() && !controller_.hasPendingOutcome() &&
             !resource_controller_.hasPendingOutcome() && boost_controller_.activeCount() == 0U &&
             !boost_controller_.recoveryRequired()) {
+            trial_history_.setConfiguration(controller_.activeGovernorSettings(),resource_controller_.activeResourceSettings());
             const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
             auto planned = executeCoordinatedPlan(controller_, resource_controller_, next,
                 sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);

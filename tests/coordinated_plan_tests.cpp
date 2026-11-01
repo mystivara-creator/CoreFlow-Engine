@@ -101,17 +101,17 @@ int thermalCohort() {
     CHECK(p.stabilizing_only && p.mutation_eligible);
     const auto result = executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p);
     CHECK(result.resource == MutationResult::Verified && result.cpu == MutationResult::Skipped);
-    CHECK(result.members == 3U && result.identity.starts_with("cohort:"));
-    CHECK(f.read(paths[0]) == "800" && f.read(paths[1]) == "800");
-    CHECK(f.read(paths[2]) != "max" && f.read(cpu+"/scaling_governor") == "walt");
-    CHECK(f.resources.stabilizingEpoch() && f.resource_journal.entries.size() == 3U);
+    CHECK(result.members == 1U && result.trials.size() == 1U);
+    CHECK(f.read(paths[1]) == "1200"); // GPU remains observation-only
+    CHECK(f.read(cpu+"/scaling_governor") == "walt");
+    CHECK(f.resources.stabilizingEpoch() && f.resource_journal.entries.size() == 1U);
     const auto before = f.read(paths[0]);
     CHECK(f.resources.apply(RuntimeState::ThermalGuard,s,f.profile,config(),p,
         MutationAuthority{}.authorize(p,config(),RuntimeState::ThermalGuard,1.,MutationPermit::Scope::Resource)) == MutationResult::Skipped);
     CHECK(f.read(paths[0]) == before); // own journal is not a crash recovery
     CHECK(!f.resources.captureBaseline(f.profile)); CHECK(f.read(paths[0]) == before);
     CHECK(f.resources.acceptCoordinatedMutation());
-    CHECK(!f.resources.hasPendingOutcome() && f.resources.activeResourceSettings().size() == 3U);
+    CHECK(!f.resources.hasPendingOutcome() && f.resources.activeResourceSettings().size() == 1U);
     EpochRestoreInputs in;
     in.state = RuntimeState::ThermalGuard; in.mode_adaptive = in.armed = true;
     in.resource_epoch_stabilizing = true; // confidence dip blocks new writes, not cooling retention
@@ -130,7 +130,7 @@ int thermalCohort() {
 int failedCompanionRollsBack() {
     Fixture f; f.governor("walt"); std::vector<std::string> paths; thermalNodes(f,paths);
     CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
-    f.resource_journal.fail_on = 2U;
+    f.resource_journal.fail_on = 1U;
     const auto s = sample(true); const auto p = plan(f.profile,s,RuntimeState::ThermalGuard);
     const auto result = executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p);
     CHECK(!result.verified()); CHECK(!f.resources.hasPendingOutcome());
@@ -148,10 +148,10 @@ int governorAndDiscoveredTunables() {
     p.mutation_eligible = true; p.candidates.push_back({ResourceDomain::CpuFreq,"governor",{},1.,.2,PolicyAction::Candidate});
     const auto result = executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
     CHECK(result.cpu == MutationResult::Verified); CHECK(f.read(cpu+"/scaling_governor") == "walt");
-    CHECK(f.profile.capabilities.resources.size() == 2U);
-    CHECK(result.resource == MutationResult::Verified && result.members >= 2U);
+    CHECK(f.profile.capabilities.resources.empty()); // no dependent discovery until acceptance
+    CHECK(result.resource == MutationResult::Skipped && result.members == 1U);
     CHECK(f.resources.lastAppliedResources().size() <= ResourceMutationController::kMaxCohortWrites);
-    CHECK(f.resources.rollbackLastMutation()); CHECK(f.cpu.rollbackLastMutation());
+    CHECK(!f.resources.hasPendingOutcome()); CHECK(f.cpu.rollbackLastMutation());
     CHECK(f.read(cpu+"/scaling_governor") == "powersave");
     CHECK(f.read(cpu+"/walt/up_rate_limit_us") == "2000" && f.read(cpu+"/walt/down_rate_limit_us") == "4000");
     return 0;
@@ -162,12 +162,12 @@ int dependentRollbackFailurePreservesGovernor() {
     CHECK(f.cpu.captureBaseline(f.profile)); const auto s=sample(false);
     PolicyPlan p; p.action=PolicyAction::Candidate; p.intervention=InterventionLevel::Moderate; p.mutation_eligible=true;
     const auto result=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
-    CHECK(result.cpu==MutationResult::Verified && result.resource==MutationResult::Verified);
-    f.resource_journal.fail_clear=true;
+    CHECK(result.cpu==MutationResult::Verified && result.resource==MutationResult::Skipped);
+    f.cpu_journal.fail_clear=true;
     CHECK(!rollbackCoordinatedPlan(f.cpu,f.resources));
-    CHECK(f.read(cpu+"/scaling_governor")=="walt");
-    CHECK(f.cpu.hasPendingOutcome() && !f.resource_journal.entries.empty());
-    f.resource_journal.fail_clear=false;
+    CHECK(f.read(cpu+"/scaling_governor")=="powersave"); // physical restore precedes durable cleanup
+    CHECK(f.cpu.hasPendingOutcome() && !f.cpu_journal.entries.empty());
+    f.cpu_journal.fail_clear=false;
     CHECK(rollbackCoordinatedPlan(f.cpu,f.resources));
     CHECK(f.read(cpu+"/scaling_governor")=="powersave");
     return 0;
@@ -176,12 +176,13 @@ int externalMemberWithdrawn() {
     Fixture f; std::vector<std::string> paths; thermalNodes(f,paths);
     CHECK(f.resources.captureBaseline(f.profile)); const auto s=sample(true);
     const auto p=plan(f.profile,s,RuntimeState::ThermalGuard);
-    CHECK(executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p).members==3U);
-    f.write(paths[0],"700");
+    CHECK(executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p).members==1U);
+    const auto selected=f.resources.lastAppliedResources().front().first;
+    f.write(selected,"700");
     std::unordered_set<std::string> external;
-    CHECK(f.resources.reconcileExternalChanges(external)); CHECK(external.contains(paths[0]));
-    CHECK(f.resources.rollbackLastMutation());
-    CHECK(f.read(paths[0])=="700" && f.read(paths[1])=="1200" && f.read(paths[2])=="max");
+    CHECK(f.resources.reconcileExternalChanges(external)); CHECK(external.contains(selected));
+    CHECK(!f.resources.hasPendingOutcome());
+    CHECK(f.read(selected)=="700");
     return 0;
 }
 int ioSchedulerCompanions() {
@@ -198,8 +199,8 @@ int ioSchedulerCompanions() {
     const auto result=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
     CHECK(result.resource==MutationResult::Verified && result.cpu==MutationResult::Skipped);
     CHECK(f.read(scheduler)=="mq-deadline");
-    CHECK(result.members>=2U && f.resources.activeResourceSettings().size()==result.members);
-    CHECK(f.read(requests)!="128" || f.read(f.root/"block/disk/queue/iosched/fifo_batch")!="16");
+    CHECK(result.members==1U && f.resources.activeResourceSettings().size()==result.members);
+    CHECK(f.read(requests)=="128" && f.read(f.root/"block/disk/queue/iosched/fifo_batch")=="16");
     CHECK(f.read(cpu+"/scaling_governor")=="walt");
     CHECK(f.resources.rollbackLastMutation()); CHECK(f.read(scheduler)=="cfq");
     CHECK(f.read(requests)=="128" && f.read(f.root/"block/disk/queue/iosched/fifo_batch")=="16");
@@ -209,7 +210,7 @@ int incompleteCrashRecoveryKeepsJournal() {
     Fixture f; std::vector<std::string> paths; thermalNodes(f,paths);
     CHECK(f.resources.captureBaseline(f.profile)); const auto s=sample(true);
     const auto p=plan(f.profile,s,RuntimeState::ThermalGuard);
-    CHECK(executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p).members==3U);
+    CHECK(executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::ThermalGuard,s,f.profile,config(),p).members==1U);
     const auto absent=f.resource_journal.entries.back();
     fs::remove(absent.first);
     ResourceMutationController restarted; restarted.setJournal(&f.resource_journal);
@@ -259,36 +260,59 @@ int conditionDrivenSelection() {
             continue;
         }
         CHECK(r.verified());
-        CHECK((r.cpu==MutationResult::Verified)==cpu_option.valid);
-        CHECK((r.resource==MutationResult::Verified)==io_option.valid);
+        CHECK(r.members==1U && r.trials.size()==1U);
+        CHECK((r.cpu==MutationResult::Verified) != (r.resource==MutationResult::Verified));
+        CHECK(r.cpu!=MutationResult::Verified || cpu_option.valid);
+        CHECK(r.resource!=MutationResult::Verified || io_option.valid);
         if (scenario==0U) CHECK(r.winner=="CPU_GOVERNOR");
         if (scenario==1U || scenario==4U) CHECK(r.winner=="IO");
         if (scenario==2U) {
-            CHECK(r.members==2U);
+            const bool cpu_won=r.cpu==MutationResult::Verified;
             CHECK(r.winner==(cpu_option.utility>io_option.utility ? "CPU_GOVERNOR" : "IO"));
-            CHECK(f.cpu.acceptCoordinatedMutation()); CHECK(f.resources.acceptCoordinatedMutation());
-            EpochRestoreInputs idle;
-            idle.mode_adaptive=idle.armed=true; idle.state=RuntimeState::Idle;
-            idle.pending_outcome=false;
-            CHECK(!shouldRestoreEpochNow(idle));
-            idle.armed=false; CHECK(shouldRestoreEpochNow(idle)); idle.armed=true;
-            idle.pending_outcome=true; CHECK(shouldRestoreEpochNow(idle));
-            const auto held=f.cpu.apply(RuntimeState::Idle,s,f.profile,config(),p,MutationAuthority{}.authorize(p,config(),RuntimeState::Idle,1.,MutationPermit::Scope::CpuFreq));
-            CHECK(held==MutationResult::Skipped && f.read(cpu+"/scaling_governor")=="walt");
-            f.add(ResourceDomain::Io,"disk:nr_requests","block/disk/queue/nr_requests","128");
-            CHECK(f.resources.admitNewBaselines(f.profile));
-            s.cpu_utilization=.1;
-            const auto next_plan=plan(f.profile,s,RuntimeState::Elevated);
-            const auto next=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),next_plan);
-            CHECK(next.resource==MutationResult::Verified && next.cpu==MutationResult::Skipped);
-            CHECK(next.members==f.resources.lastAppliedResources().size());
-            CHECK(next.identity.find("cpufreq:")==std::string::npos); // no credit to an earlier accepted governor
+            const auto blocked=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,c,p);
+            CHECK(!blocked.verified() && blocked.decision_reason=="outcome_measurement_pending");
+            CHECK(cpu_won ? f.cpu.acceptCoordinatedMutation() : f.resources.acceptCoordinatedMutation());
+            const auto next=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,c,p);
+            CHECK(next.members==1U);
+            CHECK(cpu_won ? next.resource==MutationResult::Verified : next.cpu==MutationResult::Verified);
+            CHECK(rollbackCoordinatedPlan(f.cpu,f.resources));
+            // Rejecting trial B preserves the accepted setting A.
+            CHECK(cpu_won ? f.read(cpu+"/scaling_governor")=="walt" : f.read(scheduler)=="mq-deadline");
 
         }
         CHECK(restoreCoordinatedPlan(f.cpu,f.resources));
     }
     return 0;
 }
+int selectiveAcceptedRollback() {
+    Fixture f; const auto policy=f.governor();
+    const auto io=f.add(ResourceDomain::Io,"disk:scheduler","block/disk/queue/scheduler",
+        "[cfq] mq-deadline",{"cfq","mq-deadline"});
+    f.profile.capabilities.resources.back().ordered_scale=false;
+    f.profile.capabilities.resources.back().vendor_values.push_back({"mq-deadline",VendorProfile::Default,"firmware"});
+    FileRetainedStateStore cpu_store((f.root/"cpu-retained").string()), resource_store((f.root/"resource-retained").string());
+    f.cpu.setRetainedStateStore(&cpu_store); f.resources.setRetainedStateStore(&resource_store);
+    CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
+    auto s=sample(false); s.psi_available=true; s.psi_io_some_avg10=.3;
+    const auto p=plan(f.profile,s,RuntimeState::Elevated);
+    for (unsigned i=0;i<2U;++i) {
+        const auto r=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),p);
+        CHECK(r.members==1U);
+        CHECK(r.cpu==MutationResult::Verified ? !f.cpu.restoreOneRetained() : !f.resources.restoreOneRetained()); // pending trial holds release
+        CHECK(r.cpu==MutationResult::Verified ? f.cpu.retainLastMutation(f.profile) : f.resources.retainLastMutation(f.profile));
+    }
+    CHECK(f.read(policy+"/scaling_governor")=="walt" && f.read(io)=="mq-deadline");
+    CHECK(f.resources.restoreOneRetained());
+    CHECK(f.read(io)=="cfq" && f.read(policy+"/scaling_governor")=="walt");
+    CHECK(!f.resources.mutated() && f.cpu.mutated());
+    RetainedStateStore::Entries entries; CHECK(resource_store.load(entries)!=RetainedStateStore::LoadState::Corrupt && entries.empty());
+    CHECK(f.cpu.restoreOneRetained());
+    CHECK(f.read(policy+"/scaling_governor")=="powersave" && !f.cpu.mutated());
+    CHECK(cpu_store.load(entries)!=RetainedStateStore::LoadState::Corrupt && entries.empty());
+    CHECK(f.cpu_journal.entries.empty() && f.resource_journal.entries.empty());
+    return 0;
+}
+
 int needWithoutAuthorityOrUsefulSurface() {
     Fixture f;
     f.add(ResourceDomain::Memory,"unclassified","proc/sys/vm/unclassified","10");
@@ -395,7 +419,7 @@ int distinctGovernorMayCompeteAfterFailedTrial() {
 
 }
 int main() {
-    const int result=contextualHistoryPreventsRepeatAndDrift() || distinctGovernorMayCompeteAfterFailedTrial() || cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
+    const int result=selectiveAcceptedRollback() || contextualHistoryPreventsRepeatAndDrift() || distinctGovernorMayCompeteAfterFailedTrial() || cpuReviewExplainsNoWrite() || conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
         dependentRollbackFailurePreservesGovernor() || externalMemberWithdrawn() || ioSchedulerCompanions() || incompleteCrashRecoveryKeepsJournal() || crashRestoresWholeCohort();
     if (!result) std::puts("CoreFlow coordinated and thermal plans: PASS");
     return result;

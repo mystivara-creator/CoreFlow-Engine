@@ -1187,6 +1187,33 @@ bool ResourceMutationController::reconcileExternalChanges(std::unordered_set<std
     } catch (...) { return false; }
 }
 
+bool ResourceMutationController::restoreOneRetained() noexcept {
+    if (pending_outcome_ || !recoveryReady()) return false;
+    if (!mutated_) return true;
+    try {
+        if (active_resources_cache_.empty()) return false;
+        auto setting = active_resources_cache_.back();
+        // Restore iosched children before their scheduler anchor, regardless of
+        // cache insertion order (retained and session settings have separate stores).
+        if (setting.first.ends_with("/queue/scheduler")) {
+            const auto prefix=setting.first.substr(0,setting.first.find_last_of('/'))+"/iosched/";
+            for (const auto& active:active_resources_cache_)
+                if (active.first.starts_with(prefix)) { setting=active; break; }
+        }
+        const auto base=baseline_.find(setting.first);
+        if (base==baseline_.end() || !base->second.valid || journal_==nullptr) return false;
+        if (external_control_paths_ && external_control_paths_->contains(setting.first)) return false;
+        pending_changes_.push_back({setting.first,setting.second,base->second.value,false,true});
+        pending_outcome_=true;
+        if (!rollbackLastMutation()) return false;
+        accepted_resources_.erase(std::remove_if(accepted_resources_.begin(),accepted_resources_.end(),
+            [&](const auto& entry) { return entry.first==setting.first; }),accepted_resources_.end());
+        write_order_.erase(std::remove(write_order_.begin(),write_order_.end(),setting.first),write_order_.end());
+        refreshRetainedActiveCache();
+        return true;
+    } catch (...) { restore_failed_=true; return false; }
+}
+
 bool ResourceMutationController::restoreAll() noexcept {
     // A failed startup recovery owns a durable journal, not an initialized RAM
     // dirty set. Never clear that journal by "restoring" an empty RAM inventory.

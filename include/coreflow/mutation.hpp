@@ -85,6 +85,8 @@ public:
         const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace = nullptr) noexcept;
     bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
     bool restoreAll() noexcept;
+    // Re-evaluate one accepted change; caller must settle dependent controllers first.
+    bool restoreOneRetained() noexcept;
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
     bool retainLastMutation(const DeviceProfile& profile) noexcept;

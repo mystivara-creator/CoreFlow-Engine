@@ -336,10 +336,8 @@ std::vector<EffectScore> EffectModel::proposals(
                 case KnowledgeRisk::FrameworkOwned:
                     return out;
                 case KnowledgeRisk::Quarantined:
-                    // Keep quarantined surfaces discoverable and usable when
-                    // there is headroom; never probe them as an emergency fix.
-                    if (situation.stressed()) return out;
-                    break;
+                    // Quarantine preserves observation, never runtime write authority.
+                    return out;
                 case KnowledgeRisk::BoundedTune:
                 case KnowledgeRisk::VendorVolatile:
                     break;

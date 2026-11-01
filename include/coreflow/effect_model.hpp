@@ -32,8 +32,7 @@ namespace coreflow {
 // resource; generic numeric changes such as a swappiness step are not presumed
 // beneficial. Other exploration waits for headroom, and BaselineIntelligence
 // measures outcomes so experience can steer later choices. The semantic catalog
-// also suppresses ObserveOnly / FrameworkOwned nodes and defers quarantined
-// surfaces while stressed; final mutation authority remains elsewhere.
+// also suppresses ObserveOnly / FrameworkOwned / Quarantined nodes; final mutation authority remains elsewhere.
 
 enum class EffectDirection : std::uint8_t {
     None = 0,

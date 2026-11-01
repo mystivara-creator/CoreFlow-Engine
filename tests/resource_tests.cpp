@@ -1462,21 +1462,12 @@ void test_thermal_guard_allows_stabilizing_write_and_restores() {
     stab::Fixture f("coreflow_stab_hot");
     f.sample.thermal_millidegrees = 55000;
     CHECK(f.controller.captureBaseline(f.profile));
-
-    CHECK(f.run(RuntimeState::ThermalGuard, stab::Fixture::stabilizingPlan()) ==
-          MutationResult::Verified);
-    // Thermal stress: one step down the hardware's own advertised scale. The
-    // memory knob has no load-reducing evidence and is left untouched.
-    CHECK(readFile(f.gpu_max) == "450");
-    CHECK(readFile(f.swappiness) == "60");
-    CHECK(f.controller.mutated());
-    CHECK(f.controller.stabilizingEpoch());
-    CHECK(f.journal.pending);
-
-    CHECK(f.controller.restoreAll());
+    // Advertised GPU frequencies do not establish a safe driver contract.
+    CHECK(f.run(RuntimeState::ThermalGuard, stab::Fixture::stabilizingPlan()) == MutationResult::Skipped);
     CHECK(readFile(f.gpu_max) == "600");
-    CHECK(!f.controller.stabilizingEpoch());
-    CHECK(!f.journal.pending);
+    CHECK(readFile(f.swappiness) == "60");
+    CHECK(!f.controller.mutated() && !f.journal.pending);
+    CHECK(f.controller.restoreAll());
 }
 
 void test_pressure_defers_without_memory_evidence() {
@@ -1524,20 +1515,12 @@ void test_regressed_candidate_is_suppressed() {
     stab::Fixture f("coreflow_stab_reject");
     f.sample.thermal_millidegrees = 55000;
     CHECK(f.controller.captureBaseline(f.profile));
-    const PolicyPlan plan = stab::Fixture::stabilizingPlan();
-
-    CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Verified);
-    // The daemon rejects the candidate when its measured outcome regressed, then
-    // restores.
-    CHECK(readFile(f.gpu_max) == "450");
-    f.controller.rejectLastMutation();
-    CHECK(f.controller.restoreAll());
-    CHECK(readFile(f.gpu_max) == "600");
-
-    // The same candidate is not selected again within the cooldown.
-    CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Skipped);
-    CHECK(readFile(f.gpu_max) == "600");
-    CHECK(!f.controller.mutated());
+    const auto plan = stab::Fixture::stabilizingPlan();
+    for (unsigned i=0; i<150U; ++i)
+        CHECK(f.run(RuntimeState::ThermalGuard, plan) == MutationResult::Skipped);
+    CHECK(readFile(f.gpu_max) == "600" && !f.controller.mutated());
+    // Measured ordinary-failure suppression is exercised by trial_history_tests
+    // and contextualHistoryPreventsRepeatAndDrift, using admissible surfaces.
 }
 
 

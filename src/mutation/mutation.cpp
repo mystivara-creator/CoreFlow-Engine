@@ -1201,6 +1201,28 @@ bool MutationController::reconcileExternalChanges(std::unordered_set<std::string
     } catch (...) { return false; }
 }
 
+bool MutationController::restoreOneRetained() noexcept {
+    if (pending_outcome_ || !recoveryReady()) return false;
+    if (!mutated_) return true;
+    try {
+        if (active_governors_cache_.empty() || journal_==nullptr) return false;
+        const auto setting=active_governors_cache_.back();
+        const auto path=governorPathOf(setting.first);
+        const auto base=baseline_.find(path);
+        if (base==baseline_.end() || !base->second.valid) return false;
+        if (external_control_paths_ && external_control_paths_->contains(path)) return false;
+        last_mutation_path_=path; last_mutation_target_=setting.second;
+        last_previous_value_=base->second.value;
+        last_path_was_dirty_before_=false; last_candidate_from_retained_=true;
+        pending_outcome_=true;
+        if (!rollbackLastMutation()) return false;
+        accepted_governors_.erase(std::remove_if(accepted_governors_.begin(),accepted_governors_.end(),
+            [&](const auto& entry) { return entry.first==setting.first; }),accepted_governors_.end());
+        refreshRetainedActiveCache();
+        return true;
+    } catch (...) { restore_failed_=true; return false; }
+}
+
 bool MutationController::restoreAll() noexcept {
     if (profile_ != nullptr && !ensureRecovered(*profile_)) return false;
     if (!baseline_captured_) return !mutated_;

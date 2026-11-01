@@ -478,6 +478,18 @@ jobs:
           echo "coreflowd:"
           stat -c '%n %s bytes' "$BINARY"
 
+      - name: Generate binary provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
+          SHA="artifacts/CoreFlow-Autonomous/coreflowd-${ANDROID_ABI}.sha256"
+          sha256sum "$BINARY" | tee "$SHA"
+          printf 'version=%s\nabi=%s\nmin_api=%s\ncommit=%s\n' \
+            "$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')" \
+            "$ANDROID_ABI" "$ANDROID_MIN_API" "$GITHUB_SHA" \
+            > artifacts/CoreFlow-Autonomous/build-provenance.txt
+
       - name: Package module
         shell: bash
         run: |
@@ -508,18 +520,6 @@ jobs:
           unzip -l "$ZIP" | grep -F "webroot/index.html"
           unzip -l "$ZIP" | grep -F "webroot/app.js"
           unzip -l "$ZIP" | grep -F "webroot/style.css"
-
-      - name: Generate binary provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          BINARY="artifacts/CoreFlow-Autonomous/system/bin/coreflowd"
-          SHA="artifacts/CoreFlow-Autonomous/coreflowd-${ANDROID_ABI}.sha256"
-          sha256sum "$BINARY" | tee "$SHA"
-          printf 'version=%s\nabi=%s\nmin_api=%s\n' \
-            "$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')" \
-            "$ANDROID_ABI" "$ANDROID_MIN_API" \
-            > artifacts/CoreFlow-Autonomous/build-provenance.txt
 
       - name: Upload raw production binary
         uses: actions/upload-artifact@v7

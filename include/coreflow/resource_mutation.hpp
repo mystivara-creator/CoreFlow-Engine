@@ -98,6 +98,8 @@ public:
         const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace = nullptr) noexcept;
     bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
     bool restoreAll() noexcept;
+    // Re-evaluate one accepted change; caller must settle dependent controllers first.
+    bool restoreOneRetained() noexcept;
     const std::vector<ResourceCapability>& discoveredCapabilities() const noexcept { return supplemental_; }
     bool admitNewBaselines(const DeviceProfile& profile) noexcept;
     bool retainLastMutation(const DeviceProfile& profile) noexcept;

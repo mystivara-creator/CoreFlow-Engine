@@ -75,16 +75,6 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
               (cpu_option.risk==resource_option.risk && cpu_option.path<resource_option.path))));
         result.winner=cpu_wins ? "CPU_GOVERNOR" : resourceDomainName(resource_option.domain);
         result.decision_reason="predicted_gain_selected_across_domains";
-        // Incompatible anchor/dependent alternatives compete; independent
-        // profitable options can participate in the same measured configuration.
-        if (cpu_option.valid && resource_option.valid) {
-            const auto slash=cpu_option.path.find_last_of('/');
-            const auto prefix=cpu_option.path.substr(0,slash)+"/";
-            if (resource_option.path.starts_with(prefix)) {
-                if (cpu_wins) resource_option.valid=false;
-                else cpu_option.valid=false;
-            }
-        }
         if (trace) {
             const auto& selected=cpu_wins ? cpu_option : resource_option;
             const std::string reason="cpu_utility="+std::to_string(result.cpu_utility)+
@@ -102,46 +92,16 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
             else cpu_option.valid = false;
         }
         resources.setConditionDriven(true);
-        PolicyPlan execution_plan=plan;
-        // A chosen governor is an anchor, so its writes precede dependent files.
-        // This execution order never grants it priority in the score comparison.
         if (cpu_option.valid) {
             result.cpu=cpu.applySelected(cpu_option,state,sample,profile,config,plan,cpu_permit,trace);
             if (result.cpu!=MutationResult::Verified) {
                 result.decision_reason="selected_cpu_proposal_changed_or_failed"; return result;
             }
-            for (const auto& setting:cpu.lastAppliedGovernors()) {
-                (void)TunableDiscovery{}.discoverWithin(profile.capabilities,VendorKnowledge{},setting.first+"/"+setting.second);
-                const auto slash=setting.first.find_last_of('/');
-                if (slash!=std::string::npos)
-                    (void)TunableDiscovery{}.discoverWithin(profile.capabilities,VendorKnowledge{},setting.first.substr(0,slash)+"/"+setting.second);
-            }
-            (void)resources.admitNewBaselines(profile);
-            for (const auto& cap:profile.capabilities.resources)
-                if (cap.mutation_ready && cap.readable && cap.writable && cap.runtime_verified &&
-                    !execution_plan.allows(cap.domain,cap.name))
-                    execution_plan.candidates.push_back({cap.domain,cap.name,{},sample.confidence,1.,PolicyAction::Candidate});
-        }
-        // A governor transition changes the active CPU policy and may expose
-        // new dependent controls. Never replay a resource choice scored against
-        // the old governor: re-preview the COMPLETE live configuration after
-        // refreshing capabilities and baselines. If the same value is no longer
-        // the best admissible option, defer it; a later epoch can evaluate it
-        // without attributing the old estimate to the new configuration.
-        if (result.cpu == MutationResult::Verified && resource_option.valid) {
-            const auto revised = resources.preview(state,sample,profile,config,execution_plan);
-            if (!revised.valid || revised.path != resource_option.path ||
-                revised.requested != resource_option.requested ||
-                revised.current != resource_option.current) {
-                resource_option.valid = false;
-                result.resource_reason = "resource_preselection_stale_after_governor_transition";
-            } else {
-                resource_option = revised;
-            }
+            // Refresh governor-dependent inventory only after measured acceptance.
         }
         if (resource_option.valid) {
             result.resource=resources.applySelected(resource_option,state,sample,profile,config,
-                execution_plan,resource_permit,trace);
+                plan,resource_permit,trace);
             if (result.resource!=MutationResult::Verified) {
                 result.decision_reason="selected_resource_proposal_changed_or_failed";
                 if (result.cpu==MutationResult::Verified) recover();
@@ -166,7 +126,7 @@ CoordinatedResult executeCoordinatedPlan(MutationController& cpu,
             identities.push_back("resource:" + setting.first + ":" + setting.second);
         std::sort(identities.begin(), identities.end());
         result.members = identities.size();
-        if (identities.empty() || identities.size()!=result.trials.size()) { recover(); return result; }
+        if (identities.size()!=1U || identities.size()!=result.trials.size()) { recover(); return result; }
         if (identities.size() == 1U) result.identity = identities.front();
         else {
             result.identity = "cohort";
