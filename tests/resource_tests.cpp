@@ -1352,7 +1352,8 @@ void test_legacy_bracketed_journal_value_is_normalized() {
     fs::remove(path);
 }
 
-// CPUFreq permits use the global Adaptive/armed gate; no separate opt-in exists.
+// CPUFreq permits use global Adaptive/armed and domain-grant gates; the legacy
+// allow_cpu_governor compatibility flag is not a separate authority source.
 void test_cpu_permit_uses_global_adaptive_gate() {
     PolicyPlan plan;
     plan.action = PolicyAction::Candidate;

@@ -95,6 +95,16 @@ int main(int argc, char** argv) {
 
     emit(dir, "ready.json", base());
 
+    EngineStatus selection = base();
+    selection.selection_current = true;
+    selection.selection_winner = "KEEP_CURRENT";
+    selection.selection_reason = "no_measured_tuning_need_keep_current";
+    emit(dir, "selection_stable.json", selection);
+    selection.selection_reason = "measured_need_but_no_admissible_gain";
+    selection.selection_funnel = {true,100,40,35,20,8,6,0};
+    selection.outcome_reason = "regression_outcome_candidate_rejection_and_rollback_attempted";
+    emit(dir, "selection_blocked.json", selection);
+
     EngineStatus observe = base();
     observe.mode = "observe";
     observe.armed = false;

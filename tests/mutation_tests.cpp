@@ -163,6 +163,7 @@ EngineConfig adaptiveConfig() {
     EngineConfig cfg;
     cfg.setMutationMode(MutationMode::Adaptive);
     cfg.setMutationArmed(true);
+    cfg.setGrantCpuFreq(true);
     cfg.setAllowCpuGovernor(true);
     return cfg;
 }
@@ -253,7 +254,7 @@ void test_restore_returns_to_factory_and_clears_journal() {
     CHECK(!journal.has_pending);
 }
 
-void test_kernel_advertised_vendor_governor_is_explorable() {
+void test_equal_prior_vendor_governor_does_not_churn() {
     Sandbox box;
     FakeJournal journal;
     MutationController controller;
@@ -264,8 +265,9 @@ void test_kernel_advertised_vendor_governor_is_explorable() {
     CHECK(controller.captureBaseline(profile));
     const MutationResult result = controller.apply(
         RuntimeState::Normal, sample(0.5, 30.0), profile, adaptiveConfig());
-    CHECK(result == MutationResult::Verified);
-    CHECK(readLine(box.governor_file) == "vendor_adaptive");
+    CHECK(result == MutationResult::Skipped);
+    CHECK(journal.commits == 0);
+    CHECK(readLine(box.governor_file) == "powersave");
     CHECK(controller.restoreAll());
     CHECK(readLine(box.governor_file) == "powersave");
 }
@@ -1259,8 +1261,9 @@ void test_regressed_governor_is_not_bootstrapped() {
 
     CHECK(mc.captureBaseline(profile));
     CHECK(mc.apply(RuntimeState::Normal, runtime, profile,
-                   adaptiveConfig()) == MutationResult::Verified);
-    CHECK(readLine(box.governor_file) != "schedutil");
+                   adaptiveConfig()) == MutationResult::Skipped);
+    CHECK(readLine(box.governor_file) == "powersave");
+    CHECK(journal.commits == 0);
     CHECK(mc.restoreAll());
     CHECK(readLine(box.governor_file) == "powersave");
 }
@@ -1312,6 +1315,7 @@ void test_capability_bound_permit_rejects_scope_and_mismatches() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    config.setGrantCpuFreq(true);
     config.setAllowCpuGovernor(true);
     config.setMinConfidence(0.5);
 
@@ -1396,6 +1400,7 @@ void test_cpufreq_actuator_rejects_scope_only_permit() {
     EngineConfig config;
     config.setMutationMode(MutationMode::Adaptive);
     config.setMutationArmed(true);
+    config.setGrantCpuFreq(true);
     config.setAllowCpuGovernor(true);
     config.setMinConfidence(0.5);
 
@@ -1430,7 +1435,7 @@ int main() {
     };
     const std::vector<Case> cases = {
         {"restore_returns_to_factory_and_clears_journal", test_restore_returns_to_factory_and_clears_journal},
-        {"kernel_advertised_vendor_governor_is_explorable", test_kernel_advertised_vendor_governor_is_explorable},
+        {"equal_prior_vendor_governor_does_not_churn", test_equal_prior_vendor_governor_does_not_churn},
         {"live_governor_drives_decisions", test_live_governor_drives_decisions_not_stale_snapshot},
         {"rejected_candidate_cooldown", test_rejected_candidate_is_not_reselected_during_cooldown},
         {"refresh_cannot_rebaseline_mutated", test_refresh_cannot_rebaseline_a_mutated_system},

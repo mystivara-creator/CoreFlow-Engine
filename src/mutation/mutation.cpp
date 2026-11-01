@@ -281,7 +281,7 @@ double MutationController::governorScore(
             // Energy-aware dynamic governors cooperate directly with Android
             // Power HAL, Performance Hint API, and UClamp requests. Keep the
             // delta (0.04) strictly below kAdaptiveHysteresis (0.10) so no
-            // unmeasured switch occurs without positive outcome evidence, while
+            // ordinary ranked switch occurs without positive outcome evidence, while
             // breaking ties cleanly against static powersave/userspace governors.
             if (governor == "schedutil" || governor == "walt" || governor == "sugov") {
                 return 0.54;
@@ -296,7 +296,7 @@ bool MutationController::buildPlan(
     const RuntimeSample& sample,
     const DeviceProfile& profile,
     std::vector<MutationPlanEntry>& plan
-) const noexcept {
+) const noexcept try {
     plan.clear();
 
     for (const CpuPolicy& policy : profile.cpu_policies) {
@@ -328,7 +328,7 @@ bool MutationController::buildPlan(
         // hysteresis compares like with like (experience + retained preference
         // used to be added to candidates only, never to the current governor).
         const auto experienceRecordFor =
-            [&](const std::string& governor) noexcept
+            [&](const std::string& governor)
                 -> const ExperienceMemory::Record* {
             if (experience_memory_ == nullptr) return nullptr;
 
@@ -357,7 +357,7 @@ bool MutationController::buildPlan(
             return nullptr;
         };
 
-        const auto adjustedScore = [&](const std::string& governor) noexcept {
+        const auto adjustedScore = [&](const std::string& governor) {
             double score = governorScore(governor, state, sample);
             if (score < 0.0) return score;
 
@@ -417,7 +417,7 @@ bool MutationController::buildPlan(
             }
 
             std::string bootstrap;
-            // Bootstrap from the kernel's advertised alternatives, not a
+            // Bootstrap from better-scoring kernel-advertised alternatives, not a
             // hard-coded governor name. A previously rejected candidate remains
             // under cooldown; choosing a vendor governor never bypasses it.
             for (const std::string& candidate : policy.available_governors) {
@@ -427,7 +427,7 @@ bool MutationController::buildPlan(
                     continue;
                 }
                 const double candidate_score = adjustedScore(candidate);
-                if (candidate_score < currentScore || candidate_score < 0.0) continue;
+                if (candidate_score <= currentScore || candidate_score < 0.0) continue;
                 if (bootstrap.empty() || candidate_score > adjustedScore(bootstrap)) bootstrap = candidate;
             }
 
@@ -438,17 +438,69 @@ bool MutationController::buildPlan(
         if (bestGovernor == current) continue;
 
         // Hysteresis is retained for empirically ranked choices. The explicit
-        // bootstrap branch above is a bounded experiment, not a claimed score
-        // advantage, and never runs in ThermalGuard/Pressure/Idle.
+        // bootstrap branch above is a bounded, prior-backed experiment, not a
+        // measured benefit, and never runs in ThermalGuard/Pressure/Idle.
         if (!needsExploration && currentScore >= 0.0 &&
             bestScore < currentScore + kAdaptiveHysteresis) {
             continue;
         }
 
+        if (selected_primary_ != nullptr &&
+            (selected_primary_->path != governorPath || selected_primary_->requested != bestGovernor)) continue;
         plan.push_back({governorPath, bestGovernor, baseline->second.value});
     }
 
     return !plan.empty();
+} catch (...) { plan.clear(); return false; }
+
+PlanOption MutationController::preview(RuntimeState state, const RuntimeSample& sample,
+    const DeviceProfile& profile, const EngineConfig& config, const PolicyPlan& policy) noexcept {
+    ++decision_cycle_; // cooldowns age even when keeping the current configuration
+    try {
+        PlanOption best;
+        if (!recoveryReady() || !baseline_captured_ || pending_outcome_ ||
+            !domainNeedsTuning(sample,state,ResourceDomain::CpuFreq) ||
+            mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::CpuFreq)) return best;
+        std::vector<MutationPlanEntry> candidates;
+        if (!buildPlan(state,sample,profile,candidates)) return best;
+        for (const auto& entry : candidates) {
+            std::string current;
+            if (!readLiveGovernor(entry.path,current)) continue;
+            ExperienceMemory::Context context;
+            context.state=state; context.workload=ContextEngine{}.evaluate(sample,state).workload;
+            context.charging=sample.charging; context.thermal_trend=sample.thermal_trend;
+            context.memory_trend=sample.memory_trend; context.load_trend=sample.load_trend;
+            const auto directory=entry.path.substr(0,entry.path.find_last_of('/'));
+            const auto adjusted=[&](const std::string& governor) {
+                ExperienceMemory::CandidateIdentity id;
+                id.key="cpufreq:"+directory+":"+governor;
+                return blendExperienceScore(governorScore(governor,state,sample),
+                    experience_memory_ ? experience_memory_->find(id,context) : nullptr);
+            };
+            const double gain = adjusted(entry.target) - adjusted(current);
+            if (gain <= 0.) continue; // different token alone is not an improvement
+            const double demand = sample.cpu_utilization_available && std::isfinite(sample.cpu_utilization)
+                ? std::clamp(sample.cpu_utilization,0.,1.) : .5;
+            const double benefit = std::clamp(gain + demand * .25,0.,1.);
+            const double confidence = std::clamp(sample.confidence * .92,0.,1.);
+            const double risk = .32; // governor replacement has greater uncertainty than a numeric step
+            const double utility = candidateUtility(benefit,risk,confidence) - .05;
+            if (benefit < .10 || utility <= 0. || (best.valid && utility <= best.utility)) continue;
+            best = {true,ResourceDomain::CpuFreq,"scaling_governor",entry.path,current,entry.target,
+                "measured CPU/render demand and a better advertised governor prior",benefit,risk,confidence,utility};
+        }
+        return best;
+    } catch (...) { return {}; }
+}
+MutationResult MutationController::applySelected(const PlanOption& selected, RuntimeState state,
+    const RuntimeSample& sample, const DeviceProfile& profile, const EngineConfig& config,
+    const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace) noexcept {
+    std::string live;
+    if (!selected.valid || !readLiveGovernor(selected.path,live) || live != selected.current) return MutationResult::Skipped;
+    selected_primary_ = &selected;
+    const auto result = apply(state,sample,profile,config,policy,permit,trace);
+    selected_primary_ = nullptr;
+    return result;
 }
 
 MutationJournal::Entries MutationController::factorySnapshot() const {
@@ -983,8 +1035,8 @@ MutationResult MutationController::apply(
     // While a previous restore is incomplete, plan nothing new. Retry the restore.
     if (restore_failed_) return restoreGovernors();
 
-    // Idle and memory pressure restore the factory baseline.
-    if (state == RuntimeState::Idle || state == RuntimeState::Pressure) {
+    // Cancel an unmeasured trial on Idle; accepted settings survive inactivity.
+    if (state == RuntimeState::Pressure || (state == RuntimeState::Idle && pending_outcome_)) {
         return relaxToBaseline();
     }
 

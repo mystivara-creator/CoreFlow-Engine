@@ -186,6 +186,7 @@ EngineStatus recoveryHeartbeat(const EngineStatus& previous, const std::int64_t 
     s.permit_resource = false;
     s.mutation_eligible = false;
     s.observing = false;
+    s.selection_current = false;
     return s;
 }
 
@@ -214,7 +215,8 @@ std::string primaryBlocker(const EngineStatus& s) {
         if (s.confidence < 0.60) return "CONTEXT_LOW_CONFIDENCE";
         return "CONTEXT_NO_HEADROOM";
     }
-    if (!s.mutation_eligible || s.candidates == 0) return "NO_CANDIDATES";
+    if ((s.selection_current && s.selection_winner == "KEEP_CURRENT") ||
+        !s.mutation_eligible || s.candidates == 0) return "NO_CANDIDATES";
     return "READY";
 }
 
@@ -228,6 +230,20 @@ std::string statusToJson(const EngineStatus& s) {
         << ",\"interval_s\":" << s.interval_s << ",\"running\":";
     appendBool(out, s.running);
     out << ",\"telemetry_epoch\":" << s.telemetry_epoch;
+    out << ",\"selection\":{\"current\":"; appendBool(out,s.selection_current);
+    out << ",\"reason\":"; appendEscaped(out,s.selection_reason);
+    out << ",\"winner\":"; appendEscaped(out,s.selection_winner);
+    out << ",\"cpu_utility\":"; appendNumber(out,s.selection_cpu_utility);
+    out << ",\"resource_utility\":"; appendNumber(out,s.selection_resource_utility);
+    out << ",\"assessed\":"; appendBool(out,s.selection_funnel.assessed);
+    out << ",\"discovered\":" << s.selection_funnel.discovered
+        << ",\"structural\":" << s.selection_funnel.structural
+        << ",\"baseline\":" << s.selection_funnel.baseline
+        << ",\"granted\":" << s.selection_funnel.granted
+        << ",\"relevant\":" << s.selection_funnel.relevant
+        << ",\"ranked\":" << s.selection_funnel.ranked
+        << ",\"selectable\":" << s.selection_funnel.selectable << '}';
+    out << ",\"outcome_reason\":"; appendEscaped(out,s.outcome_reason);
     out << ",\"cohort_identity\":"; appendEscaped(out, s.cohort_identity);
     out << ",\"cohort_members\":" << s.cohort_members;
     out << ",\"recovery_phase\":"; appendEscaped(out, s.recovery_phase);

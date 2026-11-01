@@ -59,6 +59,7 @@ struct EpochRestoreInputs {
     bool mode_adaptive{false};
     bool armed{false};
     bool cpu_mutated{false};
+    bool pending_outcome{true};
     // Every change the resource controller holds was made under a stabilizing plan.
     bool resource_epoch_stabilizing{false};
     bool plan_stabilizing_only{false};
@@ -66,7 +67,8 @@ struct EpochRestoreInputs {
 };
 
 // True when the active epoch must be restored this cycle rather than held for
-// its observation/outcome window. Idle, a disarmed config (this includes the
+// its observation/outcome window. Idle cancels pending trials but holds accepted
+// settings. A disarmed config (this includes the
 // kill switch and SAFE_MODE, which disable the config) and any CPU governor change
 // under stress always restore. Under thermal/memory stress a held change is kept
 // only if it is a stabilizing resource write. A transient confidence/plan change

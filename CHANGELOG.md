@@ -34,6 +34,16 @@
   measure each cohort under one outcome identity without per-component credit.
 - Expose thermal stabilization and plan membership in the WebUI.
 
+- Remove the intermediate resource-first priority: compare read-only CPU/resource
+  proposals against keeping current values, based on measured domain demand.
+- Permit independently justified cross-domain members in one measured plan;
+  filter grants/relevance before bounded ranking and reject stale proposals.
+- Stop equal-prior governor churn and preserve accepted settings during Idle.
+- Enforce the CPU domain grant in coarse and target-bound governor authorization;
+  a denied CPU option cannot block an independently granted resource proposal.
+- Explain current/last selection, candidate funnel and measured outcome separately
+  in native status and the offline WebUI.
+
 ## v3.0.2 — Automatic operation and scoped control recovery
 
 - Activate bounded optimization automatically during installation.

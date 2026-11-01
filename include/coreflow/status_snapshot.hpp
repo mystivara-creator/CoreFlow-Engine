@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "coreflow/high_capability.hpp"
+#include "coreflow/plan_option.hpp"
 #include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/consultation.hpp"
 
@@ -31,6 +32,10 @@ struct EngineStatus {
     bool sample_checkpoint_ok{false};
     std::int64_t updated_epoch{0};
     std::int64_t telemetry_epoch{0}; // last telemetry snapshot, independent of heartbeat
+    std::string selection_reason, selection_winner, outcome_reason;
+    bool selection_current{false};
+    double selection_cpu_utility{0.0}, selection_resource_utility{0.0};
+    CandidateFunnel selection_funnel;
     std::string cohort_identity;
     std::size_t cohort_members{0};
     std::string recovery_phase;

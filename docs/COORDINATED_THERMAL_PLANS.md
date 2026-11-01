@@ -8,12 +8,34 @@ I/O, memory, cgroup and GPU candidates. The resource controller also loaded its
 own active journal as if a different process had crashed; a subsequent apply
 could restore accepted values before coupling could build on them.
 
-The replacement executes one **coordinated plan** per measurement epoch. Resource
-candidates get first choice. Each plan can contain up to three resource writes;
-a governor fallback can add up to three justified resource companions. Every
-member still needs its own capability admission, grant, exact-target permit,
-pre-write journal and read-back verification. A plan does not fill its budget
-with unrelated writes just to touch every domain.
+The replacement evaluates read-only CPU and resource proposals together before
+writing. There is no domain rotation or fixed resource/CPU priority. A candidate
+must respond to measured CPU/render, memory, I/O or thermal demand. An inventory
+of many discovered files is neither permission nor evidence of a useful write.
+
+Both classes use the same benefit/risk/confidence utility weights (0.65, -0.25,
+0.10), with existing evidence adjustments and a 0.05 admission margin. Keeping
+the current configuration has net utility zero. These scores are **heuristic
+priors**, not measured performance gains or proof of a globally optimal stock
+configuration. CPU governor replacement carries an explicit uncertainty cost;
+equal-score governor alternatives no longer trigger token-changing exploration.
+
+The strongest admissible option identifies the primary domain. Incompatible
+anchor/dependent alternatives compete by utility, then risk/path for ties.
+Independent profitable CPU and resource proposals may execute in the same plan;
+up to three resource writes join a selected governor or form a resource-only
+plan. Governor anchors execute before dependent files for correctness, not
+selection priority. Each member still requires its own capability, grant,
+exact-target permit, pre-write journal and read-back verification. Live values
+are checked again before a frozen proposal can execute; stale proposals cannot
+overwrite a newer value. The engine does not fill a budget with unrelated writes.
+
+When no measured tuning need exists, keep the current configuration. When there
+is demand but no admissible improvement, report that separately. The CPU governor
+also requires its CPU domain grant;
+the legacy allow_cpu_governor flag remains diagnostic compatibility data.
+Resource grants, relevance, baseline and surface admission filter candidates
+**before** bounded ranking so unavailable domains cannot crowd out otherwise useful candidates.
 
 ## Coupling uses live configuration
 
@@ -24,7 +46,8 @@ with unrelated writes just to touch every domain.
   `iosched` subtree. After a governor transition, policy-local and shared
   governor attribute trees are refreshed. Newly found controls need baselines
   and the same grants/authority as previously discovered controls.
-- A governor fallback adds only companions with coupling evidence. Inactive
+- A governor-only selection can add newly discovered companions with coupling
+  evidence; independently justified resource proposals can also share the plan. Inactive
   advertised governor directories are not treated as active tunables.
 - A scheduler/governor is not switched out from under still-owned dependent
   controls. Existing dependencies must first settle through the normal recovery
@@ -69,6 +92,9 @@ suppressed under the existing rejection cooldown. No measured joint benefit is
 invented as proof that each individual member was beneficial on its own.
 
 Accepted cohorts remain active in the session with durable recovery journals.
+Idle by itself no longer discards accepted settings. An unfinished trial is still
+canceled on Idle; authority loss, unsafe stress and recovery obligations retain
+their restoration behavior.
 Their individual members are **not** written as independent retained preferences.
 After reboot, journals restore the original settings and the engine rebuilds
 fresh baselines; scoped group experience and lifetime sample identity persist.
@@ -87,12 +113,18 @@ over that actor's value; remaining cohort members can then be canceled safely.
 
 The WebUI exposes `THERMAL_STABILIZING`, the latest cohort identity/member count,
 applied controls, and the existing separate heartbeat/telemetry timestamps.
-Decision trace events include coordinated plan verification and observation start.
+The candidate funnel distinguishes discovered, structurally writable, baselined,
+granted, condition-relevant, ranked and finally selectable resource proposals.
+Last selection and predicted utilities are separate from the last measured
+outcome/rollback reason. Current-selection freshness prevents an old decision
+from replacing a new safety or recovery banner. Decision trace events include
+global selection, coordinated plan verification and observation start.
 This describes executed/held plans, not simulated success or guaranteed cooling.
 
 ## Verification scope
 
-Host fixtures cover thermal CPU/GPU/cgroup plans, resource-first scheduling,
+Host fixtures cover thermal CPU/GPU/cgroup plans, condition-driven CPU/I/O choice, simultaneous cross-domain plans, stable
+keep-current behavior, stale-proposal rejection, accepted Idle retention,
 governor plus newly discovered companions, I/O scheduler plus queue companions,
 whole-cohort rollback, failed companion commits, dependent rollback failure,
 external override, cumulative capping bounds and restart recovery. Existing
@@ -115,7 +147,7 @@ it is called a field-validated release checkpoint.
 - Strict C++20 host compilation: 48 core sources, 28 host suites passed.
 - ASan + UBSan: all 28 host suites passed locally; leak detection disabled in
   the traced local environment, with CI leak detection unchanged.
-- Offline WebUI build and contracts: 391 checks passed.
+- Offline WebUI build and contracts: 414 checks passed.
 - Installer harness: 11 scenarios passed; safety and clean source-release
   contracts passed. Android orchestrator strict syntax was checked with a log stub.
 - Android linking/packaging and device behavior require their own validation;

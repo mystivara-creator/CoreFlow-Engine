@@ -106,6 +106,7 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
         EngineConfig config;
         config.setMutationMode(MutationMode::Adaptive);
         config.setMutationArmed(true);
+        config.setGrantCpuFreq(true);
         config.setAllowCpuGovernor(true);
         PolicyPlan plan;
         plan.action = PolicyAction::Candidate;
@@ -141,12 +142,18 @@ coreflow::RuntimeSample base(int milli_c, double load, double cpu, double mem) {
               MutationPermit::Scope::Resource) == nullptr);
 
         plan.stabilizing_only = false;
-        // CPUFreq uses the global adaptive/armed authority; the legacy
+        // CPUFreq uses global adaptive/armed authority and its domain grant; the legacy
         // allow_cpu_governor switch no longer creates a second permission gate.
         config.setAllowCpuGovernor(false);
         CHECK(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
               MutationPermit::Scope::CpuFreq) == nullptr);
         CHECK(authority.authorize(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq).valid());
+
+        config.setGrantCpuFreq(false);
+        CHECK(std::string(mutationPermitBlockReason(plan, config, RuntimeState::Normal, 0.9,
+              MutationPermit::Scope::CpuFreq)) == "cpu_domain_grant_required");
+        CHECK(!authority.authorize(plan, config, RuntimeState::Normal, 0.9,
               MutationPermit::Scope::CpuFreq).valid());
 
         config.setMutationArmed(false);

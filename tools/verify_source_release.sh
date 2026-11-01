@@ -8,6 +8,7 @@ required_files="
 CMakeLists.txt
 package.json
 package-lock.json
+include/coreflow/plan_option.hpp
 include/coreflow/coordinated_plan.hpp
 src/balance/coordinated_plan.cpp
 tests/coordinated_plan_tests.cpp

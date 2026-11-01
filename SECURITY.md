@@ -9,7 +9,7 @@ CoreFlow runs as a privileged Android module and can interact with kernel-facing
 3. Require explicit capability checks.
 4. Apply bounded changes only.
 5. Read back and verify the requested value.
-6. Restore on stop, authority loss or an unsafe/failed plan; keep verified stabilizing settings through thermal stress when appropriate. Restore dependent controls before their anchor.
+6. CPU governor writes require the CPU domain grant. Accepted settings survive Idle; cancel unfinished Idle trials. Restore on stop, authority loss or an unsafe/failed plan; keep verified stabilizing settings through thermal stress when appropriate. Restore dependent controls before their anchor.
 7. Skip unknown or unsupported controls.
 
 Installation enables automatic bounded tuning using explicit compatibility keys and domain grants in config.ini. Upgrades preserve explicit grant_<domain>=no exclusions. There is no Observe/Standby mode selector. Missing, unreadable or malformed configuration blocks new writes; SAFE_MODE and DISABLE remain authoritative. Capability admission, target-bound permits, journals, read-back verification and rollback still apply. Saving WebUI settings never clears an operator stop or recovery marker. Explicit Start may resume DISABLE only while SAFE_MODE is absent.

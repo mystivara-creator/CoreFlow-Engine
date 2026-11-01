@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "coreflow/config.hpp"
+#include "coreflow/plan_option.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/cpufreq_actuator.hpp"
 #include "coreflow/experience.hpp"
@@ -74,6 +75,12 @@ public:
 
     // True only when every still-owned governor is restored; externally handed-off
     // paths are no longer restore obligations.
+    PlanOption preview(RuntimeState state, const RuntimeSample& sample, const DeviceProfile& profile,
+                       const EngineConfig& config, const PolicyPlan& policy) noexcept;
+    MutationResult applySelected(const PlanOption& selected, RuntimeState state,
+        const RuntimeSample& sample, const DeviceProfile& profile, const EngineConfig& config,
+        const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace = nullptr) noexcept;
+    bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
     bool restoreAll() noexcept;
 
     // Persist the most recent candidate only after a beneficial outcome was measured.
@@ -98,6 +105,7 @@ public:
     static constexpr std::uint64_t kRejectionCooldownCycles = 120;
 
 private:
+    const PlanOption* selected_primary_{nullptr};
     std::vector<std::pair<std::string, std::string>> accepted_governors_;
     const std::unordered_set<std::string>* external_control_paths_{nullptr};
 

@@ -131,3 +131,14 @@ this source checkpoint. Group settings remain journaled for the running session;
 reboot restores and measures afresh instead of promoting jointly measured settings
 as independent retained preferences. This change needs its own Android CI and
 on-device acceptance, including thermal transitions and interrupted recovery.
+
+
+### Condition-driven selection follow-up
+
+The global chooser replaces the intermediate resource-first priority with
+read-only cross-domain comparison against keeping current values. CPU and
+independently justified resources can share a plan. Equal-prior governor churn
+is rejected, accepted values survive Idle, and selection/funnel/outcome reasons
+are visible separately. Tests cover demand changes on identical inventories,
+joint CPU/I/O plans, no-demand stock retention, stale proposals and authority
+loss during Idle. The same device acceptance requirements still apply.

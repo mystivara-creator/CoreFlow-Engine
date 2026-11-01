@@ -33,3 +33,14 @@ confidence dip; no new write bypasses the configured threshold. Kernel options,
 live values and reviewed ABI bounds define candidate steps, with a cumulative
 factory-relative budget for cgroup capping. There is no fixed scheduler/governor
 pairing preset. [Execution and recovery rules](COORDINATED_THERMAL_PLANS.md).
+
+
+## Condition-driven selection and retention
+
+CPU and resource proposals are compared before writes, without domain rotation.
+Independent useful domains can join one measured plan; dependency order only
+controls safe execution. No measured demand keeps the current configuration;
+measured demand without an admissible gain is a separate diagnostic. Selection
+scores are priors, and measured outcomes decide retention/rollback. Accepted
+settings survive Idle while an unfinished Idle trial is canceled. See the
+[selection details](COORDINATED_THERMAL_PLANS.md).

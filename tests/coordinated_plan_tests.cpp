@@ -229,9 +229,103 @@ int crashRestoresWholeCohort() {
     CHECK(f.resource_journal.entries.empty());
     return 0;
 }
+int conditionDrivenSelection() {
+    for (unsigned scenario=0; scenario<5U; ++scenario) {
+        Fixture f; const auto cpu=f.governor();
+        const auto scheduler=f.add(ResourceDomain::Io,"disk:scheduler","block/disk/queue/scheduler",
+            "[cfq] mq-deadline",{"cfq","mq-deadline"});
+        f.profile.capabilities.resources.back().ordered_scale=false;
+        f.profile.capabilities.resources.back().vendor_values.push_back({"mq-deadline",VendorProfile::Default,"firmware"});
+        CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
+        auto s=sample(false); s.cpu_utilization=(scenario==0U || scenario==2U || scenario==4U) ? .8 : .1;
+        s.load1=.1; s.gpu_busy_available=false; s.psi_available=true;
+        s.psi_io_some_avg10=(scenario==1U || scenario==2U || scenario==4U) ? .3 : 0.; s.io_activity_available=true;
+        auto c=config(); if (scenario==4U) c.setGrantCpuFreq(false);
+        const auto p=plan(f.profile,s,RuntimeState::Elevated);
+        const auto cpu_option=f.cpu.preview(RuntimeState::Elevated,s,f.profile,c,p);
+        const auto io_option=f.resources.preview(RuntimeState::Elevated,s,f.profile,c,p);
+        CHECK(f.cpu_journal.commits==0U && f.resource_journal.commits==0U);
+        CHECK(f.read(cpu+"/scaling_governor")=="powersave" && f.read(scheduler)=="[cfq] mq-deadline");
+        CHECK(cpu_option.valid==(scenario==0U || scenario==2U));
+        CHECK(io_option.valid==(scenario==1U || scenario==2U || scenario==4U));
+        const auto r=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,c,p);
+        if (scenario==3U) {
+            CHECK(!r.verified() && r.winner=="KEEP_CURRENT");
+            CHECK(r.decision_reason=="no_measured_tuning_need_keep_current");
+            CHECK(f.cpu_journal.commits==0U && f.resource_journal.commits==0U);
+            continue;
+        }
+        CHECK(r.verified());
+        CHECK((r.cpu==MutationResult::Verified)==cpu_option.valid);
+        CHECK((r.resource==MutationResult::Verified)==io_option.valid);
+        if (scenario==0U) CHECK(r.winner=="CPU_GOVERNOR");
+        if (scenario==1U || scenario==4U) CHECK(r.winner=="IO");
+        if (scenario==2U) {
+            CHECK(r.members==2U);
+            CHECK(r.winner==(cpu_option.utility>io_option.utility ? "CPU_GOVERNOR" : "IO"));
+            CHECK(f.cpu.acceptCoordinatedMutation()); CHECK(f.resources.acceptCoordinatedMutation());
+            EpochRestoreInputs idle;
+            idle.mode_adaptive=idle.armed=true; idle.state=RuntimeState::Idle;
+            idle.pending_outcome=false;
+            CHECK(!shouldRestoreEpochNow(idle));
+            idle.armed=false; CHECK(shouldRestoreEpochNow(idle)); idle.armed=true;
+            idle.pending_outcome=true; CHECK(shouldRestoreEpochNow(idle));
+            const auto held=f.cpu.apply(RuntimeState::Idle,s,f.profile,config(),p,MutationAuthority{}.authorize(p,config(),RuntimeState::Idle,1.,MutationPermit::Scope::CpuFreq));
+            CHECK(held==MutationResult::Skipped && f.read(cpu+"/scaling_governor")=="walt");
+            f.add(ResourceDomain::Io,"disk:nr_requests","block/disk/queue/nr_requests","128");
+            CHECK(f.resources.admitNewBaselines(f.profile));
+            s.cpu_utilization=.1;
+            const auto next_plan=plan(f.profile,s,RuntimeState::Elevated);
+            const auto next=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Elevated,s,f.profile,config(),next_plan);
+            CHECK(next.resource==MutationResult::Verified && next.cpu==MutationResult::Skipped);
+            CHECK(next.members==f.resources.lastAppliedResources().size());
+            CHECK(next.identity.find("cpufreq:")==std::string::npos); // no credit to an earlier accepted governor
+
+        }
+        CHECK(restoreCoordinatedPlan(f.cpu,f.resources));
+    }
+    return 0;
+}
+int needWithoutAuthorityOrUsefulSurface() {
+    Fixture f;
+    f.add(ResourceDomain::Memory,"unclassified","proc/sys/vm/unclassified","10");
+    CHECK(f.resources.captureBaseline(f.profile));
+    auto s=sample(false); s.cpu_utilization=.1; s.load1=.1; s.gpu_busy_available=false;
+    s.mem_available_ratio=.1;
+    PolicyPlan p; p.action=PolicyAction::Candidate; p.intervention=InterventionLevel::Moderate; p.mutation_eligible=true; p.stabilizing_only=true;
+    p.candidates.push_back({ResourceDomain::Memory,"unclassified",{},1.,.2,PolicyAction::Candidate});
+    const auto r=executeCoordinatedPlan(f.cpu,f.resources,RuntimeState::Pressure,s,f.profile,config(),p);
+    CHECK(!r.verified() && r.decision_reason=="measured_need_but_no_admissible_gain");
+    CHECK(r.funnel.assessed && r.funnel.discovered==1U);
+    CHECK(f.resource_journal.commits==0U);
+    return 0;
+}
+int stalePreviewsCannotOverwrite() {
+    Fixture f; const auto cpu=f.governor();
+    const auto scheduler=f.add(ResourceDomain::Io,"disk:scheduler","block/disk/queue/scheduler",
+        "[cfq] mq-deadline",{"cfq","mq-deadline"});
+    f.profile.capabilities.resources.back().ordered_scale=false;
+    f.profile.capabilities.resources.back().vendor_values.push_back({"mq-deadline",VendorProfile::Default,"firmware"});
+    CHECK(f.cpu.captureBaseline(f.profile)); CHECK(f.resources.captureBaseline(f.profile));
+    auto s=sample(false); s.psi_available=true; s.psi_io_some_avg10=.3;
+    const auto p=plan(f.profile,s,RuntimeState::Elevated); const auto c=config();
+    const auto a=f.cpu.preview(RuntimeState::Elevated,s,f.profile,c,p);
+    const auto b=f.resources.preview(RuntimeState::Elevated,s,f.profile,c,p);
+    CHECK(a.valid && b.valid);
+    f.write(cpu+"/scaling_governor","performance"); f.write(scheduler,"none");
+    const MutationAuthority authority;
+    CHECK(f.cpu.applySelected(a,RuntimeState::Elevated,s,f.profile,c,p,
+        authority.authorize(p,c,RuntimeState::Elevated,1.,MutationPermit::Scope::CpuFreq))==MutationResult::Skipped);
+    CHECK(f.resources.applySelected(b,RuntimeState::Elevated,s,f.profile,c,p,
+        authority.authorize(p,c,RuntimeState::Elevated,1.,MutationPermit::Scope::Resource))==MutationResult::Skipped);
+    CHECK(f.cpu_journal.commits==0U && f.resource_journal.commits==0U);
+    CHECK(f.read(cpu+"/scaling_governor")=="performance" && f.read(scheduler)=="none");
+    return 0;
+}
+
 }
 int main() {
-    const int result=thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
+    const int result=conditionDrivenSelection() || needWithoutAuthorityOrUsefulSurface() || stalePreviewsCannotOverwrite() || thermalCohort() || failedCompanionRollsBack() || governorAndDiscoveredTunables() ||
         dependentRollbackFailurePreservesGovernor() || externalMemberWithdrawn() || ioSchedulerCompanions() || incompleteCrashRecoveryKeepsJournal() || crashRestoresWholeCohort();
     if (!result) std::puts("CoreFlow coordinated and thermal plans: PASS");
     return result;

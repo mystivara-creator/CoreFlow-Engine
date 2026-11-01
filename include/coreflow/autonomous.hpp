@@ -11,6 +11,7 @@
 #include "coreflow/runtime_intelligence.hpp"
 #include "coreflow/context.hpp"
 #include "coreflow/control.hpp"
+#include "coreflow/coordinated_plan.hpp"
 #include "coreflow/resource_model.hpp"
 #include "coreflow/resource_mutation.hpp"
 #include "coreflow/discovery.hpp"
@@ -65,6 +66,10 @@ private:
     bool has_restored_{false};
     bool refresh_pending_{false};
     bool telemetry_recovery_pending_{false};
+    CoordinatedResult last_plan_selection_;
+    std::uint64_t last_selection_sample_{0};
+    bool selection_available_{false};
+    std::string last_outcome_reason_;
     bool observation_cohort_{false};
     std::string observation_identity_;
     std::size_t observation_members_{0};

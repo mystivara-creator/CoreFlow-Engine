@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "coreflow/config.hpp"
+#include "coreflow/plan_option.hpp"
 #include "coreflow/consultation.hpp"
 #include "coreflow/control.hpp"
 #include "coreflow/decision_agent.hpp"
@@ -87,8 +88,13 @@ public:
     // still permitted for recovery.
     bool captureBaseline(const DeviceProfile& profile) noexcept;
 
-    bool restoreAll() noexcept;
+    PlanOption preview(RuntimeState state, const RuntimeSample& sample, const DeviceProfile& profile,
+                       const EngineConfig& config, const PolicyPlan& policy) noexcept;
+    MutationResult applySelected(const PlanOption& selected, RuntimeState state,
+        const RuntimeSample& sample, const DeviceProfile& profile, const EngineConfig& config,
+        const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace = nullptr) noexcept;
     bool recoveryReady() const noexcept { return !recovery_pending_ && !restore_failed_; }
+    bool restoreAll() noexcept;
     const std::vector<ResourceCapability>& discoveredCapabilities() const noexcept { return supplemental_; }
     bool admitNewBaselines(const DeviceProfile& profile) noexcept;
     bool retainLastMutation(const DeviceProfile& profile) noexcept;
@@ -134,6 +140,8 @@ public:
     static constexpr std::size_t kMaxCohortWrites = 3U;
     // CPU-governor follow-ups may select only candidates with coupling evidence.
     void setCoupledOnly(bool value) noexcept { coupled_only_ = value; }
+    void setConditionDriven(bool value) noexcept { condition_driven_ = value; }
+    CandidateFunnel candidateFunnel() const noexcept { return candidate_funnel_; }
 
     // Last DecisionAgent reasoning summary for this cycle (empty if none).
     const std::string& lastAgentReason() const noexcept { return last_agent_reason_; }
@@ -169,6 +177,9 @@ private:
         std::string path;
         std::string requested;
         std::string baseline;
+        std::string current;
+        double confidence{0.0};
+        double utility{0.0};
         double benefit{0.0};
         double risk{1.0};
         std::string reason;
@@ -181,7 +192,7 @@ private:
         const DeviceProfile& profile,
         const PolicyPlan& policy,
         const UserGrants& grants,
-        Candidate& out, bool companion = false) const noexcept;
+        Candidate& out, bool companion = false, bool condition_driven = false) const noexcept;
     MutationResult applyCandidate(const Candidate& candidate,
                                   RuntimeState state,
                                   double confidence,
@@ -203,6 +214,9 @@ private:
     std::vector<ResourceCapability> supplemental_;
     bool rollbackSingleMutation() noexcept;
     bool coupled_only_{false};
+    bool condition_driven_{false};
+    mutable CandidateFunnel candidate_funnel_;
+    const PlanOption* selected_primary_{nullptr};
     MutationJournal* journal_{nullptr};
     RetainedStateStore* retained_store_{nullptr};
     RetainedStateStore::Entries retained_entries_;

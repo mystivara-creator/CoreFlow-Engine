@@ -82,6 +82,9 @@ export interface ParsedEngineStatus {
     sample: number;
     updated: number;
     telemetryUpdated?: number;
+    selection?: { current: boolean; reason: string; winner: string; cpuUtility: number | null; resourceUtility: number | null;
+      assessed: boolean; discovered: number; structural: number; baseline: number; granted: number; relevant: number; ranked: number; selectable: number };
+    outcomeReason?: string;
     cohortIdentity?: string;
     cohortMembers?: number;
     recoveryPhase?: string;

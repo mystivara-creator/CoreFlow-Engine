@@ -1002,9 +1002,9 @@ void AutonomousEngine::tick() {
         const bool stress = next == RuntimeState::ThermalGuard || next == RuntimeState::Pressure;
         const bool authority_lost = config_.mutationMode() != MutationMode::Adaptive || !config_.mutationArmed();
         const bool restore_cpu = controller_.mutated() &&
-            (authority_lost || next == RuntimeState::Idle || stress);
+            (authority_lost || (next == RuntimeState::Idle && controller_.hasPendingOutcome()) || stress);
         const bool restore_resources = resource_controller_.mutated() &&
-            (authority_lost || next == RuntimeState::Idle ||
+            (authority_lost || (next == RuntimeState::Idle && resource_controller_.hasPendingOutcome()) ||
              (stress && !resource_controller_.stabilizingEpoch()));
         if (restore_cpu || restore_resources) {
             // Resource dependents must be unwound before their governor anchor.
@@ -1332,6 +1332,7 @@ void AutonomousEngine::tick() {
                         outcome_reason = "regression_outcome_candidate_rejection_and_rollback_attempted";
                         break;
                 }
+                last_outcome_reason_=outcome_reason;
                 appendDecisionTraceEvent(trace_context, {
                     "outcome_resolved", "pending_mutation_epoch",
                     mutationResultName(mutation), outcome_reason});
@@ -1348,6 +1349,8 @@ void AutonomousEngine::tick() {
             const std::size_t inventory_before = snapshot_.profile.capabilities.resources.size();
             const auto result = executeCoordinatedPlan(controller_, resource_controller_, next,
                 sample, snapshot_.profile, config_, ecosystem_plan, &trace_context);
+            last_plan_selection_=result;
+            last_selection_sample_=sample_count_; selection_available_=true;
             mutation = result.cpu;
             cpu_mutation_for_trace = result.cpu;
             resource_mutation = result.resource;
@@ -1527,6 +1530,13 @@ void AutonomousEngine::publishStatus(
         s.sample_checkpoint_ok = sample_sequence_.healthy();
         s.updated_epoch = static_cast<std::int64_t>(std::time(nullptr));
         s.telemetry_epoch = s.updated_epoch;
+        s.selection_current=selection_available_ && last_selection_sample_==sample_count_;
+        s.selection_reason=last_plan_selection_.decision_reason;
+        s.selection_winner=last_plan_selection_.winner;
+        s.selection_cpu_utility=last_plan_selection_.cpu_utility;
+        s.selection_resource_utility=last_plan_selection_.resource_utility;
+        s.selection_funnel=last_plan_selection_.funnel;
+        s.outcome_reason=last_outcome_reason_;
         s.cohort_identity = observation_identity_;
         s.cohort_members = observation_members_;
         s.interval_s = config_.monitorIntervalSeconds();

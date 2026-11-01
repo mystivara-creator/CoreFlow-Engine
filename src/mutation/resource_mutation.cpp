@@ -261,7 +261,7 @@ bool ResourceMutationController::selectCandidate(
     const DeviceProfile& profile,
     const PolicyPlan& policy,
     const UserGrants& grants,
-    Candidate& out, bool companion
+    Candidate& out, bool companion, bool condition_driven
 ) const noexcept try {
     if (!baseline_captured_ || baseline_.empty()) return false;
     if (!policy.mutation_eligible || policy.candidates.empty()) return false;
@@ -414,7 +414,22 @@ bool ResourceMutationController::selectCandidate(
 
     // Exclude shared externally controlled paths before top-N ranking, so
     // contested candidates cannot crowd out otherwise eligible resources.
+    candidate_funnel_ = {};
+    candidate_funnel_.assessed = true;
+    candidate_funnel_.discovered = effective_matrix.resources.size();
     for (auto& cap : effective_matrix.resources) {
+        const bool structural = cap.mutation_ready && cap.exists && cap.readable && cap.writable && cap.runtime_verified;
+        if (structural) ++candidate_funnel_.structural;
+        const auto base = baseline_.find(cap.path);
+        const bool baseline_ok = structural && base != baseline_.end() && base->second.valid;
+        if (baseline_ok) ++candidate_funnel_.baseline;
+        const bool granted = grants.allows(namespaceOf(cap.domain,cap.name));
+        if (baseline_ok && granted) ++candidate_funnel_.granted;
+        const bool relevant = !condition_driven || domainNeedsTuning(sample,state,cap.domain);
+        if (baseline_ok && granted && relevant) ++candidate_funnel_.relevant;
+        if (condition_driven && (!baseline_ok || !granted || !relevant ||
+            !policy.allows(cap.domain,cap.name) || !fallbackPolicyAuthorized(cap.domain,cap.name,cap.path)))
+            cap.mutation_ready = false;
         if ((external_control_paths_ != nullptr && external_control_paths_->contains(cap.path)) ||
             std::any_of(pending_changes_.begin(), pending_changes_.end(),
                 [&](const PendingChange& change) { return change.path == cap.path; })) cap.mutation_ready = false;
@@ -449,6 +464,7 @@ bool ResourceMutationController::selectCandidate(
     last_agent_reason_ = proposal.reasoning_summary;
     if (!proposal.valid) return false;
     const auto& ranked = proposal.ranked;
+    candidate_funnel_.ranked = ranked.size();
 
     double best_utility = -1.0;
     Candidate best_candidate;
@@ -459,6 +475,8 @@ bool ResourceMutationController::selectCandidate(
         const std::string& name = scored.resource_name;
         const std::string& path = scored.path;
         if (name.empty() || path.empty()) continue;
+        if (!companion && selected_primary_ != nullptr &&
+            (path != selected_primary_->path || scored.requested != selected_primary_->requested)) continue;
         if (external_control_paths_ != nullptr && external_control_paths_->contains(path)) continue;
 
         auto bit = baseline_.find(path);
@@ -470,7 +488,8 @@ bool ResourceMutationController::selectCandidate(
         // reducing load. Everything else waits for headroom.
         if (policy.stabilizing_only && !scored.stabilizing) continue;
         if ((companion || coupled_only_) && !policy.stabilizing_only &&
-            scored.reason.find("[coupled:") == std::string::npos) continue;
+            scored.reason.find("[coupled:") == std::string::npos &&
+            !(condition_driven && !coupled_only_ && domainNeedsTuning(sample,state,scored.domain))) continue;
 
         // Consultation: the eye reports facts, the brain decides. A Defer or
         // Deny drops only this candidate. The cycle continues, and nothing is
@@ -510,11 +529,8 @@ bool ResourceMutationController::selectCandidate(
         // when it is already live; the actuator verifies the write by read-back.
         const std::string requested = scored.requested;
         if (requested.empty() || requested == bit->second.value) continue;
-        {
-            std::string live;
-            if (!ResourceActuator::readComparable(path, live)) continue;
-            if (live == requested) continue;
-        }
+        std::string current;
+        if (!ResourceActuator::readComparable(path,current) || current == requested) continue;
 
         if (bit->second.domain == ResourceDomain::UClamp &&
             (path.ends_with("/cpu.uclamp.min") || path.ends_with("/cpu.uclamp.max"))) {
@@ -572,6 +588,7 @@ bool ResourceMutationController::selectCandidate(
         // Preserve the original raw-utility admission threshold of 0.05
         // after the affine normalization above.
         constexpr double normalized_min_utility = (0.05 + 0.29) / 1.04;
+        if (utility >= normalized_min_utility) ++candidate_funnel_.selectable;
         if (utility < normalized_min_utility ||
             utility < best_utility ||
             (utility == best_utility &&
@@ -587,6 +604,9 @@ bool ResourceMutationController::selectCandidate(
         best_candidate.path = path;
         best_candidate.requested = requested;
         best_candidate.baseline = bit->second.value;
+        best_candidate.current = current;
+        best_candidate.confidence = scored.confidence;
+        best_candidate.utility = utility * 1.04 - .29;
         best_candidate.benefit = scored.benefit;
         best_candidate.risk = scored.risk;
         best_candidate.reason = scored.reason;
@@ -866,6 +886,34 @@ MutationResult ResourceMutationController::applyCandidate(
     return MutationResult::Failed;
 }
 
+PlanOption ResourceMutationController::preview(RuntimeState state, const RuntimeSample& sample,
+    const DeviceProfile& profile, const EngineConfig& config, const PolicyPlan& policy) noexcept {
+    ++cycle_; // rejecting every proposal must not freeze rejection cooldowns
+    candidate_funnel_={}; candidate_funnel_.discovered=profile.capabilities.resources.size();
+    try {
+        if (!recoveryReady() || pending_outcome_ || !baseline_captured_ ||
+            mutationPermitBlockReason(policy,config,state,sample.confidence,MutationPermit::Scope::Resource)) return {};
+        UserGrants grants;
+        grants.memory=config.grantMemory(); grants.block_queue=config.grantBlockQueue(); grants.scheduler=config.grantScheduler();
+        grants.gpu=config.grantGpu(); grants.cgroup=config.grantCgroup(); grants.cpufreq=config.grantCpuFreq(); grants.kernel=config.grantKernel();
+        Candidate candidate;
+        if (!selectCandidate(state,sample,profile,policy,grants,candidate,false,true)) return {};
+        if (candidate.utility <= .05) return {};
+        return {true,candidate.domain,candidate.name,candidate.path,candidate.current,candidate.requested,candidate.reason,
+            candidate.benefit,candidate.risk,candidate.confidence,candidate.utility - .05};
+    } catch (...) { return {}; }
+}
+MutationResult ResourceMutationController::applySelected(const PlanOption& selected, RuntimeState state,
+    const RuntimeSample& sample, const DeviceProfile& profile, const EngineConfig& config,
+    const PolicyPlan& policy, const MutationPermit& permit, const DecisionTraceContext* trace) noexcept {
+    std::string live;
+    if (!selected.valid || !ResourceActuator::readComparable(selected.path,live) || live != selected.current) return MutationResult::Skipped;
+    selected_primary_ = &selected;
+    const auto result = apply(state,sample,profile,config,policy,permit,trace);
+    selected_primary_ = nullptr;
+    return result;
+}
+
 MutationResult ResourceMutationController::apply(
     const RuntimeState state,
     const RuntimeSample& sample,
@@ -906,7 +954,7 @@ MutationResult ResourceMutationController::apply(
         // Only an authority loss restores here. A merely ineligible plan or a
         // transient confidence dip means "no new candidate"; accepted settings
         // persist until shouldRestoreEpochNow() reports a safety/authority
-        // transition (Idle, stress with a non-stabilizing epoch, mode/arm off).
+        // transition (pending trial canceled, unsafe stress, mode/arm off).
         const bool authority_lost =
             config.mutationMode() != MutationMode::Adaptive || !config.mutationArmed();
         if (!authority_lost) return MutationResult::Skipped;
@@ -933,7 +981,7 @@ MutationResult ResourceMutationController::apply(
         const DeviceProfile* view = &profile;
         for (std::size_t i = 0; i < kMaxCohortWrites; ++i) {
             Candidate candidate;
-            if (!selectCandidate(state, sample, *view, working_policy, grants, candidate, i != 0U)) break;
+            if (!selectCandidate(state, sample, *view, working_policy, grants, candidate, i != 0U, condition_driven_)) break;
             const MutationResult applied = applyCandidate(
                 candidate, state, sample.confidence, config, working_policy, trace_context);
             if (applied == MutationResult::Verified) {

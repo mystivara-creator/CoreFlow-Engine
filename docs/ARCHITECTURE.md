@@ -29,8 +29,10 @@ Passing host tests does not establish Android ABI/link correctness, vendor-kerne
 
 ## Coordinated execution
 
-Resource-first planning replaces fixed CPU-first execution. Up to three resource
-members, or a governor fallback plus justified companions, share one outcome
+Read-only CPU and resource proposals compete by condition, utility and risk
+against keeping the current configuration. No class has a fixed turn or priority.
+Independent profitable options can share a bounded plan: up to three resource
+members plus a selected governor share one outcome
 identity. Live coupling and bounded subtree rediscovery follow anchor changes.
 Reverse-order resource journals settle dependents before CPU recovery. Verified
 cooling can remain active during ThermalGuard; confidence dips block new writes.

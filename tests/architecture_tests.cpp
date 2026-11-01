@@ -230,6 +230,7 @@ int main() {
         EngineConfig enabled;
         enabled.setMutationMode(MutationMode::Adaptive);
         enabled.setMutationArmed(true);
+        enabled.setGrantCpuFreq(true);
 
         const MutationPermit allowed = authority.authorize(
             plan,

@@ -51,6 +51,7 @@
 
   // Validate and normalize. Unknown fields are dropped; wrong types become safe defaults.
   function normalize(j) {
+    var sel = isObj(j.selection) ? j.selection : {};
     var insight = isObj(j.intelligence) ? j.intelligence : {};
     var e = isObj(j.eyes) ? j.eyes : {};
     var b = isObj(j.brain) ? j.brain : {};
@@ -62,6 +63,11 @@
       sample: int(j.sample, 0),
       updated: int(j.updated_epoch, 0),
       telemetryUpdated: int(j.telemetry_epoch, int(j.updated_epoch, 0)),
+      selection: { current: bool(sel.current), reason: str(sel.reason, 160), winner: str(sel.winner, 64),
+        cpuUtility: num(sel.cpu_utility), resourceUtility: num(sel.resource_utility), assessed: bool(sel.assessed),
+        discovered: int(sel.discovered, 0), structural: int(sel.structural, 0), baseline: int(sel.baseline, 0),
+        granted: int(sel.granted, 0), relevant: int(sel.relevant, 0), ranked: int(sel.ranked, 0), selectable: int(sel.selectable, 0) },
+      outcomeReason: str(j.outcome_reason, 200),
       cohortIdentity: str(j.cohort_identity, 512),
       cohortMembers: int(j.cohort_members, 0),
       recoveryPhase: str(j.recovery_phase, 40),
@@ -195,6 +201,12 @@
     if (p.stale) {
       return { tone: "bad", title: "Engine not responding", detail: "No update for " + p.age + "s. The daemon may have stalled or been killed; check the log.", code: "STALE" };
     }
+    if (d.selection.current && d.blocker === "NO_CANDIDATES") {
+      if (d.selection.reason === "no_measured_tuning_need_keep_current")
+        return { tone: "ok", title: "No measured tuning need", detail: "Current telemetry does not justify a new experiment. The current configuration is kept; this does not prove it is globally optimal.", code: "NO_CANDIDATES" };
+      if (d.selection.reason === "measured_need_but_no_admissible_gain")
+        return { tone: "warn", title: "Tuning need detected; no admissible plan", detail: "Inventory " + d.selection.discovered + "; granted baselines " + d.selection.granted + "; relevant " + d.selection.relevant + "; selectable reviewed proposals " + d.selection.selectable + ". Capability discovery alone does not justify a write.", code: "NO_CANDIDATES" };
+    }
     var info = BLOCKERS[d.blocker];
     if (!info) return { tone: "info", title: "Unrecognized status", detail: "The engine reported a code this page does not know: " + d.blocker, code: d.blocker };
     var detail = info.detail;
@@ -324,6 +336,10 @@
       ["Decision agent", b.agentMode || "ScoringOnly", b.agentReason || "no proposal this cycle"],
       ["Baseline", b.baselineReady ? "ready" : (b.baselineSamples + "/" + b.baselineTarget), ""],
       ["Observation epoch", b.observing ? (b.observationSamples + "/" + (b.observationTarget || 5)) : "idle", b.observing ? "measuring mutation outcome" : ""],
+      ["Last selection", d.selection.winner || "—", d.selection.reason || "—"],
+      ["Predicted net gain", "CPU " + fix(d.selection.cpuUtility, 3) + " · resources " + fix(d.selection.resourceUtility, 3), "relative to keeping the current configuration"],
+      ["Candidate review", d.selection.assessed ? (d.selection.selectable + " selectable / " + d.selection.ranked + " reviewed") : "not assessed", d.selection.discovered + " inventory; " + d.selection.granted + " granted baselines; " + d.selection.relevant + " relevant"],
+      ["Last outcome", d.outcomeReason || "—", "Measured result; separate from predicted selection scores"],
       ["Last plan", (d.cohortMembers || 0) + " target(s)", d.cohortIdentity || "—"],
       ["Skip / wait reason", b.skipReason || "—", b.cooldown ? (b.cooldown + " cooldown left") : ""],
       ["Safety hold", b.holdActive ? b.hold : "none", ""],

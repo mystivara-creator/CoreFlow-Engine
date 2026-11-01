@@ -127,6 +127,9 @@ const char* mutationPermitBlockReason(const PolicyPlan& plan,
     if (state == RuntimeState::Idle && plan.action == PolicyAction::Candidate) {
         return "idle_state_blocks_candidate";
     }
+    if (scope == MutationPermit::Scope::CpuFreq && !config.grantCpuFreq()) {
+        return "cpu_domain_grant_required";
+    }
     return nullptr;
 }
 
@@ -170,8 +173,8 @@ MutationPermit MutationAuthority::authorize(
 }
 
 bool shouldRestoreEpochNow(const EpochRestoreInputs& in) noexcept {
-    if (in.state == RuntimeState::Idle) return true;
     if (!in.mode_adaptive || !in.armed) return true;
+    if (in.state == RuntimeState::Idle) return in.pending_outcome;
     const bool stress =
         in.state == RuntimeState::Pressure || in.state == RuntimeState::ThermalGuard;
     if (!stress) return false;

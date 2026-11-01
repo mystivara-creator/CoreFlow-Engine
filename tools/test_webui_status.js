@@ -189,5 +189,27 @@ check(S.summary(p).code === "TOTALLY_NEW" && S.summary(p).tone === "info", "unkn
       "integrated runtime evidence is parsed and displayed");
 }
 
+// Real writer fixtures distinguish no measured demand from an inadmissible plan.
+{
+  const stable = S.parse(raw("selection_stable.json"));
+  const blocked = S.parse(raw("selection_blocked.json"));
+  check(stable.ok && stable.data.blocker === "NO_CANDIDATES", "current KEEP_CURRENT replaces READY");
+  check(S.summary(stable).title === "No measured tuning need", "stable does not claim proven optimality");
+  check(blocked.ok && S.summary(blocked).title === "Tuning need detected; no admissible plan", "pressure is not reported as no need");
+  check(blocked.data.selection.granted === 20 && blocked.data.selection.relevant === 8 &&
+    blocked.data.selection.selectable === 0, "candidate funnel survives native JSON roundtrip");
+  check(S.brainRows(blocked.data).some(r => r[0] === "Last outcome" && /regression_outcome/.test(r[1])), "measured rejection is visible separately from predictions");
+  const j=JSON.parse(load("selection_stable.json"));
+  j.selection.current=false;
+  const previous=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(S.summary(previous).title !== "No measured tuning need", "historical selection cannot override current blocker");
+  delete j.selection; delete j.outcome_reason;
+  const legacy=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(legacy.ok && !legacy.data.selection.assessed && legacy.data.outcomeReason === "", "older snapshots have safe empty selection defaults");
+  j.selection={current: true, cpu_utility: "NaN", resource_utility: {}, discovered: "oops", reason: "<script>x</script>"};
+  const malformed=S.parse("NOW="+(j.updated_epoch+1)+"\n"+JSON.stringify(j));
+  check(malformed.ok && malformed.data.selection.cpuUtility === null && malformed.data.selection.resourceUtility === null && malformed.data.selection.discovered === 0, "malformed selection numbers are unavailable");
+}
+
 console.log("CoreFlow WebUI status contract: " + (checks - failures) + "/" + checks + " checks passed");
 process.exit(failures ? 1 : 0);

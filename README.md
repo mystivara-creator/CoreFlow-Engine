@@ -40,7 +40,7 @@ measured on that device. The engine runs locally without a cloud account or API 
 | --- | --- |
 | **Runtime awareness** | CPU/load, memory, I/O, PSI, thermal and optional GPU/render telemetry inform the current context. Missing signals remain unavailable. |
 | **Capability-based tuning** | CPU governor, memory, block queue, scheduler, GPU and cgroup candidates require supported interfaces, domain grants and safety admission. Discovery alone grants no write access. |
-| **Coordinated adaptation** | Resource-first planning couples justified targets into a bounded cohort. Fresh baselines, per-target verification and one shared outcome window evaluate the whole plan. |
+| **Coordinated adaptation** | Condition-driven planning compares CPU and resource proposals together, joining justified targets in a bounded cohort. Fresh baselines, per-target verification and one shared outcome window evaluate the whole plan. |
 | **Thermal stabilization** | ThermalGuard can apply load-reducing resource plans and keep verified cooling settings active, while withdrawing performance boosts. |
 | **Durable recovery** | Mutation journals precede writes. Ownership checks prevent recovery from overwriting a detected external change. Failed handoffs keep tuning blocked. |
 | **Memory across boots** | Lifetime sample IDs, retained candidate records and scoped experience persist on disk. Each boot still rebuilds a fresh measurement baseline. |
