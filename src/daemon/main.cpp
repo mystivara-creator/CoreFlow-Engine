@@ -1,11 +1,12 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine Daemon (coreflowd) Native Entry Point
+ * @brief CoreFlow Engine Daemon (coreflowd) Native Entry Point (Zero Hardcode)
  * @author mystivara-creator
  * @license Apache-2.0
  */
 
 #include "coreflow/types.hpp"
+#include "coreflow/config.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/cgroup_v2.hpp"
 #include "coreflow/uclamp.hpp"
@@ -20,19 +21,22 @@
 using namespace coreflow;
 
 int main(int argc, char* argv[]) {
+    // 1. Load Dynamic Configuration (Zero Hardcoded Values)
+    auto config = DaemonConfig::load_best_available();
+
     std::cout << "========================================================\n"
-              << " CoreFlow Engine Daemon (coreflowd) v2.0-MODERN\n"
-              << " Target: Android 15+ | cgroups v2 | EAS Uclamp\n"
+              << " CoreFlow Engine Daemon (coreflowd) v" << config.version << "\n"
+              << " Target: Android 15+ | Zero-Polling | Zero-Hardcode\n"
               << " Author: mystivara-creator\n"
               << "========================================================\n"
               << std::endl;
 
-    // 1. Hardware & System Probe
+    // 2. Hardware & System Probe
     auto topo = DeviceProfiler::instance().probe();
     std::cout << "[Init] Detected SoC: " << topo.soc_name 
               << " (CPUs: " << topo.total_cpus << ")" << std::endl;
 
-    // 2. Initialize Controllers
+    // 3. Initialize Controllers with dynamic configuration
     CgroupV2Controller cgroup_ctrl;
     UclampGovernor uclamp_gov;
     RenderBooster render_booster;
@@ -41,11 +45,15 @@ int main(int argc, char* argv[]) {
         std::cerr << "[Init][Warning] cgroups v2 not active. Falling back to hybrid mode." << std::endl;
     }
 
-    // 3. Unlock OEM Throttling Restrictions
-    cgroup_ctrl.unlock_vendor_restrictions();
-    render_booster.unlock_display_refresh_limits();
+    // 4. Dynamic Vendor & Rendering Unlock
+    if (config.unlock_vendor_clamping) {
+        cgroup_ctrl.unlock_vendor_restrictions();
+    }
+    if (config.force_120hz_rendering) {
+        render_booster.unlock_display_refresh_limits();
+    }
 
-    // 4. Epoll Reactor Setup (Zero-Polling)
+    // 5. Epoll Reactor Setup (Zero-Polling)
     EpollReactor reactor;
 
     // Mask signals for clean signalfd event handling
@@ -64,21 +72,26 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    // 5. Register 1000ms Safety Heartbeat (timerfd) to monitor thermals without busy looping
-    reactor.create_timerfd(std::chrono::milliseconds(1000), [&uclamp_gov, &topo](uint32_t) {
-        float temp = DeviceProfiler::instance().get_soc_temperature();
-        if (temp >= 44.0f) {
-            std::cerr << "[Thermal Alert] Temp: " << temp << "°C! Shifting to ThermalThrottled state." << std::endl;
-            uclamp_gov.apply_state(WorkloadState::ThermalThrottled, topo.tier);
-        } else {
-            uclamp_gov.apply_state(WorkloadState::Interactive, topo.tier);
+    // 6. Dynamic Thermal Heartbeat (timerfd) using configured interval and trip threshold
+    reactor.create_timerfd(
+        std::chrono::milliseconds(config.temp_monitor_interval_ms),
+        [&uclamp_gov, &topo, &config](uint32_t) {
+            float temp = DeviceProfiler::instance().get_soc_temperature();
+            if (temp >= config.thermal_trip_celsius) {
+                std::cerr << "[Thermal Alert] Temp: " << temp << "°C >= " 
+                          << config.thermal_trip_celsius << "°C! Shifting to ThermalThrottled state." << std::endl;
+                uclamp_gov.apply_state(WorkloadState::ThermalThrottled, topo.tier);
+            } else {
+                uclamp_gov.apply_state(WorkloadState::Interactive, topo.tier);
+            }
         }
-    });
+    );
 
-    // 6. Run Event Loop (Zero CPU idle wakeups)
+    // 7. Run Event Loop (Zero CPU idle wakeups)
+    std::cout << "[CoreFlow] Daemon running. Epoll zero-polling active." << std::endl;
     reactor.run();
 
-    // 7. Shutdown: Atomic Rollback to Factory OEM Baseline
+    // 8. Shutdown: Atomic Rollback to Factory OEM Baseline
     std::cout << "[CoreFlow] Restoring OEM factory baseline nodes..." << std::endl;
     size_t restored = BaselineStore::instance().rollback_all();
     std::cout << "[CoreFlow] Clean exit completed. (" << restored << " nodes verified)." << std::endl;

@@ -27,9 +27,15 @@ std::string BaselineStore::read_raw_node(const std::string& path) const {
 }
 
 bool BaselineStore::write_raw_node(const std::string& path, const std::string& value) {
-    int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
-    if (fd < 0) return false;
+    // Try O_TRUNC first so regular files and mock test nodes don't leave trailing bytes
+    int fd = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC);
+    if (fd < 0) {
+        // Fallback for virtual sysfs/procfs nodes where kernel drivers may reject O_TRUNC
+        fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+    }
     ssize_t w = ::write(fd, value.c_str(), value.size());
+    ::ftruncate(fd, value.size());
     ::close(fd);
     return w == static_cast<ssize_t>(value.size());
 }

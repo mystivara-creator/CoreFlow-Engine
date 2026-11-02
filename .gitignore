@@ -13,6 +13,8 @@ Testing/
 
 # WebUI build dependencies
 node_modules/
+bun.lock
+bun.lockb
 .env
 .env.local
 public/assets/aistudio/

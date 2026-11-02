@@ -19,7 +19,7 @@ int main() {
     // Setup mock sysfs node in /tmp
     std::string test_node = "/tmp/mock_uclamp_min";
     {
-        std::ofstream f(test_node);
+        std::ofstream f(test_node, std::ios::trunc);
         f << "0"; // OEM initial value
     }
 
@@ -37,6 +37,7 @@ int main() {
         std::ifstream f(test_node);
         std::string val;
         f >> val;
+        std::cout << "[Test] Node mutated value: '" << val << "' (expected '512')" << std::endl;
         assert(val == "512");
     }
 
@@ -50,6 +51,7 @@ int main() {
         std::ifstream f(test_node);
         std::string val;
         f >> val;
+        std::cout << "[Test] Restored node value: '" << val << "' (expected '0')" << std::endl;
         assert(val == "0");
     }
 

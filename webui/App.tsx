@@ -233,6 +233,7 @@ emergency_rollback_on_overheat = true
         <section aria-label="Engine Real-Time Telemetry">
           <AutonomousStateHero
             telemetry={telemetry}
+            thermalTripCelsius={config.thermalTripCelsius}
             onSimulateTouchBoost={handleSimulateTouchBoost}
             onSimulateAppLaunch={handleSimulateAppLaunch}
           />

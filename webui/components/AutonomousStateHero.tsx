@@ -7,28 +7,29 @@ import {
   Zap,
   Gauge,
   Smartphone,
-  Shield,
 } from 'lucide-react';
 import { AutonomousTelemetry, getModeMeta } from '../engine/autonomousEngine';
 
 interface AutonomousStateHeroProps {
   telemetry: AutonomousTelemetry;
+  thermalTripCelsius: number;
   onSimulateTouchBoost: () => void;
   onSimulateAppLaunch: () => void;
 }
 
 export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
   telemetry,
+  thermalTripCelsius,
   onSimulateTouchBoost,
   onSimulateAppLaunch,
 }) => {
   const meta = getModeMeta(telemetry.mode);
   const uclampPct = Math.min(100, Math.round((telemetry.uclampMin / 1024) * 100));
 
-  // Determine thermal safety label & color
+  // Determine thermal safety label & color based on dynamic trip ceiling
   const temp = telemetry.socTempCelsius;
-  const isOverheating = temp >= 43.5;
-  const isWarm = temp >= 39.5;
+  const isOverheating = temp >= thermalTripCelsius;
+  const isWarm = temp >= thermalTripCelsius - 4.0;
   const tempColor = isOverheating
     ? 'text-rose-500'
     : isWarm
@@ -89,7 +90,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
               {telemetry.uclampMin}
             </span>
             <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">
-              / 1024
+              / {telemetry.uclampMax}
             </span>
           </div>
           {/* Capacity fill bar */}
@@ -125,7 +126,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            SurfaceFlinger 120Hz locked
+            SurfaceFlinger {telemetry.targetFps}Hz active
           </div>
         </div>
 
@@ -146,11 +147,11 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>Thermal state:</span>
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              {isOverheating ? 'Guarded' : isWarm ? 'Warm' : 'Optimal'}
+              {isOverheating ? 'Guarded' : isWarm ? 'Elevated' : 'Optimal'}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            Trip ceiling: 44.0°C
+            Trip ceiling: {thermalTripCelsius.toFixed(1)}°C
           </div>
         </div>
 
@@ -162,7 +163,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </div>
           <div className="flex items-baseline gap-1 mb-2">
             <span className="text-lg sm:text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-              Unified Active
+              {telemetry.cgroupsV2Status === 'unified_active' ? 'Unified Active' : 'Hybrid Mode'}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
