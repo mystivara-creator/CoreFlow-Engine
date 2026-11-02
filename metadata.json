@@ -1,5 +1,5 @@
 {
   "name": "CoreFlow Engine",
-  "description": "Offline WebUI for native CoreFlow diagnostics, explained configuration, persistent memory status and a separate browser preview.",
+  "description": "Modern autonomous performance engine and Google Pixel Material 3 single-page dashboard for Android 15+ kernel tuning.",
   "requestFramePermissions": []
 }

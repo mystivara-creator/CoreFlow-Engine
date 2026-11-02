@@ -1,275 +1,110 @@
+/**
+ * @file types.hpp
+ * @brief CoreFlow Engine Modern C++20 Core Type Definitions
+ * @author mystivara-creator
+ * @license Apache-2.0
+ * 
+ * Target: Android 15+ (Linux Kernel 5.15 / 6.1 / 6.6)
+ * Standards: Modern C++20, cgroups v2, EAS (Energy Aware Scheduling), Uclamp
+ */
+
 #pragma once
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
-
-#include "coreflow/environment.hpp"
-#include "coreflow/high_capability.hpp"
+#include <chrono>
+#include <optional>
+#include <system_error>
 
 namespace coreflow {
 
-enum class RuntimeState {
-    Idle,
-    Normal,
-    Warming,
-    Elevated,
-    Pressure,
-    ThermalGuard
+// ============================================================================
+// Device Tier & Architecture Taxonomy
+// ============================================================================
+enum class DeviceTier : uint8_t {
+    Entry,       ///< 4x LITTLE + 4x Mid (e.g. Snapdragon 680, Helio G99)
+    MidRange,    ///< 4x Efficiency + 4x Performance (e.g. Snapdragon 6 Gen 3 'Kunzite')
+    UpperMid,    ///< High IPC 4+4 or 1+3+4 (e.g. Dimensity 8300, Snapdragon 7+ Gen 3)
+    Flagship     ///< Tri/Quad-cluster Prime (e.g. Snapdragon 8 Gen 3/4, Dimensity 9300)
 };
 
-enum class Decision {
-    NoAction,
-    Observe,
-    Notify,
-    ReduceIntervention
+enum class WorkloadState : uint8_t {
+    DeepSleep,   ///< Screen-off / Ambient Doze (ultra-conservative)
+    DailyIdle,   ///< Nominal background, low frequency ceiling
+    Interactive, ///< Active touch scrolling, responsive uclamp floor
+    BurstLaunch, ///< App startup / dexopt / cold launch boost
+    SustainedGame,///< High-framerate gaming, thermal-constrained uclamp
+    ThermalThrottled ///< Critical thermal mitigation state
 };
 
-enum class InterventionLevel : std::uint8_t {
-    ObserveOnly = 0,
-    Low,
-    Moderate,
-    High
+enum class ClusterType : uint8_t {
+    Little,      ///< High efficiency, background tasks
+    Medium,      ///< Balanced performance, UI rendering
+    BigPrime     ///< Max IPC, burst launches, heavy frames
 };
 
-enum class Trend {
-    Unknown,
-    Rising,
-    Stable,
-    Falling
+// ============================================================================
+// Hardware Topology Descriptors
+// ============================================================================
+struct CpuCluster {
+    ClusterType type;
+    uint32_t first_cpu;
+    uint32_t last_cpu;
+    uint32_t base_freq_khz;
+    uint32_t max_freq_khz;
+    std::string cpufreq_policy_path;
+    std::string energy_model_path;
 };
 
-enum class ThermalSource {
-    Unknown,
-    Primary,
-    Fallback
+struct DeviceTopology {
+    std::string soc_name;
+    std::string hardware_platform;
+    DeviceTier tier;
+    uint32_t total_cpus;
+    std::vector<CpuCluster> clusters;
+    bool has_cgroups_v2;
+    bool has_uclamp;
+    bool has_surfaceflinger_hints;
 };
 
-enum class NotificationEvent {
-    None,
-    ThermalWarming,
-    ThermalWarning,
-    ThermalGuard,
-    ChargingProtection
+// ============================================================================
+// Uclamp & Scheduling Constants (Linux kernel 5.10+ / 5.15+)
+// Reference: Documentation/scheduler/sched-util-clamping.rst
+// Scale: 0 to 1024 (SCHED_CAPACITY_SCALE)
+// ============================================================================
+struct UclampValues {
+    uint32_t uclamp_min{0};    ///< Guaranteed minimum capacity (0 - 1024)
+    uint32_t uclamp_max{1024}; ///< Hard frequency ceiling (0 - 1024)
+    bool boost_render_thread{false};
 };
 
-enum class MutationResult {
-    Skipped,
-    Applied,
-    Verified,
-    Failed,
-    RolledBack
+// ============================================================================
+// Cgroup v2 Migration Targets
+// ============================================================================
+enum class CgroupTarget : uint8_t {
+    TopApp,      ///< /sys/fs/cgroup/top-app
+    Foreground,  ///< /sys/fs/cgroup/foreground
+    Background,  ///< /sys/fs/cgroup/background
+    System       ///< /sys/fs/cgroup/system
 };
 
-struct CpuPolicy {
-    int id{-1};
-    std::string path;
-    std::string related_cpus;
-    std::string governor;
-    std::vector<std::string> available_governors;
-    std::uint64_t hardware_min_frequency{0};
-    std::uint64_t hardware_max_frequency{0};
-    std::uint64_t scaling_min_frequency{0};
-    std::uint64_t scaling_max_frequency{0};
-    bool readable{false};
-    bool governor_writable{false};
-    bool scaling_max_writable{false};
-    bool energy_performance_available{false};
-    std::string energy_performance_preference;
-    bool boost_available{false};
-    // Bounded, kernel-advertised CPU policy OPPs; empty means unavailable.
-    std::vector<std::uint64_t> available_frequencies;
+// ============================================================================
+// Error Codes for Zero-Exception Native Execution
+// ============================================================================
+enum class CoreFlowError {
+    Success = 0,
+    NodeNotFound,
+    PermissionDenied,
+    EpollCreateFailed,
+    EpollCtlFailed,
+    InvalidTopology,
+    BaselineSnapshotFailed,
+    RollbackFailed,
+    ThermalEmergency
 };
 
-struct ThermalZone {
-    std::string path;
-    std::string type;
-    long temperature_millidegrees{0};
-    bool readable{false};
-};
-
-// Runtime snapshot for every discovered thermal zone. Readings are retained
-// even when invalid or excluded from policy so diagnostics never silently
-// discard a sensor.
-enum class ThermalReadingStatus : std::uint8_t {
-    Valid,
-    Unreadable,
-    InvalidRange,
-    ExcludedFromPolicy
-};
-
-struct ThermalReading {
-    std::string zone;
-    std::string type;
-    long temperature_millidegrees{0};
-    bool readable{false};
-    bool valid{false};
-    bool policy_eligible{false};
-    ThermalReadingStatus status{ThermalReadingStatus::Unreadable};
-};
-
-struct IoQueueAttribute {
-    std::string name;
-    std::string path;
-    std::string value;
-    bool readable{false};
-    bool writable{false};
-};
-
-struct IoDevice {
-    std::string path;
-    std::string name;
-    std::uint64_t read_ahead_kb{0};
-    bool read_ahead_readable{false};
-    bool read_ahead_writable{false};
-    std::uint64_t nr_requests{0};
-    bool nr_requests_readable{false};
-    bool nr_requests_writable{false};
-    std::string scheduler;
-    bool scheduler_readable{false};
-    bool scheduler_writable{false};
-    // Complete discovered queue-tunable inventory; legacy fields above remain
-    // compatibility projections for existing consumers.
-    std::vector<IoQueueAttribute> queue_attributes;
-};
-
-struct ChargingCapability {
-    std::string battery_path;
-    bool battery_available{false};
-    bool status_readable{false};
-    bool telemetry_readable{false};
-
-    bool has_input_current_limit{false};
-    bool has_charge_current_limit{false};
-    bool has_charge_control_limit{false};
-
-    std::string charge_control_limit_path;
-    bool charge_control_limit_readable{false};
-    bool charge_control_limit_writable{false};
-    bool charge_control_limit_numeric{false};
-    long long charge_control_limit_value{0};
-    bool charge_control_limit_min_available{false};
-    bool charge_control_limit_max_available{false};
-    long long charge_control_limit_min{0};
-    long long charge_control_limit_max{0};
-    bool charge_control_limit_range_valid{false};
-    bool charge_control_limit_semantics_validated{false};
-    bool charge_control_limit_mutation_ready{false};
-
-    bool has_charging_enabled{false};
-    bool has_charge_disable{false};
-};
-
-struct DeviceProfile {
-    std::string android_release;
-    std::string kernel_release;
-    std::string abi;
-    std::vector<CpuPolicy> cpu_policies;
-    std::vector<ThermalZone> thermal_zones;
-    std::vector<IoDevice> io_devices;
-
-    bool proc_available{false};
-    bool sys_available{false};
-    ChargingCapability charging;
-    AndroidEnvironment environment;
-    EnvironmentCapabilityMatrix capabilities;
-    std::vector<ExpandedDomainStatus> expanded_domains;
-
-    // Capability-driven discovery evidence (status/diagnostics).
-    std::size_t vendor_files_parsed{0};
-    std::size_t vendor_knobs{0};
-    std::size_t tunables_walked{0};
-    std::size_t tunables_added{0};
-    std::size_t tunables_fatal_skipped{0};
-    std::size_t tunables_unclaimed{0};
-    bool tunables_truncated{false};
-};
-
-struct RuntimeSample {
-    std::uint64_t mem_available_kb{0};
-    std::uint64_t mem_total_kb{0};
-    double mem_available_ratio{0.0};
-
-    std::uint64_t uptime_seconds{0};
-    double load1{0.0};
-    bool load_available{false};
-    double cpu_utilization{0.0};
-    bool cpu_utilization_available{false};
-
-    long thermal_millidegrees{0};
-    long hottest_thermal_millidegrees{0};
-    bool thermal_available{false};
-    ThermalSource thermal_source{ThermalSource::Unknown};
-    std::vector<ThermalReading> thermal_readings;
-    std::uint32_t thermal_sensor_count{0};
-    std::uint32_t thermal_valid_sensor_count{0};
-
-    bool charging{false};
-    bool charging_telemetry_available{false};
-    long battery_temperature_millidegrees{0};
-    long battery_current_microamps{0};
-    long battery_voltage_microvolts{0};
-    int battery_level_percent{-1};
-    std::string battery_status;
-
-    double io_read_kb_per_sec{0.0};
-    double io_write_kb_per_sec{0.0};
-    bool io_activity_available{false};
-
-    // Pressure Stall Information (PSI) when the kernel exposes /proc/pressure/*.
-    // avg10 is the 10-second average of stall time (fraction 0..1).
-    bool psi_available{false};
-    double psi_cpu_some_avg10{0.0};
-    double psi_memory_some_avg10{0.0};
-    double psi_io_some_avg10{0.0};
-    double psi_cpu_full_avg10{0.0};
-    double psi_memory_full_avg10{0.0};
-    double psi_io_full_avg10{0.0};
-
-    // Throttling / stall diagnosis derived from PSI + thermal + reclaim pressure.
-    bool throttling_detected{false};
-    double throttle_ratio{0.0};          // 0..1 estimated limited fraction
-    bool memory_stall_detected{false};
-    double memory_stall_score{0.0};      // 0..1 composite PSI memory + reclaim
-
-    // I/O latency (ms) from diskstats weighted wait times when available.
-    bool io_latency_available{false};
-    double io_read_latency_ms{0.0};
-    double io_write_latency_ms{0.0};
-    double io_avg_latency_ms{0.0};
-
-    std::uint32_t process_count{0};
-    std::string top_process_name;
-    double top_process_cpu_ratio{0.0};
-    std::uint64_t top_process_memory_kb{0};
-    bool process_profile_available{false};
-
-    // Live GPU / SurfaceFlinger rendering signals when interactivity telemetry runs.
-    bool gpu_busy_available{false};
-    double gpu_busy_ratio{0.0};
-    double frame_jank_rate{0.0};
-    bool frame_jank_available{false};
-    std::uint64_t frame_period_ns{0};
-    bool storage_health_caution{false};
-    bool gaming_active{false};
-
-    Trend thermal_trend{Trend::Unknown};
-    Trend memory_trend{Trend::Unknown};
-    Trend load_trend{Trend::Unknown};
-
-    double confidence{0.0};
-};
-
-struct EngineSnapshot {
-    DeviceProfile profile;
-    RuntimeState state{RuntimeState::Idle};
-};
-
-const char* stateName(RuntimeState);
-const char* decisionName(Decision);
-const char* trendName(Trend);
-const char* notificationEventName(NotificationEvent);
-const char* mutationResultName(MutationResult);
-const char* interventionLevelName(InterventionLevel) noexcept;
+std::error_code make_error_code(CoreFlowError e);
 
 } // namespace coreflow
