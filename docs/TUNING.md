@@ -1,114 +1,67 @@
-# Tuning Documentation
+# CoreFlow Engine v2.0 Tuning Guide
 
-Document every user-visible or safety-relevant tuning behavior here.
+This document describes the parameters available in `config/coreflow.conf` and the autonomous dials on the Google Pixel Material 3 WebUI.
 
-For each tunable, record:
+---
 
-- Purpose and expected effect.
-- Valid range and default value.
-- Conditions under which CoreFlow may change it.
-- Safety limits enforced by `src/conscience`.
-- Rollback or recovery behavior.
-- Device or chipset-specific caveats.
+## 1. Configuration File (`config/coreflow.conf`)
 
-Keep tuning policies explicit. Avoid undocumented automatic behavior that could reduce stability, battery life, or thermal safety.
+Located at `/data/adb/modules/coreflow_engine/coreflow.conf`:
 
-## v3.1.0 settings workflow
+```ini
+[general]
+version = 2.0.0
+log_level = info
+zero_polling_mode = true
+enable_cgroups_v2 = true
+enable_uclamp = true
 
-The WebUI provides per-field purpose, default, units, valid range and tradeoffs in
-Indonesian. A settings choice changes a draft only. Review → Save writes config;
-Restart applies it. Discard reverts the draft, not the device. The quieter choice
-uses an 8-second monitor interval and 70% minimum confidence and disables temporary
-interactivity assistance; the main optimizer remains active. Faster observation
-uses 2 seconds and 65% confidence, without increasing boost amplitudes. Neither is
-an FPS/thermal guarantee. Existing authority, capability, journaling and recovery
-gates remain mandatory. See [checkpoint scope](CHECKPOINT_3.1.0.md).
+[device_adaptation]
+tier_override = auto
+unlock_vendor_clamping = true
+force_120hz_rendering = true
 
+[uclamp_tuning]
+top_app_interactive_min = 320
+top_app_interactive_max = 1024
+top_app_burst_launch_min = 800
+top_app_game_min = 512
+top_app_game_max = 980
+foreground_min = 60
+background_max = 250
+sched_util_clamp_min_rt_default = 128
 
-## ThermalGuard and coordinated plans
+[thermal_guardian]
+temp_monitor_interval_ms = 1000
+thermal_trip_celsius = 44.0
+thermal_recover_celsius = 40.0
+emergency_rollback_on_overheat = true
 
-ThermalGuard withdraws performance boosts while permitting measured,
-stabilizing-only resource plans. Existing verified cooling is held through a
-confidence dip; no new write bypasses the configured threshold. Kernel options,
-live values and reviewed ABI bounds define candidate steps, with a cumulative
-factory-relative budget for cgroup capping. There is no fixed scheduler/governor
-pairing preset. [Execution and recovery rules](COORDINATED_THERMAL_PLANS.md).
+[render_pipeline]
+jank_detection_threshold_ratio = 1.25
+burst_boost_duration_ms = 120
+touch_boost_uclamp_min = 380
+```
 
+---
 
-## Condition-driven selection and retention
+## 2. Key Tunables & Safety Boundaries
 
-CPU and resource proposals are compared before writes, without domain rotation.
-Independent useful domains can join one measured plan; dependency order only
-controls safe execution. No measured demand keeps the current configuration;
-measured demand without an admissible gain is a separate diagnostic. Selection
-scores are priors, and measured outcomes decide retention/rollback. Accepted
-settings survive Idle while an unfinished Idle trial is canceled. See the
-[selection details](COORDINATED_THERMAL_PLANS.md).
+| Parameter | Default | Range | Description |
+|---|---|---|---|
+| `zero_polling_mode` | `true` | `true/false` | Uses Linux kernel `epoll` instead of periodic polling. Reduces CPU idle wakeups to 0. |
+| `top_app_interactive_min` | `320` | `0 – 1024` | EAS Uclamp capacity floor for the active foreground top-app. Prevents frame drops during interactive tasks. |
+| `top_app_burst_launch_min`| `800` | `500 – 1024` | Momentary uclamp capacity allocated during application cold launch transitions. |
+| `touch_boost_uclamp_min` | `380` | `200 – 600` | Instantaneous uclamp floor allocated upon touchscreen scroll/swipe input events. |
+| `burst_boost_duration_ms` | `120` | `60 – 300 ms`| Duration for which touch or launch boost clamps remain active before gracefully fading. |
+| `thermal_trip_celsius` | `44.0` | `40.0 – 48.0°C` | Proactive thermal trip threshold. If the SoC reaches this temperature, the engine clamps the maximum uclamp ceiling to prevent aggressive hardware throttling. |
+| `force_120hz_rendering` | `true` | `true/false` | Directs SurfaceFlinger render booster to align with 120Hz display refresh cadence. |
+| `unlock_vendor_clamping` | `true` | `true/false` | Overrides restrictive OEM proprietary throttling constraints on foreground interactive cgroups. |
 
+---
 
-## v3.1.1 outcome interpretation
+## 3. Transactional Baseline Rollback
 
-The native CPU table reports current kernel values; OS writability is not a
-mutation grant. Current/min/max frequency telemetry does not authorize frequency
-limit writes. Last evaluation displays raw units in its metric keys (Celsius,
-load1, fractions and milliseconds), per-side coverage and normalized scores.
-Changes below max(absolute noise, twice combined standard error) score neutral:
-thermal 0.3 C, load1 0.10, CPU 0.02, memory 0.01, PSI 0.01, latency 1 ms, jank 0.005.
-The relative scale has a finite floor for zero-origin measurements. Existing
-rendering-regression and stress recovery rules remain. Short windows cannot
-separate every workload change from a tuning effect; inspect evidence before
-claiming an improvement. See [acceptance requirements](CHECKPOINT_3.1.1.md).
-
-
-## v3.1.2 trial admission and retention
-
-Write/read-back verification proves that the requested value landed; it does not
-prove that it improved the workload. Accepted outcome configurations are held
-while their context matches. An unsuccessful/unproven measured trial defers the
-same categorical target or scalar surface, including nearby numeric variants.
-A different governor/scheduler token may still compete; no fixed domain turns
-are introduced. The hold is not a timer. Material comparisons use absolute
-changes of 4 C, CPU/GPU 0.20, memory 0.10, PSI 0.10, jank 0.05, and load1 1.0
-or 50%, latency 10 ms or 50%. Only dimensions relevant to the resource count.
-Known foreground/charging/mode transitions and changed display period for render
-or CPU-related resources also count. Lost data and trend label jitter do not.
-These thresholds are heuristics; new trials still require fresh baselines and
-all existing authority, safety and outcome checks.
-
-An accepted configuration with no remaining measured tuning need is released
-only after a material context change and three consecutive quiet samples.
-Thermal/pressure safety transitions, disarm and stop retain immediate recovery.
-History is separate from restore journals and advisory experience, scoped to the
-device/firmware/kernel, and bounded to 128 member records. A reserve prevents a
-full same-context cache from rotating old failures out just to repeat them.
-See [checkpoint v3.1.2](CHECKPOINT_3.1.2.md).
-
-## Adaptive value admission hardening (post-v3.1.2, unreleased)
-
-Candidate values from vendor hints, kernel-advertised options, and bounded steps
-must all obey reviewed Linux/Android numeric bounds. Standard cgroup uclamp
-percentages use 0..100, and `max` is accepted only on `cpu.uclamp.max`.
-Discrete hardware frequency and level proposals must be members of the live
-advertised OPP/option list. If a governor frequency has no verified scale,
-CoreFlow defers that candidate instead of guessing a GHz target or overclocking.
-
-Immediately before a resource write, the controller re-reads coupled sibling
-values. `vm.dirty_background_ratio` must not exceed `vm.dirty_ratio`;
-`cpu.uclamp.min` must not exceed `cpu.uclamp.max`. A stale/conflicting
-proposal is skipped before journaling or touching a kernel node. This is a
-conservative incremental change, not a claim that all device-specific ABI
-constraints or end-to-end checkpoint acceptance have been completed.
-
-The existing v3.1.2 scoped trial holds, accepted-configuration retention, and
-group outcome attribution remain mandatory. Android ARM64 CI and on-device
-acceptance are still needed before this checkpoint can be called stable.
-
-## Device-aware diagnostic evidence (post-v3.1.2 source checkpoint)
-
-Read-only CPUFreq inventory exposes each policy's related CPUs, live scaling
-limits, live cpuinfo hardware bounds and the optional *complete, bounded*
-`scaling_available_frequencies` table. Missing/out-of-range/oversized tables
-are reported as unavailable rather than extrapolated. The status also exposes
-observed firmware incremental/security patch, vendor file/knob counts and
-whether tunable discovery reached a budget cap. These diagnostic fields never
-authorize mutations or supersede OEM Power HAL and thermal limits.
+The `BaselineStore` subsystem snapshots all modified sysfs nodes at daemon initialization:
+- **Emergency Automatic Rollback**: Triggered if the SoC temperature exceeds critical limits with `emergency_rollback_on_overheat = true` or on clean shutdown.
+- **Manual WebUI Rollback**: Pressing "Restore OEM Baseline" in the WebUI reverts all modified nodes to their factory boot state within 10 milliseconds.

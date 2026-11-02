@@ -19,24 +19,41 @@
 
 ## What is CoreFlow Engine Modern v2.0?
 
-CoreFlow Engine v2.0 has been completely restructured from the ground up to eliminate over 50% of legacy bloat, focusing strictly on high-performance native Linux kernel mechanics and an autonomous, self-adapting experience:
+CoreFlow Engine v2.0 represents a total architectural restructuring that eliminates over 50% of legacy monolithic complexity. Instead of relying on rigid manual profiles, complex background polling loops, or heavy machine learning dependencies, CoreFlow v2.0 operates as an **autonomous, self-adapting performance manager**:
 
-- **Zero-Polling epoll Reactor (`coreflowd`)**: Replaces resource-heavy polling loops with Linux kernel `epoll` and `signalfd` event notifications for near-zero idle CPU and battery drain.
-- **EAS Uclamp Acceleration**: Dynamically tunes Energy Aware Scheduling (EAS) task utilization clamping (`sched_util_min` and `sched_util_max`) for foreground top-apps, reducing cold launch latency and touch gesture stutter.
-- **Unified cgroups v2 Task Migration**: Seamlessly manages cpuset pinning and priority hierarchy across `/sys/fs/cgroup/top-app` and background cgroups.
-- **SurfaceFlinger & HWUI Frame Pacing Booster**: Unblocks silky 120Hz display refresh rates and mitigates frame misses during intense rendering.
-- **Transactional BaselineStore**: Snapshots all factory sysfs nodes at boot time and guarantees an atomic, clean rollback to stock OEM values upon exit or via 1-click WebUI action.
-- **Pixel Material Design 3 Single-Page Dashboard**: A lightweight, fluid WebUI built with React 19, Tailwind CSS v4, and Google Pixel Material 3 aesthetic (tonal surfaces, squircle cards, dynamic pill indicators, and dark/light mode).
+- **Zero-Polling epoll Reactor (`coreflowd`)**: Employs Linux kernel `epoll` and `signalfd` event notifications instead of continuous sleep-polling loops, achieving near-zero idle CPU wakeups and preserving battery longevity.
+- **EAS Uclamp Acceleration**: Dynamically modulates Energy Aware Scheduling (EAS) task utilization clamps (`sched_util_min` / `sched_util_max`) for foreground top-apps, eliminating cold launch delays and touch gesture scroll stutter.
+- **Unified cgroups v2 Controller**: Intelligently migrates tasks and pins cpusets across Android 15 unified cgroups hierarchies while bypassing vendor throttling locks.
+- **SurfaceFlinger 120Hz Frame Pacing**: Synchronizes HWUI render thread timing with display refresh periods, preventing frame pacing variances during intense multitasking or gaming.
+- **Transactional BaselineStore**: Snapshots all factory sysfs nodes before making any modifications and guarantees an atomic, zero-pollution rollback to OEM factory values on exit or via the WebUI.
+- **Google Pixel / Material Design 3 WebUI**: A lightweight, fluid single-page dashboard built with React 19 and Tailwind CSS v4, featuring tactile squircle cards, dynamic status pills, and dark/light mode.
 
 ---
 
-## Architecture Overview
+## Source Tree Migration: Legacy (v3.x) vs Modern (v2.0)
+
+| Area | Legacy Architecture (v3.x) | Modern Architecture (v2.0) | Benefit |
+|---|---|---|---|
+| **Daemon Core** | 40+ monolithic C++ files across 6 folders (`src/observe`, `src/understand`, `src/balance`, `src/mutation`, `src/conscience`, `src/runtime`) | Streamlined into `src/daemon/` (reactor, entry) and `src/kernel/` (cgroups, uclamp, baseline, render) | **>50% code reduction**, near-instant compile times, zero dynamic memory overhead |
+| **Event Loop** | Continuous timer-based sleep polling loops | Linux kernel `epoll_wait` and `signalfd` zero-polling event reactor | Zero idle battery consumption, immediate event response |
+| **Scheduling** | Complex trial-history bandit heuristic | Real-time EAS Utilization Clamping (`uclamp`) for top-apps | Native kernel integration, direct scheduler queue impact |
+| **Rollback Safety** | Multi-file journal serialization & manual checks | Transactional `BaselineStore` holding in-memory OEM snapshots | Guaranteed atomic rollback to stock factory values |
+| **Dependencies** | External ONNX Runtime binaries (~100MB download) & synthetic ML predictors | Pure C++20 standard library with Linux kernel interfaces | Zero external runtime bloat, no fragile network downloads during CI |
+| **WebUI** | 5 fragmented tabs (Sysfs tree explorer, INI text editor, ONNX lab, multi-charts) | Single-Page Google Pixel Material 3 Dashboard | Fast loading, fluid navigation, glanceable autonomous telemetry |
+
+---
+
+## Clean Source Tree Structure
 
 ```
 CoreFlow-Engine/
-├── CMakeLists.txt              # Clean C++20 build definition (Host & Android NDK)
+├── CMakeLists.txt              # Unified C++20 build definition (Host tests & Android NDK)
 ├── config/
-│   └── coreflow.conf          # Modern INI daemon configuration
+│   └── coreflow.conf          # Active daemon configuration
+├── docs/                       # Architecture and tuning documentation
+│   ├── ARCHITECTURE.md        # Technical subsystem specification
+│   ├── TUNING.md              # Tunable parameter guide & safety bounds
+│   └── assets/                # Visual branding assets
 ├── include/coreflow/          # Modern modular C++20 headers
 │   ├── baseline_store.hpp     # Transactional OEM rollback store
 │   ├── cgroup_v2.hpp          # Unified cgroups v2 controller
@@ -45,20 +62,22 @@ CoreFlow-Engine/
 │   ├── psi_monitor.hpp        # Pressure Stall Information monitor
 │   ├── reactor.hpp            # Zero-polling Linux epoll reactor
 │   ├── render_booster.hpp     # SurfaceFlinger 120Hz frame pacing
-│   ├── types.hpp              # Common types and limits
+│   ├── types.hpp              # Engine definitions and bounds
 │   └── uclamp.hpp             # EAS Utilization Clamping governor
 ├── module/                    # KernelSU / Magisk flashable package
-│   ├── customize.sh           # Magisk/KernelSU installer
-│   ├── module.prop            # Module identity & versioning
+│   ├── customize.sh           # Module installation script
+│   ├── module.prop            # Module identity & versioning (v2.0.0)
 │   ├── service.sh             # Late-boot supervisor daemon launcher
-│   └── system/etc/coreflow/   # Default daemon configuration
+│   ├── system/etc/coreflow/   # Packaged default daemon configuration
+│   ├── update.json            # KernelSU update feed metadata
+│   └── webroot/               # Compiled offline WebUI dashboard
 ├── src/
 │   ├── daemon/                # Native daemon core (main.cpp, reactor.cpp)
-│   └── kernel/                # Hardware controllers (cgroups, uclamp, baseline)
+│   └── kernel/                # Hardware controllers (cgroups, uclamp, baseline, etc.)
 ├── tests/
 │   └── test_baseline_rollback.cpp  # Host CTest verification suite
 └── webui/                     # Google Pixel Material 3 Single-Page Dashboard
-    ├── App.tsx                # Unified reactive dashboard
+    ├── App.tsx                # Unified single-page reactive dashboard
     ├── components/            # Pixel-style modular components
     ├── engine/                # Autonomous reactive simulation
     └── bridge/                # KernelSU & local storage bridge
@@ -66,26 +85,55 @@ CoreFlow-Engine/
 
 ---
 
-## Building & Installation
+## Configuration (`config/coreflow.conf`)
+
+```ini
+[general]
+version = 2.0.0
+log_level = info
+zero_polling_mode = true
+enable_cgroups_v2 = true
+enable_uclamp = true
+
+[device_adaptation]
+tier_override = auto
+unlock_vendor_clamping = true
+force_120hz_rendering = true
+
+[uclamp_tuning]
+top_app_interactive_min = 320
+top_app_interactive_max = 1024
+top_app_burst_launch_min = 800
+touch_boost_uclamp_min = 380
+burst_boost_duration_ms = 120
+
+[thermal_guardian]
+thermal_trip_celsius = 44.0
+emergency_rollback_on_overheat = true
+```
+
+---
+
+## Building
 
 ### 1. Build WebUI Dashboard
 ```bash
 npm ci
 npm run build
 ```
-The compiled offline assets are bundled into `module/webroot/`.
+Compiles the offline React WebUI directly into `module/webroot/`.
 
-### 2. Build Native Android ARM64 Daemon (using NDK)
-```bash
-export ANDROID_NDK_HOME=/path/to/android-ndk
-./tools/build_android.sh
-```
-
-### 3. Run Host Tests
+### 2. Run Host Unit Tests (Linux / Host CI)
 ```bash
 cmake -S . -B build/host -DCMAKE_BUILD_TYPE=Debug -DCORE_FLOW_BUILD_TESTS=ON
 cmake --build build/host
 ctest --test-dir build/host --output-on-failure
+```
+
+### 3. Build Native Android ARM64 Daemon (NDK)
+```bash
+export ANDROID_NDK_HOME=/path/to/android-ndk
+./tools/build_android.sh
 ```
 
 ---

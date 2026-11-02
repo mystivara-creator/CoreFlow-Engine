@@ -30,20 +30,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NDK_VERSION: "30.0.16248370"
   ANDROID_MIN_API: ${{ inputs.android_min_api || '34' }}
-  ANDROID_SDK_API: "36"
   ANDROID_ABI: "arm64-v8a"
 
 jobs:
   host-tests:
     name: Host deterministic tests
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Verify host build toolchain
         shell: bash
@@ -60,9 +58,9 @@ jobs:
           g++ --version | head -n1
 
       - name: Setup Node.js for WebUI build
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
 
       - name: Build offline React WebUI into module/webroot
         shell: bash
@@ -93,13 +91,13 @@ jobs:
 
   android:
     name: Android 15+ ARM64 Production Build
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: host-tests
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Verify release version alignment
         shell: bash
@@ -114,34 +112,24 @@ jobs:
           test "$MODULE_CODE" = "$EXPECTED_CODE"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: "platform-tools"
-
-      - name: Install Android SDK & NDK
+      - name: Setup Android NDK
+        shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install \
-            "platforms;android-${ANDROID_SDK_API}" \
-            "ndk;${NDK_VERSION}"
-
-      - name: Configure NDK
-        run: |
-          set -euo pipefail
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_BIN=${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_ENV"
+          if [ -d "${ANDROID_HOME}/ndk" ] && [ -n "$(ls -A "${ANDROID_HOME}/ndk" 2>/dev/null)" ]; then
+            LATEST_NDK="$(ls -d "${ANDROID_HOME}/ndk/"* | sort -V | tail -n 1)"
+            echo "Using runner NDK at ${LATEST_NDK}"
+            echo "ANDROID_NDK_HOME=${LATEST_NDK}" >> "$GITHUB_ENV"
+          else
+            echo "Installing Android NDK via sdkmanager..."
+            sdkmanager --install "ndk;27.2.12479018"
+            echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          fi
 
       - name: Setup Node.js for WebUI bundle
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
 
       - name: Build offline React WebUI into module/webroot
         shell: bash
@@ -188,7 +176,11 @@ jobs:
 
           test -n "$BINARY"
           file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
-          "${TOOLCHAIN_BIN}/llvm-strip" --strip-all "$BINARY"
+          
+          STRIP_BIN="$(find "$ANDROID_NDK_HOME" -name "llvm-strip" -type f | head -n 1)"
+          if [ -n "$STRIP_BIN" ] && [ -x "$STRIP_BIN" ]; then
+            "$STRIP_BIN" --strip-all "$BINARY"
+          fi
 
       - name: Assemble Module Package
         shell: bash
@@ -232,7 +224,7 @@ jobs:
           zip -r "../$(basename "$ZIP")" .
 
       - name: Upload Production Module
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: CoreFlow-Engine-${{ env.ANDROID_ABI }}-Package
           path: artifacts/CoreFlow-Engine-*-arm64.zip

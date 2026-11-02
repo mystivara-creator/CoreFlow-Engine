@@ -39,7 +39,7 @@ jobs:
           fi
           [[ -n "$TAG" ]] || { echo "::error::No published GitHub release was found."; exit 1; }
 
-          ASSET="CoreFlow-Autonomous-${TAG}-minapi${MIN_API}-arm64.zip"
+          ASSET="CoreFlow-Engine-${TAG}-arm64.zip"
           WORK_DIR="$RUNNER_TEMP/coreflow-release"
           mkdir -p "$WORK_DIR"
           gh release download "$TAG" \
