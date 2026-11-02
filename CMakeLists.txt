@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Optimization Flags for Android Native Daemons
+option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
+
+# Optimization Flags for Native Daemons
 add_compile_options(
     -O3
     -flto
@@ -26,16 +28,38 @@ add_link_options(
 
 include_directories(include)
 
-add_executable(coreflowd
-    src/daemon/main.cpp
-    src/daemon/reactor.cpp
+# Modern CoreFlow Kernel & System Sources
+set(COREFLOW_KERNEL_SOURCES
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
+    src/kernel/psi_monitor.cpp
+    src/kernel/memory_guardian.cpp
 )
 
-target_link_libraries(coreflowd PRIVATE
-    log
+# Main Daemon (coreflowd)
+add_executable(coreflowd
+    src/daemon/main.cpp
+    src/daemon/reactor.cpp
+    ${COREFLOW_KERNEL_SOURCES}
 )
+
+if(ANDROID)
+    target_link_libraries(coreflowd PRIVATE log)
+endif()
+
+# Unit Test Target
+if(CORE_FLOW_BUILD_TESTS)
+    enable_testing()
+    add_executable(test_baseline_rollback
+        tests/test_baseline_rollback.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_baseline_rollback PRIVATE include)
+    if(ANDROID)
+        target_link_libraries(test_baseline_rollback PRIVATE log)
+    endif()
+    add_test(NAME BaselineRollbackTest COMMAND test_baseline_rollback)
+endif()

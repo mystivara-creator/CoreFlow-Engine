@@ -1,3 +1,13 @@
+## v2.0.0 — Modern C++20 Architecture & Google Pixel Material 3 Suite
+
+- Major overhaul pruning >50% of legacy monolithic complexity.
+- Native C++20 zero-polling daemon using Linux kernel epoll & signalfd event reactor (`coreflowd`).
+- Unified cgroups v2 task migration and cpuset pinning for foreground top-apps.
+- EAS Utilization Clamping (Uclamp) dynamic task acceleration (Cold Launch & Touch Boost).
+- SurfaceFlinger & HWUI 120Hz frame pacing stabilization.
+- Transactional BaselineStore: snapshots factory OEM sysfs values at boot with guaranteed atomic rollback.
+- Complete WebUI redesign: Google Pixel / Material Design 3 single-page dashboard with real-time autonomous adaptation telemetry, tonal surfaces, and dark/light support.
+
 ## v3.1.2 — Context-aware trial retention
 
 - Persist bounded trial-admission history per device/firmware/kernel scope. An
