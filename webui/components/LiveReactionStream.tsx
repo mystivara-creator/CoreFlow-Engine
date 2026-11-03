@@ -6,12 +6,14 @@ interface LiveReactionStreamProps {
   logs: ReactionLogEvent[];
   onClearLogs: () => void;
   engineActive: boolean;
+  nativeMode?: boolean;
 }
 
 export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
   logs,
   onClearLogs,
   engineActive,
+  nativeMode = false,
 }) => {
   const [filterType, setFilterType] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -80,7 +82,7 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Zero-polling epoll events, frame pacing adjustments & uclamp migrations
+              {nativeMode ? 'Captured native daemon stdout/stderr; simulation is disabled' : 'Preview-only simulated engine events'}
             </p>
           </div>
         </div>
