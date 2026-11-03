@@ -1,3 +1,2 @@
-# CoreFlow Autonomous v3.0.2
-# No permissive rules and no wildcard grants.
-# Add only minimal, verified rules after an actual AVC denial.
+# CoreFlow Modern v2: no SELinux allow-all or permissive rules.
+# Add a narrowly scoped rule only after verifying an actual AVC denial.
