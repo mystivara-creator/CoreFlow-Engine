@@ -1,0 +1,55 @@
+/**
+ * @file hardware_longevity.hpp
+ * @brief Battery Thermal Step-Charging & UFS Storage Longevity Subsystem
+ * @author mystivara-creator
+ * @license Apache-2.0
+ */
+
+#pragma once
+
+#include <string>
+#include <string_view>
+
+namespace coreflow {
+
+struct LongevityConfig {
+    bool enable_battery_step_charging{true};
+    bool enable_ufs_burst_pacing{true};
+    float battery_step_temp_threshold{41.5f}; ///< Thermal threshold to step down charging
+    uint32_t stepped_charge_current_ma{1500};   ///< Reduced charging current during high loads
+    uint32_t top_app_io_weight{800};             ///< cgroups v2 I/O priority for foreground
+    uint32_t background_io_weight{50};           ///< cgroups v2 I/O limit for background apps
+};
+
+class HardwareLongevityManager {
+public:
+    static HardwareLongevityManager& instance();
+
+    /// Dynamically discover battery and storage control nodes
+    void initialize(const LongevityConfig& config);
+
+    /// Evaluate battery thermal load and step-charge if overheating
+    bool monitor_battery_thermals(float current_soc_temp);
+
+    /// Apply UFS storage write pacing to minimize write amplification and frame stutter
+    bool apply_storage_pacing();
+
+    /// Revert any battery/storage changes back to OEM factory baseline
+    void restore_oem_baseline();
+
+    [[nodiscard]] bool is_battery_guarded() const noexcept { return battery_stepped_; }
+    [[nodiscard]] bool is_storage_paced() const noexcept { return storage_paced_; }
+    [[nodiscard]] std::string battery_node_path() const { return battery_node_; }
+
+private:
+    HardwareLongevityManager() = default;
+
+    LongevityConfig config_;
+    std::string battery_node_;
+    bool battery_stepped_{false};
+    bool storage_paced_{false};
+
+    void discover_battery_node();
+};
+
+} // namespace coreflow

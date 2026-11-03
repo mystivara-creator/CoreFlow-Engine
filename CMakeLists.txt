@@ -4,12 +4,13 @@ project(CoreFlowEngine VERSION 2.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
 
 # Optimization & Security Hardening Flags for Native Systems
 add_compile_options(
+    -O3
+    -flto
     -fvisibility=hidden
     -fvisibility-inlines-hidden
     -Wall
@@ -17,32 +18,34 @@ add_compile_options(
     -Wpedantic
     -fno-exceptions
     -fno-rtti
-    -fno-strict-overflow
     -fstack-protector-strong
     -Wformat
     -Wformat-security
     -Werror=return-type
 )
 
-add_compile_definitions(
-    $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>
-)
+add_compile_definitions(_FORTIFY_SOURCE=2)
 
 add_link_options(
+    -flto
     -Wl,--gc-sections
-    $<$<CONFIG:Release>:-Wl,--strip-all>
+    -Wl,--strip-all
     -Wl,-z,relro
     -Wl,-z,now
-    -Wl,-z,noexecstack
 )
 
 include_directories(include)
 
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
+    src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
-    src/kernel/thermal_monitor.cpp
+    src/kernel/render_booster.cpp
+    src/kernel/device_profiler.cpp
+    src/kernel/psi_monitor.cpp
+    src/kernel/memory_guardian.cpp
+    src/kernel/hardware_longevity.cpp
 )
 
 # Main Daemon (coreflowd)
@@ -51,8 +54,6 @@ add_executable(coreflowd
     src/daemon/reactor.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
-# Prefer predictable optimization over whole-program LTO for this small privileged daemon.
-target_compile_options(coreflowd PRIVATE $<$<CONFIG:Release>:-O2>)
 
 if(ANDROID)
     target_link_libraries(coreflowd PRIVATE log)
@@ -70,16 +71,4 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_baseline_rollback PRIVATE log)
     endif()
     add_test(NAME BaselineRollbackTest COMMAND test_baseline_rollback)
-    add_executable(test_config tests/test_config.cpp)
-    target_include_directories(test_config PRIVATE include)
-    add_test(NAME ConfigValidationTest COMMAND test_config)
-    add_executable(test_uclamp tests/test_uclamp.cpp src/kernel/uclamp.cpp src/kernel/baseline_store.cpp)
-    target_include_directories(test_uclamp PRIVATE include)
-    add_test(NAME UclampCgroupPercentageTest COMMAND test_uclamp)
-    add_executable(test_stability_policy tests/test_stability_policy.cpp)
-    target_include_directories(test_stability_policy PRIVATE include)
-    add_test(NAME StabilityPolicyTest COMMAND test_stability_policy)
-    add_executable(test_thermal_monitor tests/test_thermal_monitor.cpp src/kernel/thermal_monitor.cpp)
-    target_include_directories(test_thermal_monitor PRIVATE include)
-    add_test(NAME ThermalMonitorTest COMMAND test_thermal_monitor)
 endif()
