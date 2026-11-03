@@ -286,6 +286,7 @@ export const App: React.FC = () => {
             logs={logs}
             onClearLogs={() => setLogs([])}
             engineActive={telemetry.engineActive}
+            nativeMode={isNativeBridge}
           />
         </section>
       </main>
