@@ -7,6 +7,7 @@
 
 #include "coreflow/uclamp.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/baseline_store.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <filesystem>
@@ -102,27 +103,24 @@ bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_
     min_val = std::clamp(min_val, 0u, 1024u);
     max_val = std::clamp(max_val, min_val, 1024u);
 
-    auto write_file = [](const std::string& p, uint32_t val) {
-        UniqueFd ufd(::open(p.c_str(), O_WRONLY | O_CLOEXEC));
-        if (!ufd.valid()) return false;
-        std::string s = std::to_string(val);
-        ssize_t w = ::write(ufd.get(), s.c_str(), s.size());
-        return w == static_cast<ssize_t>(s.size());
-    };
-
-    bool ok_min = write_file(prefix + "cpu.uclamp.min", min_val);
-    bool ok_max = write_file(prefix + "cpu.uclamp.max", max_val);
-    return ok_min && ok_max;
+    auto& baseline = BaselineStore::instance();
+    // Apply the ceiling before raising the floor, and reverse the order when
+    // lowering the ceiling, so intermediate values remain valid.
+    const std::string min_path = prefix + "cpu.uclamp.min";
+    const std::string max_path = prefix + "cpu.uclamp.max";
+    const uint32_t current_min = read_uclamp_node(min_path);
+    if (max_val < current_min) {
+        return baseline.apply_mutation(min_path, std::to_string(min_val)) &&
+               baseline.apply_mutation(max_path, std::to_string(max_val));
+    }
+    return baseline.apply_mutation(max_path, std::to_string(max_val)) &&
+           baseline.apply_mutation(min_path, std::to_string(min_val));
 }
 
 bool UclampGovernor::set_rt_clamp_min(uint32_t clamp_val) {
     clamp_val = std::clamp(clamp_val, 0u, 1024u);
-    const char* rt_node = "/proc/sys/kernel/sched_util_clamp_min_rt_default";
-    UniqueFd ufd(::open(rt_node, O_WRONLY | O_CLOEXEC));
-    if (!ufd.valid()) return false;
-    std::string s = std::to_string(clamp_val);
-    ssize_t w = ::write(ufd.get(), s.c_str(), s.size());
-    return w == static_cast<ssize_t>(s.size());
+    return BaselineStore::instance().apply_mutation(
+        "/proc/sys/kernel/sched_util_clamp_min_rt_default", std::to_string(clamp_val));
 }
 
 uint32_t UclampGovernor::get_top_app_min() const {
