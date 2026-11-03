@@ -42,11 +42,16 @@ bool PsiMonitor::register_trigger(PsiResource res, uint32_t stall_us, uint32_t w
     fd_map_[fd] = res;
 
     // Epoll on EPOLLPRI (exceptional condition) as mandated by Linux PSI docs
-    return reactor_.register_fd(fd, EPOLLPRI, [this, fd, cb = std::move(callback)](uint32_t) {
+    const bool registered = reactor_.register_fd(fd, EPOLLPRI, [this, fd, cb = std::move(callback)](uint32_t) {
         PsiResource res = fd_map_[fd];
         double current = get_current_pressure(res);
         cb(res, current);
     });
+    if (!registered) {
+        fd_map_.erase(fd);
+        ::close(fd);
+    }
+    return registered;
 }
 
 double PsiMonitor::get_current_pressure(PsiResource res) const {
