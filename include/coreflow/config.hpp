@@ -14,6 +14,9 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <charconv>
+#include <cmath>
+#include <vector>
 
 namespace coreflow {
 
@@ -27,8 +30,8 @@ struct DaemonConfig {
 
     // [device_adaptation]
     std::string tier_override{"auto"};
-    bool unlock_vendor_clamping{true};
-    bool force_120hz_rendering{true};
+    bool unlock_vendor_clamping{false};
+    bool force_120hz_rendering{false};
 
     // [uclamp_tuning]
     uint32_t top_app_interactive_min{320};
@@ -128,9 +131,9 @@ struct DaemonConfig {
 
     static DaemonConfig load_best_available() {
         const std::vector<std::string> paths = {
+            "/data/adb/coreflow/coreflow.conf",
             "/data/adb/modules/coreflow_engine/coreflow.conf",
             "/system/etc/coreflow/default.conf",
-            "/data/adb/coreflow/coreflow.conf",
             "config/coreflow.conf"
         };
         for (const auto& path : paths) {
