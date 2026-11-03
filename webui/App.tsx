@@ -20,6 +20,7 @@ interface NativeStatus {
   pid: number;
   uclampMin: number;
   uclampMax: number;
+  uclampSupported: boolean;
   cgroupV2: boolean;
   socTempCelsius: number | null;
   recoveryPending: boolean;
@@ -30,6 +31,7 @@ const checkedNativeStatus = (result: string): NativeStatus => {
   const status = obj as Partial<NativeStatus>;
   if (typeof status.running !== 'boolean' || typeof status.pid !== 'number' ||
       typeof status.uclampMin !== 'number' || typeof status.uclampMax !== 'number' ||
+      typeof status.uclampSupported !== 'boolean' ||
       typeof status.cgroupV2 !== 'boolean' ||
       (typeof status.socTempCelsius !== 'number' && status.socTempCelsius !== null) ||
       typeof status.recoveryPending !== 'boolean') {
@@ -92,7 +94,7 @@ export const App: React.FC = () => {
       uclampMax: status.uclampMax, socTempCelsius: status.socTempCelsius ?? -1,
       cgroupsV2Status: status.cgroupV2 ? 'unified_active' : 'disabled',
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
-      modeLabel: status.running ? 'Native daemon active' : 'Daemon stopped',
+      modeLabel: status.running ? (status.uclampSupported ? 'Native daemon active' : 'Daemon active: UClamp unavailable') : 'Daemon stopped',
       modeDescription: status.recoveryPending ? 'Recovery needs attention' : 'Native kernel status',
       timestamp: Date.now(),
     }));
@@ -187,8 +189,8 @@ export const App: React.FC = () => {
         + '\ntop_app_interactive_max = 1024\n'
         + '\n[thermal_guardian]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' + trip.toFixed(1)
         + '\nthermal_recover_celsius = ' + (trip - 4).toFixed(1) + '\n';
-      const output = await execChecked("cat <<'COREFLOW_CONFIG' > /data/adb/coreflow/coreflow.conf\n"
-        + content + "COREFLOW_CONFIG\n[ -s /data/adb/coreflow/coreflow.conf ] && echo COREFLOW_CONFIG_WRITTEN");
+      const output = await execChecked("cat <<'COREFLOW_CONFIG' > /data/adb/coreflow/coreflow.conf.tmp\n"
+        + content + "COREFLOW_CONFIG\nchmod 600 /data/adb/coreflow/coreflow.conf.tmp && mv -f /data/adb/coreflow/coreflow.conf.tmp /data/adb/coreflow/coreflow.conf && echo COREFLOW_CONFIG_WRITTEN");
       if (!output.includes('COREFLOW_CONFIG_WRITTEN')) throw new Error('Configuration write not acknowledged');
       const before = await refreshNative();
       if (before.running) {
