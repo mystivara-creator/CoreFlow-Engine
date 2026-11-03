@@ -176,7 +176,7 @@ int main(int argc, char* argv[]) {
                temp > config.thermal_recover_celsius)
                 ? WorkloadState::ThermalThrottled : WorkloadState::Interactive;
         if (!applied || current != desired) {
-            if (governor.apply_state(desired, topology.tier)) {
+            if (governor.apply_state(desired, topology.tier, config.top_app_interactive_min, config.top_app_interactive_max)) {
                 current = desired;
                 applied = true;
             } else {
