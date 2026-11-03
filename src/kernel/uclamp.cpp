@@ -249,12 +249,6 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
            baseline.apply_mutation(min_path, encode(min_val, false));
 }
 
-bool UclampGovernor::set_rt_clamp_min(uint32_t clamp_val) {
-    clamp_val = std::clamp(clamp_val, 0u, 1024u);
-    return BaselineStore::instance().apply_mutation(
-        "/proc/sys/kernel/sched_util_clamp_min_rt_default", std::to_string(clamp_val));
-}
-
 uint32_t UclampGovernor::get_top_app_min() const {
     return supported_ ? read_uclamp_node(target_path_ + "/cpu.uclamp.min") : 0;
 }
