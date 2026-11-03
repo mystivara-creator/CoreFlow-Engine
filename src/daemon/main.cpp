@@ -17,23 +17,24 @@
 #include <iostream>
 #include <csignal>
 #include <cstdlib>
+#include <unistd.h>
 #include <sys/signalfd.h>
 
 using namespace coreflow;
 
 namespace {
 
-// Emergency Crash Signal Trap: Guaranteed OEM baseline restore on fatal fault
+// Fatal signal handlers must only use async-signal-safe operations.
+// Recovery after an abrupt crash requires a durable journal, not mutexes here.
 void emergency_crash_handler(int sig) {
-    std::cerr << "\n[CoreFlow][EMERGENCY] Fatal signal " << sig 
-              << " caught. Restoring OEM factory baseline before termination..." << std::endl;
-    BaselineStore::instance().rollback_all();
+    static constexpr char message[] = "[CoreFlow] Fatal signal; terminating without unsafe signal-handler rollback.\n";
+    (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
     std::_Exit(128 + sig);
 }
 
 } // namespace
 
-int main(int argc, char* argv[]) {
+int main() {
     // 0. Register emergency crash traps for unexpected fatal faults
     std::signal(SIGSEGV, emergency_crash_handler);
     std::signal(SIGBUS,  emergency_crash_handler);
@@ -65,7 +66,7 @@ int main(int argc, char* argv[]) {
     }
 
     // 4. Dynamic Vendor & Rendering Unlock
-    if (config.unlock_vendor_clamping) {
+    if (config.enable_cgroups_v2 && config.unlock_vendor_clamping) {
         cgroup_ctrl.unlock_vendor_restrictions();
     }
     if (config.force_120hz_rendering) {
