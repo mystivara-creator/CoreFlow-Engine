@@ -4,7 +4,7 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
-#include "coreflow/device_profiler.hpp"
+#include "coreflow/thermal_monitor.hpp"
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
@@ -106,8 +106,7 @@ int stop_daemon() {
 }
 void print_status() {
     const pid_t pid = daemon_pid();
-    DeviceProfiler& profiler = DeviceProfiler::instance();
-    const float temp = profiler.get_soc_temperature();
+    const float temp = ThermalMonitor::instance().hottest_celsius();
     UclampGovernor governor;
     std::cout << "{\"running\":" << (pid ? "true" : "false")
               << ",\"pid\":" << pid
@@ -197,7 +196,7 @@ int main(int argc, char* argv[]) {
             reactor.stop();
             return;
         }
-        const float temp = DeviceProfiler::instance().get_soc_temperature();
+        const float temp = ThermalMonitor::instance().hottest_celsius();
         if (temp < 0.0f) {
             // No trusted thermal sensor: do not apply speculative performance boost.
             if (applied) {
