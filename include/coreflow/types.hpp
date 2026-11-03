@@ -31,12 +31,10 @@ enum class DeviceTier : uint8_t {
 };
 
 enum class WorkloadState : uint8_t {
-    DeepSleep,   ///< Screen-off / Ambient Doze (ultra-conservative)
-    DailyIdle,   ///< Nominal background, low frequency ceiling
-    Interactive, ///< Active touch scrolling, responsive uclamp floor
-    BurstLaunch, ///< App startup / dexopt / cold launch boost
-    SustainedGame,///< High-framerate gaming, thermal-constrained uclamp
-    ThermalThrottled ///< Critical thermal mitigation state
+    Balanced,       ///< Normal daily use: configured responsive floor, open ceiling
+    SustainedLoad,  ///< Sustained CPU pressure with thermal headroom (games/heavy foreground work)
+    PressureGuard,  ///< Memory/I/O contention: reduce artificial boosting, keep ceiling open
+    ThermalGuard    ///< Thermal pressure: lower scheduler ceiling before OEM throttling becomes severe
 };
 
 enum class ClusterType : uint8_t {
