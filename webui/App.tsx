@@ -183,12 +183,12 @@ export const App: React.FC = () => {
       const interactiveMin = config.adaptiveBias === 'battery' ? 220
         : config.adaptiveBias === 'responsiveness' ? 480 : config.touchBoostMin;
       const trip = Math.max(40, Math.min(48, config.thermalTripCelsius));
-      const content = '[general]\nversion = 2.0.0\nenable_cgroups_v2 = true\nenable_uclamp = true\n'
-        + '\n[device_adaptation]\nunlock_vendor_clamping = false\nforce_120hz_rendering = false\n'
-        + '\n[uclamp_tuning]\ntop_app_interactive_min = ' + interactiveMin
+      const content = '[general]\nversion = 2.0.0\nlog_level = info\nenable_uclamp = true\n'
+        + '\n[uclamp]\ntop_app_interactive_min = ' + interactiveMin
         + '\ntop_app_interactive_max = 1024\n'
-        + '\n[thermal_guardian]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' + trip.toFixed(1)
-        + '\nthermal_recover_celsius = ' + (trip - 4).toFixed(1) + '\n';
+        + '\n[thermal]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' + trip.toFixed(1)
+        + '\nthermal_recover_celsius = ' + (trip - 4).toFixed(1)
+        + '\nemergency_rollback_on_overheat = true\n';
       const output = await execChecked("cat <<'COREFLOW_CONFIG' > /data/adb/coreflow/coreflow.conf.tmp\n"
         + content + "COREFLOW_CONFIG\nchmod 600 /data/adb/coreflow/coreflow.conf.tmp && mv -f /data/adb/coreflow/coreflow.conf.tmp /data/adb/coreflow/coreflow.conf && echo COREFLOW_CONFIG_WRITTEN");
       if (!output.includes('COREFLOW_CONFIG_WRITTEN')) throw new Error('Configuration write not acknowledged');
