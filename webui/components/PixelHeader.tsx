@@ -8,6 +8,7 @@ interface PixelHeaderProps {
   onToggleTheme: () => void;
   epollEventsPerSec: number;
   modeLabel: string;
+  nativeMode?: boolean;
 }
 
 export const PixelHeader: React.FC<PixelHeaderProps> = ({
@@ -17,6 +18,7 @@ export const PixelHeader: React.FC<PixelHeaderProps> = ({
   onToggleTheme,
   epollEventsPerSec,
   modeLabel,
+  nativeMode = false,
 }) => {
   return (
     <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 dark:bg-[#090d16]/85 border-b border-slate-200/70 dark:border-slate-800/80 transition-colors duration-200">
@@ -55,7 +57,7 @@ export const PixelHeader: React.FC<PixelHeaderProps> = ({
             <span className="text-slate-700 dark:text-slate-300">
               {engineActive ? `Autonomous: ${modeLabel}` : 'Stock OEM Mode'}
             </span>
-            {engineActive && (
+            {engineActive && !nativeMode && (
               <span className="text-slate-400 dark:text-slate-500 font-mono text-[11px] tabular-nums">
                 ({epollEventsPerSec} ev/s)
               </span>
