@@ -61,4 +61,4 @@ nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &
       printf '0\n' > "$TMP_ATTEMPTS" && chmod 600 "$TMP_ATTEMPTS" && mv -f "$TMP_ATTEMPTS" "$ATTEMPTS"
     fi
   fi
-) >/dev/null 2>&1 &
+) </dev/null >/dev/null 2>&1 &

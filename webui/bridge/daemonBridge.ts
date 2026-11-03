@@ -1,4 +1,4 @@
-// CoreFlow Modern v2.0 Hardened KernelSU & System Root Shell Bridge
+// CoreFlow Modern v2.0 Hardened KernelSU / KernelSU Next & Root Shell Bridge
 
 export interface ShellResult {
   errno: number;
@@ -6,15 +6,23 @@ export interface ShellResult {
   stderr: string;
 }
 
+type KsuExecFn = (
+  command: string,
+  optionsOrCallback?: string,
+  callbackFuncName?: string
+) => unknown;
+
 declare global {
   interface Window {
     ksu?: {
-      exec: (command: string) => Promise<string | ShellResult>;
+      exec: KsuExecFn;
     };
+    [key: string]: unknown;
   }
 }
 
 const DEFAULT_EXEC_TIMEOUT_MS = 10000;
+let callbackSeq = 0;
 
 export function hasNativeKernelSuBridge(): boolean {
   return typeof window !== 'undefined' && typeof window.ksu?.exec === 'function';
@@ -26,9 +34,10 @@ function normalizeShellResult(raw: unknown): ShellResult {
   }
   if (typeof raw === 'object' && raw !== null) {
     const candidate = raw as Partial<ShellResult>;
-    const errno = typeof candidate.errno === 'number' && Number.isFinite(candidate.errno)
-      ? candidate.errno
-      : -1;
+    const errno =
+      typeof candidate.errno === 'number' && Number.isFinite(candidate.errno)
+        ? candidate.errno
+        : -1;
     const stdout = typeof candidate.stdout === 'string' ? candidate.stdout : '';
     const stderr = typeof candidate.stderr === 'string' ? candidate.stderr : '';
     return { errno, stdout, stderr };
@@ -47,29 +56,78 @@ export async function execNativeKsuShell(
     return { errno: -1, stdout: '', stderr: 'Invalid shell command' };
   }
 
-  let timerId: number | undefined;
-  try {
-    const timeoutPromise = new Promise<ShellResult>((resolve) => {
-      timerId = window.setTimeout(() => {
-        resolve({
+  const ksu = window.ksu;
+  const boundedTimeout = Math.max(1000, timeoutMs);
+
+  return new Promise<ShellResult>((resolve) => {
+    let settled = false;
+    callbackSeq += 1;
+    const cbName = `__coreflow_ksu_cb_${Date.now()}_${callbackSeq}`;
+
+    const finish = (result: ShellResult) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timerId);
+      delete window[cbName];
+      resolve(result);
+    };
+
+    const timerId = window.setTimeout(() => {
+      finish({
+        errno: -1,
+        stdout: '',
+        stderr: `Native command timed out after ${boundedTimeout}ms`,
+      });
+    }, boundedTimeout);
+
+    window[cbName] = (errno: unknown, stdout?: unknown, stderr?: unknown) => {
+      if (typeof errno === 'object' && errno !== null) {
+        finish(normalizeShellResult(errno));
+        return;
+      }
+      finish({
+        errno: typeof errno === 'number' && Number.isFinite(errno) ? errno : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? ''),
+      });
+    };
+
+    try {
+      // Standard KernelSU / KernelSU Next @JavascriptInterface signature:
+      // ksu.exec(cmd, optionsJson, callbackFuncName) returns undefined and invokes
+      // window[cbName](errno, stdout, stderr) asynchronously from a background thread.
+      const directReturn = ksu.exec(command, '{}', cbName);
+      if (directReturn !== undefined) {
+        Promise.resolve(directReturn)
+          .then((resolved) => finish(normalizeShellResult(resolved)))
+          .catch((err) =>
+            finish({
+              errno: -1,
+              stdout: '',
+              stderr: err instanceof Error ? err.message : String(err),
+            })
+          );
+      }
+    } catch {
+      // Fallback for legacy 1-argument @JavascriptInterface ksu.exec(cmd) bridges.
+      try {
+        const legacyReturn = ksu.exec(command);
+        Promise.resolve(legacyReturn)
+          .then((resolved) => finish(normalizeShellResult(resolved)))
+          .catch((err) =>
+            finish({
+              errno: -1,
+              stdout: '',
+              stderr: err instanceof Error ? err.message : String(err),
+            })
+          );
+      } catch (fallbackErr) {
+        finish({
           errno: -1,
           stdout: '',
-          stderr: `Native command timed out after ${timeoutMs}ms`,
+          stderr: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
         });
-      }, Math.max(1000, timeoutMs));
-    });
-
-    const execPromise = window.ksu.exec(command).then(normalizeShellResult);
-    return await Promise.race([execPromise, timeoutPromise]);
-  } catch (error) {
-    return {
-      errno: -1,
-      stdout: '',
-      stderr: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    if (timerId !== undefined) {
-      window.clearTimeout(timerId);
+      }
     }
-  }
+  });
 }
