@@ -14,6 +14,9 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
 
 namespace coreflow {
 
@@ -107,14 +110,22 @@ bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_
     max_val = std::clamp(max_val, min_val, 1024u);
 
     auto& baseline = BaselineStore::instance();
+    // The cgroup v2 cpu.uclamp files accept *percentage* values, unlike the
+    // sched capacity scale (0..1024) used by our internal configurations.
+    auto to_percentage = [](uint32_t capacity) -> std::string {
+        if (capacity >= 1024) return "max";
+        char out[32];
+        std::snprintf(out, sizeof(out), "%.2f", static_cast<double>(capacity) * 100.0 / 1024.0);
+        return out;
+    };
     // Apply the ceiling before raising the floor, and reverse the order when
     // lowering the ceiling, so intermediate values remain valid.
     const std::string min_path = prefix + "cpu.uclamp.min";
     const std::string max_path = prefix + "cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
     if (max_val < current_min) {
-        return baseline.apply_mutation(min_path, std::to_string(min_val)) &&
-               baseline.apply_mutation(max_path, std::to_string(max_val));
+        return baseline.apply_mutation(min_path, to_percentage(min_val)) &&
+               baseline.apply_mutation(max_path, to_percentage(max_val));
     }
     return baseline.apply_mutation(max_path, std::to_string(max_val)) &&
            baseline.apply_mutation(min_path, std::to_string(min_val));
@@ -136,10 +147,14 @@ uint32_t UclampGovernor::get_top_app_max() const {
 
 uint32_t UclampGovernor::read_uclamp_node(const std::string& path) const {
     std::ifstream f(path);
-    if (!f.is_open()) return 0;
-    uint32_t val = 0;
-    f >> val;
-    return std::clamp(val, 0u, 1024u);
+    std::string raw;
+    if (!(f >> raw)) return 0;
+    if (raw == "max") return 1024;
+    char* end = nullptr;
+    const double percent = std::strtod(raw.c_str(), &end);
+    if (end == raw.c_str() || *end != '\0' || !std::isfinite(percent) ||
+        percent < 0.0 || percent > 100.0) return 0;
+    return static_cast<uint32_t>(std::lround(percent * 1024.0 / 100.0));
 }
 
 } // namespace coreflow
