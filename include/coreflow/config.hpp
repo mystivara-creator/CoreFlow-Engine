@@ -17,6 +17,8 @@
 #include <charconv>
 #include <cmath>
 #include <vector>
+#include <cstdlib>
+#include <cerrno>
 
 namespace coreflow {
 
@@ -67,6 +69,22 @@ struct DaemonConfig {
         return lower == "true" || lower == "1" || lower == "yes";
     }
 
+    static uint32_t parse_uint(const std::string& text, uint32_t fallback) {
+        uint32_t result = 0;
+        const char* first = text.data();
+        const char* last = first + text.size();
+        const auto parsed = std::from_chars(first, last, result);
+        return parsed.ec == std::errc{} && parsed.ptr == last ? result : fallback;
+    }
+
+    static float parse_float(const std::string& text, float fallback) {
+        if (text.empty()) return fallback;
+        char* end = nullptr;
+        errno = 0;
+        float val = std::strtof(text.c_str(), &end);
+        return errno == 0 && end == text.c_str() + text.size() && std::isfinite(val) ? val : fallback;
+    }
+
     static DaemonConfig load_from_file(const std::string& path) {
         DaemonConfig cfg;
         std::ifstream file(path);
@@ -105,27 +123,32 @@ struct DaemonConfig {
             else if (key == "force_120hz_rendering") cfg.force_120hz_rendering = parse_bool(val);
 
             // [uclamp_tuning]
-            else if (key == "top_app_interactive_min") cfg.top_app_interactive_min = std::stoul(val);
-            else if (key == "top_app_interactive_max") cfg.top_app_interactive_max = std::stoul(val);
-            else if (key == "top_app_burst_launch_min") cfg.top_app_burst_launch_min = std::stoul(val);
-            else if (key == "top_app_game_min") cfg.top_app_game_min = std::stoul(val);
-            else if (key == "top_app_game_max") cfg.top_app_game_max = std::stoul(val);
-            else if (key == "foreground_min") cfg.foreground_min = std::stoul(val);
-            else if (key == "background_max") cfg.background_max = std::stoul(val);
-            else if (key == "sched_util_clamp_min_rt_default") cfg.sched_util_clamp_min_rt_default = std::stoul(val);
+            else if (key == "top_app_interactive_min") cfg.top_app_interactive_min = parse_uint(val, cfg.top_app_interactive_min);
+            else if (key == "top_app_interactive_max") cfg.top_app_interactive_max = parse_uint(val, cfg.top_app_interactive_max);
+            else if (key == "top_app_burst_launch_min") cfg.top_app_burst_launch_min = parse_uint(val, cfg.top_app_burst_launch_min);
+            else if (key == "top_app_game_min") cfg.top_app_game_min = parse_uint(val, cfg.top_app_game_min);
+            else if (key == "top_app_game_max") cfg.top_app_game_max = parse_uint(val, cfg.top_app_game_max);
+            else if (key == "foreground_min") cfg.foreground_min = parse_uint(val, cfg.foreground_min);
+            else if (key == "background_max") cfg.background_max = parse_uint(val, cfg.background_max);
+            else if (key == "sched_util_clamp_min_rt_default") cfg.sched_util_clamp_min_rt_default = parse_uint(val, cfg.sched_util_clamp_min_rt_default);
 
             // [thermal_guardian]
-            else if (key == "temp_monitor_interval_ms") cfg.temp_monitor_interval_ms = std::stoul(val);
-            else if (key == "thermal_trip_celsius") cfg.thermal_trip_celsius = std::stof(val);
-            else if (key == "thermal_recover_celsius") cfg.thermal_recover_celsius = std::stof(val);
+            else if (key == "temp_monitor_interval_ms") cfg.temp_monitor_interval_ms = parse_uint(val, cfg.temp_monitor_interval_ms);
+            else if (key == "thermal_trip_celsius") cfg.thermal_trip_celsius = parse_float(val, cfg.thermal_trip_celsius);
+            else if (key == "thermal_recover_celsius") cfg.thermal_recover_celsius = parse_float(val, cfg.thermal_recover_celsius);
             else if (key == "emergency_rollback_on_overheat") cfg.emergency_rollback_on_overheat = parse_bool(val);
 
             // [render_pipeline]
-            else if (key == "jank_detection_threshold_ratio") cfg.jank_detection_threshold_ratio = std::stof(val);
-            else if (key == "burst_boost_duration_ms") cfg.burst_boost_duration_ms = std::stoul(val);
-            else if (key == "touch_boost_uclamp_min") cfg.touch_boost_uclamp_min = std::stoul(val);
+            else if (key == "jank_detection_threshold_ratio") cfg.jank_detection_threshold_ratio = parse_float(val, cfg.jank_detection_threshold_ratio);
+            else if (key == "burst_boost_duration_ms") cfg.burst_boost_duration_ms = parse_uint(val, cfg.burst_boost_duration_ms);
+            else if (key == "touch_boost_uclamp_min") cfg.touch_boost_uclamp_min = parse_uint(val, cfg.touch_boost_uclamp_min);
         }
 
+        cfg.temp_monitor_interval_ms = std::clamp(cfg.temp_monitor_interval_ms, 1000u, 60000u);
+        cfg.thermal_trip_celsius = std::clamp(cfg.thermal_trip_celsius, 35.0f, 65.0f);
+        cfg.thermal_recover_celsius = std::clamp(cfg.thermal_recover_celsius, 25.0f, cfg.thermal_trip_celsius - 1.0f);
+        cfg.top_app_interactive_min = std::min(cfg.top_app_interactive_min, 1024u);
+        cfg.top_app_interactive_max = std::clamp(cfg.top_app_interactive_max, cfg.top_app_interactive_min, 1024u);
         return cfg;
     }
 
