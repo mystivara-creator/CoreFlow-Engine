@@ -1,6 +1,6 @@
 /**
  * @file reactor.cpp
- * @brief Zero-polling Linux Epoll Reactor Implementation
+ * @brief Event-driven Linux epoll reactor implementation
  * @author mystivara-creator
  * @license Apache-2.0
  */
@@ -112,7 +112,7 @@ void EpollReactor::run() {
     running_ = true;
     epoll_event events[MAX_EPOLL_EVENTS];
 
-    std::cout << "[CoreFlow][Reactor] Zero-polling epoll reactor started (native kernel wait)." << std::endl;
+    std::cout << "[CoreFlow][Reactor] epoll reactor started; waiting on registered kernel events." << std::endl;
 
     while (running_) {
         // -1 timeout: daemon sleeps deeply in kernel until a registered event or timer fires
