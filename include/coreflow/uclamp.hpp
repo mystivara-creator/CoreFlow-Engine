@@ -1,16 +1,10 @@
 /**
  * @file uclamp.hpp
- * @brief EAS Utilization Clamping (Uclamp) Governor
+ * @brief Capability-driven Android/Linux utilization clamp controller
  * @author mystivara-creator
  * @license Apache-2.0
- * 
- * Manages cpu.uclamp.min and cpu.uclamp.max directly on Android 14/15+ kernels.
- * Converts internal 0..1024 capacity values into cgroup v2 percentages.
- * The native runtime controls only a validated top-app cgroup.
  */
-
 #pragma once
-
 #include "types.hpp"
 #include <string>
 #include <string_view>
@@ -19,30 +13,37 @@ namespace coreflow {
 
 class UclampGovernor {
 public:
-    explicit UclampGovernor(std::string_view cgroup_root = "/sys/fs/cgroup");
+    // Empty root means runtime discovery from mounted cgroup filesystems.
+    // An explicit root exists only for deterministic tests or controlled bring-up.
+    explicit UclampGovernor(std::string_view explicit_root = {});
     ~UclampGovernor() = default;
 
-    /// Checks if kernel supports sched_util_clamping
     [[nodiscard]] bool is_supported() const noexcept;
+    [[nodiscard]] std::string_view target_path() const noexcept { return target_path_; }
+    [[nodiscard]] std::string_view encoding_name() const noexcept;
 
-    /// Apply dynamic uclamp profile based on workload state
-    bool apply_state(WorkloadState state, DeviceTier tier, uint32_t interactive_min = 0, uint32_t interactive_max = 1024);
+    bool apply_state(WorkloadState state, DeviceTier tier,
+                     uint32_t interactive_min = 0,
+                     uint32_t interactive_max = 1024);
 
-    /// Optional journaled RT clamp write, not called by the native runtime: /proc/sys/kernel/sched_util_clamp_min_rt_default
+    // Optional standardized sysctl. Not used by the automatic v2 runtime.
     bool set_rt_clamp_min(uint32_t clamp_val);
 
-    /// Read active uclamp.min of top-app
     [[nodiscard]] uint32_t get_top_app_min() const;
-
-    /// Read active uclamp.max of top-app
     [[nodiscard]] uint32_t get_top_app_max() const;
 
 private:
-    std::string cgroup_root_;
+    enum class Encoding : uint8_t { Unknown, Percentage, Capacity1024 };
+
+    std::string target_path_;
+    Encoding encoding_{Encoding::Unknown};
     bool supported_{false};
 
-    bool write_uclamp(CgroupTarget target, uint32_t min_val, uint32_t max_val);
-    uint32_t read_uclamp_node(const std::string& path) const;
+    void discover(std::string_view explicit_root);
+    bool validate_target(const std::string& directory, Encoding& encoding) const;
+    bool write_top_app(uint32_t min_val, uint32_t max_val);
+    [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
+    [[nodiscard]] uint32_t read_uclamp_node(const std::string& path) const;
 };
 
 } // namespace coreflow
