@@ -1,13 +1,10 @@
-// CoreFlow Modern v2.0 Autonomous Engine Types and Reactive Simulation
-// Models the C++20 zero-polling epoll reactor, cgroups v2, and EAS Uclamp engine.
-
+// CoreFlow Modern v2 preview model.
+// Native mode never uses this simulator; it exists only for browser preview.
 export type AutonomousMode =
-  | 'dynamic_balance'
-  | 'launch_burst'
-  | 'frame_pacing'
-  | 'touch_boost'
-  | 'thermal_guard'
-  | 'deep_idle';
+  | 'balanced'
+  | 'sustained_load'
+  | 'pressure_guard'
+  | 'thermal_guard';
 
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
@@ -16,29 +13,20 @@ export interface AutonomousTelemetry {
   engineActive: boolean;
   uclampMin: number;
   uclampMax: number;
-  currentFps: number;
-  targetFps: number;
-  jankRatePct: number;
-  socTempCelsius: number;
   uclampSupported: boolean;
-  topApp: string;
-  topAppLabel: string;
-  topAppPid: number;
-  epollEventsPerSec: number;
+  socTempCelsius: number;
+  cpuPressurePct: number;
+  memoryPressurePct: number;
+  ioPressurePct: number;
   baselineNodesSnapshotted: number;
   baselineStatus: 'protected' | 'restored';
-  batteryDrainEstimatedMh: number;
   timestamp: number;
 }
 
 export interface AutonomousConfig {
   adaptiveBias: 'balanced' | 'responsiveness' | 'battery';
-  targetFps: 120 | 90 | 60;
   thermalTripCelsius: number;
-  burstDurationMs: number;
-  touchBoostMin: number;
-  unlockVendorClamping: boolean;
-  proactiveMemoryGuardian: boolean;
+  balancedUclampMin: number;
 }
 
 export interface ReactionLogEvent {
@@ -51,298 +39,169 @@ export interface ReactionLogEvent {
 
 export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   adaptiveBias: 'balanced',
-  targetFps: 120,
   thermalTripCelsius: 44.0,
-  burstDurationMs: 120,
-  touchBoostMin: 380,
-  unlockVendorClamping: false,
-  proactiveMemoryGuardian: false,
+  balancedUclampMin: 320,
 };
 
-const SAMPLE_APPS = [
-  { pkg: 'com.android.chrome', label: 'Google Chrome', defaultMode: 'dynamic_balance' as AutonomousMode, baseFps: 120 },
-  { pkg: 'com.miHoYo.GenshinImpact', label: 'Genshin Impact', defaultMode: 'frame_pacing' as AutonomousMode, baseFps: 120 },
-  { pkg: 'com.google.android.youtube', label: 'YouTube', defaultMode: 'dynamic_balance' as AutonomousMode, baseFps: 120 },
-  { pkg: 'com.instagram.android', label: 'Instagram', defaultMode: 'touch_boost' as AutonomousMode, baseFps: 120 },
-  { pkg: 'com.google.android.apps.photos', label: 'Google Photos', defaultMode: 'dynamic_balance' as AutonomousMode, baseFps: 120 },
-  { pkg: 'com.android.launcher3', label: 'System Launcher', defaultMode: 'touch_boost' as AutonomousMode, baseFps: 120 },
-];
-
-export function getModeMeta(mode: AutonomousMode): {
-  label: string;
-  description: string;
-  badgeColor: string;
-  glowColor: string;
-} {
+export function getModeMeta(mode: AutonomousMode) {
   switch (mode) {
-    case 'launch_burst':
+    case 'sustained_load':
       return {
-        label: 'Cold Launch Burst',
-        description: 'Accelerating cold start via maximum top-app EAS Uclamp capacity',
-        badgeColor: 'text-amber-500 bg-amber-500/10 border-amber-500/30',
-        glowColor: '#f59e0b',
-      };
-    case 'frame_pacing':
-      return {
-        label: 'SurfaceFlinger 120Hz Pacing',
-        description: 'Dynamically mitigating frame drops & prioritizing render thread in cgroup',
+        label: 'Sustained Load',
+        description: 'CPU pressure is elevated while thermal headroom remains available.',
         badgeColor: 'text-sky-500 bg-sky-500/10 border-sky-500/30',
         glowColor: '#0ea5e9',
       };
-    case 'touch_boost':
+    case 'pressure_guard':
       return {
-        label: 'Tactile Touch Response',
-        description: 'Zero-latency interactive touch burst for 120Hz scrolling & gesture velocity',
-        badgeColor: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30',
-        glowColor: '#10b981',
+        label: 'Pressure Guard',
+        description: 'Memory or I/O contention is elevated, so artificial boosting is reduced.',
+        badgeColor: 'text-amber-500 bg-amber-500/10 border-amber-500/30',
+        glowColor: '#f59e0b',
       };
     case 'thermal_guard':
       return {
-        label: 'Thermal Throttling Defense',
-        description: 'Proactively managing clamp ceilings before hardware trip point occurs',
+        label: 'Thermal Guard',
+        description: 'Thermal pressure has priority; scheduler demand is reduced smoothly.',
         badgeColor: 'text-rose-500 bg-rose-500/10 border-rose-500/30',
         glowColor: '#f43f5e',
       };
-    case 'deep_idle':
-      return {
-        label: 'Zero-Overhead Idle Saver',
-        description: 'Display low-refresh state detected; epoll reactor parked with 0 uclamp floor',
-        badgeColor: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30',
-        glowColor: '#818cf8',
-      };
-    case 'dynamic_balance':
+    case 'balanced':
     default:
       return {
-        label: 'Dynamic Intelligent Balance',
-        description: 'Autonomously evaluating task load and balancing power vs throughput',
-        badgeColor: 'text-teal-400 bg-teal-500/10 border-teal-500/30',
+        label: 'Balanced',
+        description: 'Stable daily baseline with the configured top-app UClamp floor.',
+        badgeColor: 'text-teal-500 bg-teal-500/10 border-teal-500/30',
         glowColor: '#14b8a6',
       };
   }
 }
 
 export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
-  const meta = getModeMeta('dynamic_balance');
+  const meta = getModeMeta('balanced');
   return {
-    mode: 'dynamic_balance',
+    mode: 'balanced',
     modeLabel: meta.label,
     modeDescription: meta.description,
     engineActive: true,
     uclampMin: 320,
     uclampMax: 1024,
-    currentFps: 120,
-    targetFps: 120,
-    jankRatePct: 0.2,
-    socTempCelsius: 36.6,
     uclampSupported: true,
-    topApp: 'com.android.chrome',
-    topAppLabel: 'Google Chrome',
-    topAppPid: 24819,
-    epollEventsPerSec: 38,
-    baselineNodesSnapshotted: 18,
+    socTempCelsius: 36.5,
+    cpuPressurePct: 1.2,
+    memoryPressurePct: 0.3,
+    ioPressurePct: 0.4,
+    baselineNodesSnapshotted: 0,
     baselineStatus: 'protected',
-    batteryDrainEstimatedMh: 380,
     timestamp: Date.now(),
   };
 }
 
 export function createInitialLogs(): ReactionLogEvent[] {
   const now = new Date();
-  const t = (deltaSec: number) => {
-    const d = new Date(now.getTime() - deltaSec * 1000);
-    return d.toTimeString().slice(0, 8);
-  };
-
+  const stamp = (seconds: number) =>
+    new Date(now.getTime() - seconds * 1000).toTimeString().slice(0, 8);
   return [
     {
-      id: 'log-1',
-      timestamp: t(14),
+      id: 'preview-1',
+      timestamp: stamp(9),
+      type: 'INFO',
+      tag: 'Discovery',
+      message: 'Preview: semantic top-app UClamp capability discovered.',
+    },
+    {
+      id: 'preview-2',
+      timestamp: stamp(6),
       type: 'BASELINE',
-      tag: 'BaselineStore',
-      message: 'OEM factory values snapshotted (18 sysfs nodes preserved in transactional store).',
+      tag: 'Recovery',
+      message: 'Preview: pre-mutation values protected by a write-ahead journal.',
     },
     {
-      id: 'log-2',
-      timestamp: t(12),
+      id: 'preview-3',
+      timestamp: stamp(3),
       type: 'INFO',
-      tag: 'Reactor',
-      message: 'Linux epoll zero-polling event reactor initialized on kernel 6.1.75-android15.',
-    },
-    {
-      id: 'log-3',
-      timestamp: t(9),
-      type: 'CGROUP',
-      tag: 'CgroupV2',
-      message: 'Unified cgroups v2 controller attached. Task migration configured for /sys/fs/cgroup/top-app.',
-    },
-    {
-      id: 'log-4',
-      timestamp: t(6),
-      type: 'BOOST',
-      tag: 'Uclamp',
-      message: 'EAS dynamic clamp initialized. Top-app default clamped to min: 320, max: 1024.',
-    },
-    {
-      id: 'log-5',
-      timestamp: t(3),
-      type: 'FRAME',
-      tag: 'RenderBooster',
-      message: 'SurfaceFlinger HWUI frame pacing active: locked to 120 FPS target window.',
-    },
-    {
-      id: 'log-6',
-      timestamp: t(0),
-      type: 'INFO',
-      tag: 'Autonomous',
-      message: 'Autonomous engine online. Self-adapting to foreground application and thermal telemetry.',
+      tag: 'Stability',
+      message: 'Preview: four-state thermal + PSI policy is active.',
     },
   ];
 }
 
-// Tick the autonomous simulator state
 export function stepAutonomousSimulation(
   current: AutonomousTelemetry,
   config: AutonomousConfig,
-  forcedAppIndex?: number
+  forced?: 'cpu' | 'memory'
 ): { next: AutonomousTelemetry; event?: ReactionLogEvent } {
   if (!current.engineActive) {
     return {
       next: {
         ...current,
         uclampMin: 0,
-        currentFps: 60,
-        jankRatePct: 4.8,
-        epollEventsPerSec: 0,
-        mode: 'deep_idle',
-        modeLabel: 'Engine Paused (OEM Stock)',
-        modeDescription: 'All autonomous controls suspended; running on stock OEM kernel parameters',
+        uclampMax: 1024,
+        mode: 'balanced',
+        modeLabel: 'Engine Paused',
+        modeDescription: 'Preview controls paused; OEM baseline assumed.',
         timestamp: Date.now(),
       },
     };
   }
 
-  // 1. Determine autonomous mode dynamically
-  const appIdx = forcedAppIndex ?? Math.floor(Math.random() * SAMPLE_APPS.length);
-  const activeApp = SAMPLE_APPS[appIdx] || SAMPLE_APPS[0];
+  const biasFloor =
+    config.adaptiveBias === 'battery'
+      ? Math.round(config.balancedUclampMin * 0.75)
+      : config.adaptiveBias === 'responsiveness'
+      ? Math.round(config.balancedUclampMin * 1.25)
+      : config.balancedUclampMin;
+  const base = Math.max(0, Math.min(1024, biasFloor));
 
-  let nextMode: AutonomousMode = 'dynamic_balance';
-  let targetUclamp = 320;
-  let targetFps = config.targetFps;
-  let jank = 0.1;
-  let deltaTemp = (Math.random() - 0.5) * 0.3;
-  let nextTemp = Math.max(33.0, Math.min(46.0, current.socTempCelsius + deltaTemp));
+  const nextTemp = Math.max(
+    32,
+    Math.min(49, current.socTempCelsius + (Math.random() - 0.46) * 0.35)
+  );
+  const cpu = forced === 'cpu' ? 14 : Math.max(0, Math.random() * 10);
+  const memory = forced === 'memory' ? 6 : Math.max(0, Math.random() * 3.5);
+  const io = forced === 'memory' ? 6 : Math.max(0, Math.random() * 5.5);
 
-  // Check thermal guard
+  let mode: AutonomousMode = 'balanced';
+  let min = base;
+  let max = 1024;
+
   if (nextTemp >= config.thermalTripCelsius) {
-    nextMode = 'thermal_guard';
-    targetUclamp = 180;
-    targetFps = Math.min(targetFps, 90) as (120 | 90 | 60);
-    jank = 1.2;
-  } else {
-    // Normal autonomous state transitions
-    const rand = Math.random();
-    if (rand < 0.22) {
-      nextMode = 'touch_boost';
-      targetUclamp = config.touchBoostMin;
-    } else if (rand < 0.42 && activeApp.pkg.includes('GenshinImpact')) {
-      nextMode = 'frame_pacing';
-      targetUclamp = 512;
-    } else if (rand < 0.55 && Math.random() < 0.3) {
-      nextMode = 'launch_burst';
-      targetUclamp = 800;
-    } else if (rand > 0.88) {
-      nextMode = 'deep_idle';
-      targetUclamp = 40;
-      targetFps = 60;
-    } else {
-      nextMode = 'dynamic_balance';
-      if (config.adaptiveBias === 'responsiveness') {
-        targetUclamp = 420;
-      } else if (config.adaptiveBias === 'battery') {
-        targetUclamp = 220;
-      } else {
-        targetUclamp = 320;
-      }
-    }
+    mode = 'thermal_guard';
+    min = 0;
+    max = 896;
+  } else if (memory >= 3 || io >= 5) {
+    mode = 'pressure_guard';
+    min = Math.floor(base / 4);
+  } else if (cpu >= 8 && nextTemp <= config.thermalTripCelsius - 3) {
+    mode = 'sustained_load';
+    min = Math.min(1024, base + Math.floor(base / 2));
   }
 
-  // Adjust for config bias
-  if (config.adaptiveBias === 'responsiveness' && nextMode !== 'thermal_guard') {
-    targetUclamp = Math.min(1024, Math.round(targetUclamp * 1.15));
-  } else if (config.adaptiveBias === 'battery' && nextMode !== 'launch_burst') {
-    targetUclamp = Math.max(40, Math.round(targetUclamp * 0.82));
-  }
-
-  const fpsJitter = (Math.random() - 0.5) * 1.2;
-  const currentFps = Math.min(targetFps, Math.max(30, Math.round(targetFps - jank + fpsJitter)));
-  const meta = getModeMeta(nextMode);
-
-  const nextTelemetry: AutonomousTelemetry = {
+  const meta = getModeMeta(mode);
+  const next: AutonomousTelemetry = {
     ...current,
-    mode: nextMode,
+    mode,
     modeLabel: meta.label,
     modeDescription: meta.description,
-    uclampMin: targetUclamp,
-    currentFps,
-    targetFps,
-    jankRatePct: Number((Math.max(0, jank + (Math.random() * 0.2 - 0.1))).toFixed(1)),
+    uclampMin: min,
+    uclampMax: max,
     socTempCelsius: Number(nextTemp.toFixed(1)),
-    topApp: activeApp.pkg,
-    topAppLabel: activeApp.label,
-    topAppPid: 24000 + Math.floor(Math.random() * 5000),
-    epollEventsPerSec: Math.floor(25 + Math.random() * 30),
-    batteryDrainEstimatedMh: Math.round(targetUclamp * 0.65 + 180),
+    cpuPressurePct: Number(cpu.toFixed(1)),
+    memoryPressurePct: Number(memory.toFixed(1)),
+    ioPressurePct: Number(io.toFixed(1)),
     timestamp: Date.now(),
   };
 
-  // Generate occasional reaction event log if mode changed
-  let event: ReactionLogEvent | undefined;
-  if (current.mode !== nextMode) {
-    const timeStr = new Date().toTimeString().slice(0, 8);
-    const id = `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  if (mode === current.mode) return { next };
 
-    if (nextMode === 'launch_burst') {
-      event = {
-        id,
-        timestamp: timeStr,
-        type: 'BOOST',
-        tag: 'LaunchDetector',
-        message: `App launch transition detected for ${activeApp.label}: uclamp raised to ${targetUclamp} for ${config.burstDurationMs}ms`,
-      };
-    } else if (nextMode === 'frame_pacing') {
-      event = {
-        id,
-        timestamp: timeStr,
-        type: 'FRAME',
-        tag: 'RenderBooster',
-        message: `HWUI deadline variance stabilized: render thread pinned and clamped to ${targetUclamp}`,
-      };
-    } else if (nextMode === 'touch_boost') {
-      event = {
-        id,
-        timestamp: timeStr,
-        type: 'BOOST',
-        tag: 'TouchReaction',
-        message: `Input gesture detected: instantaneous ${config.touchBoostMin} uclamp touch burst applied`,
-      };
-    } else if (nextMode === 'thermal_guard') {
-      event = {
-        id,
-        timestamp: timeStr,
-        type: 'THERMAL',
-        tag: 'ThermalGuard',
-        message: `SoC reached ${nextTelemetry.socTempCelsius}°C (trip limit ${config.thermalTripCelsius}°C): clamped ceiling to prevent frame throttling`,
-      };
-    } else if (nextMode === 'dynamic_balance') {
-      event = {
-        id,
-        timestamp: timeStr,
-        type: 'CGROUP',
-        tag: 'Autonomous',
-        message: `Dynamic balance restored: ${activeApp.label} normalized with uclamp=${targetUclamp}`,
-      };
-    }
-  }
-
-  return { next: nextTelemetry, event };
+  const event: ReactionLogEvent = {
+    id: 'preview-' + Date.now(),
+    timestamp: new Date().toTimeString().slice(0, 8),
+    type: mode === 'thermal_guard' ? 'THERMAL' : mode === 'sustained_load' ? 'BOOST' : 'INFO',
+    tag: 'Stability',
+    message: 'Preview state -> ' + meta.label +
+      ' | cpu=' + next.cpuPressurePct + '% mem=' + next.memoryPressurePct +
+      '% io=' + next.ioPressurePct + '% temp=' + next.socTempCelsius + 'C',
+  };
+  return { next, event };
 }
