@@ -29,7 +29,7 @@ private:
     DeviceProfiler() = default;
     DeviceTopology cached_topology_;
     bool probed_{false};
-    mutable std::string thermal_zone_path_;
+    mutable std::vector<std::string> thermal_zone_paths_;
 
     void discover_clusters(DeviceTopology& topo);
     void detect_soc_name(DeviceTopology& topo);
