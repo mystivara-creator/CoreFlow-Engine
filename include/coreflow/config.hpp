@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <cctype>
+#include <cstdint>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
