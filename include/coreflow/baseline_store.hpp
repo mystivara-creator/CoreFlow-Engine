@@ -4,9 +4,9 @@
  * @author mystivara-creator
  * @license Apache-2.0
  * 
- * Solves the critical issue where third-party tweaks permanently pollute factory
- * settings. CoreFlow captures OEM values on startup and guarantees safe restoration
- * upon shutdown, crash, or thermal emergency.
+ * Records pre-mutation values and attempts verified per-node restoration.
+ * Same-boot process crashes are recovered on next start using a durable journal;
+ * recovery is best-effort and not an atomic whole-kernel transaction.
  */
 
 #pragma once
@@ -43,7 +43,7 @@ public:
     [[nodiscard]] bool recover_pending();
 
     /// Best-effort verified rollback of all modified nodes; never claim atomicity.
-    /// Atomic rollback of all modified nodes to factory baseline
+    /// Best-effort rollback of tracked modifications to original observed values
     size_t rollback_all();
 
     /// Query if any system node currently differs from factory baseline
