@@ -60,15 +60,14 @@ double read_psi_avg10(const char* path) {
 
 const char* state_name(WorkloadState state) {
     switch (state) {
-        case WorkloadState::DeepSleep: return "deep-sleep";
-        case WorkloadState::DailyIdle: return "pressure-guard";
-        case WorkloadState::Interactive: return "balanced";
-        case WorkloadState::BurstLaunch: return "burst";
-        case WorkloadState::SustainedGame: return "sustained-load";
-        case WorkloadState::ThermalThrottled: return "thermal-guard";
+        case WorkloadState::Balanced: return "balanced";
+        case WorkloadState::SustainedLoad: return "sustained-load";
+        case WorkloadState::PressureGuard: return "pressure-guard";
+        case WorkloadState::ThermalGuard: return "thermal-guard";
     }
     return "unknown";
 }
+
 bool process_matches(pid_t pid) {
     if (pid <= 0 || ::kill(pid, 0) != 0) return false;
     std::ifstream cmdline("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
