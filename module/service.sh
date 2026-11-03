@@ -1,20 +1,33 @@
 #!/system/bin/sh
-# CoreFlow Engine — Late Start Service
-# Starts native daemon after Android boot completion
+# CoreFlow Modern v2: single-instance daemon supervisor.
+MODDIR="${0%/*}"
+STATE="/data/adb/coreflow"
+LOGS="$STATE/logs"
+BIN="$MODDIR/system/bin/coreflowd"
+[ -f "$BIN" ] || BIN="$MODDIR/coreflowd"
+[ -f "$BIN" ] || exit 1
 
-MODDIR=${0%/*}
-
-# Wait until Android boots completely
 while [ "$(getprop sys.boot_completed)" != "1" ]; do
-    sleep 2
+  sleep 2
 done
+mkdir -p "$LOGS" || exit 1
+chmod 700 "$STATE" "$LOGS" 2>/dev/null
+echo 0 > "$STATE/boot_attempts"
 
-# Grant executable permission
-chmod 755 "$MODDIR/system/bin/coreflowd" 2>/dev/null || chmod 755 "$MODDIR/coreflowd" 2>/dev/null
-
-# Execute native daemon with nice -20 (high priority)
-if [ -f "$MODDIR/system/bin/coreflowd" ]; then
-    nohup "$MODDIR/system/bin/coreflowd" > /dev/null 2>&1 &
-elif [ -f "$MODDIR/coreflowd" ]; then
-    nohup "$MODDIR/coreflowd" > /dev/null 2>&1 &
+# Operator stop and boot-loop recovery are authoritative.
+if [ -f "$STATE/SAFE_MODE" ] || [ -f "$STATE/DISABLE" ] || [ -f "$MODDIR/disable" ]; then
+  echo "$(date) CoreFlow disabled by safety marker" >> "$LOGS/service.log"
+  exit 0
 fi
+chmod 755 "$BIN"
+"$BIN" --status 2>/dev/null | grep -q '"running":true' && exit 0
+
+LOG="$LOGS/coreflowd.log"
+if [ -f "$LOG" ]; then
+  SIZE=$(wc -c < "$LOG" 2>/dev/null)
+  case "$SIZE" in
+    ''|*[!0-9]*) ;;
+    *) [ "$SIZE" -gt 524288 ] && mv -f "$LOG" "$LOG.1" ;;
+  esac
+fi
+nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &
