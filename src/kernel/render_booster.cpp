@@ -51,25 +51,9 @@ void RenderBooster::on_frame_presented(double frame_time_ms) {
 }
 
 bool RenderBooster::unlock_display_refresh_limits() {
-    // Override vendor thermal-engine refresh locks on panel nodes
-    std::vector<std::string> panel_fps_nodes = {
-        "/sys/devices/virtual/graphics/fb0/dynamic_fps",
-        "/sys/class/drm/card0-DSI-1/fps",
-        "/sys/devices/platform/soc/soc:qcom,dsi-display-primary/fps"
-    };
-
-    bool any_success = false;
-    for (const auto& node : panel_fps_nodes) {
-        if (BaselineStore::instance().capture(node)) {
-            // Write max refresh rate support
-            if (BaselineStore::instance().apply_mutation(node, "120")) {
-                any_success = true;
-                std::cout << "[CoreFlow][Render] Unlocked 120Hz on " << node << std::endl;
-            }
-        }
-    }
-
-    return any_success;
+    // Refresh-rate policy is owned by Android DisplayManager and vendor HAL.
+    // Writing undocumented panel nodes can destabilize the display pipeline.
+    return false;
 }
 
 FrameMetrics RenderBooster::get_metrics() const {
@@ -77,11 +61,10 @@ FrameMetrics RenderBooster::get_metrics() const {
 }
 
 void RenderBooster::trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration) {
-    // Direct sysfs mutation protected by BaselineStore
-    BaselineStore::instance().apply_mutation(
-        "/sys/fs/cgroup/top-app/cpu.uclamp.min", 
-        std::to_string(uclamp_min)
-    );
+    // No timer-backed restoration exists yet. Fail closed instead of leaving
+    // a persistent boost that outlives the requested duration.
+    (void)uclamp_min;
+    (void)duration;
 }
 
 } // namespace coreflow
