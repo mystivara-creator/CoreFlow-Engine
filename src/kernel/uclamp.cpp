@@ -25,7 +25,7 @@ UclampGovernor::UclampGovernor(std::string_view cgroup_root)
     supported_ = fs::exists(test_path);
 
     if (supported_) {
-        std::cout << "[CoreFlow][Uclamp] EAS Utilization Clamping supported by kernel." << std::endl;
+        std::cerr << "[CoreFlow][Uclamp] EAS Utilization Clamping supported by kernel." << std::endl;
     } else {
         std::cerr << "[CoreFlow][Uclamp] Notice: cpu.uclamp.min not detected at " << test_path << std::endl;
     }
