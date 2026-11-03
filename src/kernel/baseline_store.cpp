@@ -345,7 +345,11 @@ size_t BaselineStore::rollback_locked() {
 
 bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || !path_safe(path) || new_value.empty()) return false;
+    if (!recovery_checked_) return false;
+    if (!path_safe(path) || new_value.empty()) {
+        rollback_locked();
+        return false;
+    }
     auto it = store_.find(path);
     if (it == store_.end()) {
         const std::string before = read_raw_node(path);

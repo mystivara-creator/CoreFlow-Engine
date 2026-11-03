@@ -1,7 +1,7 @@
-# CoreFlow Modern v2 offline WebUI
+# CoreFlow Modern v2 public assets
 
-This directory is the built offline React dashboard packaged with the module.
+Vite copies these static assets into the offline module WebUI.
 
-The native bridge uses only coreflowd --status, --stop, --rollback-baseline, the persistent CoreFlow config, and the bounded daemon log. Native controls represent the same four-state stability model as the C++ daemon.
+Native mode is capability-driven: the dashboard reads coreflowd status, the discovered top-app UClamp pair, the hottest trusted thermal sensor, recovery state, and daemon logs. Browser mode is an explicitly labelled simulation of the same four-state stability policy.
 
-The browser-only preview is explicitly simulated. Modern v2 does not claim native FPS/frame-pacing telemetry, package-specific game detection, vendor unlocks, or arbitrary sysfs mutation.
+There is no native FPS, SurfaceFlinger, package-specific game, vendor-unlock, or arbitrary sysfs control in Modern v2.

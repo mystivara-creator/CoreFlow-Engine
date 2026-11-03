@@ -13,6 +13,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/render_booster.hpp"
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/thermal_monitor.hpp"
 #include "coreflow/pid_governor.hpp"
 #include "coreflow/hardware_longevity.hpp"
 
@@ -36,12 +37,33 @@ void emergency_crash_handler(int sig) {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    // 0. Register emergency crash traps for unexpected fatal faults
+    // 0. Handle command-line options
+    if (argc > 1) {
+        const std::string_view arg(argv[1]);
+        if (arg == "--rollback-baseline" || arg == "--rollback") {
+            size_t restored = BaselineStore::instance().rollback_all();
+            std::cout << "[CoreFlow] Restored " << restored << " modified nodes to OEM baseline.\n";
+            return 0;
+        }
+        if (arg == "--status") {
+            bool modified = BaselineStore::instance().has_active_mutations();
+            std::cout << "[CoreFlow] Status: " << (modified ? "Active mutations present" : "Clean (OEM baseline)") << "\n";
+            return 0;
+        }
+        if (arg == "--recover") {
+            return BaselineStore::instance().recover_pending() ? 0 : 1;
+        }
+    }
+
+    // 1. Register emergency crash traps for unexpected fatal faults
     std::signal(SIGSEGV, emergency_crash_handler);
     std::signal(SIGBUS,  emergency_crash_handler);
     std::signal(SIGABRT, emergency_crash_handler);
 
-    // 1. Load Dynamic Configuration (Zero Hardcoded Values)
+    // 2. Recover any pending uncommitted mutations from previous daemon session
+    BaselineStore::instance().recover_pending();
+
+    // 3. Load Dynamic Configuration (Zero Hardcoded Values)
     auto config = DaemonConfig::load_best_available();
 
     std::cout << "========================================================\n"
@@ -52,12 +74,12 @@ int main(int argc, char* argv[]) {
               << "========================================================\n"
               << std::endl;
 
-    // 2. Hardware & System Probe
+    // 4. Hardware & System Probe
     auto topo = DeviceProfiler::instance().probe();
     std::cout << "[Init] Detected Hardware: " << topo.soc_name 
               << " (CPUs: " << topo.online_cpus_mask << ", Kernel: " << topo.kernel_version << ")" << std::endl;
 
-    // 3. Initialize Controllers with dynamic configuration
+    // 5. Initialize Controllers with dynamic configuration
     CgroupV2Controller cgroup_ctrl;
     UclampGovernor uclamp_gov;
     RenderBooster render_booster;
@@ -66,7 +88,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "[Init][Warning] cgroups v2 not active. Falling back to hybrid mode." << std::endl;
     }
 
-    // 4. Initialize Hardware Longevity (Battery Step-Charging & UFS Storage Pacing)
+    // 6. Initialize Hardware Longevity (Battery Step-Charging & UFS Storage Pacing)
     LongevityConfig longevity_cfg{
         .enable_battery_step_charging = config.enable_battery_step_charging,
         .enable_ufs_burst_pacing = config.enable_ufs_burst_pacing,
@@ -77,7 +99,7 @@ int main(int argc, char* argv[]) {
     };
     HardwareLongevityManager::instance().initialize(longevity_cfg);
 
-    // 5. Initialize Predictive PID Equilibrium Governor
+    // 7. Initialize Predictive PID Equilibrium Governor
     PidParameters pid_params{
         .kp = config.pid_kp,
         .ki = config.pid_ki,
@@ -86,7 +108,7 @@ int main(int argc, char* argv[]) {
     };
     PidEquilibriumGovernor pid_gov(pid_params);
 
-    // 6. Dynamic Vendor & Rendering Unlock
+    // 8. Dynamic Vendor & Rendering Unlock
     if (config.unlock_vendor_clamping) {
         cgroup_ctrl.unlock_vendor_restrictions();
     }
@@ -94,7 +116,7 @@ int main(int argc, char* argv[]) {
         render_booster.unlock_display_refresh_limits();
     }
 
-    // 7. Epoll Reactor Setup (Zero-Polling)
+    // 9. Epoll Reactor Setup (Zero-Polling)
     EpollReactor reactor;
 
     // Mask signals for clean signalfd event handling
@@ -113,12 +135,16 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    // 8. Dynamic Predictive PID Heartbeat (timerfd)
+    // 10. Dynamic Predictive PID Heartbeat (timerfd)
     auto interval = std::chrono::milliseconds(config.temp_monitor_interval_ms);
     reactor.create_timerfd(
         interval,
-        [&uclamp_gov, &pid_gov, &topo, &config, interval](uint32_t) {
+        [&uclamp_gov, &pid_gov, &config, interval](uint32_t) {
             float temp = DeviceProfiler::instance().get_soc_temperature();
+            float monitor_temp = ThermalMonitor::instance().hottest_celsius();
+            if (monitor_temp > 0.0f) {
+                temp = std::max(temp, monitor_temp);
+            }
 
             // Evaluate battery step-charging longevity
             HardwareLongevityManager::instance().monitor_battery_thermals(temp);
@@ -127,26 +153,34 @@ int main(int argc, char* argv[]) {
                 // Continuous PID Dynamic Equilibrium: micro-adjusts capacity smoothly
                 float budget = pid_gov.compute_thermal_budget(temp, interval);
                 if (budget < 0.65f) {
-                    uclamp_gov.apply_state(WorkloadState::ThermalThrottled, topo.tier);
+                    uclamp_gov.apply_state(WorkloadState::ThermalGuard,
+                                           config.top_app_interactive_min,
+                                           config.top_app_interactive_max);
                 } else {
-                    uclamp_gov.apply_state(WorkloadState::Interactive, topo.tier);
+                    uclamp_gov.apply_state(WorkloadState::Balanced,
+                                           config.top_app_interactive_min,
+                                           config.top_app_interactive_max);
                 }
             } else {
                 // Threshold mode
                 if (temp >= config.thermal_trip_celsius) {
-                    uclamp_gov.apply_state(WorkloadState::ThermalThrottled, topo.tier);
+                    uclamp_gov.apply_state(WorkloadState::ThermalGuard,
+                                           config.top_app_interactive_min,
+                                           config.top_app_interactive_max);
                 } else {
-                    uclamp_gov.apply_state(WorkloadState::Interactive, topo.tier);
+                    uclamp_gov.apply_state(WorkloadState::Balanced,
+                                           config.top_app_interactive_min,
+                                           config.top_app_interactive_max);
                 }
             }
         }
     );
 
-    // 9. Run Event Loop (Zero CPU idle wakeups)
+    // 11. Run Event Loop (Zero CPU idle wakeups)
     std::cout << "[CoreFlow] Daemon running. Epoll zero-polling & PID equilibrium active." << std::endl;
     reactor.run();
 
-    // 10. Shutdown: Atomic Rollback to Factory OEM Baseline
+    // 12. Shutdown: Verified Rollback to Factory OEM Baseline
     std::cout << "[CoreFlow] Restoring OEM factory baseline nodes..." << std::endl;
     size_t restored = BaselineStore::instance().rollback_all();
     std::cout << "[CoreFlow] Clean exit completed. (" << restored << " nodes verified)." << std::endl;

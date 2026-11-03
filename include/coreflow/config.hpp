@@ -44,6 +44,11 @@ struct DaemonConfig {
     uint32_t temp_monitor_interval_ms{1000};
     float thermal_trip_celsius{44.0f};
     float thermal_recover_celsius{40.0f};
+    float thermal_emergency_margin_celsius{5.0f};
+    float thermal_headroom_celsius{3.0f};
+    double memory_pressure_guard_pct{15.0};
+    double io_pressure_guard_pct{15.0};
+    double cpu_pressure_boost_pct{25.0};
     bool emergency_rollback_on_overheat{true};
 
     // [pid_equilibrium]
@@ -77,6 +82,27 @@ struct DaemonConfig {
         std::string lower = val;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         return lower == "true" || lower == "1" || lower == "yes";
+    }
+
+    static bool parse_float_safe(std::string_view text, float& out) noexcept {
+        double d = 0.0;
+        if (!parse_ascii_double(text, d) || !std::isfinite(d)) return false;
+        out = static_cast<float>(d);
+        return true;
+    }
+
+    static bool parse_double_safe(std::string_view text, double& out) noexcept {
+        double d = 0.0;
+        if (!parse_ascii_double(text, d) || !std::isfinite(d)) return false;
+        out = d;
+        return true;
+    }
+
+    static bool parse_uint32_safe(std::string_view text, uint32_t& out) noexcept {
+        double d = 0.0;
+        if (!parse_ascii_double(text, d) || !std::isfinite(d) || d < 0.0 || d > 4294967295.0) return false;
+        out = static_cast<uint32_t>(d);
+        return true;
     }
 
     static DaemonConfig load_from_file(const std::string& path) {
@@ -117,40 +143,136 @@ struct DaemonConfig {
             else if (key == "force_120hz_rendering") cfg.force_120hz_rendering = parse_bool(val);
 
             // [uclamp_tuning]
-            else if (key == "top_app_interactive_min") cfg.top_app_interactive_min = std::stoul(val);
-            else if (key == "top_app_interactive_max") cfg.top_app_interactive_max = std::stoul(val);
-            else if (key == "top_app_burst_launch_min") cfg.top_app_burst_launch_min = std::stoul(val);
-            else if (key == "top_app_game_min") cfg.top_app_game_min = std::stoul(val);
-            else if (key == "top_app_game_max") cfg.top_app_game_max = std::stoul(val);
-            else if (key == "foreground_min") cfg.foreground_min = std::stoul(val);
-            else if (key == "background_max") cfg.background_max = std::stoul(val);
-            else if (key == "sched_util_clamp_min_rt_default") cfg.sched_util_clamp_min_rt_default = std::stoul(val);
+            else if (key == "top_app_interactive_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_interactive_min = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "top_app_interactive_max") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_interactive_max = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "top_app_burst_launch_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_burst_launch_min = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "top_app_game_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_game_min = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "top_app_game_max") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_game_max = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "foreground_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.foreground_min = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "background_max") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.background_max = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "sched_util_clamp_min_rt_default") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.sched_util_clamp_min_rt_default = std::clamp(v, 0u, 1024u);
+            }
 
             // [thermal_guardian]
-            else if (key == "temp_monitor_interval_ms") cfg.temp_monitor_interval_ms = std::stoul(val);
-            else if (key == "thermal_trip_celsius") cfg.thermal_trip_celsius = std::stof(val);
-            else if (key == "thermal_recover_celsius") cfg.thermal_recover_celsius = std::stof(val);
+            else if (key == "temp_monitor_interval_ms") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.temp_monitor_interval_ms = std::clamp(v, 1000u, 60000u);
+                else cfg.temp_monitor_interval_ms = 1000u;
+            }
+            else if (key == "thermal_trip_celsius") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v) && v >= 30.0f && v <= 80.0f) cfg.thermal_trip_celsius = v;
+            }
+            else if (key == "thermal_recover_celsius") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v) && v >= 25.0f && v <= 75.0f) cfg.thermal_recover_celsius = v;
+            }
             else if (key == "emergency_rollback_on_overheat") cfg.emergency_rollback_on_overheat = parse_bool(val);
+
+            // [stability_policy]
+            else if (key == "cpu_pressure_boost_pct") {
+                double v = 0.0;
+                if (parse_double_safe(val, v)) cfg.cpu_pressure_boost_pct = std::clamp(v, 0.5, 50.0);
+            }
+            else if (key == "memory_pressure_guard_pct") {
+                double v = 0.0;
+                if (parse_double_safe(val, v)) cfg.memory_pressure_guard_pct = std::clamp(v, 0.5, 50.0);
+            }
+            else if (key == "io_pressure_guard_pct") {
+                double v = 0.0;
+                if (parse_double_safe(val, v)) cfg.io_pressure_guard_pct = std::clamp(v, 0.5, 50.0);
+                else cfg.io_pressure_guard_pct = 5.0;
+            }
+            else if (key == "thermal_headroom_celsius") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.thermal_headroom_celsius = std::clamp(v, 0.5f, 10.0f);
+            }
+            else if (key == "thermal_emergency_margin_celsius") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.thermal_emergency_margin_celsius = std::clamp(v, 2.0f, 15.0f);
+            }
 
             // [pid_equilibrium]
             else if (key == "enable_pid_equilibrium") cfg.enable_pid_equilibrium = parse_bool(val);
-            else if (key == "pid_target_celsius") cfg.pid_target_celsius = std::stof(val);
-            else if (key == "pid_kp") cfg.pid_kp = std::stof(val);
-            else if (key == "pid_ki") cfg.pid_ki = std::stof(val);
-            else if (key == "pid_kd") cfg.pid_kd = std::stof(val);
+            else if (key == "pid_target_celsius") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.pid_target_celsius = v;
+            }
+            else if (key == "pid_kp") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.pid_kp = v;
+            }
+            else if (key == "pid_ki") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.pid_ki = v;
+            }
+            else if (key == "pid_kd") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.pid_kd = v;
+            }
 
             // [hardware_longevity]
             else if (key == "enable_battery_step_charging") cfg.enable_battery_step_charging = parse_bool(val);
             else if (key == "enable_ufs_burst_pacing") cfg.enable_ufs_burst_pacing = parse_bool(val);
-            else if (key == "battery_step_temp_threshold") cfg.battery_step_temp_threshold = std::stof(val);
-            else if (key == "stepped_charge_current_ma") cfg.stepped_charge_current_ma = std::stoul(val);
-            else if (key == "top_app_io_weight") cfg.top_app_io_weight = std::stoul(val);
-            else if (key == "background_io_weight") cfg.background_io_weight = std::stoul(val);
+            else if (key == "battery_step_temp_threshold") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.battery_step_temp_threshold = v;
+            }
+            else if (key == "stepped_charge_current_ma") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.stepped_charge_current_ma = v;
+            }
+            else if (key == "top_app_io_weight") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.top_app_io_weight = v;
+            }
+            else if (key == "background_io_weight") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.background_io_weight = v;
+            }
 
             // [render_pipeline]
-            else if (key == "jank_detection_threshold_ratio") cfg.jank_detection_threshold_ratio = std::stof(val);
-            else if (key == "burst_boost_duration_ms") cfg.burst_boost_duration_ms = std::stoul(val);
-            else if (key == "touch_boost_uclamp_min") cfg.touch_boost_uclamp_min = std::stoul(val);
+            else if (key == "jank_detection_threshold_ratio") {
+                float v = 0.0f;
+                if (parse_float_safe(val, v)) cfg.jank_detection_threshold_ratio = v;
+            }
+            else if (key == "burst_boost_duration_ms") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.burst_boost_duration_ms = v;
+            }
+            else if (key == "touch_boost_uclamp_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.touch_boost_uclamp_min = v;
+            }
+        }
+
+        // Post-validation: ensure max >= min
+        cfg.top_app_interactive_max = std::max(cfg.top_app_interactive_max, cfg.top_app_interactive_min);
+        if (cfg.thermal_recover_celsius >= cfg.thermal_trip_celsius) {
+            cfg.thermal_recover_celsius = cfg.thermal_trip_celsius - 4.0f;
         }
 
         return cfg;

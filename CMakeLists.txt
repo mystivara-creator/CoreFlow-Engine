@@ -43,8 +43,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/baseline_store.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
-    src/kernel/psi_monitor.cpp
-    src/kernel/memory_guardian.cpp
+    src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
 )
 
@@ -62,6 +61,7 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+
     add_executable(test_baseline_rollback
         tests/test_baseline_rollback.cpp
         src/kernel/baseline_store.cpp
@@ -71,4 +71,43 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_baseline_rollback PRIVATE log)
     endif()
     add_test(NAME BaselineRollbackTest COMMAND test_baseline_rollback)
+
+    add_executable(test_config
+        tests/test_config.cpp
+    )
+    target_include_directories(test_config PRIVATE include)
+    if(ANDROID)
+        target_link_libraries(test_config PRIVATE log)
+    endif()
+    add_test(NAME ConfigTest COMMAND test_config)
+
+    add_executable(test_stability_policy
+        tests/test_stability_policy.cpp
+    )
+    target_include_directories(test_stability_policy PRIVATE include)
+    if(ANDROID)
+        target_link_libraries(test_stability_policy PRIVATE log)
+    endif()
+    add_test(NAME StabilityPolicyTest COMMAND test_stability_policy)
+
+    add_executable(test_thermal_monitor
+        tests/test_thermal_monitor.cpp
+        src/kernel/thermal_monitor.cpp
+    )
+    target_include_directories(test_thermal_monitor PRIVATE include)
+    if(ANDROID)
+        target_link_libraries(test_thermal_monitor PRIVATE log)
+    endif()
+    add_test(NAME ThermalMonitorTest COMMAND test_thermal_monitor)
+
+    add_executable(test_uclamp
+        tests/test_uclamp.cpp
+        src/kernel/uclamp.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_uclamp PRIVATE include)
+    if(ANDROID)
+        target_link_libraries(test_uclamp PRIVATE log)
+    endif()
+    add_test(NAME UclampTest COMMAND test_uclamp)
 endif()

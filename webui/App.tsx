@@ -97,40 +97,31 @@ export const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [config]);
 
-  // Touch boost simulation trigger
-  const handleSimulateTouchBoost = useCallback(() => {
-    setTelemetry((prev) => ({
-      ...prev,
-      mode: 'touch_boost',
-      modeLabel: 'Touch Boost (Render)',
-      modeDescription: 'Instantaneous EAS Uclamp burst for fluid 120Hz gesture response',
-      uclampMin: config.touchBoostMin,
-      currentFps: config.targetFps,
-      jankRatePct: 0.1,
-    }));
+  // Simulated CPU load
+  const handleSimulateCpuLoad = useCallback(() => {
+    setTelemetry((prev) => {
+      const { next, event } = stepAutonomousSimulation(prev, config, 'cpu');
+      if (event) setLogs((l) => [event, ...l.slice(0, 49)]);
+      return next;
+    });
     addLog(
       'BOOST',
-      'RenderBooster',
-      `Touch event detected: raised EAS uclamp_min to ${config.touchBoostMin} for 120ms`
+      'PSI',
+      'Elevated CPU load simulated: top-app boost evaluated against thermal headroom'
     );
   }, [config, addLog]);
 
-  // App launch burst simulation trigger
-  const handleSimulateAppLaunch = useCallback(() => {
-    setTelemetry((prev) => ({
-      ...prev,
-      mode: 'launch_burst',
-      modeLabel: 'App Launch Burst',
-      modeDescription: 'Cold startup acceleration; CPU capacity pinned for zero latency',
-      uclampMin: 800,
-      currentFps: config.targetFps,
-      jankRatePct: 0.0,
-      topAppLabel: 'com.example.game (Cold Launch)',
-    }));
+  // Simulated memory pressure
+  const handleSimulateMemoryPressure = useCallback(() => {
+    setTelemetry((prev) => {
+      const { next, event } = stepAutonomousSimulation(prev, config, 'memory');
+      if (event) setLogs((l) => [event, ...l.slice(0, 49)]);
+      return next;
+    });
     addLog(
       'BOOST',
-      'CgroupV2',
-      `App cold launch: cpuset pinned to online CPUs, uclamp_min set to 800`
+      'PSI',
+      'Elevated memory/IO pressure simulated: entered pressure guard'
     );
   }, [config, addLog]);
 
@@ -148,15 +139,15 @@ export const App: React.FC = () => {
       return {
         ...prev,
         engineActive: nextActive,
-        mode: nextActive ? 'dynamic_balance' : 'deep_idle',
-        modeLabel: nextActive ? 'Dynamic Balance' : 'OEM Stock Mode',
+        mode: nextActive ? 'balanced' : 'balanced',
+        modeLabel: nextActive ? 'Balanced' : 'Engine Paused',
         modeDescription: nextActive
-          ? 'EAS uclamp & cgroups v2 dynamic equilibrium active'
-          : 'Suspended; running on factory stock parameters',
-        uclampMin: nextActive ? 320 : 0,
+          ? 'Stable daily baseline with the configured top-app UClamp floor.'
+          : 'Preview controls paused; OEM baseline assumed.',
+        uclampMin: nextActive ? config.balancedUclampMin : 0,
       };
     });
-  }, [addLog]);
+  }, [config.balancedUclampMin, addLog]);
 
   // Save config to coreflow.conf
   const handleSaveConfig = async () => {
@@ -174,15 +165,13 @@ enable_uclamp = true
 
 [device_adaptation]
 tier_override = auto
-unlock_vendor_clamping = ${config.unlockVendorClamping}
-force_120hz_rendering = ${config.targetFps === 120}
+unlock_vendor_clamping = true
+force_120hz_rendering = true
 
 [uclamp_tuning]
-top_app_interactive_min = ${config.adaptiveBias === 'responsiveness' ? 450 : config.adaptiveBias === 'battery' ? 200 : 320}
+top_app_interactive_min = ${config.balancedUclampMin}
 top_app_interactive_max = 1024
 top_app_burst_launch_min = 800
-touch_boost_uclamp_min = ${config.touchBoostMin}
-burst_boost_duration_ms = ${config.burstDurationMs}
 
 [thermal_guardian]
 thermal_trip_celsius = ${config.thermalTripCelsius}
@@ -201,7 +190,7 @@ emergency_rollback_on_overheat = true
       addLog(
         'INFO',
         'AutonomousConfig',
-        `Autonomous parameters updated: Bias=${config.adaptiveBias}, Target=${config.targetFps}Hz, ThermalTrip=${config.thermalTripCelsius}°C`
+        `Autonomous parameters updated: Bias=${config.adaptiveBias}, Floor=${config.balancedUclampMin}, ThermalTrip=${config.thermalTripCelsius}°C`
       );
       setTimeout(() => setSaveMessage(null), 3000);
     }, 400);
@@ -226,7 +215,7 @@ emergency_rollback_on_overheat = true
         ...prev,
         baselineStatus: 'restored',
         uclampMin: 0,
-        mode: 'deep_idle',
+        mode: 'balanced',
         modeLabel: 'OEM Baseline Restored',
         modeDescription: 'All sysfs nodes reverted to initial factory snapshot.',
       }));
@@ -248,7 +237,7 @@ emergency_rollback_on_overheat = true
         onToggleEngine={handleToggleEngine}
         isDark={isDark}
         onToggleTheme={toggleTheme}
-        epollEventsPerSec={telemetry.epollEventsPerSec}
+        epollEventsPerSec={telemetry.engineActive ? 60 : 0}
         modeLabel={telemetry.modeLabel}
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
       />
@@ -260,8 +249,8 @@ emergency_rollback_on_overheat = true
           <AutonomousStateHero
             telemetry={telemetry}
             thermalTripCelsius={config.thermalTripCelsius}
-            onSimulateTouchBoost={handleSimulateTouchBoost}
-            onSimulateAppLaunch={handleSimulateAppLaunch}
+            onSimulateCpuLoad={handleSimulateCpuLoad}
+            onSimulateMemoryPressure={handleSimulateMemoryPressure}
           />
         </section>
 

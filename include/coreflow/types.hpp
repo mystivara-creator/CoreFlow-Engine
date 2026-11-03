@@ -3,9 +3,6 @@
  * @brief CoreFlow Engine Modern C++20 Core Type Definitions
  * @author mystivara-creator
  * @license Apache-2.0
- * 
- * Target: Android 15+ (Linux Kernel 5.15 / 6.1 / 6.6)
- * Standards: Modern C++20, cgroups v2, EAS (Energy Aware Scheduling), Uclamp
  */
 
 #pragma once
@@ -17,8 +14,29 @@
 #include <chrono>
 #include <optional>
 #include <system_error>
+#include <cerrno>
+#include <cstdlib>
 
 namespace coreflow {
+
+// ============================================================================
+// Robust ASCII Numeric Parsing (Noexcept & Safe)
+// ============================================================================
+inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) return false;
+    const size_t last = text.find_last_not_of(" \t\r\n");
+    std::string_view trimmed = text.substr(first, last - first + 1);
+    if (trimmed.empty()) return false;
+
+    char* endptr = nullptr;
+    std::string s(trimmed);
+    errno = 0;
+    double d = std::strtod(s.c_str(), &endptr);
+    if (endptr == s.c_str() || *endptr != '\0' || errno == ERANGE) return false;
+    value = d;
+    return true;
+}
 
 // ============================================================================
 // Device Tier & Architecture Taxonomy
@@ -31,12 +49,18 @@ enum class DeviceTier : uint8_t {
 };
 
 enum class WorkloadState : uint8_t {
-    DeepSleep,   ///< Screen-off / Ambient Doze (ultra-conservative)
-    DailyIdle,   ///< Nominal background, low frequency ceiling
-    Interactive, ///< Active touch scrolling, responsive uclamp floor
-    BurstLaunch, ///< App startup / dexopt / cold launch boost
-    SustainedGame,///< High-framerate gaming, thermal-constrained uclamp
-    ThermalThrottled ///< Critical thermal mitigation state
+    Balanced = 0,
+    SustainedLoad = 1,
+    PressureGuard = 2,
+    ThermalGuard = 3,
+
+    // Aliases for compatibility with different submodules
+    Interactive = Balanced,
+    DailyIdle = Balanced,
+    DeepSleep = Balanced,
+    BurstLaunch = SustainedLoad,
+    SustainedGame = SustainedLoad,
+    ThermalThrottled = ThermalGuard
 };
 
 enum class ClusterType : uint8_t {
