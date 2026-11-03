@@ -21,7 +21,6 @@ interface NativeStatus {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
-  cgroupV2: boolean;
   socTempCelsius: number | null;
   recoveryPending: boolean;
 }
@@ -61,7 +60,7 @@ export const App: React.FC = () => {
       ...initial, engineActive: false, currentFps: 0, targetFps: 0,
       jankRatePct: 0, socTempCelsius: -1, uclampMin: 0, uclampMax: 0,
       topApp: '', topAppLabel: 'Unavailable', topAppPid: 0, epollEventsPerSec: 0,
-      cgroupsV2Status: 'disabled', baselineNodesSnapshotted: 0,
+      uclampSupported: false, baselineNodesSnapshotted: 0,
       modeLabel: 'Awaiting native status', modeDescription: 'Awaiting daemon response',
     } : initial;
   });
@@ -92,7 +91,7 @@ export const App: React.FC = () => {
     setTelemetry(old => ({
       ...old, engineActive: status.running, uclampMin: status.uclampMin,
       uclampMax: status.uclampMax, socTempCelsius: status.socTempCelsius ?? -1,
-      cgroupsV2Status: status.cgroupV2 ? 'unified_active' : 'disabled',
+      uclampSupported: status.uclampSupported,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       modeLabel: status.running ? (status.uclampSupported ? 'Native daemon active' : 'Daemon active: UClamp unavailable') : 'Daemon stopped',
       modeDescription: status.recoveryPending ? (status.running ? 'Active changes tracked in recovery journal' : 'Recovery pending after daemon stop') : 'Native kernel status',
