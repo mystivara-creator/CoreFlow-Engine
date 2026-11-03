@@ -154,6 +154,8 @@ int main(int argc, char* argv[]) {
 
     bool applied = false;
     WorkloadState current = WorkloadState::DailyIdle;
+    uint32_t consecutive_failures = 0;
+    auto retry_after = std::chrono::steady_clock::time_point::min();
     const auto interval = std::chrono::milliseconds(
         std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
     if (reactor.create_timerfd(interval, [&](uint32_t) {
@@ -167,7 +169,11 @@ int main(int argc, char* argv[]) {
         const float temp = DeviceProfiler::instance().get_soc_temperature();
         if (temp < 0.0f) {
             // No trusted thermal sensor: do not apply speculative performance boost.
-            if (applied) { baseline.rollback_all(); applied = false; }
+            if (applied) {
+                baseline.rollback_all();
+                applied = false;
+                if (baseline.has_active_mutations()) reactor.stop();
+            }
             return;
         }
         const auto desired = temp >= config.thermal_trip_celsius
@@ -176,12 +182,25 @@ int main(int argc, char* argv[]) {
                temp > config.thermal_recover_celsius)
                 ? WorkloadState::ThermalThrottled : WorkloadState::Interactive;
         if (!applied || current != desired) {
-            if (governor.apply_state(desired, topology.tier, config.top_app_interactive_min, config.top_app_interactive_max)) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < retry_after) return;
+            if (governor.apply_state(desired, topology.tier,
+                                     config.top_app_interactive_min, config.top_app_interactive_max)) {
                 current = desired;
                 applied = true;
+                consecutive_failures = 0;
             } else {
                 baseline.rollback_all();
                 applied = false;
+                if (baseline.has_active_mutations()) {
+                    reactor.stop(); // Fail closed when recovery was incomplete.
+                    return;
+                }
+                consecutive_failures = std::min(consecutive_failures + 1, 8u);
+                const auto delay_sec = std::min(300u, 1u << consecutive_failures);
+                retry_after = now + std::chrono::seconds(delay_sec);
+                std::cerr << "[CoreFlow] UClamp write failed; retry no sooner than "
+                          << delay_sec << " seconds.\n";
             }
         }
     }) < 0) {
