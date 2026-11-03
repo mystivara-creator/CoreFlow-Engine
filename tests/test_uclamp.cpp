@@ -40,7 +40,7 @@ int main() {
     assert(percentage.is_supported());
     assert(percentage.encoding_name() == "percentage");
     assert(percentage.target_path() == percent_top);
-    assert(percentage.apply_state(WorkloadState::Balanced, DeviceTier::MidRange, 320, 1024));
+    assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(read_token(percent_top + "/cpu.uclamp.min") == "31.25");
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
     assert(percentage.get_top_app_min() == 320u);
@@ -60,7 +60,7 @@ int main() {
     assert(capacity.is_supported());
     assert(capacity.encoding_name() == "capacity1024");
     assert(capacity.target_path() == capacity_top);
-    assert(capacity.apply_state(WorkloadState::SustainedLoad, DeviceTier::Flagship, 320, 1024));
+    assert(capacity.apply_state(WorkloadState::SustainedLoad, 320, 1024));
     assert(read_token(capacity_top + "/cpu.uclamp.min") == "480");
     assert(read_token(capacity_top + "/cpu.uclamp.max") == "1024");
     assert(capacity.get_top_app_min() == 480u);
