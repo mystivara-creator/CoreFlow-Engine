@@ -67,11 +67,26 @@ bool BaselineStore::capture(const std::string& path) {
 bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // Fail closed for both baseline capture errors and node write errors.
+    // A rejected mutation must not leave earlier changes active.
+    const auto fail_safe = [&]() {
+        std::cerr << "[CoreFlow][FailSafe] Mutation rejected for node '" << path
+                  << "'. Restoring tracked OEM baselines." << std::endl;
+        for (auto& [p, snap] : store_) {
+            if (snap.is_modified && write_raw_node(p, snap.factory_value)) {
+                snap.active_value = snap.factory_value;
+                snap.is_modified = false;
+            }
+        }
+        return false;
+    };
+
     auto it = store_.find(path);
     if (it == store_.end()) {
-        // Automatically capture factory baseline first
         std::string factory_val = read_raw_node(path);
-        if (factory_val.empty()) return false;
+        if (factory_val.empty()) {
+            return fail_safe();
+        }
         store_[path] = NodeSnapshot{
             .path = path,
             .factory_value = factory_val,
@@ -81,28 +96,13 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         it = store_.find(path);
     }
 
-    if (write_raw_node(path, new_value)) {
-        it->second.active_value = new_value;
-        it->second.is_modified = (it->second.active_value != it->second.factory_value);
-        return true;
+    if (!write_raw_node(path, new_value)) {
+        return fail_safe();
     }
 
-    // IMMEDIATE FAIL-SAFE FALLBACK:
-    // If any node mutation fails, atomically rollback all active mutations
-    // to OEM defaults to prevent an unstable, inconsistent kernel state.
-    std::cerr << "[CoreFlow][FailSafe] Write failed for node '" << path 
-              << "'! Triggering immediate rollback to OEM defaults." << std::endl;
-
-    for (auto& [p, snap] : store_) {
-        if (snap.is_modified) {
-            if (write_raw_node(p, snap.factory_value)) {
-                snap.active_value = snap.factory_value;
-                snap.is_modified = false;
-            }
-        }
-    }
-
-    return false;
+    it->second.active_value = new_value;
+    it->second.is_modified = (new_value != it->second.factory_value);
+    return true;
 }
 
 bool BaselineStore::rollback(const std::string& path) {
