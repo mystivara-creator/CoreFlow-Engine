@@ -11,10 +11,10 @@ if [ "$ARCH" != "arm64" ]; then
 fi
 
 # Verify cgroups v2 availability
-if [ ! -d "/sys/fs/cgroup" ]; then
-    ui_print "! Warning: /sys/fs/cgroup not found. Enabling hybrid mode."
+if [ -f "/sys/fs/cgroup/cgroup.controllers" ]; then
+    ui_print "- Detected unified cgroups v2; node support checked by daemon."
 else
-    ui_print "- Detected modern cgroups v2 subsystem."
+    ui_print "! No unified cgroups v2 controller detected. Unsupported tuning stays inactive."
 fi
 
 # Set executable permissions
@@ -25,4 +25,6 @@ elif [ -f "$MODPATH/coreflowd" ]; then
 fi
 
 set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
+set_perm "$MODPATH/uninstall.sh" 0 0 0755
 ui_print "- Installation successful! Reboot to activate."
