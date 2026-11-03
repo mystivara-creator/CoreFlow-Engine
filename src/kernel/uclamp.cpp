@@ -193,14 +193,12 @@ bool UclampGovernor::validate_target(const std::string& directory, Encoding& enc
     return false;
 }
 
-bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier,
-                                  uint32_t interactive_min, uint32_t interactive_max) {
+bool UclampGovernor::apply_state(WorkloadState state,
+                                  uint32_t balanced_min, uint32_t balanced_max) {
     if (!supported_) return false;
 
-    const uint32_t fallback_min =
-        (tier == DeviceTier::Entry || tier == DeviceTier::MidRange) ? 320u : 256u;
-    const uint32_t base_min = std::min(interactive_min > 0 ? interactive_min : fallback_min, 1024u);
-    const uint32_t base_max = std::clamp(interactive_max, base_min, 1024u);
+    const uint32_t base_min = std::min(balanced_min, 1024u);
+    const uint32_t base_max = std::clamp(balanced_max, base_min, 1024u);
 
     UclampValues top{.uclamp_min = base_min, .uclamp_max = base_max};
     switch (state) {
