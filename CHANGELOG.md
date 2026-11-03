@@ -3,12 +3,12 @@
 ## v2.0.0 Modern C++20 hardening (main development line)
 
 - Lightweight epoll reactor with timerfd thermal cadence and RAII descriptor ownership.
-- Bounded, capability-dependent UClamp writes using cgroup v2 percentage encoding.
+- Bounded top-app UClamp writes using semantic cgroup discovery across Android/Linux controller mounts, with runtime encoding detection.
 - Fsync-backed same-boot write-ahead journal, read-back-verified node recovery and guarded daemon restart.
 - Safe fatal signal termination with journal recovery on next launch, not unsafe synchronous signal-handler rollback.
 - Native `--status`, `--stop` and `--rollback-baseline` commands with a single-instance PID lock.
 - KernelSU/Magisk late-boot supervisor, safe-mode boot guard and persistent configuration.
-- React dashboard with actual native status and clearly labelled simulation-only metrics.
+- Four-state stability policy (Balanced, SustainedLoad, PressureGuard, ThermalGuard) driven by thermal headroom and Linux PSI.\n- React dashboard mirrors the native stability model and clearly labels browser-only simulation.
 - Expanded native regression tests, sanitizer CI, shell validation and full ARM64 module packaging.
 - Disabled unverified vendor display overrides, arbitrary task migration and unsafe memory-policy mutations.
 
