@@ -22,9 +22,9 @@ public:
     [[nodiscard]] std::string_view target_path() const noexcept { return target_path_; }
     [[nodiscard]] std::string_view encoding_name() const noexcept;
 
-    bool apply_state(WorkloadState state, DeviceTier tier,
-                     uint32_t interactive_min = 0,
-                     uint32_t interactive_max = 1024);
+    bool apply_state(WorkloadState state,
+                     uint32_t balanced_min,
+                     uint32_t balanced_max);
 
     // Optional standardized sysctl. Not used by the automatic v2 runtime.
     bool set_rt_clamp_min(uint32_t clamp_val);
