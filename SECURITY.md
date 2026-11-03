@@ -1,37 +1,19 @@
-# Security and Safety
+# CoreFlow Modern v2 Security Model
 
-CoreFlow runs as a privileged Android module and can interact with kernel-facing interfaces. Production changes therefore follow a fail-closed policy.
+CoreFlow is a privileged Android daemon. It must operate on verified kernel interfaces only.
 
-## Mutation rules
+- The daemon is single-instance and checks operator `DISABLE`, `SAFE_MODE` and the module disable marker.
+- Any supported mutation must be journaled before the write and verified after read-back.
+- The journal stores the original **observed** value (not a proven factory image) in `/data/adb/coreflow/baseline.journal`. Same-boot restart attempts recovery before further tuning.
+- A fatal POSIX signal handler performs no mutex or C++ I/O; it terminates the process. A subsequent daemon restart performs the actual recovery.
+- Recovery is best-effort, non-atomic, and can fail if the vendor changes the interface, other root modules race, or hardware is unstable.
+- No unknown vendor display nodes are written. Automatic task migration and process OOM policy overrides are disabled.
+- A failed mutation triggers rollback and bounded retry; incomplete recovery stops tuning.
+- Configuration inputs are bounded, and unrecognized or malformed values use defensive defaults.
+- SELinux is not set to permissive; rules are added only for verified device-specific denials.
 
-1. Discover the interface before use.
-2. Capture a baseline before mutation.
-3. Require explicit capability checks.
-4. Apply bounded changes only.
-5. Read back and verify the requested value.
-6. CPU governor writes require the CPU domain grant. Accepted settings survive Idle; cancel unfinished Idle trials. Restore on stop, authority loss or an unsafe/failed plan; keep verified stabilizing settings through thermal stress when appropriate. Restore dependent controls before their anchor.
-7. Skip unknown or unsupported controls.
+## Reports
 
-Installation enables automatic bounded tuning using explicit compatibility keys and domain grants in config.ini. Upgrades preserve explicit grant_<domain>=no exclusions. There is no Observe/Standby mode selector. Missing, unreadable or malformed configuration blocks new writes; SAFE_MODE and DISABLE remain authoritative. Capability admission, target-bound permits, journals, read-back verification and rollback still apply. Saving WebUI settings never clears an operator stop or recovery marker. Explicit Start may resume DISABLE only while SAFE_MODE is absent.
-
-## SELinux
-
-The module does not use permissive mode or wildcard allow rules. Device-specific AVC denials should be investigated individually before adding a minimal rule.
-
-## Reporting
-
-For a crash, boot loop, corrupted configuration or unexpected kernel behavior, include the CoreFlow version, device/kernel information, relevant `logcat` lines and the contents of `/data/adb/coreflow/config.ini` with any sensitive identifiers removed.
-
-## v2.1.0 capability-driven mutation
-
-Discovery records capabilities, not permission by itself. EffectModel proposes only admitted resources with known semantics, bounded candidate values and the required domain grant. Fatal controls remain excluded. Unknown scalars require appropriate advertised or measured evidence. Neither automatic activation nor historical experience bypasses current permits, write verification, journal recovery or safety holds.
-
-
-
-## Coordinated plans
-
-Each cohort member retains its own target-bound permit, journal and read-back
-check. The whole cohort is measured as one unit and rolled back in reverse
-dependency order on failure. A failed dependent restore keeps its anchor and
-journals intact. Joint outcomes do not become independent retained preferences.
-See [thermal and coordinated plan semantics](docs/COORDINATED_THERMAL_PLANS.md).
+Include `coreflowd --status`, the installed module version, kernel/ROM version,
+`/data/adb/coreflow/logs/coreflowd.log` and the outcome of `--rollback-baseline`.
+Do not delete `baseline.journal` as a troubleshooting shortcut.
