@@ -1,29 +1,45 @@
-# CoreFlow Modern v2 tuning and recovery
+# CoreFlow Modern v2 tuning
 
-## Native configuration
+Persistent configuration: /data/adb/coreflow/coreflow.conf
 
-Persistent file: `/data/adb/coreflow/coreflow.conf`. Installer copies `module/system/etc/coreflow/default.conf` when the persistent file is missing. Changes take effect on the next daemon start.
+## Active controls
 
-Actively applied settings:
-- `enable_uclamp`: enables/disables the UClamp heartbeat.
-- `temp_monitor_interval_ms`: 1000 to 60000 ms, the periodic kernel timer; epoll itself does not poll continuously.
-- `thermal_trip_celsius`: 35–65°C, upper state transition threshold (the WebUI exposes a narrower range).
-- `thermal_recover_celsius`: 25°C to at least 1°C below the trip threshold; adds hysteresis.
-- `top_app_interactive_min`: 0–1024, utilization floor while interactive; only applied if the kernel interface exists.
-- `top_app_interactive_max`: clamped between the configured minimum and 1024.
+General:
+- enable_uclamp: master actuator gate.
 
-Experimental or reserved fields in the INI must **not** be treated as active features. In particular, `force_120hz_rendering`, `unlock_vendor_clamping`, `burst_boost_duration_ms`, `top_app_burst_launch_min` and PSI/memory actions do not currently activate hardware changes. Vendor override and forced display writes are disabled regardless of these fields.
+UClamp:
+- top_app_interactive_min: Balanced-state floor in internal 0..1024 capacity scale.
+- top_app_interactive_max: upper bound used by Balanced and SustainedLoad.
 
-## Commands
+The kernel-facing representation is discovered dynamically. Do not enter percentages here.
 
-```sh
-su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --status'
-su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --stop'
-su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --rollback-baseline'
-```
+Thermal:
+- temp_monitor_interval_ms: safety/state cadence, clamped to 1000..60000 ms.
+- thermal_trip_celsius: ThermalGuard entry threshold.
+- thermal_recover_celsius: hysteresis recovery threshold.
+- emergency_rollback_on_overheat: enables severe-heat exit.
+- thermal_headroom_celsius: margin below trip required for SustainedLoad.
+- thermal_emergency_margin_celsius: margin above trip that restores baseline and stops daemon.
 
-To restart after changing configuration, run the installed module's `service.sh` after Android reports `sys.boot_completed=1`. The script respects `DISABLE` and `SAFE_MODE`. Do not delete `baseline.journal` to bypass a failed recovery.
+PSI stability gates:
+- cpu_pressure_boost_pct: CPU PSI avg10 required for SustainedLoad.
+- memory_pressure_guard_pct: memory PSI avg10 that enters PressureGuard.
+- io_pressure_guard_pct: I/O PSI avg10 that enters PressureGuard.
 
-## Safety limitations
+Priority:
 
-Rollback is read-back-verified per node, not an atomic whole-device operation. It does not reverse other modules' edits, physical display instability, nor driver side effects. Same-boot abnormal process termination is handled by the journal on the next start. The daemon refuses to tune if journal recovery is incomplete. Use the `DISABLE` marker for emergency suspension.
+    Emergency thermal exit
+    ThermalGuard
+    PressureGuard
+    SustainedLoad
+    Balanced
+
+This order is deliberate: component health and system-wide contention outrank raw performance.
+
+Recovery:
+
+    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --status'
+    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --stop'
+    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --rollback-baseline'
+
+Never delete baseline.journal to bypass a recovery failure.
