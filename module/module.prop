@@ -1,7 +1,7 @@
 id=coreflow_engine
-name=CoreFlow Engine — Modern C++20 Daemon
+name=CoreFlow Engine — Modern C++20 Stability Daemon
 version=v2.0.0
 versionCode=20000
 author=mystivara-creator
-description=Modern epoll-driven native daemon with bounded UClamp thermal response, verified write-ahead baseline recovery, and offline KernelSU dashboard.
+description=Stability-first native Android optimizer with semantic UClamp discovery, thermal/PSI policy, verified recovery journal, and offline KernelSU dashboard.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json
