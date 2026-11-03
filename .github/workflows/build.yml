@@ -69,6 +69,12 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Validate module shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in module/*.sh; do sh -n "$file"; done
+
       - name: Configure host tests
         run: |
           set -euo pipefail
@@ -173,6 +179,8 @@ jobs:
           test -s module/webroot/index.html
           test -s module/webroot/app.js
           test -s module/webroot/style.css
+          test -s module/post-fs-data.sh
+          test -s module/uninstall.sh
 
       - name: Configure Android ARM64 Release
         shell: bash
@@ -231,12 +239,18 @@ jobs:
           cp module/module.prop "${MODULE_DIR}/module.prop"
           cp module/customize.sh "${MODULE_DIR}/customize.sh"
           cp module/service.sh "${MODULE_DIR}/service.sh"
+          cp module/post-fs-data.sh "${MODULE_DIR}/post-fs-data.sh"
+          cp module/uninstall.sh "${MODULE_DIR}/uninstall.sh"
+          cp module/sepolicy.rule "${MODULE_DIR}/sepolicy.rule"
           cp module/system/etc/coreflow/default.conf "${MODULE_DIR}/system/etc/coreflow/default.conf"
           cp -R module/webroot "${MODULE_DIR}/webroot"
 
           chmod 0755 "${MODULE_DIR}/system/bin/coreflowd"
           chmod 0755 "${MODULE_DIR}/customize.sh"
           chmod 0755 "${MODULE_DIR}/service.sh"
+          chmod 0755 "${MODULE_DIR}/post-fs-data.sh"
+          chmod 0755 "${MODULE_DIR}/uninstall.sh"
+          chmod 0644 "${MODULE_DIR}/sepolicy.rule"
           find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
           chmod 0644 "${MODULE_DIR}/module.prop"
           chmod 0644 "${MODULE_DIR}/system/etc/coreflow/default.conf"
