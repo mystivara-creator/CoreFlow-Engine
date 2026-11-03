@@ -19,6 +19,14 @@ namespace coreflow {
 PsiMonitor::PsiMonitor(EpollReactor& reactor)
     : reactor_(reactor) {}
 
+PsiMonitor::~PsiMonitor() {
+    for (const auto& [fd, resource] : fd_map_) {
+        (void)resource;
+        reactor_.unregister_fd(fd);
+        ::close(fd);
+    }
+}
+
 bool PsiMonitor::register_trigger(PsiResource res, uint32_t stall_us, uint32_t window_us, PsiCallback callback) {
     std::string path;
     switch (res) {
