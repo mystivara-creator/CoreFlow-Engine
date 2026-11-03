@@ -35,7 +35,7 @@ bool UclampGovernor::is_supported() const noexcept {
     return supported_;
 }
 
-bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier) {
+bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier, uint32_t interactive_min, uint32_t interactive_max) {
     if (!supported_) return false;
 
     UclampValues top_app_clamp;
@@ -60,6 +60,10 @@ bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier) {
                 top_app_clamp = { .uclamp_min = 380, .uclamp_max = 1024 };
             } else {
                 top_app_clamp = { .uclamp_min = 250, .uclamp_max = 1024 };
+            }
+            if (interactive_min > 0) {
+                top_app_clamp.uclamp_min = std::min(interactive_min, 1024u);
+                top_app_clamp.uclamp_max = std::clamp(interactive_max, top_app_clamp.uclamp_min, 1024u);
             }
             fg_clamp = { .uclamp_min = 60, .uclamp_max = 800 };
             bg_clamp = { .uclamp_min = 0,  .uclamp_max = 350 };
