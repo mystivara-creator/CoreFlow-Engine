@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace coreflow {
 
@@ -53,6 +54,7 @@ private:
     UniqueFd epoll_fd_;
     bool running_{false};
     UniqueFd stop_event_fd_;
+    std::vector<UniqueFd> timer_fds_;
     std::unordered_map<int, EventCallback> callbacks_;
     static constexpr size_t MAX_EPOLL_EVENTS = 32;
 };
