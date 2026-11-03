@@ -137,32 +137,33 @@ float DeviceProfiler::get_soc_temperature() const {
         const float value = raw > 1000.0f ? raw / 1000.0f : raw;
         return value >= -10.0f && value <= 130.0f ? value : -1.0f;
     };
-    if (!thermal_zone_path_.empty()) {
-        const float value = valid_temp(thermal_zone_path_);
-        if (value >= 0.0f) return value;
-        thermal_zone_path_.clear();
-    }
-    for (int i = 0; i < 128; ++i) {
-        std::string base{"/sys/class/thermal/thermal_zone"};
-        base.append(std::to_string(i));
-        std::ifstream label(base + "/type");
-        std::string type;
-        if (!std::getline(label, type)) continue;
-        std::transform(type.begin(), type.end(), type.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
-        if (type.find("cpu") == std::string::npos &&
-            type.find("soc") == std::string::npos &&
-            type.find("tsens") == std::string::npos &&
-            type.find("apss") == std::string::npos) continue;
-        const std::string candidate = base + "/temp";
-        const float value = valid_temp(candidate);
-        if (value >= 0.0f) {
-            thermal_zone_path_ = candidate;
-            return value;
+
+    if (thermal_zone_paths_.empty()) {
+        for (int i = 0; i < 128; ++i) {
+            std::string base{"/sys/class/thermal/thermal_zone"};
+            base.append(std::to_string(i));
+            std::ifstream label(base + "/type");
+            std::string type;
+            if (!std::getline(label, type)) continue;
+            std::transform(type.begin(), type.end(), type.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            if (type.find("cpu") == std::string::npos &&
+                type.find("soc") == std::string::npos &&
+                type.find("tsens") == std::string::npos &&
+                type.find("apss") == std::string::npos) continue;
+            const std::string candidate = base + "/temp";
+            if (valid_temp(candidate) >= 0.0f)
+                thermal_zone_paths_.push_back(candidate);
         }
     }
-    return -1.0f;
+
+    float hottest = -1.0f;
+    for (const auto& path : thermal_zone_paths_) {
+        const float value = valid_temp(path);
+        if (value > hottest) hottest = value;
+    }
+    return hottest;
 }
 
 std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
