@@ -12,7 +12,6 @@ while [ "$(getprop sys.boot_completed)" != "1" ]; do
 done
 mkdir -p "$LOGS" || exit 1
 chmod 700 "$STATE" "$LOGS" 2>/dev/null
-echo 0 > "$STATE/boot_attempts"
 
 # Operator stop and boot-loop recovery are authoritative.
 if [ -f "$STATE/SAFE_MODE" ] || [ -f "$STATE/DISABLE" ] || [ -f "$MODDIR/disable" ]; then
@@ -31,3 +30,9 @@ if [ -f "$LOG" ]; then
   esac
 fi
 nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &
+# A boot only counts as healthy after the daemon has survived its start window.
+# Early reboot loops will keep incrementing the post-fs-data counter.
+(
+  sleep 120
+  "$BIN" --status 2>/dev/null | grep -q '"running":true' && echo 0 > "$STATE/boot_attempts"
+) >/dev/null 2>&1 &
