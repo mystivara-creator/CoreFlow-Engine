@@ -44,7 +44,9 @@ of lower write amplification. Global VM writeback ratios are not modified.
 ## Power HAL, Binder and NPU integration
 
 The Android binary performs a nonblocking lookup of
-android.hardware.power.IPower/default through libbinder_ndk. Device access and
+android.hardware.power.IPower/default through optional runtime symbols from libbinder_ndk. Public NDK builds do not
+depend on private service-manager headers; missing symbols leave the capability
+unavailable. Device access and
 service availability are capabilities, not proof of an installed interceptor.
 
 Transparent interception of existing framework/vendor Binder transactions is

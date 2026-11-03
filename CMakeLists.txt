@@ -57,7 +57,7 @@ target_link_libraries(coreflowd PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
 target_compile_options(coreflowd PRIVATE $<$<CONFIG:Release>:-O2>)
 
 if(ANDROID)
-    target_link_libraries(coreflowd PRIVATE log binder_ndk)
+    target_link_libraries(coreflowd PRIVATE log)
 else()
     target_link_libraries(coreflowd PRIVATE pthread)
 endif()
