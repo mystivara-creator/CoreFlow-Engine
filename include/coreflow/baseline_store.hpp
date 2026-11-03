@@ -39,6 +39,10 @@ public:
     /// Roll back a specific node to factory value
     bool rollback(const std::string& path);
 
+    /// Recover unfinished mutations from the previous daemon process (same boot).
+    [[nodiscard]] bool recover_pending();
+
+    /// Best-effort verified rollback of all modified nodes; never claim atomicity.
     /// Atomic rollback of all modified nodes to factory baseline
     size_t rollback_all();
 
@@ -49,11 +53,16 @@ public:
     [[nodiscard]] std::vector<NodeSnapshot> get_audit_trail() const;
 
 private:
-    BaselineStore() = default;
+    BaselineStore();
     ~BaselineStore() = default;
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, NodeSnapshot> store_;
+    std::string journal_path_;
+    std::string boot_id_;
+    bool recovery_checked_{false};
+    bool persist_locked();
+    size_t rollback_locked();
 
     std::string read_raw_node(const std::string& path) const;
     bool write_raw_node(const std::string& path, const std::string& value);
