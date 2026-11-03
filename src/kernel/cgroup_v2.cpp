@@ -8,10 +8,7 @@
 #include "coreflow/cgroup_v2.hpp"
 #include "coreflow/baseline_store.hpp"
 #include <algorithm>
-#include <fcntl.h>
-#include <unistd.h>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 
 namespace coreflow {
@@ -76,23 +73,6 @@ bool CgroupV2Controller::unlock_vendor_restrictions() {
     // Never override cpuset or CPU weights blindly at daemon startup.
     std::cerr << "[CoreFlow][CgroupV2] Vendor restriction override is unsupported; no writes performed." << std::endl;
     return false;
-}
-
-bool CgroupV2Controller::write_node(const std::string& path, std::string_view value) {
-    int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
-    if (fd < 0) return false;
-
-    ssize_t written = ::write(fd, value.data(), value.size());
-    ::close(fd);
-    return written == static_cast<ssize_t>(value.size());
-}
-
-std::string CgroupV2Controller::read_node(const std::string& path) const {
-    std::ifstream file(path);
-    if (!file.is_open()) return {};
-    std::string val;
-    file >> val;
-    return val;
 }
 
 } // namespace coreflow
