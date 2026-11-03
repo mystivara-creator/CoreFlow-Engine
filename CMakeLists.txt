@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
 
-# Optimization Flags for Native Daemons
+# Optimization & Security Hardening Flags for Native Systems
 add_compile_options(
     -O3
     -flto
@@ -18,12 +18,20 @@ add_compile_options(
     -Wpedantic
     -fno-exceptions
     -fno-rtti
+    -fstack-protector-strong
+    -Wformat
+    -Wformat-security
+    -Werror=return-type
 )
+
+add_compile_definitions(_FORTIFY_SOURCE=2)
 
 add_link_options(
     -flto
     -Wl,--gc-sections
     -Wl,--strip-all
+    -Wl,-z,relro
+    -Wl,-z,now
 )
 
 include_directories(include)

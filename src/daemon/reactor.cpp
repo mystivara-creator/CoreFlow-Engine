@@ -22,11 +22,11 @@ EpollReactor::EpollReactor() {
     }
 
     // Wakeup eventfd for lock-free stop signaling
-    stop_event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (stop_event_fd_ >= 0) {
-        register_fd(stop_event_fd_, EPOLLIN, [this](uint32_t) {
+    stop_event_fd_.reset(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+    if (stop_event_fd_.valid()) {
+        register_fd(stop_event_fd_.get(), EPOLLIN, [this](uint32_t) {
             uint64_t val = 0;
-            (void)::read(stop_event_fd_, &val, sizeof(val));
+            (void)::read(stop_event_fd_.get(), &val, sizeof(val));
             running_ = false;
         });
     }
@@ -34,10 +34,6 @@ EpollReactor::EpollReactor() {
 
 EpollReactor::~EpollReactor() {
     stop();
-    if (stop_event_fd_ >= 0) {
-        ::close(stop_event_fd_);
-        stop_event_fd_ = -1;
-    }
 }
 
 bool EpollReactor::register_fd(int fd, uint32_t events, EventCallback callback) {
@@ -138,9 +134,9 @@ void EpollReactor::run() {
 
 void EpollReactor::stop() {
     if (!running_) return;
-    if (stop_event_fd_ >= 0) {
+    if (stop_event_fd_.valid()) {
         uint64_t val = 1;
-        (void)::write(stop_event_fd_, &val, sizeof(val));
+        (void)::write(stop_event_fd_.get(), &val, sizeof(val));
     }
     running_ = false;
 }

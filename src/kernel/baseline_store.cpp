@@ -1,11 +1,12 @@
 /**
  * @file baseline_store.cpp
- * @brief Baseline Store Implementation
+ * @brief Transactional Baseline Store with Immediate Fail-Safe Fallback
  * @author mystivara-creator
  * @license Apache-2.0
  */
 
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/unique_fd.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <fstream>
@@ -27,23 +28,23 @@ std::string BaselineStore::read_raw_node(const std::string& path) const {
 }
 
 bool BaselineStore::write_raw_node(const std::string& path, const std::string& value) {
-    // Try O_TRUNC first so regular files and mock test nodes don't leave trailing bytes
-    int fd = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC);
-    if (fd < 0) {
-        // Fallback for virtual sysfs/procfs nodes where kernel drivers may reject O_TRUNC
-        fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
-        if (fd < 0) return false;
+    // RAII UniqueFd guarantees safe descriptor release on all return paths
+    UniqueFd ufd(::open(path.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC));
+    if (!ufd.valid()) {
+        // Fallback for virtual sysfs/procfs nodes where drivers reject O_TRUNC
+        ufd.reset(::open(path.c_str(), O_WRONLY | O_CLOEXEC));
+        if (!ufd.valid()) return false;
     }
-    ssize_t w = ::write(fd, value.c_str(), value.size());
-    ::ftruncate(fd, value.size());
-    ::close(fd);
+
+    ssize_t w = ::write(ufd.get(), value.c_str(), value.size());
+    ::ftruncate(ufd.get(), static_cast<off_t>(value.size()));
     return w == static_cast<ssize_t>(value.size());
 }
 
 bool BaselineStore::capture(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Already tracked? Don't overwrite initial factory baseline
+    // Already tracked? Don't overwrite initial OEM factory baseline
     if (store_.find(path) != store_.end()) {
         return true;
     }
@@ -84,6 +85,21 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         it->second.active_value = new_value;
         it->second.is_modified = (it->second.active_value != it->second.factory_value);
         return true;
+    }
+
+    // IMMEDIATE FAIL-SAFE FALLBACK:
+    // If any node mutation fails, atomically rollback all active mutations
+    // to OEM defaults to prevent an unstable, inconsistent kernel state.
+    std::cerr << "[CoreFlow][FailSafe] Write failed for node '" << path 
+              << "'! Triggering immediate rollback to OEM defaults." << std::endl;
+
+    for (auto& [p, snap] : store_) {
+        if (snap.is_modified) {
+            if (write_raw_node(p, snap.factory_value)) {
+                snap.active_value = snap.factory_value;
+                snap.is_modified = false;
+            }
+        }
     }
 
     return false;

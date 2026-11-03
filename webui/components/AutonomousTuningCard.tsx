@@ -148,7 +148,10 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
             max="48.0"
             step="0.5"
             value={config.thermalTripCelsius}
-            onChange={(e) => update('thermalTripCelsius', parseFloat(e.target.value))}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              update('thermalTripCelsius', Number.isFinite(val) ? Math.min(48, Math.max(40, val)) : 44.0);
+            }}
             className="w-full accent-sky-500 cursor-pointer"
           />
           <div className="flex justify-between text-[10px] text-slate-400 font-mono mt-1">
@@ -176,7 +179,10 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
             max="600"
             step="20"
             value={config.touchBoostMin}
-            onChange={(e) => update('touchBoostMin', parseInt(e.target.value, 10))}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              update('touchBoostMin', Number.isFinite(val) ? Math.min(600, Math.max(200, val)) : 380);
+            }}
             className="w-full accent-sky-500 cursor-pointer"
           />
           <div className="flex justify-between text-[10px] text-slate-400 font-mono mt-1">

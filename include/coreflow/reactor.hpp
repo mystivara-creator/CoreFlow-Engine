@@ -3,14 +3,12 @@
  * @brief High-Performance Zero-Polling Epoll Event Reactor
  * @author mystivara-creator
  * @license Apache-2.0
- * 
- * Replaces traditional CPU-wasting 'while(true) sleep(100ms)' polling loops
- * with kernel-driven epoll_wait(), consuming 0.00% CPU when idle.
  */
 
 #pragma once
 
 #include "types.hpp"
+#include "unique_fd.hpp"
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <functional>
@@ -19,44 +17,6 @@
 #include <span>
 
 namespace coreflow {
-
-class UniqueFd {
-public:
-    constexpr UniqueFd() noexcept : fd_(-1) {}
-    explicit UniqueFd(int fd) noexcept : fd_(fd) {}
-    ~UniqueFd() { reset(); }
-
-    UniqueFd(const UniqueFd&) = delete;
-    UniqueFd& operator=(const UniqueFd&) = delete;
-
-    UniqueFd(UniqueFd&& other) noexcept : fd_(other.release()) {}
-    UniqueFd& operator=(UniqueFd&& other) noexcept {
-        if (this != &other) {
-            reset(other.release());
-        }
-        return *this;
-    }
-
-    [[nodiscard]] int get() const noexcept { return fd_; }
-    [[nodiscard]] bool valid() const noexcept { return fd_ >= 0; }
-    explicit operator bool() const noexcept { return valid(); }
-
-    int release() noexcept {
-        int temp = fd_;
-        fd_ = -1;
-        return temp;
-    }
-
-    void reset(int new_fd = -1) noexcept {
-        if (fd_ >= 0) {
-            ::close(fd_);
-        }
-        fd_ = new_fd;
-    }
-
-private:
-    int fd_;
-};
 
 using EventCallback = std::function<void(uint32_t events)>;
 
@@ -92,7 +52,7 @@ public:
 private:
     UniqueFd epoll_fd_;
     bool running_{false};
-    int stop_event_fd_{-1};
+    UniqueFd stop_event_fd_;
     std::unordered_map<int, EventCallback> callbacks_;
     static constexpr size_t MAX_EPOLL_EVENTS = 32;
 };

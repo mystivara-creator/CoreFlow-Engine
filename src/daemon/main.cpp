@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine Daemon (coreflowd) Native Entry Point (Zero Hardcode)
+ * @brief CoreFlow Engine Daemon (coreflowd) Native Entry Point (Hardened & Zero Hardcode)
  * @author mystivara-creator
  * @license Apache-2.0
  */
@@ -16,17 +16,36 @@
 
 #include <iostream>
 #include <csignal>
+#include <cstdlib>
 #include <sys/signalfd.h>
 
 using namespace coreflow;
 
+namespace {
+
+// Emergency Crash Signal Trap: Guaranteed OEM baseline restore on fatal fault
+void emergency_crash_handler(int sig) {
+    std::cerr << "\n[CoreFlow][EMERGENCY] Fatal signal " << sig 
+              << " caught. Restoring OEM factory baseline before termination..." << std::endl;
+    BaselineStore::instance().rollback_all();
+    std::_Exit(128 + sig);
+}
+
+} // namespace
+
 int main(int argc, char* argv[]) {
+    // 0. Register emergency crash traps for unexpected fatal faults
+    std::signal(SIGSEGV, emergency_crash_handler);
+    std::signal(SIGBUS,  emergency_crash_handler);
+    std::signal(SIGABRT, emergency_crash_handler);
+
     // 1. Load Dynamic Configuration (Zero Hardcoded Values)
     auto config = DaemonConfig::load_best_available();
 
     std::cout << "========================================================\n"
               << " CoreFlow Engine Daemon (coreflowd) v" << config.version << "\n"
               << " Target: Android 15+ | Zero-Polling | Zero-Hardcode\n"
+              << " Hardening: RAII UniqueFd | Immediate FailSafe Rollback\n"
               << " Author: mystivara-creator\n"
               << "========================================================\n"
               << std::endl;

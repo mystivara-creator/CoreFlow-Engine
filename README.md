@@ -25,8 +25,9 @@ CoreFlow Engine v2.0 represents a total architectural restructuring that elimina
 - **EAS Uclamp Acceleration**: Dynamically modulates Energy Aware Scheduling (EAS) task utilization clamps (`sched_util_min` / `sched_util_max`) for foreground top-apps, eliminating cold launch delays and touch gesture scroll stutter.
 - **Unified cgroups v2 Controller**: Intelligently migrates tasks and pins cpusets across Android 15 unified cgroups hierarchies while bypassing vendor throttling locks.
 - **SurfaceFlinger 120Hz Frame Pacing**: Synchronizes HWUI render thread timing with display refresh periods, preventing frame pacing variances during intense multitasking or gaming.
-- **Transactional BaselineStore**: Snapshots all factory sysfs nodes before making any modifications and guarantees an atomic, zero-pollution rollback to OEM factory values on exit or via the WebUI.
-- **Google Pixel / Material Design 3 WebUI**: A lightweight, fluid single-page dashboard built with React 19 and Tailwind CSS v4, featuring tactile squircle cards, dynamic status pills, and dark/light mode.
+- **Transactional BaselineStore & Immediate Fail-Safe**: Snapshots all factory sysfs nodes before making any modifications. If any node write fails or a fatal signal occurs, it triggers an immediate atomic rollback to OEM defaults to prevent inconsistent kernel states.
+- **Defensive Memory Safety & CI Sanitizers**: Safe RAII `UniqueFd` descriptor handling, strict input bounds checking, and CI memory verification via AddressSanitizer (ASan) + UndefinedBehaviorSanitizer (UBSan).
+- **Google Pixel / Material Design 3 WebUI**: A lightweight, fluid single-page dashboard built with React 19, Tailwind CSS v4, and React ErrorBoundary, featuring tactile squircle cards, dynamic status pills, and dark/light mode.
 
 ---
 
@@ -37,9 +38,9 @@ CoreFlow Engine v2.0 represents a total architectural restructuring that elimina
 | **Daemon Core** | 40+ monolithic C++ files across 6 folders (`src/observe`, `src/understand`, `src/balance`, `src/mutation`, `src/conscience`, `src/runtime`) | Streamlined into `src/daemon/` (reactor, entry) and `src/kernel/` (cgroups, uclamp, baseline, render) | **>50% code reduction**, near-instant compile times, zero dynamic memory overhead |
 | **Event Loop** | Continuous timer-based sleep polling loops | Linux kernel `epoll_wait` and `signalfd` zero-polling event reactor | Zero idle battery consumption, immediate event response |
 | **Scheduling** | Complex trial-history bandit heuristic | Real-time EAS Utilization Clamping (`uclamp`) for top-apps | Native kernel integration, direct scheduler queue impact |
-| **Rollback Safety** | Multi-file journal serialization & manual checks | Transactional `BaselineStore` holding in-memory OEM snapshots | Guaranteed atomic rollback to stock factory values |
+| **Rollback Safety** | Multi-file journal serialization & manual checks | Transactional `BaselineStore` with immediate fail-safe auto-fallback | Guaranteed atomic rollback to stock factory values on error |
 | **Dependencies** | External ONNX Runtime binaries (~100MB download) & synthetic ML predictors | Pure C++20 standard library with Linux kernel interfaces | Zero external runtime bloat, no fragile network downloads during CI |
-| **WebUI** | 5 fragmented tabs (Sysfs tree explorer, INI text editor, ONNX lab, multi-charts) | Single-Page Google Pixel Material 3 Dashboard | Fast loading, fluid navigation, glanceable autonomous telemetry |
+| **WebUI** | 5 fragmented tabs (Sysfs tree explorer, INI text editor, ONNX lab, multi-charts) | Single-Page Google Pixel Material 3 Dashboard with Error Boundary | Fast loading, fluid navigation, glanceable autonomous telemetry |
 
 ---
 
@@ -57,13 +58,15 @@ CoreFlow-Engine/
 ├── include/coreflow/          # Modern modular C++20 headers
 │   ├── baseline_store.hpp     # Transactional OEM rollback store
 │   ├── cgroup_v2.hpp          # Unified cgroups v2 controller
+│   ├── config.hpp             # Zero-hardcode runtime configuration loader
 │   ├── device_profiler.hpp    # Hardware topology & SoC profiler
 │   ├── memory_guardian.hpp    # Linux PSI memory pressure guard
 │   ├── psi_monitor.hpp        # Pressure Stall Information monitor
 │   ├── reactor.hpp            # Zero-polling Linux epoll reactor
 │   ├── render_booster.hpp     # SurfaceFlinger 120Hz frame pacing
 │   ├── types.hpp              # Engine definitions and bounds
-│   └── uclamp.hpp             # EAS Utilization Clamping governor
+│   ├── uclamp.hpp             # EAS Utilization Clamping governor
+│   └── unique_fd.hpp          # Safe RAII file descriptor wrapper
 ├── module/                    # KernelSU / Magisk flashable package
 │   ├── customize.sh           # Module installation script
 │   ├── module.prop            # Module identity & versioning (v2.0.0)

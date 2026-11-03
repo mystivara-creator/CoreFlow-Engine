@@ -89,11 +89,39 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/host --output-on-failure --no-tests=error
 
+  sanitizer:
+    name: ASan + UBSan Memory Sanitizer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: host-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure sanitized host build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/sanitize -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCORE_FLOW_BUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build sanitized tests
+        run: cmake --build build/sanitize --parallel "$(nproc)"
+
+      - name: Run sanitized tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build/sanitize --output-on-failure --no-tests=error
+
   android:
     name: Android 15+ ARM64 Production Build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: host-tests
+    needs: [host-tests, sanitizer]
 
     steps:
       - name: Checkout
