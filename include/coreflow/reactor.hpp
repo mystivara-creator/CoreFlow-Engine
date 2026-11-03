@@ -1,6 +1,6 @@
 /**
  * @file reactor.hpp
- * @brief High-Performance Zero-Polling Epoll Event Reactor
+ * @brief Small event-driven epoll reactor with timerfd safety cadence
  * @author mystivara-creator
  * @license Apache-2.0
  */
@@ -40,7 +40,7 @@ public:
     /// Unregister fd
     bool unregister_fd(int fd);
 
-    /// Create high-resolution kernel timerfd for periodic safety tick
+    /// Create kernel timerfd for periodic safety/state tick
     int create_timerfd(std::chrono::milliseconds interval, EventCallback callback);
 
     /// Run reactor event loop until stop requested
