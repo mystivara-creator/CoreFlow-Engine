@@ -26,8 +26,6 @@ public:
                      uint32_t balanced_min,
                      uint32_t balanced_max);
 
-    // Optional standardized sysctl. Not used by the automatic v2 runtime.
-    bool set_rt_clamp_min(uint32_t clamp_val);
 
     [[nodiscard]] uint32_t get_top_app_min() const;
     [[nodiscard]] uint32_t get_top_app_max() const;
