@@ -1,94 +1,76 @@
-/**
- * @file test_baseline_rollback.cpp
- * @brief Unit Test: Transactional Baseline Rollback & Immediate Fail-Safe Verification
- * @author mystivara-creator
- * @license Apache-2.0
- */
-
 #include "coreflow/baseline_store.hpp"
 #include <cassert>
-#include <iostream>
-#include <fstream>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace coreflow;
 
-int main() {
-    std::cout << "========================================================\n"
-              << "[Test] Running CoreFlow BaselineStore Rollback & Fail-Safe Test\n"
-              << "========================================================" << std::endl;
-
-    std::string test_node_a = "/tmp/mock_uclamp_node_a";
-    std::string test_node_b = "/tmp/mock_uclamp_node_b";
-
-    // Setup mock sysfs nodes in /tmp
-    {
-        std::ofstream fa(test_node_a, std::ios::trunc);
-        fa << "0"; // OEM initial value
-        std::ofstream fb(test_node_b, std::ios::trunc);
-        fb << "100"; // OEM initial value
+static std::string read_value(const std::string& path) {
+    std::ifstream in(path);
+    std::string value;
+    in >> value;
+    return value;
+}
+int main(int argc, char* argv[]) {
+    if (argc > 1 && std::string(argv[1]) == "--recover") {
+        return BaselineStore::instance().recover_pending() ? 0 : 2;
     }
+    char state_dir[] = "/tmp/coreflow-journal-XXXXXX";
+    assert(::mkdtemp(state_dir) != nullptr);
+    assert(::setenv("COREFLOW_TEST_STATE_DIR", state_dir, 1) == 0);
 
+    const std::string a = std::string(state_dir) + "/mock_a";
+    const std::string b = std::string(state_dir) + "/mock_b";
+    { std::ofstream out(a); out << "0"; }
+    { std::ofstream out(b); out << "100"; }
     auto& store = BaselineStore::instance();
-
-    // ------------------------------------------------------------------------
-    // Part 1: Normal Lifecycle Verification (Capture -> Mutation -> Rollback)
-    // ------------------------------------------------------------------------
-    std::cout << "[Test 1/2] Verifying standard capture, mutation, and rollback..." << std::endl;
-    assert(store.capture(test_node_a));
-    assert(store.apply_mutation(test_node_a, "512"));
+    assert(store.recover_pending());
+    assert(store.capture(a));
+    assert(store.apply_mutation(a, "512"));
+    assert(read_value(a) == "512");
     assert(store.has_active_mutations());
-
-    // Verify node now reads modified value
-    {
-        std::ifstream f(test_node_a);
-        std::string val;
-        f >> val;
-        std::cout << "  -> Mutated value: '" << val << "' (expected '512')" << std::endl;
-        assert(val == "512");
-    }
-
-    // Trigger Emergency Rollback
-    size_t restored = store.rollback_all();
-    assert(restored == 1);
+    assert(store.rollback_all() == 1);
+    assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
-    // Verify node restored to exact OEM value
-    {
-        std::ifstream f(test_node_a);
-        std::string val;
-        f >> val;
-        std::cout << "  -> Restored value: '" << val << "' (expected '0')" << std::endl;
-        assert(val == "0");
-    }
-
-    // ------------------------------------------------------------------------
-    // Part 2: Immediate Fail-Safe Fallback Verification
-    // If a node write fails, all active mutations must immediately revert to OEM.
-    // ------------------------------------------------------------------------
-    std::cout << "[Test 2/2] Verifying immediate fail-safe fallback on write error..." << std::endl;
-    assert(store.apply_mutation(test_node_a, "700"));
-    assert(store.has_active_mutations());
-
-    // Attempt mutation on an invalid unwriteable path
-    std::string invalid_node = "/dev/null/impossible_sysfs_path";
-    bool failed_res = store.apply_mutation(invalid_node, "999");
-    assert(!failed_res); // Write MUST fail
-
-    // Because mutation failed, fail-safe MUST have rolled back test_node_a to OEM!
+    // Capture failure must rollback existing mutations, too.
+    assert(store.apply_mutation(a, "700"));
+    assert(!store.apply_mutation(std::string(state_dir) + "/missing", "999"));
+    assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
-    {
-        std::ifstream f(test_node_a);
-        std::string val;
-        f >> val;
-        std::cout << "  -> Fail-safe fallback restored value: '" << val << "' (expected '0')" << std::endl;
-        assert(val == "0");
+
+    // Simulate fatal process death after a verified mutation, without shutdown.
+    pid_t writer = ::fork();
+    assert(writer >= 0);
+    if (writer == 0) {
+        if (!store.apply_mutation(a, "888") || !store.apply_mutation(b, "222"))
+            ::_exit(2);
+        ::_exit(0); // no cleanup, journal must retain the OEM values
     }
+    int status = 0;
+    assert(::waitpid(writer, &status, 0) == writer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(read_value(a) == "888");
+    assert(read_value(b) == "222");
 
-    // Cleanup mock nodes
-    std::filesystem::remove(test_node_a);
-    std::filesystem::remove(test_node_b);
+    // A new process detects same-boot journal and restores verified OEM values.
+    pid_t restorer = ::fork();
+    assert(restorer >= 0);
+    if (restorer == 0) {
+        ::execl(argv[0], argv[0], "--recover", nullptr);
+        ::_exit(127);
+    }
+    assert(::waitpid(restorer, &status, 0) == restorer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(read_value(a) == "0");
+    assert(read_value(b) == "100");
 
-    std::cout << "[Test] PASS: All baseline rollback & fail-safe invariants verified successfully!" << std::endl;
+    std::filesystem::remove_all(state_dir);
+    std::cout << "[CoreFlow] Baseline + crash-recovery invariants PASS\n";
     return 0;
 }
