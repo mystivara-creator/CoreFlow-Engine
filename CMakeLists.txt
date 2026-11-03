@@ -40,7 +40,7 @@ include_directories(include)
 set(COREFLOW_KERNEL_SOURCES
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
-    src/kernel/device_profiler.cpp
+    src/kernel/thermal_monitor.cpp
 )
 
 # Main Daemon (coreflowd)
