@@ -53,19 +53,30 @@ bool is_trusted_compute_zone(std::string_view raw_type) {
         return static_cast<char>(std::tolower(ch));
     });
 
-    // Exclude battery state-of-charge droop ("socd") and non-SoC peripherals.
+    // Exclude battery state-of-charge droop ("socd") and non-compute peripherals/counters.
     if (type.find("socd") != std::string::npos ||
         type.find("batt") != std::string::npos ||
         type.find("chg") != std::string::npos ||
-        type.find("usb") != std::string::npos) {
+        type.find("usb") != std::string::npos ||
+        type.find("bcl") != std::string::npos ||
+        type.find("ibat") != std::string::npos ||
+        type.find("sub1") != std::string::npos ||
+        type.find("sdr") != std::string::npos ||
+        type.find("mmw") != std::string::npos ||
+        type.find("zeroc") != std::string::npos ||
+        type.find("wireless") != std::string::npos) {
         return false;
     }
 
     if (type.find("cpu") != std::string::npos ||
+        type.find("cpuss") != std::string::npos ||
         type.find("soc") != std::string::npos ||
         type.find("tsens") != std::string::npos ||
         type.find("apss") != std::string::npos ||
-        type.find("cluster") != std::string::npos) {
+        type.find("cluster") != std::string::npos ||
+        type.find("nspss") != std::string::npos ||
+        type.find("npu") != std::string::npos ||
+        type.rfind("aoss", 0) == 0) {
         return true;
     }
 
@@ -116,12 +127,24 @@ void ThermalMonitor::discover_sensors() const {
         std::string lower = type;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         int category = 0;
-        if (is_trusted_compute_zone(type) || lower.find("gpu") != std::string::npos) category = 1;
-        else if (lower == "battery" || lower == "batt" || lower.rfind("battery-", 0) == 0) category = 2;
-        else if (lower == "skin" || lower.rfind("skin-", 0) == 0 || lower.rfind("skin_", 0) == 0) category = 3;
+        if (is_trusted_compute_zone(type) || lower.find("gpu") != std::string::npos || lower.find("mali") != std::string::npos) {
+            category = 1;
+        } else if (lower == "battery" || lower == "batt" || lower.rfind("battery-", 0) == 0 || lower.rfind("battery_", 0) == 0) {
+            category = 2;
+        } else if (lower == "skin" || lower.rfind("skin-", 0) == 0 || lower.rfind("skin_", 0) == 0 ||
+                   lower.find("quiet_therm") != std::string::npos || lower.find("case_therm") != std::string::npos ||
+                   lower.find("shell_therm") != std::string::npos) {
+            category = 3;
+        } else if (lower.find("ap_therm") != std::string::npos || lower.find("xo-therm") != std::string::npos ||
+                   lower.find("xo_therm") != std::string::npos || lower.rfind("aoss", 0) == 0 ||
+                   lower == "ddr" || lower == "video" || lower.find("pmic") != std::string::npos ||
+                   lower.find("pm6150") != std::string::npos || lower.find("pm7250") != std::string::npos) {
+            category = 4;
+        }
         if (category) sensors_.push_back({it->path().string(), type, category});
     }
 }
+
 float ThermalMonitor::hottest_category(int category) const {
     discover_sensors();
     float hottest = -1;
@@ -132,6 +155,90 @@ float ThermalMonitor::hottest_category(int category) const {
     }
     return hottest;
 }
+
+MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
+    discover_sensors();
+    MultiSensorProfile profile;
+    std::vector<float> cpu_readings;
+    std::vector<float> gpu_readings;
+    std::vector<float> board_readings;
+    float max_cpu = -1.0f;
+    float max_temp = -1.0f;
+
+    for (const auto& sensor : sensors_) {
+        std::string raw;
+        float value = -1.0f;
+        if (!read_sysfs_line(sensor.path + "/temp", raw) || !parse_celsius(raw, value)) continue;
+        if (value <= 0.0f) continue;
+
+        max_temp = std::max(max_temp, value);
+        std::string lower = sensor.type;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (sensor.category == 1) { // Compute
+            if (lower.find("gpu") != std::string::npos || lower.find("mali") != std::string::npos) {
+                gpu_readings.push_back(value);
+            } else if (lower.find("cpu") != std::string::npos || lower.find("apss") != std::string::npos ||
+                       lower.find("cluster") != std::string::npos || lower.find("tsens") != std::string::npos ||
+                       lower == "big" || lower == "mid" || lower == "little") {
+                cpu_readings.push_back(value);
+                max_cpu = std::max(max_cpu, value);
+            } else {
+                board_readings.push_back(value);
+            }
+        } else if (sensor.category == 2) { // Battery
+            if (profile.battery < 0 || value > profile.battery) profile.battery = value;
+        } else if (sensor.category == 3) { // Skin
+            if (profile.skin < 0 || value > profile.skin) profile.skin = value;
+        } else if (sensor.category == 4) { // Board / AP
+            board_readings.push_back(value);
+        }
+    }
+
+    profile.total_valid_sensors = cpu_readings.size() + gpu_readings.size() + board_readings.size();
+    profile.valid_cpu_count = cpu_readings.size();
+    profile.valid_gpu_count = gpu_readings.size();
+
+    if (!cpu_readings.empty()) {
+        double sum = 0.0;
+        for (float v : cpu_readings) sum += v;
+        profile.cpu_average = static_cast<float>(sum / cpu_readings.size());
+        profile.cpu_peak = max_cpu;
+    }
+    if (!gpu_readings.empty()) {
+        double sum = 0.0;
+        for (float v : gpu_readings) sum += v;
+        profile.gpu_average = static_cast<float>(sum / gpu_readings.size());
+    }
+    if (!board_readings.empty()) {
+        double sum = 0.0;
+        for (float v : board_readings) sum += v;
+        profile.board_average = static_cast<float>(sum / board_readings.size());
+    }
+
+    // Accurate multi-sensor composite calculation
+    if (profile.cpu_average >= 0.0f) {
+        if (profile.gpu_average >= 0.0f && profile.board_average >= 0.0f) {
+            profile.composite_soc = 0.50f * profile.cpu_average + 0.25f * profile.cpu_peak +
+                                    0.15f * profile.gpu_average + 0.10f * profile.board_average;
+        } else if (profile.gpu_average >= 0.0f) {
+            profile.composite_soc = 0.60f * profile.cpu_average + 0.25f * profile.cpu_peak +
+                                    0.15f * profile.gpu_average;
+        } else {
+            profile.composite_soc = 0.70f * profile.cpu_average + 0.30f * profile.cpu_peak;
+        }
+    } else if (max_temp >= 0.0f) {
+        profile.composite_soc = max_temp;
+    }
+
+    return profile;
+}
+
+float ThermalMonitor::composite_celsius() const {
+    const auto prof = multi_sensor_profile();
+    return prof.composite_soc >= 0.0f ? prof.composite_soc : hottest_celsius();
+}
+
 float ThermalMonitor::hottest_celsius() const { return hottest_category(1); }
 float ThermalMonitor::battery_celsius() const { return hottest_category(2); }
 float ThermalMonitor::skin_celsius() const { return hottest_category(3); }

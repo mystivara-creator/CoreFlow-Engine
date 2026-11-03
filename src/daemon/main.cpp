@@ -247,8 +247,15 @@ std::string json_string(std::string_view text);
 
 void print_status() {
     const pid_t pid = daemon_pid();
-    const float temp = ThermalMonitor::instance().hottest_celsius();
-    const auto thermal = ThermalMonitor::instance().assess(false);
+    const auto profile = ThermalMonitor::instance().multi_sensor_profile();
+    const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
+    auto thermal = ThermalMonitor::instance().assess(false);
+    if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
+        thermal.available = true;
+        thermal.source = "multi-sensor-composite";
+        thermal.sensor = "SoC-Composite (" + std::to_string(profile.valid_cpu_count) + " cores)";
+        thermal.pressure = std::clamp(65.0 + (std::max(0.0f, temp - 40.0f) / 4.0f) * 20.0f, 0.0f, 130.0f);
+    }
     UclampGovernor governor;
     std::cout << "{\"running\":" << (pid ? "true" : "false")
               << ",\"pid\":" << pid
@@ -273,7 +280,11 @@ void print_status() {
               << ",\"thermalSource\":" << json_string(thermal.source)
               << ",\"thermalSensor\":" << json_string(thermal.sensor)
               << ",\"thermalSeverity\":" << thermal.severity
-              << ",\"thermalPressure\":" << thermal.pressure;
+              << ",\"thermalPressure\":" << thermal.pressure
+              << ",\"socCompositeCelsius\":" << (profile.composite_soc >= 0 ? std::to_string(profile.composite_soc) : "null")
+              << ",\"cpuAverageCelsius\":" << (profile.cpu_average >= 0 ? std::to_string(profile.cpu_average) : "null")
+              << ",\"cpuPeakCelsius\":" << (profile.cpu_peak >= 0 ? std::to_string(profile.cpu_peak) : "null")
+              << ",\"gpuTempCelsius\":" << (profile.gpu_average >= 0 ? std::to_string(profile.gpu_average) : "null");
     std::cout << ",\"thermalSensors\":[";
     bool first_sensor = true;
     for (const auto& reading : thermal.readings) {
@@ -474,8 +485,24 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        const auto thermal = ThermalMonitor::instance().assess();
-        const float temp = ThermalMonitor::instance().hottest_celsius(); // Telemetry only.
+        auto thermal = ThermalMonitor::instance().assess();
+        const auto profile = ThermalMonitor::instance().multi_sensor_profile();
+        const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
+
+        if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
+            const double recover_deg = static_cast<double>(config.thermal_recover_celsius);
+            const double trip_deg = static_cast<double>(config.thermal_trip_celsius);
+            const double span = std::max(1.0, trip_deg - recover_deg);
+            const double norm = std::clamp((static_cast<double>(temp) - recover_deg) / span, 0.0, 3.0);
+            thermal.available = true;
+            thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
+            thermal.source = "multi-sensor-composite";
+            thermal.sensor = "SoC-Composite (" + std::to_string(profile.valid_cpu_count) + " cores)";
+            if (temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
+                thermal.emergency = true;
+            }
+        }
+
         if (!thermal.available) {
             last_tick = std::chrono::steady_clock::now();
             if (!unavailable_reported) {
@@ -490,20 +517,25 @@ int main(int argc, char* argv[]) {
                 controller->reset();
                 governor = UclampGovernor{};
                 if (baseline.has_active_mutations()) { reactor.stop(); return; }
-                // Frequency ownership is intentionally not reacquired until reload.
                 frequencies.discover(false, false);
             }
-            return; // Remain available to status/stop; never infer safe headroom.
+            return;
         }
         if (!thermal_ready) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
             controller->reset();
             thermal_ready = true; unavailable_reported = false;
         }
-        if (thermal.emergency) {
-            emit_log(true, "[CoreFlow][Stability] OEM thermal emergency source=" +
-                     thermal.source + " sensor=" + thermal.sensor);
-            baseline.rollback_all(); applied = false; reactor.stop(); return;
+
+        // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
+        const float batt = ThermalMonitor::instance().battery_celsius();
+        if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
+            emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
+                     std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
+                     "°C). Rolling back mutations to hardware fail-safe baseline.");
+            baseline.rollback_all();
+            applied = false;
+            return;
         }
 
         const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
@@ -536,9 +568,30 @@ int main(int argc, char* argv[]) {
             reactor.stop();
             return;
         }
-        const WorkloadState desired = static_cast<WorkloadState>(decision.state);
+
+        // Active Thermal Mitigation:
+        // When temperatures are elevated, DO NOT kill or stop the daemon!
+        // The engine remains active to cool down the SoC, clamp uclamp floors,
+        // and scale down frequencies until temperatures normalize.
+        const bool thermal_limit_hit = (thermal.emergency || temp >= config.thermal_trip_celsius ||
+                                       (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
+        const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
+        double active_capacity_scale = decision.capacity_scale;
+        if (thermal_limit_hit) {
+            active_capacity_scale = std::min(active_capacity_scale, 0.75);
+            static auto last_guard_log = std::chrono::steady_clock::time_point::min();
+            const auto now_t = std::chrono::steady_clock::now();
+            if (now_t - last_guard_log > std::chrono::seconds(10)) {
+                emit_log(true, "[CoreFlow][ThermalGuard] Active thermal mitigation engaged: cooling down SoC ("
+                         "composite=" + std::to_string(temp) + "°C, trip=" +
+                         std::to_string(config.thermal_trip_celsius) + "°C, pressure=" +
+                         std::to_string(thermal.pressure) + "). Engine actively lowering temperature.");
+                last_guard_log = now_t;
+            }
+        }
+
         // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
-        if (!frequencies.apply(decision.capacity_scale)) {
+        if (!frequencies.apply(active_capacity_scale)) {
             baseline.rollback_all();
             reactor.stop();
             return;
@@ -547,7 +600,7 @@ int main(int argc, char* argv[]) {
             baseline.rollback_all(); reactor.stop(); return;
         }
         HardwareLongevityManager::instance().monitor_battery_thermals(temp);
-        const auto capacity = static_cast<uint32_t>(std::lround(decision.capacity_scale * 1024.0));
+        const auto capacity = static_cast<uint32_t>(std::lround(active_capacity_scale * 1024.0));
         if (config.enable_uclamp && governor.is_supported() && !governor.apply_budget(desired,
                 config.top_app_interactive_min, config.top_app_interactive_max, capacity)) {
             baseline.rollback_all();

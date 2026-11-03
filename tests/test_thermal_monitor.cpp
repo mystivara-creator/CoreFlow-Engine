@@ -45,6 +45,11 @@ int main() {
 
     ThermalMonitor tensor_monitor(root);
     assert(std::fabs(tensor_monitor.hottest_celsius() - 42.75f) < 0.01f);
+    const auto prof = tensor_monitor.multi_sensor_profile();
+    assert(prof.valid_cpu_count == 3);
+    assert(std::fabs(prof.cpu_average - 39.5f) < 0.01f);
+    assert(std::fabs(prof.cpu_peak - 42.75f) < 0.01f);
+    assert(std::fabs(prof.composite_soc - 40.475f) < 0.05f);
 
     // Sub-1C millidegree sensor scaling (500 mC == 0.5 C, not 500 C).
     const std::string cold_root = root + "/cold";

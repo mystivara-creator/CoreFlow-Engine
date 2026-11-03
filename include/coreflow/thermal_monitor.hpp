@@ -7,7 +7,7 @@
 namespace coreflow {
 struct ThermalSensorReading {
     std::string id, type;
-    int category{0}; // 1 compute, 2 battery, 3 skin
+    int category{0}; // 1 compute, 2 battery, 3 skin, 4 board/power
     float celsius{-1};
     bool valid{false}, policy_available{false};
     double pressure{0};
@@ -22,15 +22,31 @@ struct ThermalAssessment {
     std::vector<ThermalSensorReading> readings;
     bool incomplete{false};
 };
+struct MultiSensorProfile {
+    float cpu_average{-1.0f};
+    float cpu_peak{-1.0f};
+    float gpu_average{-1.0f};
+    float board_average{-1.0f};
+    float battery{-1.0f};
+    float skin{-1.0f};
+    float composite_soc{-1.0f};
+    size_t valid_cpu_count{0};
+    size_t valid_gpu_count{0};
+    size_t total_valid_sensors{0};
+};
+
 [[nodiscard]] ThermalAssessment assessment_from_android_severity(int severity);
 [[nodiscard]] ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAssessment sensors);
+
 class ThermalMonitor {
 public:
     static ThermalMonitor& instance();
     explicit ThermalMonitor(std::string_view sysfs_root = "/sys/class/thermal");
     [[nodiscard]] float hottest_celsius() const;
+    [[nodiscard]] float composite_celsius() const;
     [[nodiscard]] float battery_celsius() const;
     [[nodiscard]] float skin_celsius() const;
+    [[nodiscard]] MultiSensorProfile multi_sensor_profile() const;
     [[nodiscard]] ThermalAssessment assess(bool headroom = true) const;
 private:
     struct Sensor { std::string path, type; int category; };

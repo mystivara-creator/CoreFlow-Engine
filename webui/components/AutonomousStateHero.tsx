@@ -71,7 +71,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
           <div className="text-2xl sm:text-3xl font-bold font-mono text-amber-500">
             {tempText}<span className="text-xs text-slate-400"> °C</span>
           </div>
-          <div className="text-[11px] text-slate-500 mt-2">{nativeMode ? 'Control: OEM thermal policy' : `Preview trip ${thermalTripCelsius.toFixed(1)}°C`}</div>
+          <div className="text-[11px] text-slate-500 mt-2">{nativeMode ? 'Control: Multi-sensor composite equilibrium' : `Preview trip ${thermalTripCelsius.toFixed(1)}°C`}</div>
         </div>
 
         <div className="rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/80 p-4">

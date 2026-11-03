@@ -32,6 +32,10 @@ interface NativeStatus {
   uclampMax: number;
   uclampSupported: boolean;
   socTempCelsius: number | null;
+  socCompositeCelsius?: number | null;
+  cpuAverageCelsius?: number | null;
+  cpuPeakCelsius?: number | null;
+  gpuTempCelsius?: number | null;
   recoveryPending: boolean;
   thermalPolicyAvailable?: boolean;
   thermalSeverity?: number;
@@ -160,33 +164,35 @@ export const App: React.FC = () => {
 
   const refreshNative = useCallback(async (): Promise<NativeStatus> => {
     const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
+    const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
+    const isThermalThrottling = effectiveTemp >= config.thermalTripCelsius;
     setTelemetry((old) => ({
       ...old,
       engineActive: status.running,
       uclampMin: status.uclampMin,
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
-      socTempCelsius: status.socTempCelsius ?? -1,
+      socTempCelsius: effectiveTemp,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       modeLabel: status.running
-        ? status.thermalPolicyAvailable === false ? 'OEM thermal policy unavailable' : status.uclampSupported
+        ? isThermalThrottling
+          ? 'ThermalGuard Active · Cooling SoC'
+          : status.uclampSupported
           ? 'Native stability policy active'
-          : 'Daemon active · UClamp unavailable'
+          : 'Daemon active · Multi-sensor equilibrium'
         : 'Daemon stopped',
-      modeDescription: status.running && status.thermalPolicyAvailable === false
-        ? 'OEM thermal thresholds unavailable; retaining the baseline'
-        : status.recoveryPending
-        ? status.running
-          ? `OEM thermal source: ${status.thermalSource ?? 'unavailable'}; tracked changes protected by journal`
-          : 'Recovery is still pending'
-        : status.running
-        ? 'Capability-driven UClamp with thermal and PSI stability gates'
+      modeDescription: status.running
+        ? isThermalThrottling
+          ? 'Thermal guard active: pacing clocks and uclamp to reduce temperature'
+          : status.recoveryPending
+          ? `Thermal source: ${status.thermalSource ?? 'multi-sensor-composite'}; journal protected`
+          : 'Capability-driven UClamp with multi-sensor thermal and PSI stability gates'
         : 'OEM baseline restored',
       timestamp: Date.now(),
     }));
     setNativeError(null);
     return status;
-  }, []);
+  }, [config.thermalTripCelsius]);
 
   useEffect(() => {
     if (!isNativeBridge) return;
