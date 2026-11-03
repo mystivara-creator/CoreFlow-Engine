@@ -1,5 +1,6 @@
 #include "coreflow/types.hpp"
 #include "coreflow/config.hpp"
+#include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
@@ -206,10 +207,15 @@ int main(int argc, char* argv[]) {
             }
             return;
         }
+        const PressureSnapshot pressure{
+            .cpu = read_psi_avg10("/proc/pressure/cpu"),
+            .memory = read_psi_avg10("/proc/pressure/memory"),
+            .io = read_psi_avg10("/proc/pressure/io"),
+        };
+
         // Severe heat means CoreFlow gets out of the way and returns ownership
         // to the OEM thermal stack instead of fighting it with another profile.
-        if (config.emergency_rollback_on_overheat &&
-            temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
+        if (emergency_thermal_exit(temp, config)) {
             std::cerr << "[CoreFlow][Stability] emergency thermal exit at " << temp << "C\n";
             baseline.rollback_all();
             applied = false;
@@ -217,27 +223,8 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        const double cpu_pressure = read_psi_avg10("/proc/pressure/cpu");
-        const double memory_pressure = read_psi_avg10("/proc/pressure/memory");
-        const double io_pressure = read_psi_avg10("/proc/pressure/io");
-
-        WorkloadState desired = WorkloadState::Balanced;
-        if (temp >= config.thermal_trip_celsius ||
-            (applied && current == WorkloadState::ThermalGuard &&
-             temp > config.thermal_recover_celsius)) {
-            desired = WorkloadState::ThermalGuard;
-        } else if (memory_pressure >= config.memory_pressure_guard_pct ||
-                   io_pressure >= config.io_pressure_guard_pct) {
-            // Contention guard: reduce artificial boosting, keep the ceiling open,
-            // and let reclaim/I/O complete instead of adding CPU demand.
-            desired = WorkloadState::PressureGuard;
-        } else if (cpu_pressure >= config.cpu_pressure_boost_pct &&
-                   temp <= config.thermal_trip_celsius - config.thermal_headroom_celsius) {
-            // Sustained CPU pressure with thermal headroom: moderately raise the
-            // top-app floor. This covers games and other sustained foreground work
-            // without needing package-name heuristics or an application database.
-            desired = WorkloadState::SustainedLoad;
-        }
+        const WorkloadState desired =
+            select_stability_state(temp, pressure, current, applied, config);
 
         if (!applied || current != desired) {
             const auto now = std::chrono::steady_clock::now();
@@ -249,9 +236,9 @@ int main(int argc, char* argv[]) {
                 consecutive_failures = 0;
                 std::cerr << "[CoreFlow][Stability] state=" << state_name(current)
                           << " temp=" << temp
-                          << " cpu_psi=" << cpu_pressure
-                          << " mem_psi=" << memory_pressure
-                          << " io_psi=" << io_pressure << "\n";
+                          << " cpu_psi=" << pressure.cpu
+                          << " mem_psi=" << pressure.memory
+                          << " io_psi=" << pressure.io << "\n";
             } else {
                 baseline.rollback_all();
                 applied = false;
