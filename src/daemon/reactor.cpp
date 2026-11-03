@@ -26,8 +26,9 @@ EpollReactor::EpollReactor() {
     if (stop_event_fd_.valid()) {
         register_fd(stop_event_fd_.get(), EPOLLIN, [this](uint32_t) {
             uint64_t val = 0;
-            (void)::read(stop_event_fd_.get(), &val, sizeof(val));
-            running_ = false;
+            const ssize_t consumed = ::read(stop_event_fd_.get(), &val, sizeof(val));
+            if (consumed == static_cast<ssize_t>(sizeof(val)) || errno == EAGAIN)
+                running_ = false;
         });
     }
 }
@@ -91,8 +92,9 @@ int EpollReactor::create_timerfd(std::chrono::milliseconds interval, EventCallba
     // Wrap callback to consume 8-byte uint64_t timer expiration count
     auto wrapped = [tfd, cb = std::move(callback)](uint32_t events) {
         uint64_t expirations = 0;
-        (void)::read(tfd, &expirations, sizeof(expirations));
-        cb(events);
+        const ssize_t consumed = ::read(tfd, &expirations, sizeof(expirations));
+        if (consumed == static_cast<ssize_t>(sizeof(expirations)))
+            cb(events);
     };
 
     if (!register_fd(tfd, EPOLLIN, std::move(wrapped))) {
@@ -137,7 +139,8 @@ void EpollReactor::stop() {
     if (!running_) return;
     if (stop_event_fd_.valid()) {
         uint64_t val = 1;
-        (void)::write(stop_event_fd_.get(), &val, sizeof(val));
+        const ssize_t signaled = ::write(stop_event_fd_.get(), &val, sizeof(val));
+        (void)signaled;
     }
     running_ = false;
 }
