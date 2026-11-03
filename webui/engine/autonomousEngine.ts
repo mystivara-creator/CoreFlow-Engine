@@ -20,7 +20,7 @@ export interface AutonomousTelemetry {
   targetFps: number;
   jankRatePct: number;
   socTempCelsius: number;
-  cgroupsV2Status: 'unified_active' | 'hybrid' | 'disabled';
+  uclampSupported: boolean;
   topApp: string;
   topAppLabel: string;
   topAppPid: number;
@@ -134,7 +134,7 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     targetFps: 120,
     jankRatePct: 0.2,
     socTempCelsius: 36.6,
-    cgroupsV2Status: 'unified_active',
+    uclampSupported: true,
     topApp: 'com.android.chrome',
     topAppLabel: 'Google Chrome',
     topAppPid: 24819,
