@@ -3,5 +3,5 @@ name=CoreFlow Engine — Modern C++20 Daemon
 version=v2.0.0
 versionCode=20000
 author=mystivara-creator
-description=Zero-polling native C++20 system daemon (coreflowd) featuring cgroups v2, EAS uclamp dynamic tuning, SurfaceFlinger render booster, and transactional OEM baseline protection.
+description=Modern epoll-driven native daemon with bounded UClamp thermal response, verified write-ahead baseline recovery, and offline KernelSU dashboard.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json
