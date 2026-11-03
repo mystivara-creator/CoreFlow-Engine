@@ -1,0 +1,14 @@
+# Linguist Language Overrides for GitHub
+*.kt linguist-language=Kotlin
+*.kts linguist-language=Kotlin
+*.cpp linguist-language=C++
+*.hpp linguist-language=C++
+*.rs linguist-language=Rust
+*.js linguist-language=JavaScript
+*.ts linguist-language=TypeScript
+*.tsx linguist-language=TypeScript
+*.sh linguist-language=Shell
+
+# Auto-detect text files and normalize line endings
+* text=auto eol=lf
+*.sh text eol=lf

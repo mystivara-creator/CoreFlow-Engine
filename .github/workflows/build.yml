@@ -91,7 +91,7 @@ jobs:
           for file in module/*.sh; do sh -n "$file"; done
 
       - name: Run Rust controller tests
-        run: cargo test --manifest-path rust/Cargo.toml --locked
+        run: cargo test --manifest-path rust/Cargo.toml
 
       - name: Configure host tests
         run: |

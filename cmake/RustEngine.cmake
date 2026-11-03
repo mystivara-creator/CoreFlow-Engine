@@ -24,8 +24,8 @@ endif()
 add_custom_command(OUTPUT "${_rust_lib}"
     COMMAND ${CMAKE_COMMAND} -E env ${_rust_env}
         "${COREFLOW_CARGO}" build --manifest-path "${CMAKE_SOURCE_DIR}/rust/Cargo.toml"
-        --release --locked ${_cargo_args}
-    DEPENDS rust/Cargo.lock rust/Cargo.toml rust/build.rs rust/src/lib.rs rust/src/bridge.rs rust/src/controller.rs
+        --release ${_cargo_args}
+    DEPENDS rust/Cargo.toml rust/build.rs rust/src/lib.rs rust/src/bridge.rs rust/src/controller.rs
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     VERBATIM)
 add_custom_target(coreflow_rust_build DEPENDS "${_rust_lib}")

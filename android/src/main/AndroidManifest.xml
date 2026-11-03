@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.BATTERY_STATS" />
+
+    <application>
+        <service
+            android:name="io.coreflow.CoreFlowTileService"
+            android:icon="@android:drawable/ic_dialog_info"
+            android:label="CoreFlow Mode"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="io.coreflow.CoreFlowThermalReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_CHANGED" />
+                <action android:name="android.os.action.POWER_SAVE_MODE_CHANGED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>
