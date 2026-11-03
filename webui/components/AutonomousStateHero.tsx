@@ -12,6 +12,7 @@ import { AutonomousTelemetry, getModeMeta } from '../engine/autonomousEngine';
 
 interface AutonomousStateHeroProps {
   telemetry: AutonomousTelemetry;
+  nativeMode?: boolean;
   thermalTripCelsius: number;
   onSimulateTouchBoost: () => void;
   onSimulateAppLaunch: () => void;
@@ -19,6 +20,7 @@ interface AutonomousStateHeroProps {
 
 export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
   telemetry,
+  nativeMode = false,
   thermalTripCelsius,
   onSimulateTouchBoost,
   onSimulateAppLaunch,
@@ -55,11 +57,11 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
             <span
               className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${meta.badgeColor}`}
             >
-              {telemetry.engineActive ? meta.label : 'Paused'}
+              {nativeMode ? (telemetry.engineActive ? 'Native daemon active' : 'Native daemon stopped') : (telemetry.engineActive ? meta.label : 'Paused')}
             </span>
           </div>
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-            {telemetry.engineActive ? meta.description : 'Running on OEM default parameters'}
+            {nativeMode ? telemetry.modeDescription : (telemetry.engineActive ? meta.description : 'Running on OEM default parameters')}
           </h2>
         </div>
 
@@ -68,7 +70,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           <Smartphone className="w-4 h-4 text-sky-500 shrink-0" />
           <div className="text-left">
             <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium leading-none mb-0.5">
-              Top-App (PID {telemetry.topAppPid})
+              {nativeMode ? 'Foreground detection' : `Top-App (PID ${telemetry.topAppPid})`}
             </div>
             <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 font-mono truncate max-w-[170px]">
               {telemetry.topAppLabel}
@@ -113,7 +115,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </div>
           <div className="flex items-baseline gap-1.5 mb-2">
             <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-emerald-500 tabular-nums">
-              {telemetry.currentFps}
+              {nativeMode ? 'N/A' : telemetry.currentFps}
             </span>
             <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">
               FPS
@@ -122,11 +124,11 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>Jank miss rate:</span>
             <span className="font-mono text-emerald-500 font-semibold tabular-nums">
-              {telemetry.jankRatePct}%
+              {nativeMode ? 'N/A' : `${telemetry.jankRatePct}%`}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            SurfaceFlinger {telemetry.targetFps}Hz active
+            {nativeMode ? 'Frame metrics unavailable' : `SurfaceFlinger ${telemetry.targetFps}Hz preview`}
           </div>
         </div>
 
@@ -138,7 +140,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </div>
           <div className="flex items-baseline gap-1.5 mb-2">
             <span className={`text-2xl sm:text-3xl font-bold font-mono tracking-tight tabular-nums ${tempColor}`}>
-              {telemetry.socTempCelsius.toFixed(1)}
+              {nativeMode && temp < 0 ? 'N/A' : telemetry.socTempCelsius.toFixed(1)}
             </span>
             <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">
               °C
@@ -147,7 +149,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>Thermal state:</span>
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              {isOverheating ? 'Guarded' : isWarm ? 'Elevated' : 'Optimal'}
+              {temp < 0 ? 'Unknown' : isOverheating ? 'Guarded' : isWarm ? 'Elevated' : 'Optimal'}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
@@ -163,21 +165,22 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </div>
           <div className="flex items-baseline gap-1 mb-2">
             <span className="text-lg sm:text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-              {telemetry.cgroupsV2Status === 'unified_active' ? 'Unified Active' : 'Hybrid Mode'}
+              {telemetry.cgroupsV2Status === 'unified_active' ? 'Available' : 'Not Detected'}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>Controllers:</span>
             <span className="font-mono text-indigo-400 font-semibold">
-              cpu, io, cpuset
+              {nativeMode ? 'Not queried' : 'cpu, io, cpuset'}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            Zero-latency task pinning
+            {nativeMode ? 'Controller discovery only' : 'Preview: simulated task placement'}
           </div>
         </div>
       </div>
 
+      {!nativeMode && <>
       {/* Autonomous Simulator Quick Test Triggers (For testing self-adaptation) */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-200/60 dark:border-slate-800/60 text-xs text-slate-500 dark:text-slate-400">
         <div className="flex items-center gap-1.5">
@@ -201,6 +204,7 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </button>
         </div>
       </div>
+      </>}
     </div>
   );
 };
