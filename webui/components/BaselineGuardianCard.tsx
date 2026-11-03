@@ -35,14 +35,14 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-base sm:text-lg text-slate-900 dark:text-white">
-                Transactional OEM Baseline Protection
+                Verified Baseline Recovery
               </h3>
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                {nativeMode ? 'Write-ahead Journal' : (baselineStatus === 'protected' ? 'Preview Guarded' : 'Preview Restored')}
+                {nativeMode ? 'Write-ahead Journal' : (baselineStatus === 'protected' ? 'Preview Protected' : 'Preview Restored')}
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
-              {nativeMode ? 'Native changes are journaled before writes and verified on restoration. This button stops the daemon and requests OEM recovery.' : `${nodesSnapshotted} nodes simulated; no device writes in preview.`}
+              {nativeMode ? 'CoreFlow records observed pre-mutation values before each write and verifies restoration. This stops the daemon and restores tracked pre-CoreFlow values.' : `${nodesSnapshotted} nodes simulated; no device writes in preview.`}
             </p>
           </div>
         </div>
@@ -56,16 +56,16 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
               className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs transition-all active:scale-95 disabled:opacity-50"
             >
               <RotateCcw className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Restore OEM Baseline</span>
+              <span>Restore Pre-CoreFlow Values</span>
             </button>
           ) : (
             <div className="flex items-center gap-2 p-1 rounded-full bg-amber-500/10 border border-amber-500/30">
-              <span className="text-xs font-medium text-amber-500 pl-2">Confirm rollback?</span>
+              <span className="text-xs font-medium text-amber-500 pl-2">Confirm recovery?</span>
               <button
                 onClick={handleConfirm}
                 className="px-3 py-1 rounded-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition-colors"
               >
-                Yes, Restore
+                Restore
               </button>
               <button
                 onClick={() => setShowConfirm(false)}
