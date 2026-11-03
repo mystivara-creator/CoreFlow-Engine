@@ -1,10 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  applyAppearance,
-  readAppearance,
-  saveAppearance,
-  Theme,
-} from './bridge/appearance';
+import React, { useCallback, useEffect, useState } from 'react';
+import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
 import { AutonomousTuningCard } from './components/AutonomousTuningCard';
@@ -12,204 +7,231 @@ import { BaselineGuardianCard } from './components/BaselineGuardianCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import {
-  AutonomousConfig,
-  AutonomousTelemetry,
-  createInitialAutonomousTelemetry,
-  createInitialLogs,
-  DEFAULT_AUTONOMOUS_CONFIG,
-  ReactionLogEvent,
+  AutonomousConfig, AutonomousTelemetry, createInitialAutonomousTelemetry,
+  createInitialLogs, DEFAULT_AUTONOMOUS_CONFIG, ReactionLogEvent,
   stepAutonomousSimulation,
 } from './engine/autonomousEngine';
 
+const BIN = '/data/adb/modules/coreflow_engine/system/bin/coreflowd';
+const SERVICE = '/data/adb/modules/coreflow_engine/service.sh';
+
+interface NativeStatus {
+  running: boolean;
+  pid: number;
+  uclampMin: number;
+  uclampMax: number;
+  cgroupV2: boolean;
+  socTempCelsius: number | null;
+  recoveryPending: boolean;
+}
+const checkedNativeStatus = (result: string): NativeStatus => {
+  const obj: unknown = JSON.parse(result.trim().split('\n').pop() ?? '');
+  if (typeof obj !== 'object' || obj === null) throw new Error('Invalid native status');
+  const status = obj as Partial<NativeStatus>;
+  if (typeof status.running !== 'boolean' || typeof status.pid !== 'number' ||
+      typeof status.uclampMin !== 'number' || typeof status.uclampMax !== 'number' ||
+      typeof status.cgroupV2 !== 'boolean' ||
+      (typeof status.socTempCelsius !== 'number' && status.socTempCelsius !== null) ||
+      typeof status.recoveryPending !== 'boolean') {
+    throw new Error('Unexpected daemon status schema');
+  }
+  return status as NativeStatus;
+};
+const execChecked = async (command: string) => {
+  const result = await execNativeKsuShell(command);
+  if (result.errno !== 0) throw new Error(result.stderr || result.stdout || 'Native command failed');
+  return result.stdout;
+};
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
 export const App: React.FC = () => {
-  const [isNativeBridge] = useState<boolean>(() => hasNativeKernelSuBridge());
+  const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
-  const isDark =
-    appearance.theme === 'dark' ||
-    (appearance.theme === 'system' &&
-      typeof window !== 'undefined' &&
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const isDark = appearance.theme === 'dark' ||
+    (appearance.theme === 'system' && typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 
-  const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() =>
-    createInitialAutonomousTelemetry()
-  );
-  const [config, setConfig] = useState<AutonomousConfig>(() => ({
-    ...DEFAULT_AUTONOMOUS_CONFIG,
-  }));
-  const [logs, setLogs] = useState<ReactionLogEvent[]>(() => createInitialLogs());
-
-  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
+    const initial = createInitialAutonomousTelemetry();
+    return isNativeBridge ? {
+      ...initial, engineActive: false, currentFps: 0, targetFps: 0,
+      jankRatePct: 0, socTempCelsius: -1, uclampMin: 0, uclampMax: 0,
+      topApp: '', topAppLabel: 'Unavailable', topAppPid: 0, epollEventsPerSec: 0,
+      cgroupsV2Status: 'disabled', baselineNodesSnapshotted: 0,
+      modeLabel: 'Awaiting native status', modeDescription: 'Awaiting daemon response',
+    } : initial;
+  });
+  const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
+  const [logs, setLogs] = useState<ReactionLogEvent[]>(() => isNativeBridge ? [] : createInitialLogs());
+  const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-
-  const [isRestoring, setIsRestoring] = useState<boolean>(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
 
-  // Sync theme to DOM on mount and changes
-  useEffect(() => {
-    applyAppearance(appearance);
-  }, [appearance]);
-
+  useEffect(() => { applyAppearance(appearance); }, [appearance]);
   const toggleTheme = () => {
-    const nextTheme: Theme = isDark ? 'light' : 'dark';
-    const nextApp = { ...appearance, theme: nextTheme };
-    setAppearance(nextApp);
-    saveAppearance(nextApp);
+    const theme: Theme = isDark ? 'light' : 'dark';
+    const changed = { ...appearance, theme };
+    setAppearance(changed);
+    saveAppearance(changed);
   };
+  const addLog = useCallback((type: ReactionLogEvent['type'], tag: string, message: string) => {
+    const event: ReactionLogEvent = {
+      id: String(Date.now()) + String(Math.random()), timestamp: new Date().toTimeString().slice(0, 8),
+      type, tag, message,
+    };
+    setLogs(old => [event, ...old].slice(0, 50));
+  }, []);
 
-  const addLog = useCallback(
-    (type: ReactionLogEvent['type'], tag: string, message: string) => {
-      const newEvent: ReactionLogEvent = {
-        id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        timestamp: new Date().toTimeString().slice(0, 8),
-        type,
-        tag,
-        message,
-      };
-      setLogs((prev) => [newEvent, ...prev.slice(0, 50)]);
-    },
-    []
-  );
+  const refreshNative = useCallback(async () => {
+    const status = checkedNativeStatus(await execChecked(BIN + ' --status'));
+    setTelemetry(old => ({
+      ...old, engineActive: status.running, uclampMin: status.uclampMin,
+      uclampMax: status.uclampMax, socTempCelsius: status.socTempCelsius ?? -1,
+      cgroupsV2Status: status.cgroupV2 ? 'unified_active' : 'disabled',
+      baselineStatus: status.recoveryPending ? 'protected' : 'restored',
+      modeLabel: status.running ? 'Native daemon active' : 'Daemon stopped',
+      modeDescription: status.recoveryPending ? 'Recovery needs attention' : 'Native kernel status',
+      timestamp: Date.now(),
+    }));
+    setNativeError(null);
+    return status;
+  }, []);
 
-  // Main autonomous reaction loop (2.5s tick)
+  useEffect(() => {
+    if (!isNativeBridge) return;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        await refreshNative();
+        const result = await execNativeKsuShell('/system/bin/tail -n 35 /data/adb/coreflow/logs/coreflowd.log');
+        if (!disposed && result.errno === 0) {
+          const lines = result.stdout.split('\n').map(v => v.trim()).filter(Boolean).slice(-30);
+          setLogs(lines.reverse().map((message, i) => ({
+            id: 'native-' + i + '-' + message,
+            timestamp: '--:--:--', type: 'INFO' as const, tag: 'Daemon', message: message.slice(0, 512),
+          })));
+        }
+      } catch (error) {
+        if (!disposed) setNativeError(String(error));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [isNativeBridge, refreshNative]);
+
   useEffect(() => {
     if (isNativeBridge) return;
-    const interval = setInterval(() => {
-      setTelemetry((prev) => {
-        const { next, event } = stepAutonomousSimulation(prev, config);
-        if (event) {
-          setLogs((l) => [event, ...l.slice(0, 50)]);
-        }
+    const timer = window.setInterval(() => {
+      setTelemetry(old => {
+        const { next, event } = stepAutonomousSimulation(old, config);
+        if (event) setLogs(previous => [event, ...previous].slice(0, 50));
         return next;
       });
     }, 2500);
+    return () => window.clearInterval(timer);
+  }, [isNativeBridge, config]);
 
-    return () => clearInterval(interval);
-  }, [config, isNativeBridge]);
-
-  // Master engine toggle (Active vs Stock OEM)
-  const handleToggleEngine = () => {
-    if (isNativeBridge) {
-      addLog("INFO", "Control", "Native engine toggle is unavailable until the daemon control protocol is implemented.");
+  const handleToggleEngine = async () => {
+    if (!isNativeBridge) {
+      setTelemetry(old => ({ ...old, engineActive: !old.engineActive }));
       return;
     }
-    setTelemetry((prev) => {
-      const nextActive = !prev.engineActive;
-      addLog(
-        'INFO',
-        'AutonomousEngine',
-        nextActive
-          ? 'Autonomous daemon unpaused: zero-polling reactor resuming task acceleration.'
-          : 'Autonomous daemon suspended: device reverted to OEM factory scheduler limits.'
-      );
-      return {
-        ...prev,
-        engineActive: nextActive,
-      };
-    });
+    if (isSwitching) return;
+    setIsSwitching(true);
+    try {
+      const before = await refreshNative();
+      if (before.running) {
+        await execChecked(BIN + ' --stop');
+      } else {
+        await execChecked('/system/bin/sh ' + SERVICE);
+      }
+      await delay(800);
+      const after = await refreshNative();
+      if (after.running === before.running) throw new Error('Daemon state did not change');
+      addLog('INFO', 'NativeControl', after.running ? 'Daemon started' : 'Daemon stopped; rollback verified');
+    } catch (error) {
+      setNativeError(String(error));
+      addLog('INFO', 'NativeControl', 'Failed: ' + String(error));
+    } finally {
+      setIsSwitching(false);
+    }
   };
-
-  // Instant touch boost simulation
   const handleSimulateTouchBoost = () => {
-    if (isNativeBridge) return;
-    if (!telemetry.engineActive) return;
-    setTelemetry((prev) => ({
-      ...prev,
-      mode: 'touch_boost',
-      uclampMin: config.touchBoostMin,
-    }));
-    addLog(
-      'BOOST',
-      'TouchInteraction',
-      `Touch gesture event intercepted: instant uclamp boost (${config.touchBoostMin}) dispatched for 120Hz velocity.`
-    );
+    if (isNativeBridge || !telemetry.engineActive) return;
+    setTelemetry(old => ({ ...old, mode: 'touch_boost', uclampMin: config.touchBoostMin }));
+    addLog('BOOST', 'Preview', 'Simulated touch boost');
   };
-
-  // App launch simulation
   const handleSimulateAppLaunch = () => {
-    if (isNativeBridge) return;
-    if (!telemetry.engineActive) return;
-    setTelemetry((prev) => ({
-      ...prev,
-      mode: 'launch_burst',
-      uclampMin: 800,
-      topApp: 'com.miHoYo.GenshinImpact',
-      topAppLabel: 'Genshin Impact',
-      topAppPid: 29402,
-    }));
-    addLog(
-      'BOOST',
-      'LaunchDetector',
-      `Cold launch burst: Genshin Impact pinned to cgroup top-app, uclamp floor raised to 800 for ${config.burstDurationMs}ms.`
-    );
+    if (isNativeBridge || !telemetry.engineActive) return;
+    setTelemetry(old => ({ ...old, mode: 'launch_burst', uclampMin: 800 }));
+    addLog('BOOST', 'Preview', 'Simulated cold launch');
   };
-
-  // Save configuration (updates memory and writes to KernelSU config if rooted)
   const handleSaveConfig = async () => {
     setIsSaving(true);
     setSaveMessage(null);
-
-    if (isNativeBridge) {
-      try {
-        const confContent = `[general]
-version = 2.0.0
-zero_polling_mode = true
-enable_cgroups_v2 = true
-enable_uclamp = true
-
-[device_adaptation]
-tier_override = auto
-unlock_vendor_clamping = ${config.unlockVendorClamping}
-force_120hz_rendering = ${config.targetFps === 120}
-
-[uclamp_tuning]
-top_app_interactive_min = ${config.touchBoostMin}
-touch_boost_uclamp_min = ${config.touchBoostMin}
-burst_boost_duration_ms = ${config.burstDurationMs}
-
-[thermal_guardian]
-thermal_trip_celsius = ${config.thermalTripCelsius.toFixed(1)}
-emergency_rollback_on_overheat = true
-`;
-        const result = await execNativeKsuShell(`cat << 'EOF' > /data/adb/modules/coreflow_engine/coreflow.conf\n${confContent}\nEOF`);
-        if (result.errno !== 0) throw new Error(result.stderr || "Native configuration write failed");
-        addLog('INFO', 'ConfigWriter', 'coreflow.conf updated on /data/adb/modules/coreflow_engine/');
-      } catch (err) {
-        setIsSaving(false);
-        setSaveMessage("Save failed");
-        addLog('INFO', 'ConfigWriter', `Native save failed: ${String(err)}`);
+    try {
+      if (!isNativeBridge) {
+        setSaveMessage('Preview only: nothing written to the device');
         return;
       }
-    }
-
-    setTimeout(() => {
+      const interactiveMin = config.adaptiveBias === 'battery' ? 220
+        : config.adaptiveBias === 'responsiveness' ? 480 : config.touchBoostMin;
+      const trip = Math.max(40, Math.min(48, config.thermalTripCelsius));
+      const content = '[general]\nversion = 2.0.0\nenable_cgroups_v2 = true\nenable_uclamp = true\n'
+        + '\n[device_adaptation]\nunlock_vendor_clamping = false\nforce_120hz_rendering = false\n'
+        + '\n[uclamp_tuning]\ntop_app_interactive_min = ' + interactiveMin
+        + '\ntop_app_interactive_max = 1024\n'
+        + '\n[thermal_guardian]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' + trip.toFixed(1)
+        + '\nthermal_recover_celsius = ' + (trip - 4).toFixed(1) + '\n';
+      const output = await execChecked("cat <<'COREFLOW_CONFIG' > /data/adb/coreflow/coreflow.conf\n"
+        + content + "COREFLOW_CONFIG\n[ -s /data/adb/coreflow/coreflow.conf ] && echo COREFLOW_CONFIG_WRITTEN");
+      if (!output.includes('COREFLOW_CONFIG_WRITTEN')) throw new Error('Configuration write not acknowledged');
+      const before = await refreshNative();
+      if (before.running) {
+        await execChecked(BIN + ' --stop');
+        await execChecked('/system/bin/sh ' + SERVICE);
+        await delay(800);
+        const after = await refreshNative();
+        if (!after.running) throw new Error('Config saved but daemon restart failed');
+      }
+      setSaveMessage(before.running ? 'Saved and daemon restarted' : 'Saved; takes effect on next start');
+      addLog('INFO', 'Config', 'Native config written and acknowledged');
+    } catch (error) {
+      setSaveMessage('Save failed');
+      setNativeError(String(error));
+    } finally {
       setIsSaving(false);
-      setSaveMessage('Saved successfully');
-      addLog(
-        'INFO',
-        'AutonomousConfig',
-        `Autonomous parameters updated: Bias=${config.adaptiveBias}, Target=${config.targetFps}Hz, ThermalTrip=${config.thermalTripCelsius}°C`
-      );
-      setTimeout(() => setSaveMessage(null), 3000);
-    }, 400);
+    }
   };
-
-  // Restore OEM baseline
   const handleRestoreBaseline = async () => {
     setIsRestoring(true);
     setRestoreFeedback(null);
-    if (!isNativeBridge) {
-      setTelemetry(prev => ({ ...prev, baselineStatus: 'restored', uclampMin: 0 }));
-      setRestoreFeedback('Preview only: simulated baseline restored.');
-    } else {
-      // No rollback CLI or IPC contract exists in coreflowd yet.
-      setRestoreFeedback('Unavailable: native rollback command is not implemented.');
+    try {
+      if (!isNativeBridge) {
+        setTelemetry(old => ({ ...old, baselineStatus: 'restored' }));
+        setRestoreFeedback('Preview only: simulated rollback');
+        return;
+      }
+      await execChecked(BIN + ' --rollback-baseline');
+      const status = await refreshNative();
+      if (status.running || status.recoveryPending) throw new Error('Rollback not verified');
+      setRestoreFeedback('OEM baseline restoration verified by daemon');
+      addLog('BASELINE', 'NativeRecovery', 'Daemon stopped and journal cleared');
+    } catch (error) {
+      setRestoreFeedback('Restoration failed: ' + String(error));
+      setNativeError(String(error));
+    } finally {
+      setIsRestoring(false);
     }
-    setIsRestoring(false);
   };
-
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased selection:bg-sky-500 selection:text-white">
-      <div role="status" className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100">{isNativeBridge ? "Native device: telemetry and controls are unavailable until daemon IPC is implemented." : "DEMO PREVIEW: simulated telemetry and controls, not connected to a device."}</div>
+      <div role="status" className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100">{isNativeBridge ? "Native telemetry: measured UClamp and temperature. FPS, top-app and jank measurement unavailable." : "DEMO PREVIEW: simulated telemetry and controls, not connected to a device."}</div>
+      {nativeError && <div role="alert" className="px-4 py-2 bg-rose-200 text-rose-950 dark:bg-rose-950 dark:text-rose-100 text-xs">{nativeError}</div>}
       {/* Google Pixel / Material 3 Top Navigation */}
       <PixelHeader
         engineActive={telemetry.engineActive}
@@ -218,6 +240,7 @@ emergency_rollback_on_overheat = true
         onToggleTheme={toggleTheme}
         epollEventsPerSec={telemetry.epollEventsPerSec}
         modeLabel={telemetry.modeLabel}
+        nativeMode={isNativeBridge}
       />
 
       {/* Main Single-Page Modular Dashboard Container */}
@@ -226,6 +249,7 @@ emergency_rollback_on_overheat = true
         <section aria-label="Engine Real-Time Telemetry">
           <AutonomousStateHero
             telemetry={telemetry}
+            nativeMode={isNativeBridge}
             thermalTripCelsius={config.thermalTripCelsius}
             onSimulateTouchBoost={handleSimulateTouchBoost}
             onSimulateAppLaunch={handleSimulateAppLaunch}
@@ -236,6 +260,7 @@ emergency_rollback_on_overheat = true
         <section aria-label="Autonomous Adaptation Dials">
           <AutonomousTuningCard
             config={config}
+            nativeMode={isNativeBridge}
             onChangeConfig={setConfig}
             onSaveConfig={handleSaveConfig}
             isSaving={isSaving}
@@ -247,6 +272,7 @@ emergency_rollback_on_overheat = true
         <section aria-label="OEM Baseline Protection">
           <BaselineGuardianCard
             nodesSnapshotted={telemetry.baselineNodesSnapshotted}
+            nativeMode={isNativeBridge}
             baselineStatus={telemetry.baselineStatus}
             onRestoreBaseline={handleRestoreBaseline}
             isRestoring={isRestoring}
