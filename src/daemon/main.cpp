@@ -83,6 +83,7 @@ void print_status() {
               << ",\"pid\":" << pid
               << ",\"uclampMin\":" << governor.get_top_app_min()
               << ",\"uclampMax\":" << governor.get_top_app_max()
+              << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
               << ",\"cgroupV2\":" << (std::filesystem::exists("/sys/fs/cgroup/cgroup.controllers") ? "true" : "false")
               << ",\"socTempCelsius\":";
     if (temp >= 0.0f) std::cout << temp;
