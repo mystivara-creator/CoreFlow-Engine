@@ -127,8 +127,8 @@ bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_
         return baseline.apply_mutation(min_path, to_percentage(min_val, false)) &&
                baseline.apply_mutation(max_path, to_percentage(max_val, true));
     }
-    return baseline.apply_mutation(max_path, std::to_string(max_val)) &&
-           baseline.apply_mutation(min_path, std::to_string(min_val));
+    return baseline.apply_mutation(max_path, to_percentage(max_val, true)) &&
+           baseline.apply_mutation(min_path, to_percentage(min_val, false));
 }
 
 bool UclampGovernor::set_rt_clamp_min(uint32_t clamp_val) {
