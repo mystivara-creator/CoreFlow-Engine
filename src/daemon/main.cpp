@@ -164,7 +164,6 @@ int main(int argc, char* argv[]) {
     }
 
     const DaemonConfig config = DaemonConfig::load_best_available();
-    const auto topology = DeviceProfiler::instance().probe();
     UclampGovernor governor;
     EpollReactor reactor;
 
@@ -243,7 +242,7 @@ int main(int argc, char* argv[]) {
         if (!applied || current != desired) {
             const auto now = std::chrono::steady_clock::now();
             if (now < retry_after) return;
-            if (governor.apply_state(desired, topology.tier,
+            if (governor.apply_state(desired,
                                      config.top_app_interactive_min, config.top_app_interactive_max)) {
                 current = desired;
                 applied = true;
