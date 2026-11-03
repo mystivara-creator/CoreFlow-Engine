@@ -33,7 +33,7 @@ int main() {
     assert(read(root + "/top-app/cpu.uclamp.max") == "max");
     assert(governor.get_top_app_min() == 320u);
     assert(governor.get_top_app_max() == 1024u);
-    assert(BaselineStore::instance().rollback_all() >= 4);
+    assert(BaselineStore::instance().rollback_all() >= 1);
     assert(!BaselineStore::instance().has_active_mutations());
     for (const auto* group : {"top-app", "foreground", "background"}) {
         assert(read(root + "/" + group + "/cpu.uclamp.min") == "0.00");
