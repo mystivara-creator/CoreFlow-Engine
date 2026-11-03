@@ -6,6 +6,8 @@
  */
 
 #include "coreflow/cgroup_v2.hpp"
+#include "coreflow/baseline_store.hpp"
+#include <algorithm>
 #include <fcntl.h>
 #include <unistd.h>
 #include <filesystem>
@@ -63,27 +65,21 @@ bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
 bool CgroupV2Controller::set_cpuset(CgroupTarget target, std::string_view cpus) {
     if (!supported_) return false;
     std::string path = get_cgroup_path(target) + "/cpuset.cpus";
-    return write_node(path, cpus);
+    return BaselineStore::instance().apply_mutation(path, std::string(cpus));
 }
 
 bool CgroupV2Controller::set_cpu_weight(CgroupTarget target, uint32_t weight) {
     if (!supported_) return false;
     weight = std::clamp(weight, 1u, 10000u);
     std::string path = get_cgroup_path(target) + "/cpu.weight";
-    return write_node(path, std::to_string(weight));
+    return BaselineStore::instance().apply_mutation(path, std::to_string(weight));
 }
 
 bool CgroupV2Controller::unlock_vendor_restrictions() {
-    if (!supported_) return false;
-
-    // Unlock top-app cpuset to all online CPUs (0-7 for octa-core)
-    bool ok1 = set_cpuset(CgroupTarget::TopApp, "0-7");
-    // Ensure top-app has prioritized weight
-    bool ok2 = set_cpu_weight(CgroupTarget::TopApp, 500);
-    // Lower background CPU weight so it doesn't starve the render thread
-    bool ok3 = set_cpu_weight(CgroupTarget::Background, 50);
-
-    return ok1 && ok2 && ok3;
+    // Android task profiles and vendor services own these constraints.
+    // Never override cpuset or CPU weights blindly at daemon startup.
+    std::cerr << "[CoreFlow][CgroupV2] Vendor restriction override is unsupported; no writes performed." << std::endl;
+    return false;
 }
 
 bool CgroupV2Controller::write_node(const std::string& path, std::string_view value) {
