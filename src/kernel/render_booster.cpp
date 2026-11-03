@@ -12,10 +12,10 @@
 namespace coreflow {
 
 RenderBooster::RenderBooster() {
-    metrics_.target_fps = 120;
-    metrics_.average_frame_time_ms = 8.33;
+    metrics_.target_fps = 0;
+    metrics_.average_frame_time_ms = 0;
     metrics_.dropped_frames = 0;
-    metrics_.is_vsync_aligned = true;
+    metrics_.is_vsync_aligned = false;
 }
 
 void RenderBooster::on_touch_down() {
@@ -30,6 +30,7 @@ void RenderBooster::on_touch_up() {
 
 void RenderBooster::on_frame_presented(double frame_time_ms) {
     // 120Hz budget = 8.33ms; 60Hz budget = 16.6ms
+    if (metrics_.target_fps == 0) return; // Display refresh source not connected.
     double frame_budget = 1000.0 / metrics_.target_fps;
 
     if (frame_time_ms > frame_budget * 1.25) {
@@ -40,8 +41,7 @@ void RenderBooster::on_frame_presented(double frame_time_ms) {
         if (hitches >= 2) {
             // Consecutive hitches: aggressively boost top-app uclamp to resolve bottleneck
             trigger_render_burst(580, std::chrono::milliseconds(250));
-            std::cout << "[CoreFlow][Render] Jank detected (" << frame_time_ms 
-                      << "ms vs " << frame_budget << "ms budget). Applied burst." << std::endl;
+            // A frame-event source exists, but timed boost is disabled until it is safe.
         }
     } else {
         consecutive_hitches_.store(0, std::memory_order_relaxed);
