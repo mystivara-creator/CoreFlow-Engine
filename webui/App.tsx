@@ -95,7 +95,7 @@ export const App: React.FC = () => {
       cgroupsV2Status: status.cgroupV2 ? 'unified_active' : 'disabled',
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       modeLabel: status.running ? (status.uclampSupported ? 'Native daemon active' : 'Daemon active: UClamp unavailable') : 'Daemon stopped',
-      modeDescription: status.recoveryPending ? 'Recovery needs attention' : 'Native kernel status',
+      modeDescription: status.recoveryPending ? (status.running ? 'Active changes tracked in recovery journal' : 'Recovery pending after daemon stop') : 'Native kernel status',
       timestamp: Date.now(),
     }));
     setNativeError(null);
