@@ -5,7 +5,8 @@
  * @license Apache-2.0
  * 
  * Manages cpu.uclamp.min and cpu.uclamp.max directly on Android 14/15+ kernels.
- * Replaces brute-force governor frequency locking with cooperative EAS clamping.
+ * Converts internal 0..1024 capacity values into cgroup v2 percentages.
+ * The native runtime controls only a validated top-app cgroup.
  */
 
 #pragma once
@@ -27,10 +28,7 @@ public:
     /// Apply dynamic uclamp profile based on workload state
     bool apply_state(WorkloadState state, DeviceTier tier, uint32_t interactive_min = 0, uint32_t interactive_max = 1024);
 
-    /// Apply transient burst boost (e.g. touch or cold launch)
-    bool apply_boost(uint32_t min_clamp, uint32_t max_clamp, std::chrono::milliseconds duration_ms);
-
-    /// Fine-tune global RT clamp default: /proc/sys/kernel/sched_util_clamp_min_rt_default
+    /// Optional journaled RT clamp write, not called by the native runtime: /proc/sys/kernel/sched_util_clamp_min_rt_default
     bool set_rt_clamp_min(uint32_t clamp_val);
 
     /// Read active uclamp.min of top-app
