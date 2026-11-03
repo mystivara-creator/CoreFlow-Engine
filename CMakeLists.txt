@@ -38,13 +38,9 @@ include_directories(include)
 
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
-    src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
-    src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
-    src/kernel/psi_monitor.cpp
-    src/kernel/memory_guardian.cpp
 )
 
 # Main Daemon (coreflowd)
