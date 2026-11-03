@@ -1,107 +1,24 @@
 /**
  * @file types.hpp
- * @brief CoreFlow Engine Modern C++20 Core Type Definitions
+ * @brief Minimal CoreFlow Modern v2 runtime types
  * @author mystivara-creator
  * @license Apache-2.0
- * 
- * Target: Android 15+ (Linux Kernel 5.15 / 6.1 / 6.6)
- * Standards: Modern C++20, cgroups v2, EAS (Energy Aware Scheduling), Uclamp
  */
-
 #pragma once
-
 #include <cstdint>
-#include <string>
-#include <string_view>
-#include <vector>
-#include <chrono>
-#include <optional>
-#include <system_error>
 
 namespace coreflow {
 
-// ============================================================================
-// Device Tier & Architecture Taxonomy
-// ============================================================================
-enum class DeviceTier : uint8_t {
-    Entry,       ///< 4x LITTLE + 4x Mid (e.g. Snapdragon 680, Helio G99)
-    MidRange,    ///< 4x Efficiency + 4x Performance (e.g. Snapdragon 6 Gen 3 'Kunzite')
-    UpperMid,    ///< High IPC 4+4 or 1+3+4 (e.g. Dimensity 8300, Snapdragon 7+ Gen 3)
-    Flagship     ///< Tri/Quad-cluster Prime (e.g. Snapdragon 8 Gen 3/4, Dimensity 9300)
-};
-
 enum class WorkloadState : uint8_t {
     Balanced,       ///< Normal daily use: configured responsive floor, open ceiling
-    SustainedLoad,  ///< Sustained CPU pressure with thermal headroom (games/heavy foreground work)
-    PressureGuard,  ///< Memory/I/O contention: reduce artificial boosting, keep ceiling open
-    ThermalGuard    ///< Thermal pressure: lower scheduler ceiling before OEM throttling becomes severe
+    SustainedLoad,  ///< Sustained CPU pressure with thermal headroom
+    PressureGuard,  ///< Memory/I/O contention: reduce artificial boosting
+    ThermalGuard    ///< Thermal pressure: gently lower scheduler ceiling
 };
 
-enum class ClusterType : uint8_t {
-    Little,      ///< High efficiency, background tasks
-    Medium,      ///< Balanced performance, UI rendering
-    BigPrime     ///< Max IPC, burst launches, heavy frames
-};
-
-// ============================================================================
-// Hardware Topology Descriptors
-// ============================================================================
-struct CpuCluster {
-    ClusterType type;
-    uint32_t first_cpu;
-    uint32_t last_cpu;
-    uint32_t base_freq_khz;
-    uint32_t max_freq_khz;
-    std::string cpufreq_policy_path;
-    std::string energy_model_path;
-};
-
-struct DeviceTopology {
-    std::string soc_name;
-    std::string hardware_platform;
-    DeviceTier tier;
-    uint32_t total_cpus;
-    std::vector<CpuCluster> clusters;
-    bool has_cgroups_v2;
-    bool has_uclamp;
-    bool has_surfaceflinger_hints;
-};
-
-// ============================================================================
-// Uclamp & Scheduling Constants (Linux kernel 5.10+ / 5.15+)
-// Reference: Documentation/scheduler/sched-util-clamping.rst
-// Scale: 0 to 1024 (SCHED_CAPACITY_SCALE)
-// ============================================================================
 struct UclampValues {
-    uint32_t uclamp_min{0};    ///< Guaranteed minimum capacity (0 - 1024)
-    uint32_t uclamp_max{1024}; ///< Hard frequency ceiling (0 - 1024)
-    bool boost_render_thread{false};
+    uint32_t uclamp_min{0};
+    uint32_t uclamp_max{1024};
 };
-
-// ============================================================================
-// Cgroup v2 Migration Targets
-// ============================================================================
-enum class CgroupTarget : uint8_t {
-    TopApp,      ///< /sys/fs/cgroup/top-app
-    Foreground,  ///< /sys/fs/cgroup/foreground
-    Background,  ///< /sys/fs/cgroup/background
-    System       ///< /sys/fs/cgroup/system
-};
-
-// ============================================================================
-// Error Codes for Zero-Exception Native Execution
-// ============================================================================
-enum class CoreFlowError {
-    Success = 0,
-    NodeNotFound,
-    PermissionDenied,
-    EpollCreateFailed,
-    EpollCtlFailed,
-    InvalidTopology,
-    BaselineSnapshotFailed,
-    RollbackFailed,
-    ThermalEmergency
-};
-
 
 } // namespace coreflow
