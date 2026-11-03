@@ -38,63 +38,38 @@ bool UclampGovernor::is_supported() const noexcept {
     return supported_;
 }
 
-bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier, uint32_t interactive_min, uint32_t interactive_max) {
+bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier,
+                                  uint32_t interactive_min, uint32_t interactive_max) {
     if (!supported_) return false;
-
-    UclampValues top_app_clamp;
-    UclampValues fg_clamp;
-    UclampValues bg_clamp;
-
+    // Deliberately keep Android-owned foreground/background task profiles intact.
+    // Only tune the verified top-app group; a single change has fewer side effects.
+    UclampValues top;
     switch (state) {
         case WorkloadState::DeepSleep:
-            top_app_clamp = { .uclamp_min = 0, .uclamp_max = 300 };
-            fg_clamp      = { .uclamp_min = 0, .uclamp_max = 200 };
-            bg_clamp      = { .uclamp_min = 0, .uclamp_max = 100 };
+            top = { .uclamp_min = 0, .uclamp_max = 300 };
             break;
-
         case WorkloadState::DailyIdle:
-            top_app_clamp = { .uclamp_min = 50, .uclamp_max = 800 };
-            fg_clamp      = { .uclamp_min = 20, .uclamp_max = 600 };
-            bg_clamp      = { .uclamp_min = 0,  .uclamp_max = 300 };
+            top = { .uclamp_min = 50, .uclamp_max = 800 };
             break;
-
         case WorkloadState::Interactive:
-            if (tier == DeviceTier::Entry || tier == DeviceTier::MidRange) {
-                top_app_clamp = { .uclamp_min = 380, .uclamp_max = 1024 };
-            } else {
-                top_app_clamp = { .uclamp_min = 250, .uclamp_max = 1024 };
-            }
+            top = { .uclamp_min = (tier == DeviceTier::Entry || tier == DeviceTier::MidRange) ? 380u : 250u,
+                    .uclamp_max = 1024 };
             if (interactive_min > 0) {
-                top_app_clamp.uclamp_min = std::min(interactive_min, 1024u);
-                top_app_clamp.uclamp_max = std::clamp(interactive_max, top_app_clamp.uclamp_min, 1024u);
+                top.uclamp_min = std::min(interactive_min, 1024u);
+                top.uclamp_max = std::clamp(interactive_max, top.uclamp_min, 1024u);
             }
-            fg_clamp = { .uclamp_min = 60, .uclamp_max = 800 };
-            bg_clamp = { .uclamp_min = 0,  .uclamp_max = 350 };
             break;
-
         case WorkloadState::BurstLaunch:
-            top_app_clamp = { .uclamp_min = 800, .uclamp_max = 1024 };
-            fg_clamp      = { .uclamp_min = 200, .uclamp_max = 1024 };
-            bg_clamp      = { .uclamp_min = 0,   .uclamp_max = 300 };
+            top = { .uclamp_min = 800, .uclamp_max = 1024 };
             break;
-
         case WorkloadState::SustainedGame:
-            top_app_clamp = { .uclamp_min = 512, .uclamp_max = 980 };
-            fg_clamp      = { .uclamp_min = 120, .uclamp_max = 700 };
-            bg_clamp      = { .uclamp_min = 0,   .uclamp_max = 200 };
+            top = { .uclamp_min = 512, .uclamp_max = 980 };
             break;
-
         case WorkloadState::ThermalThrottled:
-            top_app_clamp = { .uclamp_min = 0, .uclamp_max = 600 };
-            fg_clamp      = { .uclamp_min = 0, .uclamp_max = 450 };
-            bg_clamp      = { .uclamp_min = 0, .uclamp_max = 150 };
+            top = { .uclamp_min = 0, .uclamp_max = 600 };
             break;
     }
-
-    // Stop immediately on failure. BaselineStore performs verified rollback.
-    return write_uclamp(CgroupTarget::TopApp, top_app_clamp.uclamp_min, top_app_clamp.uclamp_max) &&
-           write_uclamp(CgroupTarget::Foreground, fg_clamp.uclamp_min, fg_clamp.uclamp_max) &&
-           write_uclamp(CgroupTarget::Background, bg_clamp.uclamp_min, bg_clamp.uclamp_max);
+    return write_uclamp(CgroupTarget::TopApp, top.uclamp_min, top.uclamp_max);
 }
 
 bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_t max_val) {
