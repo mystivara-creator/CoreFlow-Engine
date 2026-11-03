@@ -1,10 +1,3 @@
-/**
- * @file main.cpp
- * @brief CoreFlow Engine Daemon (coreflowd) Native Entry Point (Hardened & Zero Hardcode)
- * @author mystivara-creator
- * @license Apache-2.0
- */
-
 #include "coreflow/types.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/reactor.hpp"
@@ -13,119 +6,193 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/render_booster.hpp"
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/unique_fd.hpp"
 
-#include <iostream>
+#include <algorithm>
+#include <chrono>
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
-#include <unistd.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/signalfd.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace coreflow;
-
 namespace {
+constexpr char kStateDir[] = "/data/adb/coreflow";
+constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
 
-// Fatal signal handlers must only use async-signal-safe operations.
-// Recovery after an abrupt crash requires a durable journal, not mutexes here.
-void emergency_crash_handler(int sig) {
-    static constexpr char message[] = "[CoreFlow] Fatal signal; terminating without unsafe signal-handler rollback.\n";
-    (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
-    std::_Exit(128 + sig);
+// Fatal signal handlers cannot lock mutexes, perform stream I/O or allocate.
+void on_fatal_signal(int signum) {
+    constexpr char line[] = "[CoreFlow] Fatal signal. Next start will recover journal.\n";
+    (void)::write(STDERR_FILENO, line, sizeof(line) - 1);
+    ::_exit(128 + signum);
+}
+bool marker(const char* path) {
+    return ::access(path, F_OK) == 0;
+}
+bool process_matches(pid_t pid) {
+    if (pid <= 0 || ::kill(pid, 0) != 0) return false;
+    std::ifstream cmdline("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
+    std::string executable;
+    std::getline(cmdline, executable, '\0');
+    return executable.find("coreflowd") != std::string::npos;
+}
+pid_t daemon_pid() {
+    std::ifstream file(kPidPath);
+    long value = 0;
+    if (!(file >> value) || value < 1 || value > 2147483647) return 0;
+    const auto pid = static_cast<pid_t>(value);
+    return process_matches(pid) ? pid : 0;
+}
+bool journal_clear() {
+    std::ifstream journal(std::string(kStateDir) + "/baseline.journal");
+    if (!journal) return true;
+    std::string header, line;
+    if (!std::getline(journal, header) || header.rfind("CFJ1\t", 0) != 0) return false;
+    return !std::getline(journal, line);
+}
+int stop_daemon() {
+    const pid_t pid = daemon_pid();
+    if (pid) {
+        if (::kill(pid, SIGTERM) != 0) return 1;
+        for (int attempt = 0; attempt < 80; ++attempt) {
+            if (!process_matches(pid)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (process_matches(pid)) return 1;
+    }
+    // If the daemon died before receiving SIGTERM, recover its durable journal.
+    if (!BaselineStore::instance().recover_pending()) return 1;
+    return journal_clear() ? 0 : 1;
+}
+void print_status() {
+    const pid_t pid = daemon_pid();
+    DeviceProfiler& profiler = DeviceProfiler::instance();
+    const float temp = profiler.get_soc_temperature();
+    UclampGovernor governor;
+    std::cout << "{\"running\":" << (pid ? "true" : "false")
+              << ",\"pid\":" << pid
+              << ",\"uclampMin\":" << governor.get_top_app_min()
+              << ",\"uclampMax\":" << governor.get_top_app_max()
+              << ",\"cgroupV2\":" << (std::filesystem::exists("/sys/fs/cgroup/cgroup.controllers") ? "true" : "false")
+              << ",\"socTempCelsius\":";
+    if (temp >= 0.0f) std::cout << temp;
+    else std::cout << "null";
+    std::cout << ",\"recoveryPending\":" << (journal_clear() ? "false" : "true") << "}\n";
+}
+bool write_pid(UniqueFd& lock) {
+    if (::mkdir(kStateDir, 0700) != 0 && errno != EEXIST) return false;
+    lock.reset(::open(kPidPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!lock.valid() || ::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) return false;
+    const auto pid = std::to_string(::getpid());
+    if (::ftruncate(lock.get(), 0) != 0) return false;
+    if (::lseek(lock.get(), 0, SEEK_SET) < 0) return false;
+    if (::write(lock.get(), pid.data(), pid.size()) != static_cast<ssize_t>(pid.size())) return false;
+    return ::fsync(lock.get()) == 0;
+}
 }
 
-} // namespace
+int main(int argc, char* argv[]) {
+    if (argc == 2) {
+        const std::string command(argv[1]);
+        if (command == "--status") { print_status(); return 0; }
+        if (command == "--stop" || command == "--rollback-baseline") return stop_daemon();
+        std::cerr << "Usage: coreflowd [--status|--stop|--rollback-baseline]\n";
+        return 2;
+    }
+    if (argc != 1) return 2;
 
-int main() {
-    // 0. Register emergency crash traps for unexpected fatal faults
-    std::signal(SIGSEGV, emergency_crash_handler);
-    std::signal(SIGBUS,  emergency_crash_handler);
-    std::signal(SIGABRT, emergency_crash_handler);
+    std::signal(SIGSEGV, on_fatal_signal);
+    std::signal(SIGBUS, on_fatal_signal);
+    std::signal(SIGABRT, on_fatal_signal);
 
-    // 1. Load Dynamic Configuration (Zero Hardcoded Values)
-    auto config = DaemonConfig::load_best_available();
-
-    std::cout << "========================================================\n"
-              << " CoreFlow Engine Daemon (coreflowd) v" << config.version << "\n"
-              << " Target: Android 15+ | Zero-Polling | Zero-Hardcode\n"
-              << " Hardening: RAII UniqueFd | Immediate FailSafe Rollback\n"
-              << " Author: mystivara-creator\n"
-              << "========================================================\n"
-              << std::endl;
-
-    // 2. Hardware & System Probe
-    auto topo = DeviceProfiler::instance().probe();
-    std::cout << "[Init] Detected SoC: " << topo.soc_name 
-              << " (CPUs: " << topo.total_cpus << ")" << std::endl;
-
-    // 3. Initialize Controllers with dynamic configuration
-    CgroupV2Controller cgroup_ctrl;
-    UclampGovernor uclamp_gov;
-    RenderBooster render_booster;
-
-    if (!cgroup_ctrl.is_supported()) {
-        std::cerr << "[Init][Warning] cgroups v2 not active. Falling back to hybrid mode." << std::endl;
+    if (marker("/data/adb/coreflow/SAFE_MODE") ||
+        marker("/data/adb/coreflow/DISABLE") ||
+        marker("/data/adb/modules/coreflow_engine/disable")) {
+        std::cerr << "[CoreFlow] Safety marker active; refusing runtime mutation.\n";
+        return 2;
+    }
+    UniqueFd pid_lock;
+    if (!write_pid(pid_lock)) {
+        std::cerr << "[CoreFlow] Unable to acquire daemon singleton lock.\n";
+        return 1;
+    }
+    auto& baseline = BaselineStore::instance();
+    if (!baseline.recover_pending()) {
+        std::cerr << "[CoreFlow] Incomplete crash recovery. Refusing new mutations.\n";
+        ::unlink(kPidPath);
+        return 1;
     }
 
-    // 4. Dynamic Vendor & Rendering Unlock
-    if (config.enable_cgroups_v2 && config.unlock_vendor_clamping) {
-        cgroup_ctrl.unlock_vendor_restrictions();
-    }
-    if (config.force_120hz_rendering) {
-        render_booster.unlock_display_refresh_limits();
-    }
-
-    // 5. Epoll Reactor Setup (Zero-Polling)
+    const DaemonConfig config = DaemonConfig::load_best_available();
+    const auto topology = DeviceProfiler::instance().probe();
+    UclampGovernor governor;
     EpollReactor reactor;
 
-    // Mask signals for clean signalfd event handling
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
     sigaddset(&mask, SIGHUP);
-    pthread_sigmask(SIG_BLOCK, &mask, nullptr);
-
-    int sfd = ::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
-    if (sfd >= 0) {
-        reactor.register_fd(sfd, EPOLLIN, [&reactor](uint32_t) {
-            std::cout << "[CoreFlow] Received termination signal. Initiating graceful shutdown..." << std::endl;
+    if (::pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) return 1;
+    UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
+    if (!signal_fd.valid() ||
+        !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
+            signalfd_siginfo info{};
+            (void)::read(signal_fd.get(), &info, sizeof(info));
             reactor.stop();
-        });
-    }
+        })) return 1;
 
-    // 6. Dynamic Thermal Heartbeat (timerfd) using configured interval and trip threshold
-    WorkloadState applied_state = WorkloadState::DailyIdle;
-    bool has_applied_state = false;
-    reactor.create_timerfd(
-        std::chrono::milliseconds(config.temp_monitor_interval_ms),
-        [&uclamp_gov, &topo, &config, &applied_state, &has_applied_state](uint32_t) {
-            float temp = DeviceProfiler::instance().get_soc_temperature();
-            if (temp < 0.0f) {
-                // Sensor unavailable: do not apply speculative performance tuning.
-                return;
-            }
-            const auto desired = temp >= config.thermal_trip_celsius
-                ? WorkloadState::ThermalThrottled
-                : (has_applied_state && applied_state == WorkloadState::ThermalThrottled &&
-                   temp > config.thermal_recover_celsius)
-                    ? WorkloadState::ThermalThrottled
-                    : WorkloadState::Interactive;
-            if (!has_applied_state || desired != applied_state) {
-                if (uclamp_gov.apply_state(desired, topo.tier)) {
-                    applied_state = desired;
-                    has_applied_state = true;
-                }
+    bool applied = false;
+    WorkloadState current = WorkloadState::DailyIdle;
+    const auto interval = std::chrono::milliseconds(
+        std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+    if (reactor.create_timerfd(interval, [&](uint32_t) {
+        if (!config.enable_uclamp || !governor.is_supported()) return;
+        if (marker("/data/adb/coreflow/SAFE_MODE") ||
+            marker("/data/adb/coreflow/DISABLE") ||
+            marker("/data/adb/modules/coreflow_engine/disable")) {
+            reactor.stop();
+            return;
+        }
+        const float temp = DeviceProfiler::instance().get_soc_temperature();
+        if (temp < 0.0f) {
+            // No trusted thermal sensor: do not apply speculative performance boost.
+            if (applied) { baseline.rollback_all(); applied = false; }
+            return;
+        }
+        const auto desired = temp >= config.thermal_trip_celsius
+            ? WorkloadState::ThermalThrottled
+            : (applied && current == WorkloadState::ThermalThrottled &&
+               temp > config.thermal_recover_celsius)
+                ? WorkloadState::ThermalThrottled : WorkloadState::Interactive;
+        if (!applied || current != desired) {
+            if (governor.apply_state(desired, topology.tier)) {
+                current = desired;
+                applied = true;
+            } else {
+                baseline.rollback_all();
+                applied = false;
             }
         }
-    );
+    }) < 0) {
+        ::unlink(kPidPath);
+        return 1;
+    }
 
-    // 7. Run Event Loop (Zero CPU idle wakeups)
-    std::cout << "[CoreFlow] Daemon running. Epoll zero-polling active." << std::endl;
+    std::cout << "[CoreFlow] Modern v2 event reactor active; baseline recovery armed.\n";
     reactor.run();
-
-    // 8. Shutdown: Atomic Rollback to Factory OEM Baseline
-    std::cout << "[CoreFlow] Restoring OEM factory baseline nodes..." << std::endl;
-    size_t restored = BaselineStore::instance().rollback_all();
-    std::cout << "[CoreFlow] Clean exit completed. (" << restored << " nodes verified)." << std::endl;
-
-    return 0;
+    baseline.rollback_all();
+    const bool restored = !baseline.has_active_mutations() && journal_clear();
+    ::unlink(kPidPath);
+    return restored ? 0 : 1;
 }
