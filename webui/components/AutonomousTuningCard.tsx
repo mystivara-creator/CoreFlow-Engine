@@ -4,6 +4,7 @@ import { AutonomousConfig } from '../engine/autonomousEngine';
 
 interface AutonomousTuningCardProps {
   config: AutonomousConfig;
+  nativeMode?: boolean;
   onChangeConfig: (newConfig: AutonomousConfig) => void;
   onSaveConfig: () => void;
   isSaving: boolean;
@@ -12,6 +13,7 @@ interface AutonomousTuningCardProps {
 
 export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
   config,
+  nativeMode = false,
   onChangeConfig,
   onSaveConfig,
   isSaving,
@@ -32,7 +34,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
             </h3>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Engine self-adapts dynamically; adjust sensitivity bias and hardware boundaries.
+            Native: adjust interactive UClamp and thermal thresholds. Preview offers additional simulated controls.
           </p>
         </div>
 
@@ -117,6 +119,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
                 key={hz}
                 type="button"
                 onClick={() => update('targetFps', hz)}
+                disabled={nativeMode}
                 className={`py-2 px-2 rounded-xl text-xs font-mono font-bold transition-all ${
                   config.targetFps === hz
                     ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-sm'
@@ -128,7 +131,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
             ))}
           </div>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-            SurfaceFlinger booster aligns render deadline with display VSYNC cadence.
+            {nativeMode ? 'Unavailable: native frame pacing integration not implemented' : 'Simulation only: requested frame target'}
           </p>
         </div>
 
@@ -167,7 +170,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
         <div className="rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/80 p-4">
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              Touch Boost Capacity Floor
+              {nativeMode ? 'Interactive UClamp Floor' : 'Touch Boost Capacity Floor'}
             </span>
             <span className="font-mono font-bold text-emerald-500 tabular-nums">
               {config.touchBoostMin} / 1024
@@ -190,7 +193,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
             <span>600 (Ultra-Responsive)</span>
           </div>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-            Applied for {config.burstDurationMs}ms upon touchscreen touch/scroll velocity.
+            {nativeMode ? 'Sets persistent interactive CPU capacity floor, applied after daemon restart.' : `Simulated burst lasts ${config.burstDurationMs}ms.`}
           </p>
         </div>
       </div>
@@ -201,6 +204,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
           <input
             type="checkbox"
             checked={config.unlockVendorClamping}
+            disabled={nativeMode}
             onChange={(e) => update('unlockVendorClamping', e.target.checked)}
             className="mt-0.5 w-4 h-4 rounded text-sky-500 focus:ring-sky-500 accent-sky-500"
           />
@@ -209,7 +213,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
               Unlock Vendor Frequency Restraints
             </div>
             <div className="text-[11px] text-slate-500 dark:text-slate-400">
-              Overrides proprietary OEM vendor clamp limits on interactive top-apps.
+              {nativeMode ? 'Unavailable: vendor restrictions are left untouched for device safety.' : 'Preview only: vendor overrides not available.'}
             </div>
           </div>
         </label>
@@ -218,6 +222,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
           <input
             type="checkbox"
             checked={config.proactiveMemoryGuardian}
+            disabled={nativeMode}
             onChange={(e) => update('proactiveMemoryGuardian', e.target.checked)}
             className="mt-0.5 w-4 h-4 rounded text-sky-500 focus:ring-sky-500 accent-sky-500"
           />
@@ -226,7 +231,7 @@ export const AutonomousTuningCard: React.FC<AutonomousTuningCardProps> = ({
               Linux PSI Memory Guardian
             </div>
             <div className="text-[11px] text-slate-500 dark:text-slate-400">
-              Monitors Pressure Stall Information to prevent aggressive Android LMK kills.
+              {nativeMode ? 'Unavailable: PSI actions are not yet enabled in native daemon.' : 'Preview-only PSI guardian control.'}
             </div>
           </div>
         </label>
