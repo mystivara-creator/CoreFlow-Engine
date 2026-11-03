@@ -93,16 +93,27 @@ int main() {
     }
 
     // 6. Dynamic Thermal Heartbeat (timerfd) using configured interval and trip threshold
+    WorkloadState applied_state = WorkloadState::DailyIdle;
+    bool has_applied_state = false;
     reactor.create_timerfd(
         std::chrono::milliseconds(config.temp_monitor_interval_ms),
-        [&uclamp_gov, &topo, &config](uint32_t) {
+        [&uclamp_gov, &topo, &config, &applied_state, &has_applied_state](uint32_t) {
             float temp = DeviceProfiler::instance().get_soc_temperature();
-            if (temp >= config.thermal_trip_celsius) {
-                std::cerr << "[Thermal Alert] Temp: " << temp << "°C >= " 
-                          << config.thermal_trip_celsius << "°C! Shifting to ThermalThrottled state." << std::endl;
-                uclamp_gov.apply_state(WorkloadState::ThermalThrottled, topo.tier);
-            } else {
-                uclamp_gov.apply_state(WorkloadState::Interactive, topo.tier);
+            if (temp < 0.0f) {
+                // Sensor unavailable: do not apply speculative performance tuning.
+                return;
+            }
+            const auto desired = temp >= config.thermal_trip_celsius
+                ? WorkloadState::ThermalThrottled
+                : (has_applied_state && applied_state == WorkloadState::ThermalThrottled &&
+                   temp > config.thermal_recover_celsius)
+                    ? WorkloadState::ThermalThrottled
+                    : WorkloadState::Interactive;
+            if (!has_applied_state || desired != applied_state) {
+                if (uclamp_gov.apply_state(desired, topo.tier)) {
+                    applied_state = desired;
+                    has_applied_state = true;
+                }
             }
         }
     );
