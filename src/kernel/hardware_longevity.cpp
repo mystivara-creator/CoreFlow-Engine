@@ -51,14 +51,15 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
     double raw_temp = 0;
     const bool battery_valid = parse_ascii_double(line(root_ + "/class/power_supply/battery/temp"), raw_temp)
         && raw_temp >= 0 && raw_temp <= 800; // power_supply temperature: tenths Celsius
+    (void)soc_temp; // Charge policy uses battery temperature, never CPU junction temperature.
     const bool charging = line(root_ + "/class/power_supply/battery/status") == "Charging";
-    if (!battery_valid || !charging || !std::isfinite(soc_temp) || soc_temp < 0) {
+    if (!battery_valid || !charging) {
         if (battery_stepped_ && store.rollback(battery_node_)) {
             battery_stepped_ = false; last_charge_ua_ = charge_baseline_ua_;
         }
         return false;
     }
-    const auto temperature = std::max(static_cast<double>(soc_temp), raw_temp / 10.0);
+    const auto temperature = raw_temp / 10.0;
     if (temperature >= config_.battery_step_temp_threshold && !battery_stepped_) {
         const auto target = std::min(charge_baseline_ua_, static_cast<uint64_t>(config_.stepped_charge_current_ma) * 1000);
         if (target >= current) return false; // Never raise an OEM charging limit.

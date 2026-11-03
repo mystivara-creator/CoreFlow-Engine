@@ -3,14 +3,14 @@ use crate::bridge::ffi::{Decision, Parameters, Snapshot};
 pub struct Controller {
     parameters: Parameters,
     integral: f64,
-    previous_temperature: Option<f64>,
+    previous_pressure: Option<f64>,
     scale: f64,
     thermal_guard: bool,
 }
 
 pub fn new_controller(parameters: Parameters) -> Box<Controller> {
     Box::new(Controller {
-        parameters, integral: 0.0, previous_temperature: None,
+        parameters, integral: 0.0, previous_pressure: None,
         scale: 1.0, thermal_guard: false,
     })
 }
@@ -18,14 +18,14 @@ pub fn new_controller(parameters: Parameters) -> Box<Controller> {
 impl Controller {
     pub fn reset(&mut self) {
         self.integral = 0.0;
-        self.previous_temperature = None;
+        self.previous_pressure = None;
         self.scale = 1.0;
         self.thermal_guard = false;
     }
 
     pub fn step(&mut self, input: Snapshot) -> Decision {
         let p = &self.parameters;
-        let finite = [p.kp, p.ki, p.kd, p.target, input.temperature,
+        let finite = [p.kp, p.ki, p.kd, p.target, input.thermal_pressure,
             input.elapsed_seconds, input.cpu_pressure, input.memory_pressure,
             input.io_pressure, input.trip, input.recover, input.headroom,
             input.cpu_threshold, input.memory_threshold, input.io_threshold]
@@ -33,35 +33,35 @@ impl Controller {
         let pressures_valid = [input.cpu_pressure, input.memory_pressure, input.io_pressure,
             input.cpu_threshold, input.memory_threshold, input.io_threshold]
             .iter().all(|x| (0.0..=100.0).contains(x));
-        if !finite || !pressures_valid || !(0.0..=130.0).contains(&input.temperature)
+        if !finite || !pressures_valid || !(0.0..=130.0).contains(&input.thermal_pressure)
             || input.elapsed_seconds <= 0.0 || input.elapsed_seconds > 120.0
             || input.recover >= input.trip || input.headroom < 0.0
-            || !(25.0..=80.0).contains(&p.target) || p.target > input.trip
+            || !(0.0..=130.0).contains(&p.target) || p.target > input.trip
             || [p.kp, p.ki, p.kd].iter().any(|x| !(0.0..=20.0).contains(x)) {
             self.reset();
             return Decision { valid: false, state: 2, capacity_scale: 1.0 };
         }
         let dt = input.elapsed_seconds.clamp(0.001, 60.0);
-        self.thermal_guard = input.temperature >= input.trip
-            || (self.thermal_guard && input.temperature > input.recover);
+        self.thermal_guard = input.thermal_pressure >= input.trip
+            || (self.thermal_guard && input.thermal_pressure > input.recover);
         let state = if self.thermal_guard { 3 }
             else if input.memory_pressure >= input.memory_threshold
                  || input.io_pressure >= input.io_threshold { 2 }
             else if input.cpu_pressure >= input.cpu_threshold
-                 && input.temperature <= input.trip - input.headroom { 1 }
+                 && input.thermal_pressure <= input.trip - input.headroom { 1 }
             else { 0 };
 
         let mut target_scale = 1.0;
         if input.pid_enabled {
-            let error = p.target - input.temperature;
+            let error = p.target - input.thermal_pressure;
             // Do not bank a large positive integral while the device is cold.
             self.integral = (self.integral + error * dt).clamp(-50.0, 0.0);
-            let velocity = self.previous_temperature
-                .map_or(0.0, |previous| (input.temperature - previous) / dt);
+            let velocity = self.previous_pressure
+                .map_or(0.0, |previous| (input.thermal_pressure - previous) / dt);
             let output = p.kp * error + p.ki * self.integral - p.kd * velocity;
             target_scale = (1.0 + output / 50.0).clamp(0.4, 1.0);
         }
-        self.previous_temperature = Some(input.temperature);
+        self.previous_pressure = Some(input.thermal_pressure);
         if self.thermal_guard { target_scale = target_scale.min(0.875); }
         // At most 2 percentage points per elapsed second, never a fixed cadence jump.
         let delta = (0.02 * dt).min(0.1);
@@ -75,7 +75,7 @@ impl Controller {
 mod tests {
     use super::*;
     fn sample(temp: f64) -> Snapshot {
-        Snapshot { temperature: temp, elapsed_seconds: 1.0, cpu_pressure: 30.0,
+        Snapshot { thermal_pressure: temp, elapsed_seconds: 1.0, cpu_pressure: 30.0,
             memory_pressure: 0.0, io_pressure: 0.0, trip: 44.0, recover: 40.0,
             headroom: 3.0, cpu_threshold: 25.0, memory_threshold: 15.0,
             io_threshold: 15.0, pid_enabled: true }

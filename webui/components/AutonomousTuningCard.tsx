@@ -97,11 +97,12 @@ export const AutonomousTuningCard: React.FC<Props> = ({
 
         <div className="rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/80 p-4">
           <div className="flex items-center justify-between text-xs mb-2">
-            <span className="font-semibold">Thermal Guard Trip</span>
-            <span className="font-mono font-bold text-amber-500">{config.thermalTripCelsius.toFixed(1)}°C</span>
+            <span className="font-semibold">{nativeMode ? 'Thermal Policy' : 'Preview Thermal Trip'}</span>
+            <span className="font-mono font-bold text-amber-500">{nativeMode ? 'OEM / Auto' : `${config.thermalTripCelsius.toFixed(1)}°C`}</span>
           </div>
           <input
             type="range"
+            disabled={nativeMode}
             min="40"
             max="48"
             step="0.5"
@@ -110,7 +111,7 @@ export const AutonomousTuningCard: React.FC<Props> = ({
             className="w-full accent-sky-500 cursor-pointer"
           />
           <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-            Above this point performance boosting stops taking priority over component health.
+            {nativeMode ? 'Uses device thermal severity and sensor-specific OEM limits. A shared Celsius threshold is not applied.' : 'Synthetic preview threshold only; it does not set native sensor limits.'}
           </p>
         </div>
       </div>

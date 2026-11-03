@@ -33,6 +33,10 @@ interface NativeStatus {
   uclampSupported: boolean;
   socTempCelsius: number | null;
   recoveryPending: boolean;
+  thermalPolicyAvailable?: boolean;
+  thermalSeverity?: number;
+  thermalSource?: string;
+  thermalSensor?: string;
 }
 
 const checkedNativeStatus = (raw: string): NativeStatus => {
@@ -165,13 +169,15 @@ export const App: React.FC = () => {
       socTempCelsius: status.socTempCelsius ?? -1,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       modeLabel: status.running
-        ? status.uclampSupported
+        ? status.thermalPolicyAvailable === false ? 'OEM thermal policy unavailable' : status.uclampSupported
           ? 'Native stability policy active'
           : 'Daemon active · UClamp unavailable'
         : 'Daemon stopped',
-      modeDescription: status.recoveryPending
+      modeDescription: status.running && status.thermalPolicyAvailable === false
+        ? 'OEM thermal thresholds unavailable; retaining the baseline'
+        : status.recoveryPending
         ? status.running
-          ? 'Tracked UClamp changes are protected by the recovery journal'
+          ? `OEM thermal source: ${status.thermalSource ?? 'unavailable'}; tracked changes protected by journal`
           : 'Recovery is still pending'
         : status.running
         ? 'Capability-driven UClamp with thermal and PSI stability gates'
@@ -425,7 +431,7 @@ export const App: React.FC = () => {
         className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100"
       >
         {isNativeBridge
-          ? 'Native telemetry: UClamp capability and hottest trusted thermal sensor. PSI state transitions are recorded in daemon logs.'
+          ? 'Native telemetry: CPU/GPU temperature is diagnostic. Control uses Android/OEM thermal severity or per-sensor OEM trip points.'
           : 'DEMO PREVIEW: simulated four-state stability policy; no device writes.'}
       </div>
       {nativeError && (

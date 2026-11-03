@@ -9,7 +9,7 @@ pub mod ffi {
         target: f64,
     }
     struct Snapshot {
-        temperature: f64,
+        thermal_pressure: f64,
         elapsed_seconds: f64,
         cpu_pressure: f64,
         memory_pressure: f64,

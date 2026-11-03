@@ -14,18 +14,37 @@ capacity budget. The cxx bridge shares typed snapshots and decisions.
 5. Apply verified UClamp and supported CPU/GPU maximum frequency changes through BaselineStore.
 6. Respect external OEM writes, emergency thermal exit, operator markers, and rollback on failure.
 
-## Predictive thermal controller
+## Cross-device thermal policy
 
-Error = target temperature - measured temperature. The controller uses proportional
-error, a bounded negative integral, and temperature velocity. The first sample
-has zero derivative. Its output is bounded to 0.4–1.0 and changes by at most two
-percentage points per elapsed second (with a ten-point upper bound per delayed
-sample). CPU/GPU values are quantized to exposed operating points: a frequency
-step can exceed 2%. This is a thermal controller, not an FPS controller.
+Raw CPU/GPU junction, battery and skin temperatures are separate diagnostics.
+They never share a universal 44/48-degree cutoff. Linux thermal-zone values are
+converted from the documented millidegree ABI, without a magnitude heuristic.
+BCL/SoC-droop channels and invalid negative/sentinel values are excluded.
 
-Threshold thermal guard has hysteresis. Memory/I/O pressure takes priority over
-CPU boosting. Missing or invalid telemetry never becomes a low-pressure or cool
-sample. Emergency overheating restores tracked changes and stops the daemon.
+Production decisions prefer the public Android NDK thermal severity API. Optional
+headroom is sampled no faster than once per ten seconds. Moderate/severe thermal
+pressure reduces demand; emergency/shutdown severity yields control with rollback.
+If the API is unavailable, each classified zone is evaluated against its own
+read-only OEM passive/hot/critical trip points. Only normalized policy-relative
+pressure is compared across sensors; no manufacturer/model table is used.
+
+Missing OEM thermal policy retains the stock baseline and reports unavailable;
+it does not invent a cool measurement or reuse legacy Celsius settings. Old
+thermal_trip_celsius/recover/emergency-margin and pid_target_celsius values no
+longer control production sensors. WebUI shows OEM/Auto in native mode; Celsius
+sliders remain browser-preview controls only. No OEM trip or thermal service is
+modified. This supports capability-based adaptation, not a claim that every
+vendor exposes usable policy interfaces.
+
+## Predictive controller
+
+Rust consumes a dimensionless thermal-policy pressure index, not raw Celsius.
+Its PID includes a bounded integral and pressure velocity. Its output is bounded
+to 0.4–1.0 and changes by at most two percentage points per elapsed second (with a
+ten-point upper bound per delayed sample). CPU/GPU values are quantized to exposed
+operating points: a frequency step can exceed 2%. This is not an FPS controller.
+Pressure guard and thermal hysteresis remain active. Per-zone OEM hot/critical
+trips or Android emergency/shutdown status trigger verified rollback and exit.
 
 ## Hardware introspection and preservation
 
@@ -34,7 +53,7 @@ identities under devfreq. Missing tables disable that domain. No invented clock,
 cluster, or nominal temperature is used. Existing OEM maximums are upper bounds.
 
 Optional charging reduction uses the standard battery constant_charge_current_max
-microamp interface, validates battery temperature and charging state, and never
+microamp interface, uses only battery temperature for charging decisions and validates charging state, and never
 raises the observed charging limit. A changed OEM value retires ownership.
 
 Optional cgroup-v2 io.weight uses the documented `default N` format. It is relative

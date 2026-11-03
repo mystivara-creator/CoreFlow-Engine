@@ -44,6 +44,7 @@ struct DaemonConfig {
 
     // [thermal_guardian]
     uint32_t temp_monitor_interval_ms{1000};
+    // Legacy/preview Celsius settings; production uses OEM thermal-policy pressure.
     float thermal_trip_celsius{44.0f};
     float thermal_recover_celsius{40.0f};
     float thermal_emergency_margin_celsius{5.0f};

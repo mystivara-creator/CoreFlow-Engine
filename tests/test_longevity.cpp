@@ -25,6 +25,10 @@ int main() {
     const auto other_node = other / "class/power_supply/battery/constant_charge_current_max";
     put(other_node, "2000000"); put(other_node.parent_path() / "temp", "420"); put(other_node.parent_path() / "status", "Charging");
     coreflow::HardwareLongevityManager stepped(other.string()); stepped.initialize(config);
+    put(other_node.parent_path() / "temp", "350");
+    assert(!stepped.monitor_battery_thermals(95)); // CPU junction heat is not battery temperature.
+    assert(get(other_node) == "2000000");
+    put(other_node.parent_path() / "temp", "420");
     assert(stepped.monitor_battery_thermals(44)); assert(get(other_node) == "1500000");
     put(other_node, "700000"); // A newer OEM thermal limit wins.
     assert(!stepped.monitor_battery_thermals(44)); baseline.rollback_all(); assert(get(other_node) == "700000");

@@ -10,6 +10,11 @@
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <filesystem>
+#include <chrono>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#endif
 
 namespace coreflow {
 namespace {
@@ -79,7 +84,7 @@ bool is_trusted_compute_zone(std::string_view raw_type) {
 bool parse_celsius(std::string_view text, float& celsius) noexcept {
     double raw = 0.0;
     if (!parse_ascii_double(text, raw)) return false;
-    const double scaled = std::fabs(raw) >= 200.0 ? raw / 1000.0 : raw;
+    const double scaled = raw / 1000.0; // Linux thermal-zone ABI is millidegrees Celsius.
     if (!std::isfinite(scaled) || scaled < 0.0 || scaled > 130.0) return false;
     celsius = static_cast<float>(scaled);
     return true;
@@ -96,35 +101,117 @@ ThermalMonitor& ThermalMonitor::instance() {
 }
 
 void ThermalMonitor::discover_sensors() const {
-    if (!sensor_paths_.empty()) return;
-
-    for (int i = 0; i < 128; ++i) {
-        const std::string base = sysfs_root_ + "/thermal_zone" + std::to_string(i);
-
+    if (!sensors_.empty()) return;
+    std::error_code ec;
+    namespace fs = std::filesystem;
+    for (fs::directory_iterator it(sysfs_root_, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && sensors_.size() < 512; it.increment(ec)) {
+        if (it->path().filename().string().rfind("thermal_zone", 0) != 0) continue;
         std::string type;
-        if (!read_sysfs_line(base + "/type", type) || !is_trusted_compute_zone(type)) {
-            continue;
-        }
-
-        std::string temp_raw;
-        float celsius = 0.0f;
-        if (read_sysfs_line(base + "/temp", temp_raw) && parse_celsius(temp_raw, celsius)) {
-            sensor_paths_.push_back(base + "/temp");
-        }
+        if (!read_sysfs_line(it->path().string() + "/type", type)) continue;
+        std::string lower = type;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        int category = 0;
+        if (is_trusted_compute_zone(type) || lower.find("gpu") != std::string::npos) category = 1;
+        else if (lower == "battery" || lower == "batt" || lower.rfind("battery-", 0) == 0) category = 2;
+        else if (lower == "skin" || lower.rfind("skin-", 0) == 0 || lower.rfind("skin_", 0) == 0) category = 3;
+        if (category) sensors_.push_back({it->path().string(), type, category});
     }
 }
-
-float ThermalMonitor::hottest_celsius() const {
+float ThermalMonitor::hottest_category(int category) const {
     discover_sensors();
-    float hottest = -1.0f;
-    for (const auto& path : sensor_paths_) {
-        std::string temp_raw;
-        float celsius = 0.0f;
-        if (read_sysfs_line(path, temp_raw) && parse_celsius(temp_raw, celsius)) {
-            hottest = std::max(hottest, celsius);
-        }
+    float hottest = -1;
+    for (const auto& sensor : sensors_) {
+        if (sensor.category != category) continue;
+        std::string raw; float value;
+        if (read_sysfs_line(sensor.path + "/temp", raw) && parse_celsius(raw, value)) hottest = std::max(hottest, value);
     }
     return hottest;
 }
+float ThermalMonitor::hottest_celsius() const { return hottest_category(1); }
+float ThermalMonitor::battery_celsius() const { return hottest_category(2); }
+float ThermalMonitor::skin_celsius() const { return hottest_category(3); }
 
+ThermalAssessment assessment_from_android_severity(int severity) {
+    if (severity < 0 || severity > 6) return {};
+    constexpr double indices[] = {0, 40, 75, 95, 110, 120, 130};
+    return {true, severity >= 5, indices[severity], severity, "android-thermal", "OEM severity"};
+}
+ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
+#ifdef __ANDROID__
+    if (sysfs_root_ == "/sys/class/thermal") {
+        // Public NDK thermal API, resolved optionally for standalone root daemons.
+        // A severity is OEM policy, not a universal absolute temperature.
+        struct AThermalManager;
+        using Acquire = AThermalManager* (*)();
+        using Status = int (*)(AThermalManager*);
+        using Headroom = float (*)(AThermalManager*, int);
+        static void* library = ::dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+        static auto acquire = library ? reinterpret_cast<Acquire>(::dlsym(library, "AThermal_acquireManager")) : nullptr;
+        static auto status = library ? reinterpret_cast<Status>(::dlsym(library, "AThermal_getCurrentThermalStatus")) : nullptr;
+        static auto headroom = library ? reinterpret_cast<Headroom>(::dlsym(library, "AThermal_getThermalHeadroom")) : nullptr;
+        static auto manager = acquire && status ? acquire() : nullptr;
+        if (manager) {
+            const int severity = status(manager);
+            if (severity >= 0 && severity <= 6) {
+                auto result = assessment_from_android_severity(severity);
+                if (use_headroom && headroom) {
+                    static auto last = std::chrono::steady_clock::time_point::min();
+                    static float cached = -1;
+                    const auto now = std::chrono::steady_clock::now();
+                    if (last == std::chrono::steady_clock::time_point::min() || now - last >= std::chrono::seconds(10)) {
+                        cached = headroom(manager, 0); last = now;
+                    }
+                    if (std::isfinite(cached) && cached >= 0 && cached <= 10)
+                        result.pressure = std::max(result.pressure, std::min(130.0, static_cast<double>(cached) * 85.0));
+                }
+                return result;
+            }
+        }
+    }
+#else
+    (void)use_headroom;
+#endif
+    discover_sensors();
+    ThermalAssessment result;
+    for (const auto& sensor : sensors_) {
+        std::string raw; float temp;
+        const bool valid_temperature = read_sysfs_line(sensor.path + "/temp", raw) && parse_celsius(raw, temp);
+        float passive = -1, emergency = -1, hyst = 0;
+        // Never assume a global degree threshold or reinterpret active cooling trips.
+        std::error_code ec;
+        size_t visited = 0;
+        for (std::filesystem::directory_iterator it(sensor.path, ec), end;
+             !ec && it != end && visited++ < 256; it.increment(ec)) {
+            const auto name = it->path().filename().string();
+            if (name.rfind("trip_point_", 0) != 0 || !name.ends_with("_type")) continue;
+            const auto prefix = sensor.path + "/" + name.substr(0, name.size() - 5);
+            std::string type; float value;
+            if (!read_sysfs_line(prefix + "_type", type) || !read_sysfs_line(prefix + "_temp", raw) ||
+                !parse_celsius(raw, value) || value <= 0) continue;
+            if (type == "passive" && (passive < 0 || value < passive)) {
+                passive = value; float h = 0;
+                hyst = read_sysfs_line(prefix + "_hyst", raw) && parse_celsius(raw, h) ? h : 0;
+            }
+            if ((type == "hot" || type == "critical") && (emergency < 0 || value < emergency)) emergency = value;
+        }
+        if (!valid_temperature) {
+            if (passive > 0 || emergency > 0) return {}; // A known policy sensor cannot be silently dropped.
+            continue;
+        }
+        if (emergency > 0 && temp >= emergency) {
+            return {true, true, 120, -1, "sysfs-oem-trips", sensor.type};
+        }
+        if (passive <= 0 || (emergency > 0 && passive >= emergency)) continue;
+        const double margin = std::clamp(static_cast<double>(passive) * 0.05, 1.0, 5.0);
+        // Normalize each sensor against its own OEM trip. Different sensor classes
+        // are compared only as policy-relative pressure, never as raw Celsius.
+        const double recovery = passive - std::max(margin, static_cast<double>(hyst));
+        if (recovery < 0 || recovery >= passive) continue;
+        const double pressure = std::clamp(65.0 + (temp - recovery) / (passive - recovery) * 20.0, 0.0, 130.0);
+        if (!result.available || pressure > result.pressure)
+            result = {true, false, pressure, -1, "sysfs-oem-trips", sensor.type};
+    }
+    return result;
+}
 } // namespace coreflow

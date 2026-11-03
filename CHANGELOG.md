@@ -1,3 +1,12 @@
+## Unreleased — cross-device thermal policy correction
+
+- Replace shared Celsius cutoffs with Android/OEM thermal policy pressure.
+- Fallback to sensor-specific OEM passive/hot/critical trips; never guess a universal limit.
+- Separate CPU/GPU, battery and skin diagnostics; use documented millidegree units.
+- Ignore stale Celsius cutoffs from existing configs and show OEM/Auto in native WebUI.
+- Charging reductions use battery temperature only; unknown policy retains baseline.
+- Add mixed-sensor, >128-zone, missing-policy, sentinel and unit regression cases.
+
 ## Unreleased — hybrid equilibrium implementation
 
 - C++23 runtime with a Rust 2024 PID/state controller through cxx.

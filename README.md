@@ -24,7 +24,7 @@ Discovery never grants permission to mutate arbitrary nodes. Actuators include t
 - Balanced: configured responsive baseline.
 - Sustained Load: sustained CPU pressure with thermal headroom; moderately raises the top-app floor.
 - Pressure Guard: memory or I/O contention is elevated; backs off artificial boosting while keeping the ceiling open.
-- Thermal Guard: temperature reaches the configured trip point; gently lowers the top-app ceiling.
+- Thermal Guard: OEM thermal severity or a sensor-specific OEM passive trip requests mitigation; gently lowers the top-app ceiling.
 - Emergency thermal exit: restores tracked values and stops CoreFlow so the OEM thermal stack has full control.
 
 The Rust PID controller continuously adjusts a bounded capacity budget. CPU/GPU ceilings are quantized to kernel-exposed operating points. The engine never raises an OEM top-app maximum observed at startup. If another component changes an owned clamp, CoreFlow releases that value and stops; it can be restarted after the device policy settles.
@@ -77,3 +77,11 @@ savings, zero overhead or component-longevity claim is made.
 CI validates host tests, ASan/UBSan, WebUI build, shell syntax, and Android ARM64 packaging. Green CI is required before device testing, but is not proof of device compatibility.
 
 License: MIT.
+
+## Cross-device thermal correction
+
+CPU/GPU temperatures are diagnostics, not battery/skin limits. Runtime control
+uses Android thermal severity/headroom, falling back to read-only OEM trip
+points for each sensor. Legacy universal Celsius cutoffs are ignored. Missing
+thermal policy preserves the OEM baseline and is reported as unavailable.
+Charging decisions use battery temperature only.

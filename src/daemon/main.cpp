@@ -242,9 +242,12 @@ int stop_daemon() {
     return journal_clear() ? 0 : 1;
 }
 
+std::string json_string(std::string_view text);
+
 void print_status() {
     const pid_t pid = daemon_pid();
     const float temp = ThermalMonitor::instance().hottest_celsius();
+    const auto thermal = ThermalMonitor::instance().assess(false);
     UclampGovernor governor;
     std::cout << "{\"running\":" << (pid ? "true" : "false")
               << ",\"pid\":" << pid
@@ -265,6 +268,15 @@ void print_status() {
     } else {
         std::cout << "null";
     }
+    std::cout << ",\"thermalPolicyAvailable\":" << (thermal.available ? "true" : "false")
+              << ",\"thermalSource\":" << json_string(thermal.source)
+              << ",\"thermalSensor\":" << json_string(thermal.sensor)
+              << ",\"thermalSeverity\":" << thermal.severity
+              << ",\"thermalPressure\":" << thermal.pressure;
+    const auto battery = ThermalMonitor::instance().battery_celsius();
+    const auto skin = ThermalMonitor::instance().skin_celsius();
+    std::cout << ",\"batteryTempCelsius\":" << (battery >= 0 ? std::to_string(battery) : "null")
+              << ",\"skinTempCelsius\":" << (skin >= 0 ? std::to_string(skin) : "null");
     std::cout << ",\"recoveryPending\":" << (journal_clear() ? "false" : "true") << "}\n";
 }
 
@@ -370,7 +382,7 @@ int main(int argc, char* argv[]) {
     UclampGovernor governor;
     FrequencyController frequencies;
     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
-    auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, config.pid_target_celsius});
+    auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
     HardwareLongevityManager::instance().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
@@ -395,6 +407,8 @@ int main(int argc, char* argv[]) {
     int timer_fd = -1;
     auto last_tick = std::chrono::steady_clock::now();
     bool applied = false;
+    bool thermal_ready = false;
+    bool unavailable_reported = false;
     WorkloadState current = WorkloadState::Balanced;
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
@@ -408,7 +422,7 @@ int main(int argc, char* argv[]) {
                     if (baseline.has_active_mutations()) { reactor.stop(); continue; }
                     config = DaemonConfig::load_best_available();
                     governor = UclampGovernor{};
-                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, config.pid_target_celsius});
+                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
                     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
                     HardwareLongevityManager::instance().initialize({
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
@@ -420,7 +434,7 @@ int main(int argc, char* argv[]) {
                     timer.it_value = timer.it_interval;
                     if (::timerfd_settime(timer_fd, 0, &timer, nullptr) != 0) reactor.stop();
                     last_tick = std::chrono::steady_clock::now();
-                    applied = false;
+                    applied = false; thermal_ready = false;
                     emit_log(false, "[CoreFlow] Configuration reloaded on SIGHUP.");
                 } else {
                     reactor.stop();
@@ -445,23 +459,35 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        const float temp = ThermalMonitor::instance().hottest_celsius();
-        if (temp < 0.0f) {
+        const auto thermal = ThermalMonitor::instance().assess();
+        const float temp = ThermalMonitor::instance().hottest_celsius(); // Telemetry only.
+        if (!thermal.available) {
+            last_tick = std::chrono::steady_clock::now();
+            if (!unavailable_reported) {
+                emit_log(true, "[CoreFlow][Thermal] OEM thermal policy unavailable; retaining baseline without synthetic thresholds.");
+                unavailable_reported = true;
+            }
+            thermal_ready = false;
             if (applied) {
                 baseline.rollback_all();
                 applied = false;
-                reactor.stop();
+                controller->reset();
+                governor = UclampGovernor{};
+                if (baseline.has_active_mutations()) { reactor.stop(); return; }
+                // Frequency ownership is intentionally not reacquired until reload.
+                frequencies.discover(false, false);
             }
-            return;
+            return; // Remain available to status/stop; never infer safe headroom.
         }
-
-        if (emergency_thermal_exit(temp, config)) {
-            emit_log(true, "[CoreFlow][Stability] emergency thermal exit at " +
-                           std::to_string(temp) + "C");
-            baseline.rollback_all();
-            applied = false;
-            reactor.stop();
-            return;
+        if (!thermal_ready) {
+            frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+            controller->reset();
+            thermal_ready = true; unavailable_reported = false;
+        }
+        if (thermal.emergency) {
+            emit_log(true, "[CoreFlow][Stability] OEM thermal emergency source=" +
+                     thermal.source + " sensor=" + thermal.sensor);
+            baseline.rollback_all(); applied = false; reactor.stop(); return;
         }
 
         const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
@@ -485,9 +511,8 @@ int main(int argc, char* argv[]) {
         const double elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         last_tick = now_tick;
         const auto decision = controller->step({
-            temp, elapsed, pressure.cpu, pressure.memory, pressure.io,
-            config.thermal_trip_celsius, config.thermal_recover_celsius,
-            config.thermal_headroom_celsius, config.cpu_pressure_boost_pct,
+            thermal.pressure, elapsed, pressure.cpu, pressure.memory, pressure.io,
+            85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
         if (!decision.valid) {
@@ -519,7 +544,10 @@ int main(int argc, char* argv[]) {
                 applied = true;
                 std::ostringstream line;
                 line << "[CoreFlow][Stability] state=" << state_name(current)
-                     << " temp=" << temp
+                     << " compute_temp=" << temp
+                     << " thermal_source=" << thermal.source
+                     << " thermal_sensor=" << thermal.sensor
+                     << " thermal_pressure=" << thermal.pressure
                      << " cpu_psi=" << pressure.cpu
                      << " mem_psi=" << pressure.memory
                      << " io_psi=" << pressure.io;
