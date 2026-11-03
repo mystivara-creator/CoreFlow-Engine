@@ -7,6 +7,13 @@ mkdir -p "$LOGS"
 chmod 700 "$STATE" "$LOGS"
 umask 077
 ATTEMPTS="$STATE/boot_attempts"
+
+# An explicit operator disable is intentional, not a failed boot.
+if [ -f "$STATE/DISABLE" ]; then
+  echo 0 > "$ATTEMPTS"
+  exit 0
+fi
+
 N="$(cat "$ATTEMPTS" 2>/dev/null)"
 case "$N" in ''|*[!0-9]*) N=0 ;; esac
 N=$((N+1))
