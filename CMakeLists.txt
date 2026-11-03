@@ -25,7 +25,6 @@ add_compile_options(
 )
 
 add_compile_definitions(
-    _FILE_OFFSET_BITS=64
     $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>
 )
 
