@@ -6,6 +6,15 @@ export type AutonomousMode =
   | 'pressure_guard'
   | 'thermal_guard';
 
+export interface ThermalSensorDetail {
+  id: string;
+  type: string;
+  category: number; // 1 compute, 2 battery, 3 skin, 4 board
+  celsius: number | null;
+  valid: boolean;
+  policyAvailable: boolean;
+}
+
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
   modeLabel: string;
@@ -15,6 +24,13 @@ export interface AutonomousTelemetry {
   uclampMax: number;
   uclampSupported: boolean;
   socTempCelsius: number;
+  socCompositeCelsius?: number;
+  cpuAverageCelsius?: number;
+  cpuPeakCelsius?: number;
+  gpuTempCelsius?: number;
+  batteryTempCelsius?: number;
+  skinTempCelsius?: number;
+  thermalSensors?: ThermalSensorDetail[];
   cpuPressurePct: number;
   memoryPressurePct: number;
   ioPressurePct: number;
@@ -28,6 +44,24 @@ export interface AutonomousConfig {
   thermalTripCelsius: number;
   balancedUclampMin: number;
 }
+
+export interface HardwareLongevityConfig {
+  enableBatteryStepCharging: boolean;
+  batteryStepTempThreshold: number;
+  steppedChargeCurrentMa: number;
+  enableUfsBurstPacing: boolean;
+  topAppIoWeight: number;
+  backgroundIoWeight: number;
+}
+
+export const DEFAULT_LONGEVITY_CONFIG: HardwareLongevityConfig = {
+  enableBatteryStepCharging: true,
+  batteryStepTempThreshold: 41.5,
+  steppedChargeCurrentMa: 1500,
+  enableUfsBurstPacing: true,
+  topAppIoWeight: 800,
+  backgroundIoWeight: 50,
+};
 
 export interface ReactionLogEvent {
   id: string;
@@ -87,7 +121,23 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     uclampMin: 320,
     uclampMax: 1024,
     uclampSupported: true,
-    socTempCelsius: 36.5,
+    socTempCelsius: 38.6,
+    socCompositeCelsius: 38.6,
+    cpuAverageCelsius: 38.2,
+    cpuPeakCelsius: 41.5,
+    gpuTempCelsius: 36.8,
+    batteryTempCelsius: 33.4,
+    skinTempCelsius: 35.1,
+    thermalSensors: [
+      { id: 'tz0', type: 'cpu-0-0', category: 1, celsius: 37.8, valid: true, policyAvailable: true },
+      { id: 'tz1', type: 'cpu-0-1', category: 1, celsius: 38.0, valid: true, policyAvailable: true },
+      { id: 'tz2', type: 'cpu-1-0', category: 1, celsius: 39.4, valid: true, policyAvailable: true },
+      { id: 'tz3', type: 'cpu-1-2', category: 1, celsius: 41.5, valid: true, policyAvailable: true },
+      { id: 'tz4', type: 'gpuss-0', category: 1, celsius: 36.8, valid: true, policyAvailable: true },
+      { id: 'tz5', type: 'quiet_therm', category: 3, celsius: 35.1, valid: true, policyAvailable: true },
+      { id: 'tz6', type: 'battery', category: 2, celsius: 33.4, valid: true, policyAvailable: true },
+      { id: 'tz7', type: 'ap_therm', category: 4, celsius: 37.0, valid: true, policyAvailable: true },
+    ],
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
     ioPressurePct: 0.4,

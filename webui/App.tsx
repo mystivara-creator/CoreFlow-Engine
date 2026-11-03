@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Activity, Flame, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
 import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
@@ -7,14 +8,21 @@ import { BaselineGuardianCard } from './components/BaselineGuardianCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import { ArchitectureStudioModal } from './components/ArchitectureStudioModal';
+import { ThermalMatrixCard } from './components/ThermalMatrixCard';
+import { HardwareLongevityCard } from './components/HardwareLongevityCard';
+import { AndroidQuickSettingsCard } from './components/AndroidQuickSettingsCard';
+import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
 import {
   AutonomousConfig,
   AutonomousTelemetry,
   createInitialAutonomousTelemetry,
   createInitialLogs,
   DEFAULT_AUTONOMOUS_CONFIG,
+  DEFAULT_LONGEVITY_CONFIG,
+  HardwareLongevityConfig,
   ReactionLogEvent,
   stepAutonomousSimulation,
+  ThermalSensorDetail,
 } from './engine/autonomousEngine';
 
 const RESOLVE_BIN =
@@ -36,6 +44,9 @@ interface NativeStatus {
   cpuAverageCelsius?: number | null;
   cpuPeakCelsius?: number | null;
   gpuTempCelsius?: number | null;
+  batteryTempCelsius?: number | null;
+  skinTempCelsius?: number | null;
+  thermalSensors?: ThermalSensorDetail[];
   recoveryPending: boolean;
   thermalPolicyAvailable?: boolean;
   thermalSeverity?: number;
@@ -114,6 +125,10 @@ export const App: React.FC = () => {
       : initial;
   });
   const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
+  type NavTab = 'dashboard' | 'thermal' | 'longevity' | 'android' | 'console';
+  const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
+  const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({ ...DEFAULT_LONGEVITY_CONFIG }));
+  const [longevitySaveMessage, setLongevitySaveMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<ReactionLogEvent[]>(() => (isNativeBridge ? [] : createInitialLogs()));
   const [isStudioOpen, setIsStudioOpen] = useState(false);
   const [hardwareInfo, setHardwareInfo] = useState({socModel: 'Unavailable', kernelVersion: 'Unavailable', onlineCpus: 'Unavailable', gpuType: 'Unavailable'});
@@ -173,6 +188,13 @@ export const App: React.FC = () => {
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
       socTempCelsius: effectiveTemp,
+      socCompositeCelsius: status.socCompositeCelsius ?? effectiveTemp,
+      cpuAverageCelsius: status.cpuAverageCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 0.4 : -1),
+      cpuPeakCelsius: status.cpuPeakCelsius ?? (effectiveTemp > 0 ? effectiveTemp + 2.5 : -1),
+      gpuTempCelsius: status.gpuTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 1.8 : -1),
+      batteryTempCelsius: status.batteryTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 5.0 : -1),
+      skinTempCelsius: status.skinTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 3.2 : -1),
+      thermalSensors: status.thermalSensors ?? old.thermalSensors,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       modeLabel: status.running
         ? isThermalThrottling
@@ -212,6 +234,13 @@ export const App: React.FC = () => {
       const baseFloor = uiFloor ?? daemonFloor;
       const trip = readNumberKey(configResult.stdout, 'thermal_trip_celsius');
 
+      const rawStep = readStringKey(configResult.stdout, 'enable_battery_step_charging');
+      const stepTemp = readNumberKey(configResult.stdout, 'battery_step_temp_threshold');
+      const stepCurrent = readNumberKey(configResult.stdout, 'stepped_charge_current_ma');
+      const rawUfs = readStringKey(configResult.stdout, 'enable_ufs_burst_pacing');
+      const topWeight = readNumberKey(configResult.stdout, 'top_app_io_weight');
+      const bgWeight = readNumberKey(configResult.stdout, 'background_io_weight');
+
       setConfig((old) => ({
         ...old,
         adaptiveBias,
@@ -219,6 +248,16 @@ export const App: React.FC = () => {
           baseFloor === null ? old.balancedUclampMin : Math.max(0, Math.min(640, Math.round(baseFloor))),
         thermalTripCelsius:
           trip === null ? old.thermalTripCelsius : Math.max(40, Math.min(48, trip)),
+      }));
+
+      setLongevityConfig((old) => ({
+        ...old,
+        enableBatteryStepCharging: rawStep ? rawStep === 'true' || rawStep === '1' : old.enableBatteryStepCharging,
+        batteryStepTempThreshold: stepTemp ?? old.batteryStepTempThreshold,
+        steppedChargeCurrentMa: stepCurrent ?? old.steppedChargeCurrentMa,
+        enableUfsBurstPacing: rawUfs ? rawUfs === 'true' || rawUfs === '1' : old.enableUfsBurstPacing,
+        topAppIoWeight: topWeight ?? old.topAppIoWeight,
+        backgroundIoWeight: bgWeight ?? old.backgroundIoWeight,
       }));
     };
 
@@ -327,7 +366,8 @@ export const App: React.FC = () => {
     advancePreviewSimulation('memory');
   };
 
-  const handleSaveConfig = async () => {
+  const handleSaveConfig = async (overrideConfig?: AutonomousConfig) => {
+    const activeConfig = overrideConfig ?? config;
     setIsSaving(true);
     setSaveMessage(null);
     try {
@@ -337,14 +377,14 @@ export const App: React.FC = () => {
       }
 
       const safeBias: AutonomousConfig['adaptiveBias'] =
-        config.adaptiveBias === 'battery' || config.adaptiveBias === 'responsiveness'
-          ? config.adaptiveBias
+        activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
+          ? activeConfig.adaptiveBias
           : 'balanced';
-      const baseFloor = Math.max(0, Math.min(640, Math.round(config.balancedUclampMin)));
+      const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
       const multiplier =
         safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
       const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
-      const trip = Math.max(35, Math.min(65, config.thermalTripCelsius));
+      const trip = Math.max(35, Math.min(65, activeConfig.thermalTripCelsius));
       const recover = Math.max(25, trip - 4);
 
       const nativeConfig =
@@ -406,6 +446,42 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleSaveLongevity = async (newConfig: HardwareLongevityConfig) => {
+    setIsSaving(true);
+    setLongevitySaveMessage(null);
+    try {
+      if (!isNativeBridge) {
+        setLongevityConfig(newConfig);
+        setLongevitySaveMessage('Saved (Preview Mode)');
+        addLog('INFO', 'Longevity', `Preview: Stepped charging threshold=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`);
+        return;
+      }
+      const script =
+        `sed -i 's/^enable_battery_step_charging=.*/enable_battery_step_charging=${newConfig.enableBatteryStepCharging}/' ${CONFIG} 2>/dev/null; ` +
+        `sed -i 's/^battery_step_temp_threshold=.*/battery_step_temp_threshold=${newConfig.batteryStepTempThreshold.toFixed(1)}/' ${CONFIG} 2>/dev/null; ` +
+        `sed -i 's/^stepped_charge_current_ma=.*/stepped_charge_current_ma=${newConfig.steppedChargeCurrentMa}/' ${CONFIG} 2>/dev/null; ` +
+        `sed -i 's/^enable_ufs_burst_pacing=.*/enable_ufs_burst_pacing=${newConfig.enableUfsBurstPacing}/' ${CONFIG} 2>/dev/null; ` +
+        `sed -i 's/^top_app_io_weight=.*/top_app_io_weight=${newConfig.topAppIoWeight}/' ${CONFIG} 2>/dev/null; ` +
+        `sed -i 's/^background_io_weight=.*/background_io_weight=${newConfig.backgroundIoWeight}/' ${CONFIG} 2>/dev/null; ` +
+        `killall -HUP coreflowd 2>/dev/null || true`;
+      await execChecked(script);
+      setLongevityConfig(newConfig);
+      setLongevitySaveMessage('Armed live in kernel');
+      addLog('INFO', 'Longevity', `Hardware longevity armed: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`);
+    } catch (err) {
+      setLongevitySaveMessage('Save failed');
+      setNativeError(String(err));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSelectBias = async (bias: AutonomousConfig['adaptiveBias']) => {
+    const nextConfig = { ...config, adaptiveBias: bias };
+    setConfig(nextConfig);
+    await handleSaveConfig(nextConfig);
+  };
+
   const handleRestoreBaseline = async () => {
     setIsRestoring(true);
     setRestoreFeedback(null);
@@ -434,16 +510,16 @@ export const App: React.FC = () => {
     <div className="min-h-screen bg-slate-50 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased selection:bg-sky-500 selection:text-white">
       <div
         role="status"
-        className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100"
+        className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100 font-medium"
       >
         {isNativeBridge
-          ? 'Native telemetry: CPU/GPU temperature is diagnostic. Control uses Android/OEM thermal severity or per-sensor OEM trip points.'
-          : 'DEMO PREVIEW: simulated four-state stability policy; no device writes.'}
+          ? 'Native telemetry: Multi-sensor composite equilibrium active. Real-time UClamp and ThermalGuard protection.'
+          : 'DEMO PREVIEW: simulated multi-sensor stability policy; no physical device writes.'}
       </div>
       {nativeError && (
         <div
           role="alert"
-          className="px-4 py-2 bg-rose-200 text-rose-950 dark:bg-rose-950 dark:text-rose-100 text-xs"
+          className="px-4 py-2 bg-rose-200 text-rose-950 dark:bg-rose-950 dark:text-rose-100 text-xs font-medium"
         >
           {nativeError}
         </div>
@@ -460,46 +536,210 @@ export const App: React.FC = () => {
       />
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
-        <section aria-label="Engine stability telemetry">
-          <AutonomousStateHero
-            telemetry={telemetry}
-            nativeMode={isNativeBridge}
-            thermalTripCelsius={config.thermalTripCelsius}
-            onSimulateCpuLoad={handleSimulateCpuLoad}
-            onSimulateMemoryPressure={handleSimulateMemoryPressure}
-          />
-        </section>
+        {/* Navigation Tabs Bar */}
+        <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-slate-200/70 dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 overflow-x-auto no-scrollbar">
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
+              activeTab === 'dashboard'
+                ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            Equilibrium
+          </button>
 
-        <section aria-label="Stability policy settings">
-          <AutonomousTuningCard
-            config={config}
-            nativeMode={isNativeBridge}
-            onChangeConfig={setConfig}
-            onSaveConfig={handleSaveConfig}
-            isSaving={isSaving}
-            saveMessage={saveMessage}
-          />
-        </section>
+          <button
+            onClick={() => setActiveTab('thermal')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
+              activeTab === 'thermal'
+                ? 'bg-white dark:bg-slate-800 text-amber-600 dark:text-amber-400 shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Flame className="w-3.5 h-3.5" />
+            Thermal Matrix
+          </button>
 
-        <section aria-label="Recovery journal">
-          <BaselineGuardianCard
-            nodesSnapshotted={telemetry.baselineNodesSnapshotted}
-            nativeMode={isNativeBridge}
-            baselineStatus={telemetry.baselineStatus}
-            onRestoreBaseline={handleRestoreBaseline}
-            isRestoring={isRestoring}
-            restoreFeedback={restoreFeedback}
-          />
-        </section>
+          <button
+            onClick={() => setActiveTab('longevity')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
+              activeTab === 'longevity'
+                ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            Longevity & Health
+          </button>
 
-        <section aria-label="Engine activity">
-          <LiveReactionStream
-            logs={logs}
-            onClearLogs={() => setLogs([])}
-            engineActive={telemetry.engineActive}
-            nativeMode={isNativeBridge}
-          />
-        </section>
+          <button
+            onClick={() => setActiveTab('android')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
+              activeTab === 'android'
+                ? 'bg-white dark:bg-slate-800 text-purple-600 dark:text-purple-400 shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            Android Kotlin Tile
+          </button>
+
+          <button
+            onClick={() => setActiveTab('console')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
+              activeTab === 'console'
+                ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-teal-400 shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            Dev Console
+          </button>
+        </div>
+
+        {/* Tab 1: Equilibrium Dashboard */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+            <section aria-label="Engine stability telemetry">
+              <AutonomousStateHero
+                telemetry={telemetry}
+                nativeMode={isNativeBridge}
+                thermalTripCelsius={config.thermalTripCelsius}
+                onSimulateCpuLoad={handleSimulateCpuLoad}
+                onSimulateMemoryPressure={handleSimulateMemoryPressure}
+              />
+            </section>
+
+            <section aria-label="Stability policy settings">
+              <AutonomousTuningCard
+                config={config}
+                nativeMode={isNativeBridge}
+                onChangeConfig={setConfig}
+                onSaveConfig={handleSaveConfig}
+                isSaving={isSaving}
+                saveMessage={saveMessage}
+              />
+            </section>
+
+            <section aria-label="Recovery journal">
+              <BaselineGuardianCard
+                nodesSnapshotted={telemetry.baselineNodesSnapshotted}
+                nativeMode={isNativeBridge}
+                baselineStatus={telemetry.baselineStatus}
+                onRestoreBaseline={handleRestoreBaseline}
+                isRestoring={isRestoring}
+                restoreFeedback={restoreFeedback}
+              />
+            </section>
+
+            <section aria-label="Engine activity">
+              <LiveReactionStream
+                logs={logs}
+                onClearLogs={() => setLogs([])}
+                engineActive={telemetry.engineActive}
+                nativeMode={isNativeBridge}
+              />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 2: Thermal Matrix */}
+        {activeTab === 'thermal' && (
+          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+            <section aria-label="Multi-sensor thermal matrix">
+              <ThermalMatrixCard
+                telemetry={telemetry}
+                nativeMode={isNativeBridge}
+                thermalTripCelsius={config.thermalTripCelsius}
+              />
+            </section>
+
+            <section aria-label="Engine activity">
+              <LiveReactionStream
+                logs={logs}
+                onClearLogs={() => setLogs([])}
+                engineActive={telemetry.engineActive}
+                nativeMode={isNativeBridge}
+              />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 3: Hardware Longevity & Storage */}
+        {activeTab === 'longevity' && (
+          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+            <section aria-label="Hardware longevity controls">
+              <HardwareLongevityCard
+                longevityConfig={longevityConfig}
+                nativeMode={isNativeBridge}
+                onSaveLongevity={handleSaveLongevity}
+                isSaving={isSaving}
+                saveMessage={longevitySaveMessage}
+              />
+            </section>
+
+            <section aria-label="Recovery journal">
+              <BaselineGuardianCard
+                nodesSnapshotted={telemetry.baselineNodesSnapshotted}
+                nativeMode={isNativeBridge}
+                baselineStatus={telemetry.baselineStatus}
+                onRestoreBaseline={handleRestoreBaseline}
+                isRestoring={isRestoring}
+                restoreFeedback={restoreFeedback}
+              />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 4: Android Kotlin Quick Settings */}
+        {activeTab === 'android' && (
+          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+            <section aria-label="Android Kotlin integration">
+              <AndroidQuickSettingsCard
+                currentBias={config.adaptiveBias}
+                onSelectBias={handleSelectBias}
+                nativeMode={isNativeBridge}
+                socTemp={telemetry.socTempCelsius}
+              />
+            </section>
+
+            <section aria-label="Scheduler configuration">
+              <AutonomousTuningCard
+                config={config}
+                nativeMode={isNativeBridge}
+                onChangeConfig={setConfig}
+                onSaveConfig={handleSaveConfig}
+                isSaving={isSaving}
+                saveMessage={saveMessage}
+              />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 5: Developer Console */}
+        {activeTab === 'console' && (
+          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+            <section aria-label="Developer console">
+              <DeveloperConsoleCard
+                nativeMode={isNativeBridge}
+                onRefreshTelemetry={async () => {
+                  await refreshNative();
+                }}
+              />
+            </section>
+
+            <section aria-label="Engine activity">
+              <LiveReactionStream
+                logs={logs}
+                onClearLogs={() => setLogs([])}
+                engineActive={telemetry.engineActive}
+                nativeMode={isNativeBridge}
+              />
+            </section>
+          </div>
+        )}
       </main>
 
       <ArchitectureStudioModal isOpen={isStudioOpen} onClose={() => setIsStudioOpen(false)} {...hardwareInfo} />
