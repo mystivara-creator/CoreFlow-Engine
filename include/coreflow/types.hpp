@@ -16,6 +16,8 @@
 #include <system_error>
 #include <cerrno>
 #include <cstdlib>
+#include <cmath>
+#include <limits>
 
 namespace coreflow {
 
@@ -33,7 +35,7 @@ inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
     std::string s(trimmed);
     errno = 0;
     double d = std::strtod(s.c_str(), &endptr);
-    if (endptr == s.c_str() || *endptr != '\0' || errno == ERANGE) return false;
+    if (endptr == s.c_str() || *endptr != '\0' || errno == ERANGE || !std::isfinite(d)) return false;
     value = d;
     return true;
 }
@@ -137,3 +139,4 @@ enum class CoreFlowError {
 std::error_code make_error_code(CoreFlowError e);
 
 } // namespace coreflow
+

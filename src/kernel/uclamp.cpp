@@ -284,6 +284,18 @@ std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
     return out;
 }
 
+bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
+                                 uint32_t ceiling, uint32_t capacity) {
+    if (!supported_ || !owned_values_intact() || capacity > 1024u) return false;
+    const auto base_max = std::min({ceiling, oem_max_, 1024u});
+    const auto maximum = (base_max * capacity) / 1024u;
+    uint32_t minimum = floor > base_max ? 0u : std::min(floor, base_max);
+    if (state == WorkloadState::ThermalGuard) minimum = 0;
+    else if (state == WorkloadState::PressureGuard) minimum /= 4;
+    else if (state == WorkloadState::SustainedLoad) minimum += minimum / 2;
+    return write_top_app(std::min(minimum, maximum), maximum);
+}
+
 bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     if (!supported_) return false;
     if (!owned_values_intact()) return false;

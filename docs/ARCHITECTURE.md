@@ -14,7 +14,7 @@ Flow:
           |
     Select one stability state
           |
-    Apply one bounded top-app UClamp pair
+    Apply bounded UClamp and supported CPU/GPU ceilings
           |
     Read-back verify
           |
@@ -31,10 +31,15 @@ There is no Observe -> Understand -> Balance -> Adapt pipeline.
 - src/kernel/uclamp.cpp: semantic cgroup discovery, encoding detection, bounded top-app UClamp writes.
 - src/kernel/thermal_monitor.cpp: type-labelled thermal discovery and hottest-zone reading.
 - src/kernel/baseline_store.cpp: write-ahead journal, read-back verification, recovery.
-- include/coreflow/stability_policy.hpp: pure deterministic four-state decision function.
+- rust/src/controller.rs: production thermal/pressure state machine and bounded PID budget.
+- rust/src/bridge.rs: cxx shared snapshot/decision interface.
+- src/kernel/frequency_controller.cpp: CPUFreq and GPU devfreq limits with OEM ownership checks.
+- src/kernel/hardware_longevity.cpp: optional standard charging and I/O controls.
+- src/kernel/power_bridge.cpp: nonblocking AIDL Power HAL capability discovery.
+- include/coreflow/stability_policy.hpp: reference threshold policy for regression comparison.
 - include/coreflow/config.hpp: small bounded runtime policy config.
 
-Generic cgroup, render, memory, and PSI mutation placeholders are not part of the production daemon.
+Generic task migration, vendor clamp overrides, forced refresh rates and unexpired render bursts are not activated. See [the equilibrium blueprint](EQUILIBRIUM_BLUEPRINT.md) for platform-integration limits.
 
 ## UClamp discovery
 

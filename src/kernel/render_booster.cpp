@@ -38,7 +38,7 @@ void RenderBooster::on_frame_presented(double frame_time_ms) {
         if (hitches >= 2) {
             trigger_render_burst(580, std::chrono::milliseconds(250));
             std::cout << "[CoreFlow][Render] Jank detected (" << frame_time_ms 
-                      << "ms vs " << frame_budget << "ms budget). Applied burst." << std::endl;
+                      << "ms vs " << frame_budget << "ms budget). No native frame backend attached." << std::endl;
         }
     } else {
         consecutive_hitches_.store(0, std::memory_order_relaxed);
@@ -48,23 +48,8 @@ void RenderBooster::on_frame_presented(double frame_time_ms) {
 }
 
 bool RenderBooster::unlock_display_refresh_limits() {
-    std::vector<std::string> panel_fps_nodes = {
-        "/sys/devices/virtual/graphics/fb0/dynamic_fps",
-        "/sys/class/drm/card0-DSI-1/fps",
-        "/sys/devices/platform/soc/soc:qcom,dsi-display-primary/fps"
-    };
-
-    bool any_success = false;
-    for (const auto& node : panel_fps_nodes) {
-        if (BaselineStore::instance().capture(node)) {
-            if (BaselineStore::instance().apply_mutation(node, "120")) {
-                any_success = true;
-                std::cout << "[CoreFlow][Render] Unlocked 120Hz on " << node << std::endl;
-            }
-        }
-    }
-
-    return any_success;
+    // No verified display-mode backend: never force an unadvertised panel mode.
+    return false;
 }
 
 FrameMetrics RenderBooster::get_metrics() const {
@@ -72,10 +57,10 @@ FrameMetrics RenderBooster::get_metrics() const {
 }
 
 void RenderBooster::trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds) {
-    (void)BaselineStore::instance().apply_mutation(
-        "/sys/fs/cgroup/top-app/cpu.uclamp.min", 
-        std::to_string(uclamp_min)
-    );
+    // A rendering backend must supply trusted events and an expiry before it
+    // can request boosts through the central controller. This helper does not write nodes.
+    (void)uclamp_min;
 }
 
 } // namespace coreflow
+

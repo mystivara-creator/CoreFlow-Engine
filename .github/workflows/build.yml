@@ -11,6 +11,9 @@ on:
   push:
     paths:
       - "CMakeLists.txt"
+      - "cmake/**"
+      - "rust/**"
+      - "docs/EQUILIBRIUM_BLUEPRINT.md"
       - "include/**"
       - "src/**"
       - "tests/**"
@@ -42,6 +45,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up Rust 2024 toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          rustup target add aarch64-linux-android
+
 
       - name: Verify host build toolchain
         shell: bash
@@ -79,6 +90,9 @@ jobs:
           set -euo pipefail
           for file in module/*.sh; do sh -n "$file"; done
 
+      - name: Run Rust controller tests
+        run: cargo test --manifest-path rust/Cargo.toml --locked
+
       - name: Configure host tests
         run: |
           set -euo pipefail
@@ -109,6 +123,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Set up Rust 2024 toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          rustup target add aarch64-linux-android
+
+
       - name: Configure sanitized host build
         run: |
           set -euo pipefail
@@ -136,6 +158,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Set up Rust 2024 toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          rustup target add aarch64-linux-android
+
 
       - name: Verify release version alignment
         shell: bash

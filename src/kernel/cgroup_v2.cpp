@@ -8,6 +8,7 @@
 #include "coreflow/cgroup_v2.hpp"
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/baseline_store.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <filesystem>
@@ -51,14 +52,10 @@ std::string CgroupV2Controller::get_cgroup_path(CgroupTarget target) const {
 }
 
 bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
-    if (!supported_ || tid <= 0) return false;
-
-    std::string target_path = get_cgroup_path(target) + "/cgroup.threads";
-    if (!fs::exists(target_path)) {
-        target_path = get_cgroup_path(target) + "/cgroup.procs";
-    }
-
-    return write_node(target_path, std::to_string(tid));
+    // Task migration requires a verified original membership and lifecycle owner.
+    // Do not silently migrate an entire process when cgroup.threads is absent.
+    (void)tid; (void)target;
+    return false;
 }
 
 bool CgroupV2Controller::set_cpuset(CgroupTarget target, std::string_view cpus) {
@@ -75,26 +72,14 @@ bool CgroupV2Controller::set_cpu_weight(CgroupTarget target, uint32_t weight) {
 }
 
 bool CgroupV2Controller::unlock_vendor_restrictions() {
-    if (!supported_) return false;
-
-    // Dynamically retrieve the genuine online CPU mask (e.g. "0-7", "0-5", "0-9")
-    // from Linux kernel /sys/devices/system/cpu/online instead of hardcoding
-    auto topo = DeviceProfiler::instance().probe();
-    std::string active_mask = topo.online_cpus_mask.empty() ? "0-7" : topo.online_cpus_mask;
-
-    bool ok1 = set_cpuset(CgroupTarget::TopApp, active_mask);
-    bool ok2 = set_cpu_weight(CgroupTarget::TopApp, 500);
-    bool ok3 = set_cpu_weight(CgroupTarget::Background, 50);
-
-    return ok1 && ok2 && ok3;
+    // Opening vendor cpusets would bypass OEM task-placement policy without
+    // proving a benefit. No transparent vendor-override backend is installed.
+    return false;
 }
 
 bool CgroupV2Controller::write_node(const std::string& path, std::string_view value) {
-    UniqueFd ufd(::open(path.c_str(), O_WRONLY | O_CLOEXEC));
-    if (!ufd.valid()) return false;
-
-    ssize_t written = ::write(ufd.get(), value.data(), value.size());
-    return written == static_cast<ssize_t>(value.size());
+    return BaselineStore::instance().capture(path) &&
+           BaselineStore::instance().apply_mutation(path, std::string(value));
 }
 
 std::string CgroupV2Controller::read_node(const std::string& path) const {
@@ -106,3 +91,4 @@ std::string CgroupV2Controller::read_node(const std::string& path) const {
 }
 
 } // namespace coreflow
+

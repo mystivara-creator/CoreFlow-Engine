@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(CoreFlowEngine VERSION 2.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -9,8 +9,6 @@ option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
 
 # Optimization & Security Hardening Flags for Native Systems
 add_compile_options(
-    -O3
-    -flto
     -fvisibility=hidden
     -fvisibility-inlines-hidden
     -Wall
@@ -27,14 +25,14 @@ add_compile_options(
 add_compile_definitions(_FORTIFY_SOURCE=2)
 
 add_link_options(
-    -flto
     -Wl,--gc-sections
-    -Wl,--strip-all
+    $<$<CONFIG:Release>:-Wl,--strip-all>
     -Wl,-z,relro
     -Wl,-z,now
 )
 
 include_directories(include)
+include(cmake/RustEngine.cmake)
 
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
@@ -45,6 +43,8 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/device_profiler.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
+    src/kernel/frequency_controller.cpp
+    src/kernel/power_bridge.cpp
 )
 
 # Main Daemon (coreflowd)
@@ -53,14 +53,28 @@ add_executable(coreflowd
     src/daemon/reactor.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
+target_link_libraries(coreflowd PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
+target_compile_options(coreflowd PRIVATE $<$<CONFIG:Release>:-O2>)
 
 if(ANDROID)
-    target_link_libraries(coreflowd PRIVATE log)
+    target_link_libraries(coreflowd PRIVATE log binder_ndk)
+else()
+    target_link_libraries(coreflowd PRIVATE pthread)
 endif()
 
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/baseline_store.cpp)
+    add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
+    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/baseline_store.cpp)
+    add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
+    add_executable(test_rust_bridge tests/test_rust_bridge.cpp)
+    target_link_libraries(test_rust_bridge PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
+    if(NOT ANDROID)
+        target_link_libraries(test_rust_bridge PRIVATE pthread)
+    endif()
+    add_test(NAME RustBridgeIntegrationTest COMMAND test_rust_bridge)
 
     add_executable(test_baseline_rollback
         tests/test_baseline_rollback.cpp
@@ -111,3 +125,4 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME UclampTest COMMAND test_uclamp)
 endif()
+

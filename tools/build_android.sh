@@ -11,6 +11,8 @@ if [ -z "$NDK" ] || [ ! -f "$NDK/build/cmake/android.toolchain.cmake" ]; then
     exit 2
 fi
 
+command -v cargo >/dev/null || { echo "error: Rust 1.85+ and cargo are required" >&2; exit 2; }
+rustup target add aarch64-linux-android
 BUILD_DIR="$ROOT/build/android-arm64"
 
 echo "CoreFlow Engine v2.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"

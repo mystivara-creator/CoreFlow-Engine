@@ -1,3 +1,12 @@
+## Unreleased — hybrid equilibrium implementation
+
+- C++23 runtime with a Rust 2024 PID/state controller through cxx.
+- Discovered CPU/GPU frequency ceilings, OEM ownership and journaled restoration.
+- Bounded charging reduction and correctly formatted optional cgroup-v2 I/O weights.
+- Restored singleton lifecycle, native JSON status, PSI/sensor failure handling and WebUI controls.
+- Architecture Studio with source inspection, explicit integration limits, illustrative simulator and blueprint export.
+- Host/Rust/bridge regression tests; ARM64 hybrid build added to CI. Device performance validation remains required.
+
 # CoreFlow release history
 
 ## v2.0.0 Modern C++20 hardening (main development line)

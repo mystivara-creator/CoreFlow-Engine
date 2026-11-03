@@ -6,6 +6,7 @@
  */
 
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/thermal_monitor.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,6 +18,16 @@
 namespace coreflow {
 
 namespace fs = std::filesystem;
+namespace {
+bool exists(const fs::path& path) { std::error_code ec; return fs::exists(path, ec) && !ec; }
+std::vector<fs::directory_entry> entries(const fs::path& path) {
+    std::error_code ec;
+    std::vector<fs::directory_entry> result;
+    for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && result.size() < 192; it.increment(ec)) result.push_back(*it);
+    return result;
+}
+}
 
 DeviceProfiler& DeviceProfiler::instance() {
     static DeviceProfiler inst;
@@ -27,8 +38,8 @@ DeviceTopology DeviceProfiler::probe() {
     if (probed_) return cached_topology_;
 
     DeviceTopology topo{};
-    topo.total_cpus = static_cast<uint32_t>(::sysconf(_SC_NPROCESSORS_CONF));
-    if (topo.total_cpus == 0) topo.total_cpus = 8;
+    const long count = ::sysconf(_SC_NPROCESSORS_CONF);
+    topo.total_cpus = count > 0 ? static_cast<uint32_t>(count) : 0;
 
     // 1. Read Linux Kernel Release via uname
     struct utsname uts{};
@@ -41,7 +52,7 @@ DeviceTopology DeviceProfiler::probe() {
     if (online_f.is_open()) {
         online_f >> topo.online_cpus_mask;
     } else {
-        topo.online_cpus_mask = "0-" + std::to_string(topo.total_cpus > 0 ? topo.total_cpus - 1 : 7);
+        topo.online_cpus_mask = "0-" + std::to_string(topo.total_cpus > 0 ? topo.total_cpus - 1 : 0);
     }
 
     // 3. Dynamic SoC and Platform Discovery
@@ -51,33 +62,32 @@ DeviceTopology DeviceProfiler::probe() {
     discover_clusters(topo);
 
     // 5. Cgroups & Sched-Uclamp Capability Probe
-    topo.has_cgroups_v2 = fs::exists("/sys/fs/cgroup/cgroup.controllers") ||
-                          fs::exists("/sys/fs/cgroup/cgroup.subtree_control");
-    topo.has_uclamp = fs::exists("/sys/fs/cgroup/top-app/cpu.uclamp.min") ||
-                      fs::exists("/dev/cpuctl/top-app/cpu.uclamp.min");
-    topo.has_surfaceflinger_hints = fs::exists("/sys/class/drm") ||
-                                    fs::exists("/sys/devices/virtual/graphics/fb0");
+    topo.has_cgroups_v2 = exists("/sys/fs/cgroup/cgroup.controllers") ||
+                          exists("/sys/fs/cgroup/cgroup.subtree_control");
+    topo.has_uclamp = exists("/sys/fs/cgroup/top-app/cpu.uclamp.min") ||
+                      exists("/dev/cpuctl/top-app/cpu.uclamp.min");
+    topo.has_surfaceflinger_hints = false; // Display node presence is not frame telemetry.
 
     // 6. Dynamic Battery & GPU Hardware Node Probing
-    if (fs::exists("/sys/class/power_supply/battery/current_max")) {
+    if (exists("/sys/class/power_supply/battery/current_max")) {
         topo.battery_control_node = "/sys/class/power_supply/battery/current_max";
-    } else if (fs::exists("/sys/class/power_supply/battery/constant_charge_current_max")) {
+    } else if (exists("/sys/class/power_supply/battery/constant_charge_current_max")) {
         topo.battery_control_node = "/sys/class/power_supply/battery/constant_charge_current_max";
     }
 
-    if (fs::exists("/sys/class/kgsl/kgsl-3d0")) {
+    if (exists("/sys/class/kgsl/kgsl-3d0")) {
         topo.gpu_type = "Qualcomm Adreno (KGSL)";
-    } else if (fs::exists("/sys/class/devfreq")) {
-        for (const auto& entry : fs::directory_iterator("/sys/class/devfreq")) {
+    } else if (exists("/sys/class/devfreq")) {
+        for (const auto& entry : entries("/sys/class/devfreq")) {
             std::string name = entry.path().filename().string();
             if (name.find("mali") != std::string::npos || name.find("gpu") != std::string::npos) {
                 topo.gpu_type = "ARM Mali / Immortalis (" + name + ")";
                 break;
             }
         }
-        if (topo.gpu_type.empty()) topo.gpu_type = "Linux Generic Devfreq";
+        if (topo.gpu_type.empty()) topo.gpu_type = "Unavailable (no identified GPU devfreq domain)";
     } else {
-        topo.gpu_type = "AOSP Standard SurfaceFlinger";
+        topo.gpu_type = "Unavailable";
     }
 
     cached_topology_ = topo;
@@ -150,8 +160,8 @@ void DeviceProfiler::discover_clusters(DeviceTopology& topo) {
     topo.clusters.clear();
 
     const std::string cpufreq_dir = "/sys/devices/system/cpu/cpufreq";
-    if (fs::exists(cpufreq_dir)) {
-        for (const auto& entry : fs::directory_iterator(cpufreq_dir)) {
+    if (exists(cpufreq_dir)) {
+        for (const auto& entry : entries(cpufreq_dir)) {
             std::string dir_name = entry.path().filename().string();
             if (dir_name.rfind("policy", 0) == 0) {
                 CpuCluster cluster{};
@@ -205,78 +215,11 @@ void DeviceProfiler::discover_clusters(DeviceTopology& topo) {
         return;
     }
 
-    // Dynamic fallback when /sys/devices/system/cpu/cpufreq is not mounted (e.g. host CI)
-    uint32_t half = topo.total_cpus / 2;
-    topo.clusters.push_back(CpuCluster{
-        .type = ClusterType::Little,
-        .first_cpu = 0,
-        .last_cpu = half > 0 ? half - 1 : 0,
-        .base_freq_khz = 600000,
-        .max_freq_khz = 1800000,
-        .cpufreq_policy_path = "/sys/devices/system/cpu/cpufreq/policy0",
-        .energy_model_path = ""
-    });
-
-    if (topo.total_cpus > 1) {
-        topo.clusters.push_back(CpuCluster{
-            .type = ClusterType::BigPrime,
-            .first_cpu = half,
-            .last_cpu = topo.total_cpus - 1,
-            .base_freq_khz = 800000,
-            .max_freq_khz = 2400000,
-            .cpufreq_policy_path = "/sys/devices/system/cpu/cpufreq/policy" + std::to_string(half),
-            .energy_model_path = ""
-        });
-    }
+    // Unavailable topology stays unavailable; never invent clusters or frequencies.
 }
 
 float DeviceProfiler::get_soc_temperature() const {
-    // Linux sysfs thermal framework: scan thermal zones dynamically
-    int best_zone = -1;
-    std::string best_zone_type;
-
-    for (int i = 0; i < 30; ++i) {
-        std::string type_path = "/sys/class/thermal/thermal_zone" + std::to_string(i) + "/type";
-        std::ifstream type_f(type_path);
-        if (type_f.is_open()) {
-            std::string ztype;
-            std::getline(type_f, ztype);
-            std::string lower = ztype;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-            // Match genuine SoC/CPU thermal sensor identifiers
-            if (lower.find("soc") != std::string::npos ||
-                lower.find("cpu") != std::string::npos ||
-                lower.find("tsens") != std::string::npos ||
-                lower.find("mtkts") != std::string::npos ||
-                lower.find("thermal") != std::string::npos) {
-                best_zone = i;
-                best_zone_type = ztype;
-                break;
-            }
-            if (best_zone < 0) {
-                best_zone = i;
-                best_zone_type = ztype;
-            }
-        }
-    }
-
-    if (best_zone >= 0) {
-        std::string temp_path = "/sys/class/thermal/thermal_zone" + std::to_string(best_zone) + "/temp";
-        std::ifstream temp_f(temp_path);
-        if (temp_f.is_open()) {
-            int raw_temp = 0;
-            temp_f >> raw_temp;
-            if (raw_temp > 1000) {
-                return static_cast<float>(raw_temp) / 1000.0f; // millidegrees to Celsius
-            }
-            if (raw_temp > 0) {
-                return static_cast<float>(raw_temp);
-            }
-        }
-    }
-
-    return 36.5f; // Nominal ambient thermal reading
+    return ThermalMonitor::instance().hottest_celsius();
 }
 
 std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
@@ -293,3 +236,4 @@ std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
 }
 
 } // namespace coreflow
+

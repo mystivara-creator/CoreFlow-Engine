@@ -27,8 +27,10 @@ struct DaemonConfig {
 
     // [device_adaptation]
     std::string tier_override{"auto"};
-    bool unlock_vendor_clamping{true};
-    bool force_120hz_rendering{true};
+    bool unlock_vendor_clamping{false};
+    bool force_120hz_rendering{false};
+    bool enable_cpu_frequency_control{true};
+    bool enable_gpu_frequency_control{true};
 
     // [uclamp_tuning]
     uint32_t top_app_interactive_min{320};
@@ -80,13 +82,14 @@ struct DaemonConfig {
 
     static bool parse_bool(const std::string& val) {
         std::string lower = val;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return lower == "true" || lower == "1" || lower == "yes";
     }
 
     static bool parse_float_safe(std::string_view text, float& out) noexcept {
         double d = 0.0;
         if (!parse_ascii_double(text, d) || !std::isfinite(d)) return false;
+        if (std::abs(d) > std::numeric_limits<float>::max()) return false;
         out = static_cast<float>(d);
         return true;
     }
@@ -100,7 +103,7 @@ struct DaemonConfig {
 
     static bool parse_uint32_safe(std::string_view text, uint32_t& out) noexcept {
         double d = 0.0;
-        if (!parse_ascii_double(text, d) || !std::isfinite(d) || d < 0.0 || d > 4294967295.0) return false;
+        if (!parse_ascii_double(text, d) || !std::isfinite(d) || d < 0.0 || d > 4294967295.0 || std::floor(d) != d) return false;
         out = static_cast<uint32_t>(d);
         return true;
     }
@@ -141,6 +144,8 @@ struct DaemonConfig {
             else if (key == "tier_override") cfg.tier_override = val;
             else if (key == "unlock_vendor_clamping") cfg.unlock_vendor_clamping = parse_bool(val);
             else if (key == "force_120hz_rendering") cfg.force_120hz_rendering = parse_bool(val);
+            else if (key == "enable_cpu_frequency_control") cfg.enable_cpu_frequency_control = parse_bool(val);
+            else if (key == "enable_gpu_frequency_control") cfg.enable_gpu_frequency_control = parse_bool(val);
 
             // [uclamp_tuning]
             else if (key == "top_app_interactive_min") {
@@ -270,6 +275,14 @@ struct DaemonConfig {
         }
 
         // Post-validation: ensure max >= min
+        cfg.pid_target_celsius = std::clamp(cfg.pid_target_celsius, 25.0f, cfg.thermal_trip_celsius);
+        cfg.pid_kp = std::clamp(cfg.pid_kp, 0.0f, 20.0f);
+        cfg.pid_ki = std::clamp(cfg.pid_ki, 0.0f, 20.0f);
+        cfg.pid_kd = std::clamp(cfg.pid_kd, 0.0f, 20.0f);
+        cfg.stepped_charge_current_ma = std::clamp(cfg.stepped_charge_current_ma, 100u, 5000u);
+        cfg.battery_step_temp_threshold = std::clamp(cfg.battery_step_temp_threshold, 30.0f, 45.0f);
+        cfg.top_app_io_weight = std::clamp(cfg.top_app_io_weight, 1u, 10000u);
+        cfg.background_io_weight = std::clamp(cfg.background_io_weight, 1u, 10000u);
         cfg.top_app_interactive_max = std::max(cfg.top_app_interactive_max, cfg.top_app_interactive_min);
         if (cfg.thermal_recover_celsius >= cfg.thermal_trip_celsius) {
             cfg.thermal_recover_celsius = cfg.thermal_trip_celsius - 4.0f;
@@ -280,9 +293,9 @@ struct DaemonConfig {
 
     static DaemonConfig load_best_available() {
         const std::vector<std::string> paths = {
+            "/data/adb/coreflow/coreflow.conf",
             "/data/adb/modules/coreflow_engine/coreflow.conf",
             "/system/etc/coreflow/default.conf",
-            "/data/adb/coreflow/coreflow.conf",
             "config/coreflow.conf"
         };
         for (const auto& path : paths) {
@@ -298,3 +311,4 @@ struct DaemonConfig {
 };
 
 } // namespace coreflow
+

@@ -4,7 +4,7 @@
 
 # CoreFlow Engine Modern v2.0
 
-CoreFlow is a compact native C++20 stability-first Android optimizer. The target is not maximum benchmark output. The target is stable responsiveness across daily use, multitasking, and sustained workloads without a large overlapping decision architecture.
+CoreFlow is a native C++23 + Rust 2024 stability-first Android optimizer. The target is not maximum benchmark output. The target is stable responsiveness across daily use, multitasking, and sustained workloads without a large overlapping decision architecture.
 
 ## Design rule: discover broadly, mutate narrowly
 
@@ -17,7 +17,7 @@ CoreFlow does not keep device-specific sysfs paths or model lists. At runtime it
 - discovers trusted CPU/SoC thermal zones by type labels;
 - reads standard Linux PSI from /proc/pressure/cpu, memory, and io.
 
-Discovery never grants permission to mutate arbitrary nodes. The production actuator is intentionally limited to the verified top-app UClamp pair.
+Discovery never grants permission to mutate arbitrary nodes. Actuators include the verified top-app UClamp pair, CPUFreq/GPU devfreq ceilings discovered from exposed frequency tables, optional standard charging-current reduction and cgroup-v2 I/O weights. All go through the recovery journal.
 
 ## One small stability state machine
 
@@ -27,7 +27,7 @@ Discovery never grants permission to mutate arbitrary nodes. The production actu
 - Thermal Guard: temperature reaches the configured trip point; gently lowers the top-app ceiling.
 - Emergency thermal exit: restores tracked values and stops CoreFlow so the OEM thermal stack has full control.
 
-The engine never raises an OEM top-app maximum observed at startup. If another component changes an owned clamp, CoreFlow releases that value and stops; it can be restarted after the device policy settles.
+The Rust PID controller continuously adjusts a bounded capacity budget. CPU/GPU ceilings are quantized to kernel-exposed operating points. The engine never raises an OEM top-app maximum observed at startup. If another component changes an owned clamp, CoreFlow releases that value and stops; it can be restarted after the device policy settles.
 
 There is no package-name game list, round-robin mutation, vendor display override, arbitrary cgroup migration, or background/foreground clamp rewriting.
 
@@ -47,10 +47,32 @@ Emergency disable: /data/adb/coreflow/DISABLE
 Commands:
 
     su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --status'
+    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --capabilities'
     su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --stop'
     su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --rollback-baseline'
 
-See docs/ARCHITECTURE.md, docs/TUNING.md, and docs/DEVICE_TEST.md.
+See [architecture](docs/ARCHITECTURE.md), [equilibrium blueprint](docs/EQUILIBRIUM_BLUEPRINT.md), [tuning](docs/TUNING.md), and [device validation](docs/DEVICE_TEST.md).
+
+## Build and workbench
+
+Requires CMake 3.22+, a C++23 compiler, Rust 1.85+ and Cargo. Android builds also
+require the NDK and `rustup target add aarch64-linux-android`. Cargo dependencies
+are pinned through `rust/Cargo.lock`; `cxx` provides the typed language bridge.
+
+    cargo test --manifest-path rust/Cargo.toml --locked
+    cmake -S . -B build/host -DCMAKE_BUILD_TYPE=Debug
+    cmake --build build/host
+    ctest --test-dir build/host --output-on-failure
+    npm ci && npm run build
+
+Architecture Studio includes a labeled thermal simulator, actual C++/Rust source
+and Markdown/Text blueprint export. Native mode uses daemon data; browser
+simulation is never device telemetry.
+
+Power HAL service discovery is implemented. Transparent Binder interception,
+generic NPU offload and measured frame-time collection are **not implemented**;
+those require concrete platform/workload integration. No guaranteed FPS, energy
+savings, zero overhead or component-longevity claim is made.
 
 CI validates host tests, ASan/UBSan, WebUI build, shell syntax, and Android ARM64 packaging. Green CI is required before device testing, but is not proof of device compatibility.
 

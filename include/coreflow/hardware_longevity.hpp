@@ -8,6 +8,8 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
+#include "types.hpp"
 #include <string_view>
 
 namespace coreflow {
@@ -23,6 +25,7 @@ struct LongevityConfig {
 
 class HardwareLongevityManager {
 public:
+    explicit HardwareLongevityManager(std::string sys_root = "/sys") : root_(std::move(sys_root)) {}
     static HardwareLongevityManager& instance();
 
     /// Dynamically discover battery and storage control nodes
@@ -42,14 +45,17 @@ public:
     [[nodiscard]] std::string battery_node_path() const { return battery_node_; }
 
 private:
-    HardwareLongevityManager() = default;
+    std::string root_;
 
     LongevityConfig config_;
     std::string battery_node_;
     bool battery_stepped_{false};
     bool storage_paced_{false};
+    uint64_t charge_baseline_ua_{0};
+    uint64_t last_charge_ua_{0};
 
     void discover_battery_node();
 };
 
 } // namespace coreflow
+

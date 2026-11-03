@@ -19,3 +19,7 @@ bun.lockb
 .env
 .env.local
 public/assets/aistudio/
+
+# Rust build output
+rust/target/
+node_modules

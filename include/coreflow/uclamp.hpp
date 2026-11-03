@@ -25,6 +25,8 @@ public:
     bool apply_state(WorkloadState state,
                      uint32_t balanced_min,
                      uint32_t balanced_max);
+    bool apply_budget(WorkloadState state, uint32_t balanced_min,
+                      uint32_t balanced_max, uint32_t capacity);
 
 
     [[nodiscard]] uint32_t get_top_app_min() const;
