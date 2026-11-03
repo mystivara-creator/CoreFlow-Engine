@@ -15,6 +15,8 @@
 #include <filesystem>
 #include <string_view>
 #include <utility>
+#include <cmath>
+#include <cstdlib>
 
 namespace coreflow {
 namespace {
@@ -51,6 +53,21 @@ bool hex_decode(std::string_view input, std::string& out) {
         out.push_back(static_cast<char>((high << 4) | low));
     }
     return !out.empty();
+}
+bool readback_matches(const std::string& path, const std::string& expected, const std::string& actual) {
+    if (expected == actual) return true;
+    if (path.find("/cpu.uclamp.") == std::string::npos) return false;
+    const auto numeric = [](const std::string& value, double& percent) {
+        if (value == "max") { percent = 100.0; return true; }
+        char* end = nullptr;
+        percent = std::strtod(value.c_str(), &end);
+        return end != value.c_str() && *end == '\0' &&
+               std::isfinite(percent) && percent >= 0.0 && percent <= 100.0;
+    };
+    double before = 0, after = 0;
+    // cgroup v2 formats numeric utilization clamps as percentages (e.g. 31.25).
+    return numeric(expected, before) && numeric(actual, after) &&
+           std::abs(before - after) <= 0.05;
 }
 bool write_all(int fd, std::string_view data) {
     while (!data.empty()) {
@@ -94,7 +111,7 @@ bool BaselineStore::write_raw_node(const std::string& path, const std::string& v
     if (!fd.valid() || !write_all(fd.get(), value)) return false;
     if (!virtual_node && S_ISREG(st.st_mode) && ::fsync(fd.get()) != 0) return false;
     // Kernel nodes may normalize input; verify the actual read-back.
-    return read_raw_node(path) == value;
+    return readback_matches(path, value, read_raw_node(path));
 }
 
 bool BaselineStore::persist_locked() {
