@@ -32,7 +32,7 @@ export interface AutonomousConfig {
 export interface ReactionLogEvent {
   id: string;
   timestamp: string;
-  type: 'BOOST' | 'CGROUP' | 'FRAME' | 'THERMAL' | 'BASELINE' | 'INFO';
+  type: 'BOOST' | 'THERMAL' | 'BASELINE' | 'INFO';
   tag: string;
   message: string;
 }
