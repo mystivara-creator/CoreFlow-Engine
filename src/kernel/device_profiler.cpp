@@ -24,15 +24,15 @@ DeviceTopology DeviceProfiler::probe() {
     if (probed_) return cached_topology_;
 
     DeviceTopology topo{};
-    topo.total_cpus = static_cast<uint32_t>(::sysconf(_SC_NPROCESSORS_CONF));
-    if (topo.total_cpus == 0) topo.total_cpus = 8; // Default octa-core
+    const long detected_cpus = ::sysconf(_SC_NPROCESSORS_CONF);
+    topo.total_cpus = detected_cpus > 0 ? static_cast<uint32_t>(detected_cpus) : 0;
 
     detect_soc_name(topo);
     discover_clusters(topo);
 
     topo.has_cgroups_v2 = fs::exists("/sys/fs/cgroup/cgroup.controllers");
     topo.has_uclamp = fs::exists("/sys/fs/cgroup/top-app/cpu.uclamp.min");
-    topo.has_surfaceflinger_hints = true;
+    topo.has_surfaceflinger_hints = false;
 
     cached_topology_ = topo;
     probed_ = true;
@@ -58,38 +58,34 @@ void DeviceProfiler::detect_soc_name(DeviceTopology& topo) {
     }
 
     if (topo.soc_name.empty()) {
-        topo.soc_name = "Snapdragon 6 Gen 3 (Kunzite)";
-        topo.tier = DeviceTier::MidRange;
+        topo.soc_name = "Unknown SoC";
     }
 }
 
 void DeviceProfiler::discover_clusters(DeviceTopology& topo) {
-    // Discover CPUFreq policies in /sys/devices/system/cpu/cpufreq/
     topo.clusters.clear();
-
-    // Standard modern big.LITTLE / Tri-cluster setup
-    CpuCluster little{
-        .type = ClusterType::Little,
-        .first_cpu = 0,
-        .last_cpu = 3,
-        .base_freq_khz = 600000,
-        .max_freq_khz = 1800000,
-        .cpufreq_policy_path = "/sys/devices/system/cpu/cpufreq/policy0",
-        .energy_model_path = "/sys/devices/system/cpu/cpu0/energy_model"
-    };
-
-    CpuCluster big{
-        .type = ClusterType::Medium,
-        .first_cpu = 4,
-        .last_cpu = 7,
-        .base_freq_khz = 800000,
-        .max_freq_khz = 2400000,
-        .cpufreq_policy_path = "/sys/devices/system/cpu/cpufreq/policy4",
-        .energy_model_path = "/sys/devices/system/cpu/cpu4/energy_model"
-    };
-
-    topo.clusters.push_back(little);
-    topo.clusters.push_back(big);
+    const fs::path root("/sys/devices/system/cpu/cpufreq");
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;
+    for (const auto& entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+        if (ec) break;
+        const auto name = entry.path().filename().string();
+        if (name.rfind("policy", 0) != 0) continue;
+        auto read_number = [&](const char* key) -> uint32_t {
+            std::ifstream f(entry.path() / key);
+            uint32_t value = 0;
+            if (f) f >> value;
+            return value;
+        };
+        CpuCluster cluster{};
+        cluster.first_cpu = read_number("affected_cpus");
+        cluster.last_cpu = cluster.first_cpu;
+        cluster.base_freq_khz = read_number("cpuinfo_min_freq");
+        cluster.max_freq_khz = read_number("cpuinfo_max_freq");
+        cluster.cpufreq_policy_path = entry.path().string();
+        cluster.type = ClusterType::Little;
+        topo.clusters.push_back(cluster);
+    }
 }
 
 float DeviceProfiler::get_soc_temperature() const {
@@ -108,11 +104,17 @@ float DeviceProfiler::get_soc_temperature() const {
             }
         }
     }
-    return 36.5f; // Nominal fallback
+    return -1.0f; // Unknown: never fabricate a thermal reading
 }
 
 std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
-    return { 1200000, 2100000 };
+    std::vector<uint32_t> result;
+    for (const auto& cluster : cached_topology_.clusters) {
+        std::ifstream f(cluster.cpufreq_policy_path + "/scaling_cur_freq");
+        uint32_t freq = 0;
+        if (f && (f >> freq)) result.push_back(freq);
+    }
+    return result;
 }
 
 } // namespace coreflow
