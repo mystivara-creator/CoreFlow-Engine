@@ -3,6 +3,7 @@ import { ShieldCheck, RotateCcw, AlertTriangle, CheckCircle2 } from 'lucide-reac
 
 interface BaselineGuardianCardProps {
   nodesSnapshotted: number;
+  nativeMode?: boolean;
   baselineStatus: 'protected' | 'restored';
   onRestoreBaseline: () => void;
   isRestoring: boolean;
@@ -11,6 +12,7 @@ interface BaselineGuardianCardProps {
 
 export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
   nodesSnapshotted,
+  nativeMode = false,
   baselineStatus,
   onRestoreBaseline,
   isRestoring,
@@ -36,11 +38,11 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
                 Transactional OEM Baseline Protection
               </h3>
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                {baselineStatus === 'protected' ? 'Active & Guarded' : 'Restored to Stock'}
+                {nativeMode ? 'Write-ahead Journal' : (baselineStatus === 'protected' ? 'Preview Guarded' : 'Preview Restored')}
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
-              {nodesSnapshotted} factory sysfs nodes snapshotted into memory at boot. You can revert all kernel frequency, uclamp, and cgroup modifications back to stock OEM values atomically at any time.
+              {nativeMode ? 'Native changes are journaled before writes and verified on restoration. This button stops the daemon and requests OEM recovery.' : `${nodesSnapshotted} nodes simulated; no device writes in preview.`}
             </p>
           </div>
         </div>
@@ -77,7 +79,7 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
       </div>
 
       {restoreFeedback && (
-        <div className="mt-4 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-fade-in">
+        <div className="mt-4 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-fade-in">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span>{restoreFeedback}</span>
         </div>
