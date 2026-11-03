@@ -72,6 +72,7 @@ export const App: React.FC = () => {
 
   // Main autonomous reaction loop (2.5s tick)
   useEffect(() => {
+    if (isNativeBridge) return;
     const interval = setInterval(() => {
       setTelemetry((prev) => {
         const { next, event } = stepAutonomousSimulation(prev, config);
@@ -83,10 +84,14 @@ export const App: React.FC = () => {
     }, 2500);
 
     return () => clearInterval(interval);
-  }, [config]);
+  }, [config, isNativeBridge]);
 
   // Master engine toggle (Active vs Stock OEM)
   const handleToggleEngine = () => {
+    if (isNativeBridge) {
+      addLog("INFO", "Control", "Native engine toggle is unavailable until the daemon control protocol is implemented.");
+      return;
+    }
     setTelemetry((prev) => {
       const nextActive = !prev.engineActive;
       addLog(
@@ -105,6 +110,7 @@ export const App: React.FC = () => {
 
   // Instant touch boost simulation
   const handleSimulateTouchBoost = () => {
+    if (isNativeBridge) return;
     if (!telemetry.engineActive) return;
     setTelemetry((prev) => ({
       ...prev,
@@ -120,6 +126,7 @@ export const App: React.FC = () => {
 
   // App launch simulation
   const handleSimulateAppLaunch = () => {
+    if (isNativeBridge) return;
     if (!telemetry.engineActive) return;
     setTelemetry((prev) => ({
       ...prev,
@@ -163,10 +170,14 @@ burst_boost_duration_ms = ${config.burstDurationMs}
 thermal_trip_celsius = ${config.thermalTripCelsius.toFixed(1)}
 emergency_rollback_on_overheat = true
 `;
-        await execNativeKsuShell(`cat << 'EOF' > /data/adb/modules/coreflow_engine/coreflow.conf\n${confContent}\nEOF`);
+        const result = await execNativeKsuShell(`cat << 'EOF' > /data/adb/modules/coreflow_engine/coreflow.conf\n${confContent}\nEOF`);
+        if (result.errno !== 0) throw new Error(result.stderr || "Native configuration write failed");
         addLog('INFO', 'ConfigWriter', 'coreflow.conf updated on /data/adb/modules/coreflow_engine/');
       } catch (err) {
-        addLog('INFO', 'ConfigWriter', `Native save fallback: ${String(err)}`);
+        setIsSaving(false);
+        setSaveMessage("Save failed");
+        addLog('INFO', 'ConfigWriter', `Native save failed: ${String(err)}`);
+        return;
       }
     }
 
@@ -186,37 +197,19 @@ emergency_rollback_on_overheat = true
   const handleRestoreBaseline = async () => {
     setIsRestoring(true);
     setRestoreFeedback(null);
-
-    if (isNativeBridge) {
-      try {
-        await execNativeKsuShell('coreflowd --rollback-baseline');
-      } catch {
-        // fallback
-      }
+    if (!isNativeBridge) {
+      setTelemetry(prev => ({ ...prev, baselineStatus: 'restored', uclampMin: 0 }));
+      setRestoreFeedback('Preview only: simulated baseline restored.');
+    } else {
+      // No rollback CLI or IPC contract exists in coreflowd yet.
+      setRestoreFeedback('Unavailable: native rollback command is not implemented.');
     }
-
-    setTimeout(() => {
-      setIsRestoring(false);
-      setTelemetry((prev) => ({
-        ...prev,
-        baselineStatus: 'restored',
-        uclampMin: 0,
-        currentFps: 60,
-      }));
-      setRestoreFeedback(
-        'Transaction completed: All 18 sysfs kernel nodes restored to OEM factory state.'
-      );
-      addLog(
-        'BASELINE',
-        'BaselineStore',
-        'Transactional rollback executed: sysfs nodes, CPU governor & EAS clamps reverted to initial factory snapshot.'
-      );
-      setTimeout(() => setRestoreFeedback(null), 5000);
-    }, 600);
+    setIsRestoring(false);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased selection:bg-sky-500 selection:text-white">
+      <div role="status" className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100">{isNativeBridge ? "Native device: telemetry and controls are unavailable until daemon IPC is implemented." : "DEMO PREVIEW: simulated telemetry and controls, not connected to a device."}</div>
       {/* Google Pixel / Material 3 Top Navigation */}
       <PixelHeader
         engineActive={telemetry.engineActive}
