@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -39,6 +41,35 @@ void on_fatal_signal(int signum) {
 }
 bool marker(const char* path) {
     return ::access(path, F_OK) == 0;
+}
+
+double read_psi_avg10(const char* path) {
+    std::ifstream file(path);
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.rfind("some ", 0) != 0) continue;
+        const auto at = line.find("avg10=");
+        if (at == std::string::npos) continue;
+        const char* start = line.c_str() + at + 6;
+        char* end = nullptr;
+        errno = 0;
+        const double value = std::strtod(start, &end);
+        if (errno == 0 && end != start && std::isfinite(value) && value >= 0.0)
+            return value;
+    }
+    return 0.0;
+}
+
+const char* state_name(WorkloadState state) {
+    switch (state) {
+        case WorkloadState::DeepSleep: return "deep-sleep";
+        case WorkloadState::DailyIdle: return "pressure-guard";
+        case WorkloadState::Interactive: return "balanced";
+        case WorkloadState::BurstLaunch: return "burst";
+        case WorkloadState::SustainedGame: return "sustained-load";
+        case WorkloadState::ThermalThrottled: return "thermal-guard";
+    }
+    return "unknown";
 }
 bool process_matches(pid_t pid) {
     if (pid <= 0 || ::kill(pid, 0) != 0) return false;
@@ -179,11 +210,39 @@ int main(int argc, char* argv[]) {
             }
             return;
         }
-        const auto desired = temp >= config.thermal_trip_celsius
-            ? WorkloadState::ThermalThrottled
-            : (applied && current == WorkloadState::ThermalThrottled &&
-               temp > config.thermal_recover_celsius)
-                ? WorkloadState::ThermalThrottled : WorkloadState::Interactive;
+        // Severe heat means CoreFlow gets out of the way and returns ownership
+        // to the OEM thermal stack instead of fighting it with another profile.
+        if (config.emergency_rollback_on_overheat &&
+            temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
+            std::cerr << "[CoreFlow][Stability] emergency thermal exit at " << temp << "C\n";
+            baseline.rollback_all();
+            applied = false;
+            reactor.stop();
+            return;
+        }
+
+        const double cpu_pressure = read_psi_avg10("/proc/pressure/cpu");
+        const double memory_pressure = read_psi_avg10("/proc/pressure/memory");
+        const double io_pressure = read_psi_avg10("/proc/pressure/io");
+
+        WorkloadState desired = WorkloadState::Interactive;
+        if (temp >= config.thermal_trip_celsius ||
+            (applied && current == WorkloadState::ThermalThrottled &&
+             temp > config.thermal_recover_celsius)) {
+            desired = WorkloadState::ThermalThrottled;
+        } else if (memory_pressure >= config.memory_pressure_guard_pct ||
+                   io_pressure >= config.io_pressure_guard_pct) {
+            // Contention guard: reduce artificial boosting, keep the ceiling open,
+            // and let reclaim/I/O complete instead of adding CPU demand.
+            desired = WorkloadState::DailyIdle;
+        } else if (cpu_pressure >= config.cpu_pressure_boost_pct &&
+                   temp <= config.thermal_trip_celsius - config.thermal_headroom_celsius) {
+            // Sustained CPU pressure with thermal headroom: moderately raise the
+            // top-app floor. This covers games and other sustained foreground work
+            // without needing package-name heuristics or an application database.
+            desired = WorkloadState::SustainedGame;
+        }
+
         if (!applied || current != desired) {
             const auto now = std::chrono::steady_clock::now();
             if (now < retry_after) return;
@@ -192,6 +251,11 @@ int main(int argc, char* argv[]) {
                 current = desired;
                 applied = true;
                 consecutive_failures = 0;
+                std::cerr << "[CoreFlow][Stability] state=" << state_name(current)
+                          << " temp=" << temp
+                          << " cpu_psi=" << cpu_pressure
+                          << " mem_psi=" << memory_pressure
+                          << " io_psi=" << io_pressure << "\n";
             } else {
                 baseline.rollback_all();
                 applied = false;
