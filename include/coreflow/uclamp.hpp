@@ -25,7 +25,7 @@ public:
     [[nodiscard]] bool is_supported() const noexcept;
 
     /// Apply dynamic uclamp profile based on workload state
-    bool apply_state(WorkloadState state, DeviceTier tier);
+    bool apply_state(WorkloadState state, DeviceTier tier, uint32_t interactive_min = 0, uint32_t interactive_max = 1024);
 
     /// Apply transient burst boost (e.g. touch or cold launch)
     bool apply_boost(uint32_t min_clamp, uint32_t max_clamp, std::chrono::milliseconds duration_ms);
