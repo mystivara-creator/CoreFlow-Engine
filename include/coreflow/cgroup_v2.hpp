@@ -44,8 +44,6 @@ private:
     std::string root_path_;
     bool supported_{false};
 
-    bool write_node(const std::string& path, std::string_view value);
-    std::string read_node(const std::string& path) const;
 };
 
 } // namespace coreflow
