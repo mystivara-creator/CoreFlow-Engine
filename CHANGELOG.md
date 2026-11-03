@@ -1,3 +1,11 @@
+## Unreleased — fused thermal sensing and active cooling feedback
+
+- Evaluate recognized CPU/GPU, battery and skin sensors alongside Android thermal status.
+- Preserve all sensor readings in status JSON and compare policy-relative limits.
+- Keep mitigation active at OEM hot trips; reserve thermal exit for critical/emergency/shutdown.
+- Log matched-sensor cooling trends over ten-second mitigation windows, including mixed outcomes.
+- Refresh sensor discovery and test fusion, hot/critical distinction and sensor-switch feedback.
+
 ## Unreleased — cross-device thermal policy correction
 
 - Replace shared Celsius cutoffs with Android/OEM thermal policy pressure.

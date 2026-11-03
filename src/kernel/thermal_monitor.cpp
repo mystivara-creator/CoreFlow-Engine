@@ -101,11 +101,15 @@ ThermalMonitor& ThermalMonitor::instance() {
 }
 
 void ThermalMonitor::discover_sensors() const {
-    if (!sensors_.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!sensors_.empty() && now - discovery_at_ < std::chrono::seconds(30)) return;
+    discovery_at_ = now;
+    sensors_.clear();
+    size_t visited = 0;
     std::error_code ec;
     namespace fs = std::filesystem;
     for (fs::directory_iterator it(sysfs_root_, fs::directory_options::skip_permission_denied, ec), end;
-         !ec && it != end && sensors_.size() < 512; it.increment(ec)) {
+         !ec && it != end && sensors_.size() < 512 && visited++ < 2048; it.increment(ec)) {
         if (it->path().filename().string().rfind("thermal_zone", 0) != 0) continue;
         std::string type;
         if (!read_sysfs_line(it->path().string() + "/type", type)) continue;
@@ -135,9 +139,24 @@ float ThermalMonitor::skin_celsius() const { return hottest_category(3); }
 ThermalAssessment assessment_from_android_severity(int severity) {
     if (severity < 0 || severity > 6) return {};
     constexpr double indices[] = {0, 40, 75, 95, 110, 120, 130};
-    return {true, severity >= 5, indices[severity], severity, "android-thermal", "OEM severity"};
+    return {true, severity >= 5, indices[severity], severity, "android-thermal", "OEM severity", {}, false};
+}
+ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAssessment sensors) {
+    auto result = platform;
+    if (sensors.available && (!result.available || sensors.pressure > result.pressure)) {
+        result.pressure = sensors.pressure; result.sensor = sensors.sensor;
+    }
+    result.emergency = platform.emergency || sensors.emergency;
+    result.available = (platform.available || sensors.available) && (!sensors.incomplete || result.emergency);
+    result.source = platform.available && sensors.available ? "android+sysfs-oem-trips" :
+        platform.available ? platform.source : sensors.source;
+    result.readings = std::move(sensors.readings);
+    result.incomplete = sensors.incomplete;
+    return result;
 }
 ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
+    ThermalAssessment platform;
+
 #ifdef __ANDROID__
     if (sysfs_root_ == "/sys/class/thermal") {
         // Public NDK thermal API, resolved optionally for standalone root daemons.
@@ -165,7 +184,7 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
                     if (std::isfinite(cached) && cached >= 0 && cached <= 10)
                         result.pressure = std::max(result.pressure, std::min(130.0, static_cast<double>(cached) * 85.0));
                 }
-                return result;
+                platform = result;
             }
         }
     }
@@ -177,7 +196,7 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
     for (const auto& sensor : sensors_) {
         std::string raw; float temp;
         const bool valid_temperature = read_sysfs_line(sensor.path + "/temp", raw) && parse_celsius(raw, temp);
-        float passive = -1, emergency = -1, hyst = 0;
+        float passive = -1, critical = -1, hot = -1, hyst = 0;
         // Never assume a global degree threshold or reinterpret active cooling trips.
         std::error_code ec;
         size_t visited = 0;
@@ -193,25 +212,43 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
                 passive = value; float h = 0;
                 hyst = read_sysfs_line(prefix + "_hyst", raw) && parse_celsius(raw, h) ? h : 0;
             }
-            if ((type == "hot" || type == "critical") && (emergency < 0 || value < emergency)) emergency = value;
+            if (type == "hot" && (hot < 0 || value < hot)) hot = value;
+            if (type == "critical" && (critical < 0 || value < critical)) critical = value;
         }
+        ThermalSensorReading reading{sensor.path, sensor.type, sensor.category,
+            valid_temperature ? temp : -1, valid_temperature, passive > 0 || hot > 0 || critical > 0, 0};
+        result.readings.push_back(reading);
+        auto& observed = result.readings.back();
         if (!valid_temperature) {
-            if (passive > 0 || emergency > 0) return {}; // A known policy sensor cannot be silently dropped.
+            if (observed.policy_available) result.incomplete = true;
             continue;
         }
-        if (emergency > 0 && temp >= emergency) {
-            return {true, true, 120, -1, "sysfs-oem-trips", sensor.type};
+        if (critical > 0 && temp >= critical) {
+            result.emergency = true; result.available = true; result.pressure = 130;
+            result.source = "sysfs-oem-trips"; result.sensor = sensor.type;
+            observed.pressure = 130;
+            continue; // Continue reading the remaining sensors, even during emergency.
         }
-        if (passive <= 0 || (emergency > 0 && passive >= emergency)) continue;
+        if (hot > 0 && temp >= hot) {
+            observed.pressure = 110;
+            if (!result.available || result.pressure < 110) {
+                result.available = true; result.pressure = 110;
+                result.source = "sysfs-oem-trips"; result.sensor = sensor.type;
+            }
+        }
+        if (passive <= 0 || (critical > 0 && passive >= critical)) continue;
         const double margin = std::clamp(static_cast<double>(passive) * 0.05, 1.0, 5.0);
         // Normalize each sensor against its own OEM trip. Different sensor classes
         // are compared only as policy-relative pressure, never as raw Celsius.
         const double recovery = passive - std::max(margin, static_cast<double>(hyst));
         if (recovery < 0 || recovery >= passive) continue;
         const double pressure = std::clamp(65.0 + (temp - recovery) / (passive - recovery) * 20.0, 0.0, 130.0);
-        if (!result.available || pressure > result.pressure)
-            result = {true, false, pressure, -1, "sysfs-oem-trips", sensor.type};
+        observed.pressure = std::max(observed.pressure, pressure);
+        if (!result.available || pressure > result.pressure) {
+            result.available = true; result.pressure = pressure;
+            result.source = "sysfs-oem-trips"; result.sensor = sensor.type;
+        }
     }
-    return result;
+    return fuse_thermal_assessments(std::move(platform), std::move(result));
 }
 } // namespace coreflow

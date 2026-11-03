@@ -1,4 +1,5 @@
 #include "coreflow/thermal_monitor.hpp"
+#include "coreflow/cooling_feedback.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -71,10 +72,30 @@ int main() {
     assert(adaptive.skin_celsius() == 41);
     const auto decision = adaptive.assess();
     assert(decision.available && !decision.emergency);
+    assert(decision.readings.size() == 3);
+    const auto fused = fuse_thermal_assessments(assessment_from_android_severity(0), decision);
+    assert(fused.pressure == decision.pressure && fused.sensor == decision.sensor);
+    assert(fused.readings.size() == 3);
     assert(decision.sensor == "skin"); // 41/43C is nearer its own limit than CPU 78/95C.
     assert(!tensor_monitor.assess().available); // A name/temperature alone is no thermal policy.
     create_zone(oem, 150, "cpuss-0", "111000");
     assert(adaptive.assess().emergency);
+    assert(adaptive.assess().readings.size() == 3); // No emergency short-circuit.
+    create_zone(oem, 150, "cpuss-0", "99000");
+    trip(oem, 150, 2, "hot", "98000");
+    const auto hot = adaptive.assess();
+    assert(hot.available && !hot.emergency && hot.pressure >= 110);
+    CoolingFeedback feedback;
+    auto before = decision;
+    assert(!feedback.sample(before, 0, true));
+    auto after = before;
+    after.sensor = "cpuss-0"; // Switching the limiting sensor must not fake cooling.
+    after.readings[0].celsius += 1;
+    after.readings[1].celsius -= 1;
+    assert(feedback.sample(after, 10, true) == "mixed");
+    assert(!feedback.sample(after, 20, false));
+    assert(!feedback.sample(after, 21, true));
+    assert(feedback.sample(after, 31, true) == "steady");
     create_zone(oem, 150, "cpuss-0", "78000");
     create_zone(oem, 151, "battery", "unavailable");
     assert(!adaptive.assess().available); // Do not silently omit a broken, known-policy sensor.

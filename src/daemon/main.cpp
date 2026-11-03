@@ -5,6 +5,7 @@
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/thermal_monitor.hpp"
+#include "coreflow/cooling_feedback.hpp"
 #include "coreflow/unique_fd.hpp"
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/power_bridge.hpp"
@@ -273,6 +274,19 @@ void print_status() {
               << ",\"thermalSensor\":" << json_string(thermal.sensor)
               << ",\"thermalSeverity\":" << thermal.severity
               << ",\"thermalPressure\":" << thermal.pressure;
+    std::cout << ",\"thermalSensors\":[";
+    bool first_sensor = true;
+    for (const auto& reading : thermal.readings) {
+        if (!first_sensor) std::cout << ',';
+        first_sensor = false;
+        std::cout << "{\"id\":" << json_string(reading.id)
+                  << ",\"type\":" << json_string(reading.type)
+                  << ",\"category\":" << reading.category
+                  << ",\"valid\":" << (reading.valid ? "true" : "false")
+                  << ",\"celsius\":" << (reading.valid ? std::to_string(reading.celsius) : "null")
+                  << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false") << '}';
+    }
+    std::cout << "]";
     const auto battery = ThermalMonitor::instance().battery_celsius();
     const auto skin = ThermalMonitor::instance().skin_celsius();
     std::cout << ",\"batteryTempCelsius\":" << (battery >= 0 ? std::to_string(battery) : "null")
@@ -407,6 +421,7 @@ int main(int argc, char* argv[]) {
     int timer_fd = -1;
     auto last_tick = std::chrono::steady_clock::now();
     bool applied = false;
+    CoolingFeedback cooling_feedback;
     bool thermal_ready = false;
     bool unavailable_reported = false;
     WorkloadState current = WorkloadState::Balanced;
@@ -434,7 +449,7 @@ int main(int argc, char* argv[]) {
                     timer.it_value = timer.it_interval;
                     if (::timerfd_settime(timer_fd, 0, &timer, nullptr) != 0) reactor.stop();
                     last_tick = std::chrono::steady_clock::now();
-                    applied = false; thermal_ready = false;
+                    applied = false; thermal_ready = false; cooling_feedback.reset();
                     emit_log(false, "[CoreFlow] Configuration reloaded on SIGHUP.");
                 } else {
                     reactor.stop();
@@ -468,6 +483,7 @@ int main(int argc, char* argv[]) {
                 unavailable_reported = true;
             }
             thermal_ready = false;
+            cooling_feedback.reset();
             if (applied) {
                 baseline.rollback_all();
                 applied = false;
@@ -537,6 +553,15 @@ int main(int argc, char* argv[]) {
             baseline.rollback_all();
             reactor.stop();
             return;
+        }
+        const auto trend = cooling_feedback.sample(thermal,
+            std::chrono::duration<double>(now_tick.time_since_epoch()).count(),
+            decision.capacity_scale < 0.999 || desired == WorkloadState::ThermalGuard);
+        if (trend) {
+            emit_log(true, "[CoreFlow][Cooling] observed=" + *trend +
+                " sensors=" + std::to_string(thermal.readings.size()) +
+                " pressure=" + std::to_string(thermal.pressure) +
+                " capacity=" + std::to_string(decision.capacity_scale));
         }
         if (!applied || current != desired) {
             {

@@ -21,10 +21,12 @@ They never share a universal 44/48-degree cutoff. Linux thermal-zone values are
 converted from the documented millidegree ABI, without a magnitude heuristic.
 BCL/SoC-droop channels and invalid negative/sentinel values are excluded.
 
-Production decisions prefer the public Android NDK thermal severity API. Optional
+Production decisions fuse the public Android NDK thermal severity API with every
+recognized compute, battery and skin zone. The platform result never short-circuits
+sensor evaluation. Optional
 headroom is sampled no faster than once per ten seconds. Moderate/severe thermal
 pressure reduces demand; emergency/shutdown severity yields control with rollback.
-If the API is unavailable, each classified zone is evaluated against its own
+Each classified zone is also evaluated against its own
 read-only OEM passive/hot/critical trip points. Only normalized policy-relative
 pressure is compared across sensors; no manufacturer/model table is used.
 
@@ -44,7 +46,15 @@ to 0.4–1.0 and changes by at most two percentage points per elapsed second (wi
 ten-point upper bound per delayed sample). CPU/GPU values are quantized to exposed
 operating points: a frequency step can exceed 2%. This is not an FPS controller.
 Pressure guard and thermal hysteresis remain active. Per-zone OEM hot/critical
-trips or Android emergency/shutdown status trigger verified rollback and exit.
+critical trips or Android emergency/shutdown status trigger verified rollback and exit.
+OEM hot trips retain active mitigation. The worst normalized pressure is the
+protective bound; all readings are retained in --status, and a missing known-policy
+sensor prevents new boosting. Sensor discovery refreshes every 30 seconds.
+
+During mitigation, ten-second windows compare the same sensor IDs, reporting
+cooling/rising/mixed/steady observations in daemon logs. A change of limiting
+sensor does not count as cooling. These observations are not proof of causality;
+the PID continues to react to fused pressure with its existing bounded slew.
 
 ## Hardware introspection and preservation
 
