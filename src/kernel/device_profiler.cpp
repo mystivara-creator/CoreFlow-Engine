@@ -10,6 +10,8 @@
 #include <fstream>
 #include <iostream>
 #include <unistd.h>
+#include <algorithm>
+#include <cctype>
 
 namespace coreflow {
 
@@ -89,22 +91,26 @@ void DeviceProfiler::discover_clusters(DeviceTopology& topo) {
 }
 
 float DeviceProfiler::get_soc_temperature() const {
-    // Check thermal zone 0 or thermal zone 1 (tsens_tz_sensor)
-    for (int i = 0; i < 10; ++i) {
-        std::string path = "/sys/class/thermal/thermal_zone" + std::to_string(i) + "/temp";
-        std::ifstream f(path);
-        if (f.is_open()) {
-            int raw_temp = 0;
-            f >> raw_temp;
-            if (raw_temp > 1000) {
-                return static_cast<float>(raw_temp) / 1000.0f; // millidegrees to Celsius
-            }
-            if (raw_temp > 0) {
-                return static_cast<float>(raw_temp);
-            }
-        }
+    // Thermal zones are not ordered. Only trust type-labeled CPU/SoC sensors.
+    for (int i = 0; i < 128; ++i) {
+        const std::string base = "/sys/class/thermal/thermal_zone" + std::to_string(i);
+        std::ifstream type_file(base + "/type");
+        std::string type;
+        if (!std::getline(type_file, type)) continue;
+        std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (type.find("cpu") == std::string::npos &&
+            type.find("soc") == std::string::npos &&
+            type.find("tsens") == std::string::npos &&
+            type.find("apss") == std::string::npos) continue;
+        std::ifstream temp_file(base + "/temp");
+        float raw = 0;
+        if (!(temp_file >> raw)) continue;
+        const float celsius = raw > 1000.0f ? raw / 1000.0f : raw;
+        if (celsius >= -10.0f && celsius <= 130.0f) return celsius;
     }
-    return -1.0f; // Unknown: never fabricate a thermal reading
+    return -1.0f; // unknown is safer than inventing a nominal temperature
 }
 
 std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
