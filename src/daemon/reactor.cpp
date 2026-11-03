@@ -2,7 +2,7 @@
  * @file reactor.cpp
  * @brief Event-driven Linux epoll reactor implementation
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 
 #include "coreflow/reactor.hpp"

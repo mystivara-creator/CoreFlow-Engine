@@ -2,7 +2,7 @@
  * @file reactor.hpp
  * @brief Small event-driven epoll reactor with timerfd safety cadence
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 
 #pragma once

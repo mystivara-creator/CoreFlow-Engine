@@ -45,8 +45,11 @@ int main() {
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
     assert(percentage.get_top_app_min() == 320u);
     assert(percentage.get_top_app_max() == 1024u);
-    assert(BaselineStore::instance().rollback_all() >= 1);
-    assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
+    // OEM changes must not be overwritten during subsequent policy transitions or stop.
+    write_token(percent_top + "/cpu.uclamp.min", "10.00");
+    assert(!percentage.owned_values_intact());
+    (void)BaselineStore::instance().rollback_all();
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "10.00");
 
     // Android/vendor controller layouts can expose 0..1024 capacity values.
     // Put it one directory deeper to exercise bounded semantic discovery.
@@ -69,7 +72,8 @@ int main() {
     assert(!BaselineStore::instance().has_active_mutations());
 
     // Vendor thermal throttling may leave integer 0..1024 nodes capped <= 100 at startup;
-    // ensure plain integers without cgroup.controllers remain capacity1024.
+    // ensure plain integers without cgroup.controllers remain capacity1024,
+    // while preserving a low OEM ceiling rather than forcing 1024.
     const std::string throttled_root = root + "/throttled-v1";
     const std::string throttled_top = throttled_root + "/top-app";
     std::filesystem::create_directories(throttled_top);
@@ -80,10 +84,30 @@ int main() {
     assert(throttled.is_supported());
     assert(throttled.encoding_name() == "capacity1024");
     assert(throttled.apply_state(WorkloadState::Balanced, 320, 1024));
-    assert(read_token(throttled_top + "/cpu.uclamp.min") == "320");
-    assert(read_token(throttled_top + "/cpu.uclamp.max") == "1024");
-    assert(BaselineStore::instance().rollback_all() >= 1);
+    assert(read_token(throttled_top + "/cpu.uclamp.min") == "0");
     assert(read_token(throttled_top + "/cpu.uclamp.max") == "100");
+    assert(throttled.apply_state(WorkloadState::ThermalGuard, 320, 1024));
+    assert(read_token(throttled_top + "/cpu.uclamp.max") == "87");
+    write_token(throttled_top + "/cpu.uclamp.max", "70");
+    assert(!throttled.owned_values_intact());
+    (void)BaselineStore::instance().rollback_all();
+    assert(read_token(throttled_top + "/cpu.uclamp.max") == "70");
+    assert(!throttled.apply_state(WorkloadState::Balanced, 320, 1024));
+
+    const std::string capped_root = root + "/capped-v2";
+    const std::string capped_top = capped_root + "/top-app";
+    std::filesystem::create_directories(capped_top);
+    write_token(capped_root + "/cgroup.controllers", "cpu");
+    write_token(capped_top + "/cpu.uclamp.min", "0.00");
+    write_token(capped_top + "/cpu.uclamp.max", "50.00");
+    UclampGovernor capped(capped_root);
+    assert(capped.is_supported());
+    assert(capped.apply_state(WorkloadState::Balanced, 320, 1024));
+    assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
+    assert(capped.apply_state(WorkloadState::ThermalGuard, 320, 1024));
+    assert(capped.get_top_app_max() < 512u);
+    (void)BaselineStore::instance().rollback_all();
+    assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
 
     // Unified cgroup v2 hierarchy identified by cgroup.controllers uses percentage.
     const std::string v2_ctrl_root = root + "/unified-controllers";

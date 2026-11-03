@@ -58,6 +58,18 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "888");
     assert(read_value(b) == "222");
 
+    // A crash after journaling the next write, but before the kernel accepts it,
+    // must recognize the previous CoreFlow value as ours and restore baseline.
+    std::string boot_id;
+    { std::ifstream in("/proc/sys/kernel/random/boot_id"); in >> boot_id; }
+    assert(!boot_id.empty());
+    {
+        std::ofstream journal(std::string(state_dir) + "/baseline.journal");
+        journal << "CFJ3\t" << boot_id << "\n"
+                << a << "\t30\t383838\t393939\n"
+                << b << "\t313030\t313030\t323232\n";
+    }
+
     // A new process detects same-boot journal and restores verified OEM values.
     pid_t restorer = ::fork();
     assert(restorer >= 0);
@@ -69,6 +81,50 @@ int main(int argc, char* argv[]) {
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     assert(read_value(a) == "0");
     assert(read_value(b) == "100");
+
+    // Existing installations can still have a CFJ1 journal at upgrade time.
+    { std::ofstream out(a); out << "555"; }
+    {
+        std::ofstream journal(std::string(state_dir) + "/baseline.journal");
+        journal << "CFJ1\t" << boot_id << "\n" << a << "\t30\n";
+    }
+    restorer = ::fork();
+    assert(restorer >= 0);
+    if (restorer == 0) {
+        ::execl(argv[0], argv[0], "--recover", nullptr);
+        ::_exit(127);
+    }
+    assert(::waitpid(restorer, &status, 0) == restorer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(read_value(a) == "0");
+
+    // An OEM write made after our crash is authoritative on the next start.
+    writer = ::fork();
+    assert(writer >= 0);
+    if (writer == 0) {
+        if (!store.apply_mutation(a, "888") || !store.apply_mutation(b, "222"))
+            ::_exit(2);
+        ::_exit(0);
+    }
+    assert(::waitpid(writer, &status, 0) == writer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    { std::ofstream out(a); out << "777"; }
+    restorer = ::fork();
+    assert(restorer >= 0);
+    if (restorer == 0) {
+        ::execl(argv[0], argv[0], "--recover", nullptr);
+        ::_exit(127);
+    }
+    assert(::waitpid(restorer, &status, 0) == restorer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(read_value(a) == "777");
+    assert(read_value(b) == "100");
+    assert(!store.apply_mutation(a, "999"));
+    assert(read_value(a) == "777");
+    assert(store.apply_mutation(a, "888"));
+    { std::ofstream out(a); out << "666"; }
+    assert(store.rollback(a));
+    assert(read_value(a) == "666");
 
     std::filesystem::remove_all(state_dir);
     std::cout << "[CoreFlow] Baseline + crash-recovery invariants PASS\n";

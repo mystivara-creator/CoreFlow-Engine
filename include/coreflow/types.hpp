@@ -2,7 +2,7 @@
  * @file types.hpp
  * @brief Minimal CoreFlow Modern v2 runtime types
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 #pragma once
 #include <cstdint>

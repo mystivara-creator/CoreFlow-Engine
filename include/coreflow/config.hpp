@@ -2,7 +2,7 @@
  * @file config.hpp
  * @brief Hardened fail-safe runtime policy configuration for CoreFlow Modern v2
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 #pragma once
 

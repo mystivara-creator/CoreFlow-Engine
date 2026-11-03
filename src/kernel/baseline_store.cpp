@@ -159,7 +159,9 @@ std::string BaselineStore::read_raw_node(const std::string& path) const {
 
 bool BaselineStore::write_raw_node(const std::string& path, const std::string& value) {
     if (!path_safe(path) || value.empty() || value.size() > 4096) return false;
-    const bool virtual_node = path.rfind("/sys/", 0) == 0 || path.rfind("/proc/", 0) == 0;
+    const bool virtual_node = path.rfind("/sys/", 0) == 0 ||
+                              path.rfind("/proc/", 0) == 0 ||
+                              path.rfind("/dev/", 0) == 0;
 
     // Open with O_NOFOLLOW | O_NONBLOCK first, then fstat the descriptor to eliminate TOCTOU.
     UniqueFd fd(::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
@@ -184,11 +186,14 @@ bool BaselineStore::persist_locked() {
     if (error) return false;
     (void)::chmod(parent.c_str(), 0700);
 
-    std::string payload = "CFJ1\t" + boot_id_ + "\n";
+    std::string payload = "CFJ3\t" + boot_id_ + "\n";
     for (const auto& [path, snap] : store_) {
         if (snap.is_modified) {
             if (!path_safe(path) || snap.factory_value.empty()) return false;
-            payload += path + "\t" + hex_encode(snap.factory_value) + "\n";
+            if (snap.active_value.empty() || snap.prior_value.empty()) return false;
+            payload += path + "\t" + hex_encode(snap.factory_value) +
+                       "\t" + hex_encode(snap.prior_value) +
+                       "\t" + hex_encode(snap.active_value) + "\n";
         }
     }
 
@@ -242,7 +247,10 @@ bool BaselineStore::recover_pending() {
 
     std::istringstream file(raw);
     std::string header;
-    if (!std::getline(file, header) || header.rfind("CFJ1\t", 0) != 0 || boot_id_.empty()) return false;
+    if (!std::getline(file, header) || boot_id_.empty()) return false;
+    const bool legacy = header.rfind("CFJ1\t", 0) == 0;
+    const bool v2 = header.rfind("CFJ2\t", 0) == 0;
+    if (!legacy && !v2 && header.rfind("CFJ3\t", 0) != 0) return false;
     if (!header.empty() && header.back() == '\r') header.pop_back();
     const std::string journal_boot = header.substr(5);
     if (journal_boot != boot_id_) {
@@ -252,25 +260,38 @@ bool BaselineStore::recover_pending() {
         return true;
     }
 
-    std::vector<std::pair<std::string, std::string>> entries;
+    std::vector<NodeSnapshot> entries;
     std::string line;
     while (std::getline(file, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         const auto sep = line.find('\t');
-        std::string value;
+        const auto second = sep == std::string::npos ? sep : line.find('\t', sep + 1);
+        const auto third = second == std::string::npos ? second : line.find('\t', second + 1);
+        std::string value, prior, applied;
         if (sep == std::string::npos ||
             !path_safe(line.substr(0, sep)) ||
-            !hex_decode(std::string_view(line).substr(sep + 1), value)) {
+            (legacy ? second != std::string::npos : second == std::string::npos) ||
+            (v2 ? third != std::string::npos : (!legacy && third == std::string::npos)) ||
+            !hex_decode(std::string_view(line).substr(
+                sep + 1, legacy ? std::string_view::npos : second - sep - 1), value) ||
+            (!legacy && !v2 && !hex_decode(
+                std::string_view(line).substr(second + 1, third - second - 1), prior)) ||
+            (!legacy && !hex_decode(std::string_view(line).substr(
+                (v2 ? second : third) + 1), applied))) {
             return false;
         }
-        entries.emplace_back(line.substr(0, sep), std::move(value));
+        if (legacy) applied = read_raw_node(line.substr(0, sep));
+        if (v2 || legacy) prior = applied;
+        if (prior.empty() || applied.empty()) return false;
+        entries.push_back(NodeSnapshot{line.substr(0, sep), std::move(value),
+                                       std::move(applied), true, std::move(prior)});
         if (entries.size() > 256) return false;
     }
     if (!file.eof()) return false;
 
-    for (const auto& [path, baseline] : entries) {
-        store_[path] = NodeSnapshot{path, baseline, read_raw_node(path), true};
+    for (const auto& snap : entries) {
+        store_[snap.path] = snap;
     }
     rollback_locked();
     for (const auto& [_, snap] : store_) {
@@ -286,17 +307,35 @@ bool BaselineStore::capture(const std::string& path) {
     if (store_.contains(path)) return true;
     const std::string before = read_raw_node(path);
     if (before.empty()) return false;
-    store_.emplace(path, NodeSnapshot{path, before, before, false});
+    store_.emplace(path, NodeSnapshot{path, before, before, false, before});
     return true;
 }
 
 size_t BaselineStore::rollback_locked() {
     size_t restored = 0;
-    for (auto& [path, snap] : store_) {
-        if (snap.is_modified && write_raw_node(path, snap.factory_value)) {
-            snap.active_value = snap.factory_value;
-            snap.is_modified = false;
-            ++restored;
+    // A clamp pair can require the other member to be restored first.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (auto& [path, snap] : store_) {
+            if (!snap.is_modified) continue;
+            const std::string actual = read_raw_node(path);
+            if (actual.empty()) continue;
+            // Recovery accepts either side of a write in flight, or the baseline.
+            if (!readback_matches(path, snap.active_value, actual) &&
+                !readback_matches(path, snap.prior_value, actual) &&
+                !readback_matches(path, snap.factory_value, actual)) {
+                snap.factory_value = actual;
+                snap.active_value = actual;
+                snap.prior_value = actual;
+                snap.is_modified = false;
+                continue;
+            }
+            if (readback_matches(path, snap.factory_value, actual) ||
+                write_raw_node(path, snap.factory_value)) {
+                snap.active_value = snap.factory_value;
+                snap.prior_value = snap.factory_value;
+                snap.is_modified = false;
+                ++restored;
+            }
         }
     }
     // A failed rollback keeps the original journal records for next process start.
@@ -314,14 +353,32 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
             rollback_locked();
             return false;
         }
-        it = store_.emplace(path, NodeSnapshot{path, before, before, false}).first;
+        it = store_.emplace(path, NodeSnapshot{path, before, before, false, before}).first;
     }
-    if (it->second.active_value == new_value && read_raw_node(path) == new_value) return true;
+    const std::string actual = read_raw_node(path);
+    if (actual.empty() ||
+        !readback_matches(path, it->second.active_value, actual)) {
+        if (!actual.empty()) {
+            it->second.factory_value = actual;
+            it->second.active_value = actual;
+            it->second.prior_value = actual;
+            it->second.is_modified = false;
+        }
+        rollback_locked();
+        return false;
+    }
+    if (it->second.active_value == new_value && actual == new_value) return true;
     // Write-ahead: fsync original value before any kernel write.
     const bool previous_modified = it->second.is_modified;
+    const std::string previous_value = it->second.active_value;
+    const std::string previous_prior = it->second.prior_value;
     it->second.is_modified = true;
+    it->second.prior_value = previous_value;
+    it->second.active_value = new_value;
     if (!persist_locked()) {
         it->second.is_modified = previous_modified;
+        it->second.active_value = previous_value;
+        it->second.prior_value = previous_prior;
         rollback_locked();
         return false;
     }
@@ -342,9 +399,19 @@ bool BaselineStore::rollback(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = store_.find(path);
     if (it == store_.end() || !it->second.is_modified) return true;
-    if (!write_raw_node(path, it->second.factory_value)) return false;
+    const std::string actual = read_raw_node(path);
+    if (actual.empty()) return false;
+    if (!readback_matches(path, it->second.active_value, actual) &&
+        !readback_matches(path, it->second.prior_value, actual) &&
+        !readback_matches(path, it->second.factory_value, actual)) {
+        it->second.factory_value = actual;
+    } else if (!readback_matches(path, it->second.factory_value, actual) &&
+               !write_raw_node(path, it->second.factory_value)) {
+        return false;
+    }
     it->second.is_modified = false;
     it->second.active_value = it->second.factory_value;
+    it->second.prior_value = it->second.factory_value;
     return persist_locked();
 }
 

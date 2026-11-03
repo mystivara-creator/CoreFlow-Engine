@@ -2,7 +2,7 @@
  * @file unique_fd.hpp
  * @brief Safe RAII File Descriptor Wrapper for Linux/Android Native Systems
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 
 #pragma once

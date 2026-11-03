@@ -59,7 +59,7 @@ Games are not identified by package name. A game becomes a sustained workload be
 
 ## Recovery
 
-Before a supported write, BaselineStore persists the observed pre-CoreFlow value to /data/adb/coreflow/baseline.journal. The write is then read back. Any failure starts rollback.
+Before a supported write, BaselineStore persists the observed pre-CoreFlow value, previous CoreFlow value, and intended write to /data/adb/coreflow/baseline.journal. The write is then read back. Recovery restores values still matching either side of an in-flight CoreFlow write; it leaves a later external change in place. Any failure starts rollback. The reader accepts the old CFJ1 journal during upgrade.
 
 Fatal signal handlers do not run C++ rollback code. They terminate safely; the next daemon start in the same boot recovers the journal before new writes are allowed.
 

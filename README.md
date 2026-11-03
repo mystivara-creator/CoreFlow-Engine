@@ -27,11 +27,13 @@ Discovery never grants permission to mutate arbitrary nodes. The production actu
 - Thermal Guard: temperature reaches the configured trip point; gently lowers the top-app ceiling.
 - Emergency thermal exit: restores tracked values and stops CoreFlow so the OEM thermal stack has full control.
 
+The engine never raises an OEM top-app maximum observed at startup. If another component changes an owned clamp, CoreFlow releases that value and stops; it can be restarted after the device policy settles.
+
 There is no package-name game list, round-robin mutation, vendor display override, arbitrary cgroup migration, or background/foreground clamp rewriting.
 
 ## Safety
 
-Every native write is preceded by a private fsync-backed write-ahead journal and followed by read-back verification. Clean stop restores tracked pre-CoreFlow values. An abrupt same-boot process death is recovered before the next daemon instance can mutate anything.
+Every native write is preceded by a private fsync-backed write-ahead journal and followed by read-back verification. Clean stop restores tracked pre-CoreFlow values. An abrupt same-boot process death is recovered before the next daemon instance can mutate anything. The journal also records the intended value, so recovery leaves externally changed nodes under OEM control.
 
 This is best-effort per-node recovery, not an atomic whole-device transaction.
 
@@ -52,4 +54,4 @@ See docs/ARCHITECTURE.md, docs/TUNING.md, and docs/DEVICE_TEST.md.
 
 CI validates host tests, ASan/UBSan, WebUI build, shell syntax, and Android ARM64 packaging. Green CI is required before device testing, but is not proof of device compatibility.
 
-License: Apache-2.0.
+License: MIT.

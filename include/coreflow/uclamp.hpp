@@ -2,7 +2,7 @@
  * @file uclamp.hpp
  * @brief Capability-driven Android/Linux utilization clamp controller
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 #pragma once
 #include "types.hpp"
@@ -29,6 +29,7 @@ public:
 
     [[nodiscard]] uint32_t get_top_app_min() const;
     [[nodiscard]] uint32_t get_top_app_max() const;
+    [[nodiscard]] bool owned_values_intact();
 
 private:
     enum class Encoding : uint8_t { Unknown, Percentage, Capacity1024 };
@@ -37,6 +38,10 @@ private:
     std::string target_path_;
     Encoding encoding_{Encoding::Unknown};
     bool supported_{false};
+    bool has_written_{false};
+    uint32_t oem_max_{1024};
+    uint32_t last_min_{0};
+    uint32_t last_max_{1024};
 
     void discover(std::string_view explicit_root);
     bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;

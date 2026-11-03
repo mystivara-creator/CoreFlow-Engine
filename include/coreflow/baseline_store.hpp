@@ -2,7 +2,7 @@
  * @file baseline_store.hpp
  * @brief Transactional Baseline Store and Automatic Rollback Engine
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  * 
  * Records pre-mutation values and attempts verified per-node restoration.
  * Same-boot process crashes are recovered on next start using a durable journal;
@@ -24,6 +24,7 @@ struct NodeSnapshot {
     std::string factory_value;
     std::string active_value;
     bool is_modified{false};
+    std::string prior_value;
 };
 
 class BaselineStore {

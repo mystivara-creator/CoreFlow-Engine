@@ -19,6 +19,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <optional>
 #include <pthread.h>
 #include <sstream>
 #include <string>
@@ -90,16 +91,16 @@ bool safety_halt_requested() noexcept {
            marker("/data/adb/modules/coreflow_engine/disable");
 }
 
-double read_psi_avg10(const char* path) {
+std::optional<double> read_psi_avg10(const char* path) {
     UniqueFd fd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return 0.0;
+    if (!fd.valid()) return std::nullopt;
 
     char buf[512];
     ssize_t n = 0;
     do {
         n = ::read(fd.get(), buf, sizeof(buf));
     } while (n < 0 && errno == EINTR);
-    if (n <= 0) return 0.0;
+    if (n <= 0) return std::nullopt;
 
     std::string_view content(buf, static_cast<size_t>(n));
     size_t pos = 0;
@@ -121,7 +122,7 @@ double read_psi_avg10(const char* path) {
             return value;
         }
     }
-    return 0.0;
+    return std::nullopt;
 }
 
 const char* state_name(WorkloadState state) noexcept {
@@ -210,7 +211,9 @@ bool journal_clear() {
 
     std::istringstream journal(raw);
     std::string header;
-    if (!std::getline(journal, header) || header.rfind("CFJ1\t", 0) != 0) return false;
+    if (!std::getline(journal, header) ||
+        (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
+         header.rfind("CFJ3\t", 0) != 0)) return false;
     std::string line;
     while (std::getline(journal, line)) {
         if (!DaemonConfig::trim(line).empty()) return false;
@@ -381,6 +384,12 @@ int main(int argc, char* argv[]) {
             reactor.stop();
             return;
         }
+        if (!governor.owned_values_intact() && applied) {
+            baseline.rollback_all();
+            applied = false;
+            reactor.stop();
+            return;
+        }
         if (!config.enable_uclamp || !governor.is_supported()) {
             if (applied) {
                 baseline.rollback_all();
@@ -400,12 +409,6 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        const PressureSnapshot pressure{
-            .cpu = read_psi_avg10("/proc/pressure/cpu"),
-            .memory = read_psi_avg10("/proc/pressure/memory"),
-            .io = read_psi_avg10("/proc/pressure/io"),
-        };
-
         if (emergency_thermal_exit(temp, config)) {
             emit_log(true, "[CoreFlow][Stability] emergency thermal exit at " +
                            std::to_string(temp) + "C");
@@ -414,6 +417,23 @@ int main(int argc, char* argv[]) {
             reactor.stop();
             return;
         }
+
+        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
+        const auto io_psi = read_psi_avg10("/proc/pressure/io");
+        if (!cpu_psi || !memory_psi || !io_psi) {
+            if (applied) {
+                baseline.rollback_all();
+                applied = false;
+                if (baseline.has_active_mutations()) reactor.stop();
+            }
+            return;
+        }
+        const PressureSnapshot pressure{
+            .cpu = *cpu_psi,
+            .memory = *memory_psi,
+            .io = *io_psi,
+        };
 
         const WorkloadState desired =
             select_stability_state(temp, pressure, current, applied, config);
@@ -437,7 +457,7 @@ int main(int argc, char* argv[]) {
             } else {
                 baseline.rollback_all();
                 applied = false;
-                if (baseline.has_active_mutations()) {
+                if (baseline.has_active_mutations() || !governor.is_supported()) {
                     reactor.stop();
                     return;
                 }

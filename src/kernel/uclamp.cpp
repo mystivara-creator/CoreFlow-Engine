@@ -2,7 +2,7 @@
  * @file uclamp.cpp
  * @brief Capability-driven UClamp discovery and bounded top-app control
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
@@ -163,6 +163,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 target_path_ = current.path.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
+                oem_max_ = get_top_app_max();
                 return;
             }
 
@@ -172,6 +173,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 target_path_ = direct.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
+                oem_max_ = get_top_app_max();
                 return;
             }
 
@@ -243,8 +245,10 @@ bool UclampGovernor::apply_state(WorkloadState state,
                                  uint32_t balanced_max) {
     if (!supported_) return false;
 
-    const uint32_t base_min = std::min(balanced_min, 1024u);
-    const uint32_t base_max = std::clamp(balanced_max, base_min, 1024u);
+    if (!owned_values_intact()) return false;
+    // A user/OEM ceiling is authoritative, including a temporary thermal cap.
+    const uint32_t base_max = std::min({balanced_max, oem_max_, 1024u});
+    const uint32_t base_min = balanced_min > base_max ? 0u : std::min(balanced_min, base_max);
 
     UclampValues top{.uclamp_min = base_min, .uclamp_max = base_max};
     switch (state) {
@@ -258,7 +262,7 @@ bool UclampGovernor::apply_state(WorkloadState state,
             break;
         case WorkloadState::ThermalGuard:
             top.uclamp_min = 0;
-            top.uclamp_max = std::max(1u, (base_max * 7u) / 8u);
+            top.uclamp_max = base_max == 0 ? 0u : std::max(1u, (base_max * 7u) / 8u);
             break;
     }
     return write_top_app(top.uclamp_min, top.uclamp_max);
@@ -282,6 +286,7 @@ std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
 
 bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     if (!supported_) return false;
+    if (!owned_values_intact()) return false;
     min_val = std::clamp(min_val, 0u, 1024u);
     max_val = std::clamp(max_val, min_val, 1024u);
 
@@ -290,12 +295,29 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     const std::string max_path = target_path_ + "/cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
 
+    bool success = false;
     if (max_val < current_min) {
-        return baseline.apply_mutation(min_path, encode(min_val, false)) &&
-               baseline.apply_mutation(max_path, encode(max_val, true));
+        success = baseline.apply_mutation(min_path, encode(min_val, false)) &&
+                  baseline.apply_mutation(max_path, encode(max_val, true));
+    } else {
+        success = baseline.apply_mutation(max_path, encode(max_val, true)) &&
+                  baseline.apply_mutation(min_path, encode(min_val, false));
     }
-    return baseline.apply_mutation(max_path, encode(max_val, true)) &&
-           baseline.apply_mutation(min_path, encode(min_val, false));
+    if (success) {
+        last_min_ = get_top_app_min();
+        last_max_ = get_top_app_max();
+        has_written_ = true;
+    }
+    return success;
+}
+
+bool UclampGovernor::owned_values_intact() {
+    if (!supported_ || !has_written_) return supported_;
+    if (get_top_app_min() == last_min_ && get_top_app_max() == last_max_) return true;
+    // Another system component took ownership. Do not reassert our policy.
+    supported_ = false;
+    std::cerr << "[CoreFlow][Uclamp] external clamp change; relinquishing control\n";
+    return false;
 }
 
 uint32_t UclampGovernor::get_top_app_min() const {
