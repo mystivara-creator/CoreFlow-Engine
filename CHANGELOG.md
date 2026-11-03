@@ -1,12 +1,20 @@
-## v2.0.0 — Modern C++20 Architecture & Google Pixel Material 3 Suite
+# CoreFlow release history
 
-- Major overhaul pruning >50% of legacy monolithic complexity.
-- Native C++20 zero-polling daemon using Linux kernel epoll & signalfd event reactor (`coreflowd`).
-- Unified cgroups v2 task migration and cpuset pinning for foreground top-apps.
-- EAS Utilization Clamping (Uclamp) dynamic task acceleration (Cold Launch & Touch Boost).
-- SurfaceFlinger & HWUI 120Hz frame pacing stabilization.
-- Transactional BaselineStore: snapshots factory OEM sysfs values at boot with guaranteed atomic rollback.
-- Complete WebUI redesign: Google Pixel / Material Design 3 single-page dashboard with real-time autonomous adaptation telemetry, tonal surfaces, and dark/light support.
+## v2.0.0 Modern C++20 hardening (main development line)
+
+- Lightweight epoll reactor with timerfd thermal cadence and RAII descriptor ownership.
+- Bounded, capability-dependent UClamp writes using cgroup v2 percentage encoding.
+- Fsync-backed same-boot write-ahead journal, read-back-verified node recovery and guarded daemon restart.
+- Safe fatal signal termination with journal recovery on next launch, not unsafe synchronous signal-handler rollback.
+- Native `--status`, `--stop` and `--rollback-baseline` commands with a single-instance PID lock.
+- KernelSU/Magisk late-boot supervisor, safe-mode boot guard and persistent configuration.
+- React dashboard with actual native status and clearly labelled simulation-only metrics.
+- Expanded native regression tests, sanitizer CI, shell validation and full ARM64 module packaging.
+- Disabled unverified vendor display overrides, arbitrary task migration and unsafe memory-policy mutations.
+
+These safeguards reduce risk but do not guarantee atomic recovery or device-wide compatibility.
+
+## Archived releases from the prior architecture
 
 ## v3.1.2 — Context-aware trial retention
 
