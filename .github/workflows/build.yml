@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify host build toolchain
         shell: bash
@@ -58,7 +58,7 @@ jobs:
           g++ --version | head -n1
 
       - name: Setup Node.js for WebUI build
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -103,7 +103,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure sanitized host build
         run: |
@@ -131,7 +131,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify release version alignment
         shell: bash
@@ -161,7 +161,7 @@ jobs:
           fi
 
       - name: Setup Node.js for WebUI bundle
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -266,7 +266,7 @@ jobs:
           zip -r "../$(basename "$ZIP")" .
 
       - name: Upload Production Module
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CoreFlow-Engine-${{ env.ANDROID_ABI }}-Package
           path: artifacts/CoreFlow-Engine-*-arm64.zip
