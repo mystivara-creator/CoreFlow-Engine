@@ -16,7 +16,6 @@
 #include <string_view>
 #include <utility>
 #include <cmath>
-#include <cstdlib>
 
 namespace coreflow {
 namespace {
@@ -29,6 +28,18 @@ std::string read_line(const std::string& path) {
 bool path_safe(const std::string& path) {
     if (path.find_first_of("\r\n\t") != std::string::npos || path.find("..") != std::string::npos) return false;
     if (path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0) return true;
+
+    // Android can mount the CPU controller under /dev (for example /dev/cpuctl).
+    // Authorize only the semantic top-app UClamp leaf discovered by the engine,
+    // not arbitrary /dev nodes.
+    if (path.rfind("/dev/", 0) == 0) {
+        const std::filesystem::path p(path);
+        const auto leaf = p.filename().string();
+        const auto parent = p.parent_path().filename().string();
+        if (parent == "top-app" && (leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max"))
+            return true;
+    }
+
     // Unit tests can use private mock files without granting arbitrary runtime writes.
     return std::getenv("COREFLOW_TEST_STATE_DIR") != nullptr && path.rfind("/tmp/", 0) == 0;
 }
