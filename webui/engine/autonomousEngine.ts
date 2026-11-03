@@ -55,8 +55,8 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   thermalTripCelsius: 44.0,
   burstDurationMs: 120,
   touchBoostMin: 380,
-  unlockVendorClamping: true,
-  proactiveMemoryGuardian: true,
+  unlockVendorClamping: false,
+  proactiveMemoryGuardian: false,
 };
 
 const SAMPLE_APPS = [
