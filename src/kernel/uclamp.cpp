@@ -197,32 +197,27 @@ bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier,
                                   uint32_t interactive_min, uint32_t interactive_max) {
     if (!supported_) return false;
 
-    UclampValues top;
+    const uint32_t fallback_min =
+        (tier == DeviceTier::Entry || tier == DeviceTier::MidRange) ? 320u : 256u;
+    const uint32_t base_min = std::min(interactive_min > 0 ? interactive_min : fallback_min, 1024u);
+    const uint32_t base_max = std::clamp(interactive_max, base_min, 1024u);
+
+    UclampValues top{.uclamp_min = base_min, .uclamp_max = base_max};
     switch (state) {
-        case WorkloadState::DeepSleep:
-            top = { .uclamp_min = 0, .uclamp_max = 512 };
+        case WorkloadState::Balanced:
             break;
-        case WorkloadState::DailyIdle:
-            top = { .uclamp_min = 64, .uclamp_max = 1024 };
+        case WorkloadState::SustainedLoad:
+            // Increase the floor proportionally, never force max capacity.
+            top.uclamp_min = std::min(base_max, base_min + std::max(1u, base_min / 2u));
             break;
-        case WorkloadState::Interactive:
-            top = { .uclamp_min = (tier == DeviceTier::Entry || tier == DeviceTier::MidRange) ? 320u : 256u,
-                    .uclamp_max = 1024 };
-            if (interactive_min > 0) {
-                top.uclamp_min = std::min(interactive_min, 1024u);
-                top.uclamp_max = std::clamp(interactive_max, top.uclamp_min, 1024u);
-            }
+        case WorkloadState::PressureGuard:
+            // Back off boosting during memory/I/O contention; do not cap throughput.
+            top.uclamp_min = base_min / 4u;
             break;
-        case WorkloadState::BurstLaunch:
-            top = { .uclamp_min = 512, .uclamp_max = 1024 };
-            break;
-        case WorkloadState::SustainedGame:
-            // Sustained load keeps headroom rather than forcing a permanent maximum floor.
-            top = { .uclamp_min = 448, .uclamp_max = 1024 };
-            break;
-        case WorkloadState::ThermalThrottled:
-            // Thermal guard lowers demand without imposing a harsh cap likely to cause jank.
-            top = { .uclamp_min = 0, .uclamp_max = 768 };
+        case WorkloadState::ThermalGuard:
+            // Smooth thermal response: keep some headroom instead of an abrupt low cap.
+            top.uclamp_min = 0;
+            top.uclamp_max = std::max(1u, (base_max * 7u) / 8u);
             break;
     }
     return write_top_app(top.uclamp_min, top.uclamp_max);
