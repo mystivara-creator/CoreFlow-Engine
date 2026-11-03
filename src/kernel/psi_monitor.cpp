@@ -11,6 +11,8 @@
 #include <sstream>
 #include <fstream>
 #include <iostream>
+#include <cstdlib>
+#include <cerrno>
 
 namespace coreflow {
 
@@ -71,7 +73,11 @@ double PsiMonitor::get_current_pressure(PsiResource res) const {
             // parse "avg10=X.XX"
             auto pos = line.find("avg10=");
             if (pos != std::string::npos) {
-                return std::stod(line.substr(pos + 6));
+                const char* start = line.c_str() + pos + 6;
+            char* end = nullptr;
+            errno = 0;
+            double value = std::strtod(start, &end);
+            return (end != start && errno == 0 && value >= 0.0) ? value : 0.0;
             }
         }
     }
