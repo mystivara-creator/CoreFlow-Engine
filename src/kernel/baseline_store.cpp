@@ -88,10 +88,11 @@ bool BaselineStore::write_raw_node(const std::string& path, const std::string& v
     if (!path_safe(path) || value.empty() || value.size() > 4096) return false;
     struct stat st {};
     if (::stat(path.c_str(), &st) != 0) return false;
-    const int flags = O_WRONLY | O_CLOEXEC | O_NOFOLLOW | (S_ISREG(st.st_mode) ? O_TRUNC : 0);
+    const bool virtual_node = path.rfind("/sys/", 0) == 0 || path.rfind("/proc/", 0) == 0;
+    const int flags = O_WRONLY | O_CLOEXEC | O_NOFOLLOW | (!virtual_node && S_ISREG(st.st_mode) ? O_TRUNC : 0);
     UniqueFd fd(::open(path.c_str(), flags));
     if (!fd.valid() || !write_all(fd.get(), value)) return false;
-    if (S_ISREG(st.st_mode) && ::fsync(fd.get()) != 0) return false;
+    if (!virtual_node && S_ISREG(st.st_mode) && ::fsync(fd.get()) != 0) return false;
     // Kernel nodes may normalize input; verify the actual read-back.
     return read_raw_node(path) == value;
 }
