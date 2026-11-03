@@ -84,11 +84,10 @@ bool UclampGovernor::apply_state(WorkloadState state, DeviceTier tier) {
             break;
     }
 
-    bool r1 = write_uclamp(CgroupTarget::TopApp, top_app_clamp.uclamp_min, top_app_clamp.uclamp_max);
-    bool r2 = write_uclamp(CgroupTarget::Foreground, fg_clamp.uclamp_min, fg_clamp.uclamp_max);
-    bool r3 = write_uclamp(CgroupTarget::Background, bg_clamp.uclamp_min, bg_clamp.uclamp_max);
-
-    return r1 && r2 && r3;
+    // Stop immediately on failure. BaselineStore performs verified rollback.
+    return write_uclamp(CgroupTarget::TopApp, top_app_clamp.uclamp_min, top_app_clamp.uclamp_max) &&
+           write_uclamp(CgroupTarget::Foreground, fg_clamp.uclamp_min, fg_clamp.uclamp_max) &&
+           write_uclamp(CgroupTarget::Background, bg_clamp.uclamp_min, bg_clamp.uclamp_max);
 }
 
 bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_t max_val) {
