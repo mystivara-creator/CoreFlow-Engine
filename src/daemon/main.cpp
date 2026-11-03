@@ -1,10 +1,8 @@
 #include "coreflow/types.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/reactor.hpp"
-#include "coreflow/cgroup_v2.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
-#include "coreflow/render_booster.hpp"
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/unique_fd.hpp"
 
