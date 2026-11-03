@@ -51,15 +51,11 @@ std::string CgroupV2Controller::get_cgroup_path(CgroupTarget target) const {
 }
 
 bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
-    if (!supported_ || tid <= 0) return false;
-
-    // In cgroups v2, threads are migrated via cgroup.threads or cgroup.procs
-    std::string target_path = get_cgroup_path(target) + "/cgroup.threads";
-    if (!fs::exists(target_path)) {
-        target_path = get_cgroup_path(target) + "/cgroup.procs";
-    }
-
-    return write_node(target_path, std::to_string(tid));
+    (void)tid;
+    (void)target;
+    // A thread's former membership and PID lifetime must be tracked before
+    // permitting this operation. Do not move it irreversibly.
+    return false;
 }
 
 bool CgroupV2Controller::set_cpuset(CgroupTarget target, std::string_view cpus) {
