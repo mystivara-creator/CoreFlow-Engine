@@ -28,7 +28,7 @@ using PsiCallback = std::function<void(PsiResource res, double stall_pct)>;
 class PsiMonitor {
 public:
     explicit PsiMonitor(EpollReactor& reactor);
-    ~PsiMonitor() = default;
+    ~PsiMonitor();
 
     /// Register a kernel PSI stall trigger (e.g. "some 20000 1000000" = 20ms stall in 1s window)
     bool register_trigger(PsiResource res, uint32_t stall_us, uint32_t window_us, PsiCallback callback);
