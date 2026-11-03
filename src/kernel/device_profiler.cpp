@@ -6,6 +6,7 @@
  */
 
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/uclamp.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,7 +37,7 @@ DeviceTopology DeviceProfiler::probe() {
     discover_clusters(topo);
 
     topo.has_cgroups_v2 = fs::exists("/sys/fs/cgroup/cgroup.controllers");
-    topo.has_uclamp = fs::exists("/sys/fs/cgroup/top-app/cpu.uclamp.min");
+    topo.has_uclamp = UclampGovernor{}.is_supported();
     topo.has_surfaceflinger_hints = false;
 
     cached_topology_ = topo;
@@ -142,7 +143,8 @@ float DeviceProfiler::get_soc_temperature() const {
         thermal_zone_path_.clear();
     }
     for (int i = 0; i < 128; ++i) {
-        const std::string base = "/sys/class/thermal/thermal_zone" + std::to_string(i);
+        std::string base{"/sys/class/thermal/thermal_zone"};
+        base.append(std::to_string(i));
         std::ifstream label(base + "/type");
         std::string type;
         if (!std::getline(label, type)) continue;
