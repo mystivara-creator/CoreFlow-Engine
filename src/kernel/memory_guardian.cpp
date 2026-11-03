@@ -49,19 +49,9 @@ bool MemoryGuardian::balance_zram_swappiness(uint32_t free_ram_mb) {
     return BaselineStore::instance().apply_mutation(swappiness_node, target_val);
 }
 
-bool MemoryGuardian::protect_top_app_oom(pid_t top_app_pid) {
-    if (top_app_pid <= 0) return false;
-
-    // Set oom_score_adj to -1000 for top-app render thread during heavy workloads
-    std::string oom_path = "/proc/" + std::to_string(top_app_pid) + "/oom_score_adj";
-    if (fs::exists(oom_path)) {
-        std::ofstream f(oom_path);
-        if (f.is_open()) {
-            f << "-1000";
-            return true;
-        }
-    }
+bool MemoryGuardian::protect_top_app_oom(pid_t pid) {
+    (void)pid;
+    // Android's process OOM policy is owned by lmkd; never override it here.
     return false;
 }
-
 } // namespace coreflow
