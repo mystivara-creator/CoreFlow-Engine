@@ -100,6 +100,7 @@ int EpollReactor::create_timerfd(std::chrono::milliseconds interval, EventCallba
         return -1;
     }
 
+    timer_fds_.emplace_back(tfd);
     return tfd;
 }
 
