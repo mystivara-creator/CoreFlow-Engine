@@ -4,8 +4,8 @@
  * @author mystivara-creator
  * @license Apache-2.0
  * 
- * Coordinates with SurfaceFlinger and HWUI to eliminate frame drops without
- * causing battery drain. Unblocks vendor refresh rate clamping (60Hz lock on mid-range).
+ * Experimental frame metrics interface. No native SurfaceFlinger hooks or
+ * timed boost are active until validated on a supported platform.
  */
 
 #pragma once
@@ -35,7 +35,7 @@ public:
     /// Notify booster of frame presentation time from HWUI / SurfaceFlinger
     void on_frame_presented(double frame_time_ms);
 
-    /// Unlock vendor refresh rate limiter (e.g. forced 60Hz in YouTube or Google Maps)
+    /// Unsupported in v2: returns false; never writes vendor display controls
     bool unlock_display_refresh_limits();
 
     /// Retrieve live rendering metrics
