@@ -253,8 +253,8 @@ void print_status() {
     if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
         thermal.available = true;
         thermal.source = "multi-sensor-composite";
-        thermal.sensor = "SoC-Composite (" + std::to_string(profile.valid_cpu_count) + " cores)";
-        thermal.pressure = std::clamp(65.0 + (std::max(0.0f, temp - 40.0f) / 4.0f) * 20.0f, 0.0f, 130.0f);
+        const double norm = std::max(0.0, (static_cast<double>(temp) - 40.0) / 4.0);
+        thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
     }
     UclampGovernor governor;
     std::cout << "{\"running\":" << (pid ? "true" : "false")
