@@ -105,6 +105,5 @@ enum class CoreFlowError {
     ThermalEmergency
 };
 
-std::error_code make_error_code(CoreFlowError e);
 
 } // namespace coreflow
