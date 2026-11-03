@@ -9,8 +9,6 @@ option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
 
 # Optimization & Security Hardening Flags for Native Systems
 add_compile_options(
-    -O3
-    -flto
     -fvisibility=hidden
     -fvisibility-inlines-hidden
     -Wall
@@ -27,7 +25,6 @@ add_compile_options(
 add_compile_definitions(_FORTIFY_SOURCE=2)
 
 add_link_options(
-    -flto
     -Wl,--gc-sections
     -Wl,--strip-all
     -Wl,-z,relro
@@ -49,6 +46,8 @@ add_executable(coreflowd
     src/daemon/reactor.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
+# Prefer predictable optimization over whole-program LTO for this small privileged daemon.
+target_compile_options(coreflowd PRIVATE $<$<CONFIG:Release>:-O2>)
 
 if(ANDROID)
     target_link_libraries(coreflowd PRIVATE log)
