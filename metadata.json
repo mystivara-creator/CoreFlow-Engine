@@ -1,5 +1,5 @@
 {
   "name": "CoreFlow Engine",
-  "description": "Modern autonomous performance engine and Google Pixel Material 3 single-page dashboard for Android 15+ kernel tuning.",
+  "description": "Stability-first C++20 Android optimizer with semantic UClamp discovery, thermal/PSI policy, verified recovery, and a modern offline dashboard.",
   "requestFramePermissions": []
 }
