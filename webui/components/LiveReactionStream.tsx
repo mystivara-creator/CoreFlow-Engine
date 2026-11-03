@@ -47,12 +47,8 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
     switch (type) {
       case 'BOOST':
         return 'text-sky-500 bg-sky-500/10 border-sky-500/20';
-      case 'FRAME':
-        return 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20';
       case 'THERMAL':
         return 'text-rose-500 bg-rose-500/10 border-rose-500/20';
-      case 'CGROUP':
-        return 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20';
       case 'BASELINE':
         return 'text-teal-400 bg-teal-500/10 border-teal-500/20';
       case 'INFO':
@@ -112,10 +108,9 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           {[
             { id: 'ALL', label: 'All' },
-            { id: 'BOOST', label: 'Boosts' },
-            { id: 'FRAME', label: 'Frame Pacing' },
-            { id: 'CGROUP', label: 'cgroups' },
+            { id: 'BOOST', label: 'Sustained Load' },
             { id: 'THERMAL', label: 'Thermal' },
+            { id: 'BASELINE', label: 'Recovery' },
           ].map((chip) => (
             <button
               key={chip.id}
