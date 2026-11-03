@@ -51,6 +51,13 @@ struct DaemonConfig {
     float thermal_recover_celsius{40.0f};
     bool emergency_rollback_on_overheat{true};
 
+    // [stability_policy] - lightweight global pressure gates, not device paths
+    float cpu_pressure_boost_pct{8.0f};
+    float memory_pressure_guard_pct{3.0f};
+    float io_pressure_guard_pct{5.0f};
+    float thermal_headroom_celsius{3.0f};
+    float thermal_emergency_margin_celsius{4.0f};
+
     // [render_pipeline]
     float jank_detection_threshold_ratio{1.25f};
     uint32_t burst_boost_duration_ms{120};
@@ -138,6 +145,13 @@ struct DaemonConfig {
             else if (key == "thermal_recover_celsius") cfg.thermal_recover_celsius = parse_float(val, cfg.thermal_recover_celsius);
             else if (key == "emergency_rollback_on_overheat") cfg.emergency_rollback_on_overheat = parse_bool(val);
 
+            // [stability_policy]
+            else if (key == "cpu_pressure_boost_pct") cfg.cpu_pressure_boost_pct = parse_float(val, cfg.cpu_pressure_boost_pct);
+            else if (key == "memory_pressure_guard_pct") cfg.memory_pressure_guard_pct = parse_float(val, cfg.memory_pressure_guard_pct);
+            else if (key == "io_pressure_guard_pct") cfg.io_pressure_guard_pct = parse_float(val, cfg.io_pressure_guard_pct);
+            else if (key == "thermal_headroom_celsius") cfg.thermal_headroom_celsius = parse_float(val, cfg.thermal_headroom_celsius);
+            else if (key == "thermal_emergency_margin_celsius") cfg.thermal_emergency_margin_celsius = parse_float(val, cfg.thermal_emergency_margin_celsius);
+
             // [render_pipeline]
             else if (key == "jank_detection_threshold_ratio") cfg.jank_detection_threshold_ratio = parse_float(val, cfg.jank_detection_threshold_ratio);
             else if (key == "burst_boost_duration_ms") cfg.burst_boost_duration_ms = parse_uint(val, cfg.burst_boost_duration_ms);
@@ -149,6 +163,11 @@ struct DaemonConfig {
         cfg.thermal_recover_celsius = std::clamp(cfg.thermal_recover_celsius, 25.0f, cfg.thermal_trip_celsius - 1.0f);
         cfg.top_app_interactive_min = std::min(cfg.top_app_interactive_min, 1024u);
         cfg.top_app_interactive_max = std::clamp(cfg.top_app_interactive_max, cfg.top_app_interactive_min, 1024u);
+        cfg.cpu_pressure_boost_pct = std::clamp(cfg.cpu_pressure_boost_pct, 1.0f, 50.0f);
+        cfg.memory_pressure_guard_pct = std::clamp(cfg.memory_pressure_guard_pct, 0.5f, 30.0f);
+        cfg.io_pressure_guard_pct = std::clamp(cfg.io_pressure_guard_pct, 0.5f, 30.0f);
+        cfg.thermal_headroom_celsius = std::clamp(cfg.thermal_headroom_celsius, 1.0f, 10.0f);
+        cfg.thermal_emergency_margin_celsius = std::clamp(cfg.thermal_emergency_margin_celsius, 2.0f, 10.0f);
         return cfg;
     }
 
