@@ -38,7 +38,7 @@ export const PixelHeader: React.FC<PixelHeaderProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Android 15+ · Linux epoll zero-polling daemon
+              Android 15+ · epoll reactor · thermal + PSI stability
             </p>
           </div>
         </div>
