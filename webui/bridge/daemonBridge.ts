@@ -20,12 +20,7 @@ export function hasNativeKernelSuBridge(): boolean {
 
 export async function execNativeKsuShell(command: string): Promise<ShellResult> {
   if (!hasNativeKernelSuBridge() || !window.ksu) {
-    // In browser preview, return mock success
-    return {
-      errno: 0,
-      stdout: `[SIMULATED KSU EXEC]: ${command}`,
-      stderr: '',
-    };
+    return { errno: -1, stdout: '', stderr: 'Native KernelSU bridge unavailable' };
   }
 
   try {
