@@ -33,7 +33,8 @@ constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
 // Fatal signal handlers cannot lock mutexes, perform stream I/O or allocate.
 void on_fatal_signal(int signum) {
     constexpr char line[] = "[CoreFlow] Fatal signal. Next start will recover journal.\n";
-    (void)::write(STDERR_FILENO, line, sizeof(line) - 1);
+    const ssize_t emitted = ::write(STDERR_FILENO, line, sizeof(line) - 1);
+    (void)emitted;
     ::_exit(128 + signum);
 }
 bool marker(const char* path) {
@@ -149,8 +150,9 @@ int main(int argc, char* argv[]) {
     if (!signal_fd.valid() ||
         !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
             signalfd_siginfo info{};
-            (void)::read(signal_fd.get(), &info, sizeof(info));
-            reactor.stop();
+            const ssize_t consumed = ::read(signal_fd.get(), &info, sizeof(info));
+            if (consumed == static_cast<ssize_t>(sizeof(info)))
+                reactor.stop();
         })) return 1;
 
     bool applied = false;
