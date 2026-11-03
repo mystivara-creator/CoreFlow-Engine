@@ -157,25 +157,25 @@ export const AutonomousStateHero: React.FC<AutonomousStateHeroProps> = ({
           </div>
         </div>
 
-        {/* Metric 4: cgroups v2 Controller */}
+        {/* Metric 4: discovered scheduler capability */}
         <div className="rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800/80 p-4 transition-all hover:border-indigo-500/30">
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium mb-1">
-            <span>cgroups v2 Status</span>
+            <span>UClamp Capability</span>
             <Layers className="w-3.5 h-3.5 text-indigo-400" />
           </div>
           <div className="flex items-baseline gap-1 mb-2">
             <span className="text-lg sm:text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-              {telemetry.cgroupsV2Status === 'unified_active' ? 'Available' : 'Not Detected'}
+              {telemetry.uclampSupported ? 'Discovered' : 'Unavailable'}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>Controllers:</span>
             <span className="font-mono text-indigo-400 font-semibold">
-              {nativeMode ? 'Not queried' : 'cpu, io, cpuset'}
+              {nativeMode ? 'Semantic target' : 'Preview capability'}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-            {nativeMode ? 'Controller discovery only' : 'Preview: simulated task placement'}
+            {nativeMode ? 'top-app min/max pair' : 'Simulation only'}
           </div>
         </div>
       </div>
