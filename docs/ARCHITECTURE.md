@@ -1,35 +1,68 @@
-# CoreFlow Modern v2 architecture (implementation contract)
+# CoreFlow Modern v2 architecture
 
-This file describes what the native daemon actually implements. It is not a promise of measured performance.
+## Principle
 
-## Runtime
+Zero device-specific hardcoding does not mean blind mutation.
 
-- `src/daemon/main.cpp`: one root-owned process with a PID lock, signalfd shutdown, a bounded timerfd thermal heartbeat and an epoll reactor.
-- `src/daemon/reactor.cpp`: Linux epoll for registered file descriptors; timerfd wakeups still occur at a configured interval. The daemon does **not** claim zero CPU or zero wakeups.
-- `src/kernel/device_profiler.cpp`: enumerates CPU frequency policies and reads type-labelled thermal sensors. Missing sensor data is reported as unavailable, not fabricated.
-- `src/kernel/uclamp.cpp`: applies interactive or thermal utilization clamp settings only when a supported cgroup interface exists. The configured interactive top-app floor is honored. A failed write stops the operation.
-- `src/kernel/cgroup_v2.cpp`: detects a unified cgroup hierarchy, but automatic task migration, vendor cpuset override and direct display override are **not** activated by the daemon.
-- `src/kernel/render_booster.cpp`: placeholder frame callback API; no SurfaceFlinger frame acquisition or timed render boost is active. Display vendor refresh nodes are never written.
-- `src/kernel/psi_monitor.cpp` and `src/kernel/memory_guardian.cpp`: capability helpers; no automatic pressure-triggered memory mutation is currently wired into the daemon loop.
+Stable Linux/Android ABI names such as cpu.uclamp.min, PSI fields, and thermal-zone type are semantic contracts. Device-specific mount paths, CPU counts, cluster layouts, and vendor knobs are discovered at runtime or ignored.
 
-## Safety and lifecycle
+Flow:
 
-Before modifying a supported kernel node, `BaselineStore` stores the current value in a private, fsync-backed write-ahead journal at `/data/adb/coreflow/baseline.journal`. After each attempted write, it checks the read-back. On failure or normal termination it attempts to restore all tracked values. On the **next daemon start in the same boot**, it replays unfinished recovery before allowing new writes. Reboot-created journal entries from an earlier kernel boot are not replayed, because the vendor kernel may have installed new defaults.
+    Discover capability
+          |
+    Read thermal + PSI
+          |
+    Select one stability state
+          |
+    Apply one bounded top-app UClamp pair
+          |
+    Read-back verify
+          |
+    Keep state until inputs materially change
+          |
+    Rollback on stop/failure/emergency
 
-This is **not atomic kernel rollback**. A fatal signal handler cannot safely take mutexes or write C++ streams. It terminates immediately; restoration requires a follow-up daemon restart. Crashes in the kernel, storage failures, driver side effects and concurrent vendor writers cannot be guaranteed recoverable. The snapshots reflect values observed when CoreFlow first modified each node, not an immutable OEM factory image.
+There is no Observe -> Understand -> Balance -> Adapt pipeline.
 
-## Control protocol
+## Active production core
 
-`coreflowd --status` prints a JSON object containing `running`, `pid`, `uclampMin`, `uclampMax`, `socTempCelsius` (nullable), `cgroupV2` and `recoveryPending`.
-`coreflowd --stop` sends SIGTERM to the active daemon and checks the recovery journal.
-`coreflowd --rollback-baseline` uses the same verified stop/recovery path. The command does not claim to rewind arbitrary edits from other modules.
+- src/daemon/main.cpp: lifecycle, PID lock, signal handling, PSI reads, state application.
+- src/daemon/reactor.cpp: epoll plus timerfd event loop.
+- src/kernel/uclamp.cpp: semantic cgroup discovery, encoding detection, bounded top-app UClamp writes.
+- src/kernel/thermal_monitor.cpp: type-labelled thermal discovery and hottest-zone reading.
+- src/kernel/baseline_store.cpp: write-ahead journal, read-back verification, recovery.
+- include/coreflow/stability_policy.hpp: pure deterministic four-state decision function.
+- include/coreflow/config.hpp: small bounded runtime policy config.
 
-`module/service.sh` starts one daemon instance after Android boot; operator markers `/data/adb/coreflow/{DISABLE,SAFE_MODE}` prevent new native mutations. `module/post-fs-data.sh` applies the boot-attempt guard. Configuration lives in `/data/adb/coreflow/coreflow.conf` and is applied on daemon restart.
+Generic cgroup, render, memory, and PSI mutation placeholders are not part of the production daemon.
+
+## UClamp discovery
+
+The daemon does not assume /sys/fs/cgroup/top-app or /dev/cpuctl/top-app.
+
+It parses /proc/self/mountinfo for cgroup and cgroup2 mounts, performs a bounded search for a top-app directory, and requires both cpu.uclamp.min and cpu.uclamp.max. The pair must be readable and writable.
+
+Existing values determine whether the interface uses percentage semantics or a 0..1024 capacity representation. Internal policy always uses 0..1024 and encodes only at the kernel boundary.
+
+## Stability policy
+
+Four states only:
+
+1. Balanced.
+2. SustainedLoad.
+3. PressureGuard.
+4. ThermalGuard.
+
+Memory/I/O pressure outranks performance boosting. Thermal guard outranks all pressure states. Severe heat triggers rollback and daemon stop.
+
+Games are not identified by package name. A game becomes a sustained workload because the system reports sustained CPU pressure while thermal headroom remains.
+
+## Recovery
+
+Before a supported write, BaselineStore persists the observed pre-CoreFlow value to /data/adb/coreflow/baseline.journal. The write is then read back. Any failure starts rollback.
+
+Fatal signal handlers do not run C++ rollback code. They terminate safely; the next daemon start in the same boot recovers the journal before new writes are allowed.
 
 ## WebUI
 
-React components and animations remain in `webui/`. In a normal browser the data source is an explicitly labelled simulator. With KernelSU's native shell bridge, the UI reads `--status`, tail-reads the daemon log and calls the stop/recovery commands. Native frame FPS, jank, foreground app and PSI telemetry are **not implemented** and must display unavailable rather than synthetic numbers.
-
-## Verification
-
-CMake host tests exercise baseline restoration after an abrupt child-process exit, failed write / capture fallback and malformed configuration bounds. CI runs host tests, ASan+UBSan, TypeScript, shell syntax and Android ARM64 packaging. A successful CI run proves build/test invariants, **not** compatibility with any particular vendor kernel.
+Native mode displays measured daemon/UClamp/thermal status and daemon logs. Browser-only simulation stays explicitly labelled preview. FPS, jank, and foreground-app metrics are not claimed as native telemetry until a validated source exists.
