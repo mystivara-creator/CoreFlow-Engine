@@ -187,7 +187,7 @@ int main(int argc, char* argv[]) {
         })) return 1;
 
     bool applied = false;
-    WorkloadState current = WorkloadState::DailyIdle;
+    WorkloadState current = WorkloadState::Balanced;
     uint32_t consecutive_failures = 0;
     auto retry_after = std::chrono::steady_clock::time_point::min();
     const auto interval = std::chrono::milliseconds(
@@ -225,22 +225,22 @@ int main(int argc, char* argv[]) {
         const double memory_pressure = read_psi_avg10("/proc/pressure/memory");
         const double io_pressure = read_psi_avg10("/proc/pressure/io");
 
-        WorkloadState desired = WorkloadState::Interactive;
+        WorkloadState desired = WorkloadState::Balanced;
         if (temp >= config.thermal_trip_celsius ||
-            (applied && current == WorkloadState::ThermalThrottled &&
+            (applied && current == WorkloadState::ThermalGuard &&
              temp > config.thermal_recover_celsius)) {
-            desired = WorkloadState::ThermalThrottled;
+            desired = WorkloadState::ThermalGuard;
         } else if (memory_pressure >= config.memory_pressure_guard_pct ||
                    io_pressure >= config.io_pressure_guard_pct) {
             // Contention guard: reduce artificial boosting, keep the ceiling open,
             // and let reclaim/I/O complete instead of adding CPU demand.
-            desired = WorkloadState::DailyIdle;
+            desired = WorkloadState::PressureGuard;
         } else if (cpu_pressure >= config.cpu_pressure_boost_pct &&
                    temp <= config.thermal_trip_celsius - config.thermal_headroom_celsius) {
             // Sustained CPU pressure with thermal headroom: moderately raise the
             // top-app floor. This covers games and other sustained foreground work
             // without needing package-name heuristics or an application database.
-            desired = WorkloadState::SustainedGame;
+            desired = WorkloadState::SustainedLoad;
         }
 
         if (!applied || current != desired) {
