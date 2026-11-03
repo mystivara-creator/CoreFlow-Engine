@@ -112,8 +112,8 @@ bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_
     auto& baseline = BaselineStore::instance();
     // The cgroup v2 cpu.uclamp files accept *percentage* values, unlike the
     // sched capacity scale (0..1024) used by our internal configurations.
-    auto to_percentage = [](uint32_t capacity) -> std::string {
-        if (capacity >= 1024) return "max";
+    auto to_percentage = [](uint32_t capacity, bool maximum) -> std::string {
+        if (maximum && capacity >= 1024) return "max";
         char out[32];
         std::snprintf(out, sizeof(out), "%.2f", static_cast<double>(capacity) * 100.0 / 1024.0);
         return out;
@@ -124,8 +124,8 @@ bool UclampGovernor::write_uclamp(CgroupTarget target, uint32_t min_val, uint32_
     const std::string max_path = prefix + "cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
     if (max_val < current_min) {
-        return baseline.apply_mutation(min_path, to_percentage(min_val)) &&
-               baseline.apply_mutation(max_path, to_percentage(max_val));
+        return baseline.apply_mutation(min_path, to_percentage(min_val, false)) &&
+               baseline.apply_mutation(max_path, to_percentage(max_val, true));
     }
     return baseline.apply_mutation(max_path, std::to_string(max_val)) &&
            baseline.apply_mutation(min_path, std::to_string(min_val));
