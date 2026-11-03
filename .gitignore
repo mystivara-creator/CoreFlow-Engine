@@ -1,5 +1,6 @@
 # Generated build output
 build/
+dist/
 artifacts/
 
 # Local Android/ONNX SDK extraction

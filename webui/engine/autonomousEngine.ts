@@ -194,14 +194,33 @@ export function stepAutonomousSimulation(
 
   if (mode === current.mode) return { next };
 
-  const event: ReactionLogEvent = {
-    id: 'preview-' + Date.now(),
+  return { next, event: createPreviewEvent(mode, meta.label, next) };
+}
+
+let previewEventSeq = 0;
+
+function createPreviewEvent(
+  mode: AutonomousMode,
+  label: string,
+  next: AutonomousTelemetry
+): ReactionLogEvent {
+  previewEventSeq += 1;
+  return {
+    id: `preview-${Date.now()}-${previewEventSeq}`,
     timestamp: new Date().toTimeString().slice(0, 8),
     type: mode === 'thermal_guard' ? 'THERMAL' : mode === 'sustained_load' ? 'BOOST' : 'INFO',
     tag: 'Stability',
-    message: 'Preview state -> ' + meta.label +
-      ' | cpu=' + next.cpuPressurePct + '% mem=' + next.memoryPressurePct +
-      '% io=' + next.ioPressurePct + '% temp=' + next.socTempCelsius + 'C',
+    message:
+      'Preview state -> ' +
+      label +
+      ' | cpu=' +
+      next.cpuPressurePct +
+      '% mem=' +
+      next.memoryPressurePct +
+      '% io=' +
+      next.ioPressurePct +
+      '% temp=' +
+      next.socTempCelsius +
+      'C',
   };
-  return { next, event };
 }

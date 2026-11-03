@@ -11,11 +11,11 @@
 #include "unique_fd.hpp"
 #include <sys/epoll.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <unordered_map>
-#include <memory>
-#include <span>
 #include <vector>
 
 namespace coreflow {
@@ -47,13 +47,15 @@ public:
     void run();
 
     /// Stop reactor loop cleanly from signal handler or thread
-    void stop();
+    void stop() noexcept;
 
-    [[nodiscard]] bool is_running() const noexcept { return running_; }
+    [[nodiscard]] bool is_running() const noexcept {
+        return running_.load(std::memory_order_acquire);
+    }
 
 private:
     UniqueFd epoll_fd_;
-    bool running_{false};
+    std::atomic<bool> running_{false};
     UniqueFd stop_event_fd_;
     std::vector<UniqueFd> timer_fds_;
     std::unordered_map<int, EventCallback> callbacks_;

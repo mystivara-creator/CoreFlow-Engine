@@ -4,6 +4,7 @@ project(CoreFlowEngine VERSION 2.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(CORE_FLOW_BUILD_TESTS "Build CoreFlow unit test suite" ON)
 
@@ -16,19 +17,24 @@ add_compile_options(
     -Wpedantic
     -fno-exceptions
     -fno-rtti
+    -fno-strict-overflow
     -fstack-protector-strong
     -Wformat
     -Wformat-security
     -Werror=return-type
 )
 
-add_compile_definitions(_FORTIFY_SOURCE=2)
+add_compile_definitions(
+    _FILE_OFFSET_BITS=64
+    $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>
+)
 
 add_link_options(
     -Wl,--gc-sections
-    -Wl,--strip-all
+    $<$<CONFIG:Release>:-Wl,--strip-all>
     -Wl,-z,relro
     -Wl,-z,now
+    -Wl,-z,noexecstack
 )
 
 include_directories(include)
@@ -74,4 +80,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_stability_policy tests/test_stability_policy.cpp)
     target_include_directories(test_stability_policy PRIVATE include)
     add_test(NAME StabilityPolicyTest COMMAND test_stability_policy)
+    add_executable(test_thermal_monitor tests/test_thermal_monitor.cpp src/kernel/thermal_monitor.cpp)
+    target_include_directories(test_thermal_monitor PRIVATE include)
+    add_test(NAME ThermalMonitorTest COMMAND test_thermal_monitor)
 endif()

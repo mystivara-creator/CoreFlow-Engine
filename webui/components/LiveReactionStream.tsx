@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { Terminal, Copy, Check, Trash2, Search, Filter } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Terminal, Copy, Check, Trash2, Search } from 'lucide-react';
 import { ReactionLogEvent } from '../engine/autonomousEngine';
 
 interface LiveReactionStreamProps {
@@ -18,6 +18,15 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
   const [filterType, setFilterType] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
@@ -37,7 +46,13 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyTimerRef.current = null;
+      }, 2000);
     } catch {
       // ignore
     }

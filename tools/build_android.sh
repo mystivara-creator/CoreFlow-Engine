@@ -24,7 +24,7 @@ cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
 
 cmake --build "$BUILD_DIR" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc 2>/dev/null || echo 2)}"
 
-BINARY="$(find "$BUILD_DIR" -type f -name coreflowd -perm -111 | head -n 1)"
+BINARY="$(find "$BUILD_DIR" -type f -name coreflowd -perm -u+x | head -n 1)"
 if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
     echo "error: coreflowd was not produced." >&2
     exit 1

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cerrno>
 #include <unistd.h>
 #include <utility>
 
@@ -17,7 +18,7 @@ public:
     constexpr UniqueFd() noexcept : fd_(-1) {}
     explicit UniqueFd(int fd) noexcept : fd_(fd) {}
 
-    ~UniqueFd() {
+    ~UniqueFd() noexcept {
         reset();
     }
 
@@ -54,8 +55,13 @@ public:
     }
 
     void reset(int new_fd = -1) noexcept {
+        if (fd_ == new_fd) return;
         if (fd_ >= 0) {
-            ::close(fd_);
+            const int saved_errno = errno;
+            // On Linux, close() always releases the descriptor even if EINTR is returned;
+            // never retry close() to avoid closing a concurrently reused descriptor.
+            (void)::close(fd_);
+            errno = saved_errno;
         }
         fd_ = new_fd;
     }

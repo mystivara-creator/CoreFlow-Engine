@@ -32,13 +32,14 @@ public:
 
 private:
     enum class Encoding : uint8_t { Unknown, Percentage, Capacity1024 };
+    enum class MountKind : uint8_t { Auto, CgroupV1, CgroupV2 };
 
     std::string target_path_;
     Encoding encoding_{Encoding::Unknown};
     bool supported_{false};
 
     void discover(std::string_view explicit_root);
-    bool validate_target(const std::string& directory, Encoding& encoding) const;
+    bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;
     bool write_top_app(uint32_t min_val, uint32_t max_val);
     [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
     [[nodiscard]] uint32_t read_uclamp_node(const std::string& path) const;

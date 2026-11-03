@@ -1,24 +1,61 @@
 /**
  * @file config.hpp
- * @brief Small fail-safe runtime policy configuration for CoreFlow Modern v2
+ * @brief Hardened fail-safe runtime policy configuration for CoreFlow Modern v2
  * @author mystivara-creator
  * @license Apache-2.0
  */
 #pragma once
 
+#include "unique_fd.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
-#include <cctype>
-#include <cstdint>
 #include <cmath>
-#include <cstdlib>
-#include <fstream>
+#include <cstdint>
+#include <fcntl.h>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 namespace coreflow {
+
+/// Locale-independent ASCII decimal parser; immune to LC_NUMERIC comma locales.
+[[nodiscard]] inline bool parse_ascii_double(std::string_view text, double& out) noexcept {
+    if (text.empty() || text.size() > 64) return false;
+    size_t i = 0;
+    bool negative = false;
+    if (text[i] == '+' || text[i] == '-') {
+        negative = (text[i] == '-');
+        ++i;
+        if (i == text.size()) return false;
+    }
+    double value = 0.0;
+    bool has_digits = false;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+        has_digits = true;
+        value = value * 10.0 + static_cast<double>(text[i] - '0');
+        if (!std::isfinite(value)) return false;
+        ++i;
+    }
+    if (i < text.size() && text[i] == '.') {
+        ++i;
+        double scale = 0.1;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            has_digits = true;
+            value += static_cast<double>(text[i] - '0') * scale;
+            scale *= 0.1;
+            ++i;
+        }
+    }
+    if (!has_digits || i != text.size() || !std::isfinite(value)) return false;
+    out = negative ? -value : value;
+    return true;
+}
 
 struct DaemonConfig {
     // Runtime activation.
@@ -44,11 +81,11 @@ struct DaemonConfig {
     float thermal_headroom_celsius{3.0f};
     float thermal_emergency_margin_celsius{4.0f};
 
-    static std::string trim(const std::string& value) {
+    static std::string trim(std::string_view value) {
         const size_t first = value.find_first_not_of(" \t\r\n");
-        if (first == std::string::npos) return {};
+        if (first == std::string_view::npos) return {};
         const size_t last = value.find_last_not_of(" \t\r\n");
-        return value.substr(first, last - first + 1);
+        return std::string(value.substr(first, last - first + 1));
     }
 
     static bool parse_bool(const std::string& text, bool fallback) {
@@ -62,6 +99,7 @@ struct DaemonConfig {
     }
 
     static uint32_t parse_uint(const std::string& text, uint32_t fallback) {
+        if (text.empty()) return fallback;
         uint32_t result = 0;
         const char* first = text.data();
         const char* last = first + text.size();
@@ -70,32 +108,57 @@ struct DaemonConfig {
     }
 
     static float parse_float(const std::string& text, float fallback) {
-        if (text.empty()) return fallback;
-        char* end = nullptr;
-        errno = 0;
-        const float value = std::strtof(text.c_str(), &end);
-        return errno == 0 && end == text.c_str() + text.size() && std::isfinite(value)
-            ? value : fallback;
+        double parsed = 0.0;
+        if (!parse_ascii_double(text, parsed)) return fallback;
+        const float value = static_cast<float>(parsed);
+        return std::isfinite(value) ? value : fallback;
     }
 
-    static DaemonConfig load_from_file(const std::string& path) {
-        DaemonConfig cfg;
-        std::ifstream file(path);
-        if (!file.is_open()) return cfg;
+    static bool read_secure_file(const std::string& path, bool enforce_root_owner, std::string& content) {
+        content.clear();
+        if (path.empty() || path.find('\0') != std::string::npos) return false;
+        UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (!fd.valid()) return false;
 
+        struct stat st{};
+        if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+        if (st.st_size < 0 || st.st_size > 65536) return false;
+        if (enforce_root_owner) {
+            if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+                std::cerr << "[CoreFlow][Config] Rejecting insecure permissions/owner on " << path << "\n";
+                return false;
+            }
+        }
+
+        char buffer[4096];
+        while (content.size() <= 65536) {
+            const ssize_t n = ::read(fd.get(), buffer, sizeof(buffer));
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+            if (n == 0) break;
+            content.append(buffer, static_cast<size_t>(n));
+        }
+        return content.size() <= 65536;
+    }
+
+    static DaemonConfig parse_content(const std::string& raw) {
+        DaemonConfig cfg;
+        std::istringstream stream(raw);
         std::string line;
-        while (std::getline(file, line)) {
+        while (std::getline(stream, line)) {
             line = trim(line);
             if (line.empty() || line[0] == '#' || line[0] == ';' ||
                 (line.front() == '[' && line.back() == ']')) continue;
 
             const size_t eq = line.find('=');
             if (eq == std::string::npos) continue;
-            const std::string key = trim(line.substr(0, eq));
-            const std::string value = trim(line.substr(eq + 1));
+            const std::string key = trim(std::string_view(line).substr(0, eq));
+            const std::string value = trim(std::string_view(line).substr(eq + 1));
 
-            if (key == "version") cfg.version = value;
-            else if (key == "log_level") cfg.log_level = value;
+            if (key == "version" && value.size() <= 32) cfg.version = value;
+            else if (key == "log_level" && value.size() <= 16) cfg.log_level = value;
             else if (key == "enable_uclamp") cfg.enable_uclamp = parse_bool(value, cfg.enable_uclamp);
             else if (key == "top_app_interactive_min")
                 cfg.top_app_interactive_min = parse_uint(value, cfg.top_app_interactive_min);
@@ -137,18 +200,31 @@ struct DaemonConfig {
         return cfg;
     }
 
+    static DaemonConfig load_from_file(const std::string& path, bool enforce_root_owner = false) {
+        std::string content;
+        if (!read_secure_file(path, enforce_root_owner, content)) return DaemonConfig{};
+        return parse_content(content);
+    }
+
     static DaemonConfig load_best_available() {
-        const std::vector<std::string> paths = {
+        const bool running_as_root = (::geteuid() == 0);
+        std::vector<std::string> paths = {
             "/data/adb/coreflow/coreflow.conf",
             "/data/adb/modules/coreflow_engine/coreflow.conf",
+            "/system_ext/etc/coreflow/default.conf",
             "/system/etc/coreflow/default.conf",
-            "config/coreflow.conf"
+            "/vendor/etc/coreflow/default.conf",
         };
+        // Never load relative working-directory files when running as privileged root service.
+        if (!running_as_root) {
+            paths.emplace_back("config/coreflow.conf");
+        }
+
         for (const auto& path : paths) {
-            std::ifstream file(path);
-            if (file.good()) {
+            std::string content;
+            if (read_secure_file(path, running_as_root, content)) {
                 std::cout << "[CoreFlow][Config] " << path << "\n";
-                return load_from_file(path);
+                return parse_content(content);
             }
         }
         std::cout << "[CoreFlow][Config] defaults\n";

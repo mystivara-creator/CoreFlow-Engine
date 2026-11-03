@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
@@ -16,7 +16,10 @@ import {
   stepAutonomousSimulation,
 } from './engine/autonomousEngine';
 
-const BIN = '/data/adb/modules/coreflow_engine/system/bin/coreflowd';
+const RESOLVE_BIN =
+  'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+  '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+  '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
 const SERVICE = '/data/adb/modules/coreflow_engine/service.sh';
 const CONFIG = '/data/adb/coreflow/coreflow.conf';
 const LOG = '/data/adb/coreflow/logs/coreflowd.log';
@@ -57,16 +60,23 @@ const execChecked = async (command: string): Promise<string> => {
 
 const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
-const readNumberKey = (text: string, key: string): number | null => {
+const readStringKey = (text: string, key: string): string | null => {
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('[')) continue;
     const at = line.indexOf('=');
     if (at < 0 || line.slice(0, at).trim() !== key) continue;
-    const parsed = Number(line.slice(at + 1).trim());
-    return Number.isFinite(parsed) ? parsed : null;
+    const value = line.slice(at + 1).trim();
+    return value.length > 0 ? value : null;
   }
   return null;
+};
+
+const readNumberKey = (text: string, key: string): number | null => {
+  const raw = readStringKey(text, key);
+  if (raw === null) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 export const App: React.FC = () => {
@@ -118,9 +128,14 @@ export const App: React.FC = () => {
     saveAppearance(next);
   };
 
+  const telemetryRef = useRef(telemetry);
+  telemetryRef.current = telemetry;
+  const logSeqRef = useRef(0);
+
   const addLog = useCallback((type: ReactionLogEvent['type'], tag: string, message: string) => {
+    logSeqRef.current += 1;
     const event: ReactionLogEvent = {
-      id: `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `evt-${Date.now()}-${logSeqRef.current}`,
       timestamp: new Date().toTimeString().slice(0, 8),
       type,
       tag,
@@ -130,7 +145,7 @@ export const App: React.FC = () => {
   }, []);
 
   const refreshNative = useCallback(async (): Promise<NativeStatus> => {
-    const status = checkedNativeStatus(await execChecked(BIN + ' --status'));
+    const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
     setTelemetry((old) => ({
       ...old,
       engineActive: status.running,
@@ -161,23 +176,36 @@ export const App: React.FC = () => {
     if (!isNativeBridge) return;
     let disposed = false;
 
-    const loadNative = async () => {
+    const loadInitialConfig = async () => {
+      const configResult = await execNativeKsuShell(`cat ${CONFIG} 2>/dev/null`);
+      if (disposed || configResult.errno !== 0) return;
+
+      const rawBias = readStringKey(configResult.stdout, 'ui_adaptive_bias');
+      const adaptiveBias: AutonomousConfig['adaptiveBias'] =
+        rawBias === 'battery' || rawBias === 'balanced' || rawBias === 'responsiveness'
+          ? rawBias
+          : 'balanced';
+      const uiFloor = readNumberKey(configResult.stdout, 'ui_balanced_uclamp_min');
+      const daemonFloor = readNumberKey(configResult.stdout, 'top_app_interactive_min');
+      const baseFloor = uiFloor ?? daemonFloor;
+      const trip = readNumberKey(configResult.stdout, 'thermal_trip_celsius');
+
+      setConfig((old) => ({
+        ...old,
+        adaptiveBias,
+        balancedUclampMin:
+          baseFloor === null ? old.balancedUclampMin : Math.max(0, Math.min(640, Math.round(baseFloor))),
+        thermalTripCelsius:
+          trip === null ? old.thermalTripCelsius : Math.max(40, Math.min(48, trip)),
+      }));
+    };
+
+    let pollInFlight = false;
+    const pollNativeTelemetry = async () => {
+      if (pollInFlight || disposed) return;
+      pollInFlight = true;
       try {
         await refreshNative();
-
-        const configResult = await execNativeKsuShell(`cat ${CONFIG} 2>/dev/null`);
-        if (!disposed && configResult.errno === 0) {
-          const floor = readNumberKey(configResult.stdout, 'top_app_interactive_min');
-          const trip = readNumberKey(configResult.stdout, 'thermal_trip_celsius');
-          setConfig((old) => ({
-            ...old,
-            adaptiveBias: 'balanced',
-            balancedUclampMin:
-              floor === null ? old.balancedUclampMin : Math.max(0, Math.min(1024, Math.round(floor))),
-            thermalTripCelsius:
-              trip === null ? old.thermalTripCelsius : Math.max(35, Math.min(65, trip)),
-          }));
-        }
 
         const logResult = await execNativeKsuShell(`/system/bin/tail -n 40 ${LOG} 2>/dev/null`);
         if (!disposed && logResult.errno === 0) {
@@ -193,8 +221,6 @@ export const App: React.FC = () => {
               timestamp: '--:--:--',
               type: message.includes('[Stability]') && message.includes('thermal')
                 ? ('THERMAL' as const)
-                : message.includes('[Stability]')
-                ? ('INFO' as const)
                 : ('INFO' as const),
               tag: 'Daemon',
               message: message.slice(0, 512),
@@ -203,28 +229,39 @@ export const App: React.FC = () => {
         }
       } catch (error) {
         if (!disposed) setNativeError(String(error));
+      } finally {
+        pollInFlight = false;
       }
     };
 
-    void loadNative();
-    const timer = window.setInterval(() => void loadNative(), 5000);
+    void loadInitialConfig();
+    void pollNativeTelemetry();
+    const timer = window.setInterval(() => void pollNativeTelemetry(), 5000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
   }, [isNativeBridge, refreshNative]);
 
+  const advancePreviewSimulation = useCallback(
+    (forced?: 'cpu' | 'memory') => {
+      const { next, event } = stepAutonomousSimulation(telemetryRef.current, config, forced);
+      telemetryRef.current = next;
+      setTelemetry(next);
+      if (event) {
+        setLogs((previous) => [event, ...previous].slice(0, 50));
+      }
+    },
+    [config]
+  );
+
   useEffect(() => {
     if (isNativeBridge) return;
     const timer = window.setInterval(() => {
-      setTelemetry((old) => {
-        const { next, event } = stepAutonomousSimulation(old, config);
-        if (event) setLogs((previous) => [event, ...previous].slice(0, 50));
-        return next;
-      });
+      advancePreviewSimulation();
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [isNativeBridge, config]);
+  }, [isNativeBridge, advancePreviewSimulation]);
 
   const handleToggleEngine = async () => {
     if (!isNativeBridge) {
@@ -235,8 +272,13 @@ export const App: React.FC = () => {
     setIsSwitching(true);
     try {
       const before = await refreshNative();
-      if (before.running) await execChecked(BIN + ' --stop');
-      else await execChecked('/system/bin/sh ' + SERVICE);
+      if (before.running) {
+        await execChecked(`${RESOLVE_BIN}; "$BIN" --stop`);
+      } else {
+        await execChecked(
+          `if [ -f "${SERVICE}" ]; then /system/bin/sh "${SERVICE}"; else ${RESOLVE_BIN}; nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null & fi`
+        );
+      }
       await delay(800);
       const after = await refreshNative();
       if (after.running === before.running) throw new Error('Daemon state did not change');
@@ -255,20 +297,12 @@ export const App: React.FC = () => {
 
   const handleSimulateCpuLoad = () => {
     if (isNativeBridge || !telemetry.engineActive) return;
-    setTelemetry((old) => {
-      const { next, event } = stepAutonomousSimulation(old, config, 'cpu');
-      if (event) setLogs((previous) => [event, ...previous].slice(0, 50));
-      return next;
-    });
+    advancePreviewSimulation('cpu');
   };
 
   const handleSimulateMemoryPressure = () => {
     if (isNativeBridge || !telemetry.engineActive) return;
-    setTelemetry((old) => {
-      const { next, event } = stepAutonomousSimulation(old, config, 'memory');
-      if (event) setLogs((previous) => [event, ...previous].slice(0, 50));
-      return next;
-    });
+    advancePreviewSimulation('memory');
   };
 
   const handleSaveConfig = async () => {
@@ -280,12 +314,14 @@ export const App: React.FC = () => {
         return;
       }
 
+      const safeBias: AutonomousConfig['adaptiveBias'] =
+        config.adaptiveBias === 'battery' || config.adaptiveBias === 'responsiveness'
+          ? config.adaptiveBias
+          : 'balanced';
+      const baseFloor = Math.max(0, Math.min(640, Math.round(config.balancedUclampMin)));
       const multiplier =
-        config.adaptiveBias === 'battery' ? 0.75 : config.adaptiveBias === 'responsiveness' ? 1.25 : 1;
-      const balancedMin = Math.max(
-        0,
-        Math.min(1024, Math.round(config.balancedUclampMin * multiplier))
-      );
+        safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
+      const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
       const trip = Math.max(35, Math.min(65, config.thermalTripCelsius));
       const recover = Math.max(25, trip - 4);
 
@@ -293,8 +329,12 @@ export const App: React.FC = () => {
         '[general]\nversion = 2.0.0\nlog_level = info\nenable_uclamp = true\n' +
         '\n[uclamp]\ntop_app_interactive_min = ' +
         balancedMin +
-        '\ntop_app_interactive_max = 1024\n' +
-        '\n[thermal]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' +
+        '\ntop_app_interactive_max = 1024' +
+        '\nui_adaptive_bias = ' +
+        safeBias +
+        '\nui_balanced_uclamp_min = ' +
+        baseFloor +
+        '\n\n[thermal]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' +
         trip.toFixed(1) +
         '\nthermal_recover_celsius = ' +
         recover.toFixed(1) +
@@ -304,11 +344,18 @@ export const App: React.FC = () => {
         'thermal_emergency_margin_celsius = 4.0\n';
 
       const command =
+        'umask 077 && [ ! -L "' +
+        CONFIG +
+        '" ] && rm -f "' +
+        CONFIG +
+        '.tmp" && ' +
         "cat <<'COREFLOW_CONFIG' > " +
         CONFIG +
         '.tmp\n' +
         nativeConfig +
-        'COREFLOW_CONFIG\nchmod 600 ' +
+        'COREFLOW_CONFIG\nchown 0:0 ' +
+        CONFIG +
+        '.tmp 2>/dev/null; chmod 600 ' +
         CONFIG +
         '.tmp && mv -f ' +
         CONFIG +
@@ -320,15 +367,14 @@ export const App: React.FC = () => {
       if (!output.includes('COREFLOW_CONFIG_WRITTEN')) throw new Error('Configuration write not acknowledged');
 
       const before = await refreshNative();
-      if (before.running) {
-        await execChecked(BIN + ' --stop');
-        await execChecked('/system/bin/sh ' + SERVICE);
-        await delay(800);
+      if (before.running && before.pid > 0) {
+        await execChecked(`kill -HUP ${Math.trunc(before.pid)}`);
+        await delay(250);
         const after = await refreshNative();
-        if (!after.running) throw new Error('Config saved but daemon restart failed');
+        if (!after.running) throw new Error('Config saved but daemon reload failed');
       }
 
-      setSaveMessage(before.running ? 'Saved and daemon restarted' : 'Saved for next start');
+      setSaveMessage(before.running ? 'Saved and reloaded live' : 'Saved for next start');
       addLog('INFO', 'Config', `Balanced floor=${balancedMin}, thermal trip=${trip.toFixed(1)}°C`);
     } catch (error) {
       setSaveMessage('Save failed');
@@ -348,7 +394,7 @@ export const App: React.FC = () => {
         return;
       }
 
-      await execChecked(BIN + ' --rollback-baseline');
+      await execChecked(`${RESOLVE_BIN}; "$BIN" --rollback-baseline`);
       const status = await refreshNative();
       if (status.running || status.recoveryPending) throw new Error('Rollback not verified');
 

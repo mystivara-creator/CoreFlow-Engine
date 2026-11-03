@@ -68,6 +68,35 @@ int main() {
     assert(BaselineStore::instance().rollback_all() >= 1);
     assert(!BaselineStore::instance().has_active_mutations());
 
+    // Vendor thermal throttling may leave integer 0..1024 nodes capped <= 100 at startup;
+    // ensure plain integers without cgroup.controllers remain capacity1024.
+    const std::string throttled_root = root + "/throttled-v1";
+    const std::string throttled_top = throttled_root + "/top-app";
+    std::filesystem::create_directories(throttled_top);
+    write_token(throttled_top + "/cpu.uclamp.min", "0");
+    write_token(throttled_top + "/cpu.uclamp.max", "100");
+
+    UclampGovernor throttled(throttled_root);
+    assert(throttled.is_supported());
+    assert(throttled.encoding_name() == "capacity1024");
+    assert(throttled.apply_state(WorkloadState::Balanced, 320, 1024));
+    assert(read_token(throttled_top + "/cpu.uclamp.min") == "320");
+    assert(read_token(throttled_top + "/cpu.uclamp.max") == "1024");
+    assert(BaselineStore::instance().rollback_all() >= 1);
+    assert(read_token(throttled_top + "/cpu.uclamp.max") == "100");
+
+    // Unified cgroup v2 hierarchy identified by cgroup.controllers uses percentage.
+    const std::string v2_ctrl_root = root + "/unified-controllers";
+    const std::string v2_ctrl_top = v2_ctrl_root + "/top-app";
+    std::filesystem::create_directories(v2_ctrl_top);
+    write_token(v2_ctrl_root + "/cgroup.controllers", "cpu memory io");
+    write_token(v2_ctrl_top + "/cpu.uclamp.min", "0");
+    write_token(v2_ctrl_top + "/cpu.uclamp.max", "100");
+
+    UclampGovernor v2_ctrl(v2_ctrl_root);
+    assert(v2_ctrl.is_supported());
+    assert(v2_ctrl.encoding_name() == "percentage");
+
     std::filesystem::remove_all(root);
     std::cout << "Semantic UClamp discovery, encoding and restoration PASS\n";
     return 0;

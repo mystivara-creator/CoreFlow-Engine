@@ -1,33 +1,60 @@
 #!/system/bin/sh
 # Early boot guard; no native daemon is launched until Android boot completion.
+export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
+umask 077
+
 MODDIR="${0%/*}"
 STATE="/data/adb/coreflow"
 LOGS="$STATE/logs"
-mkdir -p "$LOGS"
-chmod 700 "$STATE" "$LOGS"
-umask 077
+
+# Refuse to follow symlinked state directories.
+[ -L "$STATE" ] && exit 1
+mkdir -p "$STATE" || exit 1
+[ -L "$LOGS" ] && exit 1
+mkdir -p "$LOGS" || exit 1
+chmod 700 "$STATE" "$LOGS" 2>/dev/null
+
 ATTEMPTS="$STATE/boot_attempts"
+[ -L "$ATTEMPTS" ] && rm -f "$ATTEMPTS"
+
+write_atomic() {
+  TARGET="$1"
+  VALUE="$2"
+  TMP="${TARGET}.tmp.$$"
+  [ -L "$TARGET" ] && return 1
+  rm -f "$TMP"
+  printf '%s\n' "$VALUE" > "$TMP" && chmod 600 "$TMP" && mv -f "$TMP" "$TARGET"
+}
 
 # An explicit operator disable is intentional, not a failed boot.
-if [ -f "$STATE/DISABLE" ]; then
-  echo 0 > "$ATTEMPTS"
+if [ -f "$STATE/DISABLE" ] && [ ! -L "$STATE/DISABLE" ]; then
+  write_atomic "$ATTEMPTS" "0"
   exit 0
 fi
 
 N="$(cat "$ATTEMPTS" 2>/dev/null)"
 case "$N" in ''|*[!0-9]*) N=0 ;; esac
-N=$((N+1))
-echo "$N" > "$ATTEMPTS"
+N=$((N + 1))
+write_atomic "$ATTEMPTS" "$N"
+
 if [ "$N" -ge 3 ]; then
-  touch "$STATE/SAFE_MODE"
-  echo "$(date) Safe mode after $N unconfirmed boots" >> "$LOGS/boot_guard.log"
+  [ ! -L "$STATE/SAFE_MODE" ] && : > "$STATE/SAFE_MODE"
+  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Safe mode after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
 fi
 if [ "$N" -ge 5 ]; then
-  touch "$MODDIR/disable"
-  echo "$(date) Module disabled after $N unconfirmed boots" >> "$LOGS/boot_guard.log"
+  [ ! -L "$MODDIR/disable" ] && : > "$MODDIR/disable"
+  [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Module disabled after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
 fi
+
 # Persistent config is kept outside the module directory, surviving upgrades.
-if [ ! -f "$STATE/coreflow.conf" ] && [ -f "$MODDIR/system/etc/coreflow/default.conf" ]; then
-  cp "$MODDIR/system/etc/coreflow/default.conf" "$STATE/coreflow.conf"
-  chmod 600 "$STATE/coreflow.conf"
+DEFAULT_CONF="$MODDIR/system/etc/coreflow/default.conf"
+[ -f "$DEFAULT_CONF" ] || DEFAULT_CONF="/system/etc/coreflow/default.conf"
+if [ ! -e "$STATE/coreflow.conf" ] && [ ! -L "$STATE/coreflow.conf" ] && [ -f "$DEFAULT_CONF" ]; then
+  TMP_CONF="$STATE/coreflow.conf.tmp.$$"
+  rm -f "$TMP_CONF"
+  if cp "$DEFAULT_CONF" "$TMP_CONF" && chmod 600 "$TMP_CONF"; then
+    mv -f "$TMP_CONF" "$STATE/coreflow.conf"
+  else
+    rm -f "$TMP_CONF"
+  fi
 fi

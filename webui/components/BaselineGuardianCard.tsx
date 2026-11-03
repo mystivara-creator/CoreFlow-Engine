@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, RotateCcw, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { ShieldCheck, RotateCcw, CheckCircle2 } from 'lucide-react';
 
 interface BaselineGuardianCardProps {
   nodesSnapshotted: number;

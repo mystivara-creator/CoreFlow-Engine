@@ -6,15 +6,17 @@
  */
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/config.hpp"
+#include "coreflow/unique_fd.hpp"
 #include <algorithm>
-#include <charconv>
+#include <cerrno>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -23,6 +25,7 @@ namespace coreflow {
 namespace fs = std::filesystem;
 
 namespace {
+
 std::string decode_mount_path(std::string_view encoded) {
     std::string out;
     out.reserve(encoded.size());
@@ -39,8 +42,13 @@ std::string decode_mount_path(std::string_view encoded) {
     return out;
 }
 
-std::vector<std::string> cgroup_mounts() {
-    std::vector<std::string> mounts;
+struct CgroupMount {
+    std::string path;
+    bool is_v2{false};
+};
+
+std::vector<CgroupMount> cgroup_mounts() {
+    std::vector<CgroupMount> mounts;
     std::ifstream file("/proc/self/mountinfo");
     std::string line;
     while (std::getline(file, line)) {
@@ -57,27 +65,40 @@ std::vector<std::string> cgroup_mounts() {
         if (fs_type != "cgroup" && fs_type != "cgroup2") continue;
 
         auto decoded = decode_mount_path(mount_point);
-        if (!decoded.empty() && std::find(mounts.begin(), mounts.end(), decoded) == mounts.end())
-            mounts.push_back(std::move(decoded));
+        if (decoded.empty()) continue;
+        const bool already_present = std::any_of(
+            mounts.begin(), mounts.end(),
+            [&decoded](const CgroupMount& m) { return m.path == decoded; });
+        if (!already_present) {
+            mounts.push_back(CgroupMount{std::move(decoded), fs_type == "cgroup2"});
+        }
     }
     return mounts;
 }
 
-bool parse_number(std::string_view text, double& value) {
-    if (text.empty()) return false;
-    std::string copy(text);
-    char* end = nullptr;
-    errno = 0;
-    value = std::strtod(copy.c_str(), &end);
-    return errno == 0 && end != copy.c_str() && *end == '\0' && std::isfinite(value);
+std::string read_token(const fs::path& path) {
+    const std::string p = path.string();
+    if (p.empty() || p.find('\0') != std::string::npos) return {};
+    UniqueFd fd(::open(p.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return {};
+
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return {};
+
+    char buf[128];
+    ssize_t n = 0;
+    do {
+        n = ::read(fd.get(), buf, sizeof(buf));
+    } while (n < 0 && errno == EINTR);
+    if (n <= 0) return {};
+
+    const std::string_view raw(buf, static_cast<size_t>(n));
+    const size_t first = raw.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) return {};
+    const size_t end = raw.find_first_of(" \t\r\n", first);
+    return std::string(raw.substr(first, end == std::string_view::npos ? std::string_view::npos : end - first));
 }
 
-std::string read_token(const fs::path& path) {
-    std::ifstream file(path);
-    std::string token;
-    if (file) file >> token;
-    return token;
-}
 } // namespace
 
 UclampGovernor::UclampGovernor(std::string_view explicit_root) {
@@ -108,9 +129,21 @@ void UclampGovernor::discover(std::string_view explicit_root) {
     target_path_.clear();
     encoding_ = Encoding::Unknown;
 
-    std::vector<std::string> roots;
-    if (!explicit_root.empty()) roots.emplace_back(explicit_root);
-    else roots = cgroup_mounts();
+    struct RootEntry {
+        std::string path;
+        MountKind kind;
+    };
+    std::vector<RootEntry> roots;
+    if (!explicit_root.empty()) {
+        roots.push_back(RootEntry{std::string(explicit_root), MountKind::Auto});
+    } else {
+        for (auto& mount : cgroup_mounts()) {
+            roots.push_back(RootEntry{
+                std::move(mount.path),
+                mount.is_v2 ? MountKind::CgroupV2 : MountKind::CgroupV1,
+            });
+        }
+    }
 
     struct Pending { fs::path path; unsigned depth; };
     size_t visited = 0;
@@ -118,7 +151,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
     constexpr unsigned kMaxDepth = 2;
 
     for (const auto& root : roots) {
-        std::vector<Pending> pending{{fs::path(root), 0}};
+        std::vector<Pending> pending{{fs::path(root.path), 0}};
         while (!pending.empty() && visited < kMaxDirectories) {
             Pending current = std::move(pending.back());
             pending.pop_back();
@@ -126,7 +159,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
 
             Encoding candidate_encoding = Encoding::Unknown;
             if (current.path.filename() == "top-app" &&
-                validate_target(current.path.string(), candidate_encoding)) {
+                validate_target(current.path.string(), root.kind, candidate_encoding)) {
                 target_path_ = current.path.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
@@ -135,7 +168,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
 
             // Common case: controller mount directly owns top-app.
             const fs::path direct = current.path / "top-app";
-            if (validate_target(direct.string(), candidate_encoding)) {
+            if (validate_target(direct.string(), root.kind, candidate_encoding)) {
                 target_path_ = direct.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
@@ -148,6 +181,8 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                  !ec && it != end && visited + pending.size() < kMaxDirectories;
                  it.increment(ec)) {
                 std::error_code type_error;
+                // Do not traverse symlinked cgroup subdirectories.
+                if (it->is_symlink(type_error) || type_error) continue;
                 if (!it->is_directory(type_error) || type_error) continue;
                 pending.push_back({it->path(), current.depth + 1});
             }
@@ -155,7 +190,9 @@ void UclampGovernor::discover(std::string_view explicit_root) {
     }
 }
 
-bool UclampGovernor::validate_target(const std::string& directory, Encoding& encoding) const {
+bool UclampGovernor::validate_target(const std::string& directory,
+                                     MountKind kind,
+                                     Encoding& encoding) const {
     if (directory.empty()) return false;
     const fs::path dir(directory);
     if (dir.filename() != "top-app") return false;
@@ -163,6 +200,7 @@ bool UclampGovernor::validate_target(const std::string& directory, Encoding& enc
     const fs::path min_path = dir / "cpu.uclamp.min";
     const fs::path max_path = dir / "cpu.uclamp.max";
     std::error_code ec;
+    if (fs::is_symlink(min_path, ec) || ec || fs::is_symlink(max_path, ec) || ec) return false;
     if (!fs::exists(min_path, ec) || ec || !fs::exists(max_path, ec) || ec) return false;
     if (::access(min_path.c_str(), R_OK | W_OK) != 0 ||
         ::access(max_path.c_str(), R_OK | W_OK) != 0) return false;
@@ -172,17 +210,24 @@ bool UclampGovernor::validate_target(const std::string& directory, Encoding& enc
     if (min_raw.empty() || max_raw.empty()) return false;
 
     double min_value = 0.0, max_value = 0.0;
-    if (!parse_number(min_raw, min_value) || min_value < 0.0) return false;
+    if (!parse_ascii_double(min_raw, min_value) || min_value < 0.0) return false;
+
+    std::error_code ctrl_ec1, ctrl_ec2;
+    const bool has_v2_controllers =
+        (fs::exists(dir / "cgroup.controllers", ctrl_ec1) && !ctrl_ec1) ||
+        (fs::exists(dir.parent_path() / "cgroup.controllers", ctrl_ec2) && !ctrl_ec2);
+    const bool is_cgroup_v2 = (kind == MountKind::CgroupV2) || has_v2_controllers;
 
     if (max_raw == "max") {
         if (min_value > 100.0) return false;
         encoding = Encoding::Percentage;
         return true;
     }
-    if (!parse_number(max_raw, max_value) || max_value < 0.0) return false;
+    if (!parse_ascii_double(max_raw, max_value) || max_value < 0.0) return false;
 
-    if (min_raw.find('.') != std::string::npos || max_raw.find('.') != std::string::npos ||
-        (min_value <= 100.0 && max_value <= 100.0)) {
+    if (is_cgroup_v2 ||
+        min_raw.find('.') != std::string::npos ||
+        max_raw.find('.') != std::string::npos) {
         encoding = Encoding::Percentage;
         return min_value <= 100.0 && max_value <= 100.0;
     }
@@ -194,7 +239,8 @@ bool UclampGovernor::validate_target(const std::string& directory, Encoding& enc
 }
 
 bool UclampGovernor::apply_state(WorkloadState state,
-                                  uint32_t balanced_min, uint32_t balanced_max) {
+                                 uint32_t balanced_min,
+                                 uint32_t balanced_max) {
     if (!supported_) return false;
 
     const uint32_t base_min = std::min(balanced_min, 1024u);
@@ -205,15 +251,12 @@ bool UclampGovernor::apply_state(WorkloadState state,
         case WorkloadState::Balanced:
             break;
         case WorkloadState::SustainedLoad:
-            // Increase the floor proportionally, never force max capacity.
             top.uclamp_min = std::min(base_max, base_min + std::max(1u, base_min / 2u));
             break;
         case WorkloadState::PressureGuard:
-            // Back off boosting during memory/I/O contention; do not cap throughput.
             top.uclamp_min = base_min / 4u;
             break;
         case WorkloadState::ThermalGuard:
-            // Smooth thermal response: keep some headroom instead of an abrupt low cap.
             top.uclamp_min = 0;
             top.uclamp_max = std::max(1u, (base_max * 7u) / 8u);
             break;
@@ -224,9 +267,16 @@ bool UclampGovernor::apply_state(WorkloadState state,
 std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
     capacity = std::min(capacity, 1024u);
     if (encoding_ == Encoding::Capacity1024) return std::to_string(capacity);
-    if (maximum && capacity >= 1024) return "max";
-    char out[32];
-    std::snprintf(out, sizeof(out), "%.2f", static_cast<double>(capacity) * 100.0 / 1024.0);
+    if (maximum && capacity >= 1024u) return "max";
+
+    // Pure integer fixed-point formatting (2 decimal places), immune to LC_NUMERIC locale.
+    const uint32_t hundredths = (capacity * 10000u + 512u) / 1024u;
+    const uint32_t whole = hundredths / 100u;
+    const uint32_t frac = hundredths % 100u;
+    std::string out = std::to_string(whole);
+    out.push_back('.');
+    out.push_back(static_cast<char>('0' + (frac / 10u)));
+    out.push_back(static_cast<char>('0' + (frac % 10u)));
     return out;
 }
 
@@ -240,7 +290,6 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     const std::string max_path = target_path_ + "/cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
 
-    // Maintain a valid intermediate range even on kernels that reject min > max.
     if (max_val < current_min) {
         return baseline.apply_mutation(min_path, encode(min_val, false)) &&
                baseline.apply_mutation(max_path, encode(max_val, true));
@@ -263,9 +312,10 @@ uint32_t UclampGovernor::read_uclamp_node(const std::string& path) const {
     if (raw == "max") return 1024;
 
     double value = 0.0;
-    if (!parse_number(raw, value) || value < 0.0) return 0;
-    if (encoding_ == Encoding::Capacity1024)
+    if (!parse_ascii_double(raw, value) || value < 0.0) return 0;
+    if (encoding_ == Encoding::Capacity1024) {
         return static_cast<uint32_t>(std::clamp(std::lround(value), 0l, 1024l));
+    }
     if (value > 100.0) return 0;
     return static_cast<uint32_t>(std::clamp(std::lround(value * 1024.0 / 100.0), 0l, 1024l));
 }

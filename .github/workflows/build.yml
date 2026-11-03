@@ -206,7 +206,7 @@ jobs:
             find build/android-arm64 \
               -type f \
               -name coreflowd \
-              -perm -111 \
+              -perm -u+x \
               | head -n 1
           )"
 
@@ -227,7 +227,7 @@ jobs:
             find build/android-arm64 \
               -type f \
               -name coreflowd \
-              -perm -111 \
+              -perm -u+x \
               | head -n 1
           )"
 

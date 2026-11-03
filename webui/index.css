@@ -1,6 +1,7 @@
 @import "tailwindcss" source(none);
 @source "./";
 @source "../index.html";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 @theme {
   --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
