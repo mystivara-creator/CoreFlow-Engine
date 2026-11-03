@@ -4,8 +4,8 @@
  * @author mystivara-creator
  * @license Apache-2.0
  * 
- * Replaces fragile cgroup v1 mounts with standard cgroups v2 (/sys/fs/cgroup).
- * Provides atomic task migration, cpuset isolation, and memory protection.
+ * Detects standard cgroups v2 when available and journals tunable writes.
+ * Task migration/vendor overrides are deliberately disabled in v2 runtime.
  */
 
 #pragma once
@@ -25,7 +25,7 @@ public:
     /// Verify cgroups v2 availability on Android 15+ kernel
     [[nodiscard]] bool is_supported() const noexcept;
 
-    /// Migrate a process or thread PID into target cgroup
+    /// Unsupported without membership recovery: returns false
     bool migrate_task(pid_t tid, CgroupTarget target);
 
     /// Set cpuset allowed CPUs for top-app / foreground (e.g. "0-7" or "4-7")
@@ -34,7 +34,7 @@ public:
     /// Configure CPU scheduling weight (1 - 10000, default 100)
     bool set_cpu_weight(CgroupTarget target, uint32_t weight);
 
-    /// Unlock vendor throttling constraints on top-app cgroup
+    /// Unsupported: returns false without mutating vendor policy
     bool unlock_vendor_restrictions();
 
     /// Retrieve path for target cgroup directory
