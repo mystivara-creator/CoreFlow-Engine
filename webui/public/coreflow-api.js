@@ -7,8 +7,10 @@
 
   var RESOLVE_BIN =
     'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
-    '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-    '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
+    'chmod 755 "$BIN" 2>/dev/null';
 
   var CoreFlow = {
     /**

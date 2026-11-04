@@ -48,7 +48,7 @@ if [ -f "$LOG" ]; then
   esac
 fi
 
-nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &
+(nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &) 2>/dev/null || ("$BIN" </dev/null >> "$LOG" 2>&1 &)
 
 # A boot only counts as healthy after the daemon has survived its start window.
 (

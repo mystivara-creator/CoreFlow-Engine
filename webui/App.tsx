@@ -27,9 +27,10 @@ import {
 
 const RESOLVE_BIN =
   'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
-  '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-  '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
-const SERVICE = '/data/adb/modules/coreflow_engine/service.sh';
+  '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
+  '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+  '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
+  'chmod 755 "$BIN" 2>/dev/null';
 const CONFIG = '/data/adb/coreflow/coreflow.conf';
 const LOG = '/data/adb/coreflow/logs/coreflowd.log';
 
@@ -79,27 +80,6 @@ const execChecked = async (command: string): Promise<string> => {
 };
 
 const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
-const waitForNativeState = async (
-  readStatus: () => Promise<NativeStatus>,
-  expectedRunning: boolean,
-  timeoutMs = 15000
-): Promise<NativeStatus> => {
-  const deadline = Date.now() + timeoutMs;
-  let latest: NativeStatus | null = null;
-  do {
-    latest = await readStatus();
-    if (latest.running === expectedRunning) return latest;
-    await delay(500);
-  } while (Date.now() < deadline);
-
-  const observed = latest
-    ? `running=${latest.running}, pid=${latest.pid}, recoveryPending=${latest.recoveryPending}`
-    : 'status unavailable';
-  throw new Error(
-    `Daemon did not reach ${expectedRunning ? 'running' : 'stopped'} state within ${timeoutMs / 1000}s (${observed})`
-  );
-};
 
 const readStringKey = (text: string, key: string): string | null => {
   for (const rawLine of text.split('\n')) {
@@ -352,30 +332,44 @@ export const App: React.FC = () => {
     }
     if (isSwitching) return;
     setIsSwitching(true);
+    setNativeError(null);
     try {
       const before = await refreshNative();
       if (before.running) {
         await execChecked(`${RESOLVE_BIN}; "$BIN" --stop`);
       } else {
+        // Clear safety lockouts and unconfirmed boot attempts when the operator requests a manual start
         await execChecked(
-          `if [ -f "${SERVICE}" ]; then /system/bin/sh "${SERVICE}"; else ${RESOLVE_BIN}; nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null & fi`
+          `rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/modules/coreflow_engine/disable 2>/dev/null; ` +
+          `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
+          `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
+          `${RESOLVE_BIN}; ` +
+          `(nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null &) 2>/dev/null || ("$BIN" </dev/null >> "${LOG}" 2>&1 &)`
         );
       }
-      const after = await waitForNativeState(refreshNative, !before.running);
+
+      // Poll for daemon state transition up to 3.5s
+      let after = before;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await delay(350);
+        after = await refreshNative();
+        if (after.running !== before.running) break;
+      }
+
+      if (after.running === before.running) {
+        const errorLog = await execNativeKsuShell(`tail -n 6 ${LOG} 2>/dev/null || cat ${LOG} 2>/dev/null`);
+        const logSnippet = errorLog.stdout?.trim();
+        throw new Error(`Daemon state did not change${logSnippet ? ': ' + logSnippet : ''}`);
+      }
+
       addLog(
         'INFO',
         'NativeControl',
         after.running ? 'Daemon started with stability policy' : 'Daemon stopped and recovery verified'
       );
     } catch (error) {
-      // Keep the visible controls aligned with the actual daemon even when a transition fails.
-      try {
-        await refreshNative();
-      } catch {
-        // Preserve the original transition error; the next telemetry poll will retry status.
-      }
-      setNativeError(error instanceof Error ? error.message : String(error));
-      addLog('INFO', 'NativeControl', 'Failed: ' + (error instanceof Error ? error.message : String(error)));
+      setNativeError(String(error));
+      addLog('INFO', 'NativeControl', 'Failed: ' + String(error));
     } finally {
       setIsSwitching(false);
     }

@@ -37,11 +37,11 @@ case "$N" in ''|*[!0-9]*) N=0 ;; esac
 N=$((N + 1))
 write_atomic "$ATTEMPTS" "$N"
 
-if [ "$N" -ge 3 ]; then
+if [ "$N" -ge 5 ]; then
   [ ! -L "$STATE/SAFE_MODE" ] && : > "$STATE/SAFE_MODE"
   [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Safe mode after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
 fi
-if [ "$N" -ge 5 ]; then
+if [ "$N" -ge 8 ]; then
   [ ! -L "$MODDIR/disable" ] && : > "$MODDIR/disable"
   [ ! -L "$LOGS/boot_guard.log" ] && printf '%s Module disabled after %s unconfirmed boots\n' "$(date)" "$N" >> "$LOGS/boot_guard.log"
 fi
