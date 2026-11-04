@@ -26,8 +26,8 @@ mkdir -p "$LOGS" || exit 1
 chmod 700 "$STATE" "$LOGS" 2>/dev/null
 
 # Operator stop and boot-loop recovery are authoritative.
-if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable" ]; then
-  [ ! -L "$LOGS/service.log" ] && printf '%s CoreFlow disabled by safety marker\n' "$(date)" >> "$LOGS/service.log"
+if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable" ] || [ -e "/data/adb/modules/coreflow_engine/disable" ]; then
+  [ ! -L "$LOGS/service.log" ] && printf '%s CFAE disabled by safety marker\n' "$(date)" >> "$LOGS/service.log"
   exit 0
 fi
 

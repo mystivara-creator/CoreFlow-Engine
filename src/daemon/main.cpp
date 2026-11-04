@@ -95,6 +95,7 @@ bool marker(const char* path) noexcept {
 bool safety_halt_requested() noexcept {
     return marker("/data/adb/coreflow/SAFE_MODE") ||
            marker("/data/adb/coreflow/DISABLE") ||
+           marker("/data/adb/modules/cfae_framework/disable") ||
            marker("/data/adb/modules/coreflow_engine/disable");
 }
 

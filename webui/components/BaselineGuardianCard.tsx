@@ -42,7 +42,7 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
-              {nativeMode ? 'CoreFlow records observed pre-mutation values before each write and verifies restoration. This stops the daemon and restores tracked pre-CoreFlow values.' : `${nodesSnapshotted} nodes simulated; no device writes in preview.`}
+              {nativeMode ? 'CFAE records observed pre-mutation values before each write and verifies restoration. This stops the daemon and restores tracked OEM baseline values.' : `${nodesSnapshotted} nodes simulated; no device writes in preview.`}
             </p>
           </div>
         </div>
@@ -56,7 +56,7 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
               className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs transition-all active:scale-95 disabled:opacity-50"
             >
               <RotateCcw className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Restore Pre-CoreFlow Values</span>
+              <span>Restore OEM Baseline Values</span>
             </button>
           ) : (
             <div className="flex items-center gap-2 p-1 rounded-full bg-amber-500/10 border border-amber-500/30">

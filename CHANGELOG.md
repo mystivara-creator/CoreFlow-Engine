@@ -1,3 +1,28 @@
+# CFAE System Framework Release History
+
+## v3.0.R — CFAE System Framework (Autonomous Mutation Safety & Coordinated Optimization)
+
+### Coordinated Mutation Architecture
+- **5-Layer Safety Pipeline**: Transitioned from isolated single-parameter mutation to coordinated transaction optimization spanning Reasoning Engine, Dependency Analyzer, Mutation Planner, Safety Admission Gate, Transaction Coordinator, and Outcome Learning.
+- **12 Invariants of Safety**: Formally enforces zero write without verified baseline, immediate readback verification after each mutation, immutable external intervention guards (never overwriting Android/OEM adjustments), and idempotent journal rollback.
+- **Dependency Provenance**: DAG-based relationship tracking with explicit edges (Required-before, Requires, Coupled-with, Conflicts-with, Unknown). Unknown edge relationships default strictly to isolated evaluation.
+
+### Scheduling & Compute Equilibrium
+- **Semantic UClamp 2.0 Discovery**: Dynamic topology-aware discovery of Android cgroup v2 hierarchy across `/sys/fs/cgroup` and `/dev/cpuctl` with automatic encoding detection (percentage vs capacity 0-1024), scaling foreground interactive responsiveness while honoring OEM thermal limits.
+- **Real-Time Pressure Stall Information (PSI)**: Multi-resource equilibrium tracking (CPU, memory, I/O) that throttles artificial boosting under contention to prevent system stalls.
+
+### Multi-Sensor Thermal Matrix & Guard
+- **Sensor Fusion & Cooling Loop**: Evaluates compute (CPU/GPU), battery, skin, and board thermal zones alongside Android HAL thermal severity status. Paces clocks and clamps uclamp floors during elevated temperatures until temperatures normalize.
+- **Active Thermal Mitigation**: Keeps the daemon active to cool down the SoC during hot trips rather than exiting abruptly, reserving emergency exit only for physical shutdown limits.
+
+### Hardware Longevity & Storage Health
+- **Battery Stepped Charging Protection**: Automatically steps down charging current (`constant_charge_current_max`) during high thermal loads or heavy gaming workloads to preserve lithium-ion battery chemistry, reverting only when safe.
+- **UFS Storage Write Pacing**: Applies cgroup v2 relative I/O weighting to reduce storage contention, burst amplification, and background app frame drops.
+
+### Packaging & Compatibility
+- **Direct Flashable Module**: CI build produces a clean, single flashable module archive for KernelSU, KernelSU Next, Magisk, and APatch without double-nested zip packaging.
+- **Zero-Dependency Modern WebUI**: High-performance offline web dashboard with real-time equilibrium telemetry, thermal matrix, longevity controls, and Architecture Studio.
+
 ## Unreleased — fused thermal sensing and active cooling feedback
 
 - Evaluate recognized CPU/GPU, battery and skin sensors alongside Android thermal status.

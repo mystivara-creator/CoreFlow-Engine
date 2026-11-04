@@ -517,7 +517,7 @@ export const App: React.FC = () => {
       const status = await refreshNative();
       if (status.running || status.recoveryPending) throw new Error('Rollback not verified');
 
-      setRestoreFeedback('Tracked pre-CoreFlow values restored and daemon stopped');
+      setRestoreFeedback('Tracked OEM baseline values restored and daemon stopped');
       addLog('BASELINE', 'NativeRecovery', 'Recovery journal cleared after verified rollback');
     } catch (error) {
       setRestoreFeedback('Restoration failed: ' + String(error));

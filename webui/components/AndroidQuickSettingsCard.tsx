@@ -33,7 +33,7 @@ export const AndroidQuickSettingsCard: React.FC<Props> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Control CoreFlow Engine directly from the Android Quick Settings status shade without opening an app.
+            Control CFAE System Framework directly from the Android Quick Settings status shade without opening an app.
           </p>
         </div>
       </div>
