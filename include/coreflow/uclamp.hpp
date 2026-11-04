@@ -32,6 +32,7 @@ public:
     [[nodiscard]] uint32_t get_top_app_min() const;
     [[nodiscard]] uint32_t get_top_app_max() const;
     [[nodiscard]] bool owned_values_intact();
+    bool resync() noexcept;
 
 private:
     enum class Encoding : uint8_t { Unknown, Percentage, Capacity1024 };

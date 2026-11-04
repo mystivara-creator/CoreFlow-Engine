@@ -332,6 +332,20 @@ bool UclampGovernor::owned_values_intact() {
     return false;
 }
 
+bool UclampGovernor::resync() noexcept {
+    if (target_path_.empty()) return false;
+    supported_ = true;
+    has_written_ = false;
+    auto& baseline = BaselineStore::instance();
+    (void)baseline.rollback(target_path_ + "/cpu.uclamp.min");
+    (void)baseline.rollback(target_path_ + "/cpu.uclamp.max");
+    const uint32_t current_max = get_top_app_max();
+    oem_max_ = current_max > 0 ? current_max : 1024u;
+    last_min_ = get_top_app_min();
+    last_max_ = oem_max_;
+    return true;
+}
+
 uint32_t UclampGovernor::get_top_app_min() const {
     return supported_ ? read_uclamp_node(target_path_ + "/cpu.uclamp.min") : 0;
 }

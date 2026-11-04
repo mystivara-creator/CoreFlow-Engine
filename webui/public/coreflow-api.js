@@ -90,6 +90,18 @@
     },
 
     /**
+     * Start the daemon in detached background session mode
+     */
+    startDaemon: async function () {
+      var log = '/data/adb/coreflow/logs/coreflowd.log';
+      var cmd = 'rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE 2>/dev/null; ' +
+                'mkdir -p /data/adb/coreflow/logs 2>/dev/null; ' +
+                RESOLVE_BIN + '; "$BIN" --daemon >> "' + log + '" 2>&1 </dev/null';
+      var res = await this.exec(cmd);
+      return res.errno === 0;
+    },
+
+    /**
      * Rollback all mutations to factory baseline
      */
     rollbackBaseline: async function () {

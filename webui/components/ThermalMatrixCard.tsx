@@ -49,8 +49,21 @@ export const ThermalMatrixCard: React.FC<Props> = ({
     }
   };
 
+  const formatZoneId = (rawId: string) => {
+    const trimmed = rawId.trim();
+    if (trimmed.startsWith('/sys/class/thermal/thermal_zone')) {
+      return `tz${trimmed.slice('/sys/class/thermal/thermal_zone'.length)}`;
+    }
+    if (trimmed.startsWith('thermal_zone')) {
+      return `tz${trimmed.slice('thermal_zone'.length)}`;
+    }
+    const parts = trimmed.split('/').filter(Boolean);
+    const last = parts[parts.length - 1] ?? trimmed;
+    return last.replace(/^thermal_zone/, 'tz');
+  };
+
   return (
-    <div className="m3-card p-6 sm:p-8 space-y-6">
+    <div className="m3-card p-5 sm:p-8 space-y-6">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
         <div className="space-y-1.5 max-w-2xl">
@@ -83,10 +96,10 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       <div className="m3-tonal-block p-5">
         <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 mb-3">
           <span className="flex items-center gap-2 font-medium">
-            <Thermometer className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            Weighted SoC Composite Diagnostic
+            <Thermometer className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
+            <span>Weighted SoC Composite Diagnostic</span>
           </span>
-          <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 text-sm">
+          <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 text-sm shrink-0">
             {composite > 0 ? composite.toFixed(1) : '--.-'} °C
           </span>
         </div>
@@ -114,17 +127,17 @@ export const ThermalMatrixCard: React.FC<Props> = ({
         ].map(({ label, val, sub, Icon }) => (
           <div
             key={label}
-            className="m3-tonal-block p-4 flex flex-col justify-between col-span-1 last:col-span-2 lg:last:col-span-1"
+            className="m3-tonal-block p-4 flex flex-col justify-between col-span-1 last:col-span-2 lg:last:col-span-1 min-w-0"
           >
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-              <span className="font-medium">{label}</span>
-              <Icon className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 mb-2">
+              <span className="font-medium truncate">{label}</span>
+              <Icon className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
             </div>
             <div className="text-xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
               {val > 0 ? val.toFixed(1) : '--.-'}{' '}
               <span className="text-xs font-normal text-slate-500 dark:text-slate-400">°C</span>
             </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">{sub}</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 truncate">{sub}</div>
           </div>
         ))}
       </div>
@@ -132,18 +145,18 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       {/* Collapsible Full Hardware Thermal Zone Inspector */}
       {sensors.length > 0 && (
         <details className="group m3-tonal-block overflow-hidden">
-          <summary className="flex items-center justify-between px-5 py-4 cursor-pointer select-none text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03]">
-            <span className="flex items-center gap-2">
-              <Filter className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
-              Discovered Hardware Thermal Zones ({sensors.length} Zones)
+          <summary className="flex items-center justify-between gap-3 px-5 py-4 cursor-pointer select-none text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03]">
+            <span className="flex items-center gap-2 min-w-0">
+              <Filter className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
+              <span className="truncate">Discovered Hardware Thermal Zones ({sensors.length} Zones)</span>
             </span>
-            <span className="text-xs font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200">
+            <span className="text-xs font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200 shrink-0">
               ▼
             </span>
           </summary>
 
-          <div className="p-5 border-t border-slate-900/[0.06] dark:border-white/[0.06] space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="p-4 sm:p-5 border-t border-slate-900/[0.06] dark:border-white/[0.06] space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex gap-1.5 flex-wrap">
                 {[
                   { id: null, label: 'All Zones' },
@@ -170,7 +183,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
                 })}
               </div>
 
-              <div className="relative min-w-[220px]">
+              <div className="relative w-full sm:w-56">
                 <Search className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
@@ -182,7 +195,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
               </div>
             </div>
 
-            <div className="max-h-64 overflow-y-auto rounded-2xl border border-slate-900/[0.06] dark:border-white/[0.06] divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
+            <div className="max-h-72 overflow-y-auto rounded-2xl border border-slate-900/[0.06] dark:border-white/[0.06] divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
               {filteredSensors.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-500">
                   No matching hardware thermal zones found.
@@ -191,16 +204,26 @@ export const ThermalMatrixCard: React.FC<Props> = ({
                 filteredSensors.map((sensor) => (
                   <div
                     key={sensor.id + sensor.type}
-                    className="grid grid-cols-[64px_1fr_140px_90px] items-center gap-3 px-4 py-2.5 text-xs hover:bg-slate-900/[0.02] dark:hover:bg-white/[0.02]"
+                    title={`${sensor.id} (${sensor.type})`}
+                    className="flex items-center justify-between gap-3 px-3.5 sm:px-4 py-2.5 text-xs hover:bg-slate-900/[0.02] dark:hover:bg-white/[0.02]"
                   >
-                    <span className="font-mono text-slate-400">{sensor.id}</span>
-                    <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
-                      {sensor.type}
-                    </span>
-                    <span className="text-slate-500 dark:text-slate-400 hidden sm:inline">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <span className="font-mono text-[11px] px-2 py-0.5 rounded-lg bg-slate-900/[0.05] dark:bg-white/[0.07] text-slate-600 dark:text-slate-300 shrink-0 min-w-[44px] text-center">
+                        {formatZoneId(sensor.id)}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                          {sensor.type}
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate sm:hidden">
+                          {getCategoryLabel(sensor.category)}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-slate-500 dark:text-slate-400 hidden sm:inline shrink-0 w-36 truncate">
                       {getCategoryLabel(sensor.category)}
                     </span>
-                    <div className="font-mono tabular-nums font-semibold text-right text-slate-900 dark:text-slate-100">
+                    <div className="font-mono tabular-nums font-semibold text-right text-slate-900 dark:text-slate-100 shrink-0 pl-2">
                       {sensor.celsius !== null && sensor.celsius >= 0 ? (
                         `${sensor.celsius.toFixed(1)} °C`
                       ) : (

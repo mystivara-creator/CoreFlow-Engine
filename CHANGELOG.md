@@ -19,9 +19,10 @@
 - **Battery Stepped Charging Protection**: Automatically steps down charging current (`constant_charge_current_max`) during high thermal loads or heavy gaming workloads to preserve lithium-ion battery chemistry, reverting only when safe.
 - **UFS Storage Write Pacing**: Applies cgroup v2 relative I/O weighting to reduce storage contention, burst amplification, and background app frame drops.
 
-### Packaging & Compatibility
+### Packaging, Daemon Persistence & Material Design 3 WebUI
+- **Detached Session & Cgroup Survival (`--daemon`)**: Double-fork POSIX session isolation (`setsid`), automatic migration out of Android app/WebView UID cgroups into root system cgroups, OOM killer protection (`oom_score_adj -900`), and non-terminating `UclampGovernor::resync()` / `FrequencyController` recovery across transient OEM PowerHAL touch boosts so `coreflowd` continues running uninterrupted when closing the WebUI.
 - **Direct Flashable Module**: CI build produces a clean, single flashable module archive for KernelSU, KernelSU Next, Magisk, and APatch without double-nested zip packaging.
-- **Zero-Dependency Modern WebUI**: High-performance offline web dashboard with real-time equilibrium telemetry, thermal matrix, longevity controls, and Architecture Studio.
+- **Material Design 3 WebUI**: Minimalist Google Material Design 3 interface with soft backdrop blur (`backdrop-blur-2xl`), unified tonal palette, responsive mobile header, and truncation-safe hardware thermal zone inspector.
 
 ## Unreleased — fused thermal sensing and active cooling feedback
 

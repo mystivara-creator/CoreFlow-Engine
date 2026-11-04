@@ -88,9 +88,17 @@ bool FrequencyController::apply(double scale) {
             target = *next;
         }
         if (scale == 1.0) target = domain.baseline;
-        if (target < floor || target > domain.baseline) return false;
+        if (target < floor || target > domain.baseline) {
+            domain.retired = true;
+            (void)store.rollback(domain.maximum);
+            continue;
+        }
         if (target == actual) continue;
-        if (!store.apply_mutation(domain.maximum, std::to_string(target))) return false;
+        if (!store.apply_mutation(domain.maximum, std::to_string(target))) {
+            domain.retired = true;
+            (void)store.rollback(domain.maximum);
+            continue;
+        }
         domain.last = target;
     }
     return true;

@@ -375,7 +375,7 @@ export const App: React.FC = () => {
             `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
             `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
             `${RESOLVE_BIN}; ` +
-            `(nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null &) 2>/dev/null || ("$BIN" </dev/null >> "${LOG}" 2>&1 &)`
+            `"$BIN" --daemon >> "${LOG}" 2>&1 </dev/null || (setsid "$BIN" >> "${LOG}" 2>&1 </dev/null &) 2>/dev/null || (nohup "$BIN" >> "${LOG}" 2>&1 </dev/null &) 2>/dev/null`
         );
       }
 

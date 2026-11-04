@@ -359,6 +359,75 @@ void clear_pid(const UniqueFd& lock) noexcept {
     }
 }
 
+void write_sys_node_quiet(const char* path, std::string_view content) noexcept {
+    UniqueFd fd(::open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return;
+    const ssize_t written = ::write(fd.get(), content.data(), content.size());
+    (void)written;
+}
+
+void escape_app_cgroups_and_protect_oom() noexcept {
+    // When launched from a root manager WebUI (KernelSU / APatch / MMRL), the child
+    // inherits the WebView/Manager app's UID/PID cgroup. When the user closes the WebUI,
+    // Android's libprocessgroup kills all processes remaining in that app's cgroup.
+    // Migrate coreflowd into the root/system cgroups and harden oom_score_adj.
+    const std::string pid_str = std::to_string(::getpid()) + "\n";
+    constexpr const char* kRootCgroups[] = {
+        "/sys/fs/cgroup/cgroup.procs",
+        "/dev/cg2_bpf/cgroup.procs",
+        "/acct/cgroup.procs",
+        "/dev/cpuset/system-background/cgroup.procs",
+        "/dev/cpuset/system-background/tasks",
+    };
+    for (const char* cg : kRootCgroups) {
+        write_sys_node_quiet(cg, pid_str);
+    }
+    write_sys_node_quiet("/proc/self/oom_score_adj", "-900\n");
+}
+
+bool daemonize_process() noexcept {
+    const pid_t first = ::fork();
+    if (first < 0) return false;
+    if (first > 0) ::_exit(0);
+
+    if (::setsid() < 0) return false;
+
+    const pid_t second = ::fork();
+    if (second < 0) return false;
+    if (second > 0) ::_exit(0);
+
+    (void)::umask(0077);
+    (void)::chdir("/");
+
+    // Close all inherited descriptors (such as WebView/ksu.exec pipes) above STDERR.
+    for (int fd = 3; fd < 256; ++fd) {
+        (void)::close(fd);
+    }
+
+    const int null_fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (null_fd >= 0) {
+        (void)::dup2(null_fd, STDIN_FILENO);
+        if (null_fd > STDERR_FILENO) (void)::close(null_fd);
+    }
+
+    (void)ensure_secure_state_dir();
+    const std::string logs_dir = std::string(kStateDir) + "/logs";
+    (void)::mkdir(logs_dir.c_str(), 0700);
+    (void)::chmod(logs_dir.c_str(), 0700);
+
+    const std::string log_path = logs_dir + "/coreflowd.log";
+    const int log_fd = ::open(
+        log_path.c_str(),
+        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW,
+        0600);
+    if (log_fd >= 0) {
+        (void)::dup2(log_fd, STDOUT_FILENO);
+        (void)::dup2(log_fd, STDERR_FILENO);
+        if (log_fd > STDERR_FILENO) (void)::close(log_fd);
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -366,6 +435,7 @@ int main(int argc, char* argv[]) {
     (void)::setenv("LC_ALL", "C", 1);
     (void)std::setlocale(LC_ALL, "C");
 
+    bool fork_daemon = false;
     if (argc == 2) {
         const std::string_view command(argv[1]);
         if (command == "--capabilities") { print_capabilities(); return 0; }
@@ -376,20 +446,43 @@ int main(int argc, char* argv[]) {
         if (command == "--stop" || command == "--rollback-baseline") {
             return stop_daemon();
         }
-        std::cerr << "Usage: coreflowd [--status|--stop|--rollback-baseline]\n";
+        if (command == "--daemon" || command == "-d") {
+            fork_daemon = true;
+        } else {
+            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities]\n";
+            return 2;
+        }
+    } else if (argc != 1) {
+        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities]\n";
         return 2;
     }
-    if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--status|--stop|--rollback-baseline]\n";
-        return 2;
-    }
-
-    install_signal_hardening();
 
     if (safety_halt_requested()) {
         emit_log(true, "[CoreFlow] Safety marker active; refusing runtime mutation.");
         return 2;
     }
+
+    // If another live coreflowd instance already holds the PID file, exit cleanly.
+    if (daemon_pid() > 0) {
+        return 0;
+    }
+
+    if (fork_daemon) {
+        if (!daemonize_process()) {
+            emit_log(true, "[CoreFlow] Failed to detach background daemon session.");
+            return 1;
+        }
+    } else {
+        // Even when launched without --daemon (e.g. via service.sh or nohup),
+        // detach from the caller's process group/session and close leaked descriptors.
+        (void)::setsid();
+        for (int fd = 3; fd < 256; ++fd) {
+            (void)::close(fd);
+        }
+    }
+
+    escape_app_cgroups_and_protect_oom();
+    install_signal_hardening();
 
     UniqueFd pid_lock;
     if (!write_pid(pid_lock)) {
@@ -437,6 +530,7 @@ int main(int argc, char* argv[]) {
     bool thermal_ready = false;
     bool unavailable_reported = false;
     WorkloadState current = WorkloadState::Balanced;
+    uint32_t freq_resync_ticks = 0;
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
@@ -445,23 +539,27 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    baseline.rollback_all();
-                    if (baseline.has_active_mutations()) { reactor.stop(); continue; }
+                    (void)baseline.rollback_all();
                     config = DaemonConfig::load_best_available();
-                    governor = UclampGovernor{};
+                    if (!governor.resync()) {
+                        governor = UclampGovernor{};
+                    }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
                     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
                     HardwareLongevityManager::instance().initialize({
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
                         config.top_app_io_weight, config.background_io_weight});
+                    const uint32_t clamped_ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec timer{};
-                    timer.it_interval.tv_sec = config.temp_monitor_interval_ms / 1000;
-                    timer.it_interval.tv_nsec = (config.temp_monitor_interval_ms % 1000) * 1000000;
+                    timer.it_interval.tv_sec = clamped_ms / 1000;
+                    timer.it_interval.tv_nsec = (clamped_ms % 1000) * 1000000L;
                     timer.it_value = timer.it_interval;
-                    if (::timerfd_settime(timer_fd, 0, &timer, nullptr) != 0) reactor.stop();
+                    (void)::timerfd_settime(timer_fd, 0, &timer, nullptr);
                     last_tick = std::chrono::steady_clock::now();
-                    applied = false; thermal_ready = false; cooling_feedback.reset();
+                    applied = false;
+                    thermal_ready = false;
+                    cooling_feedback.reset();
                     emit_log(false, "[CoreFlow] Configuration reloaded on SIGHUP.");
                 } else {
                     reactor.stop();
@@ -479,11 +577,17 @@ int main(int argc, char* argv[]) {
             reactor.stop();
             return;
         }
-        if (config.enable_uclamp && governor.is_supported() && !governor.owned_values_intact() && applied) {
-            baseline.rollback_all();
-            applied = false;
-            reactor.stop();
-            return;
+
+        // If an OEM PowerHAL touch boost temporarily wrote to UClamp, yield for the active boost
+        // and resynchronize ownership rather than terminating the daemon.
+        bool uclamp_yield_this_tick = false;
+        if (config.enable_uclamp) {
+            if (!governor.is_supported()) {
+                (void)governor.resync();
+            } else if (!governor.owned_values_intact()) {
+                (void)governor.resync();
+                uclamp_yield_this_tick = true;
+            }
         }
 
         auto thermal = ThermalMonitor::instance().assess();
@@ -513,11 +617,10 @@ int main(int argc, char* argv[]) {
             thermal_ready = false;
             cooling_feedback.reset();
             if (applied) {
-                baseline.rollback_all();
+                (void)baseline.rollback_all();
                 applied = false;
                 controller->reset();
-                governor = UclampGovernor{};
-                if (baseline.has_active_mutations()) { reactor.stop(); return; }
+                (void)governor.resync();
                 frequencies.discover(false, false);
             }
             return;
@@ -534,7 +637,7 @@ int main(int argc, char* argv[]) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
-            baseline.rollback_all();
+            (void)baseline.rollback_all();
             applied = false;
             return;
         }
@@ -549,16 +652,19 @@ int main(int argc, char* argv[]) {
         };
 
         const auto now_tick = std::chrono::steady_clock::now();
-        const double elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
+        const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
+        const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
         const auto decision = controller->step({
-            thermal.pressure, elapsed, pressure.cpu, pressure.memory, pressure.io,
+             std::clamp(thermal.pressure, 0.0, 130.0), elapsed,
+            std::clamp(pressure.cpu, 0.0, 100.0),
+            std::clamp(pressure.memory, 0.0, 100.0),
+            std::clamp(pressure.io, 0.0, 100.0),
             85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
         if (!decision.valid) {
-            baseline.rollback_all();
-            reactor.stop();
+            controller->reset();
             return;
         }
 
@@ -583,22 +689,30 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Periodically re-discover frequency domains if OEM PowerHAL temporarily retired them.
+        if ((config.enable_cpu_frequency_control && frequencies.cpu_count() == 0) ||
+            (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0)) {
+            if (++freq_resync_ticks >= 5) {
+                freq_resync_ticks = 0;
+                frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+            }
+        } else {
+            freq_resync_ticks = 0;
+        }
+
         // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
         if (!frequencies.apply(active_capacity_scale)) {
-            baseline.rollback_all();
-            reactor.stop();
-            return;
+            frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
-        if (!HardwareLongevityManager::instance().apply_storage_pacing()) {
-            baseline.rollback_all(); reactor.stop(); return;
-        }
+        (void)HardwareLongevityManager::instance().apply_storage_pacing();
         HardwareLongevityManager::instance().monitor_battery_thermals(temp);
+
         const auto capacity = static_cast<uint32_t>(std::lround(active_capacity_scale * 1024.0));
-        if (config.enable_uclamp && governor.is_supported() && !governor.apply_budget(desired,
-                config.top_app_interactive_min, config.top_app_interactive_max, capacity)) {
-            baseline.rollback_all();
-            reactor.stop();
-            return;
+        if (config.enable_uclamp && !uclamp_yield_this_tick && governor.is_supported()) {
+            if (!governor.apply_budget(desired,
+                    config.top_app_interactive_min, config.top_app_interactive_max, capacity)) {
+                (void)governor.resync();
+            }
         }
         const auto trend = cooling_feedback.sample(thermal,
             std::chrono::duration<double>(now_tick.time_since_epoch()).count(),
