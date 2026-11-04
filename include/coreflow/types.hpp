@@ -1,8 +1,9 @@
 /**
  * @file types.hpp
- * @brief CoreFlow Engine Modern C++20 Core Type Definitions
+ * @brief CFAE System Framework v3.0.R ISO C++23 Core Type Definitions
+ *        and Coordinated Mutation Transaction Models.
  * @author mystivara-creator
- * @license Apache-2.0
+ * @license MIT
  */
 
 #pragma once
@@ -39,6 +40,58 @@ inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
     value = d;
     return true;
 }
+
+// ============================================================================
+// Coordinated Mutation Transaction & Safety Model (v3.0.R)
+// ============================================================================
+enum class DependencyRelation : uint8_t {
+    RequiredBefore = 0, ///< Control A must be applied before Control B
+    Requires = 1,       ///< Control B is valid only if prerequisite A is satisfied
+    ConflictsWith = 2,  ///< Controls A and B must never be active simultaneously
+    CoupledWith = 3,    ///< Verified semantic coupling; may be evaluated as a group
+    Unknown = 4         ///< Unverified relationship; never assume safe to group
+};
+
+enum class RiskClass : uint8_t {
+    Low = 0,       ///< Strong semantics, bounded impact, reversible, high observability
+    Medium = 1,    ///< Understood interaction & rollback; applied step-by-step in transaction
+    High = 2,      ///< Broad impact or uncertain platform semantics; strictly isolated
+    Forbidden = 3  ///< Missing baseline, unsafe rollback, ownership conflict, or policy violation
+};
+
+struct RiskDimensions {
+    uint8_t semantic_uncertainty{0};
+    uint8_t platform_uncertainty{0};
+    uint8_t interaction_risk{0};
+    uint8_t reversibility_cost{0};
+    uint8_t system_impact{0};
+    uint8_t observability_gap{0};
+    uint8_t ownership_uncertainty{0};
+};
+
+enum class TransactionStage : uint8_t {
+    Proposed = 0,
+    AdmissionCheck = 1,
+    DeferredOrRejected = 2,
+    Prepared = 3,
+    Applying = 4,
+    ReadbackVerify = 5,
+    RollingBack = 6,
+    Observing = 7,
+    DeferredReview = 8,
+    Committed = 9,
+    Retained = 10
+};
+
+enum class TransactionOutcome : uint8_t {
+    Improved = 0,         ///< Measurable benefit with zero safety regression
+    Neutral = 1,          ///< No material benefit observed
+    Regressed = 2,        ///< Degradation or elevated risk detected
+    Inconclusive = 3,     ///< Insufficient data or non-comparable workload context
+    Aborted = 4,          ///< Halted by safety invariant or thermal guard
+    OwnershipLost = 5,    ///< External OEM/Android process modified target value
+    RecoveryRequired = 6  ///< Unresolved journal state requiring idempotent recovery
+};
 
 // ============================================================================
 // Device Tier & Architecture Taxonomy
@@ -139,4 +192,3 @@ enum class CoreFlowError {
 std::error_code make_error_code(CoreFlowError e);
 
 } // namespace coreflow
-

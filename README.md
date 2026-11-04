@@ -6,26 +6,34 @@
   <a href="https://t.me/VaraProjects"><img src="https://img.shields.io/badge/Channel-Telegram-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Channel"></a>
   <a href="https://t.me/VaraProjectsDiscussion"><img src="https://img.shields.io/badge/Discussion-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Discussion"></a>
   <a href="https://instagram.com/mystivara"><img src="https://img.shields.io/badge/Instagram-mystivara-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram"></a>
-  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/Version-v3.0.R-0ea5e9?style=for-the-badge&logo=github&logoColor=white" alt="Latest Version"></a>
+  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/Version-v3.0.R-0b57d0?style=for-the-badge&logo=github&logoColor=white" alt="Latest Version"></a>
   <img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License">
 </p>
 
 ## About CFAE System Framework
 
-**CFAE System Framework** (formerly CoreFlow Engine) is an autonomous, stability-first Android optimizer engineered in native ISO C++23 and Rust 2024. Rather than applying blind benchmark boosts or fragile device-specific overrides, CFAE dynamically discovers semantic kernel interfaces (cgroup-v2, UClamp, PSI pressure, and SoC thermal zones) to deliver sustained fluid responsiveness while strictly protecting hardware longevity and thermal safety.
+**CFAE System Framework** (formerly CoreFlow Engine) is an autonomous, mutation-safe Android system optimization framework engineered across **ISO C++23**, **Rust 2024**, and **Kotlin 2.1**. Rather than applying blind single-parameter tweaks or fragile device-specific overrides, CFAE coordinates changes through **Mutation Transactions**—combining optimization intent, dependency provenance, multi-dimensional risk budgets, immediate readback verification, and OEM ownership guards.
 
-Every mutation is atomic, journaled, and 100% reversible back to factory OEM baselines.
+Every mutation is journaled prior to execution, verified on readback, and 100% reversible to factory OEM baselines.
+
+---
+
+## Programming Language Architecture
+
+- **ISO C++23 (`src/`, `include/`)**: Zero-polling `epoll`/`timerfd`/`signalfd` daemon runtime, semantic `cgroup v2` & `sysfs` capability discovery, `O_NOFOLLOW` + `fstat` object identity verification, and durable write-ahead journal (`CFJ3`).
+- **Rust 2024 (`rust/`)**: Memory-safe thermal PID equilibrium controller, hysteresis state machine, and PSI contention arbitration bridged via `cxx`.
+- **Kotlin 2.1 (`android/`)**: Native Android 15 (API 35) Quick Settings `TileService` and thermal broadcast receiver.
+- **Material Design 3 WebUI (`webui/`, `module/webroot/`)**: Minimalist Google Material You interface with frosted soft-blur tonal surfaces, real-time transaction lifecycle telemetry, and Architecture Studio.
 
 ---
 
 ## Highlights & Capabilities
 
-- **Autonomous Mutation Safety**: Zero hardcoded sysfs nodes; broad runtime discovery paired with narrow, verified actuator mutations.
-- **Dynamic UClamp 2.0 Discovery**: Semantic discovery of top-app cgroups with capacity encoding awareness (0..1024 or percentage).
-- **Multi-Sensor Thermal Matrix & PSI Guard**: Real-time evaluation of thermal severity and CPU/Memory/IO pressure headroom.
-- **Hardware Longevity**: Paced storage I/O and dynamic battery charging step control during elevated temperatures.
-- **Atomic Rollback Journal**: Fsync write-ahead journal ensures immediate, idempotent recovery to factory OEM values upon exit or safety halt.
-- **Modern Offline WebUI**: Interactive dashboard integrated directly into root manager web views for real-time monitoring and control.
+- **5-Layer Coordinated Mutation Safety**: Reasoning Engine → Dependency Analyzer → Mutation Planner → Safety Admission Gate & Transaction Coordinator → Outcome Evaluator & Learning.
+- **12 Non-Negotiable Safety Invariants**: Enforces valid baselines before every write, immediate readback verification, external OEM ownership protection (`OWNERSHIP_LOST` safe release), and idempotent crash recovery.
+- **Semantic UClamp 2.0 Discovery**: Dynamic discovery of top-app cgroups across `/sys/fs/cgroup` and `/dev/cpuctl` with automatic capacity encoding detection (`0..1024` vs percentage).
+- **Multi-Sensor Thermal Matrix & PSI Guard**: Evaluates compute, battery, skin, and board thermal zones alongside Android NDK thermal severity and Linux `/proc/pressure` (CPU, Memory, I/O).
+- **Hardware Longevity**: Bounded battery step-charging ceiling reduction during elevated temperatures and cgroup v2 relative I/O weighting.
 
 ---
 
@@ -66,12 +74,10 @@ su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --rollback-baseline
 
 ## Community & Support
 
-Join our official channels for updates, discussions, configuration sharing, and direct developer contact:
-
-- 📢 **Telegram Channel**: [@VaraProjects](https://t.me/VaraProjects) — Official releases, announcements, and news
-- 💬 **Telegram Discussion Group**: [@VaraProjectsDiscussion](https://t.me/VaraProjectsDiscussion) — Community support, testing, and feedback
-- 📸 **Instagram**: [@mystivara](https://instagram.com/mystivara) — Project creator and developer profile
-- 🐛 **Issue Tracker**: [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues) — Report bugs or submit feature suggestions
+- **Telegram Channel**: [@VaraProjects](https://t.me/VaraProjects) — Official releases, announcements, and news
+- **Telegram Discussion Group**: [@VaraProjectsDiscussion](https://t.me/VaraProjectsDiscussion) — Community support, testing, and feedback
+- **Instagram**: [@mystivara](https://instagram.com/mystivara) — Project creator and developer profile
+- **Issue Tracker**: [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues) — Report bugs or submit feature suggestions
 
 ---
 

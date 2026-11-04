@@ -1,10 +1,30 @@
-// CoreFlow Modern v2 preview model.
-// Native mode never uses this simulator; it exists only for browser preview.
+// CFAE System Framework v3.0.R — Coordinated Mutation Transaction & Preview Engine.
+// Native mode reads real daemon telemetry; this simulator models the 5-layer
+// Mutation Safety architecture strictly for browser preview.
+
 export type AutonomousMode =
   | 'balanced'
   | 'sustained_load'
   | 'pressure_guard'
   | 'thermal_guard';
+
+export type TransactionStage =
+  | 'PLANNED'
+  | 'APPLIED'
+  | 'VERIFIED'
+  | 'OBSERVING'
+  | 'RETAINED';
+
+export type RiskClass = 'Low' | 'Medium' | 'High' | 'Forbidden';
+
+export type TransactionOutcome =
+  | 'IMPROVED'
+  | 'NEUTRAL'
+  | 'REGRESSED'
+  | 'INCONCLUSIVE'
+  | 'ABORTED'
+  | 'OWNERSHIP_LOST'
+  | 'RECOVERY_REQUIRED';
 
 export interface ThermalSensorDetail {
   id: string;
@@ -36,6 +56,10 @@ export interface AutonomousTelemetry {
   ioPressurePct: number;
   baselineNodesSnapshotted: number;
   baselineStatus: 'protected' | 'restored';
+  transactionStage?: TransactionStage;
+  riskClass?: RiskClass;
+  lastOutcome?: TransactionOutcome;
+  ownershipIntact?: boolean;
   timestamp: number;
 }
 
@@ -82,31 +106,35 @@ export function getModeMeta(mode: AutonomousMode) {
     case 'sustained_load':
       return {
         label: 'Sustained Load',
-        description: 'CPU pressure is elevated while thermal headroom remains available.',
-        badgeColor: 'text-sky-500 bg-sky-500/10 border-sky-500/30',
-        glowColor: '#0ea5e9',
+        description: 'Coordinated CPU responsiveness transaction active with verified thermal headroom.',
+        stage: 'OBSERVING' as TransactionStage,
+        risk: 'Medium' as RiskClass,
+        outcome: 'IMPROVED' as TransactionOutcome,
       };
     case 'pressure_guard':
       return {
         label: 'Pressure Guard',
-        description: 'Memory or I/O contention is elevated, so artificial boosting is reduced.',
-        badgeColor: 'text-amber-500 bg-amber-500/10 border-amber-500/30',
-        glowColor: '#f59e0b',
+        description: 'Memory or I/O contention elevated; non-essential boost candidates deferred.',
+        stage: 'VERIFIED' as TransactionStage,
+        risk: 'Low' as RiskClass,
+        outcome: 'NEUTRAL' as TransactionOutcome,
       };
     case 'thermal_guard':
       return {
         label: 'Thermal Guard',
-        description: 'Thermal pressure has priority; scheduler demand is reduced smoothly.',
-        badgeColor: 'text-rose-500 bg-rose-500/10 border-rose-500/30',
-        glowColor: '#f43f5e',
+        description: 'OEM/Android thermal safety gate engaged; active mitigation pacing SoC demand.',
+        stage: 'VERIFIED' as TransactionStage,
+        risk: 'Low' as RiskClass,
+        outcome: 'ABORTED' as TransactionOutcome,
       };
     case 'balanced':
     default:
       return {
-        label: 'Balanced',
-        description: 'Stable daily baseline with the configured top-app UClamp floor.',
-        badgeColor: 'text-teal-500 bg-teal-500/10 border-teal-500/30',
-        glowColor: '#14b8a6',
+        label: 'Balanced Equilibrium',
+        description: 'Coordinated daily baseline retained with readback-verified top-app UClamp floor.',
+        stage: 'RETAINED' as TransactionStage,
+        risk: 'Low' as RiskClass,
+        outcome: 'IMPROVED' as TransactionOutcome,
       };
   }
 }
@@ -141,8 +169,12 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
     ioPressurePct: 0.4,
-    baselineNodesSnapshotted: 0,
+    baselineNodesSnapshotted: 4,
     baselineStatus: 'protected',
+    transactionStage: 'RETAINED',
+    riskClass: 'Low',
+    lastOutcome: 'IMPROVED',
+    ownershipIntact: true,
     timestamp: Date.now(),
   };
 }
@@ -156,22 +188,22 @@ export function createInitialLogs(): ReactionLogEvent[] {
       id: 'preview-1',
       timestamp: stamp(9),
       type: 'INFO',
-      tag: 'Discovery',
-      message: 'Preview: semantic top-app UClamp capability discovered.',
+      tag: 'AdmissionGate',
+      message: 'Preview: capability semantics, range bounds, and OEM ownership verified.',
     },
     {
       id: 'preview-2',
       timestamp: stamp(6),
       type: 'BASELINE',
-      tag: 'Recovery',
-      message: 'Preview: pre-mutation values protected by a write-ahead journal.',
+      tag: 'Coordinator',
+      message: 'Preview: write-ahead transaction journal committed prior to mutation.',
     },
     {
       id: 'preview-3',
       timestamp: stamp(3),
       type: 'INFO',
-      tag: 'Stability',
-      message: 'Preview: four-state thermal + PSI policy is active.',
+      tag: 'OutcomeEval',
+      message: 'Preview: readback verified (uclamp.min=320, uclamp.max=1024) -> RETAINED.',
     },
   ];
 }
@@ -188,8 +220,9 @@ export function stepAutonomousSimulation(
         uclampMin: 0,
         uclampMax: 1024,
         mode: 'balanced',
-        modeLabel: 'Engine Paused',
-        modeDescription: 'Preview controls paused; OEM baseline assumed.',
+        modeLabel: 'Engine Standby',
+        modeDescription: 'Coordinated mutations paused; OEM baseline values intact.',
+        transactionStage: 'PLANNED',
         timestamp: Date.now(),
       },
     };
@@ -239,6 +272,10 @@ export function stepAutonomousSimulation(
     cpuPressurePct: Number(cpu.toFixed(1)),
     memoryPressurePct: Number(memory.toFixed(1)),
     ioPressurePct: Number(io.toFixed(1)),
+    transactionStage: meta.stage,
+    riskClass: meta.risk,
+    lastOutcome: meta.outcome,
+    ownershipIntact: true,
     timestamp: Date.now(),
   };
 
@@ -259,18 +296,9 @@ function createPreviewEvent(
     id: `preview-${Date.now()}-${previewEventSeq}`,
     timestamp: new Date().toTimeString().slice(0, 8),
     type: mode === 'thermal_guard' ? 'THERMAL' : mode === 'sustained_load' ? 'BOOST' : 'INFO',
-    tag: 'Stability',
+    tag: 'Transaction',
     message:
-      'Preview state -> ' +
-      label +
-      ' | cpu=' +
-      next.cpuPressurePct +
-      '% mem=' +
-      next.memoryPressurePct +
-      '% io=' +
-      next.ioPressurePct +
-      '% temp=' +
-      next.socTempCelsius +
-      'C',
+      `Stage=${next.transactionStage} -> ${label} | uclamp=${next.uclampMin}/${next.uclampMax} | ` +
+      `cpu=${next.cpuPressurePct}% mem=${next.memoryPressurePct}% io=${next.ioPressurePct}% temp=${next.socTempCelsius}C`,
   };
 }

@@ -1,73 +1,89 @@
-# CoreFlow Modern v2 architecture
+# CFAE System Framework v3.0.R — Mutation Safety & Coordinated Optimization Architecture
 
-## Principle
+## 1. Architectural Principle
 
-Zero device-specific hardcoding does not mean blind mutation.
+Zero device-specific hardcoding does not mean blind mutation. Ability to write to a sysfs/cgroup node proves only file access, not safety, semantic meaning, compatibility, or system benefit.
 
-Stable Linux/Android ABI names such as cpu.uclamp.min, PSI fields, and thermal-zone type are semantic contracts. Device-specific mount paths, CPU counts, cluster layouts, and vendor knobs are discovered at runtime or ignored.
+The primary unit of control in CFAE System Framework v3.0.R is the **Mutation Transaction**: one explicit optimization goal, a dependency-verified change plan within a bounded risk budget, per-write readback verification, and ownership-safe rollback.
 
-Flow:
+### Logical Architecture Flow
 
-    Discover capability
-          |
-    Read thermal + PSI
-          |
-    Select one stability state
-          |
-    Apply bounded UClamp and supported CPU/GPU ceilings
-          |
-    Read-back verify
-          |
-    Keep state until inputs materially change
-          |
-    Rollback on stop/failure/emergency
+```text
+Sensor & Capability Discovery
+            |
+            v
+     State Normalization
+            |
+            v
+      Reasoning Engine
+            |
+            v
+    Dependency Analyzer
+            |
+            v
+      Mutation Planner
+            |
+            v
+     Safety Admission Gate
+            |
+            v
+   Transaction Coordinator
+            |
+      +-----+------+
+      |            |
+      v            v
+  Apply Order   Ownership Guard
+      |            |
+      +-----+------+
+            |
+            v
+      Readback Verify
+            |
+            v
+     Outcome Evaluator
+            |
+       +----+----+
+       |         |
+       v         v
+    Retain    Rollback
+       |
+       v
+  Outcome Learning
+```
 
-There is no Observe -> Understand -> Balance -> Adapt pipeline.
+## 2. Five-Layer Safety Pipeline
 
-## Active production core
+1. **Reasoning Engine**: Combines workload observations, CPU/Memory/I/O PSI pressure, thermal status, and power state to emit an inspectable *Optimization Intent*.
+2. **Dependency Analyzer**: Maps parameter relationships with explicit provenance (`Required-before`, `Requires`, `Coupled-with`, `Conflicts-with`, `Unknown`). Unknown relationships are strictly isolated and never grouped.
+3. **Mutation Planner**: Constructs a deterministic transaction plan specifying baseline values, target values, range provenance, execution order, seven-dimensional risk assessment (`Low`, `Medium`, `High`, `Forbidden`), and abort conditions.
+4. **Safety Admission Gate & Transaction Coordinator**: Enforces 10 pre-write admission checks, serializes conflicting transactions, writes the durable journal prior to the first write, applies mutations in dependency order, and verifies every write via readback.
+5. **Outcome Evaluator & Learning**: Evaluates impact across Stability, Responsiveness, Pressure, Thermal, Power, Consistency, and Compatibility (`IMPROVED`, `NEUTRAL`, `REGRESSED`, `INCONCLUSIVE`, `ABORTED`, `OWNERSHIP_LOST`, `RECOVERY_REQUIRED`), retaining beneficial configurations while preventing unproductive repeat trials.
 
-- src/daemon/main.cpp: lifecycle, PID lock, signal handling, PSI reads, state application.
-- src/daemon/reactor.cpp: epoll plus timerfd event loop.
-- src/kernel/uclamp.cpp: semantic cgroup discovery, encoding detection, bounded top-app UClamp writes.
-- src/kernel/thermal_monitor.cpp: type-labelled thermal discovery and hottest-zone reading.
-- src/kernel/baseline_store.cpp: write-ahead journal, read-back verification, recovery.
-- rust/src/controller.rs: production thermal/pressure state machine and bounded PID budget.
-- rust/src/bridge.rs: cxx shared snapshot/decision interface.
-- src/kernel/frequency_controller.cpp: CPUFreq and GPU devfreq limits with OEM ownership checks.
-- src/kernel/hardware_longevity.cpp: optional standard charging and I/O controls.
-- src/kernel/power_bridge.cpp: nonblocking AIDL Power HAL capability discovery.
-- include/coreflow/stability_policy.hpp: reference threshold policy for regression comparison.
-- include/coreflow/config.hpp: small bounded runtime policy config.
+## 3. Active Production Core (C++23 + Rust 2024 + Kotlin 2.1)
 
-Generic task migration, vendor clamp overrides, forced refresh rates and unexpired render bursts are not activated. See [the equilibrium blueprint](EQUILIBRIUM_BLUEPRINT.md) for platform-integration limits.
+- `src/daemon/main.cpp`: Daemon lifecycle, singleton PID lock, signal hardening, PSI reads, and coordinated state application.
+- `src/daemon/reactor.cpp`: Zero-polling Linux `epoll` + `timerfd` + `signalfd` event loop.
+- `src/kernel/uclamp.cpp`: Semantic cgroup v2 discovery across `/proc/self/mountinfo`, capacity encoding detection (`0..1024` vs `%`), and bounded top-app UClamp writes.
+- `src/kernel/thermal_monitor.cpp`: Type-labelled multi-sensor thermal discovery and Android NDK thermal severity fusion.
+- `src/kernel/baseline_store.cpp`: Write-ahead journal (`CFJ3`), object identity verification (`O_NOFOLLOW` + `fstat`), readback verification, and ownership-safe recovery.
+- `rust/src/controller.rs`: Rust 2024 thermal/pressure state machine and slew-bounded PID capacity budget.
+- `rust/src/bridge.rs`: Typed `cxx` FFI bridge between C++23 and Rust 2024.
+- `src/kernel/frequency_controller.cpp`: CPUFreq and GPU devfreq ceiling actuation with OEM ownership verification.
+- `src/kernel/hardware_longevity.cpp`: Bounded battery step-charging ceiling reduction and cgroup v2 relative I/O weights.
+- `src/kernel/power_bridge.cpp`: Nonblocking AIDL Power HAL capability discovery.
+- `android/src/main/kotlin/io/coreflow/`: Kotlin 2.1 Android Quick Settings TileService and thermal broadcast integration.
 
-## UClamp discovery
+## 4. Twelve Non-Negotiable Safety Invariants
 
-The daemon does not assume /sys/fs/cgroup/top-app or /dev/cpuctl/top-app.
-
-It parses /proc/self/mountinfo for cgroup and cgroup2 mounts, performs a bounded search for a top-app directory, and requires both cpu.uclamp.min and cpu.uclamp.max. The pair must be readable and writable.
-
-Existing values determine whether the interface uses percentage semantics or a 0..1024 capacity representation. Internal policy always uses 0..1024 and encodes only at the kernel boundary.
-
-## Stability policy
-
-Four states only:
-
-1. Balanced.
-2. SustainedLoad.
-3. PressureGuard.
-4. ThermalGuard.
-
-Memory/I/O pressure outranks performance boosting. Thermal guard outranks all pressure states. Severe heat triggers rollback and daemon stop.
-
-Games are not identified by package name. A game becomes a sustained workload because the system reports sustained CPU pressure while thermal headroom remains.
-
-## Recovery
-
-Before a supported write, BaselineStore persists the observed pre-CoreFlow value, previous CoreFlow value, and intended write to /data/adb/coreflow/baseline.journal. The write is then read back. Recovery restores values still matching either side of an in-flight CoreFlow write; it leaves a later external change in place. Any failure starts rollback. The reader accepts the old CFJ1 journal during upgrade.
-
-Fatal signal handlers do not run C++ rollback code. They terminate safely; the next daemon start in the same boot recovers the journal before new writes are allowed.
-
-## WebUI
-
-Native mode displays measured daemon/UClamp/thermal status and daemon logs. Browser-only simulation stays explicitly labelled preview. FPS, jank, and foreground-app metrics are not claimed as native telemetry until a validated source exists.
+1. No write without a valid captured baseline.
+2. No mutation without known semantics, unit, and range provenance.
+3. No grouped mutation without an explainable shared goal and verified dependency edge.
+4. No two transactions may write conflicting resources concurrently.
+5. Every write must be followed by immediate readback verification.
+6. No rollback may overwrite an external OEM/Android modification (`OWNERSHIP_LOST` retires ownership cleanly).
+7. No repeated retries of neutral/failed candidates without new evidence or material condition change.
+8. No retention without a verified outcome and intact ownership.
+9. No performance claims from unmeasured or unavailable metrics (such as synthetic FPS or jank).
+10. Validated Android/OEM thermal and power policies remain the supreme safety boundary.
+11. Durable journal write must precede mutation, and crash recovery must be idempotent.
+12. When safety or ownership cannot be proven, the default action is no write.

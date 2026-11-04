@@ -1,13 +1,19 @@
-# Linguist Language Overrides for GitHub
-*.kt linguist-language=Kotlin
-*.kts linguist-language=Kotlin
+# Linguist Language Configuration for GitHub
 *.cpp linguist-language=C++
 *.hpp linguist-language=C++
 *.rs linguist-language=Rust
-*.js linguist-language=JavaScript
+*.kt linguist-language=Kotlin
+*.kts linguist-language=Kotlin
+*.sh linguist-language=Shell
 *.ts linguist-language=TypeScript
 *.tsx linguist-language=TypeScript
-*.sh linguist-language=Shell
+*.js linguist-language=JavaScript
+
+# Mark compiled/packaged WebUI bundle & docs assets as generated so
+# repository language statistics accurately reflect C++23, Rust 2024, and Kotlin
+module/webroot/** linguist-generated=true
+dist/** linguist-generated=true
+docs/assets/** linguist-generated=true
 
 # Auto-detect text files and normalize line endings
 * text=auto eol=lf

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Flame, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
-import { applyAppearance, readAppearance, saveAppearance, Theme, SupportedLanguage, readLanguage, saveLanguage, translate } from './bridge/appearance';
+import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
 import { AutonomousTuningCard } from './components/AutonomousTuningCard';
@@ -105,7 +105,6 @@ const readNumberKey = (text: string, key: string): number | null => {
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
-  const [language, setLanguage] = useState<SupportedLanguage>(() => readLanguage());
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [isSwitching, setIsSwitching] = useState(false);
   const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
@@ -123,26 +122,46 @@ export const App: React.FC = () => {
           ioPressurePct: 0,
           baselineNodesSnapshotted: 0,
           baselineStatus: 'restored',
+          transactionStage: 'PLANNED',
           modeLabel: 'Awaiting native status',
-          modeDescription: 'Waiting for coreflowd status',
+          modeDescription: 'Waiting for coreflowd runtime status',
         }
       : initial;
   });
   const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
   type NavTab = 'dashboard' | 'thermal' | 'longevity' | 'android' | 'console';
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
-  const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({ ...DEFAULT_LONGEVITY_CONFIG }));
+  const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({
+    ...DEFAULT_LONGEVITY_CONFIG,
+  }));
   const [longevitySaveMessage, setLongevitySaveMessage] = useState<string | null>(null);
-  const [logs, setLogs] = useState<ReactionLogEvent[]>(() => (isNativeBridge ? [] : createInitialLogs()));
+  const [logs, setLogs] = useState<ReactionLogEvent[]>(() =>
+    isNativeBridge ? [] : createInitialLogs()
+  );
   const [isStudioOpen, setIsStudioOpen] = useState(false);
-  const [hardwareInfo, setHardwareInfo] = useState({socModel: 'Unavailable', kernelVersion: 'Unavailable', onlineCpus: 'Unavailable', gpuType: 'Unavailable'});
+  const [hardwareInfo, setHardwareInfo] = useState({
+    socModel: 'Unavailable',
+    kernelVersion: 'Unavailable',
+    onlineCpus: 'Unavailable',
+    gpuType: 'Unavailable',
+  });
+
   useEffect(() => {
     if (!isNativeBridge) return;
-    void execChecked(`${RESOLVE_BIN}; "$BIN" --capabilities`).then(raw => {
-      const result = JSON.parse(raw.trim().split('\n').pop() ?? '{}');
-      if (['socModel', 'kernelVersion', 'onlineCpus', 'gpuType'].every(key => typeof result[key] === 'string')) setHardwareInfo(result);
-    }).catch(() => {});
+    void execChecked(`${RESOLVE_BIN}; "$BIN" --capabilities`)
+      .then((raw) => {
+        const result = JSON.parse(raw.trim().split('\n').pop() ?? '{}');
+        if (
+          ['socModel', 'kernelVersion', 'onlineCpus', 'gpuType'].every(
+            (key) => typeof result[key] === 'string'
+          )
+        ) {
+          setHardwareInfo(result);
+        }
+      })
+      .catch(() => {});
   }, [isNativeBridge]);
+
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
@@ -200,19 +219,24 @@ export const App: React.FC = () => {
       skinTempCelsius: status.skinTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 3.2 : -1),
       thermalSensors: status.thermalSensors ?? old.thermalSensors,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
+      transactionStage: status.running
+        ? status.recoveryPending
+          ? 'RETAINED'
+          : 'VERIFIED'
+        : 'PLANNED',
       modeLabel: status.running
         ? isThermalThrottling
           ? 'ThermalGuard Active · Cooling SoC'
           : status.uclampSupported
-          ? 'Native stability policy active'
-          : 'Daemon active · Multi-sensor equilibrium'
-        : 'Daemon stopped',
+          ? 'Coordinated Stability Policy Active'
+          : 'Daemon Active · Multi-Sensor Equilibrium'
+        : 'Daemon Stopped',
       modeDescription: status.running
         ? isThermalThrottling
-          ? 'Thermal guard active: pacing clocks and uclamp to reduce temperature'
+          ? 'Thermal guard active: pacing clocks and UClamp floor to reduce temperature'
           : status.recoveryPending
-          ? `Thermal source: ${status.thermalSource ?? 'multi-sensor-composite'}; journal protected`
-          : 'Capability-driven UClamp with multi-sensor thermal and PSI stability gates'
+          ? `Thermal source: ${status.thermalSource ?? 'multi-sensor-composite'}; write-ahead journal armed`
+          : 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
         : 'OEM baseline restored',
       timestamp: Date.now(),
     }));
@@ -256,10 +280,14 @@ export const App: React.FC = () => {
 
       setLongevityConfig((old) => ({
         ...old,
-        enableBatteryStepCharging: rawStep ? rawStep === 'true' || rawStep === '1' : old.enableBatteryStepCharging,
+        enableBatteryStepCharging: rawStep
+          ? rawStep === 'true' || rawStep === '1'
+          : old.enableBatteryStepCharging,
         batteryStepTempThreshold: stepTemp ?? old.batteryStepTempThreshold,
         steppedChargeCurrentMa: stepCurrent ?? old.steppedChargeCurrentMa,
-        enableUfsBurstPacing: rawUfs ? rawUfs === 'true' || rawUfs === '1' : old.enableUfsBurstPacing,
+        enableUfsBurstPacing: rawUfs
+          ? rawUfs === 'true' || rawUfs === '1'
+          : old.enableUfsBurstPacing,
         topAppIoWeight: topWeight ?? old.topAppIoWeight,
         backgroundIoWeight: bgWeight ?? old.backgroundIoWeight,
       }));
@@ -284,9 +312,10 @@ export const App: React.FC = () => {
             lines.map((message, index) => ({
               id: `native-${index}-${message}`,
               timestamp: '--:--:--',
-              type: message.includes('[Stability]') && message.includes('thermal')
-                ? ('THERMAL' as const)
-                : ('INFO' as const),
+              type:
+                message.includes('[Stability]') && message.includes('thermal')
+                  ? ('THERMAL' as const)
+                  : ('INFO' as const),
               tag: 'Daemon',
               message: message.slice(0, 512),
             }))
@@ -341,17 +370,15 @@ export const App: React.FC = () => {
       if (before.running) {
         await execChecked(`${RESOLVE_BIN}; "$BIN" --stop`);
       } else {
-        // Clear safety lockouts and unconfirmed boot attempts when the operator requests a manual start
         await execChecked(
           `rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/modules/cfae_framework/disable /data/adb/modules/coreflow_engine/disable 2>/dev/null; ` +
-          `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
-          `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
-          `${RESOLVE_BIN}; ` +
-          `(nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null &) 2>/dev/null || ("$BIN" </dev/null >> "${LOG}" 2>&1 &)`
+            `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
+            `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
+            `${RESOLVE_BIN}; ` +
+            `(nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null &) 2>/dev/null || ("$BIN" </dev/null >> "${LOG}" 2>&1 &)`
         );
       }
 
-      // Poll for daemon state transition up to 3.5s
       let after = before;
       for (let attempt = 0; attempt < 10; attempt++) {
         await delay(350);
@@ -360,7 +387,9 @@ export const App: React.FC = () => {
       }
 
       if (after.running === before.running) {
-        const errorLog = await execNativeKsuShell(`tail -n 6 ${LOG} 2>/dev/null || cat ${LOG} 2>/dev/null`);
+        const errorLog = await execNativeKsuShell(
+          `tail -n 6 ${LOG} 2>/dev/null || cat ${LOG} 2>/dev/null`
+        );
         const logSnippet = errorLog.stdout?.trim();
         throw new Error(`Daemon state did not change${logSnippet ? ': ' + logSnippet : ''}`);
       }
@@ -368,7 +397,9 @@ export const App: React.FC = () => {
       addLog(
         'INFO',
         'NativeControl',
-        after.running ? 'Daemon started with stability policy' : 'Daemon stopped and recovery verified'
+        after.running
+          ? 'Daemon started with coordinated mutation policy'
+          : 'Daemon stopped and baseline recovery verified'
       );
     } catch (error) {
       setNativeError(String(error));
@@ -394,7 +425,7 @@ export const App: React.FC = () => {
     setSaveMessage(null);
     try {
       if (!isNativeBridge) {
-        setSaveMessage('Preview policy applied');
+        setSaveMessage('Preview transaction policy applied');
         return;
       }
 
@@ -448,7 +479,9 @@ export const App: React.FC = () => {
         ' && echo COREFLOW_CONFIG_WRITTEN';
 
       const output = await execChecked(command);
-      if (!output.includes('COREFLOW_CONFIG_WRITTEN')) throw new Error('Configuration write not acknowledged');
+      if (!output.includes('COREFLOW_CONFIG_WRITTEN')) {
+        throw new Error('Configuration write not acknowledged');
+      }
 
       const before = await refreshNative();
       if (before.running && before.pid > 0) {
@@ -458,7 +491,7 @@ export const App: React.FC = () => {
         if (!after.running) throw new Error('Config saved but daemon reload failed');
       }
 
-      setSaveMessage(before.running ? 'Saved and reloaded live' : 'Saved for next start');
+      setSaveMessage(before.running ? 'Committed and reloaded live' : 'Saved for next start');
       addLog('INFO', 'Config', `Balanced floor=${balancedMin}, thermal trip=${trip.toFixed(1)}°C`);
     } catch (error) {
       setSaveMessage('Save failed');
@@ -474,8 +507,12 @@ export const App: React.FC = () => {
     try {
       if (!isNativeBridge) {
         setLongevityConfig(newConfig);
-        setLongevitySaveMessage('Saved (Preview Mode)');
-        addLog('INFO', 'Longevity', `Preview: Stepped charging threshold=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`);
+        setLongevitySaveMessage('Saved in Preview');
+        addLog(
+          'INFO',
+          'Longevity',
+          `Preview: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`
+        );
         return;
       }
       const script =
@@ -489,7 +526,11 @@ export const App: React.FC = () => {
       await execChecked(script);
       setLongevityConfig(newConfig);
       setLongevitySaveMessage('Armed live in kernel');
-      addLog('INFO', 'Longevity', `Hardware longevity armed: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`);
+      addLog(
+        'INFO',
+        'Longevity',
+        `Hardware longevity armed: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`
+      );
     } catch (err) {
       setLongevitySaveMessage('Save failed');
       setNativeError(String(err));
@@ -509,8 +550,12 @@ export const App: React.FC = () => {
     setRestoreFeedback(null);
     try {
       if (!isNativeBridge) {
-        setTelemetry((old) => ({ ...old, baselineStatus: 'restored' }));
-        setRestoreFeedback('Preview only: simulated rollback');
+        setTelemetry((old) => ({
+          ...old,
+          baselineStatus: 'restored',
+          transactionStage: 'PLANNED',
+        }));
+        setRestoreFeedback('Preview: simulated ownership-verified baseline rollback completed.');
         return;
       }
 
@@ -518,8 +563,8 @@ export const App: React.FC = () => {
       const status = await refreshNative();
       if (status.running || status.recoveryPending) throw new Error('Rollback not verified');
 
-      setRestoreFeedback('Tracked OEM baseline values restored and daemon stopped');
-      addLog('BASELINE', 'NativeRecovery', 'Recovery journal cleared after verified rollback');
+      setRestoreFeedback('Tracked OEM baseline values restored and daemon stopped.');
+      addLog('BASELINE', 'NativeRecovery', 'Recovery journal cleared after verified rollback.');
     } catch (error) {
       setRestoreFeedback('Restoration failed: ' + String(error));
       setNativeError(String(error));
@@ -528,20 +573,40 @@ export const App: React.FC = () => {
     }
   };
 
+  const navItems: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
+    { id: 'dashboard', label: 'Equilibrium', Icon: Activity },
+    { id: 'thermal', label: 'Thermal Matrix', Icon: Flame },
+    { id: 'longevity', label: 'Hardware Longevity', Icon: ShieldCheck },
+    { id: 'android', label: 'Quick Settings', Icon: Smartphone },
+    { id: 'console', label: 'RPC Console', Icon: Terminal },
+  ];
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased selection:bg-sky-500 selection:text-white">
+    <div className="min-h-screen relative overflow-x-hidden bg-[#f7f9fc] dark:bg-[#0e1117] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased">
+      {/* Ambient Material 3 Soft Diffused Background Blurs */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed top-12 left-1/4 w-[28rem] h-[28rem] rounded-full bg-[#d3e3fd]/45 dark:bg-[#0842a0]/15 blur-3xl -z-10"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed bottom-12 right-1/4 w-[26rem] h-[26rem] rounded-full bg-slate-200/55 dark:bg-slate-800/20 blur-3xl -z-10"
+      />
+
+      {/* Subtle Context Banner */}
       <div
         role="status"
-        className="px-4 py-2 text-center text-xs bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100 font-medium"
+        className="px-4 py-2 text-center text-xs bg-[#d3e3fd]/60 text-[#041e49] dark:bg-[#0842a0]/30 dark:text-[#d3e3fd] backdrop-blur-md border-b border-slate-900/[0.04] dark:border-white/[0.04]"
       >
         {isNativeBridge
-          ? 'Native telemetry: Multi-sensor composite equilibrium active. Real-time UClamp and ThermalGuard protection.'
-          : 'DEMO PREVIEW: simulated multi-sensor stability policy; no physical device writes.'}
+          ? 'Native Runtime · Coordinated mutation transactions, readback verification, and OEM thermal safety active.'
+          : 'Browser Preview · Modeling the 5-layer Coordinated Mutation Safety architecture without physical kernel writes.'}
       </div>
+
       {nativeError && (
         <div
           role="alert"
-          className="px-4 py-2 bg-rose-200 text-rose-950 dark:bg-rose-950 dark:text-rose-100 text-xs font-medium"
+          className="px-4 py-2 bg-rose-100 text-rose-900 dark:bg-rose-950/80 dark:text-rose-200 text-xs font-medium text-center"
         >
           {nativeError}
         </div>
@@ -555,80 +620,37 @@ export const App: React.FC = () => {
         modeLabel={telemetry.modeLabel}
         nativeMode={isNativeBridge}
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
-        language={language}
-        onSelectLanguage={(lang) => {
-          setLanguage(lang);
-          saveLanguage(lang);
-        }}
       />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
-        {/* Navigation Tabs Bar */}
-        <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-slate-200/70 dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 overflow-x-auto no-scrollbar">
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
-              activeTab === 'dashboard'
-                ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            {translate('stateBalanced', language)}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('thermal')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
-              activeTab === 'thermal'
-                ? 'bg-white dark:bg-slate-800 text-amber-600 dark:text-amber-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Flame className="w-3.5 h-3.5" />
-            {translate('thermalMatrixTitle', language)}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('longevity')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
-              activeTab === 'longevity'
-                ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            {translate('longevityTitle', language)}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('android')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
-              activeTab === 'android'
-                ? 'bg-white dark:bg-slate-800 text-purple-600 dark:text-purple-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            {translate('quickSettings', language)}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('console')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap select-none ${
-              activeTab === 'console'
-                ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-teal-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            {translate('developerConsoleTitle', language)}
-          </button>
-        </div>
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+        {/* Material Design 3 Navigation Pill Bar (Unified Monochromatic Tonal Indicator) */}
+        <nav
+          aria-label="Primary sections"
+          className="flex items-center gap-1.5 p-1.5 rounded-full bg-white/75 dark:bg-[#181c24]/75 backdrop-blur-2xl border border-slate-900/[0.06] dark:border-white/[0.07] overflow-x-auto no-scrollbar w-fit max-w-full"
+        >
+          {navItems.map(({ id, label, Icon }) => {
+            const active = activeTab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={
+                  'px-4 py-2 rounded-full text-xs font-medium transition-all flex items-center gap-2 whitespace-nowrap select-none ' +
+                  (active
+                    ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-900/[0.04] dark:hover:bg-white/[0.04]')
+                }
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </nav>
 
         {/* Tab 1: Equilibrium Dashboard */}
         {activeTab === 'dashboard' && (
-          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+          <div className="space-y-6 m3-stage">
             <section aria-label="Engine stability telemetry">
               <AutonomousStateHero
                 telemetry={telemetry}
@@ -674,7 +696,7 @@ export const App: React.FC = () => {
 
         {/* Tab 2: Thermal Matrix */}
         {activeTab === 'thermal' && (
-          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+          <div className="space-y-6 m3-stage">
             <section aria-label="Multi-sensor thermal matrix">
               <ThermalMatrixCard
                 telemetry={telemetry}
@@ -696,7 +718,7 @@ export const App: React.FC = () => {
 
         {/* Tab 3: Hardware Longevity & Storage */}
         {activeTab === 'longevity' && (
-          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+          <div className="space-y-6 m3-stage">
             <section aria-label="Hardware longevity controls">
               <HardwareLongevityCard
                 longevityConfig={longevityConfig}
@@ -722,7 +744,7 @@ export const App: React.FC = () => {
 
         {/* Tab 4: Android Kotlin Quick Settings */}
         {activeTab === 'android' && (
-          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+          <div className="space-y-6 m3-stage">
             <section aria-label="Android Kotlin integration">
               <AndroidQuickSettingsCard
                 currentBias={config.adaptiveBias}
@@ -747,7 +769,7 @@ export const App: React.FC = () => {
 
         {/* Tab 5: Developer Console */}
         {activeTab === 'console' && (
-          <div className="space-y-6 sm:space-y-8 animate-fadeIn">
+          <div className="space-y-6 m3-stage">
             <section aria-label="Developer console">
               <DeveloperConsoleCard
                 nativeMode={isNativeBridge}
@@ -769,16 +791,22 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      <ArchitectureStudioModal isOpen={isStudioOpen} onClose={() => setIsStudioOpen(false)} {...hardwareInfo} />
+      <ArchitectureStudioModal
+        isOpen={isStudioOpen}
+        onClose={() => setIsStudioOpen(false)}
+        {...hardwareInfo}
+      />
 
-      <footer className="border-t border-slate-200/80 dark:border-slate-800/80 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
-        <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <footer className="border-t border-slate-900/[0.06] dark:border-white/[0.06] bg-white/50 dark:bg-[#0e1117]/60 backdrop-blur-xl py-6 text-xs text-slate-500 dark:text-slate-400">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">CFAE System Framework v3.0.R</span>
+            <span className="font-semibold text-slate-700 dark:text-slate-300">
+              CFAE System Framework v3.0.R
+            </span>
             {' · '}Autonomous Mutation Safety & Coordinated Optimization
           </div>
           <div className="text-[11px] font-mono">
-            C++23 + Rust 2024 · Coordinated Mutation Transactions · Verified Recovery
+            ISO C++23 · Rust 2024 · Kotlin 2.1 · Readback Verified Recovery
           </div>
         </div>
       </footer>

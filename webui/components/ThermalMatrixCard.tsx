@@ -34,241 +34,178 @@ export const ThermalMatrixCard: React.FC<Props> = ({
     return true;
   });
 
-  const getCategoryBadge = (cat: number) => {
+  const getCategoryLabel = (cat: number) => {
     switch (cat) {
       case 1:
-        return <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-sky-500/10 text-sky-500 border border-sky-500/20">Compute / CPU-GPU</span>;
+        return 'Compute · CPU/GPU';
       case 2:
-        return <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">Battery Cell</span>;
+        return 'Battery Cell';
       case 3:
-        return <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-500 border border-purple-500/20">Skin / Chassis</span>;
+        return 'Skin · Chassis';
       case 4:
-        return <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">Board / PMIC</span>;
+        return 'Board · PMIC';
       default:
-        return <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-400 border border-slate-500/20">Peripheral</span>;
+        return 'Peripheral';
     }
   };
 
   return (
-    <div className="rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 p-5 sm:p-7 shadow-sm space-y-6">
+    <div className="m3-card p-6 sm:p-8 space-y-6">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Flame className="w-4 h-4 text-amber-500" />
-            <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-              Multi-Sensor Thermal Matrix
-            </h3>
-            {isThrottling ? (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-500 border border-rose-500/30 animate-pulse">
-                ThermalGuard Cooling
-              </span>
-            ) : (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
-                Thermal Equilibrium Safe
-              </span>
-            )}
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-700">
-              {nativeMode ? 'Hardware sysfs Active' : 'Simulation Model'}
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+        <div className="space-y-1.5 max-w-2xl">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <Flame className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            <span className="font-semibold text-slate-900 dark:text-slate-100 text-base sm:text-lg">
+              Multi-Sensor Thermal & OEM Policy Matrix
             </span>
+            <span aria-hidden="true">·</span>
+            <span className="font-medium text-[#0b57d0] dark:text-[#a8c7fa]">
+              {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>{nativeMode ? 'Hardware sysfs Live' : 'Preview Model'}</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Weighted composite fusion across CPU clusters, GPU shaders, battery cell, and chassis thermistors.
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+            Prioritizes validated Android thermal status and per-zone OEM trip points over single-sensor heuristics. Separate compute, battery, and skin domains are evaluated without conflating distinct physical units.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
-          <span className="text-slate-500">Trip Point:</span>
-          <span className="font-semibold text-amber-500">{thermalTripCelsius.toFixed(1)}°C</span>
+        <div className="m3-tonal-block px-4 py-2.5 text-xs font-mono shrink-0 self-start">
+          <span className="text-slate-500 dark:text-slate-400">Policy Reference: </span>
+          <span className="font-semibold text-slate-900 dark:text-slate-100">
+            {nativeMode ? 'OEM / Android HAL' : `${thermalTripCelsius.toFixed(1)} °C`}
+          </span>
         </div>
       </div>
 
       {/* Primary Composite SoC Bar */}
-      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800">
-        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 mb-2">
-          <span className="flex items-center gap-1.5 font-medium">
-            <Thermometer className="w-3.5 h-3.5 text-amber-500" />
-            Weighted SoC Composite Temperature
+      <div className="m3-tonal-block p-5">
+        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 mb-3">
+          <span className="flex items-center gap-2 font-medium">
+            <Thermometer className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            Weighted SoC Composite Diagnostic
           </span>
-          <span className="font-mono font-bold text-slate-900 dark:text-white text-sm">
+          <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 text-sm">
             {composite > 0 ? composite.toFixed(1) : '--.-'} °C
           </span>
         </div>
-        <div className="w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden relative">
+        <div className="w-full h-2.5 rounded-full bg-slate-900/[0.08] dark:bg-white/[0.08] overflow-hidden">
           <div
-            className={`h-full transition-all duration-500 rounded-full ${
-              isThrottling
-                ? 'bg-gradient-to-r from-amber-500 to-rose-500'
-                : 'bg-gradient-to-r from-teal-500 via-sky-500 to-amber-500'
-            }`}
+            className="h-full transition-all duration-500 rounded-full bg-[#0b57d0] dark:bg-[#a8c7fa]"
             style={{ width: `${thermalProgress}%` }}
           />
         </div>
-        <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
-          <span>30°C (Idle)</span>
-          <span>44°C (Trip Threshold)</span>
-          <span>60°C (Hard Limit)</span>
+        <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
+          <span>30.0 °C (Idle)</span>
+          <span>{thermalTripCelsius.toFixed(1)} °C (Mitigation Gate)</span>
+          <span>60.0 °C (OEM Ceiling)</span>
         </div>
       </div>
 
       {/* Cluster & Subsystem Cards Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800">
-          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-            <span>CPU Cluster Avg</span>
-            <Cpu className="w-3.5 h-3.5 text-sky-500" />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
+        {[
+          { label: 'CPU Cluster Avg', val: cpuAvg, sub: 'Little & Big Cores', Icon: Cpu },
+          { label: 'CPU Peak Core', val: cpuPeak, sub: 'Hottest Core Zone', Icon: Zap },
+          { label: 'GPU Domain', val: gpu, sub: 'Shader / Devfreq', Icon: Layers },
+          { label: 'Battery Cell', val: battery, sub: 'Charge Guard Input', Icon: ShieldCheck },
+          { label: 'Skin / Surface', val: skin, sub: 'Chassis Thermistor', Icon: Thermometer },
+        ].map(({ label, val, sub, Icon }) => (
+          <div
+            key={label}
+            className="m3-tonal-block p-4 flex flex-col justify-between col-span-1 last:col-span-2 lg:last:col-span-1"
+          >
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
+              <span className="font-medium">{label}</span>
+              <Icon className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            </div>
+            <div className="text-xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              {val > 0 ? val.toFixed(1) : '--.-'}{' '}
+              <span className="text-xs font-normal text-slate-500 dark:text-slate-400">°C</span>
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">{sub}</div>
           </div>
-          <div className="text-xl font-bold font-mono text-sky-500">
-            {cpuAvg > 0 ? cpuAvg.toFixed(1) : '--.-'} <span className="text-xs font-normal text-slate-400">°C</span>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Little & Big Cores</div>
-        </div>
-
-        <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800">
-          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-            <span>CPU Peak Core</span>
-            <Zap className="w-3.5 h-3.5 text-amber-500" />
-          </div>
-          <div className="text-xl font-bold font-mono text-amber-500">
-            {cpuPeak > 0 ? cpuPeak.toFixed(1) : '--.-'} <span className="text-xs font-normal text-slate-400">°C</span>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Hottest Single Core</div>
-        </div>
-
-        <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800">
-          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-            <span>GPU Domain</span>
-            <Layers className="w-3.5 h-3.5 text-teal-500" />
-          </div>
-          <div className="text-xl font-bold font-mono text-teal-500">
-            {gpu > 0 ? gpu.toFixed(1) : '--.-'} <span className="text-xs font-normal text-slate-400">°C</span>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Adreno / Mali GPU</div>
-        </div>
-
-        <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800">
-          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-            <span>Battery Cell</span>
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-          </div>
-          <div className="text-xl font-bold font-mono text-emerald-500">
-            {battery > 0 ? battery.toFixed(1) : '--.-'} <span className="text-xs font-normal text-slate-400">°C</span>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Li-ion Health Guard</div>
-        </div>
-
-        <div className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800 col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-            <span>Skin / Quiet</span>
-            <Thermometer className="w-3.5 h-3.5 text-purple-500" />
-          </div>
-          <div className="text-xl font-bold font-mono text-purple-500">
-            {skin > 0 ? skin.toFixed(1) : '--.-'} <span className="text-xs font-normal text-slate-400">°C</span>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Chassis / Surface Therm</div>
-        </div>
+        ))}
       </div>
 
       {/* Collapsible Full Hardware Thermal Zone Inspector */}
       {sensors.length > 0 && (
-        <details className="group border border-slate-200/80 dark:border-slate-800 rounded-2xl overflow-hidden bg-slate-50/50 dark:bg-slate-900/30">
-          <summary className="flex items-center justify-between px-4 py-3 cursor-pointer select-none text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/40">
+        <details className="group m3-tonal-block overflow-hidden">
+          <summary className="flex items-center justify-between px-5 py-4 cursor-pointer select-none text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03]">
             <span className="flex items-center gap-2">
-              <Filter className="w-3.5 h-3.5 text-sky-500" />
-              Hardware Thermal Zones Inspector ({sensors.length} Detected)
+              <Filter className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
+              Discovered Hardware Thermal Zones ({sensors.length} Zones)
             </span>
-            <span className="text-[11px] font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200">
+            <span className="text-xs font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200">
               ▼
             </span>
           </summary>
 
-          <div className="p-4 border-t border-slate-200/80 dark:border-slate-800 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Filter sensor name (e.g. cpu, gpu, quiet)..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-sky-500"
-                />
+          <div className="p-5 border-t border-slate-900/[0.06] dark:border-white/[0.06] space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex gap-1.5 flex-wrap">
+                {[
+                  { id: null, label: 'All Zones' },
+                  { id: 1, label: 'Compute' },
+                  { id: 2, label: 'Battery' },
+                  { id: 3, label: 'Skin' },
+                  { id: 4, label: 'Board' },
+                ].map((cat) => {
+                  const active = filterCategory === cat.id;
+                  return (
+                    <button
+                      key={String(cat.id)}
+                      onClick={() => setFilterCategory(cat.id)}
+                      className={
+                        'px-3.5 py-1.5 text-xs rounded-full font-medium transition-all ' +
+                        (active
+                          ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
+                          : 'bg-slate-900/[0.04] dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 hover:bg-slate-900/[0.08]')
+                      }
+                    >
+                      {cat.label}
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="flex gap-1.5 flex-wrap">
-                <button
-                  onClick={() => setFilterCategory(null)}
-                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium ${
-                    filterCategory === null
-                      ? 'bg-sky-500 text-white border-sky-600'
-                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  All
-                </button>
-                <button
-                  onClick={() => setFilterCategory(1)}
-                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium ${
-                    filterCategory === 1
-                      ? 'bg-sky-500 text-white border-sky-600'
-                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Compute
-                </button>
-                <button
-                  onClick={() => setFilterCategory(2)}
-                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium ${
-                    filterCategory === 2
-                      ? 'bg-emerald-500 text-white border-emerald-600'
-                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Battery
-                </button>
-                <button
-                  onClick={() => setFilterCategory(3)}
-                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium ${
-                    filterCategory === 3
-                      ? 'bg-purple-500 text-white border-purple-600'
-                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Skin
-                </button>
-                <button
-                  onClick={() => setFilterCategory(4)}
-                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium ${
-                    filterCategory === 4
-                      ? 'bg-amber-500 text-white border-amber-600'
-                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  Board
-                </button>
+              <div className="relative min-w-[220px]">
+                <Search className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search sensor type..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-4 py-1.5 text-xs rounded-full bg-white/70 dark:bg-slate-900/60 border border-slate-900/[0.08] dark:border-white/[0.08] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#0b57d0]"
+                />
               </div>
             </div>
 
-            <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200/70 dark:border-slate-800 divide-y divide-slate-200/60 dark:divide-slate-800">
+            <div className="max-h-64 overflow-y-auto rounded-2xl border border-slate-900/[0.06] dark:border-white/[0.06] divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
               {filteredSensors.length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-400">
-                  No matching hardware sensors found
+                <div className="py-8 text-center text-xs text-slate-500">
+                  No matching hardware thermal zones found.
                 </div>
               ) : (
                 filteredSensors.map((sensor) => (
                   <div
                     key={sensor.id + sensor.type}
-                    className="flex items-center justify-between px-3.5 py-2 text-xs hover:bg-slate-100/50 dark:hover:bg-slate-800/50"
+                    className="grid grid-cols-[64px_1fr_140px_90px] items-center gap-3 px-4 py-2.5 text-xs hover:bg-slate-900/[0.02] dark:hover:bg-white/[0.02]"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11px] text-slate-400">{sensor.id}</span>
-                      <span className="font-medium text-slate-800 dark:text-slate-200">{sensor.type}</span>
-                      {getCategoryBadge(sensor.category)}
-                    </div>
-                    <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                      {sensor.celsius !== null && sensor.celsius >= 0
-                        ? `${sensor.celsius.toFixed(1)} °C`
-                        : <span className="text-slate-400 font-normal">Offline</span>}
+                    <span className="font-mono text-slate-400">{sensor.id}</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                      {sensor.type}
+                    </span>
+                    <span className="text-slate-500 dark:text-slate-400 hidden sm:inline">
+                      {getCategoryLabel(sensor.category)}
+                    </span>
+                    <div className="font-mono tabular-nums font-semibold text-right text-slate-900 dark:text-slate-100">
+                      {sensor.celsius !== null && sensor.celsius >= 0 ? (
+                        `${sensor.celsius.toFixed(1)} °C`
+                      ) : (
+                        <span className="text-slate-400 font-normal">Offline</span>
+                      )}
                     </div>
                   </div>
                 ))

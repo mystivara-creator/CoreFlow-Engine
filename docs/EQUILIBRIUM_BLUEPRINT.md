@@ -1,108 +1,38 @@
-# CoreFlow C++23 + Rust 2024 equilibrium blueprint
+# CFAE System Framework v3.0.R — C++23 + Rust 2024 + Kotlin Equilibrium & Mutation Safety Blueprint
 
-## Runtime architecture
+## 1. Runtime Architecture & Language Implementation Stack
 
-C++23 handles discovery, Linux epoll/timerfd/signalfd, journaled kernel writes,
-Android service discovery, and status JSON. The Rust 2024 controller owns thermal
-PID state, hysteresis, pressure decisions, invalid-input rejection and a bounded
-capacity budget. The cxx bridge shares typed snapshots and decisions.
+- **ISO C++23 Core (`src/daemon/`, `src/kernel/`, `include/coreflow/`)**: Handles semantic sysfs/cgroup v2 discovery, Linux `epoll`/`timerfd`/`signalfd` event loop, `O_NOFOLLOW` + `fstat` object identity checks, durable write-ahead journal (`CFJ3`), readback verification, and Android service capability probing.
+- **Rust 2024 Decision Engine (`rust/src/`)**: Owns the memory-safe thermal PID controller, hysteresis state machine, PSI pressure arbitration, invalid-sample rejection, and slew-bounded capacity budget via `cxx` FFI.
+- **Kotlin 2.1 Android Integration (`android/src/main/kotlin/io/coreflow/`)**: Provides native Android 15 (API 35) Quick Settings TileService (`CoreFlowTileService`) and thermal broadcast integration (`CoreFlowThermalReceiver`).
+- **Material Design 3 WebUI (`webui/`, `module/webroot/`)**: Lightweight offline dashboard synchronized between `dist/` and `module/webroot/`.
 
-1. Discover trusted CPU/SoC temperatures and semantic top-app UClamp.
-2. Discover CPUFreq policies and GPU devfreq domains with readable frequency tables.
-3. Sample temperature and CPU/memory/I/O PSI at the configured timerfd cadence.
-4. Rust validates samples, prioritizes thermal and resource pressure, and computes a capacity scale.
-5. Apply verified UClamp and supported CPU/GPU maximum frequency changes through BaselineStore.
-6. Respect external OEM writes, emergency thermal exit, operator markers, and rollback on failure.
+## 2. Coordinated Mutation Transactions (5-Layer Pipeline)
 
-## Cross-device thermal policy
+Rather than rigid single-parameter-only rules or blind bulk writes, the primary unit of control is the **Mutation Transaction**: one explicit optimization goal, a dependency-verified change plan within a bounded risk budget, per-write readback verification, and ownership-safe rollback.
 
-Raw CPU/GPU junction, battery and skin temperatures are separate diagnostics.
-They never share a universal 44/48-degree cutoff. Linux thermal-zone values are
-converted from the documented millidegree ABI, without a magnitude heuristic.
-BCL/SoC-droop channels and invalid negative/sentinel values are excluded.
+1. **Reasoning Engine**: Combines workload observations, CPU/Memory/I/O PSI, thermal headroom, and power state into an inspectable *Optimization Intent*.
+2. **Dependency Analyzer**: Evaluates parameter relationships with explicit provenance (`Required-before`, `Requires`, `Coupled-with`, `Conflicts-with`, `Unknown`). Unknown relationships are never grouped.
+3. **Mutation Planner**: Builds a transaction plan with seven risk dimensions (`Semantic uncertainty`, `Platform uncertainty`, `Interaction risk`, `Reversibility`, `System impact`, `Observability`, `Ownership confidence`) and classifies risk (`Low`, `Medium`, `High`, `Forbidden`).
+4. **Safety Admission Gate & Transaction Coordinator**: Verifies 10 pre-write invariants, serializes conflicting transactions, writes the durable journal before the first write, applies changes in dependency order, and verifies every write via readback (`PROPOSED → ADMISSION_CHECK → PREPARED → APPLYING → READBACK_VERIFY → OBSERVING → COMMITTED → RETAINED`).
+5. **Outcome Evaluator & Learning**: Evaluates impact across Stability, Responsiveness, Pressure, Thermal, Power, Consistency, and Compatibility (`IMPROVED`, `NEUTRAL`, `REGRESSED`, `INCONCLUSIVE`, `ABORTED`, `OWNERSHIP_LOST`, `RECOVERY_REQUIRED`), retaining beneficial settings while preventing unproductive repeat trials.
 
-Production decisions fuse the public Android NDK thermal severity API with every
-recognized compute, battery and skin zone. The platform result never short-circuits
-sensor evaluation. Optional
-headroom is sampled no faster than once per ten seconds. Moderate/severe thermal
-pressure reduces demand; emergency/shutdown severity yields control with rollback.
-Each classified zone is also evaluated against its own
-read-only OEM passive/hot/critical trip points. Only normalized policy-relative
-pressure is compared across sensors; no manufacturer/model table is used.
+## 3. Cross-Device Thermal & Power Policy
 
-Missing OEM thermal policy retains the stock baseline and reports unavailable;
-it does not invent a cool measurement or reuse legacy Celsius settings. Old
-thermal_trip_celsius/recover/emergency-margin and pid_target_celsius values no
-longer control production sensors. WebUI shows OEM/Auto in native mode; Celsius
-sliders remain browser-preview controls only. No OEM trip or thermal service is
-modified. This supports capability-based adaptation, not a claim that every
-vendor exposes usable policy interfaces.
+Raw CPU/GPU junction, battery, and skin temperatures are distinct diagnostics and never share an arbitrary universal cutoff in native mode. Linux thermal-zone values are converted from the documented millidegree ABI.
 
-## Predictive controller
+Production decisions prioritize the Android NDK thermal severity API alongside recognized compute, battery, and skin zones evaluated against their read-only OEM passive/hot/critical trip points. Missing OEM thermal policy retains the stock baseline and reports unavailable.
 
-Rust consumes a dimensionless thermal-policy pressure index, not raw Celsius.
-Its PID includes a bounded integral and pressure velocity. Its output is bounded
-to 0.4–1.0 and changes by at most two percentage points per elapsed second (with a
-ten-point upper bound per delayed sample). CPU/GPU values are quantized to exposed
-operating points: a frequency step can exceed 2%. This is not an FPS controller.
-Pressure guard and thermal hysteresis remain active. Per-zone OEM hot/critical
-critical trips or Android emergency/shutdown status trigger verified rollback and exit.
-OEM hot trips retain active mitigation. The worst normalized pressure is the
-protective bound; all readings are retained in --status, and a missing known-policy
-sensor prevents new boosting. Sensor discovery refreshes every 30 seconds.
+## 4. Predictive Controller & Slew Bounding
 
-During mitigation, ten-second windows compare the same sensor IDs, reporting
-cooling/rising/mixed/steady observations in daemon logs. A change of limiting
-sensor does not count as cooling. These observations are not proof of causality;
-the PID continues to react to fused pressure with its existing bounded slew.
+Rust consumes a dimensionless thermal-policy pressure index. Its PID controller includes a bounded integral and pressure velocity, bounding output to `0.4–1.0` with a maximum slew of 2% per elapsed second. CPU/GPU ceilings are quantized to exposed operating points while honoring existing OEM maximums.
 
-## Hardware introspection and preservation
+## 5. Ownership Guard & Idempotent Recovery
 
-CPU policies are discovered from sysfs; GPU discovery accepts only GPU/Mali/KGSL
-identities under devfreq. Missing tables disable that domain. No invented clock,
-cluster, or nominal temperature is used. Existing OEM maximums are upper bounds.
+For every mutation, `BaselineStore` records the baseline value, written value, last verified actual value, object identity, and ownership state. Rollback restores baseline values only if object identity matches and no external Android/OEM process has taken over (`OWNERSHIP_LOST` retires ownership without overwriting external changes). Crash recovery on startup is strictly idempotent.
 
-Optional charging reduction uses the standard battery constant_charge_current_max
-microamp interface, uses only battery temperature for charging decisions and validates charging state, and never
-raises the observed charging limit. A changed OEM value retires ownership.
+## 6. Hardware Introspection & Preservation
 
-Optional cgroup-v2 io.weight uses the documented `default N` format. It is relative
-I/O scheduling priority, not a bandwidth limiter, UFS wear measurement or guarantee
-of lower write amplification. Global VM writeback ratios are not modified.
-
-## Power HAL, Binder and NPU integration
-
-The Android binary performs a nonblocking lookup of
-android.hardware.power.IPower/default through optional runtime symbols from libbinder_ndk. Public NDK builds do not
-depend on private service-manager headers; missing symbols leave the capability
-unavailable. Device access and
-service availability are capabilities, not proof of an installed interceptor.
-
-Transparent interception of existing framework/vendor Binder transactions is
-UNAVAILABLE in this module. A production proxy needs an explicit OEM/AOSP service
-integration, generated versioned AIDL/HIDL bindings, service registration,
-SELinux permissions, death handling, and pass-through validation. Merely opening
-/dev/binder does not route other processes through this daemon.
-
-Generic application work is not offloaded to Hexagon or MediaTek APU. NPU work
-requires a supported compute/model runtime, compatible workload and explicit
-application integration. Firmware thermal controllers remain active. No voltage,
-energy-model table, raw vendor ioctl, or forced display-mode override is installed.
-
-## Workbench and simulator
-
-The Architecture Studio displays this specification and exports Markdown/Text.
-Its thermal model is an illustrative simulation, separate from native telemetry.
-Hardware identity is fetched from coreflowd --capabilities; unavailable data stays
-unavailable. Browser preview uses labeled synthetic data only.
-
-## Verification and release limits
-
-Host coverage includes Rust input/state tests, the real C++/Rust cxx bridge,
-CPU/GPU ownership and rollback fixtures, existing UClamp and journal recovery
-regressions, configuration parsing and thermal discovery. CI also builds Android
-ARM64 with the NDK. Passing CI is not device validation.
-
-Measure frame-time distribution, temperature, energy use, idle wakeups and daemon
-CPU time on the target firmware. There is no claim of zero overhead, guaranteed
-120 Hz, eliminated stutter, extended component life or universal chipset support.
+- **CPU/GPU Ceilings**: Discovered from `cpufreq` and `devfreq` frequency tables. Missing tables disable that domain.
+- **Battery Step-Charging**: Uses standard `constant_charge_current_max`, evaluates battery temperature exclusively while charging, and never raises an OEM current ceiling.
+- **Storage I/O Weighting**: Uses documented cgroup v2 `io.weight` (`default N` format) for relative scheduling priority without modifying global VM writeback ratios.

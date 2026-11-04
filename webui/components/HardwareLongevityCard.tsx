@@ -20,7 +20,10 @@ export const HardwareLongevityCard: React.FC<Props> = ({
   const [local, setLocal] = useState<HardwareLongevityConfig>(longevityConfig);
   const [hasChanges, setHasChanges] = useState(false);
 
-  const update = <K extends keyof HardwareLongevityConfig>(key: K, value: HardwareLongevityConfig[K]) => {
+  const update = <K extends keyof HardwareLongevityConfig>(
+    key: K,
+    value: HardwareLongevityConfig[K]
+  ) => {
     setLocal((prev) => {
       const next = { ...prev, [key]: value };
       setHasChanges(true);
@@ -39,46 +42,42 @@ export const HardwareLongevityCard: React.FC<Props> = ({
   };
 
   return (
-    <div className="rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-800 p-5 sm:p-7 shadow-sm space-y-6">
+    <div className="m3-card p-6 sm:p-8 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <ShieldCheck className="w-4 h-4 text-emerald-500" />
-            <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-              Hardware Longevity & Silicon Health
-            </h3>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-              Active Protection
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+        <div className="space-y-1.5 max-w-2xl">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <ShieldCheck className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            <span className="text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-100">
+              Hardware Longevity & Resource Preservation
             </span>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-700">
-              {nativeMode ? 'cgroups v2 Active' : 'Preview Sandbox'}
-            </span>
+            <span aria-hidden="true">·</span>
+            <span>{nativeMode ? 'cgroup v2 & Power Supply Active' : 'Preview Sandbox'}</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Protects lithium-ion battery chemistry from thermal degradation and paces UFS storage write bursts.
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+            Applies bounded, ownership-verified controls: steps down charging current strictly when battery temperature is elevated while charging, and balances cgroup v2 relative I/O weights.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 self-start">
           {saveMessage && (
-            <span className="text-xs font-medium text-emerald-500 flex items-center gap-1">
+            <span className="text-xs font-medium text-[#0b57d0] dark:text-[#a8c7fa] flex items-center gap-1 mr-1">
               <CheckCircle2 className="w-3.5 h-3.5" />
               {saveMessage}
             </span>
           )}
           <button
             onClick={handleReset}
-            className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5"
-            title="Reset to factory safety defaults"
+            className="px-4 py-2 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-xs font-medium text-slate-700 dark:text-slate-300 inline-flex items-center gap-1.5"
+            title="Reset to defaults"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            Reset
+            <span>Reset</span>
           </button>
           <button
             onClick={handleSave}
             disabled={isSaving || !hasChanges}
-            className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold shadow-sm shadow-emerald-500/20 transition-all flex items-center gap-1.5"
+            className="px-5 py-2 rounded-full bg-[#0b57d0] hover:bg-[#0842a0] dark:bg-[#a8c7fa] dark:hover:bg-[#8ab4f8] disabled:opacity-40 text-white dark:text-[#062e6f] text-xs font-medium transition-all"
           >
             {isSaving ? 'Applying...' : 'Save & Arm'}
           </button>
@@ -87,42 +86,49 @@ export const HardwareLongevityCard: React.FC<Props> = ({
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Subsystem 1: Battery Step-Charging Protection */}
-        <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
-                <BatteryCharging className="w-4 h-4" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
-                  Battery Step-Charging Guard
-                </h4>
-                <div className="text-[11px] text-slate-400">
-                  Throttles current at elevated thermals
+        <div className="m3-tonal-block p-6 space-y-5 flex flex-col justify-between">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#d3e3fd] dark:bg-[#0842a0] text-[#041e49] dark:text-[#d3e3fd] flex items-center justify-center shrink-0">
+                  <BatteryCharging className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Battery Step-Charging Guard
+                  </h4>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Standard `constant_charge_current_max` ceiling reduction
+                  </div>
                 </div>
               </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={local.enableBatteryStepCharging}
+                onClick={() => update('enableBatteryStepCharging', !local.enableBatteryStepCharging)}
+                className={
+                  'w-12 h-7 rounded-full p-1 transition-colors flex items-center shrink-0 ' +
+                  (local.enableBatteryStepCharging
+                    ? 'bg-[#0b57d0] dark:bg-[#a8c7fa] justify-end'
+                    : 'bg-slate-300 dark:bg-slate-700 justify-start')
+                }
+              >
+                <span className="w-5 h-5 rounded-full bg-white dark:bg-[#0e1117] shadow-xs" />
+              </button>
             </div>
 
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={local.enableBatteryStepCharging}
-                onChange={(e) => update('enableBatteryStepCharging', e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-emerald-500"></div>
-            </label>
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              Evaluates battery sensor temperature exclusively while charging. Reduces the charging ceiling during elevated heat and never raises an OEM current limit.
+            </p>
           </div>
 
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            High voltage coupled with temperatures above 42°C accelerates lithium plating and capacity fade. When active, CoreFlow steps down charging current during heavy computing sessions.
-          </p>
-
-          <div className="space-y-3 pt-2">
+          <div className="space-y-4 pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
             <div>
-              <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300 mb-1">
-                <span>Thermal Step Trigger</span>
-                <span className="font-mono font-bold text-emerald-500">
+              <div className="flex justify-between text-xs text-slate-700 dark:text-slate-300 mb-2">
+                <span className="font-medium">Battery Thermal Step Trigger</span>
+                <span className="font-mono tabular-nums font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
                   {local.batteryStepTempThreshold.toFixed(1)} °C
                 </span>
               </div>
@@ -133,19 +139,19 @@ export const HardwareLongevityCard: React.FC<Props> = ({
                 step="0.5"
                 value={local.batteryStepTempThreshold}
                 onChange={(e) => update('batteryStepTempThreshold', parseFloat(e.target.value))}
-                className="w-full accent-emerald-500"
+                className="w-full"
               />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
-                <span>38.0°C (Aggressive)</span>
-                <span>41.5°C (Recommended)</span>
-                <span>46.0°C (Permissive)</span>
+              <div className="flex justify-between text-[11px] text-slate-400 mt-1.5 font-mono tabular-nums">
+                <span>38.0 °C</span>
+                <span>41.5 °C (Default)</span>
+                <span>46.0 °C</span>
               </div>
             </div>
 
             <div>
-              <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300 mb-1">
-                <span>Stepped Max Current</span>
-                <span className="font-mono font-bold text-emerald-500">
+              <div className="flex justify-between text-xs text-slate-700 dark:text-slate-300 mb-2">
+                <span className="font-medium">Stepped Current Ceiling</span>
+                <span className="font-mono tabular-nums font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
                   {local.steppedChargeCurrentMa} mA
                 </span>
               </div>
@@ -156,54 +162,61 @@ export const HardwareLongevityCard: React.FC<Props> = ({
                 step="100"
                 value={local.steppedChargeCurrentMa}
                 onChange={(e) => update('steppedChargeCurrentMa', parseInt(e.target.value, 10))}
-                className="w-full accent-emerald-500"
+                className="w-full"
               />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
-                <span>800 mA (Slow trickle)</span>
+              <div className="flex justify-between text-[11px] text-slate-400 mt-1.5 font-mono tabular-nums">
+                <span>800 mA</span>
                 <span>1500 mA (Balanced)</span>
-                <span>2500 mA (Fast)</span>
+                <span>2500 mA</span>
               </div>
             </div>
           </div>
         </div>
 
         {/* Subsystem 2: UFS Storage Burst Pacing */}
-        <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-xl bg-sky-500/10 text-sky-500">
-                <HardDrive className="w-4 h-4" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
-                  UFS Storage I/O Burst Pacing
-                </h4>
-                <div className="text-[11px] text-slate-400">
-                  cgroups v2 writeback queue pacing
+        <div className="m3-tonal-block p-6 space-y-5 flex flex-col justify-between">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#d3e3fd] dark:bg-[#0842a0] text-[#041e49] dark:text-[#d3e3fd] flex items-center justify-center shrink-0">
+                  <HardDrive className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Storage I/O Relative Weighting
+                  </h4>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    cgroup v2 `io.weight` contention control
+                  </div>
                 </div>
               </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={local.enableUfsBurstPacing}
+                onClick={() => update('enableUfsBurstPacing', !local.enableUfsBurstPacing)}
+                className={
+                  'w-12 h-7 rounded-full p-1 transition-colors flex items-center shrink-0 ' +
+                  (local.enableUfsBurstPacing
+                    ? 'bg-[#0b57d0] dark:bg-[#a8c7fa] justify-end'
+                    : 'bg-slate-300 dark:bg-slate-700 justify-start')
+                }
+              >
+                <span className="w-5 h-5 rounded-full bg-white dark:bg-[#0e1117] shadow-xs" />
+              </button>
             </div>
 
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={local.enableUfsBurstPacing}
-                onChange={(e) => update('enableUfsBurstPacing', e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-sky-500"></div>
-            </label>
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              Prioritizes foreground interactive I/O queues over background write bursts using documented `default N` cgroup v2 weights without modifying global VM ratios.
+            </p>
           </div>
 
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            Eliminates high-priority UI latency spikes caused by background applications saturating flash controller write buffers. Allocates 800+ IO weight to top-app while pacing background writes.
-          </p>
-
-          <div className="space-y-3 pt-2">
+          <div className="space-y-4 pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
             <div>
-              <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300 mb-1">
-                <span>Foreground App I/O Priority</span>
-                <span className="font-mono font-bold text-sky-500">
+              <div className="flex justify-between text-xs text-slate-700 dark:text-slate-300 mb-2">
+                <span className="font-medium">Foreground Top-App I/O Weight</span>
+                <span className="font-mono tabular-nums font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
                   weight {local.topAppIoWeight}
                 </span>
               </div>
@@ -214,19 +227,19 @@ export const HardwareLongevityCard: React.FC<Props> = ({
                 step="50"
                 value={local.topAppIoWeight}
                 onChange={(e) => update('topAppIoWeight', parseInt(e.target.value, 10))}
-                className="w-full accent-sky-500"
+                className="w-full"
               />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
+              <div className="flex justify-between text-[11px] text-slate-400 mt-1.5 font-mono tabular-nums">
                 <span>400</span>
-                <span>800 (Top-app boost)</span>
-                <span>1000 (Max)</span>
+                <span>800 (Recommended)</span>
+                <span>1000</span>
               </div>
             </div>
 
             <div>
-              <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300 mb-1">
-                <span>Background App I/O Cap</span>
-                <span className="font-mono font-bold text-sky-500">
+              <div className="flex justify-between text-xs text-slate-700 dark:text-slate-300 mb-2">
+                <span className="font-medium">Background I/O Weight</span>
+                <span className="font-mono tabular-nums font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
                   weight {local.backgroundIoWeight}
                 </span>
               </div>
@@ -237,10 +250,10 @@ export const HardwareLongevityCard: React.FC<Props> = ({
                 step="10"
                 value={local.backgroundIoWeight}
                 onChange={(e) => update('backgroundIoWeight', parseInt(e.target.value, 10))}
-                className="w-full accent-sky-500"
+                className="w-full"
               />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
-                <span>10 (Aggressive clamp)</span>
+              <div className="flex justify-between text-[11px] text-slate-400 mt-1.5 font-mono tabular-nums">
+                <span>10</span>
                 <span>50 (Recommended)</span>
                 <span>200</span>
               </div>

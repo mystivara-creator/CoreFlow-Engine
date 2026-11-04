@@ -4,18 +4,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
-import java.io.File
-import java.io.InputStreamReader
 
 /**
- * CoreFlowManager: Kotlin Android client for CoreFlow Engine daemon (coreflowd).
+ * CoreFlowManager: Kotlin 2.1 Android client for CFAE System Framework daemon (coreflowd).
  * Provides root-bridged state querying, multi-sensor thermal monitoring,
- * and dynamic profile actuation.
+ * and coordinated profile actuation.
  */
 object CoreFlowManager {
 
     private const val RESOLVE_DAEMON =
-        "BIN=\"/data/adb/modules/coreflow_engine/system/bin/coreflowd\"; " +
+        "BIN=\"/data/adb/modules/cfae_framework/system/bin/coreflowd\"; " +
+        "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/coreflow_engine/system/bin/coreflowd\"; " +
+        "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/cfae_framework/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/system_ext/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/system/bin/coreflowd\""
 
@@ -25,7 +25,7 @@ object CoreFlowManager {
     enum class Profile(val label: String, val uclampMin: Int) {
         BATTERY("Battery Saver", 64),
         BALANCED("Balanced Equilibrium", 320),
-        PERFORMANCE("Peak Responsiveness", 640),
+        PERFORMANCE("Interactive Responsiveness", 640),
         THERMAL_GUARD("ThermalGuard (Cooling)", 0)
     }
 
@@ -73,7 +73,7 @@ object CoreFlowManager {
     }
 
     /**
-     * Apply a performance/equilibrium profile.
+     * Apply a coordinated optimization profile.
      */
     suspend fun applyProfile(profile: Profile): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {

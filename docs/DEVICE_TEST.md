@@ -1,54 +1,59 @@
-# Device acceptance test — Modern v2
+# Device Acceptance Test — CFAE System Framework v3.0.R
 
 Use only an artifact from a green CI run matching the tested commit.
 
-## Before install
+## Before Install
 
-1. Ensure no older CoreFlow daemon/module is active.
-2. Keep recovery or root-module disable access available.
-3. Record any visible top-app UClamp values for comparison.
+1. Ensure no older CoreFlow daemon is active (`cfae_framework` automatically migrates legacy `coreflow_engine` directories).
+2. Keep recovery or root-manager module disable access available.
+3. Record visible top-app UClamp values for baseline comparison:
 
-Diagnostic examples only:
+```bash
+su -c '
+for p in /dev/cpuctl/top-app /sys/fs/cgroup/top-app; do
+  [ -r "$p/cpu.uclamp.min" ] && echo "$p min=$(cat "$p/cpu.uclamp.min") max=$(cat "$p/cpu.uclamp.max")"
+done
+'
+```
 
-    su -c '
-    for p in /dev/cpuctl/top-app /sys/fs/cgroup/top-app; do
-      [ -r "$p/cpu.uclamp.min" ] && echo "$p min=$(cat "$p/cpu.uclamp.min") max=$(cat "$p/cpu.uclamp.max")"
-    done
-    '
+The daemon itself discovers mount points dynamically via `/proc/self/mountinfo`.
 
-The daemon itself does not depend on those example paths.
+## First Boot Verification
 
-## First boot
+After Android finishes booting (`sys.boot_completed=1`):
 
-After Android finishes booting:
-
-    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --status'
-    su -c 'tail -n 80 /data/adb/coreflow/logs/coreflowd.log'
+```bash
+su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --status'
+su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --capabilities'
+su -c 'tail -n 80 /data/adb/coreflow/logs/coreflowd.log'
+```
 
 Acceptance requires:
-- running:true
-- uclampSupported:true
-- log line showing a discovered top-app UClamp target
-- no repeated mutation failure/backoff loop
-- no unexpected reboot, display artifact, freeze, or SystemUI crash
+- `"running":true`
+- `"uclampSupported":true`
+- Log line confirming discovered CPU policies, GPU domains, and UClamp target
+- Zero repeated mutation failure or backoff loops
+- Zero unexpected reboots, display artifacts, freezes, or SystemUI crashes
 
-## Functional sequence
+## Functional Sequence
 
-1. 10 minutes idle/daily UI.
-2. Browsing and scrolling.
-3. Multitasking under memory pressure.
-4. Sustained game/load while monitoring temperature.
-5. Stop and rollback.
+1. 10 minutes idle and daily interactive navigation.
+2. High-refresh scrolling and web browsing.
+3. Multitasking under memory and I/O contention (`PressureGuard` verification).
+4. Sustained compute/gaming load while monitoring temperature (`SustainedLoad` → `ThermalGuard` transition).
+5. Graceful stop and ownership-verified baseline rollback:
 
-    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --rollback-baseline'
-    su -c '/data/adb/modules/coreflow_engine/system/bin/coreflowd --status'
+```bash
+su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --rollback-baseline'
+su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --status'
+```
 
-After rollback the daemon must be stopped and recoveryPending:false.
+After rollback, the daemon must report `"running":false` and `"recoveryPending":false`.
 
-## Emergency
+## Emergency Kill Switch
 
-    su -c 'touch /data/adb/coreflow/DISABLE'
+```bash
+su -c 'touch /data/adb/coreflow/DISABLE'
+```
 
-The daemon checks the marker on its next safety tick and exits through normal rollback. If Android cannot boot, disable/remove the module from the root manager or recovery environment.
-
-A successful device test validates only that device, ROM, and kernel combination.
+The daemon checks safety markers on every tick and exits cleanly through verified baseline rollback.

@@ -1,12 +1,14 @@
 /**
- * CoreFlow JavaScript API for KernelSU & Root Environments
- * @license Apache-2.0
+ * CFAE System Framework v3.0.R JavaScript RPC Bridge for KernelSU & APatch
+ * @license MIT
  */
 (function (global) {
   'use strict';
 
   var RESOLVE_BIN =
-    'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+    'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
@@ -54,7 +56,7 @@
     },
 
     /**
-     * Query CoreFlow daemon status
+     * Query CFAE daemon status
      * @returns {Promise<Object>}
      */
     getStatus: async function () {
