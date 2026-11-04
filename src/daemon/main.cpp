@@ -541,18 +541,10 @@ int main(int argc, char* argv[]) {
         const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
         const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
         const auto io_psi = read_psi_avg10("/proc/pressure/io");
-        if (!cpu_psi || !memory_psi || !io_psi) {
-            if (applied) {
-                baseline.rollback_all();
-                applied = false;
-                reactor.stop();
-            }
-            return;
-        }
         const PressureSnapshot pressure{
-            .cpu = *cpu_psi,
-            .memory = *memory_psi,
-            .io = *io_psi,
+            .cpu = cpu_psi.value_or(0.0),
+            .memory = memory_psi.value_or(0.0),
+            .io = io_psi.value_or(0.0),
         };
 
         const auto now_tick = std::chrono::steady_clock::now();

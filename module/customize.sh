@@ -18,6 +18,9 @@ ui_print "- Runtime capability discovery will resolve thermal and UClamp interfa
 if [ -f "$MODPATH/system/bin/coreflowd" ]; then
     set_perm "$MODPATH/system/bin/coreflowd" 0 0 0755
 elif [ -f "$MODPATH/coreflowd" ]; then
+    mkdir -p "$MODPATH/system/bin"
+    cp "$MODPATH/coreflowd" "$MODPATH/system/bin/coreflowd"
+    set_perm "$MODPATH/system/bin/coreflowd" 0 0 0755
     set_perm "$MODPATH/coreflowd" 0 0 0755
 else
     abort "! coreflowd binary missing from module package."
