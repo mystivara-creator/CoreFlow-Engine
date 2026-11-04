@@ -16,7 +16,8 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   const [copied, setCopied] = useState(false);
 
   const RESOLVE_BIN =
-    'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+    'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
     '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
     '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
 

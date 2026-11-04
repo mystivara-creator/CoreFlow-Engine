@@ -17,6 +17,7 @@ export const PixelHeader: React.FC<Props> = ({
   isDark,
   onToggleTheme,
   modeLabel,
+  onOpenArchitectureStudio,
 }) => (
   <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 dark:bg-[#090d16]/85 border-b border-slate-200/70 dark:border-slate-800/80 transition-colors duration-200">
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
@@ -26,13 +27,19 @@ export const PixelHeader: React.FC<Props> = ({
         </div>
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-bold text-base sm:text-lg tracking-tight text-slate-900 dark:text-white">CoreFlow</span>
-            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/20">v2.0 Modern</span>
+            <span className="font-bold text-base sm:text-lg tracking-tight text-slate-900 dark:text-white">CFAE System Framework</span>
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/20 font-mono">v3.0.R</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">epoll reactor · thermal + PSI stability policy</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Mutation safety · coordinated optimization · zero-hardcode</p>
         </div>
       </div>
       <div className="flex items-center gap-2 sm:gap-3 ml-auto">
+        <button
+          onClick={onOpenArchitectureStudio}
+          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-300 text-xs font-semibold border border-slate-200 dark:border-slate-700 transition-all"
+        >
+          Blueprint Studio
+        </button>
         <div className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-medium">
           <span className={'w-2 h-2 rounded-full ' + (engineActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400')} />
           <span>{engineActive ? modeLabel : 'OEM baseline'}</span>
@@ -40,7 +47,7 @@ export const PixelHeader: React.FC<Props> = ({
         <button
           onClick={onToggleEngine}
           className={'flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all active:scale-95 ' +
-            (engineActive ? 'bg-sky-500 text-slate-950' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300')}
+            (engineActive ? 'bg-sky-500 text-slate-950 shadow-sm' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300')}
         >
           <Power className="w-3.5 h-3.5" />{engineActive ? 'Engine Active' : 'Engine Paused'}
         </button>

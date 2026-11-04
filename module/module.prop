@@ -1,7 +1,7 @@
-id=coreflow_engine
-name=CoreFlow Engine — Modern Multi-Language Optimizer
-version=v2.0.0
-versionCode=20000
+id=cfae_framework
+name=CFAE System Framework
+version=v3.0.R
+versionCode=30000
 author=mystivara-creator
-description=Stability-first Android optimizer built with C++23, Rust 2024, Kotlin Quick Settings tile, and modern offline JavaScript WebUI.
+description=Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

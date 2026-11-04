@@ -1,16 +1,21 @@
 #!/system/bin/sh
-# CoreFlow Engine — hardened installer
+# CFAE System Framework — hardened installer
 ui_print "****************************************"
-ui_print "     CoreFlow Engine v2.0-MODERN        "
+ui_print "       CFAE System Framework v3.0.R     "
 ui_print "       Author: mystivara-creator        "
 ui_print "****************************************"
 
 if [ "$ARCH" != "arm64" ]; then
-    abort "! Unsupported architecture ($ARCH). CoreFlow requires ARM64."
+    abort "! Unsupported architecture ($ARCH). CFAE requires ARM64."
 fi
 
 if [ -n "${API:-}" ] && [ "$API" -lt 34 ]; then
-    abort "! Unsupported Android API ($API). CoreFlow requires Android 14+ (API 34+)."
+    abort "! Unsupported Android API ($API). CFAE requires Android 14+ (API 34+)."
+fi
+
+if [ -d "/data/adb/modules/coreflow_engine" ] && [ "$MODPATH" != "/data/adb/modules/coreflow_engine" ]; then
+    ui_print "- Migrating from legacy CoreFlow Engine installation..."
+    touch "/data/adb/modules/coreflow_engine/remove" 2>/dev/null || rm -rf "/data/adb/modules/coreflow_engine" 2>/dev/null || true
 fi
 
 ui_print "- Runtime capability discovery will resolve thermal and UClamp interfaces after boot."

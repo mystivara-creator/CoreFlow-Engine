@@ -14,7 +14,7 @@ interface ArchitectureStudioModalProps {
   onlineCpus: string;
   gpuType: string;
 }
-const tabs = ['Architecture', 'HAL / Binder', 'Thermal simulator', 'Preservation', 'C++ / Rust', 'Export'] as const;
+const tabs = ['Architecture', 'Mutation Safety', 'HAL / Binder', 'Thermal simulator', 'Preservation', 'C++ / Rust', 'Export'] as const;
 type Tab = typeof tabs[number];
 
 export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (props) => {
@@ -42,14 +42,14 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
     return samples;
   }, [load, ambient]);
   if (!props.isOpen) return null;
-  const fullText = blueprint + `\n\n## Current hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
+  const fullText = blueprint + `\n\n## CFAE System Framework v3.0.R\n## Current hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
   const copy = async () => {
     try { await navigator.clipboard.writeText(fullText); setCopied(true); setCopyError(''); }
     catch { setCopyError('Clipboard unavailable. Use Download.'); }
   };
   const download = (extension: string) => {
     const url = URL.createObjectURL(new Blob([fullText], { type: 'text/plain;charset=utf-8' }));
-    const anchor = document.createElement('a'); anchor.href = url; anchor.download = `coreflow_equilibrium_blueprint.${extension}`;
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = `cfae_framework_blueprint.${extension}`;
     document.body.appendChild(anchor); anchor.click(); anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -57,13 +57,13 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
   const capacityPoints = simulation.map((s, i) => `${i * 5},${200 - s.scale * 160}`).join(' ');
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-      <div role="dialog" aria-modal="true" aria-label="CoreFlow Architecture Studio" className="relative w-full max-w-5xl h-[90vh] flex flex-col rounded-3xl bg-[#090D16] border border-slate-800 text-slate-100 shadow-2xl overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label="CFAE System Framework Architecture Studio" className="relative w-full max-w-5xl h-[90vh] flex flex-col rounded-3xl bg-[#090D16] border border-slate-800 text-slate-100 shadow-2xl overflow-hidden">
         <header className="p-5 border-b border-slate-800 flex justify-between items-center gap-3">
-          <div><h2 className="font-semibold text-lg">CoreFlow Architecture Studio</h2><p className="text-xs text-slate-400">C++23 · Rust 2024 · cxx · capability-driven control</p></div>
-          <button onClick={props.onClose} aria-label="Close Studio" className="p-2 rounded-xl hover:bg-slate-800"><X size={20} /></button>
+          <div><h2 className="font-semibold text-lg text-white">CFAE System Framework Studio</h2><p className="text-xs text-sky-400 font-mono">v3.0.R · Mutation Safety & Coordinated Optimization</p></div>
+          <button onClick={props.onClose} aria-label="Close Studio" className="p-2 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"><X size={20} /></button>
         </header>
         <nav className="flex flex-wrap gap-2 p-3 border-b border-slate-800" aria-label="Studio sections">
-          {tabs.map(item => <button key={item} onClick={() => setTab(item)} className={`px-3 py-2 rounded-xl text-xs transition-colors ${item === tab ? 'bg-sky-500 text-slate-950' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'}`}>{item}</button>)}
+          {tabs.map(item => <button key={item} onClick={() => setTab(item)} className={`px-3 py-2 rounded-xl text-xs font-medium transition-colors ${item === tab ? 'bg-sky-500 text-slate-950 shadow-sm font-semibold' : 'bg-slate-900 text-slate-300 hover:bg-slate-800'}`}>{item}</button>)}
         </nav>
         <div className="flex-1 min-h-0 overflow-auto p-5 sm:p-7 space-y-5 text-sm">
           {tab === 'Architecture' && <>
@@ -73,6 +73,31 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
               {[['C++23 runtime', 'epoll, timerfd, signalfd, sysfs discovery, OEM ownership and durable rollback journal.'], ['Rust decision engine', 'Thermal PID, hysteresis, pressure priority, sample validation and bounded capacity budget.'], ['CPU / GPU control', 'Only exposed frequency tables and limits. OEM ceilings remain authoritative.'], ['Workbench', 'Real hardware identity in native mode. Simulations and source explorer are separate from live telemetry.']].map(([title, text]) => <div key={title} className="p-4 rounded-2xl bg-slate-900 border border-slate-800"><h4 className="text-sky-300 mb-2">{title}</h4><p className="text-xs text-slate-400">{text}</p></div>)}
             </div>
             <dl className="font-mono text-xs space-y-2 text-slate-400"><div>SoC: {props.socModel}</div><div>Kernel: {props.kernelVersion}</div><div>Online CPUs: {props.onlineCpus}</div><div>GPU: {props.gpuType}</div></dl>
+          </>}
+          {tab === 'Mutation Safety' && <>
+            <h3 className="font-semibold text-base text-white">Coordinated Optimization & Mutation Safety (5 Layers)</h3>
+            <p className="text-xs text-slate-400">Unit pengendalian utama adalah <strong className="text-sky-400">Mutation Transaction</strong>: satu tujuan optimasi, satu rencana perubahan dengan batas risiko yang dipahami, readback verify per write, dan rollback aman.</p>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[
+                ['1. Reasoning Engine', 'Menggabungkan observasi workload, PSI CPU/Mem/IO, status daya & thermal. Menghasilkan optimization intent terukur.'],
+                ['2. Dependency Analyzer', 'Membangun dependency graph (Required-before, Requires, Coupled-with, Conflicts-with). Default relasi unknown = terisolasi.'],
+                ['3. Mutation Planner', 'Menyusun mutation group, menetapkan baseline, nilai target, urutan dependensi, batas risk budget, dan titik abort.'],
+                ['4. Safety Admission Gate', 'Memeriksa semantik, range, baseline valid, ketiadaan konflik ownership, dan kepatuhan kebijakan thermal OEM.'],
+                ['5. Coordinator & Readback', 'Serialisasi transaksi yang berpotensi konflik, write-ahead durability, readback verify segera setelah write.'],
+                ['6. Outcome Learning', 'Menyimpan bukti hasil: retain konfigurasi bermanfaat, defer kandidat yang berulang kali netral/gagal tanpa retry buta.']
+              ].map(([t, d]) => (
+                <div key={t} className="p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800/80">
+                  <h4 className="text-xs font-bold text-sky-300 mb-1">{t}</h4>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">{d}</p>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-900/40 text-xs space-y-2">
+              <span className="font-semibold text-amber-300">12 Invarian Keselamatan Wajib:</span>
+              <p className="text-slate-300 leading-relaxed">
+                Tidak ada write tanpa baseline valid · Writable ≠ Safe · Readback verifikasi setiap write · Rollback tidak menimpa modifikasi eksternal (ownership guard) · Kebijakan thermal OEM tetap batas keselamatan tertinggi · Fail-safe default: tidak menulis.
+              </p>
+            </div>
           </>}
           {tab === 'HAL / Binder' && <>
             <h3 className="font-semibold">Platform integration status</h3>

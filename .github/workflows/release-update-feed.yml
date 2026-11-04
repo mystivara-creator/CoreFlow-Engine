@@ -39,13 +39,13 @@ jobs:
           fi
           [[ -n "$TAG" ]] || { echo "::error::No published GitHub release was found."; exit 1; }
 
-          ASSET="CoreFlow-Engine-${TAG}-arm64.zip"
+          ASSET="CFAE-System-Framework-${TAG}-arm64.zip"
           WORK_DIR="$RUNNER_TEMP/coreflow-release"
           mkdir -p "$WORK_DIR"
-          gh release download "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$ASSET" \
-            --dir "$WORK_DIR"
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$WORK_DIR" 2>/dev/null; then
+            ASSET="CoreFlow-Engine-${TAG}-arm64.zip"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$WORK_DIR"
+          fi
           PACKAGE="$WORK_DIR/$ASSET"
           test -s "$PACKAGE" || { echo "::error::Expected release asset missing: $ASSET"; exit 1; }
 

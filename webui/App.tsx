@@ -26,7 +26,9 @@ import {
 } from './engine/autonomousEngine';
 
 const RESOLVE_BIN =
-  'BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+  'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+  '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+  '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
@@ -340,7 +342,7 @@ export const App: React.FC = () => {
       } else {
         // Clear safety lockouts and unconfirmed boot attempts when the operator requests a manual start
         await execChecked(
-          `rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/modules/coreflow_engine/disable 2>/dev/null; ` +
+          `rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/modules/cfae_framework/disable /data/adb/modules/coreflow_engine/disable 2>/dev/null; ` +
           `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
           `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
           `${RESOLVE_BIN}; ` +
@@ -407,7 +409,7 @@ export const App: React.FC = () => {
       const recover = Math.max(25, trip - 4);
 
       const nativeConfig =
-        '[general]\nversion = 2.0.0\nlog_level = info\nenable_uclamp = true\n' +
+        '[general]\nversion = 3.0.R\nlog_level = info\nenable_uclamp = true\n' +
         '\n[uclamp]\ntop_app_interactive_min = ' +
         balancedMin +
         '\ntop_app_interactive_max = 1024' +
@@ -766,11 +768,11 @@ export const App: React.FC = () => {
       <footer className="border-t border-slate-200/80 dark:border-slate-800/80 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
         <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">CoreFlow Engine v2.0</span>
-            {' · '}Stability-first Android optimizer
+            <span className="font-semibold text-slate-700 dark:text-slate-300">CFAE System Framework v3.0.R</span>
+            {' · '}Autonomous Mutation Safety & Coordinated Optimization
           </div>
           <div className="text-[11px] font-mono">
-            C++23 + Rust 2024 · CPU/GPU equilibrium · verified recovery
+            C++23 + Rust 2024 · Coordinated Mutation Transactions · Verified Recovery
           </div>
         </div>
       </footer>

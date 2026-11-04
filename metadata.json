@@ -1,5 +1,5 @@
 {
-  "name": "CoreFlow Engine",
-  "description": "Stability-first C++20 Android optimizer with semantic UClamp discovery, thermal/PSI policy, verified recovery, and a modern offline dashboard.",
+  "name": "CFAE System Framework",
+  "description": "Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.",
   "requestFramePermissions": []
 }

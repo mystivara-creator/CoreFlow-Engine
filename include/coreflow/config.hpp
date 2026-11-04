@@ -19,7 +19,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"2.0.0"};
+    std::string version{"3.0.R"};
     std::string log_level{"info"};
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};

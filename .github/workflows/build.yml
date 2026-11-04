@@ -168,6 +168,7 @@ jobs:
 
 
       - name: Verify release version alignment
+        id: version_info
         shell: bash
         run: |
           set -euo pipefail
@@ -176,8 +177,10 @@ jobs:
           CMAKE_VERSION="$(sed -n 's/^project(CoreFlowEngine VERSION \([0-9.]*\) LANGUAGES CXX).*$/\1/p' CMakeLists.txt | head -n1)"
           [[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 10000 + $2 * 1000 + $3 * 100}' <<< "$CMAKE_VERSION")"
-          test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
           test "$MODULE_CODE" = "$EXPECTED_CODE"
+          test "$MODULE_VERSION" = "v3.0.R"
+          echo "version=${MODULE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "code=${MODULE_CODE}" >> "$GITHUB_OUTPUT"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
 
       - name: Setup Android NDK
@@ -269,7 +272,7 @@ jobs:
               | head -n 1
           )"
 
-          MODULE_DIR="artifacts/CoreFlow-Engine"
+          MODULE_DIR="artifacts/CFAE-System-Framework"
           mkdir -p "${MODULE_DIR}/system/bin"
           mkdir -p "${MODULE_DIR}/system/etc/coreflow"
 
@@ -293,20 +296,32 @@ jobs:
           chmod 0644 "${MODULE_DIR}/module.prop"
           chmod 0644 "${MODULE_DIR}/system/etc/coreflow/default.conf"
 
-      - name: Package Module Zip
+      - name: Package Standalone Flashable Zip
+        id: package_zip
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
-          ZIP="artifacts/CoreFlow-Engine-${VERSION}-arm64.zip"
+          ZIP_NAME="CFAE-System-Framework-${VERSION}-arm64.zip"
 
-          cd artifacts/CoreFlow-Engine
-          zip -r "../$(basename "$ZIP")" .
+          cd artifacts/CFAE-System-Framework
+          zip -r9 "../../artifacts/${ZIP_NAME}" .
+          echo "zip_path=artifacts/${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Production Module
-        uses: actions/upload-artifact@v7
+      - name: Upload Direct Flashable Module (No Nested Zip)
+        uses: actions/upload-artifact@v4
         with:
-          name: CoreFlow-Engine-${{ env.ANDROID_ABI }}-Package
-          path: artifacts/CoreFlow-Engine-*-arm64.zip
+          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-arm64
+          path: artifacts/CFAE-System-Framework/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Attach Flashable Zip to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh release upload "$TAG" "${{ steps.package_zip.outputs.zip_path }}" --clobber || true
