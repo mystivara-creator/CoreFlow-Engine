@@ -15,6 +15,7 @@ import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
 import {
   AutonomousConfig,
   AutonomousTelemetry,
+  BlockQueueTelemetry,
   createInitialAutonomousTelemetry,
   createInitialLogs,
   DEFAULT_AUTONOMOUS_CONFIG,
@@ -23,6 +24,7 @@ import {
   ReactionLogEvent,
   stepAutonomousSimulation,
   ThermalSensorDetail,
+  TunerCandidateTelemetry,
 } from './engine/autonomousEngine';
 
 const RESOLVE_BIN =
@@ -55,6 +57,24 @@ interface NativeStatus {
   thermalSeverity?: number;
   thermalSource?: string;
   thermalSensor?: string;
+  aiBackend?: string;
+  aiOnnxActive?: boolean;
+  aiPredictedPressure10s?: number;
+  aiRecommendedScale?: number;
+  aiConfidence?: number;
+  aiSamples?: number;
+  tunerStage?: string;
+  tunerIntent?: string;
+  tunerCandidateId?: string;
+  tunerCandidateLabel?: string;
+  tunerRationale?: string;
+  tunerVerdict?: string;
+  tunerUtilityDelta?: number;
+  tunerTrials?: number;
+  tunerImproved?: number;
+  tunerRolledBack?: number;
+  blockQueues?: BlockQueueTelemetry[];
+  tunerCandidates?: TunerCandidateTelemetry[];
 }
 
 const checkedNativeStatus = (raw: string): NativeStatus => {
@@ -218,6 +238,24 @@ export const App: React.FC = () => {
       batteryTempCelsius: status.batteryTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 5.0 : -1),
       skinTempCelsius: status.skinTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 3.2 : -1),
       thermalSensors: status.thermalSensors ?? old.thermalSensors,
+      aiBackend: status.aiBackend ?? old.aiBackend,
+      aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,
+      aiPredictedPressure10s: status.aiPredictedPressure10s ?? old.aiPredictedPressure10s,
+      aiRecommendedScale: status.aiRecommendedScale ?? old.aiRecommendedScale,
+      aiConfidence: status.aiConfidence ?? old.aiConfidence,
+      aiSamples: status.aiSamples ?? old.aiSamples,
+      tunerStage: status.tunerStage ?? old.tunerStage,
+      tunerIntent: status.tunerIntent ?? old.tunerIntent,
+      tunerCandidateId: status.tunerCandidateId ?? old.tunerCandidateId,
+      tunerCandidateLabel: status.tunerCandidateLabel ?? old.tunerCandidateLabel,
+      tunerRationale: status.tunerRationale ?? old.tunerRationale,
+      tunerVerdict: status.tunerVerdict ?? old.tunerVerdict,
+      tunerUtilityDelta: status.tunerUtilityDelta ?? old.tunerUtilityDelta,
+      tunerTrials: status.tunerTrials ?? old.tunerTrials,
+      tunerImproved: status.tunerImproved ?? old.tunerImproved,
+      tunerRolledBack: status.tunerRolledBack ?? old.tunerRolledBack,
+      blockQueues: status.blockQueues ?? old.blockQueues,
+      tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       transactionStage: status.running
         ? status.recoveryPending
@@ -338,7 +376,7 @@ export const App: React.FC = () => {
   }, [isNativeBridge, refreshNative]);
 
   const advancePreviewSimulation = useCallback(
-    (forced?: 'cpu' | 'memory') => {
+    (forced?: 'cpu' | 'memory' | 'io_trial') => {
       const { next, event } = stepAutonomousSimulation(telemetryRef.current, config, forced);
       telemetryRef.current = next;
       setTelemetry(next);
@@ -417,6 +455,11 @@ export const App: React.FC = () => {
   const handleSimulateMemoryPressure = () => {
     if (isNativeBridge || !telemetry.engineActive) return;
     advancePreviewSimulation('memory');
+  };
+
+  const handleSimulateIoTrial = () => {
+    if (isNativeBridge || !telemetry.engineActive) return;
+    advancePreviewSimulation('io_trial');
   };
 
   const handleSaveConfig = async (overrideConfig?: AutonomousConfig) => {
@@ -658,6 +701,7 @@ export const App: React.FC = () => {
                 thermalTripCelsius={config.thermalTripCelsius}
                 onSimulateCpuLoad={handleSimulateCpuLoad}
                 onSimulateMemoryPressure={handleSimulateMemoryPressure}
+                onSimulateIoTrial={handleSimulateIoTrial}
               />
             </section>
 

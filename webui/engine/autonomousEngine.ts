@@ -1,6 +1,6 @@
 // CFAE System Framework v3.0.R — Coordinated Mutation Transaction & Preview Engine.
 // Native mode reads real daemon telemetry; this simulator models the 5-layer
-// Mutation Safety architecture strictly for browser preview.
+// Mutation Safety architecture + Multi-Domain Autonomous Scheduler & Tunable Evaluator for browser preview.
 
 export type AutonomousMode =
   | 'balanced'
@@ -13,7 +13,8 @@ export type TransactionStage =
   | 'APPLIED'
   | 'VERIFIED'
   | 'OBSERVING'
-  | 'RETAINED';
+  | 'RETAINED'
+  | 'ROLLED_BACK';
 
 export type RiskClass = 'Low' | 'Medium' | 'High' | 'Forbidden';
 
@@ -33,6 +34,31 @@ export interface ThermalSensorDetail {
   celsius: number | null;
   valid: boolean;
   policyAvailable: boolean;
+}
+
+export interface BlockQueueTelemetry {
+  device: string;
+  activeScheduler: string;
+  baselineScheduler: string;
+  availableSchedulers: string[];
+  readAheadKb: number;
+  nrRequests: number;
+  rqAffinity: number;
+  readExpireMs: number;
+  writesStarved: number;
+  fifoBatch: number;
+}
+
+export interface TunerCandidateTelemetry {
+  id: string;
+  label: string;
+  domain: string;
+  trials: number;
+  successes: number;
+  rollbacks: number;
+  meanDelta: number;
+  ucbScore: number;
+  cooldownTicks: number;
 }
 
 export interface AutonomousTelemetry {
@@ -60,6 +86,24 @@ export interface AutonomousTelemetry {
   riskClass?: RiskClass;
   lastOutcome?: TransactionOutcome;
   ownershipIntact?: boolean;
+  aiBackend?: string;
+  aiOnnxActive?: boolean;
+  aiPredictedPressure10s?: number;
+  aiRecommendedScale?: number;
+  aiConfidence?: number;
+  aiSamples?: number;
+  tunerStage?: string;
+  tunerIntent?: string;
+  tunerCandidateId?: string;
+  tunerCandidateLabel?: string;
+  tunerRationale?: string;
+  tunerVerdict?: string;
+  tunerUtilityDelta?: number;
+  tunerTrials?: number;
+  tunerImproved?: number;
+  tunerRolledBack?: number;
+  blockQueues?: BlockQueueTelemetry[];
+  tunerCandidates?: TunerCandidateTelemetry[];
   timestamp: number;
 }
 
@@ -114,10 +158,10 @@ export function getModeMeta(mode: AutonomousMode) {
     case 'pressure_guard':
       return {
         label: 'Pressure Guard',
-        description: 'Memory or I/O contention elevated; non-essential boost candidates deferred.',
-        stage: 'VERIFIED' as TransactionStage,
+        description: 'Memory or I/O contention elevated; dynamic block scheduler & VM relief engaged.',
+        stage: 'OBSERVING' as TransactionStage,
         risk: 'Low' as RiskClass,
-        outcome: 'NEUTRAL' as TransactionOutcome,
+        outcome: 'IMPROVED' as TransactionOutcome,
       };
     case 'thermal_guard':
       return {
@@ -169,12 +213,88 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
     ioPressurePct: 0.4,
-    baselineNodesSnapshotted: 4,
+    baselineNodesSnapshotted: 6,
     baselineStatus: 'protected',
     transactionStage: 'RETAINED',
     riskClass: 'Low',
     lastOutcome: 'IMPROVED',
     ownershipIntact: true,
+    aiBackend: 'embedded-rls-mlp',
+    aiOnnxActive: false,
+    aiPredictedPressure10s: 46.2,
+    aiRecommendedScale: 0.94,
+    aiConfidence: 0.86,
+    aiSamples: 12,
+    tunerStage: 'RETAINED',
+    tunerIntent: 'HoldEquilibrium',
+    tunerCandidateId: 'oem_baseline',
+    tunerCandidateLabel: 'OEM Baseline Equilibrium',
+    tunerRationale: 'System in equilibrium (I/O & memory PSI low); retaining OEM block scheduler without unnecessary mutation.',
+    tunerVerdict: 'IMPROVED',
+    tunerUtilityDelta: 0.0,
+    tunerTrials: 3,
+    tunerImproved: 2,
+    tunerRolledBack: 1,
+    blockQueues: [
+      {
+        device: 'sda',
+        activeScheduler: 'mq-deadline',
+        baselineScheduler: 'none',
+        availableSchedulers: ['none', 'mq-deadline', 'kyber', 'bfq'],
+        readAheadKb: 128,
+        nrRequests: 128,
+        rqAffinity: 2,
+        readExpireMs: 125,
+        writesStarved: 3,
+        fifoBatch: 8,
+      },
+    ],
+    tunerCandidates: [
+      {
+        id: 'io_mq_deadline_interactive',
+        label: 'mq-deadline + Interactive iosched Tunables',
+        domain: 'block_io',
+        trials: 2,
+        successes: 2,
+        rollbacks: 0,
+        meanDelta: 7.4,
+        ucbScore: 8.12,
+        cooldownTicks: 0,
+      },
+      {
+        id: 'io_kyber_low_latency',
+        label: 'kyber Token-Bucket Low-Latency Queue',
+        domain: 'block_io',
+        trials: 1,
+        successes: 0,
+        rollbacks: 1,
+        meanDelta: -1.8,
+        ucbScore: -0.75,
+        cooldownTicks: 0,
+      },
+      {
+        id: 'io_bfq_fair_queue',
+        label: 'bfq Budget Fair Queueing',
+        domain: 'block_io',
+        trials: 0,
+        successes: 0,
+        rollbacks: 0,
+        meanDelta: 0,
+        ucbScore: 100.0,
+        cooldownTicks: 0,
+      },
+      {
+        id: 'vm_reclaim_relief',
+        label: 'VM Page-Cluster & Cache Pressure Relief',
+        domain: 'vm_memory',
+        trials: 1,
+        successes: 1,
+        rollbacks: 0,
+        meanDelta: 4.1,
+        ucbScore: 5.15,
+        cooldownTicks: 0,
+      },
+    ],
     timestamp: Date.now(),
   };
 }
@@ -202,8 +322,8 @@ export function createInitialLogs(): ReactionLogEvent[] {
       id: 'preview-3',
       timestamp: stamp(3),
       type: 'INFO',
-      tag: 'OutcomeEval',
-      message: 'Preview: readback verified (uclamp.min=320, uclamp.max=1024) -> RETAINED.',
+      tag: 'AutonomousTuner',
+      message: 'Preview: sda queue/scheduler switched none -> mq-deadline (read_expire=125ms, fifo_batch=8) | delta_u=+7.4 -> IMPROVED.',
     },
   ];
 }
@@ -211,7 +331,7 @@ export function createInitialLogs(): ReactionLogEvent[] {
 export function stepAutonomousSimulation(
   current: AutonomousTelemetry,
   config: AutonomousConfig,
-  forced?: 'cpu' | 'memory'
+  forced?: 'cpu' | 'memory' | 'io_trial'
 ): { next: AutonomousTelemetry; event?: ReactionLogEvent } {
   if (!current.engineActive) {
     return {
@@ -241,8 +361,13 @@ export function stepAutonomousSimulation(
     Math.min(49, current.socTempCelsius + (Math.random() - 0.46) * 0.35)
   );
   const cpu = forced === 'cpu' ? 14 : Math.max(0, Math.random() * 10);
-  const memory = forced === 'memory' ? 6 : Math.max(0, Math.random() * 3.5);
-  const io = forced === 'memory' ? 6 : Math.max(0, Math.random() * 5.5);
+  const memory = forced === 'memory' ? 6.4 : Math.max(0, Math.random() * 3.5);
+  const io =
+    forced === 'io_trial'
+      ? 11.8
+      : forced === 'memory'
+      ? 6.2
+      : Math.max(0, Math.random() * 5.2);
 
   let mode: AutonomousMode = 'balanced';
   let min = base;
@@ -261,6 +386,74 @@ export function stepAutonomousSimulation(
   }
 
   const meta = getModeMeta(mode);
+  const predictedPressure = Math.min(
+    130,
+    Math.max(25, (nextTemp - 20) * 2.2 + cpu * 0.6 + io * 0.4)
+  );
+  const recScale =
+    mode === 'thermal_guard'
+      ? 0.68
+      : mode === 'pressure_guard'
+      ? 0.82
+      : Number(Math.max(0.72, Math.min(1.0, 1.0 - Math.max(0, predictedPressure - 55) * 0.004)).toFixed(2));
+  const samples = (current.aiSamples ?? 12) + 1;
+
+  // Autonomous Multi-Domain Scheduler & Tunable Evaluation simulation
+  const prevQueues = current.blockQueues ?? [];
+  const prevCandidates = (current.tunerCandidates ?? []).map((c) => ({ ...c }));
+  let tunerStage = current.tunerStage ?? 'RETAINED';
+  let tunerIntent = current.tunerIntent ?? 'HoldEquilibrium';
+  let tunerCandidateId = current.tunerCandidateId ?? 'oem_baseline';
+  let tunerCandidateLabel = current.tunerCandidateLabel ?? 'OEM Baseline Equilibrium';
+  let tunerRationale = current.tunerRationale ?? '';
+  let tunerVerdict = current.tunerVerdict ?? 'IMPROVED';
+  let tunerUtilityDelta = current.tunerUtilityDelta ?? 0;
+  let tunerTrials = current.tunerTrials ?? 3;
+  let tunerImproved = current.tunerImproved ?? 2;
+  const tunerRolledBack = current.tunerRolledBack ?? 1;
+
+  const updatedQueues = prevQueues.map((q) => ({ ...q }));
+
+  if (forced === 'io_trial' || io >= 5.0) {
+    tunerStage = 'RETAINED';
+    tunerIntent = 'IoLatencyRelief';
+    tunerCandidateId = 'io_mq_deadline_interactive';
+    tunerCandidateLabel = 'mq-deadline + Interactive iosched Tunables';
+    tunerVerdict = 'IMPROVED';
+    tunerUtilityDelta = Number((5.2 + Math.random() * 4.5).toFixed(2));
+    tunerTrials += 1;
+    tunerImproved += 1;
+    tunerRationale =
+      `I/O PSI=${io.toFixed(1)}% exceeded 4.0% threshold; switched sda scheduler none -> mq-deadline ` +
+      `(read_expire=125ms, writes_starved=3, fifo_batch=8, read_ahead_kb=128) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+    if (updatedQueues.length > 0) {
+      updatedQueues[0].activeScheduler = 'mq-deadline';
+      updatedQueues[0].readExpireMs = 125;
+      updatedQueues[0].writesStarved = 3;
+      updatedQueues[0].fifoBatch = 8;
+      updatedQueues[0].readAheadKb = 128;
+      updatedQueues[0].rqAffinity = 2;
+    }
+    const cand = prevCandidates.find((c) => c.id === 'io_mq_deadline_interactive');
+    if (cand) {
+      cand.trials += 1;
+      cand.successes += 1;
+      cand.meanDelta = Number(((cand.meanDelta * (cand.trials - 1) + tunerUtilityDelta) / cand.trials).toFixed(2));
+      cand.ucbScore = Number((cand.meanDelta + 0.65).toFixed(2));
+    }
+  } else if (forced === 'memory' || memory >= 3.2) {
+    tunerStage = 'RETAINED';
+    tunerIntent = 'MemoryStallRelief';
+    tunerCandidateId = 'vm_reclaim_relief';
+    tunerCandidateLabel = 'VM Page-Cluster & Cache Pressure Relief';
+    tunerVerdict = 'IMPROVED';
+    tunerUtilityDelta = Number((3.4 + Math.random() * 2.8).toFixed(2));
+    tunerTrials += 1;
+    tunerImproved += 1;
+    tunerRationale =
+      `Memory PSI=${memory.toFixed(1)}% elevated; applied vm.page-cluster=0 & vfs_cache_pressure=80 | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+  }
+
   const next: AutonomousTelemetry = {
     ...current,
     mode,
@@ -276,12 +469,30 @@ export function stepAutonomousSimulation(
     riskClass: meta.risk,
     lastOutcome: meta.outcome,
     ownershipIntact: true,
+    aiBackend: current.aiBackend ?? 'embedded-rls-mlp',
+    aiOnnxActive: current.aiOnnxActive ?? false,
+    aiPredictedPressure10s: Number(predictedPressure.toFixed(1)),
+    aiRecommendedScale: recScale,
+    aiConfidence: Number(Math.min(0.96, 0.78 + Math.min(samples, 50) * 0.003).toFixed(2)),
+    aiSamples: samples,
+    tunerStage,
+    tunerIntent,
+    tunerCandidateId,
+    tunerCandidateLabel,
+    tunerRationale,
+    tunerVerdict,
+    tunerUtilityDelta,
+    tunerTrials,
+    tunerImproved,
+    tunerRolledBack,
+    blockQueues: updatedQueues,
+    tunerCandidates: prevCandidates,
     timestamp: Date.now(),
   };
 
-  if (mode === current.mode) return { next };
+  if (mode === current.mode && !forced) return { next };
 
-  return { next, event: createPreviewEvent(mode, meta.label, next) };
+  return { next, event: createPreviewEvent(mode, meta.label, next, forced) };
 }
 
 let previewEventSeq = 0;
@@ -289,9 +500,19 @@ let previewEventSeq = 0;
 function createPreviewEvent(
   mode: AutonomousMode,
   label: string,
-  next: AutonomousTelemetry
+  next: AutonomousTelemetry,
+  forced?: 'cpu' | 'memory' | 'io_trial'
 ): ReactionLogEvent {
   previewEventSeq += 1;
+  if (forced === 'io_trial') {
+    return {
+      id: `preview-${Date.now()}-${previewEventSeq}`,
+      timestamp: new Date().toTimeString().slice(0, 8),
+      type: 'BOOST',
+      tag: 'AutonomousTuner',
+      message: next.tunerRationale ?? 'Dynamic scheduler trial completed.',
+    };
+  }
   return {
     id: `preview-${Date.now()}-${previewEventSeq}`,
     timestamp: new Date().toTimeString().slice(0, 8),

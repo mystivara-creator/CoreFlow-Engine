@@ -11,6 +11,8 @@
 #include "coreflow/power_bridge.hpp"
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/hardware_longevity.hpp"
+#include "coreflow/neural_predictor.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -301,8 +303,76 @@ void print_status() {
     std::cout << "]";
     const auto battery = ThermalMonitor::instance().battery_celsius();
     const auto skin = ThermalMonitor::instance().skin_celsius();
+    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu").value_or(0.0);
+    const auto mem_psi = read_psi_avg10("/proc/pressure/memory").value_or(0.0);
+    const auto io_psi = read_psi_avg10("/proc/pressure/io").value_or(0.0);
+    const auto ai = NeuralPredictor::instance().infer_and_learn({
+        std::clamp(thermal.pressure, 0.0, 130.0),
+        std::clamp(cpu_psi, 0.0, 100.0),
+        std::clamp(mem_psi, 0.0, 100.0),
+        std::clamp(io_psi, 0.0, 100.0),
+        1.0,
+        1.0,
+    });
+    AutonomousTuner::instance().discover();
+    const auto tuner = AutonomousTuner::instance().snapshot();
     std::cout << ",\"batteryTempCelsius\":" << (battery >= 0 ? std::to_string(battery) : "null")
-              << ",\"skinTempCelsius\":" << (skin >= 0 ? std::to_string(skin) : "null");
+              << ",\"skinTempCelsius\":" << (skin >= 0 ? std::to_string(skin) : "null")
+              << ",\"aiBackend\":" << json_string(ai.backend)
+              << ",\"aiOnnxActive\":" << (ai.onnx_active ? "true" : "false")
+              << ",\"aiPredictedPressure10s\":" << ai.predicted_pressure_10s
+              << ",\"aiRecommendedScale\":" << ai.recommended_scale
+              << ",\"aiConfidence\":" << ai.confidence
+              << ",\"aiSamples\":" << ai.samples_observed
+              << ",\"tunerStage\":" << json_string(AutonomousTuner::stage_name(tuner.stage))
+              << ",\"tunerIntent\":" << json_string(AutonomousTuner::intent_name(tuner.intent))
+              << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
+              << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
+              << ",\"tunerRationale\":" << json_string(tuner.rationale)
+              << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
+              << ",\"tunerUtilityDelta\":" << tuner.utility_delta
+              << ",\"tunerTrials\":" << tuner.total_trials
+              << ",\"tunerImproved\":" << tuner.improved_count
+              << ",\"tunerRolledBack\":" << tuner.rolled_back_count
+              << ",\"blockQueues\":[";
+    bool first_queue = true;
+    for (const auto& q : tuner.block_queues) {
+        if (!first_queue) std::cout << ',';
+        first_queue = false;
+        std::cout << "{\"device\":" << json_string(q.device_name)
+                  << ",\"activeScheduler\":" << json_string(q.active_scheduler)
+                  << ",\"baselineScheduler\":" << json_string(q.baseline_scheduler)
+                  << ",\"readAheadKb\":" << q.read_ahead_kb
+                  << ",\"nrRequests\":" << q.nr_requests
+                  << ",\"rqAffinity\":" << q.rq_affinity
+                  << ",\"readExpireMs\":" << q.read_expire_ms
+                  << ",\"writesStarved\":" << q.writes_starved
+                  << ",\"fifoBatch\":" << q.fifo_batch
+                  << ",\"availableSchedulers\":[";
+        bool first_sched = true;
+        for (const auto& sched : q.available_schedulers) {
+            if (!first_sched) std::cout << ',';
+            first_sched = false;
+            std::cout << json_string(sched);
+        }
+        std::cout << "]}";
+    }
+    std::cout << "],\"tunerCandidates\":[";
+    bool first_cand = true;
+    for (const auto& c : tuner.candidates) {
+        if (!first_cand) std::cout << ',';
+        first_cand = false;
+        std::cout << "{\"id\":" << json_string(c.id)
+                  << ",\"label\":" << json_string(c.label)
+                  << ",\"domain\":" << json_string(c.domain)
+                  << ",\"trials\":" << c.trials
+                  << ",\"successes\":" << c.successes
+                  << ",\"rollbacks\":" << c.rollbacks
+                  << ",\"meanDelta\":" << c.mean_utility_delta
+                  << ",\"ucbScore\":" << c.ucb_score
+                  << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
+    }
+    std::cout << "]";
     std::cout << ",\"recoveryPending\":" << (journal_clear() ? "false" : "true") << "}\n";
 }
 
@@ -319,11 +389,14 @@ std::string json_string(std::string_view text) {
 void print_capabilities() {
     const auto topology = DeviceProfiler::instance().probe();
     const auto power = PowerBridge{}.probe();
+    const auto ai = NeuralPredictor::instance().last_prediction();
     std::cout << "{\"socModel\":" << json_string(topology.soc_name)
               << ",\"kernelVersion\":" << json_string(topology.kernel_version)
               << ",\"onlineCpus\":" << json_string(topology.online_cpus_mask)
               << ",\"gpuType\":" << json_string(topology.gpu_type)
               << ",\"rustEngine\":true,\"powerHalDetected\":" << (power.aidl_power_service ? "true" : "false")
+              << ",\"aiBackend\":" << json_string(ai.backend)
+              << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
               << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}\n";
 }
 
@@ -531,6 +604,11 @@ int main(int argc, char* argv[]) {
     bool unavailable_reported = false;
     WorkloadState current = WorkloadState::Balanced;
     uint32_t freq_resync_ticks = 0;
+    double last_capacity_scale = 1.0;
+    std::string last_tuner_candidate = "oem_baseline";
+    TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
+    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
+    AutonomousTuner::instance().discover();
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
@@ -550,6 +628,9 @@ int main(int argc, char* argv[]) {
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
                         config.top_app_io_weight, config.background_io_weight});
+                    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
+                    AutonomousTuner::instance().reset();
+                    AutonomousTuner::instance().discover();
                     const uint32_t clamped_ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec timer{};
                     timer.it_interval.tv_sec = clamped_ms / 1000;
@@ -655,8 +736,29 @@ int main(int argc, char* argv[]) {
         const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
+
+        // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
+        const auto ai_pred = NeuralPredictor::instance().infer_and_learn({
+            .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
+            .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
+            .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
+            .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .current_scale = last_capacity_scale,
+            .elapsed_seconds = elapsed,
+        });
+
+        double effective_pressure = std::clamp(thermal.pressure, 0.0, 130.0);
+        if (ai_pred.valid && ai_pred.confidence >= 0.55 &&
+            ai_pred.predicted_pressure_10s > effective_pressure) {
+            // Proactive 10s horizon lookahead: blend predicted thermal surge into PID input
+            effective_pressure = std::clamp(
+                0.70 * effective_pressure + 0.30 * ai_pred.predicted_pressure_10s,
+                0.0,
+                130.0);
+        }
+
         const auto decision = controller->step({
-             std::clamp(thermal.pressure, 0.0, 130.0), elapsed,
+            effective_pressure, elapsed,
             std::clamp(pressure.cpu, 0.0, 100.0),
             std::clamp(pressure.memory, 0.0, 100.0),
             std::clamp(pressure.io, 0.0, 100.0),
@@ -676,6 +778,10 @@ int main(int argc, char* argv[]) {
                                        (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
         const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
         double active_capacity_scale = decision.capacity_scale;
+        if (ai_pred.valid && ai_pred.confidence >= 0.60 && ai_pred.predicted_pressure_10s >= 80.0) {
+            // Advisory pre-cooling bound: never raises capacity above deterministic safety policy
+            active_capacity_scale = std::min(active_capacity_scale, ai_pred.recommended_scale);
+        }
         if (thermal_limit_hit) {
             active_capacity_scale = std::min(active_capacity_scale, 0.75);
             static auto last_guard_log = std::chrono::steady_clock::time_point::min();
@@ -688,6 +794,7 @@ int main(int argc, char* argv[]) {
                 last_guard_log = now_t;
             }
         }
+        last_capacity_scale = active_capacity_scale;
 
         // Periodically re-discover frequency domains if OEM PowerHAL temporarily retired them.
         if ((config.enable_cpu_frequency_control && frequencies.cpu_count() == 0) ||
@@ -706,6 +813,27 @@ int main(int argc, char* argv[]) {
         }
         (void)HardwareLongevityManager::instance().apply_storage_pacing();
         HardwareLongevityManager::instance().monitor_battery_thermals(temp);
+
+        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched/*, vm/*)
+        const auto tuner_snap = AutonomousTuner::instance().step({
+            .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
+            .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
+            .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
+            .thermal_emergency = thermal_limit_hit,
+        });
+        if (tuner_snap.active_candidate_id != last_tuner_candidate ||
+            tuner_snap.verdict != last_tuner_verdict) {
+            last_tuner_candidate = tuner_snap.active_candidate_id;
+            last_tuner_verdict = tuner_snap.verdict;
+            emit_log(false, "[CoreFlow][Tuner] stage=" +
+                     std::string(AutonomousTuner::stage_name(tuner_snap.stage)) +
+                     " intent=" + std::string(AutonomousTuner::intent_name(tuner_snap.intent)) +
+                     " candidate=" + tuner_snap.active_candidate_id +
+                     " verdict=" + std::string(AutonomousTuner::verdict_name(tuner_snap.verdict)) +
+                     " delta_u=" + std::to_string(tuner_snap.utility_delta) +
+                     " rationale=\"" + tuner_snap.rationale + "\"");
+        }
 
         const auto capacity = static_cast<uint32_t>(std::lround(active_capacity_scale * 1024.0));
         if (config.enable_uclamp && !uclamp_yield_this_tick && governor.is_supported()) {
@@ -733,6 +861,8 @@ int main(int argc, char* argv[]) {
                      << " thermal_source=" << thermal.source
                      << " thermal_sensor=" << thermal.sensor
                      << " thermal_pressure=" << thermal.pressure
+                     << " ai_pred_10s=" << ai_pred.predicted_pressure_10s
+                     << " ai_conf=" << ai_pred.confidence
                      << " cpu_psi=" << pressure.cpu
                      << " mem_psi=" << pressure.memory
                      << " io_psi=" << pressure.io;

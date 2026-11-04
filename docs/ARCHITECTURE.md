@@ -69,6 +69,8 @@ Sensor & Capability Discovery
 - `rust/src/controller.rs`: Rust 2024 thermal/pressure state machine and slew-bounded PID capacity budget.
 - `rust/src/bridge.rs`: Typed `cxx` FFI bridge between C++23 and Rust 2024.
 - `src/kernel/frequency_controller.cpp`: CPUFreq and GPU devfreq ceiling actuation with OEM ownership verification.
+- `src/kernel/autonomous_tuner.cpp`: Need-driven multi-domain block I/O scheduler (`mq-deadline`, `kyber`, `bfq`, `none`), `iosched/*` & queue tunable (`read_expire`, `writes_starved`, `fifo_batch`, `read_ahead_kb`, `nr_requests`, `rq_affinity`), and `/proc/sys/vm/*` evaluator with UCB1 Contextual Bandit selection and empirical Before/After utility ($\Delta U$) validation.
+- `src/kernel/neural_predictor.cpp`: Hybrid ONNX Runtime C-API (`dlopen`) + Online Recursive Least Squares & 6×8×2 Micro-MLP 10-second horizon thermal/pressure predictor.
 - `src/kernel/hardware_longevity.cpp`: Bounded battery step-charging ceiling reduction and cgroup v2 relative I/O weights.
 - `src/kernel/power_bridge.cpp`: Nonblocking AIDL Power HAL capability discovery.
 - `android/src/main/kotlin/io/coreflow/`: Kotlin 2.1 Android Quick Settings TileService and thermal broadcast integration.

@@ -140,6 +140,18 @@ bool sync_directory(const std::string& path) {
     return fd.valid() && ::fsync(fd.get()) == 0;
 }
 
+std::string extract_selector_token(const std::string& path, std::string raw) {
+    if (path.find("/queue/scheduler") != std::string::npos) {
+        const size_t open_b = raw.find('[');
+        const size_t close_b =
+            open_b == std::string::npos ? std::string::npos : raw.find(']', open_b + 1);
+        if (open_b != std::string::npos && close_b != std::string::npos && close_b > open_b + 1) {
+            return raw.substr(open_b + 1, close_b - open_b - 1);
+        }
+    }
+    return raw;
+}
+
 } // namespace
 
 BaselineStore::BaselineStore() {
@@ -154,7 +166,7 @@ BaselineStore& BaselineStore::instance() {
 }
 
 std::string BaselineStore::read_raw_node(const std::string& path) const {
-    return read_line(path);
+    return extract_selector_token(path, read_line(path));
 }
 
 bool BaselineStore::write_raw_node(const std::string& path, const std::string& value) {

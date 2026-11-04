@@ -45,6 +45,8 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
     src/kernel/power_bridge.cpp
+    src/kernel/neural_predictor.cpp
+    src/kernel/autonomous_tuner.cpp
 )
 
 # Main Daemon (coreflowd)
@@ -65,6 +67,14 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
+    target_link_libraries(test_autonomous_tuner PRIVATE m)
+    add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
+
+    add_executable(test_neural_predictor tests/test_neural_predictor.cpp src/kernel/neural_predictor.cpp)
+    target_link_libraries(test_neural_predictor PRIVATE ${CMAKE_DL_LIBS} m)
+    add_test(NAME NeuralPredictorTest COMMAND test_neural_predictor)
+
     add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_frequency_controller PRIVATE m)
     add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
