@@ -80,6 +80,27 @@ const execChecked = async (command: string): Promise<string> => {
 
 const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
+const waitForNativeState = async (
+  readStatus: () => Promise<NativeStatus>,
+  expectedRunning: boolean,
+  timeoutMs = 15000
+): Promise<NativeStatus> => {
+  const deadline = Date.now() + timeoutMs;
+  let latest: NativeStatus | null = null;
+  do {
+    latest = await readStatus();
+    if (latest.running === expectedRunning) return latest;
+    await delay(500);
+  } while (Date.now() < deadline);
+
+  const observed = latest
+    ? `running=${latest.running}, pid=${latest.pid}, recoveryPending=${latest.recoveryPending}`
+    : 'status unavailable';
+  throw new Error(
+    `Daemon did not reach ${expectedRunning ? 'running' : 'stopped'} state within ${timeoutMs / 1000}s (${observed})`
+  );
+};
+
 const readStringKey = (text: string, key: string): string | null => {
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
@@ -340,17 +361,21 @@ export const App: React.FC = () => {
           `if [ -f "${SERVICE}" ]; then /system/bin/sh "${SERVICE}"; else ${RESOLVE_BIN}; nohup "$BIN" >> "${LOG}" 2>&1 < /dev/null & fi`
         );
       }
-      await delay(800);
-      const after = await refreshNative();
-      if (after.running === before.running) throw new Error('Daemon state did not change');
+      const after = await waitForNativeState(refreshNative, !before.running);
       addLog(
         'INFO',
         'NativeControl',
         after.running ? 'Daemon started with stability policy' : 'Daemon stopped and recovery verified'
       );
     } catch (error) {
-      setNativeError(String(error));
-      addLog('INFO', 'NativeControl', 'Failed: ' + String(error));
+      // Keep the visible controls aligned with the actual daemon even when a transition fails.
+      try {
+        await refreshNative();
+      } catch {
+        // Preserve the original transition error; the next telemetry poll will retry status.
+      }
+      setNativeError(error instanceof Error ? error.message : String(error));
+      addLog('INFO', 'NativeControl', 'Failed: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsSwitching(false);
     }
