@@ -12,7 +12,7 @@
 
 ## About CFAE System Framework
 
-**CFAE System Framework** (formerly CoreFlow Engine) is an autonomous, stability-first Android optimizer engineered in native C++20 and Rust. Rather than applying blind benchmark boosts or fragile device-specific overrides, CFAE dynamically discovers semantic kernel interfaces (cgroup-v2, UClamp, PSI pressure, and SoC thermal zones) to deliver sustained fluid responsiveness while strictly protecting hardware longevity and thermal safety.
+**CFAE System Framework** (formerly CoreFlow Engine) is an autonomous, stability-first Android optimizer engineered in native ISO C++23 and Rust 2024. Rather than applying blind benchmark boosts or fragile device-specific overrides, CFAE dynamically discovers semantic kernel interfaces (cgroup-v2, UClamp, PSI pressure, and SoC thermal zones) to deliver sustained fluid responsiveness while strictly protecting hardware longevity and thermal safety.
 
 Every mutation is atomic, journaled, and 100% reversible back to factory OEM baselines.
 

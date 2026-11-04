@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Flame, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
-import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
+import { applyAppearance, readAppearance, saveAppearance, Theme, SupportedLanguage, readLanguage, saveLanguage, translate } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
 import { AutonomousTuningCard } from './components/AutonomousTuningCard';
@@ -105,6 +105,7 @@ const readNumberKey = (text: string, key: string): number | null => {
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
+  const [language, setLanguage] = useState<SupportedLanguage>(() => readLanguage());
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [isSwitching, setIsSwitching] = useState(false);
   const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
@@ -554,6 +555,11 @@ export const App: React.FC = () => {
         modeLabel={telemetry.modeLabel}
         nativeMode={isNativeBridge}
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
+        language={language}
+        onSelectLanguage={(lang) => {
+          setLanguage(lang);
+          saveLanguage(lang);
+        }}
       />
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
@@ -568,7 +574,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Activity className="w-3.5 h-3.5" />
-            Equilibrium
+            {translate('stateBalanced', language)}
           </button>
 
           <button
@@ -580,7 +586,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Flame className="w-3.5 h-3.5" />
-            Thermal Matrix
+            {translate('thermalMatrixTitle', language)}
           </button>
 
           <button
@@ -592,7 +598,7 @@ export const App: React.FC = () => {
             }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            Longevity & Health
+            {translate('longevityTitle', language)}
           </button>
 
           <button
@@ -604,7 +610,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
-            Android Kotlin Tile
+            {translate('quickSettings', language)}
           </button>
 
           <button
@@ -616,7 +622,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
-            Dev Console
+            {translate('developerConsoleTitle', language)}
           </button>
         </div>
 

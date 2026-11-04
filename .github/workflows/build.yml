@@ -335,10 +335,8 @@ jobs:
           ' CHANGELOG.md > /tmp/release_notes.md
 
           if [ ! -s /tmp/release_notes.md ]; then
-            cat << 'EOF' > /tmp/release_notes.md
-### CFAE System Framework
-Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.
-EOF
+            printf '### CFAE System Framework %s\n\n' "$VERSION" > /tmp/release_notes.md
+            printf 'Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.\n' >> /tmp/release_notes.md
           fi
 
           echo "Publishing release for ${TAG} with functional changelog..."
