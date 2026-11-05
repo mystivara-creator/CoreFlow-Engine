@@ -363,8 +363,10 @@ struct DaemonConfig {
 
             // [vulkan_engine]
             else if (key == "vulkan_layer_mode") {
-                if (val == "safe_hardware" || val == "full_capability_override" || val == "disabled") {
-                    cfg.vulkan_layer_mode = val;
+                if (val == "safe_hardware" || val == "full_capability_override") {
+                    cfg.vulkan_layer_mode = "safe_hardware";
+                } else if (val == "disabled") {
+                    cfg.vulkan_layer_mode = "disabled";
                 }
             }
             else if (key == "enable_skiavk_threaded") cfg.enable_skiavk_threaded = parse_bool(val);

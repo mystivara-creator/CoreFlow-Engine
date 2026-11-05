@@ -393,22 +393,25 @@ ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAs
     auto result = platform;
     result.platform_status_valid = platform.available || platform.platform_status_valid;
     result.sysfs_trip_policy_valid = sensors.available || sensors.sysfs_trip_policy_valid;
-    result.sensor_readings_complete = !sensors.incomplete;
+    result.sensor_readings_complete = !sensors.incomplete && sensors.sensor_readings_complete;
     result.incomplete = sensors.incomplete;
-    result.degraded = sensors.incomplete;
+    result.degraded = sensors.incomplete || sensors.degraded;
 
-    if (sensors.available && (!result.available || sensors.pressure > result.pressure)) {
+    if ((sensors.available || sensors.sysfs_trip_policy_valid) &&
+        (!result.available || sensors.pressure > result.pressure)) {
         result.pressure = sensors.pressure;
-        result.sensor = sensors.sensor;
+        if (!sensors.sensor.empty()) {
+            result.sensor = sensors.sensor;
+        }
     }
     result.emergency = platform.emergency || sensors.emergency;
     // Never discard a valid Android platform thermal status when a sysfs sensor is incomplete;
     // if only sysfs policy is present and incomplete, mark degraded while preserving available
-    // when either platform status or emergency or valid sysfs trip policy is present.
+    // when either platform status or emergency or valid complete sysfs trip policy is present.
     result.available = result.platform_status_valid || result.emergency ||
                        (sensors.available && !sensors.incomplete);
-    if (result.platform_status_valid && sensors.available) {
-        result.source = sensors.incomplete ? "android+sysfs-degraded" : "android+sysfs-oem-trips";
+    if (result.platform_status_valid && (result.sysfs_trip_policy_valid || result.degraded)) {
+        result.source = result.degraded ? "android+sysfs-degraded" : "android+sysfs-oem-trips";
     } else if (result.platform_status_valid) {
         result.source = platform.source;
     } else {

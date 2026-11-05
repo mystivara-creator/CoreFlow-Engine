@@ -428,10 +428,12 @@ void VulkanController::initialize(
         state_dir_ = state_dir_override;
     }
 
-    if (!hw_probed_) {
+    if (!hw_probed_ && sysfs_root_override.empty()) {
         snap_ = VulkanCapabilitiesSnapshot{};
         probe_native_vulkan_icd();
         hw_probed_ = true;
+    } else if (!sysfs_root_override.empty()) {
+        snap_ = VulkanCapabilitiesSnapshot{};
     }
     snap_.active_mode = config_.mode;
 

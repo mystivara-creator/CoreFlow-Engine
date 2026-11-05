@@ -126,13 +126,30 @@ struct VkPhysicalDeviceFeatures2 {
     VkPhysicalDeviceFeatures features;
 };
 
-struct VkPhysicalDeviceProperties2Prefix {
-    int32_t sType;
-    void* pNext;
+struct VkPhysicalDeviceLimits {
+    uint8_t opaque[504];
+};
+
+struct VkPhysicalDeviceSparseProperties {
+    VkBool32 words[5];
+};
+
+struct VkPhysicalDeviceProperties {
     uint32_t apiVersion;
     uint32_t driverVersion;
     uint32_t vendorID;
     uint32_t deviceID;
+    uint32_t deviceType;
+    char deviceName[256];
+    uint8_t pipelineCacheUUID[16];
+    VkPhysicalDeviceLimits limits;
+    VkPhysicalDeviceSparseProperties sparseProperties;
+};
+
+struct VkPhysicalDeviceProperties2 {
+    int32_t sType;
+    void* pNext;
+    VkPhysicalDeviceProperties properties;
 };
 
 struct VkNegotiateLayerInterface {
@@ -151,7 +168,8 @@ using PFN_vkCreateDevice = VkResult (*)(VkPhysicalDevice, const VkDeviceCreateIn
 using PFN_vkDestroyDevice = void (*)(VkDevice, const void*);
 using PFN_vkGetPhysicalDeviceFeatures = void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures*);
 using PFN_vkGetPhysicalDeviceFeatures2 = void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures2*);
-using PFN_vkGetPhysicalDeviceProperties2 = void (*)(VkPhysicalDevice, VkPhysicalDeviceProperties2Prefix*);
+using PFN_vkGetPhysicalDeviceProperties = void (*)(VkPhysicalDevice, VkPhysicalDeviceProperties*);
+using PFN_vkGetPhysicalDeviceProperties2 = void (*)(VkPhysicalDevice, VkPhysicalDeviceProperties2*);
 using PFN_vkEnumerateDeviceExtensionProperties = VkResult (*)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
 
 struct InstanceDispatchEntry {
@@ -338,9 +356,25 @@ void layer_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysi
     }
 }
 
+void layer_vkGetPhysicalDeviceProperties(
+    VkPhysicalDevice physicalDevice,
+    VkPhysicalDeviceProperties* pProperties) {
+    if (!physicalDevice || !pProperties) return;
+    VkInstance inst = nullptr;
+    InstanceDispatchEntry entry{};
+    if (!lookup_phys_dispatch(physicalDevice, inst, entry)) return;
+
+    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+        entry.next_gipa(inst, "vkGetPhysicalDeviceProperties"));
+    if (fn) {
+        // Strictly pass-through physical device properties without inflating apiVersion
+        fn(physicalDevice, pProperties);
+    }
+}
+
 void layer_vkGetPhysicalDeviceProperties2(
     VkPhysicalDevice physicalDevice,
-    VkPhysicalDeviceProperties2Prefix* pProperties) {
+    VkPhysicalDeviceProperties2* pProperties) {
     if (!physicalDevice || !pProperties) return;
     VkInstance inst = nullptr;
     InstanceDispatchEntry entry{};
@@ -533,6 +567,9 @@ CF_VK_EXPORT PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const
     if (std::strcmp(pName, "vkGetPhysicalDeviceFeatures2") == 0 ||
         std::strcmp(pName, "vkGetPhysicalDeviceFeatures2KHR") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkGetPhysicalDeviceFeatures2);
+    }
+    if (std::strcmp(pName, "vkGetPhysicalDeviceProperties") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkGetPhysicalDeviceProperties);
     }
     if (std::strcmp(pName, "vkGetPhysicalDeviceProperties2") == 0 ||
         std::strcmp(pName, "vkGetPhysicalDeviceProperties2KHR") == 0) {
