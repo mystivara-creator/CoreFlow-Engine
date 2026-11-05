@@ -36,15 +36,19 @@ std::string read_file(const fs::path& path) {
 } // namespace
 
 int main() {
-    const fs::path tmp_root = fs::temp_directory_path() / ("coreflow_vk_test_" + std::to_string(::getpid()));
+    char pattern[] = "/tmp/coreflow-vk-XXXXXX";
+    const char* dir = ::mkdtemp(pattern);
+    assert(dir != nullptr);
+    const fs::path tmp_root(dir);
     const fs::path state_dir = tmp_root / "state";
     const fs::path adreno_root = tmp_root / "adreno_sysfs";
     const fs::path mali_root = tmp_root / "mali_sysfs";
 
-    fs::remove_all(tmp_root);
     fs::create_directories(state_dir);
+    ::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
 
-    BaselineStore::instance().initialize(state_dir.string());
+    auto& baseline = BaselineStore::instance();
+    assert(baseline.recover_pending());
 
     // 1. Setup synthetic Qualcomm Adreno KGSL sysfs surface
     const fs::path kgsl = adreno_root / "sys/class/kgsl/kgsl-3d0";
@@ -91,7 +95,7 @@ int main() {
     // Verify workload policy boosts adrenoboost under SustainedLoad and rolls back cleanly
     assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
     assert(read_file(kgsl / "devfreq/adrenoboost") == "2");
-    assert(BaselineStore::instance().rollback_all());
+    assert(baseline.rollback_all() >= 1U);
     assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
 
     // 2. Test Opsi B (FullCapabilityOverride)
@@ -135,7 +139,7 @@ int main() {
     write_file(mali_dev / "cur_freq", "850000000\n");
     write_file(mali_dev / "max_freq", "1100000000\n");
     write_file(mali_dev / "min_freq", "300000000\n");
-    write_file(mali_dev / "device/power_policy", "[coarse_demand] always_on\n");
+    write_file(mali_dev / "device/power_policy", "coarse_demand\n");
 
     vk.initialize(
         VulkanConfig{
@@ -154,7 +158,7 @@ int main() {
     assert(snap_mali.gpu_surface.current_freq_mhz == 850U);
     assert(snap_mali.gpu_surface.max_freq_mhz == 1100U);
 
-    (void)BaselineStore::instance().rollback_all();
+    (void)baseline.rollback_all();
     fs::remove_all(tmp_root);
     std::cout << "[PASS] Universal Vulkan 1.4 Controller & Multi-Vendor GPU Surface tests succeeded.\n";
     return 0;

@@ -179,7 +179,6 @@ private:
     std::string bus_split_node_;
     std::string throttling_node_;
     std::string mali_policy_node_;
-    bool initialized_{false};
 };
 
 } // namespace coreflow

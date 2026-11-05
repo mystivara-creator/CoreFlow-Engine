@@ -901,7 +901,7 @@ int main(int argc, char* argv[]) {
         (void)VulkanController::instance().apply_workload_policy(
             desired, active_capacity_scale, thermal_limit_hit);
 
-        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched/*, vm/*, cpufreq/*)
+        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched, vm, cpufreq)
         const auto tuner_snap = AutonomousTuner::instance().step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),

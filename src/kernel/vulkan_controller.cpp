@@ -426,7 +426,6 @@ void VulkanController::initialize(
 
     recompute_effective_capabilities();
     sync_layer_state_file();
-    initialized_ = true;
 }
 
 void VulkanController::configure(const VulkanConfig& config) noexcept {
@@ -675,6 +674,9 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
     throttling_node_.clear();
     mali_policy_node_.clear();
 
+    auto& baseline = BaselineStore::instance();
+    (void)baseline.recover_pending();
+
     GpuKernelSurface surf{};
     const std::string prefix = root_override.empty() ? "" : root_override;
 
@@ -698,14 +700,17 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
 
         if (path_exists(kgsl_dir + "/devfreq/adrenoboost")) {
             adrenoboost_node_ = kgsl_dir + "/devfreq/adrenoboost";
+            (void)baseline.capture(adrenoboost_node_);
             surf.adrenoboost_level = read_uint32_node(adrenoboost_node_, 0);
         }
         if (path_exists(kgsl_dir + "/bus_split")) {
             bus_split_node_ = kgsl_dir + "/bus_split";
+            (void)baseline.capture(bus_split_node_);
             surf.bus_split_enabled = (read_uint32_node(bus_split_node_, 1) != 0);
         }
         if (path_exists(kgsl_dir + "/throttling")) {
             throttling_node_ = kgsl_dir + "/throttling";
+            (void)baseline.capture(throttling_node_);
             surf.throttling_enabled = (read_uint32_node(throttling_node_, 1) != 0);
         }
 
@@ -756,6 +761,7 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
 
             if (path_exists(surf.sysfs_root + "/device/power_policy")) {
                 mali_policy_node_ = surf.sysfs_root + "/device/power_policy";
+                (void)baseline.capture(mali_policy_node_);
             }
 
             snap_.vendor = surf.vendor;
@@ -909,7 +915,7 @@ bool VulkanController::apply_workload_policy(
                 target_boost_num = 1;
                 target_boost = "1";
             }
-            if (baseline.write_with_baseline(adrenoboost_node_, target_boost)) {
+            if (baseline.apply_mutation(adrenoboost_node_, target_boost)) {
                 snap_.gpu_surface.adrenoboost_level = target_boost_num;
             } else {
                 ok = false;
@@ -917,14 +923,14 @@ bool VulkanController::apply_workload_policy(
         }
         if (!bus_split_node_.empty()) {
             const std::string bus_val = "1";
-            if (baseline.write_with_baseline(bus_split_node_, bus_val)) {
+            if (baseline.apply_mutation(bus_split_node_, bus_val)) {
                 snap_.gpu_surface.bus_split_enabled = true;
             }
         }
         if (!throttling_node_.empty()) {
-            // Always keep hardware thermal throttling safety enabled under ThermalGuard
-            const std::string throt_val = thermal_guard ? "1" : "1";
-            if (baseline.write_with_baseline(throttling_node_, throt_val)) {
+            // Always keep hardware thermal throttling safety enabled
+            const std::string throt_val = "1";
+            if (baseline.apply_mutation(throttling_node_, throt_val)) {
                 snap_.gpu_surface.throttling_enabled = true;
             }
         }
@@ -933,8 +939,8 @@ bool VulkanController::apply_workload_policy(
     // ARM Mali / Immortalis power policy surface coordination
     if (snap_.gpu_surface.vendor == GpuVendor::ArmMali && !mali_policy_node_.empty()) {
         const std::string cur_policy = read_first_line(mali_policy_node_);
-        if (cur_policy.find("coarse_demand") != std::string::npos) {
-            (void)baseline.write_with_baseline(mali_policy_node_, "coarse_demand");
+        if (cur_policy == "coarse_demand" || cur_policy == "always_on") {
+            (void)baseline.apply_mutation(mali_policy_node_, "coarse_demand");
         }
     }
 

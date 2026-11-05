@@ -5,7 +5,7 @@
  *
  * Extends CFAE beyond UClamp to autonomously discover, plan, apply, and empirically
  * evaluate coordinated kernel transactions across:
- *   1. Block I/O Schedulers (mq-deadline, kyber, bfq, none) & iosched/* queue tunables
+ *   1. Block I/O Schedulers (mq-deadline, kyber, bfq, none) & iosched/<tunable> queue tunables
  *   2. VM / Memory Subsystem (/proc/sys/vm/page-cluster, vfs_cache_pressure, watermark_scale_factor)
  *   3. CPUFreq Governor & rate-limit tunables (schedutil/walt up_rate_limit_us / down_rate_limit_us)
  *
