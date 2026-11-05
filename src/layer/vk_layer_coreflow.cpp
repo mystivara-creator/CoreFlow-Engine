@@ -361,8 +361,18 @@ void patch_feature_chain(VkBaseOutStructure* chain, LayerMode mode) noexcept {
                 break;
 
             case kVkStructureTypePhysicalDeviceVulkan14Features:
-                // Vulkan 1.4 consolidated feature struct: enable indexTypeUint8, lineRasterization, pushDescriptor, globalPriorityQuery, shaderFloatControls2, maintenance5, maintenance6
+                // Vulkan 1.4 consolidated feature struct:
+                // [0] globalPriorityQuery, [3] shaderFloatControls2, [5..7] rectangular/bresenham/smoothLines,
+                // [13] indexTypeUint8, [15] maintenance5, [16] maintenance6, [20] pushDescriptor
                 raw_bools[0] = kVkTrue;
+                raw_bools[3] = kVkTrue;
+                raw_bools[5] = kVkTrue;
+                raw_bools[6] = kVkTrue;
+                raw_bools[7] = kVkTrue;
+                raw_bools[13] = kVkTrue;
+                raw_bools[15] = kVkTrue;
+                raw_bools[16] = kVkTrue;
+                raw_bools[20] = kVkTrue;
                 break;
 
             case kVkStructureTypePhysicalDeviceRayTracingPipelineFeaturesKhr:

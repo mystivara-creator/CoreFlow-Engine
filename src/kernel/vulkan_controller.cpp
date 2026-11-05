@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -79,8 +80,8 @@ struct VkExtensionProperties {
     uint32_t specVersion;
 };
 
-struct VkPhysicalDeviceLimits {
-    uint8_t opaque[504];
+struct alignas(8) VkPhysicalDeviceLimits {
+    uint64_t opaque[63]; // Exact 504 bytes with mandatory 8-byte alignment on 64-bit ARM64/x86_64
 };
 
 struct VkPhysicalDeviceSparseProperties {
@@ -91,7 +92,7 @@ struct VkPhysicalDeviceSparseProperties {
     VkBool32 residencyNonResidentStrict;
 };
 
-struct VkPhysicalDeviceProperties {
+struct alignas(8) VkPhysicalDeviceProperties {
     uint32_t apiVersion;
     uint32_t driverVersion;
     uint32_t vendorID;
@@ -99,11 +100,13 @@ struct VkPhysicalDeviceProperties {
     uint32_t deviceType;
     char deviceName[kVkMaxPhysicalDeviceNameSize];
     uint8_t pipelineCacheUUID[kVkUuidSize];
+    // 4-byte compiler padding here on 64-bit so limits starts at offset 296 (total 824 bytes)
     VkPhysicalDeviceLimits limits;
     VkPhysicalDeviceSparseProperties sparseProperties;
+    uint64_t reserved_tail_pad[16];
 };
 
-struct VkPhysicalDeviceIDProperties {
+struct alignas(8) VkPhysicalDeviceIDProperties {
     int32_t sType;
     void* pNext;
     uint8_t deviceUUID[kVkUuidSize];
@@ -111,18 +114,21 @@ struct VkPhysicalDeviceIDProperties {
     uint8_t deviceLUID[8];
     uint32_t deviceNodeMask;
     VkBool32 deviceLUIDValid;
+    uint64_t reserved_tail_pad[8];
 };
 
-struct VkPhysicalDevicePushDescriptorPropertiesKHR {
+struct alignas(8) VkPhysicalDevicePushDescriptorPropertiesKHR {
     int32_t sType;
     void* pNext;
     uint32_t maxPushDescriptors;
+    uint64_t reserved_tail_pad[8];
 };
 
-struct VkPhysicalDeviceProperties2 {
+struct alignas(8) VkPhysicalDeviceProperties2 {
     int32_t sType;
     void* pNext;
     VkPhysicalDeviceProperties properties;
+    uint64_t reserved_tail_pad[16];
 };
 
 struct VkPhysicalDeviceFeatures {
@@ -183,7 +189,7 @@ struct VkPhysicalDeviceFeatures {
     VkBool32 inheritedQueries;
 };
 
-struct VkPhysicalDeviceVulkan11Features {
+struct alignas(8) VkPhysicalDeviceVulkan11Features {
     int32_t sType;
     void* pNext;
     VkBool32 storageBuffer16BitAccess;
@@ -198,9 +204,10 @@ struct VkPhysicalDeviceVulkan11Features {
     VkBool32 protectedMemory;
     VkBool32 samplerYcbcrConversion;
     VkBool32 shaderDrawParameters;
+    uint64_t reserved_tail_pad[8];
 };
 
-struct VkPhysicalDeviceVulkan12Features {
+struct alignas(8) VkPhysicalDeviceVulkan12Features {
     int32_t sType;
     void* pNext;
     VkBool32 samplerMirrorClampToEdge;
@@ -250,9 +257,10 @@ struct VkPhysicalDeviceVulkan12Features {
     VkBool32 shaderOutputViewportIndex;
     VkBool32 shaderOutputLayer;
     VkBool32 subgroupBroadcastDynamicId;
+    uint64_t reserved_tail_pad[8];
 };
 
-struct VkPhysicalDeviceVulkan13Features {
+struct alignas(8) VkPhysicalDeviceVulkan13Features {
     int32_t sType;
     void* pNext;
     VkBool32 robustImageAccess;
@@ -270,12 +278,14 @@ struct VkPhysicalDeviceVulkan13Features {
     VkBool32 dynamicRendering;
     VkBool32 shaderIntegerDotProduct;
     VkBool32 maintenance4;
+    uint64_t reserved_tail_pad[8];
 };
 
-struct VkPhysicalDeviceFeatures2 {
+struct alignas(8) VkPhysicalDeviceFeatures2 {
     int32_t sType;
     void* pNext;
     VkPhysicalDeviceFeatures features;
+    uint64_t reserved_tail_pad[8];
 };
 
 using PFN_vkGetInstanceProcAddr = void* (*)(VkInstance, const char*);
@@ -412,11 +422,14 @@ void VulkanController::initialize(
         state_dir_ = state_dir_override;
     }
 
-    snap_ = VulkanCapabilitiesSnapshot{};
+    if (!hw_probed_) {
+        snap_ = VulkanCapabilitiesSnapshot{};
+        probe_native_vulkan_icd();
+        hw_probed_ = true;
+    }
     snap_.active_mode = config_.mode;
 
     discover_gpu_kernel_surface(sysfs_root_override);
-    probe_native_vulkan_icd();
 
     snap_.layer_installed =
         path_exists("/system/lib64/libVkLayer_coreflow.so") ||
@@ -445,9 +458,13 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
     // Prevent recursive self-interception while probing raw physical capabilities
     (void)::setenv("DISABLE_COREFLOW_VULKAN_LAYER", "1", 1);
 
-    void* lib = ::dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    int dl_flags = RTLD_NOW | RTLD_LOCAL;
+#ifdef RTLD_NODELETE
+    dl_flags |= RTLD_NODELETE;
+#endif
+    void* lib = ::dlopen("libvulkan.so", dl_flags);
     if (!lib) {
-        lib = ::dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+        lib = ::dlopen("libvulkan.so.1", dl_flags);
     }
     if (!lib) {
         (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
@@ -457,7 +474,6 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
     auto get_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         ::dlsym(lib, "vkGetInstanceProcAddr"));
     if (!get_proc) {
-        ::dlclose(lib);
         (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
         return;
     }
@@ -475,37 +491,46 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
     }
 
     if (!create_inst) {
-        ::dlclose(lib);
         (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
         return;
     }
 
-    VkApplicationInfo app_info{
-        .sType = kVkStructureTypeApplicationInfo,
-        .pNext = nullptr,
-        .pApplicationName = "CoreFlowVulkanProbe",
-        .applicationVersion = make_vk_version(3, 1, 0),
-        .pEngineName = "CoreFlowEngine",
-        .engineVersion = make_vk_version(3, 1, 0),
-        .apiVersion = make_vk_version(1, 3, 0),
+    struct ProbeArena {
+        VkApplicationInfo app_info{};
+        VkInstanceCreateInfo create_info{};
+        VkPhysicalDevicePushDescriptorPropertiesKHR push_props{};
+        VkPhysicalDeviceIDProperties id_props{};
+        VkPhysicalDeviceProperties2 props2{};
+        VkPhysicalDeviceProperties props{};
+        VkPhysicalDeviceVulkan13Features v13{};
+        VkPhysicalDeviceVulkan12Features v12{};
+        VkPhysicalDeviceVulkan11Features v11{};
+        VkPhysicalDeviceFeatures2 f2{};
+        VkPhysicalDeviceFeatures f{};
     };
+    auto arena = std::make_unique<ProbeArena>();
 
-    VkInstanceCreateInfo create_info{
-        .sType = kVkStructureTypeInstanceCreateInfo,
-        .pNext = nullptr,
-        .flags = 0,
-        .pApplicationInfo = &app_info,
-        .enabledLayerCount = 0,
-        .ppEnabledLayerNames = nullptr,
-        .enabledExtensionCount = 0,
-        .ppEnabledExtensionNames = nullptr,
-    };
+    arena->app_info.sType = kVkStructureTypeApplicationInfo;
+    arena->app_info.pNext = nullptr;
+    arena->app_info.pApplicationName = "CoreFlowVulkanProbe";
+    arena->app_info.applicationVersion = make_vk_version(3, 1, 0);
+    arena->app_info.pEngineName = "CoreFlowEngine";
+    arena->app_info.engineVersion = make_vk_version(3, 1, 0);
+    arena->app_info.apiVersion = make_vk_version(1, 3, 0);
+
+    arena->create_info.sType = kVkStructureTypeInstanceCreateInfo;
+    arena->create_info.pNext = nullptr;
+    arena->create_info.flags = 0;
+    arena->create_info.pApplicationInfo = &arena->app_info;
+    arena->create_info.enabledLayerCount = 0;
+    arena->create_info.ppEnabledLayerNames = nullptr;
+    arena->create_info.enabledExtensionCount = 0;
+    arena->create_info.ppEnabledExtensionNames = nullptr;
 
     VkInstance instance = nullptr;
-    if (create_inst(&create_info, nullptr, &instance) != kVkSuccess || !instance) {
-        app_info.apiVersion = make_vk_version(1, 1, 0);
-        if (create_inst(&create_info, nullptr, &instance) != kVkSuccess || !instance) {
-            ::dlclose(lib);
+    if (create_inst(&arena->create_info, nullptr, &instance) != kVkSuccess || !instance) {
+        arena->app_info.apiVersion = make_vk_version(1, 1, 0);
+        if (create_inst(&arena->create_info, nullptr, &instance) != kVkSuccess || !instance) {
             (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
             return;
         }
@@ -534,101 +559,72 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
             snap_.vulkan_available = true;
 
             if (get_props2) {
-                VkPhysicalDevicePushDescriptorPropertiesKHR push_props{
-                    .sType = kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr,
-                    .pNext = nullptr,
-                    .maxPushDescriptors = 32,
-                };
-                VkPhysicalDeviceIDProperties id_props{
-                    .sType = kVkStructureTypePhysicalDeviceIdProperties,
-                    .pNext = &push_props,
-                    .deviceUUID = {},
-                    .driverUUID = {},
-                    .deviceLUID = {},
-                    .deviceNodeMask = 0,
-                    .deviceLUIDValid = 0,
-                };
-                VkPhysicalDeviceProperties2 props2{
-                    .sType = kVkStructureTypePhysicalDeviceProperties2,
-                    .pNext = &id_props,
-                    .properties = {},
-                };
-                get_props2(phys, &props2);
+                arena->push_props.sType = kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr;
+                arena->push_props.pNext = nullptr;
+                arena->push_props.maxPushDescriptors = 32;
 
-                snap_.api_version = format_vk_version(props2.properties.apiVersion);
-                snap_.vendor_id = props2.properties.vendorID;
-                snap_.device_id = props2.properties.deviceID;
-                snap_.device_name = props2.properties.deviceName;
-                snap_.driver_version_str = format_vk_version(props2.properties.driverVersion);
-                snap_.pipeline_cache_uuid = format_uuid_rfc4122(props2.properties.pipelineCacheUUID);
-                snap_.device_uuid = format_uuid_rfc4122(id_props.deviceUUID);
-                snap_.driver_uuid = format_uuid_rfc4122(id_props.driverUUID);
-                if (push_props.maxPushDescriptors > 0 && push_props.maxPushDescriptors <= 1024) {
-                    snap_.max_push_descriptors = push_props.maxPushDescriptors;
+                arena->id_props.sType = kVkStructureTypePhysicalDeviceIdProperties;
+                arena->id_props.pNext = &arena->push_props;
+
+                arena->props2.sType = kVkStructureTypePhysicalDeviceProperties2;
+                arena->props2.pNext = &arena->id_props;
+
+                get_props2(phys, &arena->props2);
+
+                snap_.api_version = format_vk_version(arena->props2.properties.apiVersion);
+                snap_.vendor_id = arena->props2.properties.vendorID;
+                snap_.device_id = arena->props2.properties.deviceID;
+                snap_.device_name = arena->props2.properties.deviceName;
+                snap_.driver_version_str = format_vk_version(arena->props2.properties.driverVersion);
+                snap_.pipeline_cache_uuid = format_uuid_rfc4122(arena->props2.properties.pipelineCacheUUID);
+                snap_.device_uuid = format_uuid_rfc4122(arena->id_props.deviceUUID);
+                snap_.driver_uuid = format_uuid_rfc4122(arena->id_props.driverUUID);
+                if (arena->push_props.maxPushDescriptors > 0 && arena->push_props.maxPushDescriptors <= 1024) {
+                    snap_.max_push_descriptors = arena->push_props.maxPushDescriptors;
                 }
             } else if (get_props) {
-                VkPhysicalDeviceProperties props{};
-                get_props(phys, &props);
-                snap_.api_version = format_vk_version(props.apiVersion);
-                snap_.vendor_id = props.vendorID;
-                snap_.device_id = props.deviceID;
-                snap_.device_name = props.deviceName;
-                snap_.driver_version_str = format_vk_version(props.driverVersion);
-                snap_.pipeline_cache_uuid = format_uuid_rfc4122(props.pipelineCacheUUID);
+                get_props(phys, &arena->props);
+                snap_.api_version = format_vk_version(arena->props.apiVersion);
+                snap_.vendor_id = arena->props.vendorID;
+                snap_.device_id = arena->props.deviceID;
+                snap_.device_name = arena->props.deviceName;
+                snap_.driver_version_str = format_vk_version(arena->props.driverVersion);
+                snap_.pipeline_cache_uuid = format_uuid_rfc4122(arena->props.pipelineCacheUUID);
             }
 
             snap_.vendor = classify_vendor_id(snap_.vendor_id, snap_.device_name);
 
             if (get_feats2) {
-                VkPhysicalDeviceVulkan13Features v13{
-                    .sType = kVkStructureTypePhysicalDeviceVulkan13Features,
-                    .pNext = nullptr,
-                    .robustImageAccess = 0,
-                    .inlineUniformBlock = 0,
-                    .descriptorBindingInlineUniformBlockUpdateAfterBind = 0,
-                    .pipelineCreationCacheControl = 0,
-                    .privateData = 0,
-                    .shaderDemoteToHelperInvocation = 0,
-                    .shaderTerminateInvocation = 0,
-                    .subgroupSizeControl = 0,
-                    .computeFullSubgroups = 0,
-                    .synchronization2 = 0,
-                    .textureCompressionASTC_HDR = 0,
-                    .shaderZeroInitializeWorkgroupMemory = 0,
-                    .dynamicRendering = 0,
-                    .shaderIntegerDotProduct = 0,
-                    .maintenance4 = 0,
-                };
-                VkPhysicalDeviceVulkan12Features v12{};
-                v12.sType = kVkStructureTypePhysicalDeviceVulkan12Features;
-                v12.pNext = &v13;
-                VkPhysicalDeviceVulkan11Features v11{};
-                v11.sType = kVkStructureTypePhysicalDeviceVulkan11Features;
-                v11.pNext = &v12;
-                VkPhysicalDeviceFeatures2 f2{
-                    .sType = kVkStructureTypePhysicalDeviceFeatures2,
-                    .pNext = &v11,
-                    .features = {},
-                };
-                get_feats2(phys, &f2);
+                arena->v13.sType = kVkStructureTypePhysicalDeviceVulkan13Features;
+                arena->v13.pNext = nullptr;
 
-                snap_.robust_buffer_access = (f2.features.robustBufferAccess == kVkTrue);
-                snap_.sampler_anisotropy = (f2.features.samplerAnisotropy == kVkTrue);
-                snap_.shader_int16 = (f2.features.shaderInt16 == kVkTrue);
-                snap_.hw_shader_float64 = (f2.features.shaderFloat64 == kVkTrue);
-                snap_.protected_memory = (v11.protectedMemory == kVkTrue);
-                snap_.timeline_semaphore = (v12.timelineSemaphore == kVkTrue);
-                snap_.descriptor_indexing = (v12.descriptorIndexing == kVkTrue);
-                snap_.buffer_device_address = (v12.bufferDeviceAddress == kVkTrue);
-                snap_.dynamic_rendering = (v13.dynamicRendering == kVkTrue);
-                snap_.synchronization2 = (v13.synchronization2 == kVkTrue);
+                arena->v12.sType = kVkStructureTypePhysicalDeviceVulkan12Features;
+                arena->v12.pNext = &arena->v13;
+
+                arena->v11.sType = kVkStructureTypePhysicalDeviceVulkan11Features;
+                arena->v11.pNext = &arena->v12;
+
+                arena->f2.sType = kVkStructureTypePhysicalDeviceFeatures2;
+                arena->f2.pNext = &arena->v11;
+
+                get_feats2(phys, &arena->f2);
+
+                snap_.robust_buffer_access = (arena->f2.features.robustBufferAccess == kVkTrue);
+                snap_.sampler_anisotropy = (arena->f2.features.samplerAnisotropy == kVkTrue);
+                snap_.shader_int16 = (arena->f2.features.shaderInt16 == kVkTrue);
+                snap_.hw_shader_float64 = (arena->f2.features.shaderFloat64 == kVkTrue);
+                snap_.protected_memory = (arena->v11.protectedMemory == kVkTrue);
+                snap_.timeline_semaphore = (arena->v12.timelineSemaphore == kVkTrue);
+                snap_.descriptor_indexing = (arena->v12.descriptorIndexing == kVkTrue);
+                snap_.buffer_device_address = (arena->v12.bufferDeviceAddress == kVkTrue);
+                snap_.dynamic_rendering = (arena->v13.dynamicRendering == kVkTrue);
+                snap_.synchronization2 = (arena->v13.synchronization2 == kVkTrue);
             } else if (get_feats) {
-                VkPhysicalDeviceFeatures f{};
-                get_feats(phys, &f);
-                snap_.robust_buffer_access = (f.robustBufferAccess == kVkTrue);
-                snap_.sampler_anisotropy = (f.samplerAnisotropy == kVkTrue);
-                snap_.shader_int16 = (f.shaderInt16 == kVkTrue);
-                snap_.hw_shader_float64 = (f.shaderFloat64 == kVkTrue);
+                get_feats(phys, &arena->f);
+                snap_.robust_buffer_access = (arena->f.robustBufferAccess == kVkTrue);
+                snap_.sampler_anisotropy = (arena->f.samplerAnisotropy == kVkTrue);
+                snap_.shader_int16 = (arena->f.shaderInt16 == kVkTrue);
+                snap_.hw_shader_float64 = (arena->f.shaderFloat64 == kVkTrue);
             }
 
             if (enum_dev_ext) {
@@ -664,7 +660,6 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
     if (destroy_inst) {
         destroy_inst(instance, nullptr);
     }
-    ::dlclose(lib);
     (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
 }
 
