@@ -441,7 +441,7 @@ void print_status() {
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
         << ",\"effectiveApiVersion\":" << json_string(vk.effective_api_version)
-        << ",\"driverVersion\":" << json_string(vk.driver_version)
+        << ",\"driverVersion\":" << json_string(vk.driver_version_str)
         << ",\"deviceExtensions\":" << vk.device_extensions_count
         << ",\"effectiveDeviceExtensions\":" << vk.effective_device_extensions_count
         << ",\"instanceExtensions\":" << vk.instance_extensions_count
