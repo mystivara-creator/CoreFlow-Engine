@@ -1,4 +1,4 @@
-# CFAE System Framework v3.0.R WebUI Public Assets
+# CFAE System Framework v3.1.0 WebUI Public Assets
 
 Vite copies these static assets into `module/webroot` during build so both standard web preview deployments (`dist/`) and KernelSU / APatch / Magisk offline packaging remain 100% identical and synchronized.
 

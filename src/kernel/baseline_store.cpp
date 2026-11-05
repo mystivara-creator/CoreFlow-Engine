@@ -158,6 +158,9 @@ BaselineStore::BaselineStore() {
     const char* test = std::getenv("COREFLOW_TEST_STATE_DIR");
     journal_path_ = (test && *test ? std::string(test) : "/data/adb/coreflow") + "/baseline.journal";
     boot_id_ = read_line("/proc/sys/kernel/random/boot_id");
+    if (boot_id_.empty()) {
+        boot_id_ = "fallback-boot-id";
+    }
 }
 
 BaselineStore& BaselineStore::instance() {

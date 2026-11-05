@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # CFAE System Framework — hardened installer
 ui_print "****************************************"
-ui_print "       CFAE System Framework v3.0.R     "
+ui_print "       CFAE System Framework v3.1.0     "
 ui_print "       Author: mystivara-creator        "
 ui_print "****************************************"
 
@@ -37,6 +37,9 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 [ -f "$MODPATH/sepolicy.rule" ] && set_perm "$MODPATH/sepolicy.rule" 0 0 0644
 [ -f "$MODPATH/module.prop" ] && set_perm "$MODPATH/module.prop" 0 0 0644
 [ -f "$MODPATH/system/etc/coreflow/default.conf" ] && set_perm "$MODPATH/system/etc/coreflow/default.conf" 0 0 0644
+[ -f "$MODPATH/system/lib64/libVkLayer_coreflow.so" ] && set_perm "$MODPATH/system/lib64/libVkLayer_coreflow.so" 0 0 0644
+[ -f "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" ] && set_perm "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" 0 0 0644
 [ -d "$MODPATH/webroot" ] && set_perm_recursive "$MODPATH/webroot" 0 0 0755 0644
 
+ui_print "- Universal Vulkan 1.4 Implicit Layer (VK_LAYER_COREFLOW_universal_bridge) armed."
 ui_print "- Installation complete. Reboot to start controlled capability discovery."

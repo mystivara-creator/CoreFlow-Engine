@@ -178,7 +178,8 @@ jobs:
           [[ "$CMAKE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 10000 + $2 * 1000 + $3 * 100}' <<< "$CMAKE_VERSION")"
           test "$MODULE_CODE" = "$EXPECTED_CODE"
-          test "$MODULE_VERSION" = "v3.0.R"
+          test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
+          test "$MODULE_VERSION" = "v3.1.0"
           echo "version=${MODULE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "code=${MODULE_CODE}" >> "$GITHUB_OUTPUT"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
@@ -271,12 +272,25 @@ jobs:
               -perm -u+x \
               | head -n 1
           )"
+          VK_LAYER_SO="$(
+            find build/android-arm64 \
+              -type f \
+              -name "libVkLayer_coreflow.so" \
+              | head -n 1
+          )"
 
           MODULE_DIR="artifacts/CFAE-System-Framework"
           mkdir -p "${MODULE_DIR}/system/bin"
+          mkdir -p "${MODULE_DIR}/system/lib64"
           mkdir -p "${MODULE_DIR}/system/etc/coreflow"
+          mkdir -p "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d"
 
           cp "$BINARY" "${MODULE_DIR}/system/bin/coreflowd"
+          if [ -n "$VK_LAYER_SO" ] && [ -f "$VK_LAYER_SO" ]; then
+            cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
+            chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
+          fi
+          cp module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
           cp module/module.prop "${MODULE_DIR}/module.prop"
           cp module/customize.sh "${MODULE_DIR}/customize.sh"
           cp module/service.sh "${MODULE_DIR}/service.sh"
@@ -292,6 +306,7 @@ jobs:
           chmod 0755 "${MODULE_DIR}/post-fs-data.sh"
           chmod 0755 "${MODULE_DIR}/uninstall.sh"
           chmod 0644 "${MODULE_DIR}/sepolicy.rule"
+          chmod 0644 "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
           find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
           chmod 0644 "${MODULE_DIR}/module.prop"
           chmod 0644 "${MODULE_DIR}/system/etc/coreflow/default.conf"

@@ -1,6 +1,6 @@
 /**
  * @file types.hpp
- * @brief CFAE System Framework v3.0.R ISO C++23 Core Type Definitions
+ * @brief CFAE System Framework v3.1.0 ISO C++23 Core Type Definitions
  *        and Coordinated Mutation Transaction Models.
  * @author mystivara-creator
  * @license MIT
@@ -42,7 +42,7 @@ inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
 }
 
 // ============================================================================
-// Coordinated Mutation Transaction & Safety Model (v3.0.R)
+// Coordinated Mutation Transaction & Safety Model (v3.1.0)
 // ============================================================================
 enum class DependencyRelation : uint8_t {
     RequiredBefore = 0, ///< Control A must be applied before Control B

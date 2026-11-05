@@ -19,9 +19,12 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
 
   const RESOLVE_BIN =
     'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
-    '[ -x "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
-    '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-    '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
+    'chmod 755 "$BIN" 2>/dev/null';
 
   const runCommand = async (cmd: string, title: string) => {
     setIsRunning(true);
@@ -49,6 +52,16 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
                 thermalSensor: 'SoC-Composite (8 CPU cores, 1 GPU domain)',
                 thermalSeverity: 0,
                 thermalPressure: 65.0,
+                aiBackend: 'embedded-rls-mlp',
+                aiOnnxActive: false,
+                aiPredictedPressure10s: 46.2,
+                aiPredictedVelocity: 0.08,
+                aiRecommendedScale: 0.94,
+                aiConfidence: 0.86,
+                tunerStage: 'RETAINED',
+                tunerIntent: 'HoldEquilibrium',
+                tunerCandidateId: 'io.mq_deadline_low_latency',
+                tunerVerdict: 'IMPROVED',
               },
               null,
               2
@@ -64,6 +77,8 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
                 gpuType: 'Qualcomm Adreno 620',
                 rustEngine: true,
                 powerHalDetected: true,
+                aiBackend: 'embedded-rls-mlp',
+                onnxRuntimeLoaded: false,
                 binderInterception: false,
                 npuOffload: false,
                 frameTelemetry: false,

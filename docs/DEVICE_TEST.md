@@ -1,4 +1,4 @@
-# Device Acceptance Test — CFAE System Framework v3.0.R
+# Device Acceptance Test — CFAE System Framework v3.1.0
 
 Use only an artifact from a green CI run matching the tested commit.
 

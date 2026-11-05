@@ -33,7 +33,7 @@ export const PixelHeader: React.FC<Props> = ({
               CFAE System Framework
             </span>
             <span className="text-[10px] sm:text-xs font-mono px-1.5 py-0.5 rounded-md bg-slate-900/[0.05] dark:bg-white/[0.07] text-slate-600 dark:text-slate-300 shrink-0">
-              v3.0.R
+              v3.1.0
             </span>
           </div>
           <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">

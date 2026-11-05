@@ -6,7 +6,7 @@
   <a href="https://t.me/VaraProjects"><img src="https://img.shields.io/badge/Channel-Telegram-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Channel"></a>
   <a href="https://t.me/VaraProjectsDiscussion"><img src="https://img.shields.io/badge/Discussion-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Discussion"></a>
   <a href="https://instagram.com/mystivara"><img src="https://img.shields.io/badge/Instagram-mystivara-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram"></a>
-  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/Version-v3.0.R-0b57d0?style=for-the-badge&logo=github&logoColor=white" alt="Latest Version"></a>
+  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/Version-v3.1.0-0b57d0?style=for-the-badge&logo=github&logoColor=white" alt="Latest Version"></a>
   <img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License">
 </p>
 

@@ -1,4 +1,4 @@
-// CFAE System Framework v3.0.R — Coordinated Mutation Transaction & Preview Engine.
+// CFAE System Framework v3.1.0 — Coordinated Mutation Transaction & Preview Engine.
 // Native mode reads real daemon telemetry; this simulator models the 5-layer
 // Mutation Safety architecture + Multi-Domain Autonomous Scheduler & Tunable Evaluator for browser preview.
 
@@ -61,6 +61,161 @@ export interface TunerCandidateTelemetry {
   cooldownTicks: number;
 }
 
+export type VulkanLayerMode = 'safe_hardware' | 'full_capability_override' | 'disabled';
+
+export interface VulkanEngineConfig {
+  mode: VulkanLayerMode;
+  enableSkiavkThreaded: boolean;
+  enableAdaptiveVrs: boolean;
+  enablePipelineCachePrewarm: boolean;
+}
+
+export const DEFAULT_VULKAN_CONFIG: VulkanEngineConfig = {
+  mode: 'safe_hardware',
+  enableSkiavkThreaded: true,
+  enableAdaptiveVrs: true,
+  enablePipelineCachePrewarm: true,
+};
+
+export interface VulkanTelemetry {
+  available: boolean;
+  layerInstalled: boolean;
+  layerActive: boolean;
+  mode: VulkanLayerMode;
+  vendor: string;
+  deviceName: string;
+  apiVersion: string;
+  effectiveApiVersion: string;
+  deviceExtensions: number;
+  effectiveDeviceExtensions: number;
+  instanceExtensions: number;
+  deviceUuid: string;
+  driverUuid: string;
+  pipelineCacheUuid: string;
+  // Section 1: Capabilities
+  rayTracing: boolean;
+  meshShaders: boolean;
+  variableRateShading: boolean;
+  cooperativeMatrix: boolean;
+  rtPipeline: boolean;
+  rayQuery: boolean;
+  accelerationStructure: boolean;
+  portabilitySubset: boolean;
+  // Section 2: Core Features
+  robustBufferAccess: boolean;
+  samplerAnisotropy: boolean;
+  shaderInt16: boolean;
+  shaderFloat64: boolean;
+  // Section 3: Vulkan 1.1
+  protectedMemory: boolean;
+  // Section 4: Vulkan 1.2
+  timelineSemaphore: boolean;
+  descriptorIndexing: boolean;
+  bufferDeviceAddress: boolean;
+  // Section 5: Vulkan 1.3
+  dynamicRendering: boolean;
+  synchronization2: boolean;
+  // Section 6: Vulkan 1.4
+  indexTypeUint8: boolean;
+  lineRasterization: boolean;
+  pushDescriptors: boolean;
+  globalPriorityQuery: boolean;
+  shaderFloatControls2: boolean;
+  maxPushDescriptors: number;
+  // Section 7: Highlights
+  maintenance5: boolean;
+  maintenance6: boolean;
+  maintenance7: boolean;
+  descriptorBuffer: boolean;
+  graphicsPipelineLibrary: boolean;
+  // Runtime Pipeline
+  skiavkActive: boolean;
+  adaptiveVrsActive: boolean;
+  pipelineCachePrewarmActive: boolean;
+  // Universal Multi-Vendor GPU Kernel Surface
+  gpuKernelAvailable: boolean;
+  gpuKernelLabel: string;
+  gpuGovernor: string;
+  gpuCurrentFreqMhz: number;
+  gpuMaxFreqMhz: number;
+  adrenoboostLevel: number;
+}
+
+export function computeVulkanTelemetry(
+  vkConfig: VulkanEngineConfig,
+  base?: Partial<VulkanTelemetry>
+): VulkanTelemetry {
+  const mode = vkConfig.mode;
+  const isFull = mode === 'full_capability_override';
+  const isSafe = mode === 'safe_hardware';
+  const isActive = mode !== 'disabled';
+  const baseExts = base?.deviceExtensions ?? 143;
+
+  return {
+    available: base?.available ?? true,
+    layerInstalled: base?.layerInstalled ?? true,
+    layerActive: isActive,
+    mode,
+    vendor: base?.vendor ?? 'Qualcomm Adreno',
+    deviceName: base?.deviceName ?? 'Adreno (TM) 710 · Universal Multi-Vendor Bridge',
+    apiVersion: base?.apiVersion ?? '1.3.280',
+    effectiveApiVersion: isActive ? '1.4.303' : (base?.apiVersion ?? '1.3.280'),
+    deviceExtensions: baseExts,
+    effectiveDeviceExtensions: isFull ? baseExts + 16 : isSafe ? baseExts + 9 : baseExts,
+    instanceExtensions: base?.instanceExtensions ?? 14,
+    deviceUuid: base?.deviceUuid ?? '43510000-0600-0000-c602-60000a00602c',
+    driverUuid: base?.driverUuid ?? '04000000-0100-0000-0200-000000000000',
+    pipelineCacheUuid: base?.pipelineCacheUuid ?? 'f194e304-4351-0000-0000-000001070000',
+    // Capabilities
+    rayTracing: isFull,
+    meshShaders: isFull,
+    variableRateShading: true,
+    cooperativeMatrix: isFull,
+    rtPipeline: isFull,
+    rayQuery: isFull,
+    accelerationStructure: isFull,
+    portabilitySubset: false,
+    // Core Features
+    robustBufferAccess: true,
+    samplerAnisotropy: true,
+    shaderInt16: true,
+    shaderFloat64: isFull,
+    // Vulkan 1.1
+    protectedMemory: true,
+    // Vulkan 1.2
+    timelineSemaphore: true,
+    descriptorIndexing: true,
+    bufferDeviceAddress: true,
+    // Vulkan 1.3
+    dynamicRendering: true,
+    synchronization2: true,
+    // Vulkan 1.4
+    indexTypeUint8: isActive,
+    lineRasterization: isActive,
+    pushDescriptors: true,
+    globalPriorityQuery: isActive,
+    shaderFloatControls2: isActive,
+    maxPushDescriptors: isFull ? 64 : 32,
+    // Highlights
+    maintenance5: true,
+    maintenance6: true,
+    maintenance7: isActive,
+    descriptorBuffer: isActive,
+    graphicsPipelineLibrary: isActive,
+    // Runtime Pipeline
+    skiavkActive: isActive && vkConfig.enableSkiavkThreaded,
+    adaptiveVrsActive: isActive && vkConfig.enableAdaptiveVrs,
+    pipelineCachePrewarmActive: isActive && vkConfig.enablePipelineCachePrewarm,
+    // GPU Kernel Surface
+    gpuKernelAvailable: base?.gpuKernelAvailable ?? true,
+    gpuKernelLabel: base?.gpuKernelLabel ?? 'Qualcomm Adreno (KGSL) · Universal Devfreq Ready',
+    gpuGovernor: base?.gpuGovernor ?? 'msm-adreno-tz',
+    gpuCurrentFreqMhz: base?.gpuCurrentFreqMhz ?? 680,
+    gpuMaxFreqMhz: base?.gpuMaxFreqMhz ?? 1010,
+    adrenoboostLevel: base?.adrenoboostLevel ?? 1,
+  };
+}
+
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
   modeLabel: string;
@@ -89,6 +244,7 @@ export interface AutonomousTelemetry {
   aiBackend?: string;
   aiOnnxActive?: boolean;
   aiPredictedPressure10s?: number;
+  aiPredictedVelocity?: number;
   aiRecommendedScale?: number;
   aiConfidence?: number;
   aiSamples?: number;
@@ -104,6 +260,7 @@ export interface AutonomousTelemetry {
   tunerRolledBack?: number;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  vulkan?: VulkanTelemetry;
   timestamp: number;
 }
 
@@ -222,13 +379,14 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     aiBackend: 'embedded-rls-mlp',
     aiOnnxActive: false,
     aiPredictedPressure10s: 46.2,
+    aiPredictedVelocity: 0.08,
     aiRecommendedScale: 0.94,
     aiConfidence: 0.86,
     aiSamples: 12,
     tunerStage: 'RETAINED',
     tunerIntent: 'HoldEquilibrium',
-    tunerCandidateId: 'oem_baseline',
-    tunerCandidateLabel: 'OEM Baseline Equilibrium',
+    tunerCandidateId: 'baseline',
+    tunerCandidateLabel: 'OEM Verified Baseline',
     tunerRationale: 'System in equilibrium (I/O & memory PSI low); retaining OEM block scheduler without unnecessary mutation.',
     tunerVerdict: 'IMPROVED',
     tunerUtilityDelta: 0.0,
@@ -244,16 +402,16 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
         readAheadKb: 128,
         nrRequests: 128,
         rqAffinity: 2,
-        readExpireMs: 125,
+        readExpireMs: 250,
         writesStarved: 3,
         fifoBatch: 8,
       },
     ],
     tunerCandidates: [
       {
-        id: 'io_mq_deadline_interactive',
-        label: 'mq-deadline + Interactive iosched Tunables',
-        domain: 'block_io',
+        id: 'io.mq_deadline_low_latency',
+        label: 'mq-deadline + Low-Latency Read Expiry (250ms / batch 8)',
+        domain: 'io',
         trials: 2,
         successes: 2,
         rollbacks: 0,
@@ -262,31 +420,31 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
         cooldownTicks: 0,
       },
       {
-        id: 'io_kyber_low_latency',
-        label: 'kyber Token-Bucket Low-Latency Queue',
-        domain: 'block_io',
+        id: 'io.kyber_token_bucket',
+        label: 'kyber Token-Bucket Low-Latency I/O Scheduler',
+        domain: 'io',
         trials: 1,
         successes: 0,
         rollbacks: 1,
         meanDelta: -1.8,
-        ucbScore: -0.75,
+        ucbScore: 0.42,
         cooldownTicks: 0,
       },
       {
-        id: 'io_bfq_fair_queue',
-        label: 'bfq Budget Fair Queueing',
-        domain: 'block_io',
-        trials: 0,
-        successes: 0,
+        id: 'cpufreq.schedutil_interactive_response',
+        label: 'EAS Governor Rate-Limit Pacing (500us up / 10000us down)',
+        domain: 'cpufreq',
+        trials: 1,
+        successes: 1,
         rollbacks: 0,
-        meanDelta: 0,
-        ucbScore: 100.0,
+        meanDelta: 5.2,
+        ucbScore: 6.18,
         cooldownTicks: 0,
       },
       {
-        id: 'vm_reclaim_relief',
-        label: 'VM Page-Cluster & Cache Pressure Relief',
-        domain: 'vm_memory',
+        id: 'vm.zram_latency_relief',
+        label: 'VM Page-Cluster Zero-Latency & VFS Dentry Preservation',
+        domain: 'vm',
         trials: 1,
         successes: 1,
         rollbacks: 0,
@@ -295,6 +453,7 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
         cooldownTicks: 0,
       },
     ],
+    vulkan: computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG),
     timestamp: Date.now(),
   };
 }
@@ -323,7 +482,7 @@ export function createInitialLogs(): ReactionLogEvent[] {
       timestamp: stamp(3),
       type: 'INFO',
       tag: 'AutonomousTuner',
-      message: 'Preview: sda queue/scheduler switched none -> mq-deadline (read_expire=125ms, fifo_batch=8) | delta_u=+7.4 -> IMPROVED.',
+      message: 'Preview: sda queue/scheduler switched none -> mq-deadline (read_expire=250ms, fifo_batch=8) | delta_u=+7.4 -> IMPROVED.',
     },
   ];
 }
@@ -390,6 +549,7 @@ export function stepAutonomousSimulation(
     130,
     Math.max(25, (nextTemp - 20) * 2.2 + cpu * 0.6 + io * 0.4)
   );
+  const predictedVelocity = Number(((predictedPressure - (current.aiPredictedPressure10s ?? 45)) * 0.18).toFixed(2));
   const recScale =
     mode === 'thermal_guard'
       ? 0.68
@@ -403,8 +563,8 @@ export function stepAutonomousSimulation(
   const prevCandidates = (current.tunerCandidates ?? []).map((c) => ({ ...c }));
   let tunerStage = current.tunerStage ?? 'RETAINED';
   let tunerIntent = current.tunerIntent ?? 'HoldEquilibrium';
-  let tunerCandidateId = current.tunerCandidateId ?? 'oem_baseline';
-  let tunerCandidateLabel = current.tunerCandidateLabel ?? 'OEM Baseline Equilibrium';
+  let tunerCandidateId = current.tunerCandidateId ?? 'baseline';
+  let tunerCandidateLabel = current.tunerCandidateLabel ?? 'OEM Verified Baseline';
   let tunerRationale = current.tunerRationale ?? '';
   let tunerVerdict = current.tunerVerdict ?? 'IMPROVED';
   let tunerUtilityDelta = current.tunerUtilityDelta ?? 0;
@@ -417,24 +577,24 @@ export function stepAutonomousSimulation(
   if (forced === 'io_trial' || io >= 5.0) {
     tunerStage = 'RETAINED';
     tunerIntent = 'IoLatencyRelief';
-    tunerCandidateId = 'io_mq_deadline_interactive';
-    tunerCandidateLabel = 'mq-deadline + Interactive iosched Tunables';
+    tunerCandidateId = 'io.mq_deadline_low_latency';
+    tunerCandidateLabel = 'mq-deadline + Low-Latency Read Expiry (250ms / batch 8)';
     tunerVerdict = 'IMPROVED';
     tunerUtilityDelta = Number((5.2 + Math.random() * 4.5).toFixed(2));
     tunerTrials += 1;
     tunerImproved += 1;
     tunerRationale =
-      `I/O PSI=${io.toFixed(1)}% exceeded 4.0% threshold; switched sda scheduler none -> mq-deadline ` +
-      `(read_expire=125ms, writes_starved=3, fifo_batch=8, read_ahead_kb=128) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+      `I/O PSI=${io.toFixed(1)}% exceeded threshold; switched sda scheduler none -> mq-deadline ` +
+      `(read_expire=250ms, writes_starved=3, fifo_batch=8, read_ahead_kb=256) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
     if (updatedQueues.length > 0) {
       updatedQueues[0].activeScheduler = 'mq-deadline';
-      updatedQueues[0].readExpireMs = 125;
+      updatedQueues[0].readExpireMs = 250;
       updatedQueues[0].writesStarved = 3;
       updatedQueues[0].fifoBatch = 8;
-      updatedQueues[0].readAheadKb = 128;
+      updatedQueues[0].readAheadKb = 256;
       updatedQueues[0].rqAffinity = 2;
     }
-    const cand = prevCandidates.find((c) => c.id === 'io_mq_deadline_interactive');
+    const cand = prevCandidates.find((c) => c.id === 'io.mq_deadline_low_latency');
     if (cand) {
       cand.trials += 1;
       cand.successes += 1;
@@ -444,14 +604,25 @@ export function stepAutonomousSimulation(
   } else if (forced === 'memory' || memory >= 3.2) {
     tunerStage = 'RETAINED';
     tunerIntent = 'MemoryStallRelief';
-    tunerCandidateId = 'vm_reclaim_relief';
-    tunerCandidateLabel = 'VM Page-Cluster & Cache Pressure Relief';
+    tunerCandidateId = 'vm.zram_latency_relief';
+    tunerCandidateLabel = 'VM Page-Cluster Zero-Latency & VFS Dentry Preservation';
     tunerVerdict = 'IMPROVED';
     tunerUtilityDelta = Number((3.4 + Math.random() * 2.8).toFixed(2));
     tunerTrials += 1;
     tunerImproved += 1;
     tunerRationale =
       `Memory PSI=${memory.toFixed(1)}% elevated; applied vm.page-cluster=0 & vfs_cache_pressure=80 | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+  } else if (forced === 'cpu' || cpu >= 8.5) {
+    tunerStage = 'RETAINED';
+    tunerIntent = 'InteractiveCpuPacing';
+    tunerCandidateId = 'cpufreq.schedutil_interactive_response';
+    tunerCandidateLabel = 'EAS Governor Rate-Limit Pacing (500us up / 10000us down)';
+    tunerVerdict = 'IMPROVED';
+    tunerUtilityDelta = Number((4.1 + Math.random() * 2.5).toFixed(2));
+    tunerTrials += 1;
+    tunerImproved += 1;
+    tunerRationale =
+      `CPU PSI=${cpu.toFixed(1)}% with thermal headroom; paced EAS schedutil governor rate limits (up=500us, down=10000us) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
   }
 
   const next: AutonomousTelemetry = {
@@ -472,6 +643,7 @@ export function stepAutonomousSimulation(
     aiBackend: current.aiBackend ?? 'embedded-rls-mlp',
     aiOnnxActive: current.aiOnnxActive ?? false,
     aiPredictedPressure10s: Number(predictedPressure.toFixed(1)),
+    aiPredictedVelocity: predictedVelocity,
     aiRecommendedScale: recScale,
     aiConfidence: Number(Math.min(0.96, 0.78 + Math.min(samples, 50) * 0.003).toFixed(2)),
     aiSamples: samples,

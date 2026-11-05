@@ -1,0 +1,14 @@
+{
+  "file_format_version": "1.1.2",
+  "layer": {
+    "name": "VK_LAYER_COREFLOW_universal_bridge",
+    "type": "GLOBAL",
+    "library_path": "/system/lib64/libVkLayer_coreflow.so",
+    "api_version": "1.4.303",
+    "implementation_version": "1",
+    "description": "CoreFlow Universal Vulkan 1.4 Capability & Extension Bridge Layer",
+    "disable_environment": {
+      "DISABLE_COREFLOW_VULKAN_LAYER": "1"
+    }
+  }
+}

@@ -15,7 +15,7 @@ command -v cargo >/dev/null || { echo "error: Rust 1.85+ and cargo are required"
 rustup target add aarch64-linux-android
 BUILD_DIR="$ROOT/build/android-arm64"
 
-echo "CFAE System Framework v3.0.R Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
+echo "CFAE System Framework v3.1.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \

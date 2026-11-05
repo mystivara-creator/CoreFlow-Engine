@@ -320,15 +320,23 @@ export const AutonomousStateHero: React.FC<Props> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-            Forecasts 10-second thermal trajectory via Online Recursive Least Squares + 6×8×2 Micro-MLP (or dynamic <code className="font-mono text-[11px]">libonnxruntime.so</code> C-API when <code className="font-mono text-[11px]">equilibrium.onnx</code> is present), pre-pacing capacity strictly within Safety Admission invariants.
+            Forecasts 10-second thermal trajectory via Online Recursive Least Squares + 6×8×2 Micro-MLP with NLMS output-head adaptation (or dynamic <code className="font-mono text-[11px]">libonnxruntime.so</code> C-API when <code className="font-mono text-[11px]">equilibrium.onnx</code> is present), pre-pacing capacity strictly within Safety Admission invariants.
           </p>
         </div>
 
-        <div className="grid grid-cols-3 gap-3 sm:gap-5 shrink-0 font-mono tabular-nums text-xs border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-900/[0.06] dark:border-white/[0.06]">
+        <div className="grid grid-cols-4 gap-3 sm:gap-5 shrink-0 font-mono tabular-nums text-xs border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-900/[0.06] dark:border-white/[0.06]">
           <div>
             <div className="text-[11px] text-slate-400 font-sans">10s Forecast</div>
             <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
               {(telemetry.aiPredictedPressure10s ?? 45.0).toFixed(1)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-400 font-sans">Velocity</div>
+            <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
+              {(telemetry.aiPredictedVelocity ?? 0) >= 0
+                ? `+${(telemetry.aiPredictedVelocity ?? 0).toFixed(2)}/s`
+                : `${(telemetry.aiPredictedVelocity ?? 0).toFixed(2)}/s`}
             </div>
           </div>
           <div>

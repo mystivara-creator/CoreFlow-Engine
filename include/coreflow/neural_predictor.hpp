@@ -7,8 +7,9 @@
  * 1. Dynamic ONNX Runtime C-API session (via dlopen of libonnxruntime.so + .onnx model)
  *    configured with arena-free, single-threaded non-spinning execution.
  * 2. Deterministic Embedded Online Recursive Least Squares (RLS) + 6x8x2 Micro-MLP
- *    predictor that adapts to the device's physical thermal time constant in real time
- *    without requiring external shared libraries.
+ *    predictor with online NLMS output-head adaptation that learns the device's physical
+ *    thermal time constant and nonlinear saturation curve in real time without requiring
+ *    external shared libraries.
  *
  * Safety Invariant: Predictions are strictly advisory within the Reasoning Engine
  * and can never override OEM thermal ceilings, Safety Admission Gates, or readback verification.
@@ -38,6 +39,7 @@ struct NeuralPrediction {
     double recommended_scale{1.0};      // Advisory capacity ceiling [0.4 .. 1.0]
     double confidence{0.0};             // Statistical confidence [0.0 .. 1.0]
     double prediction_mae{0.0};         // Running mean absolute error of pressure forecast
+    double predicted_velocity{0.0};     // Learned thermal pressure rate of change (/s)
     uint64_t samples_observed{0};
     std::string_view backend{"embedded-rls-mlp"};
 };
@@ -77,6 +79,8 @@ private:
     std::array<double, 4> rls_weights_{0.0, 0.02, 0.12, -0.02};
     std::array<double, 16> rls_cov_{};
     std::array<double, 4> prev_features_{0.0, 0.0, 0.0, 0.0};
+    std::array<double, 8> prev_hidden_{};
+    double prev_out0_{0.0};
     double prev_pressure_{-1.0};
     double ema_abs_error_{1.5};
     uint64_t samples_{0};

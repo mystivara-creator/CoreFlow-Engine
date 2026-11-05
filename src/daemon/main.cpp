@@ -13,6 +13,7 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/vulkan_controller.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -321,6 +322,7 @@ void print_status() {
               << ",\"aiBackend\":" << json_string(ai.backend)
               << ",\"aiOnnxActive\":" << (ai.onnx_active ? "true" : "false")
               << ",\"aiPredictedPressure10s\":" << ai.predicted_pressure_10s
+              << ",\"aiPredictedVelocity\":" << ai.predicted_velocity
               << ",\"aiRecommendedScale\":" << ai.recommended_scale
               << ",\"aiConfidence\":" << ai.confidence
               << ",\"aiSamples\":" << ai.samples_observed
@@ -373,6 +375,66 @@ void print_status() {
                   << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
     }
     std::cout << "]";
+    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
+    VulkanController::instance().initialize({
+        .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
+        .enable_skiavk_threaded = cfg_status.enable_skiavk_threaded,
+        .enable_adaptive_vrs = cfg_status.enable_adaptive_vrs,
+        .enable_pipeline_cache_prewarm = cfg_status.enable_pipeline_cache_prewarm,
+    });
+    const auto vk = VulkanController::instance().snapshot();
+    std::cout << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
+              << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
+              << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
+              << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+              << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
+              << ",\"deviceName\":" << json_string(vk.device_name)
+              << ",\"apiVersion\":" << json_string(vk.api_version)
+              << ",\"effectiveApiVersion\":" << json_string(vk.effective_api_version)
+              << ",\"deviceExtensions\":" << vk.device_extensions_count
+              << ",\"effectiveDeviceExtensions\":" << vk.effective_device_extensions_count
+              << ",\"instanceExtensions\":" << vk.instance_extensions_count
+              << ",\"deviceUuid\":" << json_string(vk.device_uuid)
+              << ",\"driverUuid\":" << json_string(vk.driver_uuid)
+              << ",\"pipelineCacheUuid\":" << json_string(vk.pipeline_cache_uuid)
+              << ",\"rayTracing\":" << (vk.ray_tracing ? "true" : "false")
+              << ",\"meshShaders\":" << (vk.mesh_shaders ? "true" : "false")
+              << ",\"variableRateShading\":" << (vk.variable_rate_shading ? "true" : "false")
+              << ",\"cooperativeMatrix\":" << (vk.cooperative_matrix ? "true" : "false")
+              << ",\"rtPipeline\":" << (vk.rt_pipeline ? "true" : "false")
+              << ",\"rayQuery\":" << (vk.ray_query ? "true" : "false")
+              << ",\"accelerationStructure\":" << (vk.acceleration_structure ? "true" : "false")
+              << ",\"portabilitySubset\":" << (vk.portability_subset ? "true" : "false")
+              << ",\"robustBufferAccess\":" << (vk.robust_buffer_access ? "true" : "false")
+              << ",\"samplerAnisotropy\":" << (vk.sampler_anisotropy ? "true" : "false")
+              << ",\"shaderInt16\":" << (vk.shader_int16 ? "true" : "false")
+              << ",\"shaderFloat64\":" << (vk.shader_float64 ? "true" : "false")
+              << ",\"protectedMemory\":" << (vk.protected_memory ? "true" : "false")
+              << ",\"timelineSemaphore\":" << (vk.timeline_semaphore ? "true" : "false")
+              << ",\"descriptorIndexing\":" << (vk.descriptor_indexing ? "true" : "false")
+              << ",\"bufferDeviceAddress\":" << (vk.buffer_device_address ? "true" : "false")
+              << ",\"dynamicRendering\":" << (vk.dynamic_rendering ? "true" : "false")
+              << ",\"synchronization2\":" << (vk.synchronization2 ? "true" : "false")
+              << ",\"indexTypeUint8\":" << (vk.index_type_uint8 ? "true" : "false")
+              << ",\"lineRasterization\":" << (vk.line_rasterization ? "true" : "false")
+              << ",\"pushDescriptors\":" << (vk.push_descriptors ? "true" : "false")
+              << ",\"globalPriorityQuery\":" << (vk.global_priority_query ? "true" : "false")
+              << ",\"shaderFloatControls2\":" << (vk.shader_float_controls2 ? "true" : "false")
+              << ",\"maxPushDescriptors\":" << vk.max_push_descriptors
+              << ",\"maintenance5\":" << (vk.maintenance5 ? "true" : "false")
+              << ",\"maintenance6\":" << (vk.maintenance6 ? "true" : "false")
+              << ",\"maintenance7\":" << (vk.maintenance7 ? "true" : "false")
+              << ",\"descriptorBuffer\":" << (vk.descriptor_buffer ? "true" : "false")
+              << ",\"graphicsPipelineLibrary\":" << (vk.graphics_pipeline_library ? "true" : "false")
+              << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
+              << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
+              << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
+              << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
+              << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
+              << ",\"gpuGovernor\":" << json_string(vk.gpu_surface.active_governor)
+              << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
+              << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
+              << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}";
     std::cout << ",\"recoveryPending\":" << (journal_clear() ? "false" : "true") << "}\n";
 }
 
@@ -389,7 +451,16 @@ std::string json_string(std::string_view text) {
 void print_capabilities() {
     const auto topology = DeviceProfiler::instance().probe();
     const auto power = PowerBridge{}.probe();
+    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
     const auto ai = NeuralPredictor::instance().last_prediction();
+    const DaemonConfig cfg_cap = DaemonConfig::load_best_available();
+    VulkanController::instance().initialize({
+        .mode = VulkanController::parse_mode(cfg_cap.vulkan_layer_mode),
+        .enable_skiavk_threaded = cfg_cap.enable_skiavk_threaded,
+        .enable_adaptive_vrs = cfg_cap.enable_adaptive_vrs,
+        .enable_pipeline_cache_prewarm = cfg_cap.enable_pipeline_cache_prewarm,
+    });
+    const auto vk = VulkanController::instance().snapshot();
     std::cout << "{\"socModel\":" << json_string(topology.soc_name)
               << ",\"kernelVersion\":" << json_string(topology.kernel_version)
               << ",\"onlineCpus\":" << json_string(topology.online_cpus_mask)
@@ -397,6 +468,8 @@ void print_capabilities() {
               << ",\"rustEngine\":true,\"powerHalDetected\":" << (power.aidl_power_service ? "true" : "false")
               << ",\"aiBackend\":" << json_string(ai.backend)
               << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
+              << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+              << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
               << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}\n";
 }
 
@@ -609,6 +682,12 @@ int main(int argc, char* argv[]) {
     TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
     NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
     AutonomousTuner::instance().discover();
+    VulkanController::instance().initialize({
+        .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+        .enable_skiavk_threaded = config.enable_skiavk_threaded,
+        .enable_adaptive_vrs = config.enable_adaptive_vrs,
+        .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+    });
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
@@ -631,6 +710,12 @@ int main(int argc, char* argv[]) {
                     NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
                     AutonomousTuner::instance().reset();
                     AutonomousTuner::instance().discover();
+                    VulkanController::instance().configure({
+                        .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+                        .enable_skiavk_threaded = config.enable_skiavk_threaded,
+                        .enable_adaptive_vrs = config.enable_adaptive_vrs,
+                        .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+                    });
                     const uint32_t clamped_ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec timer{};
                     timer.it_interval.tv_sec = clamped_ms / 1000;
@@ -813,13 +898,16 @@ int main(int argc, char* argv[]) {
         }
         (void)HardwareLongevityManager::instance().apply_storage_pacing();
         HardwareLongevityManager::instance().monitor_battery_thermals(temp);
+        (void)VulkanController::instance().apply_workload_policy(
+            desired, active_capacity_scale, thermal_limit_hit);
 
-        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched/*, vm/*)
+        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched/*, vm/*, cpufreq/*)
         const auto tuner_snap = AutonomousTuner::instance().step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
+            .thermal_guard_active = thermal_limit_hit,
             .thermal_emergency = thermal_limit_hit,
         });
         if (tuner_snap.active_candidate_id != last_tuner_candidate ||

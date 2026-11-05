@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 3.0.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 3.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,7 +47,19 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/power_bridge.cpp
     src/kernel/neural_predictor.cpp
     src/kernel/autonomous_tuner.cpp
+    src/kernel/vulkan_controller.cpp
 )
+
+# Universal Vulkan 1.4 Implicit Layer (libVkLayer_coreflow.so)
+add_library(VkLayer_coreflow SHARED
+    src/layer/vk_layer_coreflow.cpp
+)
+target_compile_options(VkLayer_coreflow PRIVATE $<$<CONFIG:Release>:-O2>)
+if(ANDROID)
+    target_link_libraries(VkLayer_coreflow PRIVATE log)
+else()
+    target_link_libraries(VkLayer_coreflow PRIVATE pthread)
+endif()
 
 # Main Daemon (coreflowd)
 add_executable(coreflowd
@@ -70,6 +82,10 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
+
+    add_executable(test_vulkan_controller tests/test_vulkan_controller.cpp src/kernel/vulkan_controller.cpp src/kernel/baseline_store.cpp)
+    target_link_libraries(test_vulkan_controller PRIVATE ${CMAKE_DL_LIBS} m)
+    add_test(NAME VulkanControllerTest COMMAND test_vulkan_controller)
 
     add_executable(test_neural_predictor tests/test_neural_predictor.cpp src/kernel/neural_predictor.cpp)
     target_link_libraries(test_neural_predictor PRIVATE ${CMAKE_DL_LIBS} m)

@@ -56,6 +56,9 @@ int main() {
     assert(initial.block_queues[0].device_name == "sda");
     assert(initial.block_queues[0].active_scheduler == "none");
     assert(initial.block_queues[0].available_schedulers.size() == 4);
+    assert(initial.block_queues[0].read_ahead_kb == 128);
+    assert(initial.block_queues[0].nr_requests == 64);
+    assert(initial.block_queues[0].rq_affinity == 1);
 
     // 1. Idle equilibrium: no need -> must hold baseline without mutating
     tuner.step({.cpu_psi = 1.0, .memory_psi = 0.2, .io_psi = 0.3, .thermal_pressure = 42.0});
@@ -78,6 +81,7 @@ int main() {
     }
     const auto after_regress = tuner.snapshot();
     assert(after_regress.last_verdict == "REGRESSED");
+    assert(after_regress.verdict == coreflow::TunerVerdict::Regressed);
     assert(after_regress.stage == "PLANNED");
     // BaselineStore normalized "[none] mq-deadline kyber bfq" -> bare token "none" on rollback
     assert(get(sda_q / "scheduler") == "none");
@@ -102,8 +106,10 @@ int main() {
     }
     const auto retained = tuner.snapshot();
     assert(retained.last_verdict == "IMPROVED");
+    assert(retained.verdict == coreflow::TunerVerdict::Improved);
     assert(retained.stage == "RETAINED");
     assert(retained.total_improved == 1);
+    assert(retained.improved_count == 1);
     assert(get(sda_q / "scheduler") == "kyber");
 
     // 6. Sustained idle for 6 ticks -> cleanly releases retained mutation back to OEM baseline
@@ -112,6 +118,23 @@ int main() {
     }
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "none");
+
+    // 7. Smart CPUFreq schedutil governor rate-limit tuning under CPU PSI bottleneck
+    const fs::path schedutil_dir = sys_root / "devices/system/cpu/cpufreq/policy0/schedutil";
+    put(schedutil_dir / "up_rate_limit_us", "2000");
+    put(schedutil_dir / "down_rate_limit_us", "1000");
+    tuner.discover(sys_root.string(), proc_root.string());
+
+    const auto cpu_obs = tuner.step({.cpu_psi = 12.5, .memory_psi = 0.2, .io_psi = 0.4, .thermal_pressure = 44.0});
+    assert(cpu_obs.stage == "OBSERVING");
+    assert(cpu_obs.active_candidate_id == "cpufreq.schedutil_interactive_response");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "500");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "10000");
+
+    tuner.reset();
+    assert(tuner.snapshot().stage == "PLANNED");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
 
     fs::remove_all(root);
     return 0;

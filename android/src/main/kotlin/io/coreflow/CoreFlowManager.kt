@@ -16,6 +16,7 @@ object CoreFlowManager {
         "BIN=\"/data/adb/modules/cfae_framework/system/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/coreflow_engine/system/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/cfae_framework/coreflowd\"; " +
+        "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/coreflow_engine/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/system_ext/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/system/bin/coreflowd\""
 
@@ -78,8 +79,8 @@ object CoreFlowManager {
     suspend fun applyProfile(profile: Profile): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val cmd = StringBuilder()
-            cmd.append("sed -i 's/^ui_adaptive_bias=.*/ui_adaptive_bias=${profile.name.lowercase()}/' $CONFIG_PATH 2>/dev/null; ")
-            cmd.append("sed -i 's/^top_app_interactive_min=.*/top_app_interactive_min=${profile.uclampMin}/' $CONFIG_PATH 2>/dev/null; ")
+            cmd.append("sed -i 's/^ui_adaptive_bias[[:space:]]*=.*/ui_adaptive_bias = ${profile.name.lowercase()}/' $CONFIG_PATH 2>/dev/null; ")
+            cmd.append("sed -i 's/^top_app_interactive_min[[:space:]]*=.*/top_app_interactive_min = ${profile.uclampMin}/' $CONFIG_PATH 2>/dev/null; ")
             cmd.append("$RESOLVE_DAEMON; killall -HUP coreflowd 2>/dev/null || true")
             execRootCommand(cmd.toString())
             Unit

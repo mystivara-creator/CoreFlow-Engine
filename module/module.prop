@@ -1,7 +1,7 @@
 id=cfae_framework
 name=CFAE System Framework
-version=v3.0.R
-versionCode=30000
+version=v3.1.0
+versionCode=31000
 author=mystivara-creator
 description=Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

@@ -19,7 +19,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"3.0.R"};
+    std::string version{"3.1.0"};
     std::string log_level{"info"};
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
@@ -73,6 +73,12 @@ struct DaemonConfig {
     float jank_detection_threshold_ratio{1.25f};
     uint32_t burst_boost_duration_ms{120};
     uint32_t touch_boost_uclamp_min{380};
+
+    // [vulkan_engine]
+    std::string vulkan_layer_mode{"safe_hardware"};
+    bool enable_skiavk_threaded{true};
+    bool enable_adaptive_vrs{true};
+    bool enable_pipeline_cache_prewarm{true};
 
     static std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t\r\n");
@@ -273,6 +279,16 @@ struct DaemonConfig {
                 uint32_t v = 0;
                 if (parse_uint32_safe(val, v)) cfg.touch_boost_uclamp_min = v;
             }
+
+            // [vulkan_engine]
+            else if (key == "vulkan_layer_mode") {
+                if (val == "safe_hardware" || val == "full_capability_override" || val == "disabled") {
+                    cfg.vulkan_layer_mode = val;
+                }
+            }
+            else if (key == "enable_skiavk_threaded") cfg.enable_skiavk_threaded = parse_bool(val);
+            else if (key == "enable_adaptive_vrs") cfg.enable_adaptive_vrs = parse_bool(val);
+            else if (key == "enable_pipeline_cache_prewarm") cfg.enable_pipeline_cache_prewarm = parse_bool(val);
         }
 
         // Post-validation: ensure max >= min
@@ -295,6 +311,8 @@ struct DaemonConfig {
     static DaemonConfig load_best_available() {
         const std::vector<std::string> paths = {
             "/data/adb/coreflow/coreflow.conf",
+            "/data/adb/modules/cfae_framework/coreflow.conf",
+            "/data/adb/modules/cfae_framework/system/etc/coreflow/default.conf",
             "/data/adb/modules/coreflow_engine/coreflow.conf",
             "/system/etc/coreflow/default.conf",
             "config/coreflow.conf"

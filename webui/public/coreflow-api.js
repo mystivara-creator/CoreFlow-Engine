@@ -1,5 +1,5 @@
 /**
- * CFAE System Framework v3.0.R JavaScript RPC Bridge for KernelSU & APatch
+ * CFAE System Framework v3.1.0 JavaScript RPC Bridge for KernelSU & APatch
  * @license MIT
  */
 (function (global) {
@@ -83,7 +83,7 @@
      */
     setBias: async function (bias) {
       var conf = '/data/adb/coreflow/coreflow.conf';
-      var cmd = 'sed -i "s/^ui_adaptive_bias=.*/ui_adaptive_bias=' + bias + '/" ' + conf + '; ' +
+      var cmd = 'sed -i "s/^ui_adaptive_bias[[:space:]]*=.*/ui_adaptive_bias = ' + bias + '/" ' + conf + '; ' +
                 RESOLVE_BIN + '; killall -HUP coreflowd 2>/dev/null || true';
       var res = await this.exec(cmd);
       return res.errno === 0;

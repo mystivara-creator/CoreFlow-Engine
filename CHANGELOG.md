@@ -1,5 +1,24 @@
 # CFAE System Framework Release History
 
+## v3.1.0 — Smart Multi-Domain Scheduler Tuning, Predictive AI Backend & Full-Tree Hardening
+
+### Smart Multi-Domain Scheduler & Tunable Evaluator (`AutonomousTuner`)
+- **Coordinated Block I/O, VM & EAS CPUFreq Transactions**: Dynamically discovers physical block queues (`/sys/block/sd*`, `mmcblk*`, `nvme*`), available schedulers (`mq-deadline`, `kyber`, `bfq`, `none`), coupled `iosched/*` tunables (`read_expire`, `writes_starved`, `fifo_batch`), queue depth controls (`read_ahead_kb`, `nr_requests`, `rq_affinity`), `/proc/sys/vm/*` nodes (`page-cluster`, `vfs_cache_pressure`), and EAS CPUFreq governor rate-limit nodes (`/sys/devices/system/cpu/cpufreq/policy*/{schedutil,walt}/{up_rate_limit_us,down_rate_limit_us}`).
+- **UCB1 Contextual Bandit & Empirical Before/After Validation**: Selects candidates only when measured Linux PSI (`cpu`, `memory`, `io`) indicates contention, executes `Required-before` → `Coupled-with` transactions via `BaselineStore`, and evaluates empirical utility improvement ($\Delta U$) over a 3-tick observation window—retaining beneficial configurations (`IMPROVED`) and rolling back neutral or regressing trials (`REGRESSED` / `NEUTRAL`) in reverse dependency order.
+
+### Predictive AI Backend (`NeuralPredictor`)
+- **Hybrid ONNX Runtime C-API + Online RLS & 6×8×2 Micro-MLP**: Dynamically loads `libonnxruntime.so` via `dlopen` when `equilibrium.onnx` is present, paired with an embedded zero-dependency 4-parameter Recursive Least Squares (RLS) thermal state-space filter and 6×8×2 Micro-MLP with online NLMS output-layer adaptation.
+- **Proactive 10-Second Horizon Pacing**: Forecasts 10-second thermal pressure and thermal velocity ($\Delta P/\text{s}$) to pre-pace capacity budgets strictly within Safety Admission invariants.
+
+### Universal Vulkan 1.4 Capability Bridge & Multi-Vendor GPU Optimizer (`VulkanController` & `VkLayer_coreflow`)
+- **Dual-Mode Implicit Layer (`libVkLayer_coreflow.so`)**: Implements Khronos Vulkan 1.4 Implicit Layer (`VK_LAYER_COREFLOW_universal_bridge`) supporting **Opsi A (`safe_hardware`)** (completes Vulkan 1.4 `indexTypeUint8`, `lineRasterization`, `pushDescriptors`, `globalPriorityQuery`, `shaderFloatControls2`, `maintenance5/6/7`, `descriptorBuffer`, and `graphicsPipelineLibrary` without spoofing missing silicon RTU/FP64 units) and **Opsi B (`full_capability_override`)** (completes full Ray Tracing, RT Pipeline, Ray Query, Mesh Shaders, Cooperative Matrix, and Shader Float64 reporting guarded by `vkCreateDevice` extension filtering so vendor ICDs never fail with `VK_ERROR_EXTENSION_NOT_PRESENT`).
+- **Universal Multi-Vendor GPU Surface Coordination**: Dynamically probes native Vulkan ICD capabilities via `dlopen("libvulkan.so")` alongside kernel GPU surfaces across Qualcomm Adreno (`/sys/class/kgsl/kgsl-3d0`), ARM Mali / Immortalis (`/sys/class/devfreq/*mali*`), Samsung Xclipse RDNA, Imagination PowerVR, and generic AOSP devfreq nodes with `BaselineStore` rollback protection.
+
+### Full-Tree Audit & Release Hardening
+- **Unified Daemon & Test ABI**: Synchronized `AutonomousTuner`, `CandidateStats`, `BlockQueueSurface`, `AutonomousDecisionSnapshot`, and `TunerTelemetryInput` across `coreflowd` (`src/daemon/main.cpp`) and deterministic host tests (`tests/test_autonomous_tuner.cpp`, `tests/test_vulkan_controller.cpp`).
+- **Atomic Configuration Persistence**: Preserves `[device_adaptation]`, `[pid_equilibrium]`, `[hardware_longevity]`, and `[vulkan_engine]` sections when committing policy updates from the Material Design 3 WebUI and Android Quick Settings bridge.
+- **Container & Custom-Kernel Journal Resilience**: Added fallback boot identity handling in `BaselineStore` when `/proc/sys/kernel/random/boot_id` is absent.
+
 ## v3.0.R — CFAE System Framework (Autonomous Mutation Safety & Coordinated Optimization)
 
 ### Coordinated Mutation Architecture

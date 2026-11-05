@@ -58,6 +58,7 @@ int main() {
     assert(hot.predicted_pressure_10s > 85.0);
     assert(hot.recommended_scale < nominal.recommended_scale);
     assert(hot.confidence >= 0.35 && hot.confidence <= 0.99);
+    assert(std::isfinite(hot.predicted_velocity));
 
     // 4. Verify custom CFW1 weight loading
     {

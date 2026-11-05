@@ -1,10 +1,10 @@
-# CFAE System Framework v3.0.R — Mutation Safety & Coordinated Optimization Architecture
+# CFAE System Framework v3.1.0 — Mutation Safety & Coordinated Optimization Architecture
 
 ## 1. Architectural Principle
 
 Zero device-specific hardcoding does not mean blind mutation. Ability to write to a sysfs/cgroup node proves only file access, not safety, semantic meaning, compatibility, or system benefit.
 
-The primary unit of control in CFAE System Framework v3.0.R is the **Mutation Transaction**: one explicit optimization goal, a dependency-verified change plan within a bounded risk budget, per-write readback verification, and ownership-safe rollback.
+The primary unit of control in CFAE System Framework v3.1.0 is the **Mutation Transaction**: one explicit optimization goal, a dependency-verified change plan within a bounded risk budget, per-write readback verification, and ownership-safe rollback.
 
 ### Logical Architecture Flow
 

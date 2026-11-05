@@ -1,4 +1,4 @@
-# CFAE System Framework v3.0.R — Tuning & Policy Reference
+# CFAE System Framework v3.1.0 — Tuning & Policy Reference
 
 Persistent configuration: `/data/adb/coreflow/coreflow.conf`  
 Packaged fallback: `/system/etc/coreflow/default.conf`

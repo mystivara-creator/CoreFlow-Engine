@@ -3,6 +3,8 @@ import { X, Copy, Download, Activity, Cpu, Code2, ShieldCheck } from 'lucide-rea
 import blueprint from '../../docs/EQUILIBRIUM_BLUEPRINT.md?raw';
 import rustController from '../../rust/src/controller.rs?raw';
 import rustBridge from '../../rust/src/bridge.rs?raw';
+import autonomousTuner from '../../src/kernel/autonomous_tuner.cpp?raw';
+import neuralPredictor from '../../src/kernel/neural_predictor.cpp?raw';
 import cppController from '../../src/kernel/frequency_controller.cpp?raw';
 import powerBridge from '../../src/kernel/power_bridge.cpp?raw';
 
@@ -32,9 +34,11 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
   const [ambient, setAmbient] = useState(30);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState('');
-  const [source, setSource] = useState('Rust controller');
+  const [source, setSource] = useState('Autonomous tuner');
 
   const sources: Record<string, string> = {
+    'Autonomous tuner': autonomousTuner,
+    'Neural predictor': neuralPredictor,
     'Rust controller': rustController,
     'cxx bridge': rustBridge,
     'CPU/GPU controller': cppController,
@@ -67,7 +71,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
   const fullText =
     blueprint +
-    `\n\n## CFAE System Framework v3.0.R\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
+    `\n\n## CFAE System Framework v3.1.0\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
 
   const copy = async () => {
     try {
@@ -109,7 +113,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
               CFAE Architecture & Mutation Safety Studio
             </h2>
             <p className="text-xs text-[#0b57d0] dark:text-[#a8c7fa] font-mono">
-              v3.0.R · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
+              v3.1.0 · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
             </p>
           </div>
           <button

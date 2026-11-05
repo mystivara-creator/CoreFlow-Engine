@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Flame, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
+import { Activity, Flame, Layers, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
 import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
@@ -12,19 +12,25 @@ import { ThermalMatrixCard } from './components/ThermalMatrixCard';
 import { HardwareLongevityCard } from './components/HardwareLongevityCard';
 import { AndroidQuickSettingsCard } from './components/AndroidQuickSettingsCard';
 import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
+import { VulkanCapabilitiesCard } from './components/VulkanCapabilitiesCard';
 import {
   AutonomousConfig,
   AutonomousTelemetry,
   BlockQueueTelemetry,
+  computeVulkanTelemetry,
   createInitialAutonomousTelemetry,
   createInitialLogs,
   DEFAULT_AUTONOMOUS_CONFIG,
   DEFAULT_LONGEVITY_CONFIG,
+  DEFAULT_VULKAN_CONFIG,
   HardwareLongevityConfig,
   ReactionLogEvent,
   stepAutonomousSimulation,
   ThermalSensorDetail,
   TunerCandidateTelemetry,
+  VulkanEngineConfig,
+  VulkanLayerMode,
+  VulkanTelemetry,
 } from './engine/autonomousEngine';
 
 const RESOLVE_BIN =
@@ -60,6 +66,7 @@ interface NativeStatus {
   aiBackend?: string;
   aiOnnxActive?: boolean;
   aiPredictedPressure10s?: number;
+  aiPredictedVelocity?: number;
   aiRecommendedScale?: number;
   aiConfidence?: number;
   aiSamples?: number;
@@ -75,6 +82,7 @@ interface NativeStatus {
   tunerRolledBack?: number;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  vulkan?: VulkanTelemetry;
 }
 
 const checkedNativeStatus = (raw: string): NativeStatus => {
@@ -149,12 +157,16 @@ export const App: React.FC = () => {
       : initial;
   });
   const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
-  type NavTab = 'dashboard' | 'thermal' | 'longevity' | 'android' | 'console';
+  type NavTab = 'dashboard' | 'vulkan' | 'thermal' | 'longevity' | 'android' | 'console';
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({
     ...DEFAULT_LONGEVITY_CONFIG,
   }));
   const [longevitySaveMessage, setLongevitySaveMessage] = useState<string | null>(null);
+  const [vulkanConfig, setVulkanConfig] = useState<VulkanEngineConfig>(() => ({
+    ...DEFAULT_VULKAN_CONFIG,
+  }));
+  const [vulkanSaveMessage, setVulkanSaveMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<ReactionLogEvent[]>(() =>
     isNativeBridge ? [] : createInitialLogs()
   );
@@ -241,6 +253,7 @@ export const App: React.FC = () => {
       aiBackend: status.aiBackend ?? old.aiBackend,
       aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,
       aiPredictedPressure10s: status.aiPredictedPressure10s ?? old.aiPredictedPressure10s,
+      aiPredictedVelocity: status.aiPredictedVelocity ?? old.aiPredictedVelocity,
       aiRecommendedScale: status.aiRecommendedScale ?? old.aiRecommendedScale,
       aiConfidence: status.aiConfidence ?? old.aiConfidence,
       aiSamples: status.aiSamples ?? old.aiSamples,
@@ -256,6 +269,7 @@ export const App: React.FC = () => {
       tunerRolledBack: status.tunerRolledBack ?? old.tunerRolledBack,
       blockQueues: status.blockQueues ?? old.blockQueues,
       tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
+      vulkan: status.vulkan ?? old.vulkan,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       transactionStage: status.running
         ? status.recoveryPending
@@ -328,6 +342,29 @@ export const App: React.FC = () => {
           : old.enableUfsBurstPacing,
         topAppIoWeight: topWeight ?? old.topAppIoWeight,
         backgroundIoWeight: bgWeight ?? old.backgroundIoWeight,
+      }));
+
+      const rawVkMode = readStringKey(configResult.stdout, 'vulkan_layer_mode');
+      const vkMode: VulkanLayerMode =
+        rawVkMode === 'full_capability_override' ||
+        rawVkMode === 'disabled' ||
+        rawVkMode === 'safe_hardware'
+          ? rawVkMode
+          : 'safe_hardware';
+      const rawSkiavk = readStringKey(configResult.stdout, 'enable_skiavk_threaded');
+      const rawVrs = readStringKey(configResult.stdout, 'enable_adaptive_vrs');
+      const rawPrewarm = readStringKey(configResult.stdout, 'enable_pipeline_cache_prewarm');
+
+      setVulkanConfig((old) => ({
+        ...old,
+        mode: vkMode,
+        enableSkiavkThreaded: rawSkiavk
+          ? rawSkiavk === 'true' || rawSkiavk === '1'
+          : old.enableSkiavkThreaded,
+        enableAdaptiveVrs: rawVrs ? rawVrs === 'true' || rawVrs === '1' : old.enableAdaptiveVrs,
+        enablePipelineCachePrewarm: rawPrewarm
+          ? rawPrewarm === 'true' || rawPrewarm === '1'
+          : old.enablePipelineCachePrewarm,
       }));
     };
 
@@ -462,6 +499,74 @@ export const App: React.FC = () => {
     advancePreviewSimulation('io_trial');
   };
 
+  const buildCompleteConfigText = (
+    activeConfig: AutonomousConfig,
+    activeLongevity: HardwareLongevityConfig,
+    activeVulkan: VulkanEngineConfig = vulkanConfig
+  ) => {
+    const safeBias: AutonomousConfig['adaptiveBias'] =
+      activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
+        ? activeConfig.adaptiveBias
+        : 'balanced';
+    const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
+    const multiplier =
+      safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
+    const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
+    const trip = Math.max(35, Math.min(65, activeConfig.thermalTripCelsius));
+    const recover = Math.max(25, trip - 4);
+    const stepTemp = Math.max(30, Math.min(45, activeLongevity.batteryStepTempThreshold));
+    const stepCurr = Math.max(100, Math.min(5000, Math.round(activeLongevity.steppedChargeCurrentMa)));
+    const topWeight = Math.max(1, Math.min(10000, Math.round(activeLongevity.topAppIoWeight)));
+    const bgWeight = Math.max(1, Math.min(10000, Math.round(activeLongevity.backgroundIoWeight)));
+    const safeVkMode: VulkanLayerMode =
+      activeVulkan.mode === 'full_capability_override' || activeVulkan.mode === 'disabled'
+        ? activeVulkan.mode
+        : 'safe_hardware';
+
+    const text =
+      '# CFAE System Framework v3.1.0 Configuration\n' +
+      '[general]\nversion = 3.1.0\nlog_level = info\nzero_polling_mode = true\nenable_cgroups_v2 = true\nenable_uclamp = true\n' +
+      '\n[device_adaptation]\ntier_override = auto\nunlock_vendor_clamping = false\nforce_120hz_rendering = false\n' +
+      'enable_cpu_frequency_control = true\nenable_gpu_frequency_control = true\n' +
+      '\n[uclamp_tuning]\ntop_app_interactive_min = ' +
+      balancedMin +
+      '\ntop_app_interactive_max = 1024\nui_adaptive_bias = ' +
+      safeBias +
+      '\nui_balanced_uclamp_min = ' +
+      baseFloor +
+      '\n\n[thermal_guardian]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' +
+      trip.toFixed(1) +
+      '\nthermal_recover_celsius = ' +
+      recover.toFixed(1) +
+      '\nemergency_rollback_on_overheat = true\n' +
+      '\n[stability]\ncpu_pressure_boost_pct = 8.0\nmemory_pressure_guard_pct = 3.0\n' +
+      'io_pressure_guard_pct = 5.0\nthermal_headroom_celsius = 3.0\nthermal_emergency_margin_celsius = 4.0\n' +
+      '\n[pid_equilibrium]\nenable_pid_equilibrium = true\npid_target_celsius = 42.5\npid_kp = 2.5\npid_ki = 0.15\npid_kd = 1.2\n' +
+      '\n[hardware_longevity]\nenable_battery_step_charging = ' +
+      (activeLongevity.enableBatteryStepCharging ? 'true' : 'false') +
+      '\nenable_ufs_burst_pacing = ' +
+      (activeLongevity.enableUfsBurstPacing ? 'true' : 'false') +
+      '\nbattery_step_temp_threshold = ' +
+      stepTemp.toFixed(1) +
+      '\nstepped_charge_current_ma = ' +
+      stepCurr +
+      '\ntop_app_io_weight = ' +
+      topWeight +
+      '\nbackground_io_weight = ' +
+      bgWeight +
+      '\n\n[vulkan_engine]\nvulkan_layer_mode = ' +
+      safeVkMode +
+      '\nenable_skiavk_threaded = ' +
+      (activeVulkan.enableSkiavkThreaded ? 'true' : 'false') +
+      '\nenable_adaptive_vrs = ' +
+      (activeVulkan.enableAdaptiveVrs ? 'true' : 'false') +
+      '\nenable_pipeline_cache_prewarm = ' +
+      (activeVulkan.enablePipelineCachePrewarm ? 'true' : 'false') +
+      '\n';
+
+    return { text, balancedMin, trip };
+  };
+
   const handleSaveConfig = async (overrideConfig?: AutonomousConfig) => {
     const activeConfig = overrideConfig ?? config;
     setIsSaving(true);
@@ -472,34 +577,10 @@ export const App: React.FC = () => {
         return;
       }
 
-      const safeBias: AutonomousConfig['adaptiveBias'] =
-        activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
-          ? activeConfig.adaptiveBias
-          : 'balanced';
-      const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
-      const multiplier =
-        safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
-      const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
-      const trip = Math.max(35, Math.min(65, activeConfig.thermalTripCelsius));
-      const recover = Math.max(25, trip - 4);
-
-      const nativeConfig =
-        '[general]\nversion = 3.0.R\nlog_level = info\nenable_uclamp = true\n' +
-        '\n[uclamp]\ntop_app_interactive_min = ' +
-        balancedMin +
-        '\ntop_app_interactive_max = 1024' +
-        '\nui_adaptive_bias = ' +
-        safeBias +
-        '\nui_balanced_uclamp_min = ' +
-        baseFloor +
-        '\n\n[thermal]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' +
-        trip.toFixed(1) +
-        '\nthermal_recover_celsius = ' +
-        recover.toFixed(1) +
-        '\nemergency_rollback_on_overheat = true\n' +
-        '\n[stability]\ncpu_pressure_boost_pct = 8.0\nmemory_pressure_guard_pct = 3.0\n' +
-        'io_pressure_guard_pct = 5.0\nthermal_headroom_celsius = 3.0\n' +
-        'thermal_emergency_margin_celsius = 4.0\n';
+      const { text: nativeConfig, balancedMin, trip } = buildCompleteConfigText(
+        activeConfig,
+        longevityConfig
+      );
 
       const command =
         'umask 077 && [ ! -L "' +
@@ -558,15 +639,30 @@ export const App: React.FC = () => {
         );
         return;
       }
-      const script =
-        `sed -i 's/^enable_battery_step_charging=.*/enable_battery_step_charging=${newConfig.enableBatteryStepCharging}/' ${CONFIG} 2>/dev/null; ` +
-        `sed -i 's/^battery_step_temp_threshold=.*/battery_step_temp_threshold=${newConfig.batteryStepTempThreshold.toFixed(1)}/' ${CONFIG} 2>/dev/null; ` +
-        `sed -i 's/^stepped_charge_current_ma=.*/stepped_charge_current_ma=${newConfig.steppedChargeCurrentMa}/' ${CONFIG} 2>/dev/null; ` +
-        `sed -i 's/^enable_ufs_burst_pacing=.*/enable_ufs_burst_pacing=${newConfig.enableUfsBurstPacing}/' ${CONFIG} 2>/dev/null; ` +
-        `sed -i 's/^top_app_io_weight=.*/top_app_io_weight=${newConfig.topAppIoWeight}/' ${CONFIG} 2>/dev/null; ` +
-        `sed -i 's/^background_io_weight=.*/background_io_weight=${newConfig.backgroundIoWeight}/' ${CONFIG} 2>/dev/null; ` +
-        `killall -HUP coreflowd 2>/dev/null || true`;
-      await execChecked(script);
+      const { text: nativeConfig } = buildCompleteConfigText(config, newConfig);
+      const command =
+        'umask 077 && [ ! -L "' +
+        CONFIG +
+        '" ] && rm -f "' +
+        CONFIG +
+        '.tmp" && ' +
+        "cat <<'COREFLOW_CONFIG' > " +
+        CONFIG +
+        '.tmp\n' +
+        nativeConfig +
+        'COREFLOW_CONFIG\nchown 0:0 ' +
+        CONFIG +
+        '.tmp 2>/dev/null; chmod 600 ' +
+        CONFIG +
+        '.tmp && mv -f ' +
+        CONFIG +
+        '.tmp ' +
+        CONFIG +
+        ' && (killall -HUP coreflowd 2>/dev/null || true) && echo COREFLOW_LONGEVITY_WRITTEN';
+      const output = await execChecked(command);
+      if (!output.includes('COREFLOW_LONGEVITY_WRITTEN')) {
+        throw new Error('Longevity configuration write not acknowledged');
+      }
       setLongevityConfig(newConfig);
       setLongevitySaveMessage('Armed live in kernel');
       addLog(
@@ -586,6 +682,71 @@ export const App: React.FC = () => {
     const nextConfig = { ...config, adaptiveBias: bias };
     setConfig(nextConfig);
     await handleSaveConfig(nextConfig);
+  };
+
+  const handleSaveVulkanConfig = async (nextVulkan: VulkanEngineConfig) => {
+    setIsSaving(true);
+    setVulkanSaveMessage(null);
+    try {
+      setVulkanConfig(nextVulkan);
+      setTelemetry((old) => ({
+        ...old,
+        vulkan: computeVulkanTelemetry(nextVulkan, old.vulkan),
+      }));
+
+      if (!isNativeBridge) {
+        setVulkanSaveMessage(
+          nextVulkan.mode === 'full_capability_override'
+            ? 'Opsi B Full Capability Override active in preview'
+            : nextVulkan.mode === 'safe_hardware'
+            ? 'Opsi A Safe Hardware & 1.4 Bridge active in preview'
+            : 'OEM Passthrough active in preview'
+        );
+        addLog(
+          'BOOST',
+          'VulkanLayer',
+          `Mode=${nextVulkan.mode} | SkiaVK=${nextVulkan.enableSkiavkThreaded} | AdaptiveVRS=${nextVulkan.enableAdaptiveVrs}`
+        );
+        return;
+      }
+
+      const { text: nativeConfig } = buildCompleteConfigText(config, longevityConfig, nextVulkan);
+      const command =
+        'umask 077 && [ ! -L "' +
+        CONFIG +
+        '" ] && rm -f "' +
+        CONFIG +
+        '.tmp" && ' +
+        "cat <<'COREFLOW_CONFIG' > " +
+        CONFIG +
+        '.tmp\n' +
+        nativeConfig +
+        'COREFLOW_CONFIG\nchown 0:0 ' +
+        CONFIG +
+        '.tmp 2>/dev/null; chmod 600 ' +
+        CONFIG +
+        '.tmp && mv -f ' +
+        CONFIG +
+        '.tmp ' +
+        CONFIG +
+        ' && (killall -HUP coreflowd 2>/dev/null || true) && echo COREFLOW_VULKAN_WRITTEN';
+      const output = await execChecked(command);
+      if (!output.includes('COREFLOW_VULKAN_WRITTEN')) {
+        throw new Error('Vulkan configuration write not acknowledged');
+      }
+      await refreshNative();
+      setVulkanSaveMessage('Armed in libVkLayer_coreflow.so');
+      addLog(
+        'BOOST',
+        'VulkanLayer',
+        `Committed Vulkan mode=${nextVulkan.mode} to /data/adb/coreflow/vulkan_layer.state`
+      );
+    } catch (err) {
+      setVulkanSaveMessage('Save failed');
+      setNativeError(String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleRestoreBaseline = async () => {
@@ -618,6 +779,7 @@ export const App: React.FC = () => {
 
   const navItems: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
     { id: 'dashboard', label: 'Equilibrium', Icon: Activity },
+    { id: 'vulkan', label: 'Vulkan 1.4 & GPU', Icon: Layers },
     { id: 'thermal', label: 'Thermal Matrix', Icon: Flame },
     { id: 'longevity', label: 'Hardware Longevity', Icon: ShieldCheck },
     { id: 'android', label: 'Quick Settings', Icon: Smartphone },
@@ -738,7 +900,39 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 2: Thermal Matrix */}
+        {/* Tab 2: Universal Vulkan 1.4 & GPU Capabilities */}
+        {activeTab === 'vulkan' && (
+          <div className="space-y-6 m3-stage">
+            <section aria-label="Vulkan capabilities and implicit layer bridge">
+              <VulkanCapabilitiesCard
+                vulkanTelemetry={telemetry.vulkan}
+                vulkanConfig={vulkanConfig}
+                nativeMode={isNativeBridge}
+                onChangeVulkanConfig={(next) => {
+                  setVulkanConfig(next);
+                  setTelemetry((old) => ({
+                    ...old,
+                    vulkan: computeVulkanTelemetry(next, old.vulkan),
+                  }));
+                }}
+                onSaveVulkanConfig={handleSaveVulkanConfig}
+                isSaving={isSaving}
+                saveMessage={vulkanSaveMessage}
+              />
+            </section>
+
+            <section aria-label="Engine activity">
+              <LiveReactionStream
+                logs={logs}
+                onClearLogs={() => setLogs([])}
+                engineActive={telemetry.engineActive}
+                nativeMode={isNativeBridge}
+              />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 3: Thermal Matrix */}
         {activeTab === 'thermal' && (
           <div className="space-y-6 m3-stage">
             <section aria-label="Multi-sensor thermal matrix">
@@ -845,7 +1039,7 @@ export const App: React.FC = () => {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              CFAE System Framework v3.0.R
+              CFAE System Framework v3.1.0
             </span>
             {' · '}Autonomous Mutation Safety & Coordinated Optimization
           </div>

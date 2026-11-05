@@ -93,6 +93,8 @@ void NeuralPredictor::init_default_network() noexcept {
 void NeuralPredictor::reset() noexcept {
     init_default_network();
     prev_features_.fill(0.0);
+    prev_hidden_.fill(0.0);
+    prev_out0_ = 0.0;
     prev_pressure_ = -1.0;
     ema_abs_error_ = 1.5;
     samples_ = 0;
@@ -103,6 +105,7 @@ void NeuralPredictor::reset() noexcept {
         .recommended_scale = 1.0,
         .confidence = 0.5,
         .prediction_mae = 0.0,
+        .predicted_velocity = 0.0,
         .samples_observed = 0,
         .backend = onnx_loaded_ ? "onnx-runtime-hybrid"
                                 : (custom_weights_loaded_ ? "custom-cfw-rls-mlp" : "embedded-rls-mlp"),
@@ -199,6 +202,9 @@ void NeuralPredictor::initialize(std::string_view model_dir) noexcept {
     custom_weights_loaded_ = try_load_custom_weights(model_dir_ + "/equilibrium.cfw");
     (void)try_load_onnx_runtime(model_dir_ + "/equilibrium.onnx");
     reset();
+    if (custom_weights_loaded_) {
+        (void)try_load_custom_weights(model_dir_ + "/equilibrium.cfw");
+    }
 }
 
 NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noexcept {
@@ -224,7 +230,7 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
 
     double velocity = 0.0;
 
-    // Step 1: Online Recursive Least Squares (RLS) learning step from previous tick
+    // Step 1: Online Recursive Least Squares (RLS) + NLMS Output-Layer learning step from previous tick
     if (prev_pressure_ >= 0.0) {
         const double actual_rate = (input.thermal_pressure - prev_pressure_) / dt;
         velocity = std::clamp(actual_rate, -10.0, 10.0);
@@ -267,6 +273,17 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
             }
             rls_cov_ = next_cov;
         }
+
+        // Online NLMS adaptation on Micro-MLP output head (w2_[0..7], b2_[0])
+        // Refines non-linear thermal surge residual without destabilizing pre-calibrated hidden features
+        const double tanh_out0 = std::tanh(prev_out0_);
+        const double grad_scale = (1.0 - tanh_out0 * tanh_out0);
+        const double residual_err = std::clamp(innovation / 8.0 - tanh_out0, -1.0, 1.0);
+        constexpr double kMlpStep = 0.015;
+        for (size_t h = 0; h < 8; ++h) {
+            w2_[h] = std::clamp(w2_[h] + kMlpStep * residual_err * grad_scale * prev_hidden_[h], -3.0, 3.0);
+        }
+        b2_[0] = std::clamp(b2_[0] + kMlpStep * residual_err * grad_scale, -1.5, 1.5);
     }
 
     const std::array<double, 4> current_rls_features{
@@ -304,6 +321,7 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
         }
         hidden[h] = std::tanh(acc);
     }
+    prev_hidden_ = hidden;
 
     std::array<double, 2> out{b2_[0], b2_[1]};
     for (size_t o = 0; o < 2; ++o) {
@@ -311,6 +329,7 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
             out[o] += w2_[o * 8 + h] * hidden[h];
         }
     }
+    prev_out0_ = out[0];
 
     const double nonlinear_pressure_delta = std::tanh(out[0]) * 8.0;
     const double predicted_10s = std::clamp(
@@ -333,6 +352,7 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
         .recommended_scale = recommended_scale,
         .confidence = confidence,
         .prediction_mae = ema_abs_error_,
+        .predicted_velocity = rls_rate_forecast,
         .samples_observed = samples_,
         .backend = onnx_loaded_ ? "onnx-runtime-hybrid"
                                 : (custom_weights_loaded_ ? "custom-cfw-rls-mlp" : "embedded-rls-mlp"),
