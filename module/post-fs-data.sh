@@ -76,3 +76,16 @@ if [ ! -e "$STATE/coreflow.conf" ] && [ ! -L "$STATE/coreflow.conf" ] && [ -f "$
     rm -f "$TMP_CONF"
   fi
 fi
+
+# Modifikasi prop khusus Xiaomi/HyperOS untuk mematikan efek Low RAM
+BRAND=$(getprop ro.product.brand | tr '[:upper:]' '[:lower:]')
+MANUFACTURER=$(getprop ro.product.manufacturer | tr '[:upper:]' '[:lower:]')
+
+if case "$BRAND" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac || \
+   case "$MANUFACTURER" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac; then
+    
+    resetprop -n ro.config.low_ram false
+    resetprop -n ro.config.low_ram.middle.threshold_gb 0
+else
+    echo "CFAE System Framework"
+fi
