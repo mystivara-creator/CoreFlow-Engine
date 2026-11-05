@@ -255,6 +255,8 @@ enum class LayerMode : uint8_t {
 struct LayerRuntimeConfig {
     LayerMode mode{LayerMode::SafeHardware};
     uint32_t max_push_descriptors{32};
+    bool adaptive_vrs{true};
+    bool pipeline_cache_prewarm{true};
 };
 
 LayerRuntimeConfig read_layer_runtime_config() noexcept {
@@ -290,6 +292,10 @@ LayerRuntimeConfig read_layer_runtime_config() noexcept {
             const std::string_view val = line.substr(21);
             if (val == "64") cfg.max_push_descriptors = 64;
             else cfg.max_push_descriptors = 32;
+        } else if (line.rfind("adaptive_vrs=", 0) == 0) {
+            cfg.adaptive_vrs = (line.substr(13) != "0");
+        } else if (line.rfind("pipeline_cache_prewarm=", 0) == 0) {
+            cfg.pipeline_cache_prewarm = (line.substr(23) != "0");
         }
     }
     return cfg;
@@ -324,8 +330,8 @@ constexpr std::array<VkExtensionProperties, 7> kOverrideExtensions = {{
     {"VK_KHR_cooperative_matrix", 2},
 }};
 
-void patch_feature_chain(VkBaseOutStructure* chain, LayerMode mode) noexcept {
-    if (mode == LayerMode::Disabled) return;
+void patch_feature_chain(VkBaseOutStructure* chain, const LayerRuntimeConfig& cfg) noexcept {
+    if (cfg.mode == LayerMode::Disabled) return;
 
     for (VkBaseOutStructure* cur = chain; cur != nullptr; cur = cur->pNext) {
         auto* raw_bools = reinterpret_cast<VkBool32*>(reinterpret_cast<char*>(cur) + sizeof(VkBaseOutStructure));
@@ -336,8 +342,13 @@ void patch_feature_chain(VkBaseOutStructure* chain, LayerMode mode) noexcept {
             case kVkStructureTypePhysicalDeviceMaintenance5FeaturesKhr:
             case kVkStructureTypePhysicalDeviceMaintenance6FeaturesKhr:
             case kVkStructureTypePhysicalDeviceMaintenance7FeaturesKhr:
-            case kVkStructureTypePhysicalDeviceGraphicsPipelineLibraryFeaturesExt:
                 raw_bools[0] = kVkTrue;
+                break;
+
+            case kVkStructureTypePhysicalDeviceGraphicsPipelineLibraryFeaturesExt:
+                if (cfg.pipeline_cache_prewarm) {
+                    raw_bools[0] = kVkTrue;
+                }
                 break;
 
             case kVkStructureTypePhysicalDeviceLineRasterizationFeaturesExt:
@@ -354,10 +365,12 @@ void patch_feature_chain(VkBaseOutStructure* chain, LayerMode mode) noexcept {
                 break;
 
             case kVkStructureTypePhysicalDeviceFragmentShadingRateFeaturesKhr:
-                // pipelineFragmentShadingRate, primitiveFragmentShadingRate, attachmentFragmentShadingRate
-                raw_bools[0] = kVkTrue;
-                raw_bools[1] = kVkTrue;
-                raw_bools[2] = kVkTrue;
+                if (cfg.adaptive_vrs) {
+                    // pipelineFragmentShadingRate, primitiveFragmentShadingRate, attachmentFragmentShadingRate
+                    raw_bools[0] = kVkTrue;
+                    raw_bools[1] = kVkTrue;
+                    raw_bools[2] = kVkTrue;
+                }
                 break;
 
             case kVkStructureTypePhysicalDeviceVulkan14Features:
@@ -380,7 +393,7 @@ void patch_feature_chain(VkBaseOutStructure* chain, LayerMode mode) noexcept {
             case kVkStructureTypePhysicalDeviceAccelerationStructureFeaturesKhr:
             case kVkStructureTypePhysicalDeviceMeshShaderFeaturesExt:
             case kVkStructureTypePhysicalDeviceCooperativeMatrixFeaturesKhr:
-                if (mode == LayerMode::FullCapabilityOverride) {
+                if (cfg.mode == LayerMode::FullCapabilityOverride) {
                     raw_bools[0] = kVkTrue;
                 }
                 break;
@@ -466,7 +479,7 @@ void layer_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysi
     if (cfg.mode == LayerMode::FullCapabilityOverride) {
         pFeatures->features.shaderFloat64 = kVkTrue;
     }
-    patch_feature_chain(reinterpret_cast<VkBaseOutStructure*>(pFeatures->pNext), cfg.mode);
+    patch_feature_chain(reinterpret_cast<VkBaseOutStructure*>(pFeatures->pNext), cfg);
 }
 
 void layer_vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2Prefix* pProperties) {

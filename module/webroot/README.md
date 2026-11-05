@@ -1,7 +1,7 @@
-# CoreFlow Modern v2 public assets
+# CFAE System Framework v3.1.0 WebUI Public Assets
 
-Vite copies these static assets into the offline module WebUI.
+Vite copies these static assets into `module/webroot` during build so both standard web preview deployments (`dist/`) and KernelSU / APatch / Magisk offline packaging remain 100% identical and synchronized.
 
-Native mode is capability-driven: the dashboard reads coreflowd status, the discovered top-app UClamp pair, the hottest trusted thermal sensor, recovery state, and daemon logs. Browser mode is an explicitly labelled simulation of the same four-state stability policy.
+Native mode is capability-driven: the Material Design 3 dashboard reads `coreflowd --status`, the discovered top-app UClamp pair, the multi-sensor thermal matrix, durable write-ahead journal state, and daemon audit logs. Browser mode is an explicitly labelled simulation of the 5-layer Coordinated Mutation Safety architecture.
 
-There is no native FPS, SurfaceFlinger, package-specific game, vendor-unlock, or arbitrary sysfs control in Modern v2.
+Unverified metrics such as synthetic FPS, frame-time, or jank are never claimed without a validated platform source.

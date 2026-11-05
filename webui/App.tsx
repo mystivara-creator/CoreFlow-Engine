@@ -34,7 +34,8 @@ import {
 } from './engine/autonomousEngine';
 
 const RESOLVE_BIN =
-  'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+  'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
+  '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
@@ -50,6 +51,10 @@ interface NativeStatus {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
+  cpuPressurePct?: number;
+  memoryPressurePct?: number;
+  ioPressurePct?: number;
+  baselineNodesSnapshotted?: number;
   socTempCelsius: number | null;
   socCompositeCelsius?: number | null;
   cpuAverageCelsius?: number | null;
@@ -85,8 +90,34 @@ interface NativeStatus {
   vulkan?: VulkanTelemetry;
 }
 
+const extractJsonObject = (raw: string): unknown => {
+  const trimmed = raw.trim();
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.startsWith('{') && line.endsWith('}')) {
+      try {
+        return JSON.parse(line);
+      } catch {
+        // continue scanning
+      }
+    }
+  }
+  const firstBrace = trimmed.indexOf('{"running":');
+  const start = firstBrace >= 0 ? firstBrace : trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    const candidate = trimmed.slice(start, end + 1).replace(/\r?\n/g, '');
+    return JSON.parse(candidate);
+  }
+  return JSON.parse(lines[lines.length - 1] ?? '{}');
+};
+
 const checkedNativeStatus = (raw: string): NativeStatus => {
-  const value: unknown = JSON.parse(raw.trim().split('\n').pop() ?? '');
+  const value: unknown = extractJsonObject(raw);
   if (typeof value !== 'object' || value === null) throw new Error('Invalid native status');
   const status = value as Partial<NativeStatus>;
   if (
@@ -153,6 +184,7 @@ export const App: React.FC = () => {
           transactionStage: 'PLANNED',
           modeLabel: 'Awaiting native status',
           modeDescription: 'Waiting for coreflowd runtime status',
+          vulkan: computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG),
         }
       : initial;
   });
@@ -182,13 +214,14 @@ export const App: React.FC = () => {
     if (!isNativeBridge) return;
     void execChecked(`${RESOLVE_BIN}; "$BIN" --capabilities`)
       .then((raw) => {
-        const result = JSON.parse(raw.trim().split('\n').pop() ?? '{}');
+        const result = extractJsonObject(raw) as Record<string, unknown>;
         if (
+          result &&
           ['socModel', 'kernelVersion', 'onlineCpus', 'gpuType'].every(
             (key) => typeof result[key] === 'string'
           )
         ) {
-          setHardwareInfo(result);
+          setHardwareInfo(result as typeof hardwareInfo);
         }
       })
       .catch(() => {});
@@ -242,13 +275,17 @@ export const App: React.FC = () => {
       uclampMin: status.uclampMin,
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
+      cpuPressurePct: status.cpuPressurePct ?? old.cpuPressurePct,
+      memoryPressurePct: status.memoryPressurePct ?? old.memoryPressurePct,
+      ioPressurePct: status.ioPressurePct ?? old.ioPressurePct,
+      baselineNodesSnapshotted: status.baselineNodesSnapshotted ?? old.baselineNodesSnapshotted,
       socTempCelsius: effectiveTemp,
       socCompositeCelsius: status.socCompositeCelsius ?? effectiveTemp,
-      cpuAverageCelsius: status.cpuAverageCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 0.4 : -1),
-      cpuPeakCelsius: status.cpuPeakCelsius ?? (effectiveTemp > 0 ? effectiveTemp + 2.5 : -1),
-      gpuTempCelsius: status.gpuTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 1.8 : -1),
-      batteryTempCelsius: status.batteryTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 5.0 : -1),
-      skinTempCelsius: status.skinTempCelsius ?? (effectiveTemp > 0 ? effectiveTemp - 3.2 : -1),
+      cpuAverageCelsius: status.cpuAverageCelsius ?? -1,
+      cpuPeakCelsius: status.cpuPeakCelsius ?? -1,
+      gpuTempCelsius: status.gpuTempCelsius ?? -1,
+      batteryTempCelsius: status.batteryTempCelsius ?? -1,
+      skinTempCelsius: status.skinTempCelsius ?? -1,
       thermalSensors: status.thermalSensors ?? old.thermalSensors,
       aiBackend: status.aiBackend ?? old.aiBackend,
       aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,

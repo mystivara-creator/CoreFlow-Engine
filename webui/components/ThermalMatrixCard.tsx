@@ -17,11 +17,11 @@ export const ThermalMatrixCard: React.FC<Props> = ({
   const [searchQuery, setSearchQuery] = useState('');
 
   const composite = telemetry.socCompositeCelsius ?? telemetry.socTempCelsius;
-  const cpuAvg = telemetry.cpuAverageCelsius ?? (composite > 0 ? composite - 0.4 : -1);
-  const cpuPeak = telemetry.cpuPeakCelsius ?? (composite > 0 ? composite + 2.5 : -1);
-  const gpu = telemetry.gpuTempCelsius ?? (composite > 0 ? composite - 1.8 : -1);
-  const battery = telemetry.batteryTempCelsius ?? (composite > 0 ? composite - 5.0 : -1);
-  const skin = telemetry.skinTempCelsius ?? (composite > 0 ? composite - 3.2 : -1);
+  const cpuAvg = telemetry.cpuAverageCelsius ?? -1;
+  const cpuPeak = telemetry.cpuPeakCelsius ?? -1;
+  const gpu = telemetry.gpuTempCelsius ?? -1;
+  const battery = telemetry.batteryTempCelsius ?? -1;
+  const skin = telemetry.skinTempCelsius ?? -1;
 
   const isThrottling = composite >= thermalTripCelsius;
   const thermalProgress = Math.min(100, Math.max(0, ((composite - 30) / (60 - 30)) * 100));

@@ -153,15 +153,15 @@ export const AutonomousStateHero: React.FC<Props> = ({
           <div className="grid grid-cols-3 gap-2 font-mono tabular-nums text-xs text-slate-800 dark:text-slate-200 my-1">
             <div>
               <div className="text-[11px] text-slate-400">CPU</div>
-              <div className="font-semibold">{nativeMode ? 'Live' : `${telemetry.cpuPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{`${telemetry.cpuPressurePct.toFixed(1)}%`}</div>
             </div>
             <div>
               <div className="text-[11px] text-slate-400">MEM</div>
-              <div className="font-semibold">{nativeMode ? 'Live' : `${telemetry.memoryPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{`${telemetry.memoryPressurePct.toFixed(1)}%`}</div>
             </div>
             <div>
               <div className="text-[11px] text-slate-400">I/O</div>
-              <div className="font-semibold">{nativeMode ? 'Live' : `${telemetry.ioPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{`${telemetry.ioPressurePct.toFixed(1)}%`}</div>
             </div>
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-normal">
@@ -178,7 +178,9 @@ export const AutonomousStateHero: React.FC<Props> = ({
             {telemetry.baselineStatus === 'protected' ? 'Journal Armed' : 'Baseline Restored'}
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-normal">
-            Write-ahead & readback verified
+            {telemetry.baselineNodesSnapshotted > 0
+              ? `${telemetry.baselineNodesSnapshotted} owned kernel nodes verified`
+              : 'Write-ahead & readback verified'}
           </div>
         </div>
       </div>
@@ -230,12 +232,12 @@ export const AutonomousStateHero: React.FC<Props> = ({
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                 <HardDrive className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
-                Block Queue Surface ({primaryQueue ? `/sys/block/${primaryQueue.device}/queue` : 'Discovered at runtime'})
+                Block Queue Surface ({primaryQueue ? `/sys/block/${primaryQueue.device}/queue` : 'Awaiting block queue probe'})
               </span>
               <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                Baseline: {primaryQueue?.baselineScheduler ?? 'none'} → Active:{' '}
+                Baseline: {primaryQueue?.baselineScheduler ?? 'N/A'} → Active:{' '}
                 <strong className="text-[#0b57d0] dark:text-[#a8c7fa]">
-                  {primaryQueue?.activeScheduler ?? 'mq-deadline'}
+                  {primaryQueue?.activeScheduler ?? 'N/A'}
                 </strong>
               </span>
             </div>
@@ -262,19 +264,19 @@ export const AutonomousStateHero: React.FC<Props> = ({
               <div>
                 <div className="text-[10px] text-slate-400 font-sans">read_ahead</div>
                 <div className="font-semibold text-slate-800 dark:text-slate-200">
-                  {primaryQueue && primaryQueue.readAheadKb >= 0 ? `${primaryQueue.readAheadKb}KB` : '128KB'}
+                  {primaryQueue && primaryQueue.readAheadKb >= 0 ? `${primaryQueue.readAheadKb}KB` : 'N/A'}
                 </div>
               </div>
               <div>
                 <div className="text-[10px] text-slate-400 font-sans">nr_requests</div>
                 <div className="font-semibold text-slate-800 dark:text-slate-200">
-                  {primaryQueue && primaryQueue.nrRequests >= 0 ? primaryQueue.nrRequests : '128'}
+                  {primaryQueue && primaryQueue.nrRequests >= 0 ? primaryQueue.nrRequests : 'N/A'}
                 </div>
               </div>
               <div>
                 <div className="text-[10px] text-slate-400 font-sans">rq_affinity</div>
                 <div className="font-semibold text-slate-800 dark:text-slate-200">
-                  {primaryQueue && primaryQueue.rqAffinity >= 0 ? primaryQueue.rqAffinity : '2'}
+                  {primaryQueue && primaryQueue.rqAffinity >= 0 ? primaryQueue.rqAffinity : 'N/A'}
                 </div>
               </div>
             </div>

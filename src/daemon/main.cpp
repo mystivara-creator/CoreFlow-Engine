@@ -232,6 +232,42 @@ bool journal_clear() {
     return true;
 }
 
+size_t count_journal_entries() noexcept {
+    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
+    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return 0;
+
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 65536) {
+        return 0;
+    }
+
+    char buf[4096];
+    std::string raw;
+    while (raw.size() <= 65536) {
+        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        if (n == 0) break;
+        raw.append(buf, static_cast<size_t>(n));
+    }
+    std::istringstream journal(raw);
+    std::string header;
+    if (!std::getline(journal, header) ||
+        (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
+         header.rfind("CFJ3\t", 0) != 0)) {
+        return 0;
+    }
+    size_t count = 0;
+    std::string line;
+    while (std::getline(journal, line)) {
+        if (!DaemonConfig::trim(line).empty()) ++count;
+    }
+    return count;
+}
+
 int stop_daemon() {
     const pid_t pid = daemon_pid();
     if (pid > 0) {
@@ -249,7 +285,12 @@ int stop_daemon() {
 
 std::string json_string(std::string_view text);
 
+double safe_json_double(double v, double fallback = 0.0) noexcept {
+    return std::isfinite(v) ? v : fallback;
+}
+
 void print_status() {
+    // 1. Run all hardware, kernel, AI, tuner, and Vulkan probes FIRST before writing any JSON
     const pid_t pid = daemon_pid();
     const auto profile = ThermalMonitor::instance().multi_sensor_profile();
     const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
@@ -261,12 +302,44 @@ void print_status() {
         thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
     }
     UclampGovernor governor;
-    std::cout << "{\"running\":" << (pid ? "true" : "false")
-              << ",\"pid\":" << pid
-              << ",\"uclampMin\":" << governor.get_top_app_min()
-              << ",\"uclampMax\":" << governor.get_top_app_max()
-              << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
-              << ",\"socTempCelsius\":";
+    const auto battery = ThermalMonitor::instance().battery_celsius();
+    const auto skin = ThermalMonitor::instance().skin_celsius();
+    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu").value_or(0.0);
+    const auto mem_psi = read_psi_avg10("/proc/pressure/memory").value_or(0.0);
+    const auto io_psi = read_psi_avg10("/proc/pressure/io").value_or(0.0);
+    const auto ai = NeuralPredictor::instance().infer_and_learn({
+        std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
+        std::clamp(safe_json_double(cpu_psi), 0.0, 100.0),
+        std::clamp(safe_json_double(mem_psi), 0.0, 100.0),
+        std::clamp(safe_json_double(io_psi), 0.0, 100.0),
+        1.0,
+        1.0,
+    });
+    AutonomousTuner::instance().discover();
+    const auto tuner = AutonomousTuner::instance().snapshot();
+    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
+    VulkanController::instance().initialize({
+        .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
+        .enable_skiavk_threaded = cfg_status.enable_skiavk_threaded,
+        .enable_adaptive_vrs = cfg_status.enable_adaptive_vrs,
+        .enable_pipeline_cache_prewarm = cfg_status.enable_pipeline_cache_prewarm,
+    });
+    const auto vk = VulkanController::instance().snapshot();
+    const bool recovery_pending = !journal_clear();
+    const size_t journal_nodes = count_journal_entries();
+
+    // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
+    std::ostringstream out;
+    out << "{\"running\":" << (pid ? "true" : "false")
+        << ",\"pid\":" << pid
+        << ",\"uclampMin\":" << governor.get_top_app_min()
+        << ",\"uclampMax\":" << governor.get_top_app_max()
+        << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
+        << ",\"cpuPressurePct\":" << safe_json_double(cpu_psi)
+        << ",\"memoryPressurePct\":" << safe_json_double(mem_psi)
+        << ",\"ioPressurePct\":" << safe_json_double(io_psi)
+        << ",\"baselineNodesSnapshotted\":" << journal_nodes
+        << ",\"socTempCelsius\":";
     if (std::isfinite(temp) && temp >= 0.0f) {
         char num[32];
         const int whole = static_cast<int>(temp);
@@ -276,166 +349,164 @@ void print_status() {
         } else {
             std::snprintf(num, sizeof(num), "%d.%d", whole, std::max(0, tenths));
         }
-        std::cout << num;
+        out << num;
     } else {
-        std::cout << "null";
+        out << "null";
     }
-    std::cout << ",\"thermalPolicyAvailable\":" << (thermal.available ? "true" : "false")
-              << ",\"thermalSource\":" << json_string(thermal.source)
-              << ",\"thermalSensor\":" << json_string(thermal.sensor)
-              << ",\"thermalSeverity\":" << thermal.severity
-              << ",\"thermalPressure\":" << thermal.pressure
-              << ",\"socCompositeCelsius\":" << (profile.composite_soc >= 0 ? std::to_string(profile.composite_soc) : "null")
-              << ",\"cpuAverageCelsius\":" << (profile.cpu_average >= 0 ? std::to_string(profile.cpu_average) : "null")
-              << ",\"cpuPeakCelsius\":" << (profile.cpu_peak >= 0 ? std::to_string(profile.cpu_peak) : "null")
-              << ",\"gpuTempCelsius\":" << (profile.gpu_average >= 0 ? std::to_string(profile.gpu_average) : "null");
-    std::cout << ",\"thermalSensors\":[";
+    out << ",\"thermalPolicyAvailable\":" << (thermal.available ? "true" : "false")
+        << ",\"thermalSource\":" << json_string(thermal.source)
+        << ",\"thermalSensor\":" << json_string(thermal.sensor)
+        << ",\"thermalSeverity\":" << thermal.severity
+        << ",\"thermalPressure\":" << safe_json_double(thermal.pressure)
+        << ",\"socCompositeCelsius\":" << (std::isfinite(profile.composite_soc) && profile.composite_soc >= 0 ? std::to_string(profile.composite_soc) : "null")
+        << ",\"cpuAverageCelsius\":" << (std::isfinite(profile.cpu_average) && profile.cpu_average >= 0 ? std::to_string(profile.cpu_average) : "null")
+        << ",\"cpuPeakCelsius\":" << (std::isfinite(profile.cpu_peak) && profile.cpu_peak >= 0 ? std::to_string(profile.cpu_peak) : "null")
+        << ",\"gpuTempCelsius\":" << (std::isfinite(profile.gpu_average) && profile.gpu_average >= 0 ? std::to_string(profile.gpu_average) : "null");
+    out << ",\"thermalSensors\":[";
     bool first_sensor = true;
     for (const auto& reading : thermal.readings) {
-        if (!first_sensor) std::cout << ',';
+        if (!first_sensor) out << ',';
         first_sensor = false;
-        std::cout << "{\"id\":" << json_string(reading.id)
-                  << ",\"type\":" << json_string(reading.type)
-                  << ",\"category\":" << reading.category
-                  << ",\"valid\":" << (reading.valid ? "true" : "false")
-                  << ",\"celsius\":" << (reading.valid ? std::to_string(reading.celsius) : "null")
-                  << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false") << '}';
+        out << "{\"id\":" << json_string(reading.id)
+            << ",\"type\":" << json_string(reading.type)
+            << ",\"category\":" << reading.category
+            << ",\"valid\":" << (reading.valid ? "true" : "false")
+            << ",\"celsius\":" << (reading.valid && std::isfinite(reading.celsius) ? std::to_string(reading.celsius) : "null")
+            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false") << '}';
     }
-    std::cout << "]";
-    const auto battery = ThermalMonitor::instance().battery_celsius();
-    const auto skin = ThermalMonitor::instance().skin_celsius();
-    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu").value_or(0.0);
-    const auto mem_psi = read_psi_avg10("/proc/pressure/memory").value_or(0.0);
-    const auto io_psi = read_psi_avg10("/proc/pressure/io").value_or(0.0);
-    const auto ai = NeuralPredictor::instance().infer_and_learn({
-        std::clamp(thermal.pressure, 0.0, 130.0),
-        std::clamp(cpu_psi, 0.0, 100.0),
-        std::clamp(mem_psi, 0.0, 100.0),
-        std::clamp(io_psi, 0.0, 100.0),
-        1.0,
-        1.0,
-    });
-    AutonomousTuner::instance().discover();
-    const auto tuner = AutonomousTuner::instance().snapshot();
-    std::cout << ",\"batteryTempCelsius\":" << (battery >= 0 ? std::to_string(battery) : "null")
-              << ",\"skinTempCelsius\":" << (skin >= 0 ? std::to_string(skin) : "null")
-              << ",\"aiBackend\":" << json_string(ai.backend)
-              << ",\"aiOnnxActive\":" << (ai.onnx_active ? "true" : "false")
-              << ",\"aiPredictedPressure10s\":" << ai.predicted_pressure_10s
-              << ",\"aiPredictedVelocity\":" << ai.predicted_velocity
-              << ",\"aiRecommendedScale\":" << ai.recommended_scale
-              << ",\"aiConfidence\":" << ai.confidence
-              << ",\"aiSamples\":" << ai.samples_observed
-              << ",\"tunerStage\":" << json_string(AutonomousTuner::stage_name(tuner.stage))
-              << ",\"tunerIntent\":" << json_string(AutonomousTuner::intent_name(tuner.intent))
-              << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
-              << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
-              << ",\"tunerRationale\":" << json_string(tuner.rationale)
-              << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
-              << ",\"tunerUtilityDelta\":" << tuner.utility_delta
-              << ",\"tunerTrials\":" << tuner.total_trials
-              << ",\"tunerImproved\":" << tuner.improved_count
-              << ",\"tunerRolledBack\":" << tuner.rolled_back_count
-              << ",\"blockQueues\":[";
+    out << "]"
+        << ",\"batteryTempCelsius\":" << (std::isfinite(battery) && battery >= 0 ? std::to_string(battery) : "null")
+        << ",\"skinTempCelsius\":" << (std::isfinite(skin) && skin >= 0 ? std::to_string(skin) : "null")
+        << ",\"aiBackend\":" << json_string(ai.backend)
+        << ",\"aiOnnxActive\":" << (ai.onnx_active ? "true" : "false")
+        << ",\"aiPredictedPressure10s\":" << safe_json_double(ai.predicted_pressure_10s)
+        << ",\"aiPredictedVelocity\":" << safe_json_double(ai.predicted_velocity)
+        << ",\"aiRecommendedScale\":" << safe_json_double(ai.recommended_scale, 1.0)
+        << ",\"aiConfidence\":" << safe_json_double(ai.confidence)
+        << ",\"aiSamples\":" << ai.samples_observed
+        << ",\"tunerStage\":" << json_string(AutonomousTuner::stage_name(tuner.stage))
+        << ",\"tunerIntent\":" << json_string(AutonomousTuner::intent_name(tuner.intent))
+        << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
+        << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
+        << ",\"tunerRationale\":" << json_string(tuner.rationale)
+        << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
+        << ",\"tunerUtilityDelta\":" << safe_json_double(tuner.utility_delta)
+        << ",\"tunerTrials\":" << tuner.total_trials
+        << ",\"tunerImproved\":" << tuner.improved_count
+        << ",\"tunerRolledBack\":" << tuner.rolled_back_count
+        << ",\"blockQueues\":[";
     bool first_queue = true;
     for (const auto& q : tuner.block_queues) {
-        if (!first_queue) std::cout << ',';
+        if (!first_queue) out << ',';
         first_queue = false;
-        std::cout << "{\"device\":" << json_string(q.device_name)
-                  << ",\"activeScheduler\":" << json_string(q.active_scheduler)
-                  << ",\"baselineScheduler\":" << json_string(q.baseline_scheduler)
-                  << ",\"readAheadKb\":" << q.read_ahead_kb
-                  << ",\"nrRequests\":" << q.nr_requests
-                  << ",\"rqAffinity\":" << q.rq_affinity
-                  << ",\"readExpireMs\":" << q.read_expire_ms
-                  << ",\"writesStarved\":" << q.writes_starved
-                  << ",\"fifoBatch\":" << q.fifo_batch
-                  << ",\"availableSchedulers\":[";
+        out << "{\"device\":" << json_string(q.device_name)
+            << ",\"activeScheduler\":" << json_string(q.active_scheduler)
+            << ",\"baselineScheduler\":" << json_string(q.baseline_scheduler)
+            << ",\"readAheadKb\":" << q.read_ahead_kb
+            << ",\"nrRequests\":" << q.nr_requests
+            << ",\"rqAffinity\":" << q.rq_affinity
+            << ",\"readExpireMs\":" << q.read_expire_ms
+            << ",\"writesStarved\":" << q.writes_starved
+            << ",\"fifoBatch\":" << q.fifo_batch
+            << ",\"availableSchedulers\":[";
         bool first_sched = true;
         for (const auto& sched : q.available_schedulers) {
-            if (!first_sched) std::cout << ',';
+            if (!first_sched) out << ',';
             first_sched = false;
-            std::cout << json_string(sched);
+            out << json_string(sched);
         }
-        std::cout << "]}";
+        out << "]}";
     }
-    std::cout << "],\"tunerCandidates\":[";
+    out << "],\"tunerCandidates\":[";
     bool first_cand = true;
     for (const auto& c : tuner.candidates) {
-        if (!first_cand) std::cout << ',';
+        if (!first_cand) out << ',';
         first_cand = false;
-        std::cout << "{\"id\":" << json_string(c.id)
-                  << ",\"label\":" << json_string(c.label)
-                  << ",\"domain\":" << json_string(c.domain)
-                  << ",\"trials\":" << c.trials
-                  << ",\"successes\":" << c.successes
-                  << ",\"rollbacks\":" << c.rollbacks
-                  << ",\"meanDelta\":" << c.mean_utility_delta
-                  << ",\"ucbScore\":" << c.ucb_score
-                  << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
+        out << "{\"id\":" << json_string(c.id)
+            << ",\"label\":" << json_string(c.label)
+            << ",\"domain\":" << json_string(c.domain)
+            << ",\"trials\":" << c.trials
+            << ",\"successes\":" << c.successes
+            << ",\"rollbacks\":" << c.rollbacks
+            << ",\"meanDelta\":" << safe_json_double(c.mean_utility_delta)
+            << ",\"ucbScore\":" << safe_json_double(c.ucb_score)
+            << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
     }
-    std::cout << "]";
-    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
-    VulkanController::instance().initialize({
-        .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
-        .enable_skiavk_threaded = cfg_status.enable_skiavk_threaded,
-        .enable_adaptive_vrs = cfg_status.enable_adaptive_vrs,
-        .enable_pipeline_cache_prewarm = cfg_status.enable_pipeline_cache_prewarm,
-    });
-    const auto vk = VulkanController::instance().snapshot();
-    std::cout << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
-              << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
-              << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
-              << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-              << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
-              << ",\"deviceName\":" << json_string(vk.device_name)
-              << ",\"apiVersion\":" << json_string(vk.api_version)
-              << ",\"effectiveApiVersion\":" << json_string(vk.effective_api_version)
-              << ",\"deviceExtensions\":" << vk.device_extensions_count
-              << ",\"effectiveDeviceExtensions\":" << vk.effective_device_extensions_count
-              << ",\"instanceExtensions\":" << vk.instance_extensions_count
-              << ",\"deviceUuid\":" << json_string(vk.device_uuid)
-              << ",\"driverUuid\":" << json_string(vk.driver_uuid)
-              << ",\"pipelineCacheUuid\":" << json_string(vk.pipeline_cache_uuid)
-              << ",\"rayTracing\":" << (vk.ray_tracing ? "true" : "false")
-              << ",\"meshShaders\":" << (vk.mesh_shaders ? "true" : "false")
-              << ",\"variableRateShading\":" << (vk.variable_rate_shading ? "true" : "false")
-              << ",\"cooperativeMatrix\":" << (vk.cooperative_matrix ? "true" : "false")
-              << ",\"rtPipeline\":" << (vk.rt_pipeline ? "true" : "false")
-              << ",\"rayQuery\":" << (vk.ray_query ? "true" : "false")
-              << ",\"accelerationStructure\":" << (vk.acceleration_structure ? "true" : "false")
-              << ",\"portabilitySubset\":" << (vk.portability_subset ? "true" : "false")
-              << ",\"robustBufferAccess\":" << (vk.robust_buffer_access ? "true" : "false")
-              << ",\"samplerAnisotropy\":" << (vk.sampler_anisotropy ? "true" : "false")
-              << ",\"shaderInt16\":" << (vk.shader_int16 ? "true" : "false")
-              << ",\"shaderFloat64\":" << (vk.shader_float64 ? "true" : "false")
-              << ",\"protectedMemory\":" << (vk.protected_memory ? "true" : "false")
-              << ",\"timelineSemaphore\":" << (vk.timeline_semaphore ? "true" : "false")
-              << ",\"descriptorIndexing\":" << (vk.descriptor_indexing ? "true" : "false")
-              << ",\"bufferDeviceAddress\":" << (vk.buffer_device_address ? "true" : "false")
-              << ",\"dynamicRendering\":" << (vk.dynamic_rendering ? "true" : "false")
-              << ",\"synchronization2\":" << (vk.synchronization2 ? "true" : "false")
-              << ",\"indexTypeUint8\":" << (vk.index_type_uint8 ? "true" : "false")
-              << ",\"lineRasterization\":" << (vk.line_rasterization ? "true" : "false")
-              << ",\"pushDescriptors\":" << (vk.push_descriptors ? "true" : "false")
-              << ",\"globalPriorityQuery\":" << (vk.global_priority_query ? "true" : "false")
-              << ",\"shaderFloatControls2\":" << (vk.shader_float_controls2 ? "true" : "false")
-              << ",\"maxPushDescriptors\":" << vk.max_push_descriptors
-              << ",\"maintenance5\":" << (vk.maintenance5 ? "true" : "false")
-              << ",\"maintenance6\":" << (vk.maintenance6 ? "true" : "false")
-              << ",\"maintenance7\":" << (vk.maintenance7 ? "true" : "false")
-              << ",\"descriptorBuffer\":" << (vk.descriptor_buffer ? "true" : "false")
-              << ",\"graphicsPipelineLibrary\":" << (vk.graphics_pipeline_library ? "true" : "false")
-              << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
-              << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
-              << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
-              << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
-              << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
-              << ",\"gpuGovernor\":" << json_string(vk.gpu_surface.active_governor)
-              << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
-              << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
-              << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}";
-    std::cout << ",\"recoveryPending\":" << (journal_clear() ? "false" : "true") << "}\n";
+    out << "]"
+        << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
+        << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
+        << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
+        << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
+        << ",\"deviceName\":" << json_string(vk.device_name)
+        << ",\"apiVersion\":" << json_string(vk.api_version)
+        << ",\"effectiveApiVersion\":" << json_string(vk.effective_api_version)
+        << ",\"driverVersion\":" << json_string(vk.driver_version)
+        << ",\"deviceExtensions\":" << vk.device_extensions_count
+        << ",\"effectiveDeviceExtensions\":" << vk.effective_device_extensions_count
+        << ",\"instanceExtensions\":" << vk.instance_extensions_count
+        << ",\"deviceUuid\":" << json_string(vk.device_uuid)
+        << ",\"driverUuid\":" << json_string(vk.driver_uuid)
+        << ",\"pipelineCacheUuid\":" << json_string(vk.pipeline_cache_uuid)
+        << ",\"rayTracing\":" << (vk.ray_tracing ? "true" : "false")
+        << ",\"meshShaders\":" << (vk.mesh_shaders ? "true" : "false")
+        << ",\"variableRateShading\":" << (vk.variable_rate_shading ? "true" : "false")
+        << ",\"cooperativeMatrix\":" << (vk.cooperative_matrix ? "true" : "false")
+        << ",\"rtPipeline\":" << (vk.rt_pipeline ? "true" : "false")
+        << ",\"rayQuery\":" << (vk.ray_query ? "true" : "false")
+        << ",\"accelerationStructure\":" << (vk.acceleration_structure ? "true" : "false")
+        << ",\"portabilitySubset\":" << (vk.portability_subset ? "true" : "false")
+        << ",\"robustBufferAccess\":" << (vk.robust_buffer_access ? "true" : "false")
+        << ",\"samplerAnisotropy\":" << (vk.sampler_anisotropy ? "true" : "false")
+        << ",\"shaderInt16\":" << (vk.shader_int16 ? "true" : "false")
+        << ",\"shaderFloat64\":" << (vk.shader_float64 ? "true" : "false")
+        << ",\"protectedMemory\":" << (vk.protected_memory ? "true" : "false")
+        << ",\"timelineSemaphore\":" << (vk.timeline_semaphore ? "true" : "false")
+        << ",\"descriptorIndexing\":" << (vk.descriptor_indexing ? "true" : "false")
+        << ",\"bufferDeviceAddress\":" << (vk.buffer_device_address ? "true" : "false")
+        << ",\"dynamicRendering\":" << (vk.dynamic_rendering ? "true" : "false")
+        << ",\"synchronization2\":" << (vk.synchronization2 ? "true" : "false")
+        << ",\"indexTypeUint8\":" << (vk.index_type_uint8 ? "true" : "false")
+        << ",\"lineRasterization\":" << (vk.line_rasterization ? "true" : "false")
+        << ",\"pushDescriptors\":" << (vk.push_descriptors ? "true" : "false")
+        << ",\"globalPriorityQuery\":" << (vk.global_priority_query ? "true" : "false")
+        << ",\"shaderFloatControls2\":" << (vk.shader_float_controls2 ? "true" : "false")
+        << ",\"maxPushDescriptors\":" << vk.max_push_descriptors
+        << ",\"maintenance5\":" << (vk.maintenance5 ? "true" : "false")
+        << ",\"maintenance6\":" << (vk.maintenance6 ? "true" : "false")
+        << ",\"maintenance7\":" << (vk.maintenance7 ? "true" : "false")
+        << ",\"descriptorBuffer\":" << (vk.descriptor_buffer ? "true" : "false")
+        << ",\"graphicsPipelineLibrary\":" << (vk.graphics_pipeline_library ? "true" : "false")
+        << ",\"hwRayTracing\":" << (vk.hw_ray_tracing ? "true" : "false")
+        << ",\"hwMeshShaders\":" << (vk.hw_mesh_shaders ? "true" : "false")
+        << ",\"hwVariableRateShading\":" << (vk.hw_variable_rate_shading ? "true" : "false")
+        << ",\"hwCooperativeMatrix\":" << (vk.hw_cooperative_matrix ? "true" : "false")
+        << ",\"hwRtPipeline\":" << (vk.hw_rt_pipeline ? "true" : "false")
+        << ",\"hwRayQuery\":" << (vk.hw_ray_query ? "true" : "false")
+        << ",\"hwAccelerationStructure\":" << (vk.hw_acceleration_structure ? "true" : "false")
+        << ",\"hwShaderFloat64\":" << (vk.hw_shader_float64 ? "true" : "false")
+        << ",\"hwIndexTypeUint8\":" << (vk.hw_index_type_uint8 ? "true" : "false")
+        << ",\"hwLineRasterization\":" << (vk.hw_line_rasterization ? "true" : "false")
+        << ",\"hwPushDescriptors\":" << (vk.hw_push_descriptors ? "true" : "false")
+        << ",\"hwGlobalPriorityQuery\":" << (vk.hw_global_priority_query ? "true" : "false")
+        << ",\"hwShaderFloatControls2\":" << (vk.hw_shader_float_controls2 ? "true" : "false")
+        << ",\"hwMaintenance5\":" << (vk.hw_maintenance5 ? "true" : "false")
+        << ",\"hwMaintenance6\":" << (vk.hw_maintenance6 ? "true" : "false")
+        << ",\"hwMaintenance7\":" << (vk.hw_maintenance7 ? "true" : "false")
+        << ",\"hwDescriptorBuffer\":" << (vk.hw_descriptor_buffer ? "true" : "false")
+        << ",\"hwGraphicsPipelineLibrary\":" << (vk.hw_graphics_pipeline_library ? "true" : "false")
+        << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
+        << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
+        << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
+        << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
+        << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
+        << ",\"gpuGovernor\":" << json_string(vk.gpu_surface.active_governor)
+        << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
+        << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
+        << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
+        << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false") << "}";
+
+    std::cout << "\n" << out.str() << "\n" << std::flush;
 }
 
 std::string json_string(std::string_view text) {
@@ -461,16 +532,18 @@ void print_capabilities() {
         .enable_pipeline_cache_prewarm = cfg_cap.enable_pipeline_cache_prewarm,
     });
     const auto vk = VulkanController::instance().snapshot();
-    std::cout << "{\"socModel\":" << json_string(topology.soc_name)
-              << ",\"kernelVersion\":" << json_string(topology.kernel_version)
-              << ",\"onlineCpus\":" << json_string(topology.online_cpus_mask)
-              << ",\"gpuType\":" << json_string(topology.gpu_type)
-              << ",\"rustEngine\":true,\"powerHalDetected\":" << (power.aidl_power_service ? "true" : "false")
-              << ",\"aiBackend\":" << json_string(ai.backend)
-              << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
-              << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-              << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
-              << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}\n";
+    std::ostringstream out;
+    out << "{\"socModel\":" << json_string(topology.soc_name)
+        << ",\"kernelVersion\":" << json_string(topology.kernel_version)
+        << ",\"onlineCpus\":" << json_string(topology.online_cpus_mask)
+        << ",\"gpuType\":" << json_string(topology.gpu_type)
+        << ",\"rustEngine\":true,\"powerHalDetected\":" << (power.aidl_power_service ? "true" : "false")
+        << ",\"aiBackend\":" << json_string(ai.backend)
+        << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
+        << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
+        << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
+    std::cout << "\n" << out.str() << "\n" << std::flush;
 }
 
 bool ensure_secure_state_dir() {

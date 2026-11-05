@@ -73,6 +73,12 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
   saveMessage,
 }) => {
   const vk = computeVulkanTelemetry(vulkanConfig, vulkanTelemetry);
+  const badgeFor = (active: boolean, hwSupported?: boolean, isOverrideOnly = false): string | undefined => {
+    if (!active) return undefined;
+    if (hwSupported) return 'HW Native';
+    return isOverrideOnly ? 'Layer Override' : 'VkLayer Bridged';
+  };
+  const addedExts = Math.max(0, vk.effectiveDeviceExtensions - vk.deviceExtensions);
 
   const handleSelectMode = async (mode: VulkanLayerMode) => {
     const updated: VulkanEngineConfig = { ...vulkanConfig, mode };
@@ -97,17 +103,17 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
             <div className="text-xs text-slate-500 dark:text-slate-400">
               <span>Universal Multi-Vendor GPU & Vulkan 1.4 Architecture</span>
               <span aria-hidden="true"> · </span>
-              <span>VK_LAYER_COREFLOW_universal_bridge</span>
+              <span>{vk.deviceName}</span>
               <span aria-hidden="true"> · </span>
-              <span>{nativeMode ? 'Native ICD Probe' : 'Interactive Capability Model'}</span>
+              <span>{nativeMode ? 'Live Device ICD Probe' : 'Interactive Capability Model'}</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
               Vulkan Capabilities & Implicit Layer Bridge
             </h2>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-              Coordinates multi-vendor GPU kernel surfaces (Qualcomm Adreno KGSL, ARM Mali / Immortalis,
-              Samsung Xclipse, PowerVR) with the C++23{' '}
-              <code className="font-mono text-xs">libVkLayer_coreflow.so</code> implicit layer and{' '}
+              Dynamically probes the active device&apos;s physical GPU ICD (Qualcomm Adreno KGSL, ARM Mali /
+              Immortalis, Samsung Xclipse, PowerVR) and bridges missing Vulkan 1.4 features via{' '}
+              <code className="font-mono text-xs">libVkLayer_coreflow.so</code> with{' '}
               <code className="font-mono text-xs">vkCreateDevice</code> extension guard.
             </p>
           </div>
@@ -125,7 +131,9 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <span className="font-semibold text-slate-900 dark:text-slate-100">
                 {vk.effectiveDeviceExtensions}
               </span>{' '}
-              <span className="text-slate-400">(Base {vk.deviceExtensions})</span>
+              <span className="text-slate-400">
+                (HW Base {vk.deviceExtensions}{addedExts > 0 ? ` + ${addedExts} Bridged` : ''})
+              </span>
               {' · '}Instance: {vk.instanceExtensions}
             </div>
           </div>
@@ -154,9 +162,9 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
                 <Shield className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Completes Vulkan 1.4 features (Index UINT8, Line Rasterization, Push Descriptors,
-                Maintenance 5/6/7, Descriptor Buffer, GPL) without spoofing missing silicon RTU/FP64
-                units. 100% crash-safe in games.
+                Completes Vulkan 1.4 features missing on this device (Index UINT8, Line Rasterization,
+                Push Descriptors, Maintenance 5/6/7, Descriptor Buffer, GPL) while preserving native
+                hardware capabilities. 100% crash-safe in games.
               </p>
             </button>
 
@@ -201,8 +209,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
                 Disables <code className="font-mono">VK_LAYER_COREFLOW_universal_bridge</code>{' '}
-                feature promotion and reports the raw physical vendor ICD readout identically to
-                stock DevCheck.
+                feature promotion and reports the raw physical vendor ICD readout of this device.
               </p>
             </button>
           </div>
@@ -277,33 +284,37 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <CapabilityRow
                 label="Ray tracing"
                 value={vk.rayTracing}
-                note={vk.rayTracing && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.rayTracing, vk.hwRayTracing, true)}
               />
               <CapabilityRow
                 label="Mesh shaders"
                 value={vk.meshShaders}
-                note={vk.meshShaders && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.meshShaders, vk.hwMeshShaders, true)}
               />
-              <CapabilityRow label="Variable rate shading" value={vk.variableRateShading} note="HW Native" />
+              <CapabilityRow
+                label="Variable rate shading"
+                value={vk.variableRateShading}
+                note={badgeFor(vk.variableRateShading, vk.hwVariableRateShading)}
+              />
               <CapabilityRow
                 label="Cooperative matrix"
                 value={vk.cooperativeMatrix}
-                note={vk.cooperativeMatrix && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.cooperativeMatrix, vk.hwCooperativeMatrix, true)}
               />
               <CapabilityRow
                 label="RT pipeline"
                 value={vk.rtPipeline}
-                note={vk.rtPipeline && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.rtPipeline, vk.hwRtPipeline, true)}
               />
               <CapabilityRow
                 label="Ray query"
                 value={vk.rayQuery}
-                note={vk.rayQuery && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.rayQuery, vk.hwRayQuery, true)}
               />
               <CapabilityRow
                 label="Acceleration structure"
                 value={vk.accelerationStructure}
-                note={vk.accelerationStructure && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.accelerationStructure, vk.hwAccelerationStructure, true)}
               />
               <CapabilityRow label="Portability subset" value={vk.portabilitySubset} />
             </div>
@@ -320,7 +331,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <CapabilityRow
                 label="Shader Float64"
                 value={vk.shaderFloat64}
-                note={vk.shaderFloat64 && vulkanConfig.mode === 'full_capability_override' ? 'Layer Override' : undefined}
+                note={badgeFor(vk.shaderFloat64, vk.hwShaderFloat64, true)}
               />
             </div>
           </div>
@@ -350,26 +361,27 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <CapabilityRow
                 label="Index type UINT8"
                 value={vk.indexTypeUint8}
-                note={vk.indexTypeUint8 ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.indexTypeUint8, vk.hwIndexTypeUint8)}
               />
               <CapabilityRow
                 label="Line rasterization"
                 value={vk.lineRasterization}
-                note={vk.lineRasterization ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.lineRasterization, vk.hwLineRasterization)}
               />
               <CapabilityRow
                 label="Push descriptors"
                 value={vk.pushDescriptors ? 'Yes (promoted)' : 'No'}
+                note={badgeFor(vk.pushDescriptors, vk.hwPushDescriptors)}
               />
               <CapabilityRow
                 label="Global priority query"
                 value={vk.globalPriorityQuery}
-                note={vk.globalPriorityQuery ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.globalPriorityQuery, vk.hwGlobalPriorityQuery)}
               />
               <CapabilityRow
                 label="Shader float controls 2"
                 value={vk.shaderFloatControls2}
-                note={vk.shaderFloatControls2 ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.shaderFloatControls2, vk.hwShaderFloatControls2)}
               />
               <CapabilityRow label="Max push descriptors" value={vk.maxPushDescriptors} />
             </div>
@@ -383,22 +395,30 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Highlights
             </h3>
             <div>
-              <CapabilityRow label="Maintenance5" value={vk.maintenance5} note="HW Native" />
-              <CapabilityRow label="Maintenance6" value={vk.maintenance6} note="HW Native" />
+              <CapabilityRow
+                label="Maintenance5"
+                value={vk.maintenance5}
+                note={badgeFor(vk.maintenance5, vk.hwMaintenance5)}
+              />
+              <CapabilityRow
+                label="Maintenance6"
+                value={vk.maintenance6}
+                note={badgeFor(vk.maintenance6, vk.hwMaintenance6)}
+              />
               <CapabilityRow
                 label="Maintenance7"
                 value={vk.maintenance7}
-                note={vk.maintenance7 ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.maintenance7, vk.hwMaintenance7)}
               />
               <CapabilityRow
                 label="Descriptor buffer"
                 value={vk.descriptorBuffer}
-                note={vk.descriptorBuffer ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.descriptorBuffer, vk.hwDescriptorBuffer)}
               />
               <CapabilityRow
                 label="Graphics pipeline library"
                 value={vk.graphicsPipelineLibrary}
-                note={vk.graphicsPipelineLibrary ? 'VkLayer Bridged' : undefined}
+                note={badgeFor(vk.graphicsPipelineLibrary, vk.hwGraphicsPipelineLibrary)}
               />
             </div>
           </div>
@@ -408,7 +428,8 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Universal Multi-Vendor GPU Surface
             </h3>
             <div>
-              <CapabilityRow label="Detected Domain" value={vk.vendor} />
+              <CapabilityRow label="Detected GPU" value={vk.deviceName} />
+              <CapabilityRow label="Vendor Domain" value={vk.vendor} />
               <CapabilityRow label="Active Governor" value={vk.gpuGovernor} />
               <CapabilityRow
                 label="Clock Window"

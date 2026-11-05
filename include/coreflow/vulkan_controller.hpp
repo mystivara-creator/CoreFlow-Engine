@@ -62,32 +62,40 @@ struct VulkanCapabilitiesSnapshot {
     GpuVendor vendor{GpuVendor::Unknown};
     uint32_t vendor_id{0};
     uint32_t device_id{0};
-    std::string device_name{"Universal Vulkan Physical Device"};
-    std::string api_version{"1.3.280"};
+    std::string device_name{"Detecting Vulkan Physical Device..."};
+    std::string api_version{"0.0.0"};
     std::string effective_api_version{"1.4.303"};
-    std::string driver_version_str{"512.762.0"};
-    uint32_t device_extensions_count{143};
-    uint32_t effective_device_extensions_count{158};
-    uint32_t instance_extensions_count{14};
+    std::string driver_version_str{"0.0.0"};
+    uint32_t device_extensions_count{0};
+    uint32_t effective_device_extensions_count{0};
+    uint32_t instance_extensions_count{0};
 
-    // RFC-4122 8-4-4-4-12 UUIDs (matches DevCheck readout)
-    std::string device_uuid{"43510000-0600-0000-c602-60000a00602c"};
-    std::string driver_uuid{"04000000-0100-0000-0200-000000000000"};
-    std::string pipeline_cache_uuid{"f194e304-4351-0000-0000-000001070000"};
+    // RFC-4122 8-4-4-4-12 UUIDs read dynamically from VkPhysicalDeviceIDProperties / VkPhysicalDeviceProperties
+    std::string device_uuid{"00000000-0000-0000-0000-000000000000"};
+    std::string driver_uuid{"00000000-0000-0000-0000-000000000000"};
+    std::string pipeline_cache_uuid{"00000000-0000-0000-0000-000000000000"};
 
     // Native hardware readouts (before layer promotion)
     bool hw_ray_tracing{false};
     bool hw_mesh_shaders{false};
-    bool hw_variable_rate_shading{true};
+    bool hw_variable_rate_shading{false};
     bool hw_cooperative_matrix{false};
+    bool hw_rt_pipeline{false};
+    bool hw_ray_query{false};
+    bool hw_acceleration_structure{false};
+    bool hw_portability_subset{false};
     bool hw_shader_float64{false};
     bool hw_index_type_uint8{false};
     bool hw_line_rasterization{false};
+    bool hw_push_descriptors{false};
     bool hw_global_priority_query{false};
     bool hw_shader_float_controls2{false};
+    bool hw_maintenance5{false};
+    bool hw_maintenance6{false};
     bool hw_maintenance7{false};
     bool hw_descriptor_buffer{false};
     bool hw_graphics_pipeline_library{false};
+    uint32_t hw_max_push_descriptors{0};
 
     // Effective capabilities exposed to applications (after Opsi A / Opsi B layer policy)
     // Section 1: Capabilities
@@ -179,6 +187,9 @@ private:
     std::string bus_split_node_;
     std::string throttling_node_;
     std::string mali_policy_node_;
+    uint32_t missing_safe_exts_{9};
+    uint32_t missing_override_exts_{7};
+    uint32_t raw_api_version_{0};
     bool hw_probed_{false};
 };
 

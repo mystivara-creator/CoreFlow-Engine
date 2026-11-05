@@ -455,6 +455,28 @@ VulkanCapabilitiesSnapshot VulkanController::snapshot() const {
 }
 
 void VulkanController::probe_native_vulkan_icd() noexcept {
+    // Silence stdout (fd 1) while invoking vendor libvulkan.so / GPU ICDs so driver
+    // printf diagnostics never interleave with CLI JSON output (--status / --capabilities).
+    struct ScopedStdoutSilencer {
+        int saved_stdout{-1};
+        ScopedStdoutSilencer() noexcept {
+            std::fflush(stdout);
+            saved_stdout = ::dup(STDOUT_FILENO);
+            const int null_fd = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+            if (null_fd >= 0) {
+                (void)::dup2(null_fd, STDOUT_FILENO);
+                if (null_fd != STDOUT_FILENO) (void)::close(null_fd);
+            }
+        }
+        ~ScopedStdoutSilencer() noexcept {
+            std::fflush(stdout);
+            if (saved_stdout >= 0) {
+                (void)::dup2(saved_stdout, STDOUT_FILENO);
+                (void)::close(saved_stdout);
+            }
+        }
+    } stdout_guard;
+
     // Prevent recursive self-interception while probing raw physical capabilities
     (void)::setenv("DISABLE_COREFLOW_VULKAN_LAYER", "1", 1);
 
@@ -531,8 +553,11 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
     if (create_inst(&arena->create_info, nullptr, &instance) != kVkSuccess || !instance) {
         arena->app_info.apiVersion = make_vk_version(1, 1, 0);
         if (create_inst(&arena->create_info, nullptr, &instance) != kVkSuccess || !instance) {
-            (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
-            return;
+            arena->app_info.apiVersion = make_vk_version(1, 0, 0);
+            if (create_inst(&arena->create_info, nullptr, &instance) != kVkSuccess || !instance) {
+                (void)::unsetenv("DISABLE_COREFLOW_VULKAN_LAYER");
+                return;
+            }
         }
     }
 
@@ -561,7 +586,7 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
             if (get_props2) {
                 arena->push_props.sType = kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr;
                 arena->push_props.pNext = nullptr;
-                arena->push_props.maxPushDescriptors = 32;
+                arena->push_props.maxPushDescriptors = 0;
 
                 arena->id_props.sType = kVkStructureTypePhysicalDeviceIdProperties;
                 arena->id_props.pNext = &arena->push_props;
@@ -571,6 +596,7 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
 
                 get_props2(phys, &arena->props2);
 
+                raw_api_version_ = arena->props2.properties.apiVersion;
                 snap_.api_version = format_vk_version(arena->props2.properties.apiVersion);
                 snap_.vendor_id = arena->props2.properties.vendorID;
                 snap_.device_id = arena->props2.properties.deviceID;
@@ -580,10 +606,12 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
                 snap_.device_uuid = format_uuid_rfc4122(arena->id_props.deviceUUID);
                 snap_.driver_uuid = format_uuid_rfc4122(arena->id_props.driverUUID);
                 if (arena->push_props.maxPushDescriptors > 0 && arena->push_props.maxPushDescriptors <= 1024) {
+                    snap_.hw_max_push_descriptors = arena->push_props.maxPushDescriptors;
                     snap_.max_push_descriptors = arena->push_props.maxPushDescriptors;
                 }
             } else if (get_props) {
                 get_props(phys, &arena->props);
+                raw_api_version_ = arena->props.apiVersion;
                 snap_.api_version = format_vk_version(arena->props.apiVersion);
                 snap_.vendor_id = arena->props.vendorID;
                 snap_.device_id = arena->props.deviceID;
@@ -636,21 +664,82 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
                     if (enum_dev_ext(phys, nullptr, &ext_count, exts.data()) == kVkSuccess) {
                         for (const auto& ext : exts) {
                             const std::string_view name(ext.extensionName);
-                            if (name == "VK_KHR_ray_tracing_pipeline") snap_.hw_ray_tracing = true;
-                            else if (name == "VK_EXT_mesh_shader") snap_.hw_mesh_shaders = true;
-                            else if (name == "VK_KHR_fragment_shading_rate") snap_.hw_variable_rate_shading = true;
-                            else if (name == "VK_KHR_cooperative_matrix") snap_.hw_cooperative_matrix = true;
-                            else if (name == "VK_EXT_index_type_uint8" || name == "VK_KHR_index_type_uint8") snap_.hw_index_type_uint8 = true;
-                            else if (name == "VK_EXT_line_rasterization" || name == "VK_KHR_line_rasterization") snap_.hw_line_rasterization = true;
-                            else if (name == "VK_KHR_global_priority" || name == "VK_EXT_global_priority_query") snap_.hw_global_priority_query = true;
-                            else if (name == "VK_KHR_shader_float_controls2") snap_.hw_shader_float_controls2 = true;
-                            else if (name == "VK_KHR_maintenance5") snap_.maintenance5 = true;
-                            else if (name == "VK_KHR_maintenance6") snap_.maintenance6 = true;
-                            else if (name == "VK_KHR_maintenance7") snap_.hw_maintenance7 = true;
-                            else if (name == "VK_EXT_descriptor_buffer") snap_.hw_descriptor_buffer = true;
-                            else if (name == "VK_EXT_graphics_pipeline_library") snap_.hw_graphics_pipeline_library = true;
-                            else if (name == "VK_KHR_push_descriptor") snap_.push_descriptors = true;
+                            if (name == "VK_KHR_ray_tracing_pipeline") {
+                                snap_.hw_rt_pipeline = true;
+                                snap_.hw_ray_tracing = true;
+                            } else if (name == "VK_KHR_ray_query") {
+                                snap_.hw_ray_query = true;
+                                snap_.hw_ray_tracing = true;
+                            } else if (name == "VK_KHR_acceleration_structure") {
+                                snap_.hw_acceleration_structure = true;
+                            } else if (name == "VK_EXT_mesh_shader") {
+                                snap_.hw_mesh_shaders = true;
+                            } else if (name == "VK_KHR_fragment_shading_rate") {
+                                snap_.hw_variable_rate_shading = true;
+                            } else if (name == "VK_KHR_cooperative_matrix") {
+                                snap_.hw_cooperative_matrix = true;
+                            } else if (name == "VK_KHR_portability_subset") {
+                                snap_.hw_portability_subset = true;
+                            } else if (name == "VK_EXT_index_type_uint8" || name == "VK_KHR_index_type_uint8") {
+                                snap_.hw_index_type_uint8 = true;
+                            } else if (name == "VK_EXT_line_rasterization" || name == "VK_KHR_line_rasterization") {
+                                snap_.hw_line_rasterization = true;
+                            } else if (name == "VK_KHR_global_priority" || name == "VK_EXT_global_priority_query") {
+                                snap_.hw_global_priority_query = true;
+                            } else if (name == "VK_KHR_shader_float_controls2") {
+                                snap_.hw_shader_float_controls2 = true;
+                            } else if (name == "VK_KHR_maintenance5") {
+                                snap_.hw_maintenance5 = true;
+                            } else if (name == "VK_KHR_maintenance6") {
+                                snap_.hw_maintenance6 = true;
+                            } else if (name == "VK_KHR_maintenance7") {
+                                snap_.hw_maintenance7 = true;
+                            } else if (name == "VK_EXT_descriptor_buffer") {
+                                snap_.hw_descriptor_buffer = true;
+                            } else if (name == "VK_EXT_graphics_pipeline_library") {
+                                snap_.hw_graphics_pipeline_library = true;
+                            } else if (name == "VK_KHR_push_descriptor") {
+                                snap_.hw_push_descriptors = true;
+                            }
                         }
+
+                        // Dynamically count how many bridged extensions this specific device's GPU driver lacks
+                        constexpr std::array<std::string_view, 9> kSafeNames = {
+                            "VK_KHR_push_descriptor",
+                            "VK_EXT_index_type_uint8",
+                            "VK_KHR_index_type_uint8",
+                            "VK_EXT_line_rasterization",
+                            "VK_KHR_line_rasterization",
+                            "VK_KHR_global_priority",
+                            "VK_EXT_global_priority_query",
+                            "VK_KHR_shader_float_controls2",
+                            "VK_KHR_maintenance7",
+                        };
+                        constexpr std::array<std::string_view, 7> kOverrideNames = {
+                            "VK_EXT_descriptor_buffer",
+                            "VK_EXT_graphics_pipeline_library",
+                            "VK_KHR_acceleration_structure",
+                            "VK_KHR_ray_tracing_pipeline",
+                            "VK_KHR_ray_query",
+                            "VK_EXT_mesh_shader",
+                            "VK_KHR_cooperative_matrix",
+                        };
+                        auto has_ext = [&exts](std::string_view target) {
+                            for (const auto& e : exts) {
+                                if (std::string_view(e.extensionName) == target) return true;
+                            }
+                            return false;
+                        };
+                        uint32_t missing_safe = 0;
+                        for (const auto& n : kSafeNames) {
+                            if (!has_ext(n)) ++missing_safe;
+                        }
+                        uint32_t missing_override = 0;
+                        for (const auto& n : kOverrideNames) {
+                            if (!has_ext(n)) ++missing_override;
+                        }
+                        missing_safe_exts_ = missing_safe;
+                        missing_override_exts_ = missing_override;
                     }
                 }
             }
@@ -680,7 +769,10 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
     if (path_exists(kgsl_dir)) {
         surf.available = true;
         surf.vendor = GpuVendor::QualcommAdreno;
-        surf.vendor_label = "Qualcomm Adreno (KGSL)";
+        const std::string gpu_model = read_first_line(kgsl_dir + "/gpu_model");
+        surf.vendor_label = gpu_model.empty()
+            ? "Qualcomm Adreno (KGSL)"
+            : "Qualcomm " + gpu_model + " (KGSL)";
         surf.sysfs_root = kgsl_dir;
 
         const std::string gov_path = kgsl_dir + "/devfreq/governor";
@@ -709,7 +801,12 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
             surf.throttling_enabled = (read_uint32_node(throttling_node_, 1) != 0);
         }
 
-        snap_.vendor = GpuVendor::QualcommAdreno;
+        if (snap_.vendor == GpuVendor::Unknown) {
+            snap_.vendor = GpuVendor::QualcommAdreno;
+        }
+        if (!snap_.vulkan_available && !gpu_model.empty()) {
+            snap_.device_name = gpu_model;
+        }
         snap_.gpu_surface = surf;
         return;
     }
@@ -759,7 +856,12 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
                 (void)baseline.capture(mali_policy_node_);
             }
 
-            snap_.vendor = surf.vendor;
+            if (snap_.vendor == GpuVendor::Unknown) {
+                snap_.vendor = surf.vendor;
+            }
+            if (!snap_.vulkan_available) {
+                snap_.device_name = surf.vendor_label;
+            }
             snap_.gpu_surface = surf;
             return;
         }
@@ -776,23 +878,30 @@ void VulkanController::recompute_effective_capabilities() noexcept {
     snap_.adaptive_vrs_active = config_.enable_adaptive_vrs && (mode != VulkanLayerMode::Disabled);
     snap_.pipeline_cache_prewarm_active = config_.enable_pipeline_cache_prewarm && (mode != VulkanLayerMode::Disabled);
 
+    const std::string promoted_api =
+        raw_api_version_ > make_vk_version(1, 4, 303) ? snap_.api_version : "1.4.303";
+
     if (mode == VulkanLayerMode::Disabled) {
-        // Pure OEM hardware readout (exact DevCheck baseline)
+        // Pure OEM hardware readout for this specific device
         snap_.effective_api_version = snap_.api_version;
         snap_.effective_device_extensions_count = snap_.device_extensions_count;
         snap_.ray_tracing = snap_.hw_ray_tracing;
         snap_.mesh_shaders = snap_.hw_mesh_shaders;
         snap_.variable_rate_shading = snap_.hw_variable_rate_shading;
         snap_.cooperative_matrix = snap_.hw_cooperative_matrix;
-        snap_.rt_pipeline = snap_.hw_ray_tracing;
-        snap_.ray_query = snap_.hw_ray_tracing;
-        snap_.acceleration_structure = snap_.hw_ray_tracing;
-        snap_.portability_subset = false;
+        snap_.rt_pipeline = snap_.hw_rt_pipeline;
+        snap_.ray_query = snap_.hw_ray_query;
+        snap_.acceleration_structure = snap_.hw_acceleration_structure;
+        snap_.portability_subset = snap_.hw_portability_subset;
         snap_.shader_float64 = snap_.hw_shader_float64;
         snap_.index_type_uint8 = snap_.hw_index_type_uint8;
         snap_.line_rasterization = snap_.hw_line_rasterization;
+        snap_.push_descriptors = snap_.hw_push_descriptors;
         snap_.global_priority_query = snap_.hw_global_priority_query;
         snap_.shader_float_controls2 = snap_.hw_shader_float_controls2;
+        snap_.max_push_descriptors = snap_.hw_max_push_descriptors;
+        snap_.maintenance5 = snap_.hw_maintenance5;
+        snap_.maintenance6 = snap_.hw_maintenance6;
         snap_.maintenance7 = snap_.hw_maintenance7;
         snap_.descriptor_buffer = snap_.hw_descriptor_buffer;
         snap_.graphics_pipeline_library = snap_.hw_graphics_pipeline_library;
@@ -800,17 +909,17 @@ void VulkanController::recompute_effective_capabilities() noexcept {
     }
 
     if (mode == VulkanLayerMode::SafeHardware) {
-        // Opsi A: Complete Vulkan 1.4 & driver-safe extensions without spoofing missing silicon ALUs
-        snap_.effective_api_version = "1.4.303";
-        snap_.effective_device_extensions_count = snap_.device_extensions_count + 9U;
+        // Opsi A: Complete Vulkan 1.4 & driver-safe extensions while preserving hardware ALU truth
+        snap_.effective_api_version = promoted_api;
+        snap_.effective_device_extensions_count = snap_.device_extensions_count + missing_safe_exts_;
         snap_.ray_tracing = snap_.hw_ray_tracing;
         snap_.mesh_shaders = snap_.hw_mesh_shaders;
         snap_.variable_rate_shading = true;
         snap_.cooperative_matrix = snap_.hw_cooperative_matrix;
-        snap_.rt_pipeline = snap_.hw_ray_tracing;
-        snap_.ray_query = snap_.hw_ray_tracing;
-        snap_.acceleration_structure = snap_.hw_ray_tracing;
-        snap_.portability_subset = false;
+        snap_.rt_pipeline = snap_.hw_rt_pipeline;
+        snap_.ray_query = snap_.hw_ray_query;
+        snap_.acceleration_structure = snap_.hw_acceleration_structure;
+        snap_.portability_subset = snap_.hw_portability_subset;
         snap_.shader_float64 = snap_.hw_shader_float64;
 
         // Safe Vulkan 1.4 & pipeline state promotions bridged by VkLayer_coreflow
@@ -819,7 +928,7 @@ void VulkanController::recompute_effective_capabilities() noexcept {
         snap_.push_descriptors = true;
         snap_.global_priority_query = true;
         snap_.shader_float_controls2 = true;
-        snap_.max_push_descriptors = std::max(snap_.max_push_descriptors, 32U);
+        snap_.max_push_descriptors = std::max(snap_.hw_max_push_descriptors, 32U);
         snap_.maintenance5 = true;
         snap_.maintenance6 = true;
         snap_.maintenance7 = true;
@@ -830,8 +939,9 @@ void VulkanController::recompute_effective_capabilities() noexcept {
 
     // Opsi B (FullCapabilityOverride): Complete all Vulkan 1.1–1.4, Ray Tracing, Mesh, FP64, and Highlights
     // with VkLayer_coreflow vkCreateDevice extension stripping guard.
-    snap_.effective_api_version = "1.4.303";
-    snap_.effective_device_extensions_count = snap_.device_extensions_count + 16U;
+    snap_.effective_api_version = promoted_api;
+    snap_.effective_device_extensions_count =
+        snap_.device_extensions_count + missing_safe_exts_ + missing_override_exts_;
     snap_.ray_tracing = true;
     snap_.mesh_shaders = true;
     snap_.variable_rate_shading = true;
@@ -846,7 +956,7 @@ void VulkanController::recompute_effective_capabilities() noexcept {
     snap_.push_descriptors = true;
     snap_.global_priority_query = true;
     snap_.shader_float_controls2 = true;
-    snap_.max_push_descriptors = std::max(snap_.max_push_descriptors, 64U);
+    snap_.max_push_descriptors = std::max(snap_.hw_max_push_descriptors, 64U);
     snap_.maintenance5 = true;
     snap_.maintenance6 = true;
     snap_.maintenance7 = true;

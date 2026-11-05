@@ -127,13 +127,21 @@ void ThermalMonitor::discover_sensors() const {
         std::string lower = type;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         int category = 0;
-        if (is_trusted_compute_zone(type) || lower.find("gpu") != std::string::npos || lower.find("mali") != std::string::npos) {
+        const bool is_gpu_zone =
+            lower.find("gpu") != std::string::npos || lower.find("gpuss") != std::string::npos ||
+            lower.find("kgsl") != std::string::npos || lower.find("adreno") != std::string::npos ||
+            lower.find("mali") != std::string::npos || lower.find("xclipse") != std::string::npos ||
+            lower.find("sgpu") != std::string::npos || lower.find("g3d") != std::string::npos;
+        if (is_trusted_compute_zone(type) || is_gpu_zone) {
             category = 1;
-        } else if (lower == "battery" || lower == "batt" || lower.rfind("battery-", 0) == 0 || lower.rfind("battery_", 0) == 0) {
+        } else if (lower == "battery" || lower == "batt" || lower == "bms" ||
+                   lower.rfind("battery-", 0) == 0 || lower.rfind("battery_", 0) == 0 ||
+                   lower.find("batt_therm") != std::string::npos) {
             category = 2;
         } else if (lower == "skin" || lower.rfind("skin-", 0) == 0 || lower.rfind("skin_", 0) == 0 ||
                    lower.find("quiet_therm") != std::string::npos || lower.find("case_therm") != std::string::npos ||
-                   lower.find("shell_therm") != std::string::npos) {
+                   lower.find("shell_therm") != std::string::npos || lower.find("chg_skin") != std::string::npos ||
+                   lower.find(" surface") != std::string::npos || lower.find("virtual-skin") != std::string::npos) {
             category = 3;
         } else if (lower.find("ap_therm") != std::string::npos || lower.find("xo-therm") != std::string::npos ||
                    lower.find("xo_therm") != std::string::npos || lower.rfind("aoss", 0) == 0 ||
@@ -176,7 +184,10 @@ MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
         if (sensor.category == 1) { // Compute
-            if (lower.find("gpu") != std::string::npos || lower.find("mali") != std::string::npos) {
+            if (lower.find("gpu") != std::string::npos || lower.find("gpuss") != std::string::npos ||
+                lower.find("kgsl") != std::string::npos || lower.find("adreno") != std::string::npos ||
+                lower.find("mali") != std::string::npos || lower.find("xclipse") != std::string::npos ||
+                lower.find("sgpu") != std::string::npos || lower.find("g3d") != std::string::npos) {
                 gpu_readings.push_back(value);
             } else if (lower.find("cpu") != std::string::npos || lower.find("apss") != std::string::npos ||
                        lower.find("cluster") != std::string::npos || lower.find("tsens") != std::string::npos ||
@@ -193,6 +204,10 @@ MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
         } else if (sensor.category == 4) { // Board / AP
             board_readings.push_back(value);
         }
+    }
+
+    if (profile.battery < 0.0f) {
+        profile.battery = battery_celsius();
     }
 
     profile.total_valid_sensors = cpu_readings.size() + gpu_readings.size() + board_readings.size();
@@ -240,7 +255,19 @@ float ThermalMonitor::composite_celsius() const {
 }
 
 float ThermalMonitor::hottest_celsius() const { return hottest_category(1); }
-float ThermalMonitor::battery_celsius() const { return hottest_category(2); }
+float ThermalMonitor::battery_celsius() const {
+    const float tz_batt = hottest_category(2);
+    if (tz_batt >= 0.0f) return tz_batt;
+    if (sysfs_root_ == "/sys/class/thermal") {
+        std::string raw;
+        double tenths = 0.0;
+        if (read_sysfs_line("/sys/class/power_supply/battery/temp", raw) &&
+            parse_ascii_double(raw, tenths) && tenths > 0.0 && tenths <= 800.0) {
+            return static_cast<float>(tenths / 10.0);
+        }
+    }
+    return -1.0f;
+}
 float ThermalMonitor::skin_celsius() const { return hottest_category(3); }
 
 ThermalAssessment assessment_from_android_severity(int severity) {

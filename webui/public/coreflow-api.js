@@ -6,13 +6,30 @@
   'use strict';
 
   var RESOLVE_BIN =
-    'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+    'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
     'chmod 755 "$BIN" 2>/dev/null';
+
+  function parseCleanJson(raw) {
+    var trimmed = String(raw || '').trim();
+    var lines = trimmed.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    for (var i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].charAt(0) === '{' && lines[i].charAt(lines[i].length - 1) === '}') {
+        try { return JSON.parse(lines[i]); } catch (e) {}
+      }
+    }
+    var first = trimmed.indexOf('{');
+    var last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      return JSON.parse(trimmed.slice(first, last + 1).replace(/\r?\n/g, ''));
+    }
+    return JSON.parse(lines[lines.length - 1] || '{}');
+  }
 
   var CoreFlow = {
     /**
@@ -62,8 +79,7 @@
     getStatus: async function () {
       var res = await this.exec(RESOLVE_BIN + '; "$BIN" --status');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
-      var lines = res.stdout.trim().split('\n');
-      return JSON.parse(lines[lines.length - 1]);
+      return parseCleanJson(res.stdout);
     },
 
     /**
@@ -73,8 +89,7 @@
     getCapabilities: async function () {
       var res = await this.exec(RESOLVE_BIN + '; "$BIN" --capabilities');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
-      var lines = res.stdout.trim().split('\n');
-      return JSON.parse(lines[lines.length - 1]);
+      return parseCleanJson(res.stdout);
     },
 
     /**

@@ -18,13 +18,37 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   const [copied, setCopied] = useState(false);
 
   const RESOLVE_BIN =
-    'BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+    'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
+    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
     'chmod 755 "$BIN" 2>/dev/null';
+
+  const extractJson = (raw: string): unknown => {
+    const trimmed = raw.trim();
+    const lines = trimmed
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].startsWith('{') && lines[i].endsWith('}')) {
+        try {
+          return JSON.parse(lines[i]);
+        } catch {
+          // continue
+        }
+      }
+    }
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      return JSON.parse(trimmed.slice(first, last + 1).replace(/\r?\n/g, ''));
+    }
+    return JSON.parse(lines[lines.length - 1] ?? '{}');
+  };
 
   const runCommand = async (cmd: string, title: string) => {
     setIsRunning(true);
@@ -39,6 +63,10 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
                 uclampMin: 320,
                 uclampMax: 1024,
                 uclampSupported: true,
+                cpuPressurePct: 1.2,
+                memoryPressurePct: 0.3,
+                ioPressurePct: 0.4,
+                baselineNodesSnapshotted: 6,
                 socTempCelsius: 38.6,
                 socCompositeCelsius: 38.6,
                 cpuAverageCelsius: 38.2,
@@ -71,10 +99,10 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
           setOutput(
             JSON.stringify(
               {
-                socModel: 'Qualcomm Snapdragon (SM7250 / SD765G)',
-                kernelVersion: 'Linux 5.4.242-android12-9-g06489379',
-                onlineCpus: '0-7 (4+3+1 Tri-Cluster EAS)',
-                gpuType: 'Qualcomm Adreno 620',
+                socModel: 'Preview SoC Profile',
+                kernelVersion: 'Linux 6.1-android14',
+                onlineCpus: '0-7',
+                gpuType: 'Universal Multi-Vendor GPU',
                 rustEngine: true,
                 powerHalDetected: true,
                 aiBackend: 'embedded-rls-mlp',
@@ -95,7 +123,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
 
       const result = await execNativeKsuShell(cmd);
       try {
-        const parsed = JSON.parse(result.stdout.trim().split('\n').pop() ?? '{}');
+        const parsed = extractJson(result.stdout);
         setOutput(JSON.stringify(parsed, null, 2));
       } catch {
         setOutput(result.stdout || result.stderr || 'Command executed with no output.');

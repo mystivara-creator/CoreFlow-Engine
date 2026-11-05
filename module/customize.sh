@@ -41,5 +41,26 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 [ -f "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" ] && set_perm "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" 0 0 0644
 [ -d "$MODPATH/webroot" ] && set_perm_recursive "$MODPATH/webroot" 0 0 0755 0644
 
-ui_print "- Universal Vulkan 1.4 Implicit Layer (VK_LAYER_COREFLOW_universal_bridge) armed."
-ui_print "- Installation complete. Reboot to start controlled capability discovery."
+LIVE_MOD="/data/adb/modules/cfae_framework"
+if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
+    ui_print "- Applying Zero-Reboot Live Hot-Upgrade to active module..."
+    mkdir -p "$LIVE_MOD/system/bin" "$LIVE_MOD/system/lib64" "$LIVE_MOD/system/etc/vulkan/implicit_layer.d" "$LIVE_MOD/system/etc/coreflow" "$LIVE_MOD/webroot" 2>/dev/null || true
+    cp -f "$MODPATH/system/bin/coreflowd" "$LIVE_MOD/system/bin/coreflowd" 2>/dev/null || true
+    chmod 0755 "$LIVE_MOD/system/bin/coreflowd" 2>/dev/null || true
+    [ -f "$MODPATH/system/lib64/libVkLayer_coreflow.so" ] && cp -f "$MODPATH/system/lib64/libVkLayer_coreflow.so" "$LIVE_MOD/system/lib64/libVkLayer_coreflow.so" 2>/dev/null || true
+    [ -f "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" ] && cp -f "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" "$LIVE_MOD/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" 2>/dev/null || true
+    [ -f "$MODPATH/system/etc/coreflow/default.conf" ] && cp -f "$MODPATH/system/etc/coreflow/default.conf" "$LIVE_MOD/system/etc/coreflow/default.conf" 2>/dev/null || true
+    [ -f "$MODPATH/module.prop" ] && cp -f "$MODPATH/module.prop" "$LIVE_MOD/module.prop" 2>/dev/null || true
+    if [ -d "$MODPATH/webroot" ]; then
+        cp -rf "$MODPATH/webroot/"* "$LIVE_MOD/webroot/" 2>/dev/null || true
+    fi
+    "$LIVE_MOD/system/bin/coreflowd" --stop >/dev/null 2>&1 || killall -TERM coreflowd >/dev/null 2>&1 || true
+    rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE 2>/dev/null || true
+    mkdir -p /data/adb/coreflow/logs 2>/dev/null || true
+    "$LIVE_MOD/system/bin/coreflowd" --daemon >> /data/adb/coreflow/logs/coreflowd.log 2>&1 </dev/null || true
+    ui_print "- Live daemon & WebUI hot-reloaded! No reboot required."
+else
+    ui_print "- Universal Vulkan 1.4 Implicit Layer (VK_LAYER_COREFLOW_universal_bridge) armed."
+    ui_print "- First-time installation complete. Reboot once to mount systemless overlay."
+fi
+

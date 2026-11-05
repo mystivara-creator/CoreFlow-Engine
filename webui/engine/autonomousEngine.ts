@@ -86,6 +86,7 @@ export interface VulkanTelemetry {
   deviceName: string;
   apiVersion: string;
   effectiveApiVersion: string;
+  driverVersion?: string;
   deviceExtensions: number;
   effectiveDeviceExtensions: number;
   instanceExtensions: number;
@@ -128,6 +129,25 @@ export interface VulkanTelemetry {
   maintenance7: boolean;
   descriptorBuffer: boolean;
   graphicsPipelineLibrary: boolean;
+  // Hardware baseline flags (discovered from physical GPU ICD)
+  hwRayTracing?: boolean;
+  hwMeshShaders?: boolean;
+  hwVariableRateShading?: boolean;
+  hwCooperativeMatrix?: boolean;
+  hwRtPipeline?: boolean;
+  hwRayQuery?: boolean;
+  hwAccelerationStructure?: boolean;
+  hwShaderFloat64?: boolean;
+  hwIndexTypeUint8?: boolean;
+  hwLineRasterization?: boolean;
+  hwPushDescriptors?: boolean;
+  hwGlobalPriorityQuery?: boolean;
+  hwShaderFloatControls2?: boolean;
+  hwMaintenance5?: boolean;
+  hwMaintenance6?: boolean;
+  hwMaintenance7?: boolean;
+  hwDescriptorBuffer?: boolean;
+  hwGraphicsPipelineLibrary?: boolean;
   // Runtime Pipeline
   skiavkActive: boolean;
   adaptiveVrsActive: boolean;
@@ -149,70 +169,148 @@ export function computeVulkanTelemetry(
   const isFull = mode === 'full_capability_override';
   const isSafe = mode === 'safe_hardware';
   const isActive = mode !== 'disabled';
-  const baseExts = base?.deviceExtensions ?? 143;
+  const baseExts = base?.deviceExtensions ?? 0;
+
+  const hwRayTracing = base?.hwRayTracing ?? false;
+  const hwMeshShaders = base?.hwMeshShaders ?? false;
+  const hwVariableRateShading = base?.hwVariableRateShading ?? base?.variableRateShading ?? false;
+  const hwCooperativeMatrix = base?.hwCooperativeMatrix ?? false;
+  const hwRtPipeline = base?.hwRtPipeline ?? false;
+  const hwRayQuery = base?.hwRayQuery ?? false;
+  const hwAccelerationStructure = base?.hwAccelerationStructure ?? false;
+  const hwShaderFloat64 = base?.hwShaderFloat64 ?? false;
+
+  const hwIndexTypeUint8 = base?.hwIndexTypeUint8 ?? false;
+  const hwLineRasterization = base?.hwLineRasterization ?? false;
+  const hwPushDescriptors = base?.hwPushDescriptors ?? base?.pushDescriptors ?? false;
+  const hwGlobalPriorityQuery = base?.hwGlobalPriorityQuery ?? false;
+  const hwShaderFloatControls2 = base?.hwShaderFloatControls2 ?? false;
+  const hwMaintenance5 = base?.hwMaintenance5 ?? base?.maintenance5 ?? false;
+  const hwMaintenance6 = base?.hwMaintenance6 ?? base?.maintenance6 ?? false;
+  const hwMaintenance7 = base?.hwMaintenance7 ?? false;
+  const hwDescriptorBuffer = base?.hwDescriptorBuffer ?? false;
+  const hwGraphicsPipelineLibrary = base?.hwGraphicsPipelineLibrary ?? false;
+
+  // Dynamically count how many extensions are actually missing on this specific device's hardware
+  const missingSafeCount = [
+    hwIndexTypeUint8,
+    hwLineRasterization,
+    hwPushDescriptors,
+    hwGlobalPriorityQuery,
+    hwShaderFloatControls2,
+    hwMaintenance5,
+    hwMaintenance6,
+    hwMaintenance7,
+    hwDescriptorBuffer,
+    hwGraphicsPipelineLibrary,
+  ].filter((supported) => !supported).length;
+
+  const missingOverrideOnlyCount = [
+    hwAccelerationStructure,
+    hwRtPipeline,
+    hwRayQuery,
+    hwRayTracing,
+    hwMeshShaders,
+    hwCooperativeMatrix,
+    hwShaderFloat64,
+  ].filter((supported) => !supported).length;
+
+  const computedEffectiveExts =
+    base?.mode === mode && typeof base?.effectiveDeviceExtensions === 'number' && base.effectiveDeviceExtensions >= baseExts
+      ? base.effectiveDeviceExtensions
+      : isFull
+      ? baseExts + missingSafeCount + missingOverrideOnlyCount
+      : isSafe
+      ? baseExts + missingSafeCount
+      : baseExts;
+
+  const hwApiVersion = base?.apiVersion ?? 'Probing ICD...';
+  const effectiveApiVersion = isActive
+    ? '1.4.303'
+    : hwApiVersion;
 
   return {
-    available: base?.available ?? true,
+    available: base?.available ?? false,
     layerInstalled: base?.layerInstalled ?? true,
     layerActive: isActive,
     mode,
-    vendor: base?.vendor ?? 'Qualcomm Adreno',
-    deviceName: base?.deviceName ?? 'Adreno (TM) 710 · Universal Multi-Vendor Bridge',
-    apiVersion: base?.apiVersion ?? '1.3.280',
-    effectiveApiVersion: isActive ? '1.4.303' : (base?.apiVersion ?? '1.3.280'),
+    vendor: base?.vendor ?? 'Auto-Detecting GPU Vendor',
+    deviceName: base?.deviceName ?? 'Probing Physical GPU ICD...',
+    apiVersion: hwApiVersion,
+    effectiveApiVersion,
+    driverVersion: base?.driverVersion ?? '0.0.0',
     deviceExtensions: baseExts,
-    effectiveDeviceExtensions: isFull ? baseExts + 16 : isSafe ? baseExts + 9 : baseExts,
-    instanceExtensions: base?.instanceExtensions ?? 14,
-    deviceUuid: base?.deviceUuid ?? '43510000-0600-0000-c602-60000a00602c',
-    driverUuid: base?.driverUuid ?? '04000000-0100-0000-0200-000000000000',
-    pipelineCacheUuid: base?.pipelineCacheUuid ?? 'f194e304-4351-0000-0000-000001070000',
-    // Capabilities
-    rayTracing: isFull,
-    meshShaders: isFull,
-    variableRateShading: true,
-    cooperativeMatrix: isFull,
-    rtPipeline: isFull,
-    rayQuery: isFull,
-    accelerationStructure: isFull,
-    portabilitySubset: false,
+    effectiveDeviceExtensions: computedEffectiveExts,
+    instanceExtensions: base?.instanceExtensions ?? 0,
+    deviceUuid: base?.deviceUuid ?? '00000000-0000-0000-0000-000000000000',
+    driverUuid: base?.driverUuid ?? '00000000-0000-0000-0000-000000000000',
+    pipelineCacheUuid: base?.pipelineCacheUuid ?? '00000000-0000-0000-0000-000000000000',
+    // Capabilities (preserve hardware native support + layer override if Opsi B)
+    rayTracing: hwRayTracing || isFull,
+    meshShaders: hwMeshShaders || isFull,
+    variableRateShading: hwVariableRateShading || isActive,
+    cooperativeMatrix: hwCooperativeMatrix || isFull,
+    rtPipeline: hwRtPipeline || isFull,
+    rayQuery: hwRayQuery || isFull,
+    accelerationStructure: hwAccelerationStructure || isFull,
+    portabilitySubset: base?.portabilitySubset ?? false,
     // Core Features
-    robustBufferAccess: true,
-    samplerAnisotropy: true,
-    shaderInt16: true,
-    shaderFloat64: isFull,
+    robustBufferAccess: base?.robustBufferAccess ?? true,
+    samplerAnisotropy: base?.samplerAnisotropy ?? true,
+    shaderInt16: base?.shaderInt16 ?? true,
+    shaderFloat64: hwShaderFloat64 || isFull,
     // Vulkan 1.1
-    protectedMemory: true,
+    protectedMemory: base?.protectedMemory ?? true,
     // Vulkan 1.2
-    timelineSemaphore: true,
-    descriptorIndexing: true,
-    bufferDeviceAddress: true,
+    timelineSemaphore: base?.timelineSemaphore ?? true,
+    descriptorIndexing: base?.descriptorIndexing ?? true,
+    bufferDeviceAddress: base?.bufferDeviceAddress ?? true,
     // Vulkan 1.3
-    dynamicRendering: true,
-    synchronization2: true,
+    dynamicRendering: base?.dynamicRendering ?? true,
+    synchronization2: base?.synchronization2 ?? true,
     // Vulkan 1.4
-    indexTypeUint8: isActive,
-    lineRasterization: isActive,
-    pushDescriptors: true,
-    globalPriorityQuery: isActive,
-    shaderFloatControls2: isActive,
-    maxPushDescriptors: isFull ? 64 : 32,
+    indexTypeUint8: hwIndexTypeUint8 || isActive,
+    lineRasterization: hwLineRasterization || isActive,
+    pushDescriptors: hwPushDescriptors || isActive,
+    globalPriorityQuery: hwGlobalPriorityQuery || isActive,
+    shaderFloatControls2: hwShaderFloatControls2 || isActive,
+    maxPushDescriptors: isFull ? Math.max(base?.maxPushDescriptors ?? 32, 64) : Math.max(base?.maxPushDescriptors ?? 32, 32),
     // Highlights
-    maintenance5: true,
-    maintenance6: true,
-    maintenance7: isActive,
-    descriptorBuffer: isActive,
-    graphicsPipelineLibrary: isActive,
+    maintenance5: hwMaintenance5 || isActive,
+    maintenance6: hwMaintenance6 || isActive,
+    maintenance7: hwMaintenance7 || isActive,
+    descriptorBuffer: hwDescriptorBuffer || isActive,
+    graphicsPipelineLibrary: hwGraphicsPipelineLibrary || isActive,
+    // Hardware baselines
+    hwRayTracing,
+    hwMeshShaders,
+    hwVariableRateShading,
+    hwCooperativeMatrix,
+    hwRtPipeline,
+    hwRayQuery,
+    hwAccelerationStructure,
+    hwShaderFloat64,
+    hwIndexTypeUint8,
+    hwLineRasterization,
+    hwPushDescriptors,
+    hwGlobalPriorityQuery,
+    hwShaderFloatControls2,
+    hwMaintenance5,
+    hwMaintenance6,
+    hwMaintenance7,
+    hwDescriptorBuffer,
+    hwGraphicsPipelineLibrary,
     // Runtime Pipeline
     skiavkActive: isActive && vkConfig.enableSkiavkThreaded,
     adaptiveVrsActive: isActive && vkConfig.enableAdaptiveVrs,
     pipelineCachePrewarmActive: isActive && vkConfig.enablePipelineCachePrewarm,
     // GPU Kernel Surface
-    gpuKernelAvailable: base?.gpuKernelAvailable ?? true,
-    gpuKernelLabel: base?.gpuKernelLabel ?? 'Qualcomm Adreno (KGSL) · Universal Devfreq Ready',
-    gpuGovernor: base?.gpuGovernor ?? 'msm-adreno-tz',
-    gpuCurrentFreqMhz: base?.gpuCurrentFreqMhz ?? 680,
-    gpuMaxFreqMhz: base?.gpuMaxFreqMhz ?? 1010,
-    adrenoboostLevel: base?.adrenoboostLevel ?? 1,
+    gpuKernelAvailable: base?.gpuKernelAvailable ?? false,
+    gpuKernelLabel: base?.gpuKernelLabel ?? 'Universal Multi-Vendor GPU Devfreq',
+    gpuGovernor: base?.gpuGovernor ?? 'auto',
+    gpuCurrentFreqMhz: base?.gpuCurrentFreqMhz ?? 0,
+    gpuMaxFreqMhz: base?.gpuMaxFreqMhz ?? 0,
+    adrenoboostLevel: base?.adrenoboostLevel ?? 0,
   };
 }
 
@@ -453,7 +551,29 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
         cooldownTicks: 0,
       },
     ],
-    vulkan: computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG),
+    vulkan: computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG, {
+      available: true,
+      layerInstalled: true,
+      vendor: 'Multi-Vendor Preview (Adreno / Mali / Xclipse)',
+      deviceName: 'Universal Mobile GPU Preview Profile',
+      apiVersion: '1.3.280',
+      driverVersion: '512.762.0',
+      deviceExtensions: 148,
+      instanceExtensions: 16,
+      deviceUuid: 'cf000001-2026-4000-a000-000000000310',
+      driverUuid: 'cf000002-2026-4000-a000-000000000310',
+      pipelineCacheUuid: 'cf000003-2026-4000-a000-000000000310',
+      hwVariableRateShading: true,
+      hwPushDescriptors: true,
+      hwMaintenance5: true,
+      hwMaintenance6: true,
+      gpuKernelAvailable: true,
+      gpuKernelLabel: 'Universal GPU Devfreq Surface (Preview)',
+      gpuGovernor: 'msm-adreno-tz / simple_ondemand',
+      gpuCurrentFreqMhz: 680,
+      gpuMaxFreqMhz: 1050,
+      adrenoboostLevel: 1,
+    }),
     timestamp: Date.now(),
   };
 }
