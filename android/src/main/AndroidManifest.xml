@@ -16,12 +16,15 @@
             </intent-filter>
         </service>
 
+        <!-- ACTION_BATTERY_CHANGED is a sticky broadcast and cannot be received via manifest declaration;
+             CoreFlowThermalReceiver queries it sticky on power-state transitions. -->
         <receiver
             android:name="io.coreflow.CoreFlowThermalReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="android.intent.action.BATTERY_CHANGED" />
                 <action android:name="android.os.action.POWER_SAVE_MODE_CHANGED" />
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+                <action android:name="android.intent.action.ACTION_POWER_DISCONNECTED" />
             </intent-filter>
         </receiver>
     </application>

@@ -22,13 +22,18 @@
 namespace coreflow {
 namespace {
 
-std::string read_line(const std::string& path) {
+std::string read_line_with_stat(
+    const std::string& path,
+    uint64_t* out_dev = nullptr,
+    uint64_t* out_ino = nullptr) {
     if (path.empty() || path.find('\0') != std::string::npos) return {};
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return {};
 
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return {};
+    if (out_dev) *out_dev = static_cast<uint64_t>(st.st_dev);
+    if (out_ino) *out_ino = static_cast<uint64_t>(st.st_ino);
 
     char buffer[4096];
     std::string raw;
@@ -47,6 +52,32 @@ std::string read_line(const std::string& path) {
     if (nl != std::string::npos) raw.resize(nl);
     if (!raw.empty() && raw.back() == '\r') raw.pop_back();
     return raw;
+}
+
+bool valid_boot_token(std::string_view token) noexcept {
+    if (token.size() < 8 || token.size() > 128) return false;
+    if (token == "fallback-boot-id") return false;
+    for (unsigned char ch : token) {
+        const bool ok = (ch >= 'a' && ch <= 'z') ||
+                        (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') ||
+                        ch == '-' || ch == '_' || ch == '.' || ch == ':';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool parse_u64_strict(std::string_view text, uint64_t& out) noexcept {
+    if (text.empty() || text.size() > 20) return false;
+    uint64_t accum = 0;
+    for (unsigned char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        const uint64_t digit = static_cast<uint64_t>(ch - '0');
+        if (accum > (UINT64_MAX - digit) / 10ULL) return false;
+        accum = accum * 10ULL + digit;
+    }
+    out = accum;
+    return true;
 }
 
 bool path_safe(const std::string& path) {
@@ -152,15 +183,58 @@ std::string extract_selector_token(const std::string& path, std::string raw) {
     return raw;
 }
 
+std::vector<std::string_view> split_tabs(std::string_view line) {
+    std::vector<std::string_view> parts;
+    size_t start = 0;
+    while (start <= line.size()) {
+        const size_t tab = line.find('\t', start);
+        if (tab == std::string_view::npos) {
+            parts.push_back(line.substr(start));
+            break;
+        }
+        parts.push_back(line.substr(start, tab - start));
+        start = tab + 1;
+    }
+    return parts;
+}
+
 } // namespace
 
 BaselineStore::BaselineStore() {
+    init_paths_and_boot_id_locked();
+}
+
+void BaselineStore::init_paths_and_boot_id_locked() {
     const char* test = std::getenv("COREFLOW_TEST_STATE_DIR");
-    journal_path_ = (test && *test ? std::string(test) : "/data/adb/coreflow") + "/baseline.journal";
-    boot_id_ = read_line("/proc/sys/kernel/random/boot_id");
-    if (boot_id_.empty()) {
-        boot_id_ = "fallback-boot-id";
+    state_dir_ = (test && *test) ? std::string(test) : "/data/adb/coreflow";
+    journal_path_ = state_dir_ + "/baseline.journal";
+
+    const char* test_boot_id_path = std::getenv("COREFLOW_TEST_BOOT_ID_PATH");
+    const std::string kernel_boot_path =
+        (test_boot_id_path && *test_boot_id_path)
+            ? std::string(test_boot_id_path)
+            : "/proc/sys/kernel/random/boot_id";
+
+    std::string candidate = read_line_with_stat(kernel_boot_path);
+    if (!valid_boot_token(candidate)) {
+        // Secondary fallback: per-boot epoch token generated once per boot by post-fs-data.sh
+        candidate = read_line_with_stat(state_dir_ + "/boot_epoch");
     }
+
+    if (valid_boot_token(candidate)) {
+        boot_id_ = std::move(candidate);
+        identity_unavailable_ = false;
+    } else {
+        boot_id_.clear();
+        identity_unavailable_ = true;
+    }
+}
+
+void BaselineStore::reinitialize() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    store_.clear();
+    recovery_checked_ = false;
+    init_paths_and_boot_id_locked();
 }
 
 BaselineStore& BaselineStore::instance() {
@@ -168,11 +242,28 @@ BaselineStore& BaselineStore::instance() {
     return store;
 }
 
-std::string BaselineStore::read_raw_node(const std::string& path) const {
-    return extract_selector_token(path, read_line(path));
+bool BaselineStore::identity_unavailable() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return identity_unavailable_;
 }
 
-bool BaselineStore::write_raw_node(const std::string& path, const std::string& value) {
+std::string BaselineStore::boot_id() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return boot_id_;
+}
+
+std::string BaselineStore::read_raw_node(
+    const std::string& path,
+    uint64_t* out_dev,
+    uint64_t* out_ino) const {
+    return extract_selector_token(path, read_line_with_stat(path, out_dev, out_ino));
+}
+
+bool BaselineStore::write_raw_node(
+    const std::string& path,
+    const std::string& value,
+    uint64_t expected_dev,
+    uint64_t expected_ino) {
     if (!path_safe(path) || value.empty() || value.size() > 4096) return false;
     const bool virtual_node = path.rfind("/sys/", 0) == 0 ||
                               path.rfind("/proc/", 0) == 0 ||
@@ -184,31 +275,45 @@ bool BaselineStore::write_raw_node(const std::string& path, const std::string& v
 
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (expected_ino != 0 &&
+        (static_cast<uint64_t>(st.st_dev) != expected_dev ||
+         static_cast<uint64_t>(st.st_ino) != expected_ino)) {
+        // Underlying inode or filesystem mount changed; refuse to overwrite replacement object.
+        return false;
+    }
     if (!virtual_node && ::ftruncate(fd.get(), 0) != 0) return false;
     if (!write_all(fd.get(), value)) return false;
     if (!virtual_node && ::fsync(fd.get()) != 0) return false;
     fd.reset();
 
-    // Kernel nodes may normalize input; verify the actual read-back.
-    return readback_matches(path, value, read_raw_node(path));
+    // Kernel nodes may normalize input; verify the actual read-back and object identity.
+    uint64_t after_dev = 0;
+    uint64_t after_ino = 0;
+    const std::string readback = read_raw_node(path, &after_dev, &after_ino);
+    if (expected_ino != 0 && (after_dev != expected_dev || after_ino != expected_ino)) {
+        return false;
+    }
+    return readback_matches(path, value, readback);
 }
 
 bool BaselineStore::persist_locked() {
-    if (boot_id_.empty()) return false;
+    if (identity_unavailable_ || !valid_boot_token(boot_id_)) return false;
     std::error_code error;
     const auto parent = std::filesystem::path(journal_path_).parent_path();
     std::filesystem::create_directories(parent, error);
     if (error) return false;
     (void)::chmod(parent.c_str(), 0700);
 
-    std::string payload = "CFJ3\t" + boot_id_ + "\n";
+    std::string payload = "CFJ4\t" + boot_id_ + "\n";
     for (const auto& [path, snap] : store_) {
         if (snap.is_modified) {
             if (!path_safe(path) || snap.factory_value.empty()) return false;
             if (snap.active_value.empty() || snap.prior_value.empty()) return false;
             payload += path + "\t" + hex_encode(snap.factory_value) +
                        "\t" + hex_encode(snap.prior_value) +
-                       "\t" + hex_encode(snap.active_value) + "\n";
+                       "\t" + hex_encode(snap.active_value) +
+                       "\t" + std::to_string(snap.dev) +
+                       "\t" + std::to_string(snap.ino) + "\n";
         }
     }
 
@@ -229,6 +334,14 @@ bool BaselineStore::persist_locked() {
 
 bool BaselineStore::recover_pending() {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Re-evaluate boot identity if not yet checked so env/state updates before first recovery take effect
+    if (!recovery_checked_) {
+        init_paths_and_boot_id_locked();
+    }
+    if (identity_unavailable_ || !valid_boot_token(boot_id_)) {
+        std::cerr << "[CoreFlow] BaselineStore: boot identity unavailable; refusing automatic recovery or mutation.\n";
+        return false;
+    }
     if (recovery_checked_) return true;
 
     UniqueFd fd(::open(journal_path_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
@@ -262,12 +375,23 @@ bool BaselineStore::recover_pending() {
 
     std::istringstream file(raw);
     std::string header;
-    if (!std::getline(file, header) || boot_id_.empty()) return false;
-    const bool legacy = header.rfind("CFJ1\t", 0) == 0;
-    const bool v2 = header.rfind("CFJ2\t", 0) == 0;
-    if (!legacy && !v2 && header.rfind("CFJ3\t", 0) != 0) return false;
+    if (!std::getline(file, header)) return false;
     if (!header.empty() && header.back() == '\r') header.pop_back();
+
+    const bool v1 = header.rfind("CFJ1\t", 0) == 0;
+    const bool v2 = header.rfind("CFJ2\t", 0) == 0;
+    const bool v3 = header.rfind("CFJ3\t", 0) == 0;
+    const bool v4 = header.rfind("CFJ4\t", 0) == 0;
+    if (!v1 && !v2 && !v3 && !v4) return false;
+
     const std::string journal_boot = header.substr(5);
+    // Reject legacy constant "fallback-boot-id" or malformed tokens: never assume same-boot
+    if (journal_boot == "fallback-boot-id" || !valid_boot_token(journal_boot)) {
+        std::cerr << "[CoreFlow] BaselineStore: rejecting ambiguous/legacy journal boot token '"
+                  << journal_boot << "'.\n";
+        return false;
+    }
+
     if (journal_boot != boot_id_) {
         // Kernel settings reset on reboot; never overwrite the new boot's OEM state.
         if (::unlink(journal_path_.c_str()) != 0 && errno != ENOENT) return false;
@@ -280,27 +404,61 @@ bool BaselineStore::recover_pending() {
     while (std::getline(file, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
-        const auto sep = line.find('\t');
-        const auto second = sep == std::string::npos ? sep : line.find('\t', sep + 1);
-        const auto third = second == std::string::npos ? second : line.find('\t', second + 1);
+
+        const auto parts = split_tabs(line);
+        std::string path_str;
         std::string value, prior, applied;
-        if (sep == std::string::npos ||
-            !path_safe(line.substr(0, sep)) ||
-            (legacy ? second != std::string::npos : second == std::string::npos) ||
-            (v2 ? third != std::string::npos : (!legacy && third == std::string::npos)) ||
-            !hex_decode(std::string_view(line).substr(
-                sep + 1, legacy ? std::string_view::npos : second - sep - 1), value) ||
-            (!legacy && !v2 && !hex_decode(
-                std::string_view(line).substr(second + 1, third - second - 1), prior)) ||
-            (!legacy && !hex_decode(std::string_view(line).substr(
-                (v2 ? second : third) + 1), applied))) {
-            return false;
+        uint64_t dev = 0;
+        uint64_t ino = 0;
+
+        if (v1) {
+            if (parts.size() != 2) return false;
+            path_str = std::string(parts[0]);
+            if (!path_safe(path_str) || !hex_decode(parts[1], value)) return false;
+            applied = read_raw_node(path_str, &dev, &ino);
+            prior = applied;
+        } else if (v2) {
+            if (parts.size() != 3) return false;
+            path_str = std::string(parts[0]);
+            if (!path_safe(path_str) ||
+                !hex_decode(parts[1], value) ||
+                !hex_decode(parts[2], applied)) {
+                return false;
+            }
+            prior = applied;
+        } else if (v3) {
+            if (parts.size() != 4) return false;
+            path_str = std::string(parts[0]);
+            if (!path_safe(path_str) ||
+                !hex_decode(parts[1], value) ||
+                !hex_decode(parts[2], prior) ||
+                !hex_decode(parts[3], applied)) {
+                return false;
+            }
+        } else {
+            // CFJ4: path \t factory_hex \t prior_hex \t active_hex \t dev \t ino
+            if (parts.size() != 6) return false;
+            path_str = std::string(parts[0]);
+            if (!path_safe(path_str) ||
+                !hex_decode(parts[1], value) ||
+                !hex_decode(parts[2], prior) ||
+                !hex_decode(parts[3], applied) ||
+                !parse_u64_strict(parts[4], dev) ||
+                !parse_u64_strict(parts[5], ino)) {
+                return false;
+            }
         }
-        if (legacy) applied = read_raw_node(line.substr(0, sep));
-        if (v2 || legacy) prior = applied;
+
         if (prior.empty() || applied.empty()) return false;
-        entries.push_back(NodeSnapshot{line.substr(0, sep), std::move(value),
-                                       std::move(applied), true, std::move(prior)});
+        entries.push_back(NodeSnapshot{
+            std::move(path_str),
+            std::move(value),
+            std::move(applied),
+            true,
+            std::move(prior),
+            dev,
+            ino,
+        });
         if (entries.size() > 256) return false;
     }
     if (!file.eof()) return false;
@@ -318,11 +476,29 @@ bool BaselineStore::recover_pending() {
 
 bool BaselineStore::capture(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_ || !path_safe(path)) return false;
-    if (store_.contains(path)) return true;
-    const std::string before = read_raw_node(path);
+    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path)) return false;
+    auto it = store_.find(path);
+    if (it != store_.end()) {
+        // Verify existing un-modified snapshot still points to the same underlying object
+        uint64_t cur_dev = 0;
+        uint64_t cur_ino = 0;
+        const std::string current = read_raw_node(path, &cur_dev, &cur_ino);
+        if (current.empty()) return false;
+        if (!it->second.is_modified &&
+            (it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino))) {
+            it->second.factory_value = current;
+            it->second.active_value = current;
+            it->second.prior_value = current;
+            it->second.dev = cur_dev;
+            it->second.ino = cur_ino;
+        }
+        return true;
+    }
+    uint64_t dev = 0;
+    uint64_t ino = 0;
+    const std::string before = read_raw_node(path, &dev, &ino);
     if (before.empty()) return false;
-    store_.emplace(path, NodeSnapshot{path, before, before, false, before});
+    store_.emplace(path, NodeSnapshot{path, before, before, false, before, dev, ino});
     return true;
 }
 
@@ -332,22 +508,34 @@ size_t BaselineStore::rollback_locked() {
     for (int pass = 0; pass < 2; ++pass) {
         for (auto& [path, snap] : store_) {
             if (!snap.is_modified) continue;
-            const std::string actual = read_raw_node(path);
+            uint64_t cur_dev = 0;
+            uint64_t cur_ino = 0;
+            const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
             if (actual.empty()) continue;
-            // Recovery accepts either side of a write in flight, or the baseline.
-            if (!readback_matches(path, snap.active_value, actual) &&
-                !readback_matches(path, snap.prior_value, actual) &&
-                !readback_matches(path, snap.factory_value, actual)) {
+
+            const bool inode_replaced =
+                snap.ino != 0 && (cur_dev != snap.dev || cur_ino != snap.ino);
+
+            // If the file/node was replaced (inode/dev changed) or modified by an external writer,
+            // adopt the external state rather than overwriting a foreign object or OEM override.
+            if (inode_replaced ||
+                (!readback_matches(path, snap.active_value, actual) &&
+                 !readback_matches(path, snap.prior_value, actual) &&
+                 !readback_matches(path, snap.factory_value, actual))) {
                 snap.factory_value = actual;
                 snap.active_value = actual;
                 snap.prior_value = actual;
+                snap.dev = cur_dev;
+                snap.ino = cur_ino;
                 snap.is_modified = false;
                 continue;
             }
             if (readback_matches(path, snap.factory_value, actual) ||
-                write_raw_node(path, snap.factory_value)) {
+                write_raw_node(path, snap.factory_value, snap.dev, snap.ino)) {
                 snap.active_value = snap.factory_value;
                 snap.prior_value = snap.factory_value;
+                snap.dev = cur_dev;
+                snap.ino = cur_ino;
                 snap.is_modified = false;
                 ++restored;
             }
@@ -360,40 +548,51 @@ size_t BaselineStore::rollback_locked() {
 
 bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!recovery_checked_) return false;
+    if (!recovery_checked_ || identity_unavailable_) return false;
     if (!path_safe(path) || new_value.empty()) {
         rollback_locked();
         return false;
     }
     auto it = store_.find(path);
     if (it == store_.end()) {
-        const std::string before = read_raw_node(path);
+        uint64_t dev = 0;
+        uint64_t ino = 0;
+        const std::string before = read_raw_node(path, &dev, &ino);
         if (before.empty()) {
             rollback_locked();
             return false;
         }
-        it = store_.emplace(path, NodeSnapshot{path, before, before, false, before}).first;
+        it = store_.emplace(path, NodeSnapshot{path, before, before, false, before, dev, ino}).first;
     }
-    const std::string actual = read_raw_node(path);
-    if (actual.empty() ||
+    uint64_t cur_dev = 0;
+    uint64_t cur_ino = 0;
+    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
+    const bool inode_replaced =
+        it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino);
+
+    if (actual.empty() || inode_replaced ||
         !readback_matches(path, it->second.active_value, actual)) {
         if (!actual.empty()) {
             it->second.factory_value = actual;
             it->second.active_value = actual;
             it->second.prior_value = actual;
+            it->second.dev = cur_dev;
+            it->second.ino = cur_ino;
             it->second.is_modified = false;
         }
         rollback_locked();
         return false;
     }
     if (it->second.active_value == new_value && actual == new_value) return true;
-    // Write-ahead: fsync original value before any kernel write.
+    // Write-ahead: fsync original value and inode identity before any kernel write.
     const bool previous_modified = it->second.is_modified;
     const std::string previous_value = it->second.active_value;
     const std::string previous_prior = it->second.prior_value;
     it->second.is_modified = true;
     it->second.prior_value = previous_value;
     it->second.active_value = new_value;
+    it->second.dev = cur_dev;
+    it->second.ino = cur_ino;
     if (!persist_locked()) {
         it->second.is_modified = previous_modified;
         it->second.active_value = previous_value;
@@ -401,7 +600,7 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         rollback_locked();
         return false;
     }
-    if (!write_raw_node(path, new_value)) {
+    if (!write_raw_node(path, new_value, cur_dev, cur_ino)) {
         rollback_locked();
         return false;
     }
@@ -418,14 +617,23 @@ bool BaselineStore::rollback(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = store_.find(path);
     if (it == store_.end() || !it->second.is_modified) return true;
-    const std::string actual = read_raw_node(path);
+    uint64_t cur_dev = 0;
+    uint64_t cur_ino = 0;
+    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
     if (actual.empty()) return false;
-    if (!readback_matches(path, it->second.active_value, actual) &&
-        !readback_matches(path, it->second.prior_value, actual) &&
-        !readback_matches(path, it->second.factory_value, actual)) {
+
+    const bool inode_replaced =
+        it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino);
+
+    if (inode_replaced ||
+        (!readback_matches(path, it->second.active_value, actual) &&
+         !readback_matches(path, it->second.prior_value, actual) &&
+         !readback_matches(path, it->second.factory_value, actual))) {
         it->second.factory_value = actual;
+        it->second.dev = cur_dev;
+        it->second.ino = cur_ino;
     } else if (!readback_matches(path, it->second.factory_value, actual) &&
-               !write_raw_node(path, it->second.factory_value)) {
+               !write_raw_node(path, it->second.factory_value, it->second.dev, it->second.ino)) {
         return false;
     }
     it->second.is_modified = false;
@@ -445,6 +653,21 @@ bool BaselineStore::has_active_mutations() const {
         if (snap.is_modified) return true;
     }
     return false;
+}
+
+bool BaselineStore::owns_expected_state(const std::string& path, const std::string& expected_value) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = store_.find(path);
+    uint64_t cur_dev = 0;
+    uint64_t cur_ino = 0;
+    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
+    if (actual.empty()) return false;
+    if (it != store_.end() && it->second.ino != 0) {
+        if (cur_dev != it->second.dev || cur_ino != it->second.ino) {
+            return false;
+        }
+    }
+    return readback_matches(path, expected_value, actual);
 }
 
 std::vector<NodeSnapshot> BaselineStore::get_audit_trail() const {

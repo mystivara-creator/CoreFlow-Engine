@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -65,6 +67,21 @@ int main() {
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
 
+    // 1b. TUNER-01 All-or-Nothing Preflight: if a required dependent node is unwritable,
+    // no partial mutation of the anchor (scheduler) may occur!
+    if (::geteuid() != 0) {
+        assert(::chmod((sda_q / "iosched/read_expire").c_str(), 0444) == 0);
+        // Temporarily restrict available schedulers to mq-deadline so it tests mq-deadline preflight directly
+        put(sda_q / "scheduler", "[none] mq-deadline");
+        tuner.discover(sys_root.string(), proc_root.string());
+        tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
+        assert(tuner.snapshot().stage == "PLANNED");
+        assert(get(sda_q / "scheduler") == "[none] mq-deadline");
+        assert(::chmod((sda_q / "iosched/read_expire").c_str(), 0644) == 0);
+        put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
+        tuner.discover(sys_root.string(), proc_root.string());
+    }
+
     // 2. Elevated I/O PSI -> Autonomously selects mq-deadline + coupled iosched tunables
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
     const auto observing1 = tuner.snapshot();
@@ -92,7 +109,8 @@ int main() {
     put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
     tuner.discover(sys_root.string(), proc_root.string());
 
-    // 4. Next step under high I/O + CPU load: mq-deadline is on cooldown, so bandit selects kyber!
+    // 4. Next step under high I/O + CPU load: mq-deadline is on cooldown (persisted across discover!),
+    // so bandit selects kyber!
     tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 8.5, .thermal_pressure = 49.0});
     const auto observing2 = tuner.snapshot();
     assert(observing2.stage == "OBSERVING");
@@ -119,12 +137,51 @@ int main() {
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "none");
 
+    // 6b. TUNER-02 Kyber Cooldown Fix: verify that when kyber regresses and is on cooldown,
+    // high concurrent CPU + I/O PSI does NOT bypass kyber's cooldown via the +0.15 bonus!
+    tuner.reset();
+    put(sda_q / "scheduler", "[none] kyber bfq");
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 8.5, .thermal_pressure = 48.0});
+    assert(tuner.snapshot().active_candidate_id == "io.kyber_token_bucket");
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 12.0, .thermal_pressure = 50.0});
+    }
+    assert(tuner.snapshot().verdict == coreflow::TunerVerdict::Regressed);
+    assert(!tuner.is_candidate_eligible("io.kyber_token_bucket"));
+    put(sda_q / "scheduler", "[none] kyber bfq");
+    tuner.discover(sys_root.string(), proc_root.string());
+    // Must NOT re-select kyber while on cooldown; must select bfq instead!
+    tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 8.5, .thermal_pressure = 48.0});
+    assert(tuner.snapshot().active_candidate_id == "io.bfq_interactive_fairness");
+
+    // 6c. TUNER-01 External Value Modification during observation -> OWNERSHIP_LOST
+    // While bfq is being observed (read_ahead_kb set to 256), an external writer sets read_ahead_kb to 512.
+    put(sda_q / "read_ahead_kb", "512");
+    tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
+    assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
+    assert(tuner.snapshot().stage == "PLANNED");
+    // External writer's value (512) is preserved, while our other node (scheduler) is rolled back to "none"
+    assert(get(sda_q / "read_ahead_kb") == "512");
+    assert(get(sda_q / "scheduler") == "none");
+    put(sda_q / "read_ahead_kb", "128");
+    tuner.reset();
+
     // 7. Smart CPUFreq schedutil governor rate-limit tuning under CPU PSI bottleneck
-    const fs::path schedutil_dir = sys_root / "devices/system/cpu/cpufreq/policy0/schedutil";
+    // First verify scaling_governor mismatch blocks schedutil rate-limit mutation (TUNER-02)
+    const fs::path policy0_dir = sys_root / "devices/system/cpu/cpufreq/policy0";
+    const fs::path schedutil_dir = policy0_dir / "schedutil";
+    put(policy0_dir / "scaling_governor", "performance");
     put(schedutil_dir / "up_rate_limit_us", "2000");
     put(schedutil_dir / "down_rate_limit_us", "1000");
     tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({.cpu_psi = 12.5, .memory_psi = 0.2, .io_psi = 0.4, .thermal_pressure = 44.0});
+    assert(tuner.snapshot().stage == "PLANNED");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
 
+    // Now set scaling_governor to schedutil -> eligible and applied!
+    put(policy0_dir / "scaling_governor", "schedutil");
+    tuner.discover(sys_root.string(), proc_root.string());
     const auto cpu_obs = tuner.step({.cpu_psi = 12.5, .memory_psi = 0.2, .io_psi = 0.4, .thermal_pressure = 44.0});
     assert(cpu_obs.stage == "OBSERVING");
     assert(cpu_obs.active_candidate_id == "cpufreq.schedutil_interactive_response");
@@ -136,6 +193,26 @@ int main() {
     assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
 
+    // 8. TUNER-02: /proc/swaps zram precondition for vm.zram_latency_relief
+    put(proc_root / "swaps", "Filename\tType\tSize\tUsed\tPriority\n");
+    tuner.discover(sys_root.string(), proc_root.string());
+    assert(!tuner.is_candidate_eligible("vm.zram_latency_relief"));
+    tuner.step({.cpu_psi = 1.0, .memory_psi = 4.5, .io_psi = 0.2, .thermal_pressure = 42.0});
+    assert(tuner.snapshot().stage == "PLANNED");
+    assert(get(proc_root / "sys/vm/page-cluster") == "3");
+
+    put(proc_root / "swaps",
+        "Filename\tType\tSize\tUsed\tPriority\n/dev/block/zram0\tpartition\t2097148\t1024\t-2\n");
+    tuner.discover(sys_root.string(), proc_root.string());
+    assert(tuner.is_candidate_eligible("vm.zram_latency_relief"));
+    tuner.step({.cpu_psi = 1.0, .memory_psi = 4.5, .io_psi = 0.2, .thermal_pressure = 42.0});
+    assert(tuner.snapshot().stage == "OBSERVING");
+    assert(tuner.snapshot().active_candidate_id == "vm.zram_latency_relief");
+    assert(get(proc_root / "sys/vm/page-cluster") == "0");
+    assert(get(proc_root / "sys/vm/vfs_cache_pressure") == "80");
+
+    tuner.reset();
     fs::remove_all(root);
+    std::cout << "[PASS] AutonomousTuner atomic transactions, cooldowns, and domain preconditions succeeded.\n";
     return 0;
 }

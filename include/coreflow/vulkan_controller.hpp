@@ -33,10 +33,10 @@ enum class GpuVendor : uint8_t {
 };
 
 struct VulkanConfig {
-    VulkanLayerMode mode{VulkanLayerMode::SafeHardware};
-    bool enable_skiavk_threaded{true};
-    bool enable_adaptive_vrs{true};
-    bool enable_pipeline_cache_prewarm{true};
+    VulkanLayerMode mode{VulkanLayerMode::Disabled};
+    bool enable_skiavk_threaded{false};
+    bool enable_adaptive_vrs{false};
+    bool enable_pipeline_cache_prewarm{false};
 };
 
 struct GpuKernelSurface {
@@ -58,16 +58,18 @@ struct VulkanCapabilitiesSnapshot {
     bool vulkan_available{false};
     bool layer_installed{false};
     bool layer_active{false};
-    VulkanLayerMode active_mode{VulkanLayerMode::SafeHardware};
+    VulkanLayerMode active_mode{VulkanLayerMode::Disabled};
     GpuVendor vendor{GpuVendor::Unknown};
     uint32_t vendor_id{0};
     uint32_t device_id{0};
     std::string device_name{"Detecting Vulkan Physical Device..."};
     std::string api_version{"0.0.0"};
-    std::string effective_api_version{"1.4.303"};
+    std::string effective_api_version{"0.0.0"};
     std::string driver_version_str{"0.0.0"};
     uint32_t device_extensions_count{0};
     uint32_t effective_device_extensions_count{0};
+    uint32_t layer_implemented_extensions_count{0};
+    uint32_t application_enabled_extensions_count{0};
     uint32_t instance_extensions_count{0};
 
     // RFC-4122 8-4-4-4-12 UUIDs read dynamically from VkPhysicalDeviceIDProperties / VkPhysicalDeviceProperties
@@ -75,7 +77,7 @@ struct VulkanCapabilitiesSnapshot {
     std::string driver_uuid{"00000000-0000-0000-0000-000000000000"};
     std::string pipeline_cache_uuid{"00000000-0000-0000-0000-000000000000"};
 
-    // Native hardware readouts (before layer promotion)
+    // Native hardware readouts (truthful physical ICD query)
     bool hw_ray_tracing{false};
     bool hw_mesh_shaders{false};
     bool hw_variable_rate_shading{false};
@@ -97,11 +99,11 @@ struct VulkanCapabilitiesSnapshot {
     bool hw_graphics_pipeline_library{false};
     uint32_t hw_max_push_descriptors{0};
 
-    // Effective capabilities exposed to applications (after Opsi A / Opsi B layer policy)
+    // Effective capabilities exposed to applications (strictly hardware-truthful pass-through)
     // Section 1: Capabilities
     bool ray_tracing{false};
     bool mesh_shaders{false};
-    bool variable_rate_shading{true};
+    bool variable_rate_shading{false};
     bool cooperative_matrix{false};
     bool rt_pipeline{false};
     bool ray_query{false};
@@ -109,42 +111,42 @@ struct VulkanCapabilitiesSnapshot {
     bool portability_subset{false};
 
     // Section 2: Core Features
-    bool robust_buffer_access{true};
-    bool sampler_anisotropy{true};
-    bool shader_int16{true};
+    bool robust_buffer_access{false};
+    bool sampler_anisotropy{false};
+    bool shader_int16{false};
     bool shader_float64{false};
 
     // Section 3: Vulkan 1.1
-    bool protected_memory{true};
+    bool protected_memory{false};
 
     // Section 4: Vulkan 1.2
-    bool timeline_semaphore{true};
-    bool descriptor_indexing{true};
-    bool buffer_device_address{true};
+    bool timeline_semaphore{false};
+    bool descriptor_indexing{false};
+    bool buffer_device_address{false};
 
     // Section 5: Vulkan 1.3
-    bool dynamic_rendering{true};
-    bool synchronization2{true};
+    bool dynamic_rendering{false};
+    bool synchronization2{false};
 
     // Section 6: Vulkan 1.4
-    bool index_type_uint8{true};
-    bool line_rasterization{true};
-    bool push_descriptors{true};
-    bool global_priority_query{true};
-    bool shader_float_controls2{true};
-    uint32_t max_push_descriptors{32};
+    bool index_type_uint8{false};
+    bool line_rasterization{false};
+    bool push_descriptors{false};
+    bool global_priority_query{false};
+    bool shader_float_controls2{false};
+    uint32_t max_push_descriptors{0};
 
     // Section 7: Highlights
-    bool maintenance5{true};
-    bool maintenance6{true};
-    bool maintenance7{true};
-    bool descriptor_buffer{true};
-    bool graphics_pipeline_library{true};
+    bool maintenance5{false};
+    bool maintenance6{false};
+    bool maintenance7{false};
+    bool descriptor_buffer{false};
+    bool graphics_pipeline_library{false};
 
     // Runtime Pipeline Acceleration Flags
-    bool skiavk_active{true};
-    bool adaptive_vrs_active{true};
-    bool pipeline_cache_prewarm_active{true};
+    bool skiavk_active{false};
+    bool adaptive_vrs_active{false};
+    bool pipeline_cache_prewarm_active{false};
 
     GpuKernelSurface gpu_surface{};
 };

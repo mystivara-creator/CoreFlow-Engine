@@ -1,6 +1,5 @@
 package io.coreflow
 
-import android.graphics.drawable.Icon
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import kotlinx.coroutines.CoroutineScope
@@ -11,7 +10,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Android Quick Settings Tile for CoreFlow Engine.
- * Allows instant cycling through Balanced, Performance, and Battery profiles.
+ * Allows cycling through Balanced, Performance (Responsiveness), and Battery profiles
+ * with verified root persistence and live state synchronization.
  */
 class CoreFlowTileService : TileService() {
 
@@ -25,17 +25,33 @@ class CoreFlowTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
-        updateTileState()
+        scope.launch {
+            val active = CoreFlowManager.readActiveProfile().getOrNull()
+            if (active != null) {
+                val idx = profiles.indexOf(active)
+                if (idx >= 0) {
+                    currentProfileIndex = idx
+                }
+            }
+            updateTileState()
+        }
     }
 
     override fun onClick() {
         super.onClick()
-        currentProfileIndex = (currentProfileIndex + 1) % profiles.size
-        val nextProfile = profiles[currentProfileIndex]
+        val nextIndex = (currentProfileIndex + 1) % profiles.size
+        val nextProfile = profiles[nextIndex]
 
         scope.launch {
-            CoreFlowManager.applyProfile(nextProfile)
-            updateTileState()
+            val applyResult = CoreFlowManager.applyProfile(nextProfile)
+            if (applyResult.isSuccess) {
+                currentProfileIndex = nextIndex
+                updateTileState()
+            } else {
+                val tile = qsTile ?: return@launch
+                tile.subtitle = "Apply failed"
+                tile.updateTile()
+            }
         }
     }
 
@@ -43,8 +59,9 @@ class CoreFlowTileService : TileService() {
         val tile = qsTile ?: return
         scope.launch {
             val statusResult = CoreFlowManager.getStatus()
-            val isRunning = statusResult.getOrNull()?.isRunning == true
-            val temp = statusResult.getOrNull()?.socCompositeCelsius ?: -1f
+            val status = statusResult.getOrNull()
+            val isRunning = status?.isRunning == true
+            val temp = status?.socCompositeCelsius ?: -1f
 
             if (isRunning) {
                 val profile = profiles[currentProfileIndex]

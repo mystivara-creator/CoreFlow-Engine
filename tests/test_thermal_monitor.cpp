@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <unistd.h>
 
@@ -103,7 +104,54 @@ int main() {
     assert(feedback.sample(after, 31, true) == "steady");
     create_zone(oem, 150, "cpuss-0", "78000");
     create_zone(oem, 151, "battery", "unavailable");
-    assert(!adaptive.assess().available); // Do not silently omit a broken, known-policy sensor.
+    const auto incomplete_sysfs = adaptive.assess();
+    assert(!incomplete_sysfs.available); // Sysfs alone without platform status is marked incomplete
+    assert(incomplete_sysfs.incomplete && incomplete_sysfs.degraded && !incomplete_sysfs.sensor_readings_complete);
+
+    // THERMAL-01: Valid Android platform status MUST NOT be discarded when a sysfs sensor is incomplete
+    const auto fused_degraded = fuse_thermal_assessments(assessment_from_android_severity(3), incomplete_sysfs);
+    assert(fused_degraded.available);
+    assert(fused_degraded.platform_status_valid);
+    assert(fused_degraded.degraded);
+    assert(!fused_degraded.sensor_readings_complete);
+    assert(fused_degraded.pressure >= 95.0);
+    assert(fused_degraded.source == "android+sysfs-degraded");
+
+    // THERMAL-01: Android headroom semantics (<0, NaN, 0.5, 1.0, >1.0)
+    const auto base_none = assessment_from_android_severity(0);
+    const auto hr_neg = apply_android_headroom(base_none, -1.0f);
+    assert(!hr_neg.headroom_valid && hr_neg.pressure == 0.0);
+    const auto hr_nan = apply_android_headroom(base_none, std::numeric_limits<float>::quiet_NaN());
+    assert(!hr_nan.headroom_valid && hr_nan.pressure == 0.0);
+    const auto hr_half = apply_android_headroom(base_none, 0.5f);
+    assert(hr_half.headroom_valid && std::fabs(hr_half.headroom_value - 0.5f) < 0.001f);
+    assert(std::fabs(hr_half.pressure - 42.5) < 0.01);
+    const auto hr_one = apply_android_headroom(base_none, 1.0f);
+    assert(hr_one.headroom_valid && std::fabs(hr_one.pressure - 95.0) < 0.01 && !hr_one.emergency);
+    // Headroom > 1.0 must NOT be linearly extrapolated to emergency (130.0)
+    const auto hr_above = apply_android_headroom(base_none, 2.5f);
+    assert(hr_above.headroom_valid && std::fabs(hr_above.headroom_value - 2.5f) < 0.001f);
+    assert(std::fabs(hr_above.pressure - 95.0) < 0.01 && !hr_above.emergency);
+
+    // THERMAL-03: Secondary hwmon discovery and diagnostic-only unknown category isolation
+    const auto hwmon_test_root = root + "/with_hwmon";
+    create_zone(hwmon_test_root, 0, "cpu-cluster0", "50000");
+    const auto hwmon0 = hwmon_test_root + "/hwmon/hwmon0";
+    std::filesystem::create_directories(hwmon0);
+    { std::ofstream(hwmon0 + "/name") << "gpu_thermal\n"; }
+    { std::ofstream(hwmon0 + "/temp1_label") << "gpuss-0\n"; }
+    { std::ofstream(hwmon0 + "/temp1_input") << "60000\n"; }
+    { std::ofstream(hwmon0 + "/temp2_label") << "mystery_aux_sensor\n"; }
+    { std::ofstream(hwmon0 + "/temp2_input") << "99000\n"; }
+    ThermalMonitor hwmon_mon(hwmon_test_root);
+    const auto hw_prof = hwmon_mon.multi_sensor_profile();
+    assert(hw_prof.valid_cpu_count == 1);
+    assert(hw_prof.valid_gpu_count == 1);
+    assert(std::fabs(hw_prof.gpu_average - 60.0f) < 0.01f);
+    // Unknown diagnostic sensor (99C) must be recorded in readings but NOT pollute compute hottest/composite
+    assert(std::fabs(hwmon_mon.hottest_celsius() - 60.0f) < 0.01f);
+    assert(hwmon_mon.assess().readings.size() == 3);
+
     const auto invalid = root + "/invalid";
     create_zone(invalid, 0, "cpu", "-40000");
     create_zone(invalid, 1, "skin", "-273000");
@@ -114,6 +162,6 @@ int main() {
     create_zone(units, 0, "cpu", "100");
     assert(std::fabs(ThermalMonitor(units).hottest_celsius() - 0.1f) < 0.001f);
     std::filesystem::remove_all(root);
-    std::cout << "ThermalMonitor cluster discovery and millidegree scaling PASS\n";
+    std::cout << "ThermalMonitor cluster discovery, fusion, headroom, and hwmon PASS\n";
     return 0;
 }

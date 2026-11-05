@@ -224,7 +224,7 @@ bool journal_clear() {
     std::string header;
     if (!std::getline(journal, header) ||
         (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
-         header.rfind("CFJ3\t", 0) != 0)) return false;
+         header.rfind("CFJ3\t", 0) != 0 && header.rfind("CFJ4\t", 0) != 0)) return false;
     std::string line;
     while (std::getline(journal, line)) {
         if (!DaemonConfig::trim(line).empty()) return false;
@@ -257,7 +257,7 @@ size_t count_journal_entries() noexcept {
     std::string header;
     if (!std::getline(journal, header) ||
         (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
-         header.rfind("CFJ3\t", 0) != 0)) {
+         header.rfind("CFJ3\t", 0) != 0 && header.rfind("CFJ4\t", 0) != 0)) {
         return 0;
     }
     size_t count = 0;
@@ -292,15 +292,26 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
 void print_status() {
     // 1. Run all hardware, kernel, AI, tuner, and Vulkan probes FIRST before writing any JSON
     const pid_t pid = daemon_pid();
+    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     const auto profile = ThermalMonitor::instance().multi_sensor_profile();
     const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
     auto thermal = ThermalMonitor::instance().assess(false);
     if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
         thermal.available = true;
-        thermal.source = "multi-sensor-composite";
-        const double norm = std::max(0.0, (static_cast<double>(temp) - 40.0) / 4.0);
+        thermal.fallback_active = true;
+        thermal.source = "generic_fallback";
+        const double recover_deg = static_cast<double>(cfg_status.thermal_recover_celsius);
+        const double trip_deg = static_cast<double>(cfg_status.thermal_trip_celsius);
+        const double span = std::max(1.0, trip_deg - recover_deg);
+        const double norm = std::clamp((static_cast<double>(temp) - recover_deg) / span, 0.0, 3.0);
         thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
+        if (temp >= cfg_status.thermal_trip_celsius + cfg_status.thermal_emergency_margin_celsius) {
+            thermal.emergency = true;
+        }
     }
+    const bool thermal_guard_active = !thermal.fallback_active
+        ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0)
+        : (thermal.emergency || temp >= cfg_status.thermal_trip_celsius);
     UclampGovernor governor;
     const auto battery = ThermalMonitor::instance().battery_celsius();
     const auto skin = ThermalMonitor::instance().skin_celsius();
@@ -317,7 +328,6 @@ void print_status() {
     });
     AutonomousTuner::instance().discover();
     const auto tuner = AutonomousTuner::instance().snapshot();
-    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     VulkanController::instance().initialize({
         .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
         .enable_skiavk_threaded = cfg_status.enable_skiavk_threaded,
@@ -354,6 +364,11 @@ void print_status() {
         out << "null";
     }
     out << ",\"thermalPolicyAvailable\":" << (thermal.available ? "true" : "false")
+        << ",\"thermalGuardActive\":" << (thermal_guard_active ? "true" : "false")
+        << ",\"thermalDataDegraded\":" << (thermal.degraded ? "true" : "false")
+        << ",\"thermalFallbackActive\":" << (thermal.fallback_active ? "true" : "false")
+        << ",\"thermalHeadroomValid\":" << (thermal.headroom_valid ? "true" : "false")
+        << ",\"thermalHeadroom\":" << (thermal.headroom_valid && std::isfinite(thermal.headroom) ? std::to_string(thermal.headroom) : "null")
         << ",\"thermalSource\":" << json_string(thermal.source)
         << ",\"thermalSensor\":" << json_string(thermal.sensor)
         << ",\"thermalSeverity\":" << thermal.severity
@@ -655,6 +670,35 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
+    if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
+        if (argc < 3) {
+            std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
+            return 2;
+        }
+        std::vector<std::pair<std::string, std::string>> updates;
+        for (int i = 2; i < argc; ++i) {
+            const std::string_view arg(argv[i]);
+            const size_t eq = arg.find('=');
+            if (eq == std::string_view::npos || eq == 0) {
+                std::cerr << "Invalid key=value argument: " << arg << "\n";
+                return 2;
+            }
+            updates.emplace_back(
+                DaemonConfig::trim(std::string(arg.substr(0, eq))),
+                DaemonConfig::trim(std::string(arg.substr(eq + 1))));
+        }
+        (void)ensure_secure_state_dir();
+        const std::string conf_path = std::string(kStateDir) + "/coreflow.conf";
+        if (!DaemonConfig::update_config_file(conf_path, updates)) {
+            std::cerr << "Failed to update configuration file: " << conf_path << "\n";
+            return 1;
+        }
+        const pid_t pid = daemon_pid();
+        if (pid > 0) {
+            (void)::kill(pid, SIGHUP);
+        }
+        return 0;
+    }
     if (argc == 2) {
         const std::string_view command(argv[1]);
         if (command == "--capabilities") { print_capabilities(); return 0; }
@@ -668,11 +712,11 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -769,6 +813,7 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
+                    (void)AutonomousTuner::instance().rollback_active("Configuration reloaded on SIGHUP");
                     (void)baseline.rollback_all();
                     config = DaemonConfig::load_best_available();
                     if (!governor.resync()) {
@@ -781,7 +826,6 @@ int main(int argc, char* argv[]) {
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
                         config.top_app_io_weight, config.background_io_weight});
                     NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
-                    AutonomousTuner::instance().reset();
                     AutonomousTuner::instance().discover();
                     VulkanController::instance().configure({
                         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
@@ -839,8 +883,9 @@ int main(int argc, char* argv[]) {
             const double span = std::max(1.0, trip_deg - recover_deg);
             const double norm = std::clamp((static_cast<double>(temp) - recover_deg) / span, 0.0, 3.0);
             thermal.available = true;
+            thermal.fallback_active = true;
             thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
-            thermal.source = "multi-sensor-composite";
+            thermal.source = "generic_fallback";
             thermal.sensor = "SoC-Composite (" + std::to_string(profile.valid_cpu_count) + " cores)";
             if (temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
                 thermal.emergency = true;
@@ -929,11 +974,14 @@ int main(int argc, char* argv[]) {
         }
 
         // Active Thermal Mitigation:
-        // When temperatures are elevated, DO NOT kill or stop the daemon!
-        // The engine remains active to cool down the SoC, clamp uclamp floors,
-        // and scale down frequencies until temperatures normalize.
-        const bool thermal_limit_hit = (thermal.emergency || temp >= config.thermal_trip_celsius ||
-                                       (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
+        // When OEM/Android thermal policy is available (!thermal.fallback_active),
+        // honor OEM/Android severity and normalized pressure rather than a generic 44.0°C cutoff.
+        // Only use config.thermal_trip_celsius when operating in explicit generic_fallback mode.
+        const bool thermal_limit_hit = !thermal.fallback_active
+            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
+               (current == WorkloadState::ThermalGuard && thermal.pressure > 65.0))
+            : (thermal.emergency || temp >= config.thermal_trip_celsius ||
+               (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
         const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
         double active_capacity_scale = decision.capacity_scale;
         if (ai_pred.valid && ai_pred.confidence >= 0.60 && ai_pred.predicted_pressure_10s >= 80.0) {
@@ -945,10 +993,9 @@ int main(int argc, char* argv[]) {
             static auto last_guard_log = std::chrono::steady_clock::time_point::min();
             const auto now_t = std::chrono::steady_clock::now();
             if (now_t - last_guard_log > std::chrono::seconds(10)) {
-                emit_log(true, "[CoreFlow][ThermalGuard] Active thermal mitigation engaged: cooling down SoC ("
-                         "composite=" + std::to_string(temp) + "°C, trip=" +
-                         std::to_string(config.thermal_trip_celsius) + "°C, pressure=" +
-                         std::to_string(thermal.pressure) + "). Engine actively lowering temperature.");
+                emit_log(true, "[CoreFlow][ThermalGuard] Active thermal mitigation engaged: reducing workload/power demand ("
+                         "composite=" + std::to_string(temp) + "°C, source=" + thermal.source +
+                         ", pressure=" + std::to_string(thermal.pressure) + ").");
                 last_guard_log = now_t;
             }
         }
@@ -1005,12 +1052,13 @@ int main(int argc, char* argv[]) {
         }
         const auto trend = cooling_feedback.sample(thermal,
             std::chrono::duration<double>(now_tick.time_since_epoch()).count(),
-            decision.capacity_scale < 0.999 || desired == WorkloadState::ThermalGuard);
+            active_capacity_scale < 0.999 || desired == WorkloadState::ThermalGuard);
         if (trend) {
             emit_log(true, "[CoreFlow][Cooling] observed=" + *trend +
                 " sensors=" + std::to_string(thermal.readings.size()) +
                 " pressure=" + std::to_string(thermal.pressure) +
-                " capacity=" + std::to_string(decision.capacity_scale));
+                " requested_capacity=" + std::to_string(decision.capacity_scale) +
+                " applied_capacity=" + std::to_string(active_capacity_scale));
         }
         if (!applied || current != desired) {
             {

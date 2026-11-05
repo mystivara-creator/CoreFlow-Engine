@@ -84,7 +84,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
 
     add_executable(test_vulkan_controller tests/test_vulkan_controller.cpp src/kernel/vulkan_controller.cpp src/kernel/baseline_store.cpp)
-    target_link_libraries(test_vulkan_controller PRIVATE ${CMAKE_DL_LIBS} m)
+    target_link_libraries(test_vulkan_controller PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     add_test(NAME VulkanControllerTest COMMAND test_vulkan_controller)
 
     add_executable(test_neural_predictor tests/test_neural_predictor.cpp src/kernel/neural_predictor.cpp)
@@ -158,5 +158,12 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_uclamp PRIVATE log)
     endif()
     add_test(NAME UclampTest COMMAND test_uclamp)
+
+    if(NOT ANDROID)
+        add_test(
+            NAME ModuleLifecycleTest
+            COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/tests/test_module_lifecycle.sh
+        )
+    endif()
 endif()
 

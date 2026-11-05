@@ -4,9 +4,12 @@
     "name": "VK_LAYER_COREFLOW_universal_bridge",
     "type": "GLOBAL",
     "library_path": "/system/lib64/libVkLayer_coreflow.so",
-    "api_version": "1.4.303",
-    "implementation_version": "1",
-    "description": "CoreFlow Universal Vulkan 1.4 Capability & Extension Bridge Layer",
+    "api_version": "1.3.0",
+    "implementation_version": "2",
+    "description": "CoreFlow Truthful Hardware Pass-Through & Telemetry Layer",
+    "enable_environment": {
+      "ENABLE_COREFLOW_VULKAN_LAYER": "1"
+    },
     "disable_environment": {
       "DISABLE_COREFLOW_VULKAN_LAYER": "1"
     }

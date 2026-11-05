@@ -71,7 +71,7 @@ export interface VulkanEngineConfig {
 }
 
 export const DEFAULT_VULKAN_CONFIG: VulkanEngineConfig = {
-  mode: 'safe_hardware',
+  mode: 'disabled',
   enableSkiavkThreaded: true,
   enableAdaptiveVrs: true,
   enablePipelineCachePrewarm: true,
@@ -165,69 +165,34 @@ export function computeVulkanTelemetry(
   vkConfig: VulkanEngineConfig,
   base?: Partial<VulkanTelemetry>
 ): VulkanTelemetry {
-  const mode = vkConfig.mode;
-  const isFull = mode === 'full_capability_override';
-  const isSafe = mode === 'safe_hardware';
+  // Clamp legacy full_capability_override to safe_hardware pass-through.
+  // Never fabricate API versions, extension counts, or unsupported hardware feature flags.
+  const mode: VulkanLayerMode =
+    vkConfig.mode === 'full_capability_override' ? 'safe_hardware' : vkConfig.mode;
   const isActive = mode !== 'disabled';
   const baseExts = base?.deviceExtensions ?? 0;
 
-  const hwRayTracing = base?.hwRayTracing ?? false;
-  const hwMeshShaders = base?.hwMeshShaders ?? false;
+  const hwRayTracing = base?.hwRayTracing ?? base?.rayTracing ?? false;
+  const hwMeshShaders = base?.hwMeshShaders ?? base?.meshShaders ?? false;
   const hwVariableRateShading = base?.hwVariableRateShading ?? base?.variableRateShading ?? false;
-  const hwCooperativeMatrix = base?.hwCooperativeMatrix ?? false;
-  const hwRtPipeline = base?.hwRtPipeline ?? false;
-  const hwRayQuery = base?.hwRayQuery ?? false;
-  const hwAccelerationStructure = base?.hwAccelerationStructure ?? false;
-  const hwShaderFloat64 = base?.hwShaderFloat64 ?? false;
+  const hwCooperativeMatrix = base?.hwCooperativeMatrix ?? base?.cooperativeMatrix ?? false;
+  const hwRtPipeline = base?.hwRtPipeline ?? base?.rtPipeline ?? false;
+  const hwRayQuery = base?.hwRayQuery ?? base?.rayQuery ?? false;
+  const hwAccelerationStructure = base?.hwAccelerationStructure ?? base?.accelerationStructure ?? false;
+  const hwShaderFloat64 = base?.hwShaderFloat64 ?? base?.shaderFloat64 ?? false;
 
-  const hwIndexTypeUint8 = base?.hwIndexTypeUint8 ?? false;
-  const hwLineRasterization = base?.hwLineRasterization ?? false;
+  const hwIndexTypeUint8 = base?.hwIndexTypeUint8 ?? base?.indexTypeUint8 ?? false;
+  const hwLineRasterization = base?.hwLineRasterization ?? base?.lineRasterization ?? false;
   const hwPushDescriptors = base?.hwPushDescriptors ?? base?.pushDescriptors ?? false;
-  const hwGlobalPriorityQuery = base?.hwGlobalPriorityQuery ?? false;
-  const hwShaderFloatControls2 = base?.hwShaderFloatControls2 ?? false;
+  const hwGlobalPriorityQuery = base?.hwGlobalPriorityQuery ?? base?.globalPriorityQuery ?? false;
+  const hwShaderFloatControls2 = base?.hwShaderFloatControls2 ?? base?.shaderFloatControls2 ?? false;
   const hwMaintenance5 = base?.hwMaintenance5 ?? base?.maintenance5 ?? false;
   const hwMaintenance6 = base?.hwMaintenance6 ?? base?.maintenance6 ?? false;
-  const hwMaintenance7 = base?.hwMaintenance7 ?? false;
-  const hwDescriptorBuffer = base?.hwDescriptorBuffer ?? false;
-  const hwGraphicsPipelineLibrary = base?.hwGraphicsPipelineLibrary ?? false;
-
-  // Dynamically count how many extensions are actually missing on this specific device's hardware
-  const missingSafeCount = [
-    hwIndexTypeUint8,
-    hwLineRasterization,
-    hwPushDescriptors,
-    hwGlobalPriorityQuery,
-    hwShaderFloatControls2,
-    hwMaintenance5,
-    hwMaintenance6,
-    hwMaintenance7,
-    hwDescriptorBuffer,
-    hwGraphicsPipelineLibrary,
-  ].filter((supported) => !supported).length;
-
-  const missingOverrideOnlyCount = [
-    hwAccelerationStructure,
-    hwRtPipeline,
-    hwRayQuery,
-    hwRayTracing,
-    hwMeshShaders,
-    hwCooperativeMatrix,
-    hwShaderFloat64,
-  ].filter((supported) => !supported).length;
-
-  const computedEffectiveExts =
-    base?.mode === mode && typeof base?.effectiveDeviceExtensions === 'number' && base.effectiveDeviceExtensions >= baseExts
-      ? base.effectiveDeviceExtensions
-      : isFull
-      ? baseExts + missingSafeCount + missingOverrideOnlyCount
-      : isSafe
-      ? baseExts + missingSafeCount
-      : baseExts;
+  const hwMaintenance7 = base?.hwMaintenance7 ?? base?.maintenance7 ?? false;
+  const hwDescriptorBuffer = base?.hwDescriptorBuffer ?? base?.descriptorBuffer ?? false;
+  const hwGraphicsPipelineLibrary = base?.hwGraphicsPipelineLibrary ?? base?.graphicsPipelineLibrary ?? false;
 
   const hwApiVersion = base?.apiVersion ?? 'Probing ICD...';
-  const effectiveApiVersion = isActive
-    ? '1.4.303'
-    : hwApiVersion;
 
   return {
     available: base?.available ?? false,
@@ -237,28 +202,28 @@ export function computeVulkanTelemetry(
     vendor: base?.vendor ?? 'Auto-Detecting GPU Vendor',
     deviceName: base?.deviceName ?? 'Probing Physical GPU ICD...',
     apiVersion: hwApiVersion,
-    effectiveApiVersion,
+    effectiveApiVersion: hwApiVersion,
     driverVersion: base?.driverVersion ?? '0.0.0',
     deviceExtensions: baseExts,
-    effectiveDeviceExtensions: computedEffectiveExts,
+    effectiveDeviceExtensions: baseExts,
     instanceExtensions: base?.instanceExtensions ?? 0,
     deviceUuid: base?.deviceUuid ?? '00000000-0000-0000-0000-000000000000',
     driverUuid: base?.driverUuid ?? '00000000-0000-0000-0000-000000000000',
     pipelineCacheUuid: base?.pipelineCacheUuid ?? '00000000-0000-0000-0000-000000000000',
-    // Capabilities (preserve hardware native support + layer override if Opsi B)
-    rayTracing: hwRayTracing || isFull,
-    meshShaders: hwMeshShaders || isFull,
-    variableRateShading: hwVariableRateShading || isActive,
-    cooperativeMatrix: hwCooperativeMatrix || isFull,
-    rtPipeline: hwRtPipeline || isFull,
-    rayQuery: hwRayQuery || isFull,
-    accelerationStructure: hwAccelerationStructure || isFull,
+    // Strictly report hardware-verified support (never falsify unsupported features)
+    rayTracing: hwRayTracing,
+    meshShaders: hwMeshShaders,
+    variableRateShading: hwVariableRateShading,
+    cooperativeMatrix: hwCooperativeMatrix,
+    rtPipeline: hwRtPipeline,
+    rayQuery: hwRayQuery,
+    accelerationStructure: hwAccelerationStructure,
     portabilitySubset: base?.portabilitySubset ?? false,
     // Core Features
     robustBufferAccess: base?.robustBufferAccess ?? true,
     samplerAnisotropy: base?.samplerAnisotropy ?? true,
     shaderInt16: base?.shaderInt16 ?? true,
-    shaderFloat64: hwShaderFloat64 || isFull,
+    shaderFloat64: hwShaderFloat64,
     // Vulkan 1.1
     protectedMemory: base?.protectedMemory ?? true,
     // Vulkan 1.2
@@ -269,18 +234,18 @@ export function computeVulkanTelemetry(
     dynamicRendering: base?.dynamicRendering ?? true,
     synchronization2: base?.synchronization2 ?? true,
     // Vulkan 1.4
-    indexTypeUint8: hwIndexTypeUint8 || isActive,
-    lineRasterization: hwLineRasterization || isActive,
-    pushDescriptors: hwPushDescriptors || isActive,
-    globalPriorityQuery: hwGlobalPriorityQuery || isActive,
-    shaderFloatControls2: hwShaderFloatControls2 || isActive,
-    maxPushDescriptors: isFull ? Math.max(base?.maxPushDescriptors ?? 32, 64) : Math.max(base?.maxPushDescriptors ?? 32, 32),
+    indexTypeUint8: hwIndexTypeUint8,
+    lineRasterization: hwLineRasterization,
+    pushDescriptors: hwPushDescriptors,
+    globalPriorityQuery: hwGlobalPriorityQuery,
+    shaderFloatControls2: hwShaderFloatControls2,
+    maxPushDescriptors: base?.maxPushDescriptors ?? 32,
     // Highlights
-    maintenance5: hwMaintenance5 || isActive,
-    maintenance6: hwMaintenance6 || isActive,
-    maintenance7: hwMaintenance7 || isActive,
-    descriptorBuffer: hwDescriptorBuffer || isActive,
-    graphicsPipelineLibrary: hwGraphicsPipelineLibrary || isActive,
+    maintenance5: hwMaintenance5,
+    maintenance6: hwMaintenance6,
+    maintenance7: hwMaintenance7,
+    descriptorBuffer: hwDescriptorBuffer,
+    graphicsPipelineLibrary: hwGraphicsPipelineLibrary,
     // Hardware baselines
     hwRayTracing,
     hwMeshShaders,
@@ -302,7 +267,7 @@ export function computeVulkanTelemetry(
     hwGraphicsPipelineLibrary,
     // Runtime Pipeline
     skiavkActive: isActive && vkConfig.enableSkiavkThreaded,
-    adaptiveVrsActive: isActive && vkConfig.enableAdaptiveVrs,
+    adaptiveVrsActive: isActive && vkConfig.enableAdaptiveVrs && hwVariableRateShading,
     pipelineCachePrewarmActive: isActive && vkConfig.enablePipelineCachePrewarm,
     // GPU Kernel Surface
     gpuKernelAvailable: base?.gpuKernelAvailable ?? false,
@@ -312,6 +277,190 @@ export function computeVulkanTelemetry(
     gpuMaxFreqMhz: base?.gpuMaxFreqMhz ?? 0,
     adrenoboostLevel: base?.adrenoboostLevel ?? 0,
   };
+}
+
+export const CANONICAL_KEY_SECTIONS: Record<string, string> = {
+  version: 'general',
+  log_level: 'general',
+  zero_polling_mode: 'general',
+  enable_cgroups_v2: 'general',
+  enable_uclamp: 'general',
+  tier_override: 'device_adaptation',
+  unlock_vendor_clamping: 'device_adaptation',
+  force_120hz_rendering: 'device_adaptation',
+  enable_cpu_frequency_control: 'device_adaptation',
+  enable_gpu_frequency_control: 'device_adaptation',
+  top_app_interactive_min: 'uclamp_tuning',
+  top_app_interactive_max: 'uclamp_tuning',
+  ui_adaptive_bias: 'uclamp_tuning',
+  ui_balanced_uclamp_min: 'uclamp_tuning',
+  foreground_boost_min: 'uclamp_tuning',
+  background_clamp_max: 'uclamp_tuning',
+  system_background_max: 'uclamp_tuning',
+  temp_monitor_interval_ms: 'thermal_guardian',
+  thermal_trip_celsius: 'thermal_guardian',
+  thermal_recover_celsius: 'thermal_guardian',
+  emergency_rollback_on_overheat: 'thermal_guardian',
+  cpu_pressure_boost_pct: 'stability_policy',
+  memory_pressure_guard_pct: 'stability_policy',
+  io_pressure_guard_pct: 'stability_policy',
+  thermal_headroom_celsius: 'stability_policy',
+  thermal_emergency_margin_celsius: 'stability_policy',
+  enable_pid_equilibrium: 'pid_equilibrium',
+  pid_target_celsius: 'pid_equilibrium',
+  pid_kp: 'pid_equilibrium',
+  pid_ki: 'pid_equilibrium',
+  pid_kd: 'pid_equilibrium',
+  enable_battery_step_charging: 'hardware_longevity',
+  enable_ufs_burst_pacing: 'hardware_longevity',
+  battery_step_temp_threshold: 'hardware_longevity',
+  stepped_charge_current_ma: 'hardware_longevity',
+  top_app_io_weight: 'hardware_longevity',
+  background_io_weight: 'hardware_longevity',
+  vulkan_layer_mode: 'vulkan_engine',
+  enable_skiavk_threaded: 'vulkan_engine',
+  enable_adaptive_vrs: 'vulkan_engine',
+  enable_pipeline_cache_prewarm: 'vulkan_engine',
+  target_fps: 'render_booster',
+  pre_boost_on_touch: 'render_booster',
+  boost_duration_ms: 'render_booster',
+};
+
+export function normalizeSectionName(sec: string): string {
+  const trimmed = sec.trim();
+  return trimmed === 'stability' ? 'stability_policy' : trimmed;
+}
+
+export function parseConfigIni(raw: string): Record<string, Record<string, string>> {
+  const result: Record<string, Record<string, string>> = {};
+  let currentSection = '';
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      currentSection = normalizeSectionName(trimmed.slice(1, -1));
+      if (!result[currentSection]) result[currentSection] = {};
+      continue;
+    }
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim();
+    if (!key) continue;
+    const expectedSection = CANONICAL_KEY_SECTIONS[key];
+    if (expectedSection && currentSection !== expectedSection) {
+      continue;
+    }
+    const sec = currentSection || expectedSection || 'general';
+    if (!result[sec]) result[sec] = {};
+    result[sec][key] = val;
+  }
+  return result;
+}
+
+export function readSectionStringKey(raw: string, key: string): string | null {
+  const parsed = parseConfigIni(raw);
+  const expectedSection = CANONICAL_KEY_SECTIONS[key];
+  if (expectedSection) {
+    const v = parsed[expectedSection]?.[key];
+    return v && v.length > 0 ? v : null;
+  }
+  for (const sec of Object.values(parsed)) {
+    if (sec[key]) return sec[key];
+  }
+  return null;
+}
+
+export function readSectionNumberKey(raw: string, key: string): number | null {
+  const str = readSectionStringKey(raw, key);
+  if (str === null) return null;
+  const num = Number(str);
+  return Number.isFinite(num) ? num : null;
+}
+
+export function mergeConfigText(
+  existingText: string,
+  updates: Record<string, string | number | boolean>
+): string {
+  const pending: Record<string, string> = {};
+  for (const [k, v] of Object.entries(updates)) {
+    const key = k.trim();
+    if (!key || !(key in CANONICAL_KEY_SECTIONS)) continue;
+    pending[key] = String(v).trim();
+  }
+  if (Object.keys(pending).length === 0) return existingText;
+
+  const lines = existingText ? existingText.replace(/\r\n/g, '\n').split('\n') : [];
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+
+  const outLines: string[] = [];
+  let currentSection = '';
+
+  const flushRemainingForSection = (sec: string) => {
+    if (!sec) return;
+    for (const [k, v] of Object.entries(pending)) {
+      if (CANONICAL_KEY_SECTIONS[k] === sec) {
+        outLines.push(`${k} = ${v}`);
+        delete pending[k];
+      }
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      flushRemainingForSection(currentSection);
+      currentSection = normalizeSectionName(trimmed.slice(1, -1));
+      outLines.push(line);
+      continue;
+    }
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) {
+      outLines.push(line);
+      continue;
+    }
+    const eq = line.indexOf('=');
+    if (eq < 0) {
+      outLines.push(line);
+      continue;
+    }
+    const key = line.slice(0, eq).trim();
+    if (key in pending && CANONICAL_KEY_SECTIONS[key] === currentSection) {
+      outLines.push(`${key} = ${pending[key]}`);
+      delete pending[key];
+    } else {
+      outLines.push(line);
+    }
+  }
+  flushRemainingForSection(currentSection);
+
+  const sectionOrder = [
+    'general',
+    'device_adaptation',
+    'uclamp_tuning',
+    'thermal_guardian',
+    'stability_policy',
+    'pid_equilibrium',
+    'hardware_longevity',
+    'vulkan_engine',
+    'render_booster',
+  ];
+
+  for (const sec of sectionOrder) {
+    const keysForSec = Object.keys(pending).filter((k) => CANONICAL_KEY_SECTIONS[k] === sec);
+    if (keysForSec.length === 0) continue;
+    if (outLines.length > 0 && outLines[outLines.length - 1].trim() !== '') {
+      outLines.push('');
+    }
+    outLines.push(`[${sec}]`);
+    for (const k of keysForSec) {
+      outLines.push(`${k} = ${pending[k]}`);
+      delete pending[k];
+    }
+  }
+
+  return outLines.join('\n') + '\n';
 }
 
 export interface AutonomousTelemetry {
@@ -329,6 +478,13 @@ export interface AutonomousTelemetry {
   gpuTempCelsius?: number;
   batteryTempCelsius?: number;
   skinTempCelsius?: number;
+  thermalGuardActive?: boolean;
+  thermalDataDegraded?: boolean;
+  thermalFallbackActive?: boolean;
+  thermalHeadroomValid?: boolean;
+  thermalHeadroom?: number | null;
+  thermalSource?: string;
+  thermalSeverity?: number;
   thermalSensors?: ThermalSensorDetail[];
   cpuPressurePct: number;
   memoryPressurePct: number;

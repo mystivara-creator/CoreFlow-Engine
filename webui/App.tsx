@@ -24,7 +24,10 @@ import {
   DEFAULT_LONGEVITY_CONFIG,
   DEFAULT_VULKAN_CONFIG,
   HardwareLongevityConfig,
+  mergeConfigText,
   ReactionLogEvent,
+  readSectionNumberKey,
+  readSectionStringKey,
   stepAutonomousSimulation,
   ThermalSensorDetail,
   TunerCandidateTelemetry,
@@ -65,6 +68,11 @@ interface NativeStatus {
   thermalSensors?: ThermalSensorDetail[];
   recoveryPending: boolean;
   thermalPolicyAvailable?: boolean;
+  thermalGuardActive?: boolean;
+  thermalDataDegraded?: boolean;
+  thermalFallbackActive?: boolean;
+  thermalHeadroomValid?: boolean;
+  thermalHeadroom?: number | null;
   thermalSeverity?: number;
   thermalSource?: string;
   thermalSensor?: string;
@@ -141,25 +149,6 @@ const execChecked = async (command: string): Promise<string> => {
 };
 
 const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
-const readStringKey = (text: string, key: string): string | null => {
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('[')) continue;
-    const at = line.indexOf('=');
-    if (at < 0 || line.slice(0, at).trim() !== key) continue;
-    const value = line.slice(at + 1).trim();
-    return value.length > 0 ? value : null;
-  }
-  return null;
-};
-
-const readNumberKey = (text: string, key: string): number | null => {
-  const raw = readStringKey(text, key);
-  if (raw === null) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : null;
-};
 
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
@@ -268,7 +257,11 @@ export const App: React.FC = () => {
   const refreshNative = useCallback(async (): Promise<NativeStatus> => {
     const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
     const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
-    const isThermalThrottling = effectiveTemp >= config.thermalTripCelsius;
+    const isThermalThrottling =
+      status.thermalGuardActive ??
+      (status.thermalFallbackActive
+        ? effectiveTemp >= config.thermalTripCelsius
+        : (status.thermalSeverity ?? 0) >= 3);
     setTelemetry((old) => ({
       ...old,
       engineActive: status.running,
@@ -286,6 +279,13 @@ export const App: React.FC = () => {
       gpuTempCelsius: status.gpuTempCelsius ?? -1,
       batteryTempCelsius: status.batteryTempCelsius ?? -1,
       skinTempCelsius: status.skinTempCelsius ?? -1,
+      thermalGuardActive: isThermalThrottling,
+      thermalDataDegraded: status.thermalDataDegraded ?? false,
+      thermalFallbackActive: status.thermalFallbackActive ?? false,
+      thermalHeadroomValid: status.thermalHeadroomValid ?? false,
+      thermalHeadroom: status.thermalHeadroom ?? null,
+      thermalSource: status.thermalSource ?? old.thermalSource,
+      thermalSeverity: status.thermalSeverity ?? old.thermalSeverity,
       thermalSensors: status.thermalSensors ?? old.thermalSensors,
       aiBackend: status.aiBackend ?? old.aiBackend,
       aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,
@@ -315,16 +315,16 @@ export const App: React.FC = () => {
         : 'PLANNED',
       modeLabel: status.running
         ? isThermalThrottling
-          ? 'ThermalGuard Active · Cooling SoC'
+          ? 'ThermalGuard Active · Pacing Demand'
           : status.uclampSupported
           ? 'Coordinated Stability Policy Active'
           : 'Daemon Active · Multi-Sensor Equilibrium'
         : 'Daemon Stopped',
       modeDescription: status.running
         ? isThermalThrottling
-          ? 'Thermal guard active: pacing clocks and UClamp floor to reduce temperature'
+          ? 'Thermal guard active: reducing workload/power demand via clocks and UClamp floor'
           : status.recoveryPending
-          ? `Thermal source: ${status.thermalSource ?? 'multi-sensor-composite'}; write-ahead journal armed`
+          ? `Thermal source: ${status.thermalSource ?? 'oem_policy'}; write-ahead CFJ4 journal armed`
           : 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
         : 'OEM baseline restored',
       timestamp: Date.now(),
@@ -341,22 +341,22 @@ export const App: React.FC = () => {
       const configResult = await execNativeKsuShell(`cat ${CONFIG} 2>/dev/null`);
       if (disposed || configResult.errno !== 0) return;
 
-      const rawBias = readStringKey(configResult.stdout, 'ui_adaptive_bias');
+      const rawBias = readSectionStringKey(configResult.stdout, 'ui_adaptive_bias');
       const adaptiveBias: AutonomousConfig['adaptiveBias'] =
         rawBias === 'battery' || rawBias === 'balanced' || rawBias === 'responsiveness'
           ? rawBias
           : 'balanced';
-      const uiFloor = readNumberKey(configResult.stdout, 'ui_balanced_uclamp_min');
-      const daemonFloor = readNumberKey(configResult.stdout, 'top_app_interactive_min');
+      const uiFloor = readSectionNumberKey(configResult.stdout, 'ui_balanced_uclamp_min');
+      const daemonFloor = readSectionNumberKey(configResult.stdout, 'top_app_interactive_min');
       const baseFloor = uiFloor ?? daemonFloor;
-      const trip = readNumberKey(configResult.stdout, 'thermal_trip_celsius');
+      const trip = readSectionNumberKey(configResult.stdout, 'thermal_trip_celsius');
 
-      const rawStep = readStringKey(configResult.stdout, 'enable_battery_step_charging');
-      const stepTemp = readNumberKey(configResult.stdout, 'battery_step_temp_threshold');
-      const stepCurrent = readNumberKey(configResult.stdout, 'stepped_charge_current_ma');
-      const rawUfs = readStringKey(configResult.stdout, 'enable_ufs_burst_pacing');
-      const topWeight = readNumberKey(configResult.stdout, 'top_app_io_weight');
-      const bgWeight = readNumberKey(configResult.stdout, 'background_io_weight');
+      const rawStep = readSectionStringKey(configResult.stdout, 'enable_battery_step_charging');
+      const stepTemp = readSectionNumberKey(configResult.stdout, 'battery_step_temp_threshold');
+      const stepCurrent = readSectionNumberKey(configResult.stdout, 'stepped_charge_current_ma');
+      const rawUfs = readSectionStringKey(configResult.stdout, 'enable_ufs_burst_pacing');
+      const topWeight = readSectionNumberKey(configResult.stdout, 'top_app_io_weight');
+      const bgWeight = readSectionNumberKey(configResult.stdout, 'background_io_weight');
 
       setConfig((old) => ({
         ...old,
@@ -364,7 +364,7 @@ export const App: React.FC = () => {
         balancedUclampMin:
           baseFloor === null ? old.balancedUclampMin : Math.max(0, Math.min(640, Math.round(baseFloor))),
         thermalTripCelsius:
-          trip === null ? old.thermalTripCelsius : Math.max(40, Math.min(48, trip)),
+          trip === null ? old.thermalTripCelsius : Math.max(30, Math.min(80, trip)),
       }));
 
       setLongevityConfig((old) => ({
@@ -381,16 +381,16 @@ export const App: React.FC = () => {
         backgroundIoWeight: bgWeight ?? old.backgroundIoWeight,
       }));
 
-      const rawVkMode = readStringKey(configResult.stdout, 'vulkan_layer_mode');
+      const rawVkMode = readSectionStringKey(configResult.stdout, 'vulkan_layer_mode');
       const vkMode: VulkanLayerMode =
-        rawVkMode === 'full_capability_override' ||
-        rawVkMode === 'disabled' ||
-        rawVkMode === 'safe_hardware'
-          ? rawVkMode
-          : 'safe_hardware';
-      const rawSkiavk = readStringKey(configResult.stdout, 'enable_skiavk_threaded');
-      const rawVrs = readStringKey(configResult.stdout, 'enable_adaptive_vrs');
-      const rawPrewarm = readStringKey(configResult.stdout, 'enable_pipeline_cache_prewarm');
+        rawVkMode === 'safe_hardware' || rawVkMode === 'full_capability_override'
+          ? 'safe_hardware'
+          : rawVkMode === 'disabled'
+          ? 'disabled'
+          : 'disabled';
+      const rawSkiavk = readSectionStringKey(configResult.stdout, 'enable_skiavk_threaded');
+      const rawVrs = readSectionStringKey(configResult.stdout, 'enable_adaptive_vrs');
+      const rawPrewarm = readSectionStringKey(configResult.stdout, 'enable_pipeline_cache_prewarm');
 
       setVulkanConfig((old) => ({
         ...old,
@@ -536,72 +536,37 @@ export const App: React.FC = () => {
     advancePreviewSimulation('io_trial');
   };
 
-  const buildCompleteConfigText = (
-    activeConfig: AutonomousConfig,
-    activeLongevity: HardwareLongevityConfig,
-    activeVulkan: VulkanEngineConfig = vulkanConfig
+  const writeSurgicalConfigUpdates = async (
+    updates: Record<string, string | number | boolean>,
+    ackToken: string
   ) => {
-    const safeBias: AutonomousConfig['adaptiveBias'] =
-      activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
-        ? activeConfig.adaptiveBias
-        : 'balanced';
-    const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
-    const multiplier =
-      safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
-    const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
-    const trip = Math.max(35, Math.min(65, activeConfig.thermalTripCelsius));
-    const recover = Math.max(25, trip - 4);
-    const stepTemp = Math.max(30, Math.min(45, activeLongevity.batteryStepTempThreshold));
-    const stepCurr = Math.max(100, Math.min(5000, Math.round(activeLongevity.steppedChargeCurrentMa)));
-    const topWeight = Math.max(1, Math.min(10000, Math.round(activeLongevity.topAppIoWeight)));
-    const bgWeight = Math.max(1, Math.min(10000, Math.round(activeLongevity.backgroundIoWeight)));
-    const safeVkMode: VulkanLayerMode =
-      activeVulkan.mode === 'full_capability_override' || activeVulkan.mode === 'disabled'
-        ? activeVulkan.mode
-        : 'safe_hardware';
-
-    const text =
-      '# CFAE System Framework v3.1.0 Configuration\n' +
-      '[general]\nversion = 3.1.0\nlog_level = info\nzero_polling_mode = true\nenable_cgroups_v2 = true\nenable_uclamp = true\n' +
-      '\n[device_adaptation]\ntier_override = auto\nunlock_vendor_clamping = false\nforce_120hz_rendering = false\n' +
-      'enable_cpu_frequency_control = true\nenable_gpu_frequency_control = true\n' +
-      '\n[uclamp_tuning]\ntop_app_interactive_min = ' +
-      balancedMin +
-      '\ntop_app_interactive_max = 1024\nui_adaptive_bias = ' +
-      safeBias +
-      '\nui_balanced_uclamp_min = ' +
-      baseFloor +
-      '\n\n[thermal_guardian]\ntemp_monitor_interval_ms = 1000\nthermal_trip_celsius = ' +
-      trip.toFixed(1) +
-      '\nthermal_recover_celsius = ' +
-      recover.toFixed(1) +
-      '\nemergency_rollback_on_overheat = true\n' +
-      '\n[stability]\ncpu_pressure_boost_pct = 8.0\nmemory_pressure_guard_pct = 3.0\n' +
-      'io_pressure_guard_pct = 5.0\nthermal_headroom_celsius = 3.0\nthermal_emergency_margin_celsius = 4.0\n' +
-      '\n[pid_equilibrium]\nenable_pid_equilibrium = true\npid_target_celsius = 42.5\npid_kp = 2.5\npid_ki = 0.15\npid_kd = 1.2\n' +
-      '\n[hardware_longevity]\nenable_battery_step_charging = ' +
-      (activeLongevity.enableBatteryStepCharging ? 'true' : 'false') +
-      '\nenable_ufs_burst_pacing = ' +
-      (activeLongevity.enableUfsBurstPacing ? 'true' : 'false') +
-      '\nbattery_step_temp_threshold = ' +
-      stepTemp.toFixed(1) +
-      '\nstepped_charge_current_ma = ' +
-      stepCurr +
-      '\ntop_app_io_weight = ' +
-      topWeight +
-      '\nbackground_io_weight = ' +
-      bgWeight +
-      '\n\n[vulkan_engine]\nvulkan_layer_mode = ' +
-      safeVkMode +
-      '\nenable_skiavk_threaded = ' +
-      (activeVulkan.enableSkiavkThreaded ? 'true' : 'false') +
-      '\nenable_adaptive_vrs = ' +
-      (activeVulkan.enableAdaptiveVrs ? 'true' : 'false') +
-      '\nenable_pipeline_cache_prewarm = ' +
-      (activeVulkan.enablePipelineCachePrewarm ? 'true' : 'false') +
-      '\n';
-
-    return { text, balancedMin, trip };
+    const existingResult = await execNativeKsuShell(
+      `cat "${CONFIG}" 2>/dev/null || cat /data/adb/modules/cfae_framework/system/etc/coreflow/default.conf 2>/dev/null || cat /system/etc/coreflow/default.conf 2>/dev/null || true`
+    );
+    const mergedText = mergeConfigText(existingResult.stdout ?? '', updates);
+    const command =
+      'umask 077 && [ ! -L "' +
+      CONFIG +
+      '" ] && rm -f "' +
+      CONFIG +
+      '.tmp" && ' +
+      "cat <<'COREFLOW_CONFIG' > " +
+      CONFIG +
+      '.tmp\n' +
+      mergedText +
+      'COREFLOW_CONFIG\nchown 0:0 ' +
+      CONFIG +
+      '.tmp 2>/dev/null; chmod 600 ' +
+      CONFIG +
+      '.tmp && mv -f ' +
+      CONFIG +
+      '.tmp ' +
+      CONFIG +
+      ` && echo ${ackToken}`;
+    const output = await execChecked(command);
+    if (!output.includes(ackToken)) {
+      throw new Error('Configuration write not acknowledged');
+    }
   };
 
   const handleSaveConfig = async (overrideConfig?: AutonomousConfig) => {
@@ -614,35 +579,27 @@ export const App: React.FC = () => {
         return;
       }
 
-      const { text: nativeConfig, balancedMin, trip } = buildCompleteConfigText(
-        activeConfig,
-        longevityConfig
+      const safeBias: AutonomousConfig['adaptiveBias'] =
+        activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
+          ? activeConfig.adaptiveBias
+          : 'balanced';
+      const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
+      const multiplier =
+        safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
+      const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
+      const trip = Math.max(30, Math.min(80, activeConfig.thermalTripCelsius));
+      const recover = Math.max(25, Math.min(trip - 1, trip - 4));
+
+      await writeSurgicalConfigUpdates(
+        {
+          top_app_interactive_min: balancedMin,
+          ui_adaptive_bias: safeBias,
+          ui_balanced_uclamp_min: baseFloor,
+          thermal_trip_celsius: trip.toFixed(1),
+          thermal_recover_celsius: recover.toFixed(1),
+        },
+        'COREFLOW_CONFIG_WRITTEN'
       );
-
-      const command =
-        'umask 077 && [ ! -L "' +
-        CONFIG +
-        '" ] && rm -f "' +
-        CONFIG +
-        '.tmp" && ' +
-        "cat <<'COREFLOW_CONFIG' > " +
-        CONFIG +
-        '.tmp\n' +
-        nativeConfig +
-        'COREFLOW_CONFIG\nchown 0:0 ' +
-        CONFIG +
-        '.tmp 2>/dev/null; chmod 600 ' +
-        CONFIG +
-        '.tmp && mv -f ' +
-        CONFIG +
-        '.tmp ' +
-        CONFIG +
-        ' && echo COREFLOW_CONFIG_WRITTEN';
-
-      const output = await execChecked(command);
-      if (!output.includes('COREFLOW_CONFIG_WRITTEN')) {
-        throw new Error('Configuration write not acknowledged');
-      }
 
       const before = await refreshNative();
       if (before.running && before.pid > 0) {
@@ -653,7 +610,7 @@ export const App: React.FC = () => {
       }
 
       setSaveMessage(before.running ? 'Committed and reloaded live' : 'Saved for next start');
-      addLog('INFO', 'Config', `Balanced floor=${balancedMin}, thermal trip=${trip.toFixed(1)}°C`);
+      addLog('INFO', 'Config', `Balanced floor=${balancedMin}, fallback trip=${trip.toFixed(1)}°C`);
     } catch (error) {
       setSaveMessage('Save failed');
       setNativeError(String(error));
@@ -676,30 +633,23 @@ export const App: React.FC = () => {
         );
         return;
       }
-      const { text: nativeConfig } = buildCompleteConfigText(config, newConfig);
-      const command =
-        'umask 077 && [ ! -L "' +
-        CONFIG +
-        '" ] && rm -f "' +
-        CONFIG +
-        '.tmp" && ' +
-        "cat <<'COREFLOW_CONFIG' > " +
-        CONFIG +
-        '.tmp\n' +
-        nativeConfig +
-        'COREFLOW_CONFIG\nchown 0:0 ' +
-        CONFIG +
-        '.tmp 2>/dev/null; chmod 600 ' +
-        CONFIG +
-        '.tmp && mv -f ' +
-        CONFIG +
-        '.tmp ' +
-        CONFIG +
-        ' && (killall -HUP coreflowd 2>/dev/null || true) && echo COREFLOW_LONGEVITY_WRITTEN';
-      const output = await execChecked(command);
-      if (!output.includes('COREFLOW_LONGEVITY_WRITTEN')) {
-        throw new Error('Longevity configuration write not acknowledged');
-      }
+      const stepTemp = Math.max(30, Math.min(45, newConfig.batteryStepTempThreshold));
+      const stepCurr = Math.max(100, Math.min(5000, Math.round(newConfig.steppedChargeCurrentMa)));
+      const topWeight = Math.max(1, Math.min(10000, Math.round(newConfig.topAppIoWeight)));
+      const bgWeight = Math.max(1, Math.min(10000, Math.round(newConfig.backgroundIoWeight)));
+
+      await writeSurgicalConfigUpdates(
+        {
+          enable_battery_step_charging: newConfig.enableBatteryStepCharging ? 'true' : 'false',
+          enable_ufs_burst_pacing: newConfig.enableUfsBurstPacing ? 'true' : 'false',
+          battery_step_temp_threshold: stepTemp.toFixed(1),
+          stepped_charge_current_ma: stepCurr,
+          top_app_io_weight: topWeight,
+          background_io_weight: bgWeight,
+        },
+        'COREFLOW_LONGEVITY_WRITTEN'
+      );
+      await execChecked('killall -HUP coreflowd 2>/dev/null || true');
       setLongevityConfig(newConfig);
       setLongevitySaveMessage('Armed live in kernel');
       addLog(
@@ -725,58 +675,47 @@ export const App: React.FC = () => {
     setIsSaving(true);
     setVulkanSaveMessage(null);
     try {
-      setVulkanConfig(nextVulkan);
+      const normalizedMode: VulkanLayerMode =
+        nextVulkan.mode === 'disabled' ? 'disabled' : 'safe_hardware';
+      const sanitizedVulkan: VulkanEngineConfig = { ...nextVulkan, mode: normalizedMode };
+      setVulkanConfig(sanitizedVulkan);
       setTelemetry((old) => ({
         ...old,
-        vulkan: computeVulkanTelemetry(nextVulkan, old.vulkan),
+        vulkan: computeVulkanTelemetry(sanitizedVulkan, old.vulkan),
       }));
 
       if (!isNativeBridge) {
         setVulkanSaveMessage(
-          nextVulkan.mode === 'full_capability_override'
-            ? 'Opsi B Full Capability Override active in preview'
-            : nextVulkan.mode === 'safe_hardware'
-            ? 'Opsi A Safe Hardware & 1.4 Bridge active in preview'
-            : 'OEM Passthrough active in preview'
+          normalizedMode === 'safe_hardware'
+            ? 'Truthful Hardware Pass-Through active in preview'
+            : 'OEM Passthrough (Disabled) active in preview'
         );
         addLog(
           'BOOST',
           'VulkanLayer',
-          `Mode=${nextVulkan.mode} | SkiaVK=${nextVulkan.enableSkiavkThreaded} | AdaptiveVRS=${nextVulkan.enableAdaptiveVrs}`
+          `Mode=${normalizedMode} | SkiaVK=${sanitizedVulkan.enableSkiavkThreaded} | AdaptiveVRS=${sanitizedVulkan.enableAdaptiveVrs}`
         );
         return;
       }
 
-      const { text: nativeConfig } = buildCompleteConfigText(config, longevityConfig, nextVulkan);
-      const command =
-        'umask 077 && [ ! -L "' +
-        CONFIG +
-        '" ] && rm -f "' +
-        CONFIG +
-        '.tmp" && ' +
-        "cat <<'COREFLOW_CONFIG' > " +
-        CONFIG +
-        '.tmp\n' +
-        nativeConfig +
-        'COREFLOW_CONFIG\nchown 0:0 ' +
-        CONFIG +
-        '.tmp 2>/dev/null; chmod 600 ' +
-        CONFIG +
-        '.tmp && mv -f ' +
-        CONFIG +
-        '.tmp ' +
-        CONFIG +
-        ' && (killall -HUP coreflowd 2>/dev/null || true) && echo COREFLOW_VULKAN_WRITTEN';
-      const output = await execChecked(command);
-      if (!output.includes('COREFLOW_VULKAN_WRITTEN')) {
-        throw new Error('Vulkan configuration write not acknowledged');
-      }
+      await writeSurgicalConfigUpdates(
+        {
+          vulkan_layer_mode: normalizedMode,
+          enable_skiavk_threaded: sanitizedVulkan.enableSkiavkThreaded ? 'true' : 'false',
+          enable_adaptive_vrs: sanitizedVulkan.enableAdaptiveVrs ? 'true' : 'false',
+          enable_pipeline_cache_prewarm: sanitizedVulkan.enablePipelineCachePrewarm
+            ? 'true'
+            : 'false',
+        },
+        'COREFLOW_VULKAN_WRITTEN'
+      );
+      await execChecked('killall -HUP coreflowd 2>/dev/null || true');
       await refreshNative();
       setVulkanSaveMessage('Armed in libVkLayer_coreflow.so');
       addLog(
         'BOOST',
         'VulkanLayer',
-        `Committed Vulkan mode=${nextVulkan.mode} to /data/adb/coreflow/vulkan_layer.state`
+        `Committed Vulkan mode=${normalizedMode} to /data/adb/coreflow/vulkan_layer.state`
       );
     } catch (err) {
       setVulkanSaveMessage('Save failed');

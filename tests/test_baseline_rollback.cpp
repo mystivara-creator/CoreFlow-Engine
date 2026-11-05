@@ -16,6 +16,7 @@ static std::string read_value(const std::string& path) {
     in >> value;
     return value;
 }
+
 int main(int argc, char* argv[]) {
     if (argc > 1 && std::string(argv[1]) == "--recover") {
         return BaselineStore::instance().recover_pending() ? 0 : 2;
@@ -30,10 +31,12 @@ int main(int argc, char* argv[]) {
     { std::ofstream out(b); out << "100"; }
     auto& store = BaselineStore::instance();
     assert(store.recover_pending());
+    assert(!store.identity_unavailable());
     assert(store.capture(a));
     assert(store.apply_mutation(a, "512"));
     assert(read_value(a) == "512");
     assert(store.has_active_mutations());
+    assert(store.owns_expected_state(a, "512"));
     assert(store.rollback_all() == 1);
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
@@ -44,7 +47,7 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
-    // Simulate fatal process death after a verified mutation, without shutdown.
+    // Simulate fatal process death after a verified mutation, without shutdown (writes CFJ4).
     pid_t writer = ::fork();
     assert(writer >= 0);
     if (writer == 0) {
@@ -58,11 +61,24 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "888");
     assert(read_value(b) == "222");
 
-    // A crash after journaling the next write, but before the kernel accepts it,
+    // Verify CFJ4 journal written by child process is recovered on same boot
+    pid_t restorer = ::fork();
+    assert(restorer >= 0);
+    if (restorer == 0) {
+        ::execl(argv[0], argv[0], "--recover", nullptr);
+        ::_exit(127);
+    }
+    assert(::waitpid(restorer, &status, 0) == restorer);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(read_value(a) == "0");
+    assert(read_value(b) == "100");
+
+    // A crash after journaling the next write in CFJ3 format, but before the kernel accepts it,
     // must recognize the previous CoreFlow value as ours and restore baseline.
-    std::string boot_id;
-    { std::ifstream in("/proc/sys/kernel/random/boot_id"); in >> boot_id; }
+    std::string boot_id = store.boot_id();
     assert(!boot_id.empty());
+    { std::ofstream out(a); out << "888"; }
+    { std::ofstream out(b); out << "222"; }
     {
         std::ofstream journal(std::string(state_dir) + "/baseline.journal");
         journal << "CFJ3\t" << boot_id << "\n"
@@ -70,8 +86,7 @@ int main(int argc, char* argv[]) {
                 << b << "\t313030\t313030\t323232\n";
     }
 
-    // A new process detects same-boot journal and restores verified OEM values.
-    pid_t restorer = ::fork();
+    restorer = ::fork();
     assert(restorer >= 0);
     if (restorer == 0) {
         ::execl(argv[0], argv[0], "--recover", nullptr);
@@ -126,7 +141,74 @@ int main(int argc, char* argv[]) {
     assert(store.rollback(a));
     assert(read_value(a) == "666");
 
+    // BASELINE-02: Inode replacement safety (unlink + recreate with new inode must not be overwritten)
+    { std::ofstream out(a); out << "10"; }
+    store.reinitialize();
+    assert(store.recover_pending());
+    assert(store.capture(a));
+    assert(store.apply_mutation(a, "20"));
+    assert(read_value(a) == "20");
+    // Replace file at path `a` with a newly created file (different inode) holding value "20"
+    // Even if its content happens to match active_value ("20"), its inode changed!
+    const std::string replacement = std::string(state_dir) + "/replacement_a";
+    { std::ofstream out(replacement); out << "20"; }
+    assert(::unlink(a.c_str()) == 0);
+    assert(::rename(replacement.c_str(), a.c_str()) == 0);
+    assert(!store.owns_expected_state(a, "20"));
+    assert(store.rollback(a));
+    // Must NOT overwrite the new file with old factory_value "10"
+    assert(read_value(a) == "20");
+
+    // BASELINE-01: Missing kernel boot_id falls back to per-boot boot_epoch in state_dir
+    const std::string missing_boot_id = std::string(state_dir) + "/nonexistent_boot_id";
+    assert(::setenv("COREFLOW_TEST_BOOT_ID_PATH", missing_boot_id.c_str(), 1) == 0);
+    const std::string boot_epoch_path = std::string(state_dir) + "/boot_epoch";
+    { std::ofstream out(boot_epoch_path); out << "epoch-boot-A-10001\n"; }
+    { std::ofstream out(a); out << "42"; }
+    store.reinitialize();
+    assert(store.recover_pending());
+    assert(!store.identity_unavailable());
+    assert(store.boot_id() == "epoch-boot-A-10001");
+    assert(store.apply_mutation(a, "84"));
+    assert(read_value(a) == "84");
+
+    // Simulate Boot B: boot_epoch changes in post-fs-data.sh, kernel node resets to OEM "50"
+    { std::ofstream out(boot_epoch_path); out << "epoch-boot-B-20002\n"; }
+    { std::ofstream out(a); out << "50"; }
+    store.reinitialize();
+    assert(store.recover_pending());
+    // Boot A's journal must NOT overwrite Boot B's OEM state ("50") with Boot A's ("42")
+    assert(read_value(a) == "50");
+    assert(!std::filesystem::exists(std::string(state_dir) + "/baseline.journal"));
+
+    // BASELINE-01: Legacy "fallback-boot-id" journal is rejected and never replayed
+    {
+        std::ofstream journal(std::string(state_dir) + "/baseline.journal");
+        journal << "CFJ3\tfallback-boot-id\n"
+                << a << "\t30\t383838\t383838\n";
+    }
+    { std::ofstream out(a); out << "888"; }
+    store.reinitialize();
+    assert(!store.recover_pending());
+    assert(read_value(a) == "888");
+    (void)::unlink((std::string(state_dir) + "/baseline.journal").c_str());
+
+    // BASELINE-01: Missing BOTH kernel boot_id and boot_epoch fails closed without deleting journal
+    (void)::unlink(boot_epoch_path.c_str());
+    {
+        std::ofstream journal(std::string(state_dir) + "/baseline.journal");
+        journal << "CFJ4\tepoch-boot-B-20002\n"
+                << a << "\t3530\t3530\t3834\t1\t1\n";
+    }
+    store.reinitialize();
+    assert(store.identity_unavailable());
+    assert(!store.recover_pending());
+    assert(std::filesystem::exists(std::string(state_dir) + "/baseline.journal"));
+    assert(!store.capture(a));
+    assert(!store.apply_mutation(a, "99"));
+    assert(read_value(a) == "888");
+
     std::filesystem::remove_all(state_dir);
-    std::cout << "[CoreFlow] Baseline + crash-recovery invariants PASS\n";
+    std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode invariants PASS\n";
     return 0;
 }

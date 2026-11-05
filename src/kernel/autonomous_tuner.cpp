@@ -90,8 +90,31 @@ TunerVerdict verdict_from_string(std::string_view v) noexcept {
     if (v == "REGRESSED") return TunerVerdict::Regressed;
     if (v == "ABORTED") return TunerVerdict::Aborted;
     if (v == "OWNERSHIP_LOST") return TunerVerdict::OwnershipLost;
+    if (v == "INCONCLUSIVE") return TunerVerdict::Inconclusive;
+    if (v == "RECOVERY_REQUIRED") return TunerVerdict::RecoveryRequired;
     if (v == "PENDING") return TunerVerdict::Pending;
     return TunerVerdict::Hold;
+}
+
+std::string resolve_state_dir() {
+    const char* test = std::getenv("COREFLOW_TEST_STATE_DIR");
+    return (test && *test) ? std::string(test) : "/data/adb/coreflow";
+}
+
+bool check_zram_swap_active(const std::string& proc_root, const std::string& sys_root) {
+    const fs::path swaps_path = fs::path(proc_root) / "swaps";
+    std::error_code ec;
+    if (fs::exists(swaps_path, ec) && !ec) {
+        std::ifstream in(swaps_path);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.find("zram") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return fs::exists(fs::path(sys_root) / "block/zram0", ec) && !ec;
 }
 
 } // namespace
@@ -122,6 +145,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
         CandidateStats{
             .id = "io.kyber_token_bucket",
@@ -136,6 +160,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
         CandidateStats{
             .id = "io.bfq_interactive_fairness",
@@ -150,6 +175,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
         CandidateStats{
             .id = "io.queue_readahead_pacing",
@@ -164,6 +190,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
         CandidateStats{
             .id = "vm.zram_latency_relief",
@@ -178,6 +205,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
         CandidateStats{
             .id = "cpufreq.schedutil_interactive_response",
@@ -192,6 +220,7 @@ void AutonomousTuner::init_candidates() {
             .regressed_count = 0,
             .rollbacks = 0,
             .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
         },
     };
     update_ucb_scores();
@@ -208,7 +237,9 @@ void AutonomousTuner::update_ucb_scores() {
 }
 
 void AutonomousTuner::reset() {
-    rollback_active("Autonomous tuner reset to verified OEM baseline.");
+    (void)rollback_active("Autonomous tuner reset to verified OEM baseline.");
+    recovery_required_ = false;
+    applied_steps_.clear();
     init_candidates();
     total_trials_ = 0;
     total_improved_ = 0;
@@ -217,6 +248,8 @@ void AutonomousTuner::reset() {
     last_verdict_enum_ = TunerVerdict::Hold;
     last_utility_delta_ = 0.0;
     idle_streak_ = 0;
+    std::error_code ec;
+    fs::remove(fs::path(resolve_state_dir()) / "tuner_stats.state", ec);
 }
 
 CandidateStats* AutonomousTuner::find_candidate(std::string_view id) {
@@ -226,11 +259,108 @@ CandidateStats* AutonomousTuner::find_candidate(std::string_view id) {
     return nullptr;
 }
 
+const CandidateStats* AutonomousTuner::find_candidate(std::string_view id) const {
+    for (const auto& c : candidates_) {
+        if (c.id == id) return &c;
+    }
+    return nullptr;
+}
+
+bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept {
+    const auto* c = find_candidate(id);
+    if (c == nullptr || c->cooldown_ticks > 0) return false;
+    if (id == "vm.zram_latency_relief" && !zram_active_) return false;
+    if (id == "cpufreq.schedutil_interactive_response" && cpufreq_governor_dirs_.empty()) return false;
+    return true;
+}
+
+std::string AutonomousTuner::compute_fingerprint() const {
+    std::string fp = "v1|zram=" + std::string(zram_active_ ? "1" : "0");
+    for (const auto& q : block_queues_) {
+        fp += "|dev=" + q.device_name + ":";
+        for (const auto& s : q.available_schedulers) {
+            fp += s + ",";
+        }
+    }
+    for (const auto& g : cpufreq_governor_dirs_) {
+        fp += "|gov=" + fs::path(g).filename().string();
+    }
+    return fp;
+}
+
+void AutonomousTuner::save_persisted_stats() const {
+    const fs::path state_dir = resolve_state_dir();
+    std::error_code ec;
+    fs::create_directories(state_dir, ec);
+    if (ec) return;
+    const fs::path tmp_path = state_dir / "tuner_stats.state.tmp";
+    const fs::path final_path = state_dir / "tuner_stats.state";
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out << "CFTS1\t" << compute_fingerprint() << "\t"
+        << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\n";
+    for (const auto& c : candidates_) {
+        out << c.id << "\t"
+            << c.mean_utility << "\t"
+            << c.mean_utility_delta << "\t"
+            << c.trials << "\t"
+            << c.improved_count << "\t"
+            << c.regressed_count << "\t"
+            << c.cooldown_ticks << "\t"
+            << c.consecutive_non_improved << "\n";
+    }
+    out.flush();
+    out.close();
+    fs::rename(tmp_path, final_path, ec);
+}
+
+void AutonomousTuner::load_persisted_stats() {
+    const fs::path final_path = fs::path(resolve_state_dir()) / "tuner_stats.state";
+    std::ifstream in(final_path);
+    if (!in.is_open()) return;
+    std::string header;
+    if (!std::getline(in, header)) return;
+    std::istringstream hs(header);
+    std::string magic, fp;
+    uint32_t trials = 0, improved = 0, rolled_back = 0;
+    if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
+    if (magic != "CFTS1" || fp != compute_fingerprint()) return;
+
+    total_trials_ = trials;
+    total_improved_ = improved;
+    total_rolled_back_ = rolled_back;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream ls(line);
+        std::string id;
+        double mean_u = 0.5, mean_du = 0.0;
+        uint32_t c_trials = 0, c_imp = 0, c_reg = 0, c_cool = 0, c_non_imp = 0;
+        if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_imp >> c_reg >> c_cool >> c_non_imp)) {
+            continue;
+        }
+        if (auto* c = find_candidate(id)) {
+            c->mean_utility = std::clamp(mean_u, 0.05, 2.50);
+            c->mean_utility_delta = mean_du;
+            c->trials = c_trials;
+            c->improved_count = c_imp;
+            c->successes = c_imp;
+            c->regressed_count = c_reg;
+            c->rollbacks = c_reg;
+            c->cooldown_ticks = std::min<uint32_t>(c_cool, 64U);
+            c->consecutive_non_improved = std::min<uint32_t>(c_non_imp, 16U);
+        }
+    }
+    update_ucb_scores();
+}
+
 void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_root) {
     sys_root_ = std::string(sys_root);
     proc_root_ = std::string(proc_root);
     block_queues_.clear();
     cpufreq_governor_dirs_.clear();
+    zram_active_ = check_zram_swap_active(proc_root_, sys_root_);
 
     const fs::path block_root = fs::path(sys_root_) / "block";
     std::error_code ec;
@@ -304,6 +434,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     });
 
     // Discover CPUFreq governor interactive rate-limit directories (schedutil / walt)
+    // Verify policyX/scaling_governor matches the governor directory if scaling_governor exists.
     auto& store = BaselineStore::instance();
     const fs::path cpufreq_root = fs::path(sys_root_) / "devices/system/cpu/cpufreq";
     std::error_code cpu_ec;
@@ -312,7 +443,14 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
          it.increment(cpu_ec)) {
         const std::string pol_name = it->path().filename().string();
         if (pol_name.rfind("policy", 0) != 0) continue;
+
+        const fs::path scaling_gov_path = it->path() / "scaling_governor";
+        const std::string active_gov = DaemonConfig::trim(read_first_line(scaling_gov_path.string()));
+
         for (const char* gov : {"schedutil", "walt"}) {
+            if (!active_gov.empty() && active_gov != gov) {
+                continue;
+            }
             const fs::path gdir = it->path() / gov;
             const std::string up_path = (gdir / "up_rate_limit_us").string();
             const std::string down_path = (gdir / "down_rate_limit_us").string();
@@ -330,9 +468,12 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     // Capture VM baseline nodes if accessible
     (void)store.capture(proc_root_ + "/sys/vm/page-cluster");
     (void)store.capture(proc_root_ + "/sys/vm/vfs_cache_pressure");
+
+    load_persisted_stats();
 }
 
 void AutonomousTuner::refresh_surface_readings() {
+    zram_active_ = check_zram_swap_active(proc_root_, sys_root_);
     for (auto& q : block_queues_) {
         std::string active;
         std::vector<std::string> avail;
@@ -366,21 +507,50 @@ void AutonomousTuner::refresh_surface_readings() {
     update_ucb_scores();
 }
 
-void AutonomousTuner::rollback_active(std::string_view reason) {
+bool AutonomousTuner::verify_active_ownership() const {
     auto& store = BaselineStore::instance();
+    for (const auto& step : applied_steps_) {
+        if (::access(step.path.c_str(), R_OK) != 0 ||
+            !store.owns_expected_state(step.path, step.target_value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AutonomousTuner::rollback_active(std::string_view reason) {
+    auto& store = BaselineStore::instance();
+    std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
     for (auto it = applied_steps_.rbegin(); it != applied_steps_.rend(); ++it) {
-        (void)store.rollback(it->path);
+        if (!store.rollback(it->path)) {
+            failed_steps.push_back(*it);
+        }
     }
-    applied_steps_.clear();
-    transaction_active_ = false;
     observing_ = false;
     obs_ticks_ = 0;
+
+    if (!failed_steps.empty()) {
+        std::reverse(failed_steps.begin(), failed_steps.end());
+        applied_steps_ = std::move(failed_steps);
+        transaction_active_ = false;
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) + " [ROLLBACK FAILED: RECOVERY_REQUIRED]";
+        refresh_surface_readings();
+        return false;
+    }
+
+    applied_steps_.clear();
+    transaction_active_ = false;
+    recovery_required_ = false;
     current_candidate_id_ = "baseline";
     current_candidate_label_ = "OEM Verified Baseline";
     current_intent_ = "HoldEquilibrium";
     current_rationale_ = std::string(reason);
     refresh_surface_readings();
+    return true;
 }
 
 bool AutonomousTuner::apply_transaction(
@@ -390,26 +560,56 @@ bool AutonomousTuner::apply_transaction(
     std::string_view rationale,
     const std::vector<MutationStep>& steps,
     const TunerTelemetryInput& telemetry) {
-    if (steps.empty()) return false;
+    if (steps.empty() || recovery_required_) return false;
 
     // First unwind any previous transaction cleanly
     if (!applied_steps_.empty()) {
-        rollback_active("Switching coordinated candidate");
+        if (!rollback_active("Switching coordinated candidate")) {
+            return false;
+        }
     }
 
     auto& store = BaselineStore::instance();
-    std::vector<MutationStep> committed;
-    committed.reserve(steps.size());
+    if (store.identity_unavailable()) return false;
+
+    // Phase 1: Full Preflight (All-or-Nothing for RequiredAnchor & RequiredDependent steps)
+    std::vector<MutationStep> planned;
+    planned.reserve(steps.size());
+    bool has_anchor = false;
 
     for (const auto& step : steps) {
-        if (::access(step.path.c_str(), W_OK) != 0) continue;
-        (void)store.capture(step.path);
-        if (!store.apply_mutation(step.path, step.target_value)) {
-            // Dependency or readback failure: unwind already-applied steps in reverse order
-            for (auto it = committed.rbegin(); it != committed.rend(); ++it) {
-                (void)store.rollback(it->path);
+        const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
+                                  step.relation == StepRelation::RequiredDependent);
+        const bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
+                                store.capture(step.path);
+        if (is_required && !accessible) {
+            // Abort entire transaction before any write occurs
+            return false;
+        }
+        if (accessible) {
+            if (step.relation == StepRelation::RequiredAnchor) {
+                has_anchor = true;
             }
-            refresh_surface_readings();
+            planned.push_back(step);
+        }
+    }
+
+    if (!has_anchor || planned.empty()) return false;
+
+    // Phase 2: Ordered Execution (RequiredAnchor before RequiredDependent)
+    std::vector<MutationStep> committed;
+    committed.reserve(planned.size());
+
+    for (const auto& step : planned) {
+        if (!store.apply_mutation(step.path, step.target_value)) {
+            const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
+                                      step.relation == StepRelation::RequiredDependent);
+            if (!is_required) {
+                continue;
+            }
+            // Dependency or readback failure on required step: unwind committed steps in reverse order
+            applied_steps_ = std::move(committed);
+            (void)rollback_active("Transaction aborted on failed required step; rolled back to baseline.");
             return false;
         }
         committed.push_back(step);
@@ -435,11 +635,14 @@ bool AutonomousTuner::apply_transaction(
     sum_after_mem_psi_ = 0.0;
     sum_after_cpu_psi_ = 0.0;
     sum_after_thermal_ = 0.0;
+    min_after_io_psi_ = 1e9;
+    max_after_io_psi_ = 0.0;
     ++total_trials_;
 
     if (auto* stats = find_candidate(candidate_id)) {
         ++stats->trials;
     }
+    save_persisted_stats();
     refresh_surface_readings();
     return true;
 }
@@ -453,17 +656,14 @@ void AutonomousTuner::evaluate_observation_window() {
     const double after_cpu = sum_after_cpu_psi_ / n;
     const double after_therm = sum_after_thermal_ / n;
 
-    // Verify ownership is still intact across all applied nodes
-    auto& store = BaselineStore::instance();
-    for (const auto& step : applied_steps_) {
-        (void)store;
-        if (::access(step.path.c_str(), R_OK) != 0) {
-            last_verdict_ = "OWNERSHIP_LOST";
-            last_verdict_enum_ = TunerVerdict::OwnershipLost;
-            ++total_rolled_back_;
-            rollback_active("External node ownership lost during observation window.");
-            return;
-        }
+    // Verify both readback value and inode ownership across all applied nodes
+    if (!verify_active_ownership()) {
+        last_verdict_ = "OWNERSHIP_LOST";
+        last_verdict_enum_ = TunerVerdict::OwnershipLost;
+        ++total_rolled_back_;
+        (void)rollback_active("External node ownership lost during observation window.");
+        save_persisted_stats();
+        return;
     }
 
     // Calculate domain-weighted empirical utility delta:
@@ -491,7 +691,28 @@ void AutonomousTuner::evaluate_observation_window() {
     if (stats != nullptr) {
         const double prev_trials = static_cast<double>(std::max(1u, stats->trials) - 1u);
         stats->mean_utility_delta =
-            (stats->mean_utility_delta * prev_trials + utility_delta) / static_cast<double>( std::max(1u, stats->trials));
+            (stats->mean_utility_delta * prev_trials + utility_delta) / static_cast<double>(std::max(1u, stats->trials));
+    }
+
+    // Check for high-variance / thermal-contaminated inconclusive observation window
+    const double io_spread = (max_after_io_psi_ >= min_after_io_psi_) ? (max_after_io_psi_ - min_after_io_psi_) : 0.0;
+    const bool high_variance_inconclusive =
+        (io_spread > std::max(6.0, before_io_psi_ * 1.2) && std::abs(utility_delta) < 0.50);
+
+    if (high_variance_inconclusive) {
+        last_verdict_ = "INCONCLUSIVE";
+        last_verdict_enum_ = TunerVerdict::Inconclusive;
+        ++total_rolled_back_;
+        if (stats != nullptr) {
+            ++stats->consecutive_non_improved;
+            const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
+            stats->cooldown_ticks = std::min<uint32_t>(32U, 4U * (1U << shift));
+        }
+        const std::string msg =
+            "Trial " + current_candidate_id_ + " inconclusive due to high sample variance; reverted to OEM baseline.";
+        (void)rollback_active(msg);
+        save_persisted_stats();
+        return;
     }
 
     if (utility_delta >= 0.25) {
@@ -502,6 +723,7 @@ void AutonomousTuner::evaluate_observation_window() {
         if (stats != nullptr) {
             ++stats->improved_count;
             stats->successes = stats->improved_count;
+            stats->consecutive_non_improved = 0;
             stats->mean_utility = std::clamp(
                 stats->mean_utility + 0.30 * (std::min(2.5, utility_delta) - stats->mean_utility),
                 0.05,
@@ -513,15 +735,17 @@ void AutonomousTuner::evaluate_observation_window() {
                               "% -> " + std::to_string(after_io).substr(0, 4) + "% -> RETAINED]";
         update_ucb_scores();
     } else if (utility_delta < -0.20) {
-        // REGRESSED: Stalls or thermals worsened -> Rollback & penalize bandit score!
+        // REGRESSED: Stalls or thermals worsened -> Rollback & penalize bandit score with exponential backoff!
         last_verdict_ = "REGRESSED";
         last_verdict_enum_ = TunerVerdict::Regressed;
         ++total_rolled_back_;
         if (stats != nullptr) {
             ++stats->regressed_count;
             stats->rollbacks = stats->regressed_count;
+            ++stats->consecutive_non_improved;
             stats->mean_utility = std::max(0.05, stats->mean_utility - 0.35);
-            stats->cooldown_ticks = 8;
+            const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
+            stats->cooldown_ticks = std::min<uint32_t>(64U, 8U * (1U << shift));
         }
         const std::string msg =
             "Trial " + current_candidate_id_ + " regressed (ΔU=" +
@@ -529,27 +753,44 @@ void AutonomousTuner::evaluate_observation_window() {
             ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
             "% -> " + std::to_string(after_io).substr(0, 4) +
             "%); rolled back to OEM baseline.";
-        rollback_active(msg);
+        (void)rollback_active(msg);
     } else {
-        // NEUTRAL: No statistically meaningful benefit -> Rollback per Invariant 8
+        // NEUTRAL: No statistically meaningful benefit -> Rollback per Invariant 8 with exponential backoff
         last_verdict_ = "NEUTRAL";
         last_verdict_enum_ = TunerVerdict::Neutral;
         ++total_rolled_back_;
         if (stats != nullptr) {
-            stats->cooldown_ticks = 4;
+            ++stats->consecutive_non_improved;
+            const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
+            stats->cooldown_ticks = std::min<uint32_t>(32U, 4U * (1U << shift));
         }
         const std::string msg =
             "Trial " + current_candidate_id_ + " neutral (ΔU=" +
             std::to_string(utility_delta).substr(0, 4) +
             "); reverted to OEM baseline per Invariant 8 (no unverified retention).";
-        rollback_active(msg);
+        (void)rollback_active(msg);
     }
+    save_persisted_stats();
 }
 
 AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& telemetry) {
+    if (recovery_required_) {
+        // Attempt recovery again; do not allow new mutations while recovery_required_ is true
+        if (!rollback_active("Retrying pending rollback recovery")) {
+            return snapshot();
+        }
+    }
+
     // Decrement candidate cooldowns
+    bool cooldown_changed = false;
     for (auto& c : candidates_) {
-        if (c.cooldown_ticks > 0) --c.cooldown_ticks;
+        if (c.cooldown_ticks > 0) {
+            --c.cooldown_ticks;
+            cooldown_changed = true;
+        }
+    }
+    if (cooldown_changed) {
+        save_persisted_stats();
     }
 
     // Safety Gate: ThermalGuard immediately rolls back non-stabilizing tuning
@@ -558,17 +799,28 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
             ++total_rolled_back_;
-            rollback_active("Thermal safety gate active; restored OEM block/VM baseline.");
+            (void)rollback_active("Thermal safety gate active; restored OEM block/VM baseline.");
+            save_persisted_stats();
         }
         return snapshot();
     }
 
     // Stage 1: If currently observing an applied transaction, collect After-Window samples
     if (observing_) {
+        if (!verify_active_ownership()) {
+            last_verdict_ = "OWNERSHIP_LOST";
+            last_verdict_enum_ = TunerVerdict::OwnershipLost;
+            ++total_rolled_back_;
+            (void)rollback_active("External node ownership lost during observation window.");
+            save_persisted_stats();
+            return snapshot();
+        }
         sum_after_io_psi_ += telemetry.io_psi;
         sum_after_mem_psi_ += telemetry.memory_psi;
         sum_after_cpu_psi_ += telemetry.cpu_psi;
         sum_after_thermal_ += telemetry.thermal_pressure;
+        min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
+        max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi);
         ++obs_ticks_;
         if (obs_ticks_ >= obs_window_) {
             evaluate_observation_window();
@@ -582,23 +834,37 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
     const bool cpu_bottleneck =
         telemetry.cpu_psi >= 8.0 && telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
 
-    // Stage 2: If a transaction is currently RETAINED, verify if it is still needed
+    // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
+        if (!verify_active_ownership()) {
+            last_verdict_ = "OWNERSHIP_LOST";
+            last_verdict_enum_ = TunerVerdict::OwnershipLost;
+            ++total_rolled_back_;
+            (void)rollback_active("External node ownership lost while transaction was retained.");
+            save_persisted_stats();
+            return snapshot();
+        }
         if (!io_bottleneck && !mem_bottleneck && telemetry.cpu_psi < 4.0) {
             if (++idle_streak_ >= 6) {
                 idle_streak_ = 0;
                 last_verdict_ = "HOLD";
                 last_verdict_enum_ = TunerVerdict::Hold;
-                rollback_active("Workload returned to sustained idle; restored OEM baseline.");
+                (void)rollback_active("Workload returned to sustained idle; restored OEM baseline.");
             }
         } else {
             idle_streak_ = 0;
-            // If pressure severely worsened while retained, re-evaluate
-            if (telemetry.io_psi > before_io_psi_ + 4.0) {
+            // Monitor domain-specific target and guard metrics while retained
+            const bool domain_regressed =
+                (telemetry.io_psi > before_io_psi_ + 4.0) ||
+                (current_intent_ == "MemoryStallRelief" && telemetry.memory_psi > before_mem_psi_ + 3.5) ||
+                (current_intent_ == "InteractiveCpuPacing" &&
+                 (telemetry.cpu_psi > before_cpu_psi_ + 6.0 || telemetry.thermal_pressure > before_thermal_ + 8.0));
+            if (domain_regressed) {
                 if (auto* stats = find_candidate(current_candidate_id_)) {
                     stats->cooldown_ticks = 6;
+                    save_persisted_stats();
                 }
-                rollback_active("Workload regime shifted; releasing retained candidate to re-plan.");
+                (void)rollback_active("Workload regime shifted; releasing retained candidate to re-plan.");
             }
         }
         refresh_surface_readings();
@@ -616,34 +882,44 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
         const auto& primary_q = block_queues_.front();
         const double total_n = std::max(1.0, static_cast<double>(total_trials_));
 
-        auto score_candidate = [&](std::string_view id) -> double {
+        auto score_candidate = [&](std::string_view id, double domain_bonus = 0.0) -> double {
+            // Strict admission gate BEFORE any UCB1 or domain bonus calculation (fixes Kyber cooldown bypass)
+            if (!is_candidate_eligible(id)) return -1.0;
             const auto* s = find_candidate(id);
-            if (s == nullptr || s->cooldown_ticks > 0) return -1.0;
-            // Upper Confidence Bound (UCB1): balances empirical benefit with exploration
+            if (s == nullptr) return -1.0;
             const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->trials + 1));
-            return s->mean_utility + explore;
+            return s->mean_utility + explore + domain_bonus;
         };
+
+        const bool any_mq_deadline = std::any_of(block_queues_.begin(), block_queues_.end(), [](const auto& q) {
+            return contains_token(q.available_schedulers, "mq-deadline");
+        });
+        const bool any_kyber = std::any_of(block_queues_.begin(), block_queues_.end(), [](const auto& q) {
+            return contains_token(q.available_schedulers, "kyber");
+        });
+        const bool any_bfq = std::any_of(block_queues_.begin(), block_queues_.end(), [](const auto& q) {
+            return contains_token(q.available_schedulers, "bfq");
+        });
 
         std::string best_id;
         double best_score = -1.0;
 
-        if (contains_token(primary_q.available_schedulers, "mq-deadline")) {
+        if (any_mq_deadline) {
             const double sc = score_candidate("io.mq_deadline_low_latency");
             if (sc > best_score) {
                 best_score = sc;
                 best_id = "io.mq_deadline_low_latency";
             }
         }
-        if (contains_token(primary_q.available_schedulers, "kyber")) {
-            // Prefer kyber when both CPU and I/O concurrency are high or when UCB1 selects it
+        if (any_kyber) {
             const double bonus = (telemetry.io_psi >= 5.0 && telemetry.cpu_psi >= 10.0) ? 0.15 : 0.0;
-            const double sc = score_candidate("io.kyber_token_bucket") + bonus;
+            const double sc = score_candidate("io.kyber_token_bucket", bonus);
             if (sc > best_score) {
                 best_score = sc;
                 best_id = "io.kyber_token_bucket";
             }
         }
-        if (contains_token(primary_q.available_schedulers, "bfq")) {
+        if (any_bfq) {
             const double sc = score_candidate("io.bfq_interactive_fairness");
             if (sc > best_score) {
                 best_score = sc;
@@ -662,12 +938,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "mq-deadline")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "mq-deadline", "Anchor (Required-before)"});
-                steps.push_back({q.queue_dir + "/iosched/read_expire", "250", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/iosched/writes_starved", "3", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/iosched/fifo_batch", "8", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with"});
+                steps.push_back({q.queue_dir + "/scheduler", "mq-deadline", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                if (q.has_iosched_tunables) {
+                    steps.push_back({q.queue_dir + "/iosched/read_expire", "250", "Coupled-with", StepRelation::RequiredDependent});
+                    steps.push_back({q.queue_dir + "/iosched/writes_starved", "3", "Coupled-with", StepRelation::RequiredDependent});
+                    steps.push_back({q.queue_dir + "/iosched/fifo_batch", "8", "Coupled-with", StepRelation::RequiredDependent});
+                }
+                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
+                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.mq_deadline_low_latency",
@@ -685,10 +963,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "kyber")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "kyber", "Anchor (Required-before)"});
-                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "128", "Coupled-with"});
-                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with"});
+                steps.push_back({q.queue_dir + "/scheduler", "kyber", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with", StepRelation::RequiredDependent});
+                steps.push_back({q.queue_dir + "/read_ahead_kb", "128", "Coupled-with", StepRelation::RequiredDependent});
+                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.kyber_token_bucket",
@@ -706,8 +984,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "bfq")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "bfq", "Anchor (Required-before)"});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with"});
+                steps.push_back({q.queue_dir + "/scheduler", "bfq", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.bfq_interactive_fairness",
@@ -723,8 +1001,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
         if (best_id == "io.queue_readahead_pacing") {
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Anchor (Required-before)"});
-                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with"});
+                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.queue_readahead_pacing",
@@ -737,44 +1015,45 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
         }
     }
 
-    // Priority B: Memory PSI Contention -> VM Subsystem Relief Transaction
-    if (mem_bottleneck) {
-        const auto* vm_cand = find_candidate("vm.zram_latency_relief");
-        if (vm_cand != nullptr && vm_cand->cooldown_ticks == 0) {
-            std::vector<MutationStep> steps{
-                {proc_root_ + "/sys/vm/page-cluster", "0", "Anchor (Required-before)"},
-                {proc_root_ + "/sys/vm/vfs_cache_pressure", "80", "Coupled-with"},
-            };
-            (void)apply_transaction(
-                "vm.zram_latency_relief",
-                "VM Page-Cluster Zero-Latency & VFS Dentry Preservation",
-                "MemoryStallRelief",
-                "Memory PSI stall (" + std::to_string(telemetry.memory_psi).substr(0, 4) +
-                    "%) detected; setting vm.page-cluster=0 and vfs_cache_pressure=80 to reduce swap latency.",
-                steps,
-                telemetry);
-            return snapshot();
-        }
+    // Priority B: Memory PSI Contention -> VM Subsystem Relief Transaction (requires active zram swap)
+    if (mem_bottleneck && is_candidate_eligible("vm.zram_latency_relief")) {
+        std::vector<MutationStep> steps{
+            {proc_root_ + "/sys/vm/page-cluster", "0", "Anchor (Required-before)", StepRelation::RequiredAnchor},
+            {proc_root_ + "/sys/vm/vfs_cache_pressure", "80", "Coupled-with", StepRelation::RequiredDependent},
+        };
+        (void)apply_transaction(
+            "vm.zram_latency_relief",
+            "VM Page-Cluster Zero-Latency & VFS Dentry Preservation",
+            "MemoryStallRelief",
+            "Memory PSI stall (" + std::to_string(telemetry.memory_psi).substr(0, 4) +
+                "%) detected with active zram swap; setting vm.page-cluster=0 and vfs_cache_pressure=80.",
+            steps,
+            telemetry);
+        return snapshot();
     }
 
     // Priority C: Interactive CPU PSI Bottleneck -> Smart CPUFreq Governor Rate-Limit Pacing
-    if (cpu_bottleneck) {
-        const auto* cpu_cand = find_candidate("cpufreq.schedutil_interactive_response");
-        if (cpu_cand != nullptr && cpu_cand->cooldown_ticks == 0) {
-            std::vector<MutationStep> steps;
-            for (const auto& gdir : cpufreq_governor_dirs_) {
-                steps.push_back({gdir + "/up_rate_limit_us", "500", "Anchor (Required-before)"});
-                steps.push_back({gdir + "/down_rate_limit_us", "10000", "Coupled-with"});
+    if (cpu_bottleneck && is_candidate_eligible("cpufreq.schedutil_interactive_response")) {
+        std::vector<MutationStep> steps;
+        for (const auto& gdir : cpufreq_governor_dirs_) {
+            const fs::path gpath(gdir);
+            const std::string gov_name = gpath.filename().string();
+            const fs::path scaling_gov_path = gpath.parent_path() / "scaling_governor";
+            const std::string active_gov = DaemonConfig::trim(read_first_line(scaling_gov_path.string()));
+            if (!active_gov.empty() && active_gov != gov_name) {
+                continue;
             }
-            (void)apply_transaction(
-                "cpufreq.schedutil_interactive_response",
-                "EAS Governor Rate-Limit Pacing (500us up / 10000us down)",
-                "InteractiveCpuPacing",
-                "CPU PSI stall (" + std::to_string(telemetry.cpu_psi).substr(0, 4) +
-                    "%) with thermal headroom; pacing EAS governor rate limits (up=500us, down=10000us).",
-                steps,
-                telemetry);
+            steps.push_back({gdir + "/up_rate_limit_us", "500", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+            steps.push_back({gdir + "/down_rate_limit_us", "10000", "Coupled-with", StepRelation::RequiredDependent});
         }
+        (void)apply_transaction(
+            "cpufreq.schedutil_interactive_response",
+            "EAS Governor Rate-Limit Pacing (500us up / 10000us down)",
+            "InteractiveCpuPacing",
+            "CPU PSI stall (" + std::to_string(telemetry.cpu_psi).substr(0, 4) +
+                "%) with thermal headroom; pacing EAS governor rate limits (up=500us, down=10000us).",
+            steps,
+            telemetry);
     }
 
     return snapshot();
@@ -782,7 +1061,15 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
 
 AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     AutonomousDecisionSnapshot out{};
-    out.stage = observing_ ? "OBSERVING" : (transaction_active_ ? "RETAINED" : "PLANNED");
+    if (recovery_required_) {
+        out.stage = "RECOVERY_REQUIRED";
+    } else if (observing_) {
+        out.stage = "OBSERVING";
+    } else if (transaction_active_) {
+        out.stage = "RETAINED";
+    } else {
+        out.stage = "PLANNED";
+    }
     out.active_intent = current_intent_;
     out.intent = current_intent_;
     out.active_candidate_id = current_candidate_id_;
@@ -806,6 +1093,7 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.improved_count = total_improved_;
     out.total_rolled_back = total_rolled_back_;
     out.rolled_back_count = total_rolled_back_;
+    out.recovery_required = recovery_required_;
     out.block_queues = block_queues_;
     out.candidates = candidates_;
     out.vm_page_cluster = read_first_line(proc_root_ + "/sys/vm/page-cluster");

@@ -7,7 +7,7 @@
 namespace coreflow {
 struct ThermalSensorReading {
     std::string id, type;
-    int category{0}; // 1 compute, 2 battery, 3 skin, 4 board/power
+    int category{0}; // 0 diagnostic/unknown, 1 compute, 2 battery, 3 skin, 4 board/power
     float celsius{-1};
     bool valid{false}, policy_available{false};
     double pressure{0};
@@ -21,6 +21,13 @@ struct ThermalAssessment {
     std::string sensor;
     std::vector<ThermalSensorReading> readings;
     bool incomplete{false};
+    bool degraded{false};
+    bool platform_status_valid{false};
+    bool headroom_valid{false};
+    float headroom_value{-1.0f};
+    bool sysfs_trip_policy_valid{false};
+    bool sensor_readings_complete{true};
+    bool fallback_active{false};
 };
 struct MultiSensorProfile {
     float cpu_average{-1.0f};
@@ -36,6 +43,7 @@ struct MultiSensorProfile {
 };
 
 [[nodiscard]] ThermalAssessment assessment_from_android_severity(int severity);
+[[nodiscard]] ThermalAssessment apply_android_headroom(ThermalAssessment base, float headroom);
 [[nodiscard]] ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAssessment sensors);
 
 class ThermalMonitor {
@@ -49,7 +57,13 @@ public:
     [[nodiscard]] MultiSensorProfile multi_sensor_profile() const;
     [[nodiscard]] ThermalAssessment assess(bool headroom = true) const;
 private:
-    struct Sensor { std::string path, type; int category; };
+    struct Sensor {
+        std::string path;
+        std::string temp_path;
+        std::string type;
+        int category{0};
+        bool is_hwmon{false};
+    };
     std::string sysfs_root_;
     mutable std::vector<Sensor> sensors_;
     mutable std::chrono::steady_clock::time_point discovery_at_{};

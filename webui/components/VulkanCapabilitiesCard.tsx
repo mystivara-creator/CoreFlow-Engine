@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Cpu, Layers, Shield, Sliders, X } from 'lucide-react';
+import { Check, Cpu, Shield, Sliders, X } from 'lucide-react';
 import {
   computeVulkanTelemetry,
   VulkanEngineConfig,
@@ -73,15 +73,14 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
   saveMessage,
 }) => {
   const vk = computeVulkanTelemetry(vulkanConfig, vulkanTelemetry);
-  const badgeFor = (active: boolean, hwSupported?: boolean, isOverrideOnly = false): string | undefined => {
+  const badgeFor = (active: boolean, hwSupported?: boolean, _isOverrideOnly = false): string | undefined => {
     if (!active) return undefined;
-    if (hwSupported) return 'HW Native';
-    return isOverrideOnly ? 'Layer Override' : 'VkLayer Bridged';
+    return hwSupported ? 'HW Native' : undefined;
   };
-  const addedExts = Math.max(0, vk.effectiveDeviceExtensions - vk.deviceExtensions);
 
   const handleSelectMode = async (mode: VulkanLayerMode) => {
-    const updated: VulkanEngineConfig = { ...vulkanConfig, mode };
+    const normalizedMode: VulkanLayerMode = mode === 'disabled' ? 'disabled' : 'safe_hardware';
+    const updated: VulkanEngineConfig = { ...vulkanConfig, mode: normalizedMode };
     onChangeVulkanConfig(updated);
     await onSaveVulkanConfig(updated);
   };
@@ -101,96 +100,47 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="space-y-1.5 max-w-2xl">
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              <span>Universal Multi-Vendor GPU & Vulkan 1.4 Architecture</span>
+              <span>Universal Multi-Vendor GPU & Truthful Vulkan Diagnostics</span>
               <span aria-hidden="true"> · </span>
               <span>{vk.deviceName}</span>
               <span aria-hidden="true"> · </span>
-              <span>{nativeMode ? 'Live Device ICD Probe' : 'Interactive Capability Model'}</span>
+              <span>{nativeMode ? 'Live Device ICD Probe' : 'Hardware Pass-Through Model'}</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Vulkan Capabilities & Implicit Layer Bridge
+              Vulkan Capabilities & Truthful Hardware Pass-Through
             </h2>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
               Dynamically probes the active device&apos;s physical GPU ICD (Qualcomm Adreno KGSL, ARM Mali /
-              Immortalis, Samsung Xclipse, PowerVR) and bridges missing Vulkan 1.4 features via{' '}
-              <code className="font-mono text-xs">libVkLayer_coreflow.so</code> with{' '}
-              <code className="font-mono text-xs">vkCreateDevice</code> extension guard.
+              Immortalis, Samsung Xclipse, PowerVR) and reports genuine hardware capabilities without
+              fabricating unsupported extensions, feature flags, or API versions. Opt-in diagnostic layer{' '}
+              <code className="font-mono text-xs">libVkLayer_coreflow.so</code> requires{' '}
+              <code className="font-mono text-xs">ENABLE_COREFLOW_VULKAN_LAYER=1</code>.
             </p>
           </div>
 
           <div className="text-left lg:text-right font-mono tabular-nums text-xs text-slate-600 dark:text-slate-400 shrink-0 space-y-1">
             <div>
-              Effective API:{' '}
+              Hardware API:{' '}
               <span className="font-semibold text-slate-900 dark:text-slate-100">
-                Vulkan {vk.effectiveApiVersion}
-              </span>{' '}
-              <span className="text-slate-400">(HW {vk.apiVersion})</span>
+                Vulkan {vk.apiVersion}
+              </span>
             </div>
             <div>
               Device Extensions:{' '}
               <span className="font-semibold text-slate-900 dark:text-slate-100">
-                {vk.effectiveDeviceExtensions}
-              </span>{' '}
-              <span className="text-slate-400">
-                (HW Base {vk.deviceExtensions}{addedExts > 0 ? ` + ${addedExts} Bridged` : ''})
+                {vk.deviceExtensions}
               </span>
               {' · '}Instance: {vk.instanceExtensions}
             </div>
           </div>
         </div>
 
-        {/* Mode Selector (Opsi A vs Opsi B vs OEM Passthrough) */}
+        {/* Mode Selector (Disabled vs Safe Hardware Pass-Through) */}
         <div className="space-y-3">
           <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-            Select Capability Interception Mode
+            Select Vulkan Layer Mode
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <button
-              type="button"
-              onClick={() => void handleSelectMode('safe_hardware')}
-              className={
-                'text-left p-4 rounded-2xl border transition-colors ' +
-                (vulkanConfig.mode === 'safe_hardware'
-                  ? 'bg-[#d3e3fd]/45 dark:bg-[#0842a0]/30 border-[#0842a0]/40 dark:border-[#d3e3fd]/40 text-slate-900 dark:text-slate-100'
-                  : 'bg-slate-50/70 dark:bg-[#1b202a] border-slate-900/[0.06] dark:border-white/[0.06] text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-[#202632]')
-              }
-            >
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs font-bold whitespace-nowrap">
-                  Opsi A · Safe Hardware & 1.4 Bridge
-                </span>
-                <Shield className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
-              </div>
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Completes Vulkan 1.4 features missing on this device (Index UINT8, Line Rasterization,
-                Push Descriptors, Maintenance 5/6/7, Descriptor Buffer, GPL) while preserving native
-                hardware capabilities. 100% crash-safe in games.
-              </p>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void handleSelectMode('full_capability_override')}
-              className={
-                'text-left p-4 rounded-2xl border transition-colors ' +
-                (vulkanConfig.mode === 'full_capability_override'
-                  ? 'bg-[#d3e3fd]/45 dark:bg-[#0842a0]/30 border-[#0842a0]/40 dark:border-[#d3e3fd]/40 text-slate-900 dark:text-slate-100'
-                  : 'bg-slate-50/70 dark:bg-[#1b202a] border-slate-900/[0.06] dark:border-white/[0.06] text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-[#202632]')
-              }
-            >
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs font-bold whitespace-nowrap">
-                  Opsi B · Full Capability Override
-                </span>
-                <Layers className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
-              </div>
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Enables all Opsi A bridges plus full Vulkan capability reporting (Ray Tracing, RT
-                Pipeline, Ray Query, Mesh Shaders, Cooperative Matrix, Shader Float64) guarded by{' '}
-                <code className="font-mono">vkCreateDevice</code> extension filtering.
-              </p>
-            </button>
-
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <button
               type="button"
               onClick={() => void handleSelectMode('disabled')}
@@ -203,13 +153,37 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
             >
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="text-xs font-bold whitespace-nowrap">
-                  OEM Passthrough (Unmodified)
+                  Default · Implicit Layer Disabled (Recommended)
                 </span>
                 <Cpu className="w-4 h-4 shrink-0 text-slate-500" />
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Disables <code className="font-mono">VK_LAYER_COREFLOW_universal_bridge</code>{' '}
-                feature promotion and reports the raw physical vendor ICD readout of this device.
+                Keeps <code className="font-mono">VK_LAYER_COREFLOW_universal_bridge</code>{' '}
+                inactive for normal applications while still reading native GPU devfreq and physical ICD
+                capabilities.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleSelectMode('safe_hardware')}
+              className={
+                'text-left p-4 rounded-2xl border transition-colors ' +
+                (vulkanConfig.mode !== 'disabled'
+                  ? 'bg-[#d3e3fd]/45 dark:bg-[#0842a0]/30 border-[#0842a0]/40 dark:border-[#d3e3fd]/40 text-slate-900 dark:text-slate-100'
+                  : 'bg-slate-50/70 dark:bg-[#1b202a] border-slate-900/[0.06] dark:border-white/[0.06] text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-[#202632]')
+              }
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-xs font-bold whitespace-nowrap">
+                  Truthful Hardware Pass-Through & GPU Pacing
+                </span>
+                <Shield className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                Uses per-handle Vulkan dispatch and forwards 100% authentic ICD capabilities without
+                spoofing API versions, injecting extensions, or stripping <code className="font-mono">vkCreateDevice</code>{' '}
+                requests.
               </p>
             </button>
           </div>

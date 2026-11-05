@@ -16,5 +16,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["webui"]
+  "include": ["webui"],
+  "exclude": ["webui/**/__tests__/**"]
 }

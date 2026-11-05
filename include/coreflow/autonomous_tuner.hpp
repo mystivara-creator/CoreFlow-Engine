@@ -34,6 +34,14 @@ enum class TunerVerdict : uint8_t {
     Regressed = 4,
     Aborted = 5,
     OwnershipLost = 6,
+    Inconclusive = 7,
+    RecoveryRequired = 8,
+};
+
+enum class StepRelation : uint8_t {
+    RequiredAnchor = 0,
+    RequiredDependent = 1,
+    OptionalIndependent = 2,
 };
 
 struct BlockQueueSurface {
@@ -68,17 +76,18 @@ struct CandidateStats {
     uint32_t regressed_count{0};
     uint32_t rollbacks{0};
     uint32_t cooldown_ticks{0};
+    uint32_t consecutive_non_improved{0};
 };
 
 struct AutonomousDecisionSnapshot {
-    std::string stage{"RETAINED"};      // PLANNED, OBSERVING, RETAINED, ROLLED_BACK
+    std::string stage{"RETAINED"};      // PLANNED, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
     std::string active_intent{"HoldEquilibrium"};
     std::string intent{"HoldEquilibrium"};
     std::string active_candidate_id{"baseline"};
     std::string active_candidate_label{"OEM Verified Baseline"};
     std::string decision_rationale{"System in low-pressure equilibrium; no mutation required."};
     std::string rationale{"System in low-pressure equilibrium; no mutation required."};
-    std::string last_verdict{"IMPROVED"}; // IMPROVED, NEUTRAL, REGRESSED, OWNERSHIP_LOST, HOLD, ABORTED
+    std::string last_verdict{"IMPROVED"}; // IMPROVED, NEUTRAL, REGRESSED, INCONCLUSIVE, OWNERSHIP_LOST, HOLD, ABORTED, RECOVERY_REQUIRED
     TunerVerdict verdict{TunerVerdict::Improved};
     double last_utility_delta{0.0};
     double utility_delta{0.0};
@@ -95,6 +104,7 @@ struct AutonomousDecisionSnapshot {
     uint32_t improved_count{0};
     uint32_t total_rolled_back{0};
     uint32_t rolled_back_count{0};
+    bool recovery_required{false};
     std::vector<BlockQueueSurface> block_queues;
     std::vector<CandidateStats> candidates;
     std::string vm_page_cluster;
@@ -122,10 +132,13 @@ public:
     AutonomousDecisionSnapshot step(const TunerTelemetryInput& telemetry);
 
     // Forces an immediate, dependency-ordered rollback of any active tuner transaction.
-    void rollback_active(std::string_view reason = "Operator or thermal rollback");
+    // Returns false and enters RECOVERY_REQUIRED if any node fails to restore.
+    bool rollback_active(std::string_view reason = "Operator or thermal rollback");
 
     // Resets all active mutations, bandit statistics, and observation state.
     void reset();
+
+    [[nodiscard]] bool is_candidate_eligible(std::string_view id) const noexcept;
 
     [[nodiscard]] AutonomousDecisionSnapshot snapshot() const;
 
@@ -150,6 +163,8 @@ public:
             case TunerVerdict::Regressed: return "REGRESSED";
             case TunerVerdict::Aborted: return "ABORTED";
             case TunerVerdict::OwnershipLost: return "OWNERSHIP_LOST";
+            case TunerVerdict::Inconclusive: return "INCONCLUSIVE";
+            case TunerVerdict::RecoveryRequired: return "RECOVERY_REQUIRED";
         }
         return "HOLD";
     }
@@ -158,7 +173,8 @@ private:
     struct MutationStep {
         std::string path;
         std::string target_value;
-        std::string relationship; // "Anchor" (Required-before) or "Coupled-with"
+        std::string relationship; // "Anchor (Required-before)" or "Coupled-with"
+        StepRelation relation{StepRelation::RequiredDependent};
     };
 
     std::string sys_root_;
@@ -166,9 +182,11 @@ private:
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
     std::vector<CandidateStats> candidates_;
+    bool zram_active_{false};
 
     bool transaction_active_{false};
     bool observing_{false};
+    bool recovery_required_{false};
     std::string current_candidate_id_{"baseline"};
     std::string current_candidate_label_{"OEM Verified Baseline"};
     std::string current_intent_{"HoldEquilibrium"};
@@ -186,6 +204,8 @@ private:
     double sum_after_mem_psi_{0.0};
     double sum_after_cpu_psi_{0.0};
     double sum_after_thermal_{0.0};
+    double min_after_io_psi_{0.0};
+    double max_after_io_psi_{0.0};
     uint32_t obs_ticks_{0};
     uint32_t obs_window_{3};
     uint32_t idle_streak_{0};
@@ -199,6 +219,10 @@ private:
     void init_candidates();
     void update_ucb_scores();
     void refresh_surface_readings();
+    std::string compute_fingerprint() const;
+    void save_persisted_stats() const;
+    void load_persisted_stats();
+    bool verify_active_ownership() const;
     bool apply_transaction(
         std::string_view candidate_id,
         std::string_view candidate_label,
@@ -208,6 +232,7 @@ private:
         const TunerTelemetryInput& telemetry);
     void evaluate_observation_window();
     CandidateStats* find_candidate(std::string_view id);
+    const CandidateStats* find_candidate(std::string_view id) const;
 };
 
 } // namespace coreflow

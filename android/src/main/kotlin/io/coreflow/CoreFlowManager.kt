@@ -21,13 +21,22 @@ object CoreFlowManager {
         "[ -x \"\$BIN\" ] || BIN=\"/system/bin/coreflowd\""
 
     private const val CONFIG_PATH = "/data/adb/coreflow/coreflow.conf"
-    private const val PID_PATH = "/data/adb/coreflow/coreflowd.pid"
 
-    enum class Profile(val label: String, val uclampMin: Int) {
-        BATTERY("Battery Saver", 64),
-        BALANCED("Balanced Equilibrium", 320),
-        PERFORMANCE("Interactive Responsiveness", 640),
-        THERMAL_GUARD("ThermalGuard (Cooling)", 0)
+    enum class Profile(val label: String, val configBias: String, val uclampMin: Int) {
+        BATTERY("Battery Saver", "battery", 64),
+        BALANCED("Balanced Equilibrium", "balanced", 320),
+        PERFORMANCE("Interactive Responsiveness", "responsiveness", 640),
+        THERMAL_GUARD("ThermalGuard (Pacing)", "battery", 0);
+
+        companion object {
+            fun fromConfigBias(bias: String, uclampMin: Int): Profile {
+                return when (bias.trim().lowercase()) {
+                    "responsiveness", "performance" -> PERFORMANCE
+                    "battery" -> if (uclampMin == 0) THERMAL_GUARD else BATTERY
+                    else -> BALANCED
+                }
+            }
+        }
     }
 
     data class DaemonStatus(
@@ -43,7 +52,8 @@ object CoreFlowManager {
         val gpuTempCelsius: Float,
         val batteryTempCelsius: Float,
         val recoveryPending: Boolean,
-        val thermalSource: String
+        val thermalSource: String,
+        val thermalGuardActive: Boolean = false
     )
 
     /**
@@ -52,7 +62,8 @@ object CoreFlowManager {
     suspend fun getStatus(): Result<DaemonStatus> = withContext(Dispatchers.IO) {
         runCatching {
             val output = execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --status")
-            val lastLine = output.trim().lines().lastOrNull() ?: throw IllegalStateException("Empty daemon output")
+            val lastLine = output.trim().lines().lastOrNull { it.trim().startsWith("{") }
+                ?: throw IllegalStateException("Empty daemon output")
             val json = JSONObject(lastLine)
 
             DaemonStatus(
@@ -68,21 +79,52 @@ object CoreFlowManager {
                 gpuTempCelsius = json.optDouble("gpuTempCelsius", -1.0).toFloat(),
                 batteryTempCelsius = json.optDouble("batteryTempCelsius", -1.0).toFloat(),
                 recoveryPending = json.optBoolean("recoveryPending", false),
-                thermalSource = json.optString("thermalSource", "multi-sensor-composite")
+                thermalSource = json.optString("thermalSource", "oem_policy"),
+                thermalGuardActive = json.optBoolean("thermalGuardActive", false)
             )
         }
     }
 
     /**
-     * Apply a coordinated optimization profile.
+     * Read the active optimization profile from /data/adb/coreflow/coreflow.conf.
+     */
+    suspend fun readActiveProfile(): Result<Profile> = withContext(Dispatchers.IO) {
+        runCatching {
+            val raw = execRootCommand("cat $CONFIG_PATH 2>/dev/null || true")
+            var bias = "balanced"
+            var uclampMin = 320
+            var inUclampSection = false
+            for (line in raw.lineSequence()) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) continue
+                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                    inUclampSection = trimmed.substring(1, trimmed.length - 1).trim() == "uclamp_tuning"
+                    continue
+                }
+                if (!inUclampSection) continue
+                val eq = trimmed.indexOf('=')
+                if (eq <= 0) continue
+                val key = trimmed.substring(0, eq).trim()
+                val value = trimmed.substring(eq + 1).trim()
+                when (key) {
+                    "ui_adaptive_bias" -> bias = value
+                    "top_app_interactive_min" -> uclampMin = value.toIntOrNull() ?: uclampMin
+                }
+            }
+            Profile.fromConfigBias(bias, uclampMin)
+        }
+    }
+
+    /**
+     * Apply a coordinated optimization profile using coreflowd's atomic --set-config updater.
      */
     suspend fun applyProfile(profile: Profile): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val cmd = StringBuilder()
-            cmd.append("sed -i 's/^ui_adaptive_bias[[:space:]]*=.*/ui_adaptive_bias = ${profile.name.lowercase()}/' $CONFIG_PATH 2>/dev/null; ")
-            cmd.append("sed -i 's/^top_app_interactive_min[[:space:]]*=.*/top_app_interactive_min = ${profile.uclampMin}/' $CONFIG_PATH 2>/dev/null; ")
-            cmd.append("$RESOLVE_DAEMON; killall -HUP coreflowd 2>/dev/null || true")
-            execRootCommand(cmd.toString())
+            val cmd = "$RESOLVE_DAEMON; \"\$BIN\" --set-config " +
+                "ui_adaptive_bias=${profile.configBias} " +
+                "top_app_interactive_min=${profile.uclampMin} " +
+                "ui_balanced_uclamp_min=${profile.uclampMin}"
+            execRootCommand(cmd)
             Unit
         }
     }

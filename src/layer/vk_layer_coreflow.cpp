@@ -1,14 +1,14 @@
 /**
  * @file vk_layer_coreflow.cpp
- * @brief Universal Multi-Vendor Vulkan 1.4 Implicit Layer (VK_LAYER_COREFLOW_universal_bridge)
- *        Implements Opsi A (Safe Hardware & Vulkan 1.4 Extension Bridge) and
- *        Opsi B (Full Capability Completion + vkCreateDevice Extension Guard).
+ * @brief Truthful Pass-Through Vulkan Implicit Layer (VK_LAYER_COREFLOW_universal_bridge)
+ *        Implements per-instance and per-device dispatch tables (VULKAN-02) and strictly
+ *        preserves physical ICD API versions, extensions, feature chains, and error
+ *        semantics without falsification or silent extension stripping (VULKAN-01).
  * @author mystivara-creator
  * @license MIT
  */
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 #define CF_VK_EXPORT extern "C" __attribute__((visibility("default")))
@@ -35,41 +36,16 @@ using PFN_vkVoidFunction = void (*)();
 constexpr VkResult kVkSuccess = 0;
 constexpr VkResult kVkIncomplete = 5;
 constexpr VkResult kVkErrorInitializationFailed = -3;
-constexpr VkBool32 kVkTrue = 1U;
 constexpr size_t kVkMaxExtensionNameSize = 256;
 constexpr size_t kVkMaxDescriptionSize = 256;
 
-// Khronos Structure Types
+// Khronos Loader-Layer Structure Types
 constexpr int32_t kVkStructureTypeLoaderInstanceCreateInfo = 47;
 constexpr int32_t kVkStructureTypeLoaderDeviceCreateInfo = 48;
-constexpr int32_t kVkStructureTypePhysicalDeviceVulkan14Features = 55;
-constexpr int32_t kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr = 1000080000;
-
-// Extension Feature Structure Types (Khronos vk.xml values)
-constexpr int32_t kVkStructureTypePhysicalDeviceLineRasterizationFeaturesExt = 1000259000;
-constexpr int32_t kVkStructureTypePhysicalDeviceIndexTypeUint8FeaturesExt = 1000265000;
-constexpr int32_t kVkStructureTypePhysicalDeviceFragmentShadingRateFeaturesKhr = 1000226000;
-constexpr int32_t kVkStructureTypePhysicalDeviceRayTracingPipelineFeaturesKhr = 1000347000;
-constexpr int32_t kVkStructureTypePhysicalDeviceRayQueryFeaturesKhr = 1000348001;
-constexpr int32_t kVkStructureTypePhysicalDeviceAccelerationStructureFeaturesKhr = 1000150013;
-constexpr int32_t kVkStructureTypePhysicalDeviceMeshShaderFeaturesExt = 1000328000;
-constexpr int32_t kVkStructureTypePhysicalDeviceCooperativeMatrixFeaturesKhr = 1000506000;
-constexpr int32_t kVkStructureTypePhysicalDeviceGlobalPriorityQueryFeaturesKhr = 1000388000;
-constexpr int32_t kVkStructureTypePhysicalDeviceShaderFloatControls2FeaturesKhr = 1000528000;
-constexpr int32_t kVkStructureTypePhysicalDeviceMaintenance5FeaturesKhr = 1000470000;
-constexpr int32_t kVkStructureTypePhysicalDeviceMaintenance6FeaturesKhr = 1000545000;
-constexpr int32_t kVkStructureTypePhysicalDeviceMaintenance7FeaturesKhr = 1000562000;
-constexpr int32_t kVkStructureTypePhysicalDeviceDescriptorBufferFeaturesExt = 1000316000;
-constexpr int32_t kVkStructureTypePhysicalDeviceGraphicsPipelineLibraryFeaturesExt = 1000320000;
 
 constexpr uint32_t make_vk_version(uint32_t major, uint32_t minor, uint32_t patch) noexcept {
     return (major << 22U) | (minor << 12U) | patch;
 }
-
-struct VkBaseOutStructure {
-    int32_t sType;
-    VkBaseOutStructure* pNext;
-};
 
 struct VkLayerProperties {
     char layerName[kVkMaxExtensionNameSize];
@@ -141,61 +117,7 @@ struct VkDeviceCreateInfo {
 };
 
 struct VkPhysicalDeviceFeatures {
-    VkBool32 robustBufferAccess;
-    VkBool32 fullDrawIndexUint32;
-    VkBool32 imageCubeArray;
-    VkBool32 independentBlend;
-    VkBool32 geometryShader;
-    VkBool32 tessellationShader;
-    VkBool32 sampleRateShading;
-    VkBool32 dualSrcBlend;
-    VkBool32 logicOp;
-    VkBool32 multiDrawIndirect;
-    VkBool32 drawIndirectFirstInstance;
-    VkBool32 depthClamp;
-    VkBool32 depthBiasClamp;
-    VkBool32 fillModeNonSolid;
-    VkBool32 depthBounds;
-    VkBool32 wideLines;
-    VkBool32 largePoints;
-    VkBool32 alphaToOne;
-    VkBool32 multiViewport;
-    VkBool32 samplerAnisotropy;
-    VkBool32 textureCompressionETC2;
-    VkBool32 textureCompressionASTC_LDR;
-    VkBool32 textureCompressionBC;
-    VkBool32 occlusionQueryPrecise;
-    VkBool32 pipelineStatisticsQuery;
-    VkBool32 vertexPipelineStoresAndAtomics;
-    VkBool32 fragmentStoresAndAtomics;
-    VkBool32 shaderTessellationAndGeometryPointSize;
-    VkBool32 shaderImageGatherExtended;
-    VkBool32 shaderStorageImageExtendedFormats;
-    VkBool32 shaderStorageImageMultisample;
-    VkBool32 shaderStorageImageReadWithoutFormat;
-    VkBool32 shaderStorageImageWriteWithoutFormat;
-    VkBool32 shaderUniformBufferArrayDynamicIndexing;
-    VkBool32 shaderSampledImageArrayDynamicIndexing;
-    VkBool32 shaderStorageBufferArrayDynamicIndexing;
-    VkBool32 shaderStorageImageArrayDynamicIndexing;
-    VkBool32 shaderClipDistance;
-    VkBool32 shaderCullDistance;
-    VkBool32 shaderFloat64;
-    VkBool32 shaderInt64;
-    VkBool32 shaderInt16;
-    VkBool32 shaderResourceResidency;
-    VkBool32 shaderResourceMinLod;
-    VkBool32 sparseBinding;
-    VkBool32 sparseResidencyBuffer;
-    VkBool32 sparseResidencyImage2D;
-    VkBool32 sparseResidencyImage3D;
-    VkBool32 sparseResidency2Samples;
-    VkBool32 sparseResidency4Samples;
-    VkBool32 sparseResidency8Samples;
-    VkBool32 sparseResidency16Samples;
-    VkBool32 sparseResidencyAliased;
-    VkBool32 variableMultisampleRate;
-    VkBool32 inheritedQueries;
+    VkBool32 features[55];
 };
 
 struct VkPhysicalDeviceFeatures2 {
@@ -204,23 +126,13 @@ struct VkPhysicalDeviceFeatures2 {
     VkPhysicalDeviceFeatures features;
 };
 
-struct VkPhysicalDevicePropertiesPrefix {
+struct VkPhysicalDeviceProperties2Prefix {
+    int32_t sType;
+    void* pNext;
     uint32_t apiVersion;
     uint32_t driverVersion;
     uint32_t vendorID;
     uint32_t deviceID;
-};
-
-struct VkPhysicalDeviceProperties2Prefix {
-    int32_t sType;
-    void* pNext;
-    VkPhysicalDevicePropertiesPrefix properties;
-};
-
-struct VkPhysicalDevicePushDescriptorPropertiesKHR {
-    int32_t sType;
-    void* pNext;
-    uint32_t maxPushDescriptors;
 };
 
 struct VkNegotiateLayerInterface {
@@ -234,6 +146,7 @@ struct VkNegotiateLayerInterface {
 
 using PFN_vkCreateInstance = VkResult (*)(const VkInstanceCreateInfo*, const void*, VkInstance*);
 using PFN_vkDestroyInstance = void (*)(VkInstance, const void*);
+using PFN_vkEnumeratePhysicalDevices = VkResult (*)(VkInstance, uint32_t*, VkPhysicalDevice*);
 using PFN_vkCreateDevice = VkResult (*)(VkPhysicalDevice, const VkDeviceCreateInfo*, const void*, VkDevice*);
 using PFN_vkDestroyDevice = void (*)(VkDevice, const void*);
 using PFN_vkGetPhysicalDeviceFeatures = void (*)(VkPhysicalDevice, VkPhysicalDeviceFeatures*);
@@ -241,162 +154,67 @@ using PFN_vkGetPhysicalDeviceFeatures2 = void (*)(VkPhysicalDevice, VkPhysicalDe
 using PFN_vkGetPhysicalDeviceProperties2 = void (*)(VkPhysicalDevice, VkPhysicalDeviceProperties2Prefix*);
 using PFN_vkEnumerateDeviceExtensionProperties = VkResult (*)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
 
-enum class LayerMode : uint8_t {
-    Disabled = 0,
-    SafeHardware = 1,
-    FullCapabilityOverride = 2
+struct InstanceDispatchEntry {
+    PFN_vkGetInstanceProcAddr next_gipa{nullptr};
+    PFN_vkVoidFunction next_gpdpa{nullptr};
 };
 
-struct LayerRuntimeConfig {
-    LayerMode mode{LayerMode::SafeHardware};
-    uint32_t max_push_descriptors{32};
-    bool adaptive_vrs{true};
-    bool pipeline_cache_prewarm{true};
+struct DeviceDispatchEntry {
+    PFN_vkGetDeviceProcAddr next_gdpa{nullptr};
+    PFN_vkGetInstanceProcAddr next_gipa{nullptr};
+    VkInstance instance{nullptr};
 };
-
-LayerRuntimeConfig read_layer_runtime_config() noexcept {
-    LayerRuntimeConfig cfg{};
-    const char* env_disable = ::getenv("DISABLE_COREFLOW_VULKAN_LAYER");
-    if (env_disable && std::strcmp(env_disable, "1") == 0) {
-        cfg.mode = LayerMode::Disabled;
-        return cfg;
-    }
-
-    const int fd = ::open("/data/adb/coreflow/vulkan_layer.state", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0) return cfg;
-
-    char buf[512];
-    const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
-    (void)::close(fd);
-    if (n <= 0) return cfg;
-    buf[n] = '\0';
-
-    std::string_view content(buf, static_cast<size_t>(n));
-    size_t pos = 0;
-    while (pos < content.size()) {
-        const size_t eol = content.find('\n', pos);
-        const std::string_view line = eol == std::string_view::npos ? content.substr(pos) : content.substr(pos, eol - pos);
-        pos = eol == std::string_view::npos ? content.size() : eol + 1;
-
-        if (line.rfind("mode=", 0) == 0) {
-            const std::string_view val = line.substr(5);
-            if (val == "disabled") cfg.mode = LayerMode::Disabled;
-            else if (val == "full_capability_override") cfg.mode = LayerMode::FullCapabilityOverride;
-            else cfg.mode = LayerMode::SafeHardware;
-        } else if (line.rfind("max_push_descriptors=", 0) == 0) {
-            const std::string_view val = line.substr(21);
-            if (val == "64") cfg.max_push_descriptors = 64;
-            else cfg.max_push_descriptors = 32;
-        } else if (line.rfind("adaptive_vrs=", 0) == 0) {
-            cfg.adaptive_vrs = (line.substr(13) != "0");
-        } else if (line.rfind("pipeline_cache_prewarm=", 0) == 0) {
-            cfg.pipeline_cache_prewarm = (line.substr(23) != "0");
-        }
-    }
-    return cfg;
-}
 
 std::mutex g_dispatch_mutex;
-PFN_vkGetInstanceProcAddr g_next_gipa = nullptr;
-PFN_vkGetDeviceProcAddr g_next_gdpa = nullptr;
-VkInstance g_last_instance = nullptr;
+std::unordered_map<VkInstance, InstanceDispatchEntry> g_instance_dispatch;
+std::unordered_map<VkPhysicalDevice, VkInstance> g_phys_to_instance;
+std::unordered_map<VkDevice, DeviceDispatchEntry> g_device_dispatch;
 
-// Safe Vulkan 1.4 & pipeline extensions (Opsi A + Opsi B)
-constexpr std::array<VkExtensionProperties, 9> kSafeBridgedExtensions = {{
-    {"VK_KHR_push_descriptor", 2},
-    {"VK_EXT_index_type_uint8", 1},
-    {"VK_KHR_index_type_uint8", 1},
-    {"VK_EXT_line_rasterization", 1},
-    {"VK_KHR_line_rasterization", 1},
-    {"VK_KHR_global_priority", 1},
-    {"VK_EXT_global_priority_query", 1},
-    {"VK_KHR_shader_float_controls2", 1},
-    {"VK_KHR_maintenance7", 1},
-}};
+bool lookup_instance_dispatch(VkInstance instance, InstanceDispatchEntry& out) noexcept {
+    std::lock_guard<std::mutex> lock(g_dispatch_mutex);
+    auto it = g_instance_dispatch.find(instance);
+    if (it != g_instance_dispatch.end()) {
+        out = it->second;
+        return out.next_gipa != nullptr;
+    }
+    if (g_instance_dispatch.size() == 1) {
+        out = g_instance_dispatch.begin()->second;
+        return out.next_gipa != nullptr;
+    }
+    return false;
+}
 
-// Full Capability Override extensions (Opsi B only)
-constexpr std::array<VkExtensionProperties, 7> kOverrideExtensions = {{
-    {"VK_EXT_descriptor_buffer", 1},
-    {"VK_EXT_graphics_pipeline_library", 1},
-    {"VK_KHR_acceleration_structure", 13},
-    {"VK_KHR_ray_tracing_pipeline", 1},
-    {"VK_KHR_ray_query", 1},
-    {"VK_EXT_mesh_shader", 1},
-    {"VK_KHR_cooperative_matrix", 2},
-}};
-
-void patch_feature_chain(VkBaseOutStructure* chain, const LayerRuntimeConfig& cfg) noexcept {
-    if (cfg.mode == LayerMode::Disabled) return;
-
-    for (VkBaseOutStructure* cur = chain; cur != nullptr; cur = cur->pNext) {
-        auto* raw_bools = reinterpret_cast<VkBool32*>(reinterpret_cast<char*>(cur) + sizeof(VkBaseOutStructure));
-        switch (cur->sType) {
-            case kVkStructureTypePhysicalDeviceIndexTypeUint8FeaturesExt:
-            case kVkStructureTypePhysicalDeviceGlobalPriorityQueryFeaturesKhr:
-            case kVkStructureTypePhysicalDeviceShaderFloatControls2FeaturesKhr:
-            case kVkStructureTypePhysicalDeviceMaintenance5FeaturesKhr:
-            case kVkStructureTypePhysicalDeviceMaintenance6FeaturesKhr:
-            case kVkStructureTypePhysicalDeviceMaintenance7FeaturesKhr:
-                raw_bools[0] = kVkTrue;
-                break;
-
-            case kVkStructureTypePhysicalDeviceGraphicsPipelineLibraryFeaturesExt:
-                if (cfg.pipeline_cache_prewarm) {
-                    raw_bools[0] = kVkTrue;
-                }
-                break;
-
-            case kVkStructureTypePhysicalDeviceLineRasterizationFeaturesExt:
-                // rectangularLines, bresenhamLines, smoothLines
-                raw_bools[0] = kVkTrue;
-                raw_bools[1] = kVkTrue;
-                raw_bools[2] = kVkTrue;
-                break;
-
-            case kVkStructureTypePhysicalDeviceDescriptorBufferFeaturesExt:
-                // descriptorBuffer, descriptorBufferCaptureReplay, descriptorBufferImageLayoutIgnored, descriptorBufferPushDescriptors
-                raw_bools[0] = kVkTrue;
-                raw_bools[3] = kVkTrue;
-                break;
-
-            case kVkStructureTypePhysicalDeviceFragmentShadingRateFeaturesKhr:
-                if (cfg.adaptive_vrs) {
-                    // pipelineFragmentShadingRate, primitiveFragmentShadingRate, attachmentFragmentShadingRate
-                    raw_bools[0] = kVkTrue;
-                    raw_bools[1] = kVkTrue;
-                    raw_bools[2] = kVkTrue;
-                }
-                break;
-
-            case kVkStructureTypePhysicalDeviceVulkan14Features:
-                // Vulkan 1.4 consolidated feature struct:
-                // [0] globalPriorityQuery, [3] shaderFloatControls2, [5..7] rectangular/bresenham/smoothLines,
-                // [13] indexTypeUint8, [15] maintenance5, [16] maintenance6, [20] pushDescriptor
-                raw_bools[0] = kVkTrue;
-                raw_bools[3] = kVkTrue;
-                raw_bools[5] = kVkTrue;
-                raw_bools[6] = kVkTrue;
-                raw_bools[7] = kVkTrue;
-                raw_bools[13] = kVkTrue;
-                raw_bools[15] = kVkTrue;
-                raw_bools[16] = kVkTrue;
-                raw_bools[20] = kVkTrue;
-                break;
-
-            case kVkStructureTypePhysicalDeviceRayTracingPipelineFeaturesKhr:
-            case kVkStructureTypePhysicalDeviceRayQueryFeaturesKhr:
-            case kVkStructureTypePhysicalDeviceAccelerationStructureFeaturesKhr:
-            case kVkStructureTypePhysicalDeviceMeshShaderFeaturesExt:
-            case kVkStructureTypePhysicalDeviceCooperativeMatrixFeaturesKhr:
-                if (cfg.mode == LayerMode::FullCapabilityOverride) {
-                    raw_bools[0] = kVkTrue;
-                }
-                break;
-
-            default:
-                break;
+bool lookup_phys_dispatch(VkPhysicalDevice phys, VkInstance& inst_out, InstanceDispatchEntry& out) noexcept {
+    std::lock_guard<std::mutex> lock(g_dispatch_mutex);
+    auto pit = g_phys_to_instance.find(phys);
+    if (pit != g_phys_to_instance.end()) {
+        auto iit = g_instance_dispatch.find(pit->second);
+        if (iit != g_instance_dispatch.end()) {
+            inst_out = pit->second;
+            out = iit->second;
+            return out.next_gipa != nullptr;
         }
     }
+    if (g_instance_dispatch.size() == 1) {
+        inst_out = g_instance_dispatch.begin()->first;
+        out = g_instance_dispatch.begin()->second;
+        return out.next_gipa != nullptr;
+    }
+    return false;
+}
+
+bool lookup_device_dispatch(VkDevice device, DeviceDispatchEntry& out) noexcept {
+    std::lock_guard<std::mutex> lock(g_dispatch_mutex);
+    auto it = g_device_dispatch.find(device);
+    if (it != g_device_dispatch.end()) {
+        out = it->second;
+        return out.next_gdpa != nullptr;
+    }
+    if (g_device_dispatch.size() == 1) {
+        out = g_device_dispatch.begin()->second;
+        return out.next_gdpa != nullptr;
+    }
+    return false;
 }
 
 VkResult layer_vkCreateInstance(
@@ -412,100 +230,131 @@ VkResult layer_vkCreateInstance(
     if (!chain || !chain->u.pLayerInfo) return kVkErrorInitializationFailed;
 
     PFN_vkGetInstanceProcAddr next_gipa = chain->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    PFN_vkVoidFunction next_gpdpa = chain->u.pLayerInfo->pfnNextGetPhysicalDeviceProcAddr;
+    if (!next_gipa) return kVkErrorInitializationFailed;
     chain->u.pLayerInfo = chain->u.pLayerInfo->pNext;
 
     auto create_func = reinterpret_cast<PFN_vkCreateInstance>(next_gipa(nullptr, "vkCreateInstance"));
     if (!create_func) return kVkErrorInitializationFailed;
 
     const VkResult res = create_func(pCreateInfo, pAllocator, pInstance);
-    if (res == kVkSuccess) {
+    if (res == kVkSuccess && *pInstance != nullptr) {
         std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        g_next_gipa = next_gipa;
-        g_last_instance = *pInstance;
+        g_instance_dispatch[*pInstance] = InstanceDispatchEntry{next_gipa, next_gpdpa};
+
+        // Pre-bind physical devices for this instance if enumeration is available
+        auto enum_phys = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+            next_gipa(*pInstance, "vkEnumeratePhysicalDevices"));
+        if (enum_phys) {
+            uint32_t count = 0;
+            if (enum_phys(*pInstance, &count, nullptr) == kVkSuccess && count > 0 && count <= 64) {
+                std::vector<VkPhysicalDevice> devs(count, nullptr);
+                if (enum_phys(*pInstance, &count, devs.data()) == kVkSuccess) {
+                    for (uint32_t i = 0; i < count; ++i) {
+                        if (devs[i] != nullptr) {
+                            g_phys_to_instance[devs[i]] = *pInstance;
+                        }
+                    }
+                }
+            }
+        }
     }
     return res;
 }
 
 void layer_vkDestroyInstance(VkInstance instance, const void* pAllocator) {
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
+    InstanceDispatchEntry entry{};
     {
         std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
+        auto it = g_instance_dispatch.find(instance);
+        if (it != g_instance_dispatch.end()) {
+            entry = it->second;
+            g_instance_dispatch.erase(it);
+        }
+        for (auto pit = g_phys_to_instance.begin(); pit != g_phys_to_instance.end();) {
+            if (pit->second == instance) {
+                pit = g_phys_to_instance.erase(pit);
+            } else {
+                ++pit;
+            }
+        }
     }
-    if (!next_gipa) return;
-    auto destroy_func = reinterpret_cast<PFN_vkDestroyInstance>(next_gipa(instance, "vkDestroyInstance"));
+    if (!entry.next_gipa) return;
+    auto destroy_func = reinterpret_cast<PFN_vkDestroyInstance>(entry.next_gipa(instance, "vkDestroyInstance"));
     if (destroy_func) destroy_func(instance, pAllocator);
 }
 
-void layer_vkGetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures) {
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
-    VkInstance inst = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
-        inst = g_last_instance;
-    }
-    if (!next_gipa || !pFeatures) return;
-    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(next_gipa(inst, "vkGetPhysicalDeviceFeatures"));
-    if (fn) fn(physicalDevice, pFeatures);
+VkResult layer_vkEnumeratePhysicalDevices(
+    VkInstance instance,
+    uint32_t* pPhysicalDeviceCount,
+    VkPhysicalDevice* pPhysicalDevices) {
+    InstanceDispatchEntry entry{};
+    if (!lookup_instance_dispatch(instance, entry)) return kVkErrorInitializationFailed;
+    auto fn = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        entry.next_gipa(instance, "vkEnumeratePhysicalDevices"));
+    if (!fn) return kVkErrorInitializationFailed;
 
-    const LayerRuntimeConfig cfg = read_layer_runtime_config();
-    if (cfg.mode == LayerMode::FullCapabilityOverride) {
-        pFeatures->shaderFloat64 = kVkTrue;
+    const VkResult res = fn(instance, pPhysicalDeviceCount, pPhysicalDevices);
+    if ((res == kVkSuccess || res == kVkIncomplete) && pPhysicalDevices && pPhysicalDeviceCount) {
+        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
+        for (uint32_t i = 0; i < *pPhysicalDeviceCount; ++i) {
+            if (pPhysicalDevices[i] != nullptr) {
+                g_phys_to_instance[pPhysicalDevices[i]] = instance;
+            }
+        }
+    }
+    return res;
+}
+
+void layer_vkGetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures) {
+    if (!physicalDevice || !pFeatures) return;
+    VkInstance inst = nullptr;
+    InstanceDispatchEntry entry{};
+    if (!lookup_phys_dispatch(physicalDevice, inst, entry)) return;
+
+    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+        entry.next_gipa(inst, "vkGetPhysicalDeviceFeatures"));
+    if (fn) {
+        // Strictly pass-through hardware features without falsifying shaderFloat64 or any ALU bit
+        fn(physicalDevice, pFeatures);
     }
 }
 
 void layer_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures) {
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
+    if (!physicalDevice || !pFeatures) return;
     VkInstance inst = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
-        inst = g_last_instance;
-    }
-    if (!next_gipa || !pFeatures) return;
-    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(next_gipa(inst, "vkGetPhysicalDeviceFeatures2"));
-    if (!fn) {
-        fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(next_gipa(inst, "vkGetPhysicalDeviceFeatures2KHR"));
-    }
-    if (fn) fn(physicalDevice, pFeatures);
+    InstanceDispatchEntry entry{};
+    if (!lookup_phys_dispatch(physicalDevice, inst, entry)) return;
 
-    const LayerRuntimeConfig cfg = read_layer_runtime_config();
-    if (cfg.mode == LayerMode::FullCapabilityOverride) {
-        pFeatures->features.shaderFloat64 = kVkTrue;
+    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        entry.next_gipa(inst, "vkGetPhysicalDeviceFeatures2"));
+    if (!fn) {
+        fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+            entry.next_gipa(inst, "vkGetPhysicalDeviceFeatures2KHR"));
     }
-    patch_feature_chain(reinterpret_cast<VkBaseOutStructure*>(pFeatures->pNext), cfg);
+    if (fn) {
+        // Strictly pass-through the entire pNext feature chain without modifying any VkBool32
+        fn(physicalDevice, pFeatures);
+    }
 }
 
-void layer_vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2Prefix* pProperties) {
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
+void layer_vkGetPhysicalDeviceProperties2(
+    VkPhysicalDevice physicalDevice,
+    VkPhysicalDeviceProperties2Prefix* pProperties) {
+    if (!physicalDevice || !pProperties) return;
     VkInstance inst = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
-        inst = g_last_instance;
-    }
-    if (!next_gipa || !pProperties) return;
-    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(next_gipa(inst, "vkGetPhysicalDeviceProperties2"));
+    InstanceDispatchEntry entry{};
+    if (!lookup_phys_dispatch(physicalDevice, inst, entry)) return;
+
+    auto fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+        entry.next_gipa(inst, "vkGetPhysicalDeviceProperties2"));
     if (!fn) {
-        fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(next_gipa(inst, "vkGetPhysicalDeviceProperties2KHR"));
+        fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+            entry.next_gipa(inst, "vkGetPhysicalDeviceProperties2KHR"));
     }
-    if (fn) fn(physicalDevice, pProperties);
-
-    const LayerRuntimeConfig cfg = read_layer_runtime_config();
-    if (cfg.mode == LayerMode::Disabled) return;
-
-    if (pProperties->properties.apiVersion < make_vk_version(1, 4, 303)) {
-        pProperties->properties.apiVersion = make_vk_version(1, 4, 303);
-    }
-
-    for (auto* cur = reinterpret_cast<VkBaseOutStructure*>(pProperties->pNext); cur != nullptr; cur = cur->pNext) {
-        if (cur->sType == kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr) {
-            auto* push = reinterpret_cast<VkPhysicalDevicePushDescriptorPropertiesKHR*>(cur);
-            if (push->maxPushDescriptors < cfg.max_push_descriptors) {
-                push->maxPushDescriptors = cfg.max_push_descriptors;
-            }
-        }
+    if (fn) {
+        // Strictly pass-through physical device properties and limits without inflating apiVersion or maxPushDescriptors
+        fn(physicalDevice, pProperties);
     }
 }
 
@@ -520,62 +369,17 @@ VkResult layer_vkEnumerateDeviceExtensionProperties(
         return kVkSuccess;
     }
 
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
+    if (!physicalDevice || !pPropertyCount) return kVkErrorInitializationFailed;
     VkInstance inst = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
-        inst = g_last_instance;
-    }
-    if (!next_gipa || !physicalDevice) return kVkErrorInitializationFailed;
+    InstanceDispatchEntry entry{};
+    if (!lookup_phys_dispatch(physicalDevice, inst, entry)) return kVkErrorInitializationFailed;
 
     auto fn = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
-        next_gipa(inst, "vkEnumerateDeviceExtensionProperties"));
+        entry.next_gipa(inst, "vkEnumerateDeviceExtensionProperties"));
     if (!fn) return kVkErrorInitializationFailed;
 
-    const LayerRuntimeConfig cfg = read_layer_runtime_config();
-    if (cfg.mode == LayerMode::Disabled) {
-        return fn(physicalDevice, pLayerName, pPropertyCount, pProperties);
-    }
-
-    uint32_t hw_count = 0;
-    VkResult res = fn(physicalDevice, pLayerName, &hw_count, nullptr);
-    if (res != kVkSuccess && res != kVkIncomplete) return res;
-
-    std::vector<VkExtensionProperties> merged(hw_count);
-    if (hw_count > 0) {
-        res = fn(physicalDevice, pLayerName, &hw_count, merged.data());
-        if (res != kVkSuccess && res != kVkIncomplete) return res;
-        merged.resize(hw_count);
-    }
-
-    auto append_unique = [&merged](const VkExtensionProperties& ext) {
-        for (const auto& existing : merged) {
-            if (std::strcmp(existing.extensionName, ext.extensionName) == 0) return;
-        }
-        merged.push_back(ext);
-    };
-
-    for (const auto& ext : kSafeBridgedExtensions) {
-        append_unique(ext);
-    }
-    if (cfg.mode == LayerMode::FullCapabilityOverride) {
-        for (const auto& ext : kOverrideExtensions) {
-            append_unique(ext);
-        }
-    }
-
-    if (!pProperties) {
-        *pPropertyCount = static_cast<uint32_t>(merged.size());
-        return kVkSuccess;
-    }
-
-    const uint32_t to_copy = std::min(*pPropertyCount, static_cast<uint32_t>(merged.size()));
-    for (uint32_t i = 0; i < to_copy; ++i) {
-        pProperties[i] = merged[i];
-    }
-    *pPropertyCount = to_copy;
-    return to_copy < merged.size() ? kVkIncomplete : kVkSuccess;
+    // Strictly enumerate native ICD extensions without injecting unimplemented extensions
+    return fn(physicalDevice, pLayerName, pPropertyCount, pProperties);
 }
 
 VkResult layer_vkCreateDevice(
@@ -583,7 +387,7 @@ VkResult layer_vkCreateDevice(
     const VkDeviceCreateInfo* pCreateInfo,
     const void* pAllocator,
     VkDevice* pDevice) {
-    if (!pCreateInfo || !pDevice) return kVkErrorInitializationFailed;
+    if (!physicalDevice || !pCreateInfo || !pDevice) return kVkErrorInitializationFailed;
 
     auto* chain = reinterpret_cast<VkLayerDeviceCreateInfo*>(const_cast<void*>(pCreateInfo->pNext));
     while (chain && !(chain->sType == kVkStructureTypeLoaderDeviceCreateInfo && chain->function == 0)) {
@@ -593,61 +397,45 @@ VkResult layer_vkCreateDevice(
 
     PFN_vkGetInstanceProcAddr next_gipa = chain->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     PFN_vkGetDeviceProcAddr next_gdpa = chain->u.pLayerInfo->pfnNextGetDeviceProcAddr;
+    if (!next_gipa || !next_gdpa) return kVkErrorInitializationFailed;
     chain->u.pLayerInfo = chain->u.pLayerInfo->pNext;
 
     VkInstance inst = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        inst = g_last_instance;
+        auto pit = g_phys_to_instance.find(physicalDevice);
+        if (pit != g_phys_to_instance.end()) {
+            inst = pit->second;
+        } else if (g_instance_dispatch.size() == 1) {
+            inst = g_instance_dispatch.begin()->first;
+        }
     }
 
     auto create_dev = reinterpret_cast<PFN_vkCreateDevice>(next_gipa(inst, "vkCreateDevice"));
     if (!create_dev) return kVkErrorInitializationFailed;
 
-    // Filter ppEnabledExtensionNames against actual hardware extensions so the vendor ICD
-    // never rejects vkCreateDevice with VK_ERROR_EXTENSION_NOT_PRESENT.
-    VkDeviceCreateInfo sanitized = *pCreateInfo;
-    std::vector<const char*> allowed_exts;
-
-    auto enum_ext = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
-        next_gipa(inst, "vkEnumerateDeviceExtensionProperties"));
-    if (enum_ext && pCreateInfo->enabledExtensionCount > 0 && pCreateInfo->ppEnabledExtensionNames) {
-        uint32_t hw_count = 0;
-        if (enum_ext(physicalDevice, nullptr, &hw_count, nullptr) == kVkSuccess && hw_count > 0) {
-            std::vector<VkExtensionProperties> hw_exts(hw_count);
-            if (enum_ext(physicalDevice, nullptr, &hw_count, hw_exts.data()) == kVkSuccess) {
-                for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i) {
-                    const char* req = pCreateInfo->ppEnabledExtensionNames[i];
-                    if (!req) continue;
-                    for (const auto& hw : hw_exts) {
-                        if (std::strcmp(hw.extensionName, req) == 0) {
-                            allowed_exts.push_back(req);
-                            break;
-                        }
-                    }
-                }
-                sanitized.enabledExtensionCount = static_cast<uint32_t>(allowed_exts.size());
-                sanitized.ppEnabledExtensionNames = allowed_exts.empty() ? nullptr : allowed_exts.data();
-            }
-        }
-    }
-
-    const VkResult res = create_dev(physicalDevice, &sanitized, pAllocator, pDevice);
-    if (res == kVkSuccess) {
+    // Pass pCreateInfo unmodified so unsupported extensions/features return authentic
+    // VK_ERROR_EXTENSION_NOT_PRESENT or VK_ERROR_FEATURE_NOT_PRESENT from the ICD.
+    const VkResult res = create_dev(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    if (res == kVkSuccess && *pDevice != nullptr) {
         std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        g_next_gdpa = next_gdpa;
+        g_device_dispatch[*pDevice] = DeviceDispatchEntry{next_gdpa, next_gipa, inst};
     }
     return res;
 }
 
 void layer_vkDestroyDevice(VkDevice device, const void* pAllocator) {
-    PFN_vkGetDeviceProcAddr next_gdpa = nullptr;
+    DeviceDispatchEntry entry{};
     {
         std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gdpa = g_next_gdpa;
+        auto it = g_device_dispatch.find(device);
+        if (it != g_device_dispatch.end()) {
+            entry = it->second;
+            g_device_dispatch.erase(it);
+        }
     }
-    if (!next_gdpa) return;
-    auto fn = reinterpret_cast<PFN_vkDestroyDevice>(next_gdpa(device, "vkDestroyDevice"));
+    if (!entry.next_gdpa) return;
+    auto fn = reinterpret_cast<PFN_vkDestroyDevice>(entry.next_gdpa(device, "vkDestroyDevice"));
     if (fn) fn(device, pAllocator);
 }
 
@@ -665,12 +453,12 @@ CF_VK_EXPORT VkResult vkEnumerateInstanceLayerProperties(
 
     std::memset(&pProperties[0], 0, sizeof(VkLayerProperties));
     std::snprintf(pProperties[0].layerName, kVkMaxExtensionNameSize, "VK_LAYER_COREFLOW_universal_bridge");
-    pProperties[0].specVersion = make_vk_version(1, 4, 303);
-    pProperties[0].implementationVersion = 1;
+    pProperties[0].specVersion = make_vk_version(1, 3, 0);
+    pProperties[0].implementationVersion = 2;
     std::snprintf(
         pProperties[0].description,
         kVkMaxDescriptionSize,
-        "CoreFlow Universal Vulkan 1.4 Capability & Extension Bridge Layer");
+        "CoreFlow Truthful Hardware Pass-Through & Telemetry Layer");
     *pPropertyCount = 1;
     return kVkSuccess;
 }
@@ -711,12 +499,9 @@ CF_VK_EXPORT PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice device, const char*
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkDestroyDevice);
     }
 
-    PFN_vkGetDeviceProcAddr next_gdpa = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gdpa = g_next_gdpa;
-    }
-    return next_gdpa ? next_gdpa(device, pName) : nullptr;
+    DeviceDispatchEntry entry{};
+    if (!lookup_device_dispatch(device, entry)) return nullptr;
+    return entry.next_gdpa ? entry.next_gdpa(device, pName) : nullptr;
 }
 
 CF_VK_EXPORT PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
@@ -730,8 +515,17 @@ CF_VK_EXPORT PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const
     if (std::strcmp(pName, "vkDestroyInstance") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkDestroyInstance);
     }
+    if (std::strcmp(pName, "vkEnumeratePhysicalDevices") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkEnumeratePhysicalDevices);
+    }
     if (std::strcmp(pName, "vkCreateDevice") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkCreateDevice);
+    }
+    if (std::strcmp(pName, "vkDestroyDevice") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkDestroyDevice);
+    }
+    if (std::strcmp(pName, "vkGetDeviceProcAddr") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&vkGetDeviceProcAddr);
     }
     if (std::strcmp(pName, "vkGetPhysicalDeviceFeatures") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkGetPhysicalDeviceFeatures);
@@ -757,12 +551,9 @@ CF_VK_EXPORT PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const
         return reinterpret_cast<PFN_vkVoidFunction>(&vkEnumerateInstanceExtensionProperties);
     }
 
-    PFN_vkGetInstanceProcAddr next_gipa = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_mutex);
-        next_gipa = g_next_gipa;
-    }
-    return next_gipa ? next_gipa(instance, pName) : nullptr;
+    InstanceDispatchEntry entry{};
+    if (!lookup_instance_dispatch(instance, entry)) return nullptr;
+    return entry.next_gipa ? entry.next_gipa(instance, pName) : nullptr;
 }
 
 CF_VK_EXPORT VkResult vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {

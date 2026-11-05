@@ -1,10 +1,10 @@
 #!/system/bin/sh
 # Early boot guard; no native daemon is launched until Android boot completion.
-export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
+export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:${PATH:-/usr/bin:/bin}"
 umask 077
 
 MODDIR="${0%/*}"
-STATE="/data/adb/coreflow"
+STATE="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
 LOGS="$STATE/logs"
 
 # Refuse to follow symlinked state directories.
@@ -16,6 +16,8 @@ chmod 700 "$STATE" "$LOGS" 2>/dev/null
 
 ATTEMPTS="$STATE/boot_attempts"
 [ -L "$ATTEMPTS" ] && rm -f "$ATTEMPTS"
+BOOT_EPOCH="$STATE/boot_epoch"
+[ -L "$BOOT_EPOCH" ] && rm -f "$BOOT_EPOCH"
 
 write_atomic() {
   TARGET="$1"
@@ -25,6 +27,22 @@ write_atomic() {
   rm -f "$TMP"
   printf '%s\n' "$VALUE" > "$TMP" && chmod 600 "$TMP" && mv -f "$TMP" "$TARGET"
 }
+
+# Generate a unique per-boot epoch token so BaselineStore can detect stale journals
+# even on kernels or SELinux policies where /proc/sys/kernel/random/boot_id is unreadable.
+KERNEL_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '[:space:]')"
+RAND_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '[:space:]')"
+if [ -z "$RAND_UUID" ]; then
+  RAND_UUID="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+fi
+if [ -n "$KERNEL_BOOT_ID" ]; then
+  EPOCH_TOKEN="boot-${KERNEL_BOOT_ID}"
+elif [ -n "$RAND_UUID" ]; then
+  EPOCH_TOKEN="epoch-${RAND_UUID}-$$"
+else
+  EPOCH_TOKEN="epoch-$(date +%s 2>/dev/null || echo 0)-$$"
+fi
+write_atomic "$BOOT_EPOCH" "$EPOCH_TOKEN" || exit 1
 
 # An explicit operator disable is intentional, not a failed boot.
 if [ -f "$STATE/DISABLE" ] && [ ! -L "$STATE/DISABLE" ]; then

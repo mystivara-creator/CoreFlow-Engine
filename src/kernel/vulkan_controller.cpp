@@ -394,10 +394,13 @@ VulkanLayerMode VulkanController::parse_mode(std::string_view text) noexcept {
     if (text == "disabled" || text == "off" || text == "0" || text == "oem") {
         return VulkanLayerMode::Disabled;
     }
-    if (text == "full_capability_override" || text == "full" || text == "override" || text == "opsi_b") {
-        return VulkanLayerMode::FullCapabilityOverride;
+    // Production safety containment (VULKAN-01): FullCapabilityOverride is disallowed in production
+    // runtime and clamped to SafeHardware pass-through inspection.
+    if (text == "safe_hardware" || text == "full_capability_override" || text == "full" ||
+        text == "override" || text == "opsi_b" || text == "opsi_a") {
+        return VulkanLayerMode::SafeHardware;
     }
-    return VulkanLayerMode::SafeHardware;
+    return VulkanLayerMode::Disabled;
 }
 
 const char* VulkanController::vendor_name(GpuVendor vendor) noexcept {
@@ -418,6 +421,9 @@ void VulkanController::initialize(
     const std::string& state_dir_override) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = config;
+    if (config_.mode == VulkanLayerMode::FullCapabilityOverride) {
+        config_.mode = VulkanLayerMode::SafeHardware;
+    }
     if (!state_dir_override.empty()) {
         state_dir_ = state_dir_override;
     }
@@ -431,11 +437,15 @@ void VulkanController::initialize(
 
     discover_gpu_kernel_surface(sysfs_root_override);
 
-    snap_.layer_installed =
-        path_exists("/system/lib64/libVkLayer_coreflow.so") ||
-        path_exists("/data/adb/modules/cfae_framework/system/lib64/libVkLayer_coreflow.so") ||
-        path_exists("/data/adb/modules/coreflow_engine/system/lib64/libVkLayer_coreflow.so") ||
-        path_exists("module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json");
+    const bool active_system_lib =
+        path_exists("/system/lib64/libVkLayer_coreflow.so") &&
+        path_exists("/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json");
+    const bool staged_module_lib =
+        (path_exists("/data/adb/modules/cfae_framework/system/lib64/libVkLayer_coreflow.so") &&
+         path_exists("/data/adb/modules/cfae_framework/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json")) ||
+        (path_exists("/data/adb/modules/coreflow_engine/system/lib64/libVkLayer_coreflow.so") &&
+         path_exists("/data/adb/modules/coreflow_engine/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"));
+    snap_.layer_installed = active_system_lib || staged_module_lib;
 
     recompute_effective_capabilities();
     sync_layer_state_file();
@@ -444,6 +454,9 @@ void VulkanController::initialize(
 void VulkanController::configure(const VulkanConfig& config) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = config;
+    if (config_.mode == VulkanLayerMode::FullCapabilityOverride) {
+        config_.mode = VulkanLayerMode::SafeHardware;
+    }
     snap_.active_mode = config_.mode;
     recompute_effective_capabilities();
     sync_layer_state_file();
@@ -702,44 +715,6 @@ void VulkanController::probe_native_vulkan_icd() noexcept {
                                 snap_.hw_push_descriptors = true;
                             }
                         }
-
-                        // Dynamically count how many bridged extensions this specific device's GPU driver lacks
-                        constexpr std::array<std::string_view, 9> kSafeNames = {
-                            "VK_KHR_push_descriptor",
-                            "VK_EXT_index_type_uint8",
-                            "VK_KHR_index_type_uint8",
-                            "VK_EXT_line_rasterization",
-                            "VK_KHR_line_rasterization",
-                            "VK_KHR_global_priority",
-                            "VK_EXT_global_priority_query",
-                            "VK_KHR_shader_float_controls2",
-                            "VK_KHR_maintenance7",
-                        };
-                        constexpr std::array<std::string_view, 7> kOverrideNames = {
-                            "VK_EXT_descriptor_buffer",
-                            "VK_EXT_graphics_pipeline_library",
-                            "VK_KHR_acceleration_structure",
-                            "VK_KHR_ray_tracing_pipeline",
-                            "VK_KHR_ray_query",
-                            "VK_EXT_mesh_shader",
-                            "VK_KHR_cooperative_matrix",
-                        };
-                        auto has_ext = [&exts](std::string_view target) {
-                            for (const auto& e : exts) {
-                                if (std::string_view(e.extensionName) == target) return true;
-                            }
-                            return false;
-                        };
-                        uint32_t missing_safe = 0;
-                        for (const auto& n : kSafeNames) {
-                            if (!has_ext(n)) ++missing_safe;
-                        }
-                        uint32_t missing_override = 0;
-                        for (const auto& n : kOverrideNames) {
-                            if (!has_ext(n)) ++missing_override;
-                        }
-                        missing_safe_exts_ = missing_safe;
-                        missing_override_exts_ = missing_override;
                     }
                 }
             }
@@ -871,97 +846,48 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
 }
 
 void VulkanController::recompute_effective_capabilities() noexcept {
-    const VulkanLayerMode mode = config_.mode;
+    // VULKAN-01 Safety Containment:
+    // Never falsify physical GPU API version, extension count, feature bits, or limits.
+    // All modes report strictly truthful hardware capabilities from the native ICD.
+    const VulkanLayerMode mode =
+        config_.mode == VulkanLayerMode::FullCapabilityOverride
+            ? VulkanLayerMode::SafeHardware
+            : config_.mode;
     snap_.active_mode = mode;
-    snap_.layer_active = (mode != VulkanLayerMode::Disabled);
+    snap_.layer_active = (mode != VulkanLayerMode::Disabled) && snap_.layer_installed;
     snap_.skiavk_active = config_.enable_skiavk_threaded && (mode != VulkanLayerMode::Disabled);
-    snap_.adaptive_vrs_active = config_.enable_adaptive_vrs && (mode != VulkanLayerMode::Disabled);
-    snap_.pipeline_cache_prewarm_active = config_.enable_pipeline_cache_prewarm && (mode != VulkanLayerMode::Disabled);
+    snap_.adaptive_vrs_active =
+        config_.enable_adaptive_vrs && (mode != VulkanLayerMode::Disabled) && snap_.hw_variable_rate_shading;
+    snap_.pipeline_cache_prewarm_active =
+        config_.enable_pipeline_cache_prewarm && (mode != VulkanLayerMode::Disabled);
 
-    const std::string promoted_api =
-        raw_api_version_ > make_vk_version(1, 4, 303) ? snap_.api_version : "1.4.303";
+    missing_safe_exts_ = 0;
+    missing_override_exts_ = 0;
+    snap_.layer_implemented_extensions_count = 0;
+    snap_.application_enabled_extensions_count = 0;
 
-    if (mode == VulkanLayerMode::Disabled) {
-        // Pure OEM hardware readout for this specific device
-        snap_.effective_api_version = snap_.api_version;
-        snap_.effective_device_extensions_count = snap_.device_extensions_count;
-        snap_.ray_tracing = snap_.hw_ray_tracing;
-        snap_.mesh_shaders = snap_.hw_mesh_shaders;
-        snap_.variable_rate_shading = snap_.hw_variable_rate_shading;
-        snap_.cooperative_matrix = snap_.hw_cooperative_matrix;
-        snap_.rt_pipeline = snap_.hw_rt_pipeline;
-        snap_.ray_query = snap_.hw_ray_query;
-        snap_.acceleration_structure = snap_.hw_acceleration_structure;
-        snap_.portability_subset = snap_.hw_portability_subset;
-        snap_.shader_float64 = snap_.hw_shader_float64;
-        snap_.index_type_uint8 = snap_.hw_index_type_uint8;
-        snap_.line_rasterization = snap_.hw_line_rasterization;
-        snap_.push_descriptors = snap_.hw_push_descriptors;
-        snap_.global_priority_query = snap_.hw_global_priority_query;
-        snap_.shader_float_controls2 = snap_.hw_shader_float_controls2;
-        snap_.max_push_descriptors = snap_.hw_max_push_descriptors;
-        snap_.maintenance5 = snap_.hw_maintenance5;
-        snap_.maintenance6 = snap_.hw_maintenance6;
-        snap_.maintenance7 = snap_.hw_maintenance7;
-        snap_.descriptor_buffer = snap_.hw_descriptor_buffer;
-        snap_.graphics_pipeline_library = snap_.hw_graphics_pipeline_library;
-        return;
-    }
-
-    if (mode == VulkanLayerMode::SafeHardware) {
-        // Opsi A: Complete Vulkan 1.4 & driver-safe extensions while preserving hardware ALU truth
-        snap_.effective_api_version = promoted_api;
-        snap_.effective_device_extensions_count = snap_.device_extensions_count + missing_safe_exts_;
-        snap_.ray_tracing = snap_.hw_ray_tracing;
-        snap_.mesh_shaders = snap_.hw_mesh_shaders;
-        snap_.variable_rate_shading = true;
-        snap_.cooperative_matrix = snap_.hw_cooperative_matrix;
-        snap_.rt_pipeline = snap_.hw_rt_pipeline;
-        snap_.ray_query = snap_.hw_ray_query;
-        snap_.acceleration_structure = snap_.hw_acceleration_structure;
-        snap_.portability_subset = snap_.hw_portability_subset;
-        snap_.shader_float64 = snap_.hw_shader_float64;
-
-        // Safe Vulkan 1.4 & pipeline state promotions bridged by VkLayer_coreflow
-        snap_.index_type_uint8 = true;
-        snap_.line_rasterization = true;
-        snap_.push_descriptors = true;
-        snap_.global_priority_query = true;
-        snap_.shader_float_controls2 = true;
-        snap_.max_push_descriptors = std::max(snap_.hw_max_push_descriptors, 32U);
-        snap_.maintenance5 = true;
-        snap_.maintenance6 = true;
-        snap_.maintenance7 = true;
-        snap_.descriptor_buffer = true;
-        snap_.graphics_pipeline_library = true;
-        return;
-    }
-
-    // Opsi B (FullCapabilityOverride): Complete all Vulkan 1.1–1.4, Ray Tracing, Mesh, FP64, and Highlights
-    // with VkLayer_coreflow vkCreateDevice extension stripping guard.
-    snap_.effective_api_version = promoted_api;
-    snap_.effective_device_extensions_count =
-        snap_.device_extensions_count + missing_safe_exts_ + missing_override_exts_;
-    snap_.ray_tracing = true;
-    snap_.mesh_shaders = true;
-    snap_.variable_rate_shading = true;
-    snap_.cooperative_matrix = true;
-    snap_.rt_pipeline = true;
-    snap_.ray_query = true;
-    snap_.acceleration_structure = true;
-    snap_.portability_subset = false;
-    snap_.shader_float64 = true;
-    snap_.index_type_uint8 = true;
-    snap_.line_rasterization = true;
-    snap_.push_descriptors = true;
-    snap_.global_priority_query = true;
-    snap_.shader_float_controls2 = true;
-    snap_.max_push_descriptors = std::max(snap_.hw_max_push_descriptors, 64U);
-    snap_.maintenance5 = true;
-    snap_.maintenance6 = true;
-    snap_.maintenance7 = true;
-    snap_.descriptor_buffer = true;
-    snap_.graphics_pipeline_library = true;
+    snap_.effective_api_version = snap_.api_version;
+    snap_.effective_device_extensions_count = snap_.device_extensions_count;
+    snap_.ray_tracing = snap_.hw_ray_tracing;
+    snap_.mesh_shaders = snap_.hw_mesh_shaders;
+    snap_.variable_rate_shading = snap_.hw_variable_rate_shading;
+    snap_.cooperative_matrix = snap_.hw_cooperative_matrix;
+    snap_.rt_pipeline = snap_.hw_rt_pipeline;
+    snap_.ray_query = snap_.hw_ray_query;
+    snap_.acceleration_structure = snap_.hw_acceleration_structure;
+    snap_.portability_subset = snap_.hw_portability_subset;
+    snap_.shader_float64 = snap_.hw_shader_float64;
+    snap_.index_type_uint8 = snap_.hw_index_type_uint8;
+    snap_.line_rasterization = snap_.hw_line_rasterization;
+    snap_.push_descriptors = snap_.hw_push_descriptors;
+    snap_.global_priority_query = snap_.hw_global_priority_query;
+    snap_.shader_float_controls2 = snap_.hw_shader_float_controls2;
+    snap_.max_push_descriptors = snap_.hw_max_push_descriptors;
+    snap_.maintenance5 = snap_.hw_maintenance5;
+    snap_.maintenance6 = snap_.hw_maintenance6;
+    snap_.maintenance7 = snap_.hw_maintenance7;
+    snap_.descriptor_buffer = snap_.hw_descriptor_buffer;
+    snap_.graphics_pipeline_library = snap_.hw_graphics_pipeline_library;
 }
 
 void VulkanController::sync_layer_state_file() const noexcept {
@@ -980,11 +906,11 @@ void VulkanController::sync_layer_state_file() const noexcept {
     if (!fd.valid()) return;
 
     std::ostringstream oss;
-    oss << "mode=" << mode_name(config_.mode) << "\n"
-        << "skiavk=" << (config_.enable_skiavk_threaded ? 1 : 0) << "\n"
-        << "adaptive_vrs=" << (config_.enable_adaptive_vrs ? 1 : 0) << "\n"
-        << "pipeline_cache_prewarm=" << (config_.enable_pipeline_cache_prewarm ? 1 : 0) << "\n"
-        << "max_push_descriptors=" << snap_.max_push_descriptors << "\n";
+    oss << "mode=" << mode_name(snap_.active_mode) << "\n"
+        << "skiavk=" << (snap_.skiavk_active ? 1 : 0) << "\n"
+        << "adaptive_vrs=" << (snap_.adaptive_vrs_active ? 1 : 0) << "\n"
+        << "pipeline_cache_prewarm=" << (snap_.pipeline_cache_prewarm_active ? 1 : 0) << "\n"
+        << "max_push_descriptors=" << snap_.hw_max_push_descriptors << "\n";
     const std::string payload = oss.str();
     const ssize_t written = ::write(fd.get(), payload.data(), payload.size());
     if (written == static_cast<ssize_t>(payload.size())) {

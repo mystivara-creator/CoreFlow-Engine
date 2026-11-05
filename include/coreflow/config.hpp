@@ -41,10 +41,12 @@ struct DaemonConfig {
     uint32_t foreground_min{60};
     uint32_t background_max{250};
     uint32_t sched_util_clamp_min_rt_default{128};
+    std::string ui_adaptive_bias{"balanced"};
+    uint32_t ui_balanced_uclamp_min{24};
 
     // [thermal_guardian]
     uint32_t temp_monitor_interval_ms{1000};
-    // Legacy/preview Celsius settings; production uses OEM thermal-policy pressure.
+    // Fallback Celsius thresholds used ONLY when OEM thermal policy (Android Thermal API & sysfs trip points) is unavailable.
     float thermal_trip_celsius{44.0f};
     float thermal_recover_celsius{40.0f};
     float thermal_emergency_margin_celsius{5.0f};
@@ -75,7 +77,7 @@ struct DaemonConfig {
     uint32_t touch_boost_uclamp_min{380};
 
     // [vulkan_engine]
-    std::string vulkan_layer_mode{"safe_hardware"};
+    std::string vulkan_layer_mode{"disabled"};
     bool enable_skiavk_threaded{true};
     bool enable_adaptive_vrs{true};
     bool enable_pipeline_cache_prewarm{true};
@@ -87,9 +89,16 @@ struct DaemonConfig {
         return str.substr(first, (last - first + 1));
     }
 
+    static std::string to_lower_ascii(std::string_view str) {
+        std::string out(str);
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return out;
+    }
+
     static bool parse_bool(const std::string& val) {
-        std::string lower = val;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::string lower = to_lower_ascii(val);
         return lower == "true" || lower == "1" || lower == "yes";
     }
 
@@ -115,6 +124,64 @@ struct DaemonConfig {
         return true;
     }
 
+    static std::string canonical_section_for_key(std::string_view key) {
+        if (key == "version" || key == "log_level" || key == "zero_polling_mode" ||
+            key == "enable_cgroups_v2" || key == "enable_uclamp") {
+            return "general";
+        }
+        if (key == "tier_override" || key == "unlock_vendor_clamping" ||
+            key == "force_120hz_rendering" || key == "enable_cpu_frequency_control" ||
+            key == "enable_gpu_frequency_control") {
+            return "device_adaptation";
+        }
+        if (key == "top_app_interactive_min" || key == "top_app_interactive_max" ||
+            key == "top_app_burst_launch_min" || key == "top_app_game_min" ||
+            key == "top_app_game_max" || key == "foreground_min" ||
+            key == "background_max" || key == "sched_util_clamp_min_rt_default" ||
+            key == "ui_adaptive_bias" || key == "ui_balanced_uclamp_min") {
+            return "uclamp_tuning";
+        }
+        if (key == "temp_monitor_interval_ms" || key == "thermal_trip_celsius" ||
+            key == "thermal_recover_celsius" || key == "emergency_rollback_on_overheat") {
+            return "thermal_guardian";
+        }
+        if (key == "cpu_pressure_boost_pct" || key == "memory_pressure_guard_pct" ||
+            key == "io_pressure_guard_pct" || key == "thermal_headroom_celsius" ||
+            key == "thermal_emergency_margin_celsius") {
+            return "stability_policy";
+        }
+        if (key == "enable_pid_equilibrium" || key == "pid_target_celsius" ||
+            key == "pid_kp" || key == "pid_ki" || key == "pid_kd") {
+            return "pid_equilibrium";
+        }
+        if (key == "enable_battery_step_charging" || key == "enable_ufs_burst_pacing" ||
+            key == "battery_step_temp_threshold" || key == "stepped_charge_current_ma" ||
+            key == "top_app_io_weight" || key == "background_io_weight") {
+            return "hardware_longevity";
+        }
+        if (key == "jank_detection_threshold_ratio" || key == "burst_boost_duration_ms" ||
+            key == "touch_boost_uclamp_min") {
+            return "render_pipeline";
+        }
+        if (key == "vulkan_layer_mode" || key == "enable_skiavk_threaded" ||
+            key == "enable_adaptive_vrs" || key == "enable_pipeline_cache_prewarm") {
+            return "vulkan_engine";
+        }
+        return "";
+    }
+
+    static bool section_accepts_key(std::string_view section, std::string_view key) {
+        const std::string expected = canonical_section_for_key(key);
+        if (expected.empty()) return false;
+        if (section == expected) return true;
+        // Accept legacy [stability] and [thermal_guardian] aliases for stability_policy keys
+        if (expected == "stability_policy" &&
+            (section == "stability" || section == "thermal_guardian")) {
+            return true;
+        }
+        return false;
+    }
+
     static DaemonConfig load_from_file(const std::string& path) {
         DaemonConfig cfg;
         std::ifstream file(path);
@@ -130,7 +197,7 @@ struct DaemonConfig {
             if (line.empty() || line[0] == '#' || line[0] == ';') continue;
 
             if (line.front() == '[' && line.back() == ']') {
-                current_section = line.substr(1, line.size() - 2);
+                current_section = to_lower_ascii(trim(line.substr(1, line.size() - 2)));
                 continue;
             }
 
@@ -139,6 +206,11 @@ struct DaemonConfig {
 
             std::string key = trim(line.substr(0, eq_pos));
             std::string val = trim(line.substr(eq_pos + 1));
+
+            // Section-aware validation: reject known keys placed in an unrelated section
+            if (!section_accepts_key(current_section, key)) {
+                continue;
+            }
 
             // [general]
             if (key == "version") cfg.version = val;
@@ -186,6 +258,15 @@ struct DaemonConfig {
             else if (key == "sched_util_clamp_min_rt_default") {
                 uint32_t v = 0;
                 if (parse_uint32_safe(val, v)) cfg.sched_util_clamp_min_rt_default = std::clamp(v, 0u, 1024u);
+            }
+            else if (key == "ui_adaptive_bias") {
+                if (val == "battery" || val == "balanced" || val == "responsiveness") {
+                    cfg.ui_adaptive_bias = val;
+                }
+            }
+            else if (key == "ui_balanced_uclamp_min") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) cfg.ui_balanced_uclamp_min = std::clamp(v, 0u, 100u);
             }
 
             // [thermal_guardian]
@@ -306,6 +387,111 @@ struct DaemonConfig {
         }
 
         return cfg;
+    }
+
+    // Surgical read-modify-write helper that updates specified keys in their canonical section
+    // while preserving comments, formatting, and unknown keys/sections.
+    static std::string merge_config_text(
+        std::string_view existing_text,
+        const std::vector<std::pair<std::string, std::string>>& updates) {
+        std::vector<bool> applied(updates.size(), false);
+        std::istringstream in{std::string(existing_text)};
+        std::ostringstream out;
+        std::string raw_line;
+        std::string current_section;
+
+        auto flush_pending_for_section = [&](std::string_view section) {
+            if (section.empty()) return;
+            for (size_t i = 0; i < updates.size(); ++i) {
+                if (applied[i]) continue;
+                const std::string target_sec = canonical_section_for_key(updates[i].first);
+                const bool matches = (section == target_sec) ||
+                                     (target_sec == "stability_policy" && section == "stability");
+                if (matches) {
+                    out << updates[i].first << " = " << updates[i].second << "\n";
+                    applied[i] = true;
+                }
+            }
+        };
+
+        while (std::getline(in, raw_line)) {
+            if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
+            const std::string trimmed = trim(raw_line);
+            if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']') {
+                flush_pending_for_section(current_section);
+                current_section = to_lower_ascii(trim(trimmed.substr(1, trimmed.size() - 2)));
+                out << raw_line << "\n";
+                continue;
+            }
+            if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
+                out << raw_line << "\n";
+                continue;
+            }
+            const size_t eq_pos = trimmed.find('=');
+            if (eq_pos == std::string::npos) {
+                out << raw_line << "\n";
+                continue;
+            }
+            const std::string key = trim(trimmed.substr(0, eq_pos));
+            bool replaced = false;
+            for (size_t i = 0; i < updates.size(); ++i) {
+                if (updates[i].first == key && section_accepts_key(current_section, key)) {
+                    if (!applied[i]) {
+                        out << key << " = " << updates[i].second << "\n";
+                        applied[i] = true;
+                    }
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                out << raw_line << "\n";
+            }
+        }
+        flush_pending_for_section(current_section);
+
+        // Append any sections that were not present in existing_text
+        for (size_t i = 0; i < updates.size(); ++i) {
+            if (applied[i]) continue;
+            const std::string sec = canonical_section_for_key(updates[i].first);
+            if (sec.empty()) continue;
+            out << "\n[" << sec << "]\n";
+            for (size_t j = i; j < updates.size(); ++j) {
+                if (!applied[j] && canonical_section_for_key(updates[j].first) == sec) {
+                    out << updates[j].first << " = " << updates[j].second << "\n";
+                    applied[j] = true;
+                }
+            }
+        }
+        return out.str();
+    }
+
+    static bool update_config_file(
+        const std::string& path,
+        const std::vector<std::pair<std::string, std::string>>& updates) {
+        std::string existing;
+        {
+            std::ifstream in(path, std::ios::binary);
+            if (in.is_open()) {
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                existing = ss.str();
+            }
+        }
+        const std::string merged = merge_config_text(existing, updates);
+        const std::string tmp_path = path + ".tmp";
+        {
+            std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) return false;
+            out << merged;
+            out.flush();
+            if (!out.good()) return false;
+        }
+        if (::rename(tmp_path.c_str(), path.c_str()) != 0) {
+            (void)::remove(tmp_path.c_str());
+            return false;
+        }
+        return true;
     }
 
     static DaemonConfig load_best_available() {

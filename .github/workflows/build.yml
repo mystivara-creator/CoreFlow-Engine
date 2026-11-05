@@ -13,6 +13,8 @@ on:
       - "CMakeLists.txt"
       - "cmake/**"
       - "rust/**"
+      - "config/**"
+      - "android/**"
       - "docs/EQUILIBRIUM_BLUEPRINT.md"
       - "include/**"
       - "src/**"
@@ -82,13 +84,15 @@ jobs:
           else
             npm install --no-package-lock --no-audit --no-fund
           fi
+          node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
           npm run build
 
-      - name: Validate module shell syntax
+      - name: Validate module shell syntax & lifecycle
         shell: bash
         run: |
           set -euo pipefail
-          for file in module/*.sh; do sh -n "$file"; done
+          for file in module/*.sh tests/test_module_lifecycle.sh; do sh -n "$file"; done
+          sh tests/test_module_lifecycle.sh
 
       - name: Run Rust controller tests
         run: cargo test --manifest-path rust/Cargo.toml
@@ -138,7 +142,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCORE_FLOW_BUILD_TESTS=ON \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
 
       - name: Build sanitized tests
         run: cmake --build build/sanitize --parallel "$(nproc)"

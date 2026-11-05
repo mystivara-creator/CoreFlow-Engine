@@ -23,7 +23,9 @@ export const ThermalMatrixCard: React.FC<Props> = ({
   const battery = telemetry.batteryTempCelsius ?? -1;
   const skin = telemetry.skinTempCelsius ?? -1;
 
-  const isThrottling = composite >= thermalTripCelsius;
+  const isThrottling = nativeMode
+    ? Boolean(telemetry.thermalGuardActive)
+    : composite >= thermalTripCelsius;
   const thermalProgress = Math.min(100, Math.max(0, ((composite - 30) / (60 - 30)) * 100));
 
   const sensors: ThermalSensorDetail[] = telemetry.thermalSensors ?? [];
@@ -45,7 +47,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       case 4:
         return 'Board · PMIC';
       default:
-        return 'Peripheral';
+        return 'Diagnostic · Unclassified';
     }
   };
 
@@ -77,17 +79,31 @@ export const ThermalMatrixCard: React.FC<Props> = ({
               {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}
             </span>
             <span aria-hidden="true">·</span>
-            <span>{nativeMode ? 'Hardware sysfs Live' : 'Preview Model'}</span>
+            <span>{nativeMode ? 'Hardware sysfs / hwmon Live' : 'Preview Model'}</span>
+            {telemetry.thermalDataDegraded && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200 font-medium">
+                Sensor Degraded (Partial Read)
+              </span>
+            )}
+            {telemetry.thermalFallbackActive && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200 font-medium">
+                Generic Fallback Mode
+              </span>
+            )}
           </div>
           <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            Prioritizes validated Android thermal status and per-zone OEM trip points over single-sensor heuristics. Separate compute, battery, and skin domains are evaluated without conflating distinct physical units.
+            Prioritizes validated Android thermal status and per-zone OEM trip points over single-sensor heuristics. Separate compute, battery, skin, and diagnostic hwmon domains are evaluated without conflating distinct physical units.
           </p>
         </div>
 
         <div className="m3-tonal-block px-4 py-2.5 text-xs font-mono shrink-0 self-start">
           <span className="text-slate-500 dark:text-slate-400">Policy Reference: </span>
           <span className="font-semibold text-slate-900 dark:text-slate-100">
-            {nativeMode ? 'OEM / Android HAL' : `${thermalTripCelsius.toFixed(1)} °C`}
+            {nativeMode
+              ? telemetry.thermalFallbackActive
+                ? `Fallback (${thermalTripCelsius.toFixed(1)} °C)`
+                : `OEM / Android (${telemetry.thermalSource ?? 'HAL'})`
+              : `${thermalTripCelsius.toFixed(1)} °C`}
           </span>
         </div>
       </div>

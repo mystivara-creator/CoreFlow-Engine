@@ -40,16 +40,16 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
               <span className="text-xs text-slate-400" aria-hidden="true">·</span>
               <span className="text-xs font-mono text-[#0b57d0] dark:text-[#a8c7fa]">
                 {nativeMode
-                  ? 'Write-Ahead Journal CFJ3'
+                  ? 'Write-Ahead Journal CFJ4'
                   : baselineStatus === 'protected'
-                  ? 'Journal Armed'
+                  ? 'Journal CFJ4 Armed'
                   : 'Baseline Restored'}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
               {nativeMode
-                ? 'Records baseline value, object identity (inode/mount), and last verified write prior to mutation. Rollback restores only values still owned by CoreFlow and never overwrites external OEM/Android adjustments.'
-                : `Tracking ${nodesSnapshotted} capability baselines with ownership verification; zero physical writes in browser preview.`}
+                ? 'Records factory & prior baseline values, validated boot_id/boot_epoch, object identity (st_dev:st_ino), and last verified write prior to mutation. Rollback restores only values still owned by CoreFlow and never overwrites external OEM/Android adjustments.'
+                : `Tracking ${nodesSnapshotted} capability baselines with CFJ4 st_dev:st_ino ownership & boot_epoch verification; zero physical writes in browser preview.`}
             </p>
           </div>
         </div>
