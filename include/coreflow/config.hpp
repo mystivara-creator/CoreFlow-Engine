@@ -42,7 +42,7 @@ struct DaemonConfig {
     uint32_t background_max{250};
     uint32_t sched_util_clamp_min_rt_default{128};
     std::string ui_adaptive_bias{"balanced"};
-    uint32_t ui_balanced_uclamp_min{24};
+    uint32_t ui_balanced_uclamp_min{320};
 
     // [thermal_guardian]
     uint32_t temp_monitor_interval_ms{1000};
@@ -266,7 +266,7 @@ struct DaemonConfig {
             }
             else if (key == "ui_balanced_uclamp_min") {
                 uint32_t v = 0;
-                if (parse_uint32_safe(val, v)) cfg.ui_balanced_uclamp_min = std::clamp(v, 0u, 100u);
+                if (parse_uint32_safe(val, v)) cfg.ui_balanced_uclamp_min = std::clamp(v, 0u, 1024u);
             }
 
             // [thermal_guardian]

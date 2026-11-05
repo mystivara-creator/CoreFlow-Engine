@@ -593,8 +593,8 @@ int main() {
     const auto snap_safe = vk.snapshot();
     assert(snap_safe.active_mode == VulkanLayerMode::SafeHardware);
     // Effective capabilities must strictly mirror hardware ICD capabilities (no falsification)
-    assert(snap_safe.effective_api_version == snap_safe.native_api_version);
-    assert(snap_safe.effective_extensions_count == snap_safe.native_extensions_count);
+    assert(snap_safe.effective_api_version == snap_safe.api_version);
+    assert(snap_safe.effective_device_extensions_count == snap_safe.device_extensions_count);
     assert(snap_safe.layer_implemented_extensions_count == 0U);
     assert(snap_safe.index_type_uint8 == snap_safe.hw_index_type_uint8);
     assert(snap_safe.line_rasterization == snap_safe.hw_line_rasterization);
@@ -628,7 +628,7 @@ int main() {
     });
     const auto snap_full = vk.snapshot();
     assert(snap_full.active_mode == VulkanLayerMode::SafeHardware);
-    assert(snap_full.effective_api_version == snap_full.native_api_version);
+    assert(snap_full.effective_api_version == snap_full.api_version);
     assert(snap_full.ray_tracing == snap_full.hw_ray_tracing);
     assert(snap_full.mesh_shaders == snap_full.hw_mesh_shaders);
     assert(snap_full.variable_rate_shading == snap_full.hw_variable_rate_shading);

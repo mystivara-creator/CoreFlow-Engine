@@ -368,7 +368,7 @@ void print_status() {
         << ",\"thermalDataDegraded\":" << (thermal.degraded ? "true" : "false")
         << ",\"thermalFallbackActive\":" << (thermal.fallback_active ? "true" : "false")
         << ",\"thermalHeadroomValid\":" << (thermal.headroom_valid ? "true" : "false")
-        << ",\"thermalHeadroom\":" << (thermal.headroom_valid && std::isfinite(thermal.headroom) ? std::to_string(thermal.headroom) : "null")
+        << ",\"thermalHeadroom\":" << (thermal.headroom_valid && std::isfinite(thermal.headroom_value) ? std::to_string(thermal.headroom_value) : "null")
         << ",\"thermalSource\":" << json_string(thermal.source)
         << ",\"thermalSensor\":" << json_string(thermal.sensor)
         << ",\"thermalSeverity\":" << thermal.severity

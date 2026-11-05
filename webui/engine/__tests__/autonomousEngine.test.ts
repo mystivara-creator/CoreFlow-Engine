@@ -7,7 +7,7 @@ import {
   parseConfigIni,
   readSectionNumberKey,
   readSectionStringKey,
-} from '../autonomousEngine';
+} from '../autonomousEngine.ts';
 
 test('computeVulkanTelemetry never fabricates API version, extension count, or unsupported hardware features', () => {
   const baseHardware = {
