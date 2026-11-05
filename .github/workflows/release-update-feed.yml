@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      MIN_API: "34"
+      MIN_API: "35"
     steps:
       - name: Sync update metadata into the published release
         shell: bash

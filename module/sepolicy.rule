@@ -1,2 +1,2 @@
-# CoreFlow Modern v2: no SELinux allow-all or permissive rules.
+# CFAE System Framework v3.1.0: no SELinux allow-all or permissive rules.
 # Add a narrowly scoped rule only after verifying an actual AVC denial.

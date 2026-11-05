@@ -3,7 +3,7 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-ANDROID_MIN_API="${ANDROID_MIN_API:-34}"
+ANDROID_MIN_API="${ANDROID_MIN_API:-35}"
 ANDROID_ABI="${ANDROID_ABI:-arm64-v8a}"
 
 if [ -z "$NDK" ] || [ ! -f "$NDK/build/cmake/android.toolchain.cmake" ]; then

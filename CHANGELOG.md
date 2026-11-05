@@ -18,6 +18,7 @@
 - **Unified Daemon & Test ABI**: Synchronized `AutonomousTuner`, `CandidateStats`, `BlockQueueSurface`, `AutonomousDecisionSnapshot`, and `TunerTelemetryInput` across `coreflowd` (`src/daemon/main.cpp`) and deterministic host tests (`tests/test_autonomous_tuner.cpp`, `tests/test_vulkan_controller.cpp`).
 - **Atomic Configuration Persistence**: Preserves `[device_adaptation]`, `[pid_equilibrium]`, `[hardware_longevity]`, and `[vulkan_engine]` sections when committing policy updates from the Material Design 3 WebUI and Android Quick Settings bridge.
 - **Container & Custom-Kernel Journal Resilience**: Added fallback boot identity handling in `BaselineStore` when `/proc/sys/kernel/random/boot_id` is absent.
+- **Android 15+ (API 35+) Native Target Alignment**: Enforced `ANDROID_MIN_API=35` (`aarch64-none-linux-android35`) across CI workflows, NDK toolchain scripts, Kotlin Gradle configuration, and `customize.sh` module installer guards with zero Clang 21 / GCC compiler warnings.
 
 ## v3.0.R — CFAE System Framework (Autonomous Mutation Safety & Coordinated Optimization)
 

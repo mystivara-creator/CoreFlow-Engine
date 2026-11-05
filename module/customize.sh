@@ -9,8 +9,8 @@ if [ "$ARCH" != "arm64" ]; then
     abort "! Unsupported architecture ($ARCH). CFAE requires ARM64."
 fi
 
-if [ -n "${API:-}" ] && [ "$API" -lt 34 ]; then
-    abort "! Unsupported Android API ($API). CFAE requires Android 14+ (API 34+)."
+if [ -n "${API:-}" ] && [ "$API" -lt 35 ]; then
+    abort "! Unsupported Android API ($API). CFAE requires Android 15+ (API 35+)."
 fi
 
 if [ -d "/data/adb/modules/coreflow_engine" ] && [ "$MODPATH" != "/data/adb/modules/coreflow_engine" ]; then

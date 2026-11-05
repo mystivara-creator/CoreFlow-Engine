@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Modern v2: single-instance daemon supervisor (overlay & system-ready).
+# CFAE System Framework v3.1.0: single-instance daemon supervisor (overlay & system-ready).
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
 umask 077
 

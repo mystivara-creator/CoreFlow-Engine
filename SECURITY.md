@@ -1,6 +1,6 @@
-# CoreFlow Modern v2 Security Model
+# CFAE System Framework v3.1.0 Security Model
 
-CoreFlow is a privileged Android daemon. It must operate on verified kernel interfaces only.
+CFAE System Framework (`coreflowd`) is a privileged Android 15+ (API 35+) daemon. It operates on verified kernel interfaces only.
 
 - The daemon is single-instance and checks operator `DISABLE`, `SAFE_MODE` and the module disable marker.
 - Any supported mutation must be journaled before the write and verified after read-back.

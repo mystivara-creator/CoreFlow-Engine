@@ -42,11 +42,6 @@ constexpr size_t kVkMaxDescriptionSize = 256;
 // Khronos Structure Types
 constexpr int32_t kVkStructureTypeLoaderInstanceCreateInfo = 47;
 constexpr int32_t kVkStructureTypeLoaderDeviceCreateInfo = 48;
-constexpr int32_t kVkStructureTypePhysicalDeviceFeatures2 = 1000059000;
-constexpr int32_t kVkStructureTypePhysicalDeviceProperties2 = 1000059001;
-constexpr int32_t kVkStructureTypePhysicalDeviceVulkan11Features = 49;
-constexpr int32_t kVkStructureTypePhysicalDeviceVulkan12Features = 51;
-constexpr int32_t kVkStructureTypePhysicalDeviceVulkan13Features = 53;
 constexpr int32_t kVkStructureTypePhysicalDeviceVulkan14Features = 55;
 constexpr int32_t kVkStructureTypePhysicalDevicePushDescriptorPropertiesKhr = 1000080000;
 
