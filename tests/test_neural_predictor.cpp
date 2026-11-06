@@ -69,7 +69,7 @@ int main() {
         });
         assert(hot.valid);
     }
-    assert(hot.samples_observed == 6);
+    assert(hot.samples_observed == 7); // Includes one valid thermal inference with incomplete PSI features.
     assert(hot.predicted_pressure_10s > 85.0);
     assert(hot.recommended_scale < nominal.recommended_scale);
     assert(hot.confidence >= 0.35 && hot.confidence <= 0.99);
