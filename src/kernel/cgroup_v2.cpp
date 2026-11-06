@@ -42,8 +42,11 @@ CgroupV2Controller::CgroupV2Controller(std::string_view root_path)
 }
 
 CgroupV2Controller::~CgroupV2Controller() {
-    // Unregister before object destruction. Any transaction that cannot be
-    // acknowledged remains leased (fail-closed) for process-level recovery.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!transaction_id_.empty()) (void)rollback_transaction_locked();
+    }
+    // unregister waits for any callback that was already dispatched.
     CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
 }
 
