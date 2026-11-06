@@ -495,6 +495,7 @@ void VulkanController::initialize(
     const std::string& sysfs_root_override,
     const std::string& state_dir_override) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!transaction_id_.empty() && !rollback_gpu_transaction_locked()) return;
     config_ = config;
     if (config_.mode == VulkanLayerMode::FullCapabilityOverride) {
         config_.mode = VulkanLayerMode::SafeHardware;
