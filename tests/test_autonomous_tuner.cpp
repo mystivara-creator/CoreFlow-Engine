@@ -820,11 +820,18 @@ int main() {
         assert(tuner_lease.size() == 1);
         assert(tuner_lease.front().domain == coreflow::MutationDomain::BlockIo);
         assert(tuner_lease.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
-        coordinator.emergency_preempt_all("test-autonomous-tuner-preemption");
+        assert(preemption_tuner.emergency_rollback("test-autonomous-tuner-preemption"));
         assert(get(sda_q / "scheduler") == "none");
         assert(get(sda_q / "iosched/read_expire") == "500");
         assert(get(sda_q / "read_ahead_kb") == "128");
         assert(coordinator.active_leases().empty());
+        // The public emergency API must reopen admission only after the tuner
+        // and every other registered owner have acknowledged verified rollback.
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::ThermalCore, "PostEmergencyAdmission",
+            "post-emergency-tx", coreflow::ControllerPriority::EmergencySafety));
+        coordinator.release_lease(
+            coreflow::MutationDomain::ThermalCore, "PostEmergencyAdmission", "post-emergency-tx");
     }
 
     // Handler teardown must wait for callbacks already copied by dispatch.
