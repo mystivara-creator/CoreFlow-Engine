@@ -54,9 +54,12 @@ interface NativeStatus {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
-  cpuPressurePct?: number;
-  memoryPressurePct?: number;
-  ioPressurePct?: number;
+  cpuPressurePct?: number | null;
+  memoryPressurePct?: number | null;
+  ioPressurePct?: number | null;
+  cpuPressureValid?: boolean;
+  memoryPressureValid?: boolean;
+  ioPressureValid?: boolean;
   baselineNodesSnapshotted?: number;
   socTempCelsius: number | null;
   socCompositeCelsius?: number | null;
@@ -168,6 +171,9 @@ export const App: React.FC = () => {
           cpuPressurePct: 0,
           memoryPressurePct: 0,
           ioPressurePct: 0,
+          cpuPressureValid: false,
+          memoryPressureValid: false,
+          ioPressureValid: false,
           baselineNodesSnapshotted: 0,
           baselineStatus: 'restored',
           transactionStage: 'PLANNED',
@@ -268,9 +274,13 @@ export const App: React.FC = () => {
       uclampMin: status.uclampMin,
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
-      cpuPressurePct: status.cpuPressurePct ?? old.cpuPressurePct,
-      memoryPressurePct: status.memoryPressurePct ?? old.memoryPressurePct,
-      ioPressurePct: status.ioPressurePct ?? old.ioPressurePct,
+      // Null pressure is unavailable telemetry, not a request to retain stale values.
+      cpuPressurePct: status.cpuPressurePct ?? 0,
+      memoryPressurePct: status.memoryPressurePct ?? 0,
+      ioPressurePct: status.ioPressurePct ?? 0,
+      cpuPressureValid: status.cpuPressureValid ?? (status.cpuPressurePct != null),
+      memoryPressureValid: status.memoryPressureValid ?? (status.memoryPressurePct != null),
+      ioPressureValid: status.ioPressureValid ?? (status.ioPressurePct != null),
       baselineNodesSnapshotted: status.baselineNodesSnapshotted ?? old.baselineNodesSnapshotted,
       socTempCelsius: effectiveTemp,
       socCompositeCelsius: status.socCompositeCelsius ?? effectiveTemp,
