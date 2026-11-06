@@ -41,10 +41,29 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
-    // Capture failure must rollback existing mutations, too.
+    // A failed operation is path-scoped: it must not roll back another
+    // controller's still-active mutation on an unrelated node.
     assert(store.apply_mutation(a, "700"));
     assert(!store.apply_mutation(std::string(state_dir) + "/missing", "999"));
+    assert(read_value(a) == "700");
+    assert(store.has_active_mutations());
+    assert(store.rollback(a));
     assert(read_value(a) == "0");
+    assert(!store.has_active_mutations());
+
+    // A journal write failure on one path must not silently reset a different
+    // active path. Explicit owner rollback remains responsible for that path.
+    assert(store.capture(a));
+    assert(store.capture(b));
+    assert(store.apply_mutation(a, "610"));
+    assert(store.apply_mutation(b, "210"));
+    assert(!store.apply_mutation(std::string(state_dir) + "/missing-again", "999"));
+    assert(read_value(a) == "610");
+    assert(read_value(b) == "210");
+    assert(store.rollback(a));
+    assert(store.rollback(b));
+    assert(read_value(a) == "0");
+    assert(read_value(b) == "100");
     assert(!store.has_active_mutations());
 
     // Simulate fatal process death after a verified mutation, without shutdown (writes CFJ4).
