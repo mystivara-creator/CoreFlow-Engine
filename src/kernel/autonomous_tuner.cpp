@@ -187,6 +187,7 @@ bool CentralMutationCoordinator::acquire_lease(
     std::string_view transaction_id,
     ControllerPriority priority,
     std::string* conflict_reason) {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& lease : leases_) {
         if (lease.domain == domain && lease.active) {
             if (lease.owner_controller == controller_name) {
@@ -219,6 +220,7 @@ bool CentralMutationCoordinator::acquire_lease(
 }
 
 void CentralMutationCoordinator::release_lease(MutationDomain domain, std::string_view controller_name) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& lease : leases_) {
         if (lease.domain == domain && lease.active && lease.owner_controller == controller_name) {
             lease.active = false;
@@ -229,6 +231,7 @@ void CentralMutationCoordinator::release_lease(MutationDomain domain, std::strin
 }
 
 void CentralMutationCoordinator::release_all_for_controller(std::string_view controller_name) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& lease : leases_) {
         if (lease.active && lease.owner_controller == controller_name) {
             lease.active = false;
@@ -238,6 +241,7 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
 }
 
 void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     (void)reason; // The caller reports the emergency; ownership must remain intact.
     for (auto& lease : leases_) {
         if (lease.active) {
@@ -252,6 +256,7 @@ bool CentralMutationCoordinator::is_domain_locked_by_other(
     MutationDomain domain,
     std::string_view controller_name,
     ControllerPriority requester_priority) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& lease : leases_) {
         if (lease.domain == domain && lease.active && lease.owner_controller != controller_name) {
             if (static_cast<uint8_t>(requester_priority) <= static_cast<uint8_t>(lease.priority)) {
@@ -263,6 +268,7 @@ bool CentralMutationCoordinator::is_domain_locked_by_other(
 }
 
 std::vector<DomainLease> CentralMutationCoordinator::active_leases() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<DomainLease> out;
     for (const auto& lease : leases_) {
         if (lease.active) out.push_back(lease);
@@ -271,8 +277,9 @@ std::vector<DomainLease> CentralMutationCoordinator::active_leases() const {
 }
 
 void CentralMutationCoordinator::reset() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     leases_.clear();
-    conflict_rejections_ = 0;
+    conflict_rejections_.store(0, std::memory_order_relaxed);
 }
 
 // ============================================================================
