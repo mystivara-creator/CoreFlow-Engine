@@ -129,6 +129,9 @@ struct DomainLease {
     // A higher-priority requester or emergency may request preemption, but the
     // current owner retains the lease until it has cancelled and verified rollback.
     bool preemption_requested{false};
+    // Prevent duplicate concurrent rollback callbacks for the same lease.
+    // Cleared after a failed acknowledgement so the daemon can retry.
+    bool preemption_dispatch_in_flight{false};
     // Set only after unregister waits for all in-flight callbacks and the
     // controller can no longer acknowledge rollback. The lease remains active
     // until a verified global recovery explicitly retires it.
