@@ -616,33 +616,28 @@ int main() {
     assert(snap_safe.gpu_surface.current_freq_mhz == 950U);
     assert(snap_safe.gpu_surface.max_freq_mhz == 1100U);
 
-    // A pre-existing journaled GPU policy value belongs to another owner.
-    // Vulkan must reject the candidate rather than report an already-matching
-    // target as applied or overwrite the foreign value.
+    // Qualcomm KGSL controls are observation-only until the exact OEM driver
+    // ABI and semantics are verified for the target firmware. A journaled
+    // external value must be preserved; no policy lease or guessed write is allowed.
     const fs::path adrenoboost = kgsl / "devfreq/adrenoboost";
     assert(baseline.capture(adrenoboost.string()));
     assert(baseline.apply_mutation(adrenoboost.string(), "1"));
-    assert(!vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
+    assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
     assert(read_file(adrenoboost) == "1");
+    assert(read_file(kgsl / "bus_split") == "1");
+    assert(read_file(kgsl / "throttling") == "1");
     assert(coordinator.active_leases().empty());
     assert(baseline.rollback(adrenoboost.string()));
     assert(read_file(adrenoboost) == "0");
 
-    // Verify workload policy boosts adrenoboost under SustainedLoad and rolls back cleanly
+    // Sustained-load and balanced requests remain no-ops on unverified KGSL
+    // actuators. Discovery still exposes raw values for diagnostics.
     assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
-    assert(read_file(kgsl / "devfreq/adrenoboost") == "2");
-    const auto gpu_lease = coordinator.active_leases();
-    assert(gpu_lease.size() == 1);
-    assert(gpu_lease.front().domain == MutationDomain::GpuDevfreq);
-    assert(gpu_lease.front().owner_controller == "VulkanController");
-    coordinator.emergency_preempt_all("test-gpu-thermal-preemption");
     assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
-    assert(coordinator.active_leases().empty());
-
-    assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
-    write_file(kgsl / "devfreq/adrenoboost", "1\n"); // OEM thermal service takes ownership.
-    assert(!vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
-    assert(read_file(kgsl / "devfreq/adrenoboost") == "1");
+    assert(vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
+    assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
+    assert(read_file(kgsl / "bus_split") == "1");
+    assert(read_file(kgsl / "throttling") == "1");
     assert(coordinator.active_leases().empty());
 
     // 2. Test legacy FullCapabilityOverride request is clamped to SafeHardware and never spoofs hardware
