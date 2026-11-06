@@ -239,6 +239,25 @@ int main() {
     put(sda_q / "iosched/read_expire", "500");
     tuner.discover(sys_root.string(), proc_root.string());
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.0, .thermal_pressure = 46.0});
+    {
+        const auto diagnostic = tuner.snapshot();
+        std::cerr << "[CI-DIAG] stage=" << diagnostic.stage
+                  << " active_candidate=" << diagnostic.active_candidate_id
+                  << " intent=" << diagnostic.intent
+                  << " workload=" << diagnostic.workload_name
+                  << " bottleneck=" << diagnostic.bottleneck_name
+                  << " objective=" << diagnostic.objective_name
+                  << " eligible_mq=" << tuner.is_candidate_eligible("io.mq_deadline_low_latency")
+                  << " rationale=" << diagnostic.rationale << '\\n';
+        for (const auto& candidate : diagnostic.candidates) {
+            if (candidate.id == "io.mq_deadline_low_latency") {
+                std::cerr << "[CI-DIAG] mq cooldown=" << candidate.cooldown_ticks
+                          << " trials=" << candidate.trials
+                          << " scale=" << candidate.adaptive_scale
+                          << " rollback=" << candidate.last_rollback_reason << '\\n';
+            }
+        }
+    }
     assert(tuner.snapshot().active_candidate_id == "io.mq_deadline_low_latency");
     assert(get(sda_q / "read_ahead_kb") == "256"); // 1.0 adaptive_scale -> full 2.0x = 256
     for (int i = 0; i < 3; ++i) {
