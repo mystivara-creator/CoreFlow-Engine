@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace coreflow {
+enum class MutationDomain : uint8_t;
 // Only kernel-exposed frequency tables are accepted; never invent an operating point.
 class FrequencyController {
 public:
@@ -28,7 +29,7 @@ private:
     std::string gpu_transaction_id_;
     uint64_t lease_generation_{0};
     bool acquire_domain_lease(bool gpu);
-    bool rollback_domain(bool gpu, std::string_view transaction_id);
+    bool rollback_domain(bool gpu);
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
     void release_domain_lease(bool gpu) noexcept;
     void add(const std::string& dir, bool gpu);
