@@ -49,6 +49,10 @@ int main() {
     assert(percentage.get_top_app_min() == 320u);
     assert(percentage.get_top_app_max() == 1024u);
     assert(coordinator.active_leases().size() == 1);
+    assert(percentage.apply_state(WorkloadState::ThermalGuard, 320, 1024));
+    const auto thermal_lease = coordinator.active_leases();
+    assert(thermal_lease.size() == 1);
+    assert(thermal_lease.front().priority == ControllerPriority::ThermalStabilization);
     coordinator.emergency_preempt_all("test-uclamp-emergency");
     assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
