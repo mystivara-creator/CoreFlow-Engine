@@ -25,20 +25,38 @@ int main() {
     const auto gpu = root / "class/devfreq/gpu";
     put(gpu / "max_freq", "800000000"); put(gpu / "min_freq", "200000000");
     put(gpu / "available_frequencies", "200000000 400000000 600000000 800000000");
-    coreflow::FrequencyController controller(root.string()); controller.discover(true, true);
+    // A second controller instance owns different mock nodes but competes for
+    // the same global CPU/GPU mutation domains. Its callback identity must not
+    // replace the first instance's preemption handler.
+    const fs::path second_root = root / "second";
+    const auto second_cpu = second_root / "devices/system/cpu/cpufreq/policy0";
+    put(second_cpu / "scaling_max_freq", "1800000");
+    put(second_cpu / "scaling_min_freq", "400000");
+    put(second_cpu / "scaling_available_frequencies", "400000 900000 1300000 1800000");
+    const auto second_gpu = second_root / "class/devfreq/gpu";
+    put(second_gpu / "max_freq", "700000000");
+    put(second_gpu / "min_freq", "100000000");
+    put(second_gpu / "available_frequencies", "100000000 300000000 500000000 700000000");
+
+    coreflow::FrequencyController controller(root.string());
+    controller.discover(true, true);
+    coreflow::FrequencyController second_controller(second_root.string());
+    second_controller.discover(true, true);
     assert(controller.cpu_count() == 1 && controller.gpu_count() == 1);
+    assert(second_controller.cpu_count() == 1 && second_controller.gpu_count() == 1);
     assert(controller.apply(0.75));
+    assert(!second_controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1500000");
     assert(get(gpu / "max_freq") == "600000000");
     auto leases = coordinator.active_leases();
     assert(leases.size() == 2);
     assert(std::any_of(leases.begin(), leases.end(), [](const auto& lease) {
         return lease.domain == coreflow::MutationDomain::CpuPolicy &&
-               lease.owner_controller == "FrequencyController";
+               lease.owner_controller.rfind("FrequencyController@", 0) == 0;
     }));
     assert(std::any_of(leases.begin(), leases.end(), [](const auto& lease) {
         return lease.domain == coreflow::MutationDomain::GpuDevfreq &&
-               lease.owner_controller == "FrequencyController";
+               lease.owner_controller.rfind("FrequencyController@", 0) == 0;
     }));
 
     // Emergency preemption must synchronously restore and read back every frequency
