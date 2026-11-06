@@ -8,11 +8,13 @@
 
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -379,6 +381,73 @@ GpuVendor classify_vendor_id(uint32_t vendor_id, std::string_view device_name) n
 VulkanController& VulkanController::instance() {
     static VulkanController inst;
     return inst;
+}
+
+namespace {
+constexpr std::string_view kVulkanControllerName = "VulkanController";
+}
+
+VulkanController::VulkanController() {
+    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+        kVulkanControllerName,
+        [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
+            return handle_preemption(domain, transaction_id);
+        });
+}
+
+VulkanController::~VulkanController() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!transaction_id_.empty()) (void)rollback_gpu_transaction_locked();
+    }
+    CentralMutationCoordinator::instance().unregister_preemption_handler(kVulkanControllerName);
+}
+
+bool VulkanController::acquire_gpu_lease_locked(ControllerPriority priority) {
+    if (!transaction_id_.empty()) {
+        return CentralMutationCoordinator::instance().acquire_lease(
+            MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_, priority);
+    }
+    transaction_id_ = "vulkan-gpu-" + std::to_string(++transaction_generation_);
+    if (!CentralMutationCoordinator::instance().acquire_lease(
+            MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_, priority)) {
+        transaction_id_.clear();
+        return false;
+    }
+    return true;
+}
+
+void VulkanController::release_gpu_lease_locked() noexcept {
+    if (transaction_id_.empty()) return;
+    CentralMutationCoordinator::instance().release_lease(
+        MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_);
+    transaction_id_.clear();
+}
+
+bool VulkanController::rollback_gpu_transaction_locked() noexcept {
+    if (transaction_id_.empty()) return active_mutation_paths_.empty();
+    auto& baseline = BaselineStore::instance();
+    const auto audit = baseline.get_audit_trail();
+    for (const auto& path : active_mutation_paths_) {
+        if (!baseline.rollback(path)) return false;
+        const auto it = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == path;
+        });
+        if (it == audit.end() || it->is_modified || read_first_line(path) != it->factory_value) {
+            return false;
+        }
+    }
+    active_mutation_paths_.clear();
+    release_gpu_lease_locked();
+    return true;
+}
+
+bool VulkanController::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id) noexcept {
+    if (domain != MutationDomain::GpuDevfreq) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (transaction_id_.empty() || transaction_id_ != transaction_id) return false;
+    return rollback_gpu_transaction_locked();
 }
 
 const char* VulkanController::mode_name(VulkanLayerMode mode) noexcept {
@@ -931,12 +1000,48 @@ bool VulkanController::apply_workload_policy(
     double capacity_scale,
     bool thermal_guard) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!snap_.gpu_surface.available) return true;
+    if (!snap_.gpu_surface.available || !std::isfinite(capacity_scale)) return true;
+
+    const auto priority = (thermal_guard || state == WorkloadState::ThermalGuard)
+        ? ControllerPriority::ThermalStabilization
+        : state == WorkloadState::PressureGuard
+            ? ControllerPriority::PressureGuard
+            : state == WorkloadState::Balanced
+                ? ControllerPriority::BackgroundEfficiency
+                : ControllerPriority::WorkloadOptimization;
 
     auto& baseline = BaselineStore::instance();
     bool ok = true;
+    const auto mutate = [&](const std::string& path, const std::string& value) {
+        if (path.empty()) return true;
+        const std::string current = read_first_line(path);
+        if (current.empty()) return false;
+        if (current == value) return true;
 
-    // Qualcomm Adreno KGSL surface coordination
+        const auto audit = baseline.get_audit_trail();
+        const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == path;
+        });
+        if (snapshot == audit.end()) return false;
+
+        if (value == snapshot->factory_value) {
+            if (!baseline.rollback(path) || read_first_line(path) != snapshot->factory_value) return false;
+            active_mutation_paths_.erase(
+                std::remove(active_mutation_paths_.begin(), active_mutation_paths_.end(), path),
+                active_mutation_paths_.end());
+            return true;
+        }
+
+        if (!acquire_gpu_lease_locked(priority)) return false;
+        if (!baseline.apply_mutation(path, value)) return false;
+        if (read_first_line(path) != value) return false;
+        if (std::find(active_mutation_paths_.begin(), active_mutation_paths_.end(), path) ==
+            active_mutation_paths_.end()) {
+            active_mutation_paths_.push_back(path);
+        }
+        return true;
+    };
+
     if (snap_.gpu_surface.vendor == GpuVendor::QualcommAdreno) {
         if (!adrenoboost_node_.empty()) {
             uint32_t target_boost_num = 0;
@@ -948,35 +1053,26 @@ bool VulkanController::apply_workload_policy(
                 target_boost_num = 1;
                 target_boost = "1";
             }
-            if (baseline.apply_mutation(adrenoboost_node_, target_boost)) {
+            if (mutate(adrenoboost_node_, target_boost)) {
                 snap_.gpu_surface.adrenoboost_level = target_boost_num;
             } else {
                 ok = false;
             }
         }
-        if (!bus_split_node_.empty()) {
-            const std::string bus_val = "1";
-            if (baseline.apply_mutation(bus_split_node_, bus_val)) {
-                snap_.gpu_surface.bus_split_enabled = true;
-            }
-        }
-        if (!throttling_node_.empty()) {
-            // Always keep hardware thermal throttling safety enabled
-            const std::string throt_val = "1";
-            if (baseline.apply_mutation(throttling_node_, throt_val)) {
-                snap_.gpu_surface.throttling_enabled = true;
-            }
-        }
+        if (!bus_split_node_.empty() && !mutate(bus_split_node_, "1")) ok = false;
+        // OEM hardware thermal throttling is never disabled by this controller.
+        if (!throttling_node_.empty() && !mutate(throttling_node_, "1")) ok = false;
     }
 
-    // ARM Mali / Immortalis power policy surface coordination
     if (snap_.gpu_surface.vendor == GpuVendor::ArmMali && !mali_policy_node_.empty()) {
-        const std::string cur_policy = read_first_line(mali_policy_node_);
-        if (cur_policy == "coarse_demand" || cur_policy == "always_on") {
-            (void)baseline.apply_mutation(mali_policy_node_, "coarse_demand");
+        const std::string current_policy = read_first_line(mali_policy_node_);
+        if ((current_policy == "coarse_demand" || current_policy == "always_on") &&
+            !mutate(mali_policy_node_, "coarse_demand")) {
+            ok = false;
         }
     }
 
+    if (active_mutation_paths_.empty() && !transaction_id_.empty()) release_gpu_lease_locked();
     return ok;
 }
 
