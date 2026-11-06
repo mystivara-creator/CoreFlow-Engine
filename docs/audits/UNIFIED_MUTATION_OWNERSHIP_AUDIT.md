@@ -169,3 +169,31 @@ Unified mutation ownership is complete only when all of the following are demons
 8. Run complete CI and audit all remaining write sites before claiming system-wide ownership.
 
 **Current status: NOT COMPLETE.** The existing coordinator is a foundation, not yet a universal mutation authority.
+
+
+## 9. Implementation update — 2026-11-06
+
+The following coordinator and telemetry hardening has now been implemented on the audit remediation branch:
+
+- Coordinator lease state is protected by a mutex; the conflict counter is atomic.
+- Concurrent acquisition of one domain is covered by a 12-contender regression test; exactly one owner may hold the lease.
+- Released lease records are reused per domain to prevent unbounded growth during long-running daemon operation.
+- Lease release can be transaction-ID scoped. A stale completion from an earlier transaction cannot release a newer lease held by the same controller/domain.
+- PSI availability is propagated independently for CPU, memory, and I/O through daemon, Rust controller, predictor, tuner, status JSON, and WebUI. Missing PSI is not treated as zero; incomplete evidence withholds normal workload mutation while thermal stabilization remains independently actionable.
+- Thermal trends are now tracked independently per discovered sensor. Invalid sensor reads reset only that sensor's trend history; the most rapidly warming valid compute/board sensor contributes the conservative trend used by the tuner.
+- WebUI reports unavailable PSI as N/A and exposes per-sensor thermal velocity instead of retaining stale pressure values.
+
+Validation for the complete candidate head `49ab32fcb781d9096f83e2d9b9020ef400e3a7c7`:
+- [GitHub Actions run 42266487313](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42266487313) passed all seven jobs: Host C++, ASan/UBSan, Rust/Clippy, WebUI, Module validation, Android ARM64 package, and CI gate.
+
+### Remaining ownership blockers
+
+These changes harden the coordinator itself; they do **not** complete system-wide mutation ownership. The following remain unresolved:
+
+- Coordinator preemption still records a request flag; registered controller callbacks, cancellation acknowledgement, and transaction-scoped rollback dispatch are not yet implemented.
+- FrequencyController, UclampGovernor, VulkanController, and HardwareLongevityManager are not yet all integrated with coordinator leases for their complete transaction lifetimes.
+- Cross-controller multi-domain acquisition and partial-acquisition cleanup are not yet demonstrated with real controller integration tests.
+- Daemon lifecycle writes still require checked, allowlisted operations and readback verification.
+- Physical-device behavior remains unvalidated; CI success is not device validation.
+
+**Status remains: NOT COMPLETE.** Do not treat this audit or the passing CI run as approval to merge or declare the 3.1.0 freeze ready.
