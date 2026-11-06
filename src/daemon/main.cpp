@@ -843,7 +843,7 @@ int main(int argc, char* argv[]) {
                     (void)baseline.rollback_all();
                     config = DaemonConfig::load_best_available();
                     if (!governor.resync()) {
-                        governor = UclampGovernor{};
+                        std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
                     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
