@@ -213,19 +213,6 @@ int main() {
 
     // 2. Elevated I/O PSI -> Autonomously selects mq-deadline + coupled iosched tunables
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
-    const auto tuner_owned_lease = coordinator.active_leases();
-    assert(tuner_owned_lease.size() == 1);
-    assert(tuner_owned_lease.front().domain == coreflow::MutationDomain::BlockIo);
-    assert(tuner_owned_lease.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
-    coordinator.emergency_preempt_all("test-autonomous-tuner-preemption");
-    assert(get(sda_q / "scheduler") == "none");
-    assert(get(sda_q / "iosched/read_expire") == "500");
-    assert(get(sda_q / "read_ahead_kb") == "128");
-    assert(coordinator.active_leases().empty());
-
-    // Re-advertise scheduler choices and ensure the tuner can acquire a fresh lease.
-    put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
-    tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
     const auto observing1 = tuner.snapshot();
     assert(observing1.stage == "OBSERVING");
     assert(observing1.active_candidate_id == "io.mq_deadline_low_latency");
@@ -818,6 +805,27 @@ int main() {
     assert(t9_eval.stage == "PLANNED");
 
     tuner.reset();
+
+    // A separate tuner instance verifies that coordinator preemption invokes
+    // its registered callback and restores the active candidate before releasing.
+    {
+        put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
+        coreflow::AutonomousTuner preemption_tuner(sys_root.string(), proc_root.string());
+        preemption_tuner.reset();
+        const auto active = preemption_tuner.step({
+            .cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
+        assert(active.stage == "OBSERVING");
+        assert(active.active_candidate_id.rfind("io.", 0) == 0);
+        const auto tuner_lease = coordinator.active_leases();
+        assert(tuner_lease.size() == 1);
+        assert(tuner_lease.front().domain == coreflow::MutationDomain::BlockIo);
+        assert(tuner_lease.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
+        coordinator.emergency_preempt_all("test-autonomous-tuner-preemption");
+        assert(get(sda_q / "scheduler") == "none");
+        assert(get(sda_q / "iosched/read_expire") == "500");
+        assert(get(sda_q / "read_ahead_kb") == "128");
+        assert(coordinator.active_leases().empty());
+    }
 
     // Handler teardown must wait for callbacks already copied by dispatch.
     coordinator.reset();
