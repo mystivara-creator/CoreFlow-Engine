@@ -681,14 +681,14 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         it->second.prior_value = previous_prior;
         if (!persist_locked()) {
             std::cerr << "[CoreFlow] BaselineStore: failed to restore journal after rejected mutation on "
-                      << path << "\\n";
+                      << path << "\n";
         }
         return false;
     }
     if (!write_raw_node(path, new_value, cur_dev, cur_ino)) {
         if (!rollback_path_locked(path)) {
             std::cerr << "[CoreFlow] BaselineStore: path-scoped rollback failed after write error on "
-                      << path << "\\n";
+                      << path << "\n";
         }
         return false;
     }
@@ -697,7 +697,7 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
     if (!persist_locked()) {
         if (!rollback_path_locked(path)) {
             std::cerr << "[CoreFlow] BaselineStore: path-scoped rollback failed after journal update error on "
-                      << path << "\\n";
+                      << path << "\n";
         }
         return false;
     }
