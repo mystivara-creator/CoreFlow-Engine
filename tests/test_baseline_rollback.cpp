@@ -251,6 +251,13 @@ int main(int argc, char* argv[]) {
     // A clear in-memory state is not enough: the empty journal must also be
     // written durably before an orphaned coordinator lease can be retired.
     assert(!store.has_active_mutations());
+    assert(!store.verify_and_persist_clear_state()); // Symlinked state path must fail closed.
+    assert(!std::filesystem::exists(external_state + "/baseline.journal"));
+    assert(std::filesystem::remove(safe_state)); // Remove the symlink, not its target.
+    std::filesystem::create_directory(safe_state);
+    store.reinitialize();
+    assert(store.recover_pending());
+    assert(!store.has_active_mutations());
     assert(store.verify_and_persist_clear_state());
     assert(std::filesystem::file_size(safe_state + "/baseline.journal") > 0);
 
