@@ -1019,13 +1019,14 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 
 bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
-    CentralMutationCoordinator::instance().emergency_preempt_all("EmergencyRollback");
+    const bool had_active_transaction = transaction_active_;
     current_objective_ = OptimizationObjective::EmergencyMitigation;
-    if (transaction_active_) {
+    if (had_active_transaction) {
         last_verdict_ = "ABORTED";
         last_verdict_enum_ = TunerVerdict::Aborted;
         ++total_rolled_back_;
     }
+    CentralMutationCoordinator::instance().emergency_preempt_all(reason);
     const bool restored = rollback_active(reason);
     if (!restored) {
         last_verdict_ = "RECOVERY_REQUIRED";
