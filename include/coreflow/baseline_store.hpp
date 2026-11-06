@@ -89,7 +89,9 @@ private:
     bool write_raw_node(const std::string& path, const std::string& value, uint64_t expected_dev = 0, uint64_t expected_ino = 0);
 };
 
-// RAII Scope Guard for temporary performance boosts
+// Legacy RAII helper for isolated, single-controller tests or bring-up only.
+// It is not a replacement for a coordinator-owned controller transaction.
+[[deprecated("Use a coordinator-owned controller transaction for runtime mutations")]]
 class ScopedBaselineLock {
 public:
     explicit ScopedBaselineLock(std::vector<std::pair<std::string, std::string>> mutations);
