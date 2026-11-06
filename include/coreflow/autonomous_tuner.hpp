@@ -22,6 +22,7 @@
 #include <string_view>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace coreflow {
@@ -193,6 +194,9 @@ private:
     };
     std::condition_variable preemption_cv_;
     std::unordered_map<std::string, PreemptionHandlerEntry> preemption_handlers_;
+    // Controller identities are single-lifetime tokens and remain retired
+    // after unregister, even when their final lease was already released.
+    std::unordered_set<std::string> retired_controller_ids_;
     bool emergency_recovery_active_{false};
     std::atomic<uint64_t> conflict_rejections_{0};
 };
