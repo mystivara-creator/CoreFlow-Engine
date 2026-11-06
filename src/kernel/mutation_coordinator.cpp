@@ -247,7 +247,7 @@ bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery
     const auto all_active_owners_are_detached = [&]() {
         for (const auto& lease : leases_) {
             if (!lease.active) continue;
-            if (!lease.owner_detached) return false;
+            if (!lease.owner_detached || !lease.preemption_requested) return false;
             if (preemption_handlers_.find(lease.owner_controller) != preemption_handlers_.end()) {
                 return false;
             }
