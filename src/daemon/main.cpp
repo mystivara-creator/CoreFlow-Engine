@@ -647,19 +647,80 @@ void clear_pid(const UniqueFd& lock) noexcept {
     }
 }
 
-void write_sys_node_quiet(const char* path, std::string_view content) noexcept {
-    UniqueFd fd(::open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return;
-    const ssize_t written = ::write(fd.get(), content.data(), content.size());
-    (void)written;
+bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
+    constexpr std::string_view kAllowed[] = {
+        "/sys/fs/cgroup/cgroup.procs",
+        "/dev/cg2_bpf/cgroup.procs",
+        "/acct/cgroup.procs",
+        "/dev/cpuset/system-background/cgroup.procs",
+        "/dev/cpuset/system-background/tasks",
+        "/proc/self/oom_score_adj",
+    };
+    return std::find(std::begin(kAllowed), std::end(kAllowed), path) != std::end(kAllowed);
 }
 
-void escape_app_cgroups_and_protect_oom() noexcept {
-    // When launched from a root manager WebUI (KernelSU / APatch / MMRL), the child
-    // inherits the WebView/Manager app's UID/PID cgroup. When the user closes the WebUI,
-    // Android's libprocessgroup kills all processes remaining in that app's cgroup.
-    // Migrate coreflowd into the root/system cgroups and harden oom_score_adj.
-    const std::string pid_str = std::to_string(::getpid()) + "\n";
+bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
+    if (fd < 0 || expected.empty() || expected.size() > 32) return false;
+    char buffer[4096];
+    std::string line;
+    bool overflow = false;
+    for (;;) {
+        ssize_t count = ::read(fd, buffer, sizeof(buffer));
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (count == 0) {
+            return !overflow && line == expected;
+        }
+        for (ssize_t i = 0; i < count; ++i) {
+            const char ch = buffer[i];
+            if (ch == '\n' || ch == '\r') {
+                if (!overflow && line == expected) return true;
+                line.clear();
+                overflow = false;
+            } else if (!overflow) {
+                if (line.size() < 32) line.push_back(ch);
+                else overflow = true;
+            }
+        }
+    }
+}
+
+bool write_sys_node_verified(
+    std::string_view path,
+    std::string_view content,
+    std::string_view expected_readback_line) {
+    if (!is_allowlisted_lifecycle_target(path) || content.empty() ||
+        expected_readback_line.empty()) {
+        return false;
+    }
+
+    const std::string owned_path(path);
+    UniqueFd fd(::open(owned_path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+
+    // cgroup membership files are command interfaces: a short write is failure,
+    // not a partially successful lifecycle operation.
+    ssize_t written = -1;
+    do {
+        written = ::write(fd.get(), content.data(), content.size());
+    } while (written < 0 && errno == EINTR);
+    if (written < 0 || static_cast<size_t>(written) != content.size()) return false;
+    fd.reset();
+
+    UniqueFd verify_fd(::open(owned_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!verify_fd.valid()) return false;
+    struct stat st{};
+    if (::fstat(verify_fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    return lifecycle_readback_contains_line(verify_fd.get(), expected_readback_line);
+}
+
+void escape_app_cgroups_and_protect_oom() {
+    // This is a lifecycle-only operation, deliberately outside adaptive mutation
+    // domains. Every target is explicitly allowlisted and must pass readback.
+    const std::string pid_token = std::to_string(::getpid());
+    const std::string pid_command = pid_token + "\n";
     constexpr const char* kRootCgroups[] = {
         "/sys/fs/cgroup/cgroup.procs",
         "/dev/cg2_bpf/cgroup.procs",
@@ -667,10 +728,20 @@ void escape_app_cgroups_and_protect_oom() noexcept {
         "/dev/cpuset/system-background/cgroup.procs",
         "/dev/cpuset/system-background/tasks",
     };
+
+    size_t verified_memberships = 0;
     for (const char* cg : kRootCgroups) {
-        write_sys_node_quiet(cg, pid_str);
+        if (write_sys_node_verified(cg, pid_command, pid_token)) {
+            ++verified_memberships;
+        }
     }
-    write_sys_node_quiet("/proc/self/oom_score_adj", "-900\n");
+    if (verified_memberships == 0) {
+        emit_log(true, "[CoreFlow][Lifecycle] No allowlisted cgroup membership write passed readback; inherited membership remains in effect.");
+    }
+
+    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900")) {
+        emit_log(true, "[CoreFlow][Lifecycle] oom_score_adj write was not verified; retaining the kernel-provided value.");
+    }
 }
 
 bool daemonize_process() noexcept {
