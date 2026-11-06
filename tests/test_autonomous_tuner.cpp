@@ -88,9 +88,10 @@ int main() {
     assert(coordinator.active_leases().empty());
     assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx", coreflow::ControllerPriority::WorkloadOptimization));
     assert(coordinator.active_leases().size() == 1);
-    // A stale completion from an earlier transaction must not release a newer lease
-    // held by the same controller/domain.
+    // A controller must release the previous transaction before acquiring a new one.
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx");
     assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2", coreflow::ControllerPriority::WorkloadOptimization));
+    // A stale completion from the earlier transaction must not release the newer lease.
     coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx");
     const auto protected_lease = coordinator.active_leases();
     assert(protected_lease.size() == 1);
@@ -138,6 +139,9 @@ int main() {
     assert(refused_lease.size() == 1);
     assert(refused_lease.front().owner_controller == "RefusingController");
     assert(refused_lease.front().preemption_requested);
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse",
+        coreflow::ControllerPriority::BackgroundEfficiency));
     coordinator.unregister_preemption_handler("RefusingController");
     coordinator.release_lease(
         coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse");
@@ -146,6 +150,7 @@ int main() {
     assert(coordinator.register_preemption_handler("RotatingController",
         [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
             assert(tx == "tx-old");
+            coordinator.release_lease(domain, "RotatingController", "tx-old");
             assert(coordinator.acquire_lease(
                 domain, "RotatingController", "tx-new",
                 coreflow::ControllerPriority::ThermalStabilization));
