@@ -41,10 +41,14 @@ FrequencyController::~FrequencyController() {
 }
 bool FrequencyController::acquire_domain_lease(bool gpu) {
     auto& transaction_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
-    if (!transaction_id.empty()) return true;
+    const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
+    if (!transaction_id.empty()) {
+        return CentralMutationCoordinator::instance().acquire_lease(
+            domain, kFrequencyControllerName, transaction_id,
+            ControllerPriority::WorkloadOptimization);
+    }
     transaction_id = "frequency-" + std::string(gpu ? "gpu-" : "cpu-") +
                      std::to_string(++lease_generation_);
-    const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
     if (!CentralMutationCoordinator::instance().acquire_lease(
             domain, kFrequencyControllerName, transaction_id,
             ControllerPriority::WorkloadOptimization)) {
