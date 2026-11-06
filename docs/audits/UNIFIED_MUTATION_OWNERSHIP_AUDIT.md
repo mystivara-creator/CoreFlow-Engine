@@ -537,3 +537,48 @@ Workflow run [42290529938](https://github.com/mystivara-creator/CoreFlow-Engine/
 - Perform physical-device validation on supported Xiaomi/HyperOS firmware combinations, including OEM arbitration, thermal behavior, and rollback after interrupted writes.
 
 **Status: EXACT-HEAD CI-VALIDATED CANDIDATE, DETACHED-OWNER RECOVERY IMPLEMENTED, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device until remaining concurrency, source-audit, Vulkan-semantic, and device-validation gates are reviewed.
+
+## 18. Single-flight preemption dispatch and immutable callback registration
+
+**Source head:** `f99ab0671e5b2c457c94a398bf3ddee1634a3d5f`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### Race identified
+
+The coordinator previously allowed two concurrent emergency/preemption paths to observe the same active lease with `preemption_requested=true` and both copy/invoke the owner's callback. Controller mutexes reduce the likelihood of overlapping writes, but duplicate rollback entry is unnecessary and leaves callback semantics dependent on every controller implementing idempotent re-entry correctly.
+
+The callback registry also allowed an idle registration under an existing identity to be silently replaced. Since controller identities are process-lifetime ownership tokens, a second registration should not replace the callback associated with the current owner.
+
+### Correction
+
+- Added a per-lease `preemption_dispatch_in_flight` marker guarded by the coordinator mutex.
+- A dispatch claims the exact domain/controller/transaction lease before calling the handler outside the lock. Concurrent dispatchers for that same lease return without invoking a second callback.
+- On successful acknowledgement, the exact lease is released atomically under the coordinator mutex. This closes the small interval between acknowledgement and release in which a second dispatcher could otherwise enter.
+- On failed acknowledgement, the in-flight marker is cleared and the lease remains active/preemption-requested so a later daemon monitor or emergency pass can retry.
+- Handler registration now rejects any already-registered controller identity instead of replacing an existing handler. Unregister remains responsible for retiring the identity after callbacks drain.
+
+### Regression coverage
+
+- Duplicate callback registration under one controller identity is rejected; the original callback remains the only callback invoked.
+- A deterministic two-thread test blocks the first rollback callback while a second emergency-preemption pass runs. The callback count remains exactly one, the active lease exposes its in-flight marker, and the first callback's successful acknowledgement releases the lease.
+- The existing failed-acknowledgement test now invokes a second emergency pass and verifies that retry occurs after the in-flight marker clears.
+- The existing unregister/callback lifetime test remains in place to verify teardown waits for copied callbacks.
+
+### CI status
+
+Workflow run [42291892269](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42291892269) was created for exact head `f99ab0671e5b2c457c94a398bf3ddee1634a3d5f`. At the time this audit entry was written, the run was still pending; it is not recorded as passed. The preceding source commit run [42291881468](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42291881468) was still in progress and is not treated as validation for the final head.
+
+### Vulkan semantics review — evidence boundary
+
+- ARM's Mali driver ABI documents the `power_policy` sysfs attribute and lists `coarse_demand` and `always_on` as supported values, with the active policy bracketed in readback. See [Android common kernel Mali sysfs ABI](https://android.googlesource.com/kernel/google-modules/gpu/+/3372cb0ffe779efd9b7507174c61d0e48822b5e2/mali_kbase/Documentation/ABI/testing/sysfs-device-mali). This supports the token vocabulary, but does not replace per-device discovery and OEM regression testing.
+- The current code also probes Qualcomm KGSL `devfreq/adrenoboost`, `bus_split`, and `throttling` nodes and applies numeric targets. The review did not identify a normative, version-matched ABI for their accepted values and thermal meaning across the supported Qualcomm kernels. Presence/readability and an initial value are not sufficient proof of safe mutation semantics.
+- Therefore these Adreno mutations remain a release acceptance gate. Before enabling them for a device family, collect exact kernel-source/ABI evidence, discover accepted values at runtime where the driver exposes them, test readback and OEM arbitration on the target firmware, and verify rollback. Unknown or unverified semantics must remain observation-only.
+
+### Remaining acceptance gates
+
+- Exact-head CI for `f99ab0671e5b2c457c94a398bf3ddee1634a3d5f` must complete successfully; no result from an earlier source head substitutes for it.
+- Add repeated stress coverage for controller destruction racing with dispatch, multi-domain owners, multiple simultaneous leases, and monitor retry under varied scheduling. The new two-thread test is deterministic regression coverage, not a substitute for long-running stress or device execution.
+- Resolve the Adreno KGSL semantic evidence gate above before authorizing those mutations for any target firmware.
+- Complete the final source/write-path inventory and perform physical Xiaomi/HyperOS validation, including OEM arbitration and interrupted-write recovery.
+
+**Status: PREEMPTION DUPLICATE-DISPATCH RACE ADDRESSED IN SOURCE, EXACT-HEAD CI PENDING, VULKAN ADRENO WRITE SEMANTICS AND DEVICE VALIDATION OPEN. PR #7 MUST REMAIN DRAFT; NOT READY FOR 3.1.0 FREEZE.**
