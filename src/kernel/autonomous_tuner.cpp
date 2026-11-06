@@ -1001,9 +1001,14 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
         return false;
     }
 
-    // Release ownership only after every rollback has succeeded and its
-    // BaselineStore readback verification has completed.
-    CentralMutationCoordinator::instance().release_all_for_controller(controller_name_);
+    // Release only the candidate's exact domain/transaction lease after every
+    // tracked path has passed BaselineStore rollback and readback verification.
+    // AutonomousTuner owns one candidate transaction at a time; never bulk-release
+    // any unexpected lease that may belong to a separate recovery path.
+    if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
+        CentralMutationCoordinator::instance().release_lease(
+            domain_for_candidate(current_candidate_id_), controller_name_, current_candidate_id_);
+    }
     applied_steps_.clear();
     transaction_active_ = false;
     recovery_required_ = false;
