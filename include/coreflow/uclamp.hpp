@@ -6,17 +6,21 @@
  */
 #pragma once
 #include "types.hpp"
+#include <cstdint>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <string_view>
 
 namespace coreflow {
+enum class MutationDomain : uint8_t;
 
 class UclampGovernor {
 public:
     // Empty root means runtime discovery from mounted cgroup filesystems.
     // An explicit root exists only for deterministic tests or controlled bring-up.
     explicit UclampGovernor(std::string_view explicit_root = {});
-    ~UclampGovernor() = default;
+    ~UclampGovernor();
 
     [[nodiscard]] bool is_supported() const noexcept;
     [[nodiscard]] std::string_view target_path() const noexcept { return target_path_; }
@@ -39,14 +43,25 @@ private:
     enum class MountKind : uint8_t { Auto, CgroupV1, CgroupV2 };
 
     std::string target_path_;
+    std::string controller_name_;
+    std::string transaction_id_;
+    mutable std::mutex mutex_;
+    uint64_t transaction_generation_{0};
     Encoding encoding_{Encoding::Unknown};
     bool supported_{false};
     bool has_written_{false};
+    uint32_t oem_min_{0};
     uint32_t oem_max_{1024};
+    bool mutation_active_{false};
     uint32_t last_min_{0};
     uint32_t last_max_{1024};
 
     void discover(std::string_view explicit_root);
+    bool acquire_mutation_lease_locked();
+    void release_mutation_lease_locked() noexcept;
+    bool rollback_transaction_locked() noexcept;
+    bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
+    bool owned_values_intact_locked();
     bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;
     bool write_top_app(uint32_t min_val, uint32_t max_val);
     [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
