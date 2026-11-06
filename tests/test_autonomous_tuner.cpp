@@ -975,6 +975,7 @@ int main() {
     coordinator.emergency_preempt_all("test-detached-owner-recovery");
     orphaned = coordinator.active_leases();
     assert(orphaned.size() == 1 && orphaned.front().owner_detached);
+    assert(orphaned.front().preemption_requested);
     assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().size() == 1);
     assert(baseline.has_active_mutations());
