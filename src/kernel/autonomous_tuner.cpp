@@ -1084,8 +1084,17 @@ bool AutonomousTuner::apply_transaction(
     for (const auto& step : steps) {
         const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                   step.relation == StepRelation::RequiredDependent);
-        const bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
-                                store.capture(step.path);
+        bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
+                          store.capture(step.path);
+        if (accessible) {
+            const auto audit = store.get_audit_trail();
+            const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == step.path;
+            });
+            // apply_transaction has already resolved this tuner's previous trial.
+            // Any remaining journaled mutation belongs to another or unresolved owner.
+            if (snapshot == audit.end() || snapshot->is_modified) accessible = false;
+        }
         if (is_required && !accessible) {
             // Abort entire transaction before any write occurs
             CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
