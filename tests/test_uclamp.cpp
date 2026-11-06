@@ -43,6 +43,18 @@ int main() {
     assert(percentage.is_supported());
     assert(percentage.encoding_name() == "percentage");
     assert(percentage.target_path() == percent_top);
+
+    // A pre-existing journaled clamp from an unrelated/legacy owner is not
+    // the OEM baseline and must not be adopted by this governor's transaction.
+    assert(BaselineStore::instance().apply_mutation(percent_top + "/cpu.uclamp.min", "10.00"));
+    assert(!percentage.apply_state(WorkloadState::Balanced, 320, 1024));
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "10.00");
+    assert(coordinator.active_leases().empty());
+    assert(!percentage.resync());
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "10.00");
+    assert(BaselineStore::instance().rollback(percent_top + "/cpu.uclamp.min"));
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
+
     assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(read_token(percent_top + "/cpu.uclamp.min") == "31.25");
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
