@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1160,6 +1161,9 @@ bool AutonomousTuner::apply_transaction(
                 continue;
             }
             // Dependency or readback failure on required step: unwind committed steps in reverse order
+            std::cerr << "[CI-DIAG] required mutation failed path=" << step.path
+                      << " target=" << step.target_value
+                      << " relation=" << step.relationship << '\\n';
             applied_steps_ = std::move(committed);
             (void)rollback_active("Transaction aborted on failed required step; rolled back to baseline.");
             return false;
