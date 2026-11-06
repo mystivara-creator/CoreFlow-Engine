@@ -206,18 +206,13 @@ bool UclampGovernor::rollback_transaction_locked() noexcept {
     const std::string max_raw = read_token(max_path);
     if (min_raw.empty() || max_raw.empty()) return false;
     const auto audit = store.get_audit_trail();
-    const auto matches_store = [&](const std::string& path, const std::string& raw,
-                                   const std::string& expected) {
+    const auto matches_store = [&](const std::string& path, const std::string& raw) {
         const auto it = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
             return node.path == path;
         });
-        if (it == audit.end()) return raw == expected;
-        return !it->is_modified && it->factory_value == raw;
+        return it != audit.end() && !it->is_modified && it->factory_value == raw;
     };
-    if (!matches_store(min_path, min_raw, oem_min_raw_) ||
-        !matches_store(max_path, max_raw, oem_max_raw_)) {
-        return false;
-    }
+    if (!matches_store(min_path, min_raw) || !matches_store(max_path, max_raw)) return false;
 
     const uint32_t restored_min = read_uclamp_node(min_path);
     const uint32_t restored_max = read_uclamp_node(max_path);
