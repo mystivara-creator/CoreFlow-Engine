@@ -896,6 +896,7 @@ int main() {
         coreflow::MutationDomain::CpuPolicy, "EmergencyGateController", "gate-tx",
         coreflow::ControllerPriority::WorkloadOptimization));
     coordinator.begin_emergency_recovery();
+    assert(coordinator.is_emergency_recovery_active());
     std::string gate_conflict;
     assert(!coordinator.acquire_lease(
         coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
@@ -906,6 +907,7 @@ int main() {
     assert(gate_acknowledged);
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
+    assert(!coordinator.is_emergency_recovery_active());
     assert(coordinator.acquire_lease(
         coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
         coreflow::ControllerPriority::EmergencySafety));
