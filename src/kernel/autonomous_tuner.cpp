@@ -195,16 +195,15 @@ bool CentralMutationCoordinator::acquire_lease(
                 return true;
             }
             if (static_cast<uint8_t>(priority) > static_cast<uint8_t>(lease.priority)) {
-                // Higher priority controller (e.g. ThermalStabilization or EmergencySafety) preempts lower priority
-                lease.owner_controller = std::string(controller_name);
-                lease.transaction_id = std::string(transaction_id);
-                lease.priority = priority;
-                return true;
+                // Priority requests cancellation; it never transfers a live lease.
+                // The current owner must finish rollback and readback before release.
+                lease.preemption_requested = true;
             }
             ++conflict_rejections_;
             if (conflict_reason != nullptr) {
-                *conflict_reason = "Domain locked by higher/equal priority controller '" +
-                                   lease.owner_controller + "' (tx: " + lease.transaction_id + ")";
+                *conflict_reason = "Domain remains owned by controller '" +
+                                   lease.owner_controller + "' (tx: " + lease.transaction_id +
+                                   "); higher-priority preemption is pending owner resolution";
             }
             return false;
         }
@@ -224,6 +223,7 @@ void CentralMutationCoordinator::release_lease(MutationDomain domain, std::strin
         if (lease.domain == domain && lease.active && lease.owner_controller == controller_name) {
             lease.active = false;
             lease.transaction_id.clear();
+            lease.preemption_requested = false;
         }
     }
 }
@@ -238,9 +238,13 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
 }
 
 void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
+    (void)reason; // The caller reports the emergency; ownership must remain intact.
     for (auto& lease : leases_) {
-        lease.active = false;
-        lease.transaction_id = std::string(reason);
+        if (lease.active) {
+            // Preserve owner and transaction identity until that owner verifies
+            // cancellation/rollback and explicitly releases the lease.
+            lease.preemption_requested = true;
+        }
     }
 }
 
@@ -1053,8 +1057,6 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
     observing_ = false;
     obs_ticks_ = 0;
     settling_ticks_remaining_ = 0;
-    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
-
     if (!failed_steps.empty()) {
         std::reverse(failed_steps.begin(), failed_steps.end());
         applied_steps_ = std::move(failed_steps);
@@ -1067,6 +1069,9 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
         return false;
     }
 
+    // Release ownership only after every rollback has succeeded and its
+    // BaselineStore readback verification has completed.
+    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
     applied_steps_.clear();
     transaction_active_ = false;
     recovery_required_ = false;
