@@ -1,5 +1,6 @@
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -28,6 +29,8 @@ int main() {
     assert(::setenv("COREFLOW_TEST_STATE_DIR", state_dir, 1) == 0);
     const std::string root(state_dir);
     assert(BaselineStore::instance().recover_pending());
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.reset();
 
     // cgroup v2-style percentage interface.
     const std::string percent_root = root + "/unified";
@@ -45,9 +48,17 @@ int main() {
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
     assert(percentage.get_top_app_min() == 320u);
     assert(percentage.get_top_app_max() == 1024u);
+    assert(coordinator.active_leases().size() == 1);
+    coordinator.emergency_preempt_all("test-uclamp-emergency");
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
+    assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
+    assert(coordinator.active_leases().empty());
+    assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
+    assert(coordinator.active_leases().size() == 1);
     // OEM changes must not be overwritten during subsequent policy transitions or stop.
     write_token(percent_top + "/cpu.uclamp.min", "10.00");
     assert(!percentage.owned_values_intact());
+    assert(coordinator.active_leases().empty());
     (void)BaselineStore::instance().rollback_all();
     assert(read_token(percent_top + "/cpu.uclamp.min") == "10.00");
 
@@ -68,7 +79,8 @@ int main() {
     assert(read_token(capacity_top + "/cpu.uclamp.max") == "1024");
     assert(capacity.get_top_app_min() == 480u);
     assert(capacity.get_top_app_max() == 1024u);
-    assert(BaselineStore::instance().rollback_all() >= 1);
+    assert(capacity.resync());
+    assert(coordinator.active_leases().empty());
     assert(!BaselineStore::instance().has_active_mutations());
 
     // Vendor thermal throttling may leave integer 0..1024 nodes capped <= 100 at startup;
@@ -106,8 +118,9 @@ int main() {
     assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
     assert(capped.apply_state(WorkloadState::ThermalGuard, 320, 1024));
     assert(capped.get_top_app_max() < 512u);
-    (void)BaselineStore::instance().rollback_all();
+    assert(capped.resync());
     assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
+    assert(coordinator.active_leases().empty());
 
     // Unified cgroup v2 hierarchy identified by cgroup.controllers uses percentage.
     const std::string v2_ctrl_root = root + "/unified-controllers";
