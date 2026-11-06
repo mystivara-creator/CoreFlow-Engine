@@ -142,6 +142,27 @@ int main() {
     coordinator.release_lease(
         coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse");
 
+    // A delayed successful acknowledgement must not release a replacement transaction.
+    assert(coordinator.register_preemption_handler("RotatingController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            assert(tx == "tx-old");
+            assert(coordinator.acquire_lease(
+                domain, "RotatingController", "tx-new",
+                coreflow::ControllerPriority::ThermalStabilization));
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "RotatingController", "tx-old",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("rotate-transaction");
+    const auto rotated_lease = coordinator.active_leases();
+    assert(rotated_lease.size() == 1);
+    assert(rotated_lease.front().transaction_id == "tx-new");
+    assert(rotated_lease.front().active);
+    coordinator.unregister_preemption_handler("RotatingController");
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "RotatingController", "tx-new");
+
     // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
     const auto incomplete_psi = tuner.step({
         .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
