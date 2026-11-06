@@ -1037,13 +1037,17 @@ export type MutationDomain =
   | 'PowerLongevity'
   | 'ThermalCore';
 
-export enum ControllerPriority {
-  BackgroundEfficiency = 20,
-  WorkloadOptimization = 40,
-  PressureGuard = 60,
-  ThermalStabilization = 80,
-  EmergencySafety = 100,
-}
+// Const object instead of `enum`: Node 22's --experimental-strip-types cannot
+// execute TypeScript enums, which broke the WebUI build in CI. This form is
+// erasable TypeScript and keeps the same names and numeric values.
+export const ControllerPriority = {
+  BackgroundEfficiency: 20,
+  WorkloadOptimization: 40,
+  PressureGuard: 60,
+  ThermalStabilization: 80,
+  EmergencySafety: 100,
+} as const;
+export type ControllerPriority = (typeof ControllerPriority)[keyof typeof ControllerPriority];
 
 export interface ResourceProbeInput {
   path: string;
@@ -1403,4 +1407,3 @@ export class CentralMutationCoordinatorModel {
     return priority <= existing.priority;
   }
 }
-
