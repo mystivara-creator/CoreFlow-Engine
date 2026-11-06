@@ -1276,6 +1276,7 @@ int main() {
     std::string disappeared_path;
     std::string disappeared_active_value;
     std::string disappeared_factory_value;
+    std::string temporarily_hidden_path;
     {
         coreflow::AutonomousTuner doomed(teardown_sys.string(), teardown_proc.string());
         const auto applied = doomed.step({
@@ -1299,7 +1300,11 @@ int main() {
         disappeared_factory_value = changed_node->factory_value;
         assert(!disappeared_active_value.empty());
         assert(!disappeared_factory_value.empty());
-        assert(fs::remove(disappeared_path));
+        // Move the same inode out of the discovered path. Reusing the original
+        // inode lets BaselineStore distinguish temporary absence from an OEM
+        // replacement when the path is restored after controller teardown.
+        temporarily_hidden_path = disappeared_path + ".temporarily-hidden";
+        assert(fs::rename(disappeared_path, temporarily_hidden_path));
     } // Actual AutonomousTuner destructor attempts rollback, then retires its handler.
 
     auto teardown_orphans = coordinator.active_leases();
@@ -1308,10 +1313,12 @@ int main() {
     assert(teardown_orphans.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
     assert(teardown_orphans.front().preemption_requested == false);
 
-    // Simulate the sysfs node becoming readable again before monitor recovery.
-    // No detached controller callback exists; BaselineStore must restore and
-    // verify the exact factory value before the orphan lease can be retired.
-    put(disappeared_path, disappeared_active_value);
+    // Restore the exact mock node (same inode) before monitor recovery. No
+    // detached controller callback exists; BaselineStore must restore and verify
+    // the factory value rather than misclassifying the unavailable path as OEM
+    // takeover or adopting the transiently hidden active value.
+    assert(fs::rename(temporarily_hidden_path, disappeared_path));
+    assert(get(disappeared_path) == disappeared_active_value);
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all("actual-controller-teardown-recovery");
     teardown_orphans = coordinator.active_leases();
