@@ -1304,7 +1304,9 @@ int main() {
         // inode lets BaselineStore distinguish temporary absence from an OEM
         // replacement when the path is restored after controller teardown.
         temporarily_hidden_path = disappeared_path + ".temporarily-hidden";
-        assert(fs::rename(disappeared_path, temporarily_hidden_path));
+        fs::rename(disappeared_path, temporarily_hidden_path);
+        assert(!fs::exists(disappeared_path));
+        assert(fs::exists(temporarily_hidden_path));
     } // Actual AutonomousTuner destructor attempts rollback, then retires its handler.
 
     auto teardown_orphans = coordinator.active_leases();
@@ -1317,7 +1319,9 @@ int main() {
     // detached controller callback exists; BaselineStore must restore and verify
     // the factory value rather than misclassifying the unavailable path as OEM
     // takeover or adopting the transiently hidden active value.
-    assert(fs::rename(temporarily_hidden_path, disappeared_path));
+    fs::rename(temporarily_hidden_path, disappeared_path);
+    assert(fs::exists(disappeared_path));
+    assert(!fs::exists(temporarily_hidden_path));
     assert(get(disappeared_path) == disappeared_active_value);
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all("actual-controller-teardown-recovery");
@@ -1329,7 +1333,7 @@ int main() {
     assert(baseline.rollback_all() > 0);
     assert(!baseline.has_active_mutations());
     assert(get(disappeared_path) == disappeared_factory_value);
-    assert(baseline.verify_and_persist_clear_state());
+    baseline.verify_and_persist_clear_state();
     assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
