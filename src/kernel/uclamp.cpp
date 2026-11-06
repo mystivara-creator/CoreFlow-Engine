@@ -462,22 +462,43 @@ bool UclampGovernor::owned_values_intact() {
 
 bool UclampGovernor::resync() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (target_path_.empty()) return false;
-    if (!transaction_id_.empty() && !rollback_transaction_locked()) return false;
-    supported_ = true;
-    has_written_ = false;
-    mutation_active_ = false;
+    if (target_path_.empty()) {
+        supported_ = false;
+        return false;
+    }
+    if (!transaction_id_.empty() && !rollback_transaction_locked()) {
+        // Preserve the active transaction and lease for later recovery, but never
+        // continue issuing policy writes after an unverified resynchronization.
+        supported_ = false;
+        return false;
+    }
     auto& baseline = BaselineStore::instance();
     if (!baseline.rollback(target_path_ + "/cpu.uclamp.min") ||
         !baseline.rollback(target_path_ + "/cpu.uclamp.max")) {
+        supported_ = false;
         return false;
     }
-    oem_min_ = get_top_app_min();
-    oem_max_ = get_top_app_max();
-    oem_min_raw_ = read_token(target_path_ + "/cpu.uclamp.min");
-    oem_max_raw_ = read_token(target_path_ + "/cpu.uclamp.max");
-    last_min_ = oem_min_;
-    last_max_ = oem_max_;
+    const std::string min_raw = read_token(target_path_ + "/cpu.uclamp.min");
+    const std::string max_raw = read_token(target_path_ + "/cpu.uclamp.max");
+    if (min_raw.empty() || max_raw.empty()) {
+        supported_ = false;
+        return false;
+    }
+    const uint32_t restored_min = read_uclamp_node(target_path_ + "/cpu.uclamp.min");
+    const uint32_t restored_max = read_uclamp_node(target_path_ + "/cpu.uclamp.max");
+    if (restored_min > restored_max || restored_max > 1024u) {
+        supported_ = false;
+        return false;
+    }
+    oem_min_ = restored_min;
+    oem_max_ = restored_max;
+    oem_min_raw_ = min_raw;
+    oem_max_raw_ = max_raw;
+    last_min_ = restored_min;
+    last_max_ = restored_max;
+    has_written_ = false;
+    mutation_active_ = false;
+    supported_ = true;
     return true;
 }
 
