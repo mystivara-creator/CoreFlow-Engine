@@ -462,7 +462,7 @@ int main() {
     assert(recovery_snapshot.recovery_required);
     const auto recovery_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
     assert(recovery_leases.size() == 1);
-    assert(recovery_leases[0].owner_controller == "AutonomousTuner");
+    assert(recovery_leases[0].owner_controller.rfind("AutonomousTuner@", 0) == 0);
     assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
 
     // Emergency must still preempt other owners even when the recovery retry fails early.
