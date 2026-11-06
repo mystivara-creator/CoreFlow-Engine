@@ -209,13 +209,22 @@ bool CentralMutationCoordinator::acquire_lease(
             return false;
         }
     }
-    leases_.push_back(DomainLease{
+    const auto reusable = std::find_if(leases_.begin(), leases_.end(), [domain](const DomainLease& lease) {
+        return lease.domain == domain && !lease.active;
+    });
+    const DomainLease next{
         .domain = domain,
         .owner_controller = std::string(controller_name),
         .transaction_id = std::string(transaction_id),
         .priority = priority,
         .active = true,
-    });
+        .preemption_requested = false,
+    };
+    if (reusable != leases_.end()) {
+        *reusable = next;
+    } else {
+        leases_.push_back(next);
+    }
     return true;
 }
 
@@ -236,6 +245,7 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
         if (lease.active && lease.owner_controller == controller_name) {
             lease.active = false;
             lease.transaction_id.clear();
+            lease.preemption_requested = false;
         }
     }
 }
