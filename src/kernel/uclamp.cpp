@@ -164,8 +164,8 @@ bool UclampGovernor::rollback_transaction_locked() noexcept {
         if (it == audit.end()) return raw == expected;
         return !it->is_modified && it->factory_value == raw;
     };
-    if (!matches_store(min_path, min_raw, encode(oem_min_, false)) ||
-        !matches_store(max_path, max_raw, encode(oem_max_, true))) {
+    if (!matches_store(min_path, min_raw, oem_min_raw_) ||
+        !matches_store(max_path, max_raw, oem_max_raw_)) {
         return false;
     }
 
@@ -258,6 +258,8 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 supported_ = true;
                 oem_min_ = get_top_app_min();
                 oem_max_ = get_top_app_max();
+                oem_min_raw_ = read_token(target_path_ + "/cpu.uclamp.min");
+                oem_max_raw_ = read_token(target_path_ + "/cpu.uclamp.max");
                 return;
             }
 
@@ -267,7 +269,10 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 target_path_ = direct.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
+                oem_min_ = get_top_app_min();
                 oem_max_ = get_top_app_max();
+                oem_min_raw_ = read_token(target_path_ + "/cpu.uclamp.min");
+                oem_max_raw_ = read_token(target_path_ + "/cpu.uclamp.max");
                 return;
             }
 
@@ -452,6 +457,8 @@ bool UclampGovernor::resync() noexcept {
     }
     oem_min_ = get_top_app_min();
     oem_max_ = get_top_app_max();
+    oem_min_raw_ = read_token(target_path_ + "/cpu.uclamp.min");
+    oem_max_raw_ = read_token(target_path_ + "/cpu.uclamp.max");
     last_min_ = oem_min_;
     last_max_ = oem_max_;
     return true;
