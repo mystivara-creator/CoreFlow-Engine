@@ -387,9 +387,10 @@ void AutonomousTuner::update_ucb_scores() {
 }
 
 void AutonomousTuner::reset() {
+    // rollback_active releases the lease only after verified recovery. Do not
+    // clear ownership here when rollback failed; recovery must remain fail-closed.
     (void)rollback_active("Autonomous tuner reset to verified OEM baseline.");
-    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
-    recovery_required_ = false;
+    recovery_required_ = recovery_required_;
     thermal_stabilization_active_ = false;
     thermal_recovery_ticks_ = 0;
     has_prev_thermal_ = false;
