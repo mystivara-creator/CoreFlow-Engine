@@ -39,6 +39,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
+    src/kernel/mutation_coordinator.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
     src/kernel/thermal_monitor.cpp
@@ -79,7 +80,7 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
-    add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
 
@@ -91,7 +92,7 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_neural_predictor PRIVATE ${CMAKE_DL_LIBS} m)
     add_test(NAME NeuralPredictorTest COMMAND test_neural_predictor)
 
-    add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_frequency_controller PRIVATE m)
     add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
 
