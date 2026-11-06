@@ -39,12 +39,16 @@ jobs:
         with:
           node-version: "22"
       - name: Install WebUI dependencies
+        id: install
         run: npm install --no-package-lock --no-audit --no-fund
       - name: Run Node.js TypeScript tests
+        if: always() && steps.install.outcome == 'success'
         run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
       - name: Type-check WebUI
+        if: always() && steps.install.outcome == 'success'
         run: npm run lint
       - name: Build WebUI
+        if: always() && steps.install.outcome == 'success'
         run: npm run build
       - name: Upload WebUI build
         if: always()
