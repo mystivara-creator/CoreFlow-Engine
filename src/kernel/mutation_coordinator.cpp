@@ -17,6 +17,14 @@ CentralMutationCoordinator& CentralMutationCoordinator::instance() {
     return coordinator;
 }
 
+std::string CentralMutationCoordinator::make_controller_identity(
+    std::string_view controller_type) {
+    if (controller_type.empty()) return {};
+    static std::atomic<uint64_t> next_identity{1};
+    const uint64_t identity = next_identity.fetch_add(1, std::memory_order_relaxed);
+    return std::string(controller_type) + "@" + std::to_string(identity);
+}
+
 bool CentralMutationCoordinator::acquire_lease(
     MutationDomain domain,
     std::string_view controller_name,
