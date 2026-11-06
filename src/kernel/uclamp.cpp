@@ -126,12 +126,12 @@ UclampGovernor::~UclampGovernor() {
         CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
     }
 }
-bool UclampGovernor::acquire_mutation_lease_locked() {
+bool UclampGovernor::acquire_mutation_lease_locked(ControllerPriority priority) {
     if (!transaction_id_.empty()) return true;
     transaction_id_ = "uclamp-" + std::to_string(++transaction_generation_);
     if (!CentralMutationCoordinator::instance().acquire_lease(
             MutationDomain::UclampCgroup, controller_name_, transaction_id_,
-            ControllerPriority::WorkloadOptimization)) {
+            priority)) {
         transaction_id_.clear();
         return false;
     }
@@ -364,7 +364,14 @@ bool UclampGovernor::apply_state(WorkloadState state,
             top.uclamp_max = base_max == 0 ? 0u : std::max(1u, (base_max * 7u) / 8u);
             break;
     }
-    return write_top_app(top.uclamp_min, top.uclamp_max);
+    const auto priority = state == WorkloadState::ThermalGuard
+        ? ControllerPriority::ThermalStabilization
+        : state == WorkloadState::PressureGuard
+            ? ControllerPriority::PressureGuard
+            : state == WorkloadState::Balanced
+                ? ControllerPriority::BackgroundEfficiency
+                : ControllerPriority::WorkloadOptimization;
+    return write_top_app(top.uclamp_min, top.uclamp_max, priority);
 }
 
 std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
@@ -392,10 +399,17 @@ bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
     if (state == WorkloadState::ThermalGuard) minimum = 0;
     else if (state == WorkloadState::PressureGuard) minimum /= 4;
     else if (state == WorkloadState::SustainedLoad) minimum += minimum / 2;
-    return write_top_app(std::min(minimum, maximum), maximum);
+    const auto priority = state == WorkloadState::ThermalGuard
+        ? ControllerPriority::ThermalStabilization
+        : state == WorkloadState::PressureGuard
+            ? ControllerPriority::PressureGuard
+            : state == WorkloadState::Balanced
+                ? ControllerPriority::BackgroundEfficiency
+                : ControllerPriority::WorkloadOptimization;
+    return write_top_app(std::min(minimum, maximum), maximum, priority);
 }
 
-bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
+bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val, ControllerPriority priority) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!supported_ || !owned_values_intact_locked()) return false;
     min_val = std::clamp(min_val, 0u, 1024u);
@@ -406,7 +420,7 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     const std::string max_path = target_path_ + "/cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
     if (read_uclamp_node(max_path) == max_val && current_min == min_val) return true;
-    if (!acquire_mutation_lease_locked()) return false;
+    if (!acquire_mutation_lease_locked(priority)) return false;
 
     bool success = false;
     if (max_val < current_min) {
