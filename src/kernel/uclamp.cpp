@@ -130,6 +130,7 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
     if (this == &other) return *this;
 
     std::string other_handler_name;
+    bool register_this_handler = false;
     {
         std::scoped_lock lock(mutex_, other.mutex_);
         // Never discard either object's live transaction unless rollback verifies.
@@ -150,6 +151,11 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         transaction_generation_ = std::max(transaction_generation_, other.transaction_generation_);
         encoding_ = other.encoding_;
         supported_ = other.supported_;
+        if (supported_ && controller_name_.empty()) {
+            controller_name_ = "UclampGovernor@" +
+                               std::to_string(reinterpret_cast<uintptr_t>(this));
+            register_this_handler = true;
+        }
         has_written_ = false;
         oem_min_ = other.oem_min_;
         oem_max_ = other.oem_max_;
@@ -166,8 +172,16 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         other.mutation_active_ = false;
     }
 
+    auto& coordinator = CentralMutationCoordinator::instance();
     if (!other_handler_name.empty()) {
-        CentralMutationCoordinator::instance().unregister_preemption_handler(other_handler_name);
+        coordinator.unregister_preemption_handler(other_handler_name);
+    }
+    if (register_this_handler) {
+        (void)coordinator.register_preemption_handler(
+            controller_name_,
+            [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
+                return handle_preemption(domain, transaction_id);
+            });
     }
     return *this;
 }
