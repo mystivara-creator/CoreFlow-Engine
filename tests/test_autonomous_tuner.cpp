@@ -963,6 +963,13 @@ int main() {
     assert(orphaned.size() == 1);
     assert(orphaned.front().owner_detached);
     assert(orphaned.front().owner_controller == "VanishedController");
+    // A detached identity cannot be rebound to a new callback while its old
+    // lease remains unresolved; process-lifetime IDs must stay one-owner-only.
+    assert(!coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return true;
+        }));
 
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all("test-detached-owner-recovery");
