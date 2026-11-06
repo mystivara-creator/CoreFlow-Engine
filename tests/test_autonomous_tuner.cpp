@@ -117,6 +117,10 @@ int main() {
     assert(coordinator.acquire_lease(
         coreflow::MutationDomain::GpuDevfreq, "ScopedReleaseController", "scoped-gpu-tx",
         coreflow::ControllerPriority::WorkloadOptimization));
+    // An empty transaction identifier is never a wildcard release.
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "");
+    assert(coordinator.active_leases().size() == 2);
     coordinator.release_lease(
         coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "scoped-cpu-tx");
     const auto scoped_remaining = coordinator.active_leases();
