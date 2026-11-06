@@ -1019,6 +1019,21 @@ bool VulkanController::apply_workload_policy(
 
     auto& baseline = BaselineStore::instance();
     bool ok = true;
+
+    // Qualcomm KGSL nodes are retained as telemetry only until the exact
+    // target-driver ABI and semantics are verified. In particular, the
+    // "throttling" attribute is not assumed to be the OEM thermal-protection
+    // switch; vendor implementations use similarly named controls for other
+    // power/telemetry behavior. If this controller still owns a transaction
+    // from an earlier policy invocation, unwind and verify it before no-op.
+    if (snap_.gpu_surface.vendor == GpuVendor::QualcommAdreno) {
+        if (!active_mutation_paths_.empty()) {
+            return rollback_gpu_transaction_locked();
+        }
+        if (!transaction_id_.empty()) release_gpu_lease_locked();
+        return true; // Safe no-op: no validated Adreno actuator is enabled.
+    }
+
     if (!active_mutation_paths_.empty()) {
         const auto audit = baseline.get_audit_trail();
         for (const auto& path : active_mutation_paths_) {
@@ -1071,28 +1086,6 @@ bool VulkanController::apply_workload_policy(
         if (!applied || readback != value) return false;
         return true;
     };
-
-    if (snap_.gpu_surface.vendor == GpuVendor::QualcommAdreno) {
-        if (!adrenoboost_node_.empty()) {
-            uint32_t target_boost_num = 0;
-            std::string target_boost = "0";
-            if (!thermal_guard && state == WorkloadState::SustainedLoad && capacity_scale >= 0.85) {
-                target_boost_num = 2;
-                target_boost = "2";
-            } else if (!thermal_guard && state == WorkloadState::Balanced && capacity_scale >= 0.90) {
-                target_boost_num = 1;
-                target_boost = "1";
-            }
-            if (mutate(adrenoboost_node_, target_boost)) {
-                snap_.gpu_surface.adrenoboost_level = target_boost_num;
-            } else {
-                ok = false;
-            }
-        }
-        if (!bus_split_node_.empty() && !mutate(bus_split_node_, "1")) ok = false;
-        // OEM hardware thermal throttling is never disabled by this controller.
-        if (!throttling_node_.empty() && !mutate(throttling_node_, "1")) ok = false;
-    }
 
     if (snap_.gpu_surface.vendor == GpuVendor::ArmMali && !mali_policy_node_.empty()) {
         const std::string current_policy = read_first_line(mali_policy_node_);
