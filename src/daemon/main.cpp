@@ -1007,6 +1007,30 @@ int main(int argc, char* argv[]) {
             return;
         }
 
+        // A controller destructor may leave an unresolved lease after its own
+        // rollback failed. Detect only leases whose callback has been fully
+        // unregistered; this is an explicit owner-lifetime signal, not a timeout
+        // or permission to steal from a live controller.
+        const auto leases_at_tick = CentralMutationCoordinator::instance().active_leases();
+        const bool detached_owner_present = std::any_of(
+            leases_at_tick.begin(), leases_at_tick.end(),
+            [](const DomainLease& lease) { return lease.active && lease.owner_detached; });
+        if (detached_owner_present) {
+            emit_log(true, "[CoreFlow][Safety] Detached mutation owner detected; starting verified journal recovery.");
+            if (!coordinated_rollback(
+                    baseline, "Detached controller owner detected by daemon monitor")) {
+                return; // Admission stays closed; the next monitor tick retries safely.
+            }
+            applied = false;
+            thermal_ready = false;
+            controller->reset();
+            (void)governor.resync();
+            cooling_feedback.reset();
+            temp_tracker.reset();
+            last_tick = std::chrono::steady_clock::now();
+            return; // Re-enter normal policy only on a fresh telemetry tick.
+        }
+
         // If an OEM PowerHAL touch boost temporarily wrote to UClamp, yield for the active boost
         // and resynchronize ownership rather than terminating the daemon.
         bool uclamp_yield_this_tick = false;
