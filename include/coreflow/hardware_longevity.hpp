@@ -8,6 +8,8 @@
 #pragma once
 
 #include <string>
+#include <mutex>
+#include <vector>
 #include <cstdint>
 #include "types.hpp"
 #include <string_view>
@@ -25,7 +27,10 @@ struct LongevityConfig {
 
 class HardwareLongevityManager {
 public:
-    explicit HardwareLongevityManager(std::string sys_root = "/sys") : root_(std::move(sys_root)) {}
+    explicit HardwareLongevityManager(std::string sys_root = "/sys");
+    ~HardwareLongevityManager();
+    HardwareLongevityManager(const HardwareLongevityManager&) = delete;
+    HardwareLongevityManager& operator=(const HardwareLongevityManager&) = delete;
     static HardwareLongevityManager& instance();
 
     /// Dynamically discover battery and storage control nodes
@@ -40,12 +45,13 @@ public:
     /// Revert any battery/storage changes back to OEM factory baseline
     void restore_oem_baseline();
 
-    [[nodiscard]] bool is_battery_guarded() const noexcept { return battery_stepped_; }
-    [[nodiscard]] bool is_storage_paced() const noexcept { return storage_paced_; }
-    [[nodiscard]] std::string battery_node_path() const { return battery_node_; }
+    [[nodiscard]] bool is_battery_guarded() const noexcept;
+    [[nodiscard]] bool is_storage_paced() const noexcept;
+    [[nodiscard]] std::string battery_node_path() const;
 
 private:
     std::string root_;
+    mutable std::mutex mutex_;
 
     LongevityConfig config_;
     std::string battery_node_;
@@ -53,8 +59,19 @@ private:
     bool storage_paced_{false};
     uint64_t charge_baseline_ua_{0};
     uint64_t last_charge_ua_{0};
+    bool battery_mutation_active_{false};
+    std::string battery_transaction_id_;
+    std::string storage_transaction_id_;
+    uint64_t transaction_generation_{0};
+    std::vector<std::string> storage_mutation_paths_;
 
     void discover_battery_node();
+    bool acquire_lease_locked(MutationDomain domain, ControllerPriority priority,
+                              std::string& transaction_id, std::string_view prefix);
+    void release_lease_locked(MutationDomain domain, std::string& transaction_id) noexcept;
+    bool rollback_battery_locked() noexcept;
+    bool rollback_storage_locked() noexcept;
+    bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
 };
 
 } // namespace coreflow
