@@ -202,10 +202,14 @@ bool CentralMutationCoordinator::dispatch_preemption(
             return false;
         }
         const auto handler_it = preemption_handlers_.find(key);
-        if (handler_it == preemption_handlers_.end() || handler_it->second.unregistering) {
+        if (handler_it == preemption_handlers_.end() || handler_it->second.unregistering ||
+            handler_it->second.callback_dispatch_in_flight) {
+            // A controller has one callback object even when it owns several
+            // domains. Serialize that object across all of its transactions.
             return false;
         }
         lease_it->preemption_dispatch_in_flight = true;
+        handler_it->second.callback_dispatch_in_flight = true;
         ++handler_it->second.in_flight;
         handler = handler_it->second.handler;
     }
@@ -219,8 +223,9 @@ bool CentralMutationCoordinator::dispatch_preemption(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto handler_it = preemption_handlers_.find(key);
-        if (handler_it != preemption_handlers_.end() && handler_it->second.in_flight > 0) {
-            --handler_it->second.in_flight;
+        if (handler_it != preemption_handlers_.end()) {
+            if (handler_it->second.in_flight > 0) --handler_it->second.in_flight;
+            handler_it->second.callback_dispatch_in_flight = false;
         }
 
         // Resolve only the exact transaction observed before callback dispatch.
