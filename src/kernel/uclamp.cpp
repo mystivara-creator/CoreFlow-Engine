@@ -105,7 +105,7 @@ std::string read_token(const fs::path& path) {
 UclampGovernor::UclampGovernor(std::string_view explicit_root) {
     discover(explicit_root);
     if (supported_) {
-        controller_name_ = "UclampGovernor:" + target_path_;
+        controller_name_ = "UclampGovernor@" + std::to_string(reinterpret_cast<uintptr_t>(this));
         (void)CentralMutationCoordinator::instance().register_preemption_handler(
             controller_name_,
             [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
@@ -128,51 +128,50 @@ UclampGovernor::~UclampGovernor() {
 }
 UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
     if (this == &other) return *this;
-    std::scoped_lock lock(mutex_, other.mutex_);
-    // Never discard a live transaction if its paired rollback cannot be verified.
-    if (!transaction_id_.empty() && !rollback_transaction_locked()) {
-        supported_ = false; // Fail closed; retain the lease and handler for later recovery.
-        return *this;
+
+    std::string other_handler_name;
+    {
+        std::scoped_lock lock(mutex_, other.mutex_);
+        // Never discard either object's live transaction unless rollback verifies.
+        if (!transaction_id_.empty() && !rollback_transaction_locked()) {
+            supported_ = false;
+            return *this;
+        }
+        if (!other.transaction_id_.empty() && !other.rollback_transaction_locked()) {
+            other.supported_ = false;
+            return *this;
+        }
+
+        // Keep this object's stable callback identity. The source object's handler
+        // is retired only after both object mutexes are released.
+        other_handler_name = other.controller_name_;
+        target_path_ = std::move(other.target_path_);
+        transaction_id_.clear();
+        transaction_generation_ = std::max(transaction_generation_, other.transaction_generation_);
+        encoding_ = other.encoding_;
+        supported_ = other.supported_;
+        has_written_ = false;
+        oem_min_ = other.oem_min_;
+        oem_max_ = other.oem_max_;
+        oem_min_raw_ = std::move(other.oem_min_raw_);
+        oem_max_raw_ = std::move(other.oem_max_raw_);
+        mutation_active_ = false;
+        last_min_ = other.last_min_;
+        last_max_ = other.last_max_;
+
+        other.controller_name_.clear();
+        other.transaction_id_.clear();
+        other.supported_ = false;
+        other.has_written_ = false;
+        other.mutation_active_ = false;
     }
 
-    auto& coordinator = CentralMutationCoordinator::instance();
-    if (!controller_name_.empty()) {
-        coordinator.unregister_preemption_handler(controller_name_);
+    if (!other_handler_name.empty()) {
+        CentralMutationCoordinator::instance().unregister_preemption_handler(other_handler_name);
     }
-    if (!other.controller_name_.empty()) {
-        coordinator.unregister_preemption_handler(other.controller_name_);
-    }
-
-    target_path_ = std::move(other.target_path_);
-    controller_name_ = std::move(other.controller_name_);
-    transaction_id_ = std::move(other.transaction_id_);
-    transaction_generation_ = other.transaction_generation_;
-    encoding_ = other.encoding_;
-    supported_ = other.supported_;
-    has_written_ = other.has_written_;
-    oem_min_ = other.oem_min_;
-    oem_max_ = other.oem_max_;
-    oem_min_raw_ = std::move(other.oem_min_raw_);
-    oem_max_raw_ = std::move(other.oem_max_raw_);
-    mutation_active_ = other.mutation_active_;
-    last_min_ = other.last_min_;
-    last_max_ = other.last_max_;
-
-    if (!controller_name_.empty()) {
-        (void)coordinator.register_preemption_handler(
-            controller_name_,
-            [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
-                return handle_preemption(domain, transaction_id);
-            });
-    }
-
-    other.controller_name_.clear();
-    other.transaction_id_.clear();
-    other.supported_ = false;
-    other.has_written_ = false;
-    other.mutation_active_ = false;
     return *this;
 }
+
 bool UclampGovernor::acquire_mutation_lease_locked(ControllerPriority priority) {
     if (!transaction_id_.empty()) {
         return CentralMutationCoordinator::instance().acquire_lease(
