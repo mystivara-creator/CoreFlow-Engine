@@ -188,9 +188,25 @@ bool CgroupV2Controller::write_node(const std::string& path, std::string_view va
     if (readback != snapshot_before->factory_value &&
         std::find(active_mutation_paths_.begin(), active_mutation_paths_.end(), path) ==
             active_mutation_paths_.end()) {
+        // A failed write can still have partially changed a control node. Track
+        // every non-baseline readback before deciding whether the transaction failed.
         active_mutation_paths_.push_back(path);
     }
-    return applied && readback == requested;
+
+    if (!applied || readback != requested) {
+        if (active_mutation_paths_.empty()) {
+            // First write did not change the node: do not strand a lease that owns
+            // no mutation. Existing controller-owned mutations, if any, are handled
+            // by the transaction rollback below.
+            release_lease_locked();
+        } else {
+            // Keep CgroupV2Controller atomic at transaction scope: if adding a node
+            // fails, restore every node this controller changed before releasing.
+            (void)rollback_transaction_locked();
+        }
+        return false;
+    }
+    return true;
 }
 
 std::string CgroupV2Controller::read_node(const std::string& path) const {
