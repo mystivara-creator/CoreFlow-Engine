@@ -556,6 +556,38 @@ bool BaselineStore::capture(const std::string& path) {
     return true;
 }
 
+bool BaselineStore::rollback_path_locked(const std::string& path) {
+    auto it = store_.find(path);
+    if (it == store_.end() || !it->second.is_modified) return true;
+
+    auto& snap = it->second;
+    uint64_t cur_dev = 0;
+    uint64_t cur_ino = 0;
+    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
+    if (actual.empty()) return false;
+
+    const bool inode_replaced =
+        snap.ino != 0 && (cur_dev != snap.dev || cur_ino != snap.ino);
+    if (inode_replaced ||
+        (!readback_matches(path, snap.active_value, actual) &&
+         !readback_matches(path, snap.prior_value, actual) &&
+         !readback_matches(path, snap.factory_value, actual))) {
+        // The kernel/OEM changed this node. Adopt only this path; do not disturb
+        // unrelated transactions owned by other controllers.
+        snap.factory_value = actual;
+        snap.dev = cur_dev;
+        snap.ino = cur_ino;
+    } else if (!readback_matches(path, snap.factory_value, actual) &&
+               !write_raw_node(path, snap.factory_value, snap.dev, snap.ino)) {
+        return false;
+    }
+
+    snap.is_modified = false;
+    snap.active_value = snap.factory_value;
+    snap.prior_value = snap.factory_value;
+    return persist_locked();
+}
+
 size_t BaselineStore::rollback_locked() {
     size_t restored = 0;
     // A clamp pair can require the other member to be restored first.
@@ -603,19 +635,13 @@ size_t BaselineStore::rollback_locked() {
 bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!recovery_checked_ || identity_unavailable_) return false;
-    if (!path_safe(path) || new_value.empty()) {
-        rollback_locked();
-        return false;
-    }
+    if (!path_safe(path) || new_value.empty()) return false;
     auto it = store_.find(path);
     if (it == store_.end()) {
         uint64_t dev = 0;
         uint64_t ino = 0;
         const std::string before = read_raw_node(path, &dev, &ino);
-        if (before.empty()) {
-            rollback_locked();
-            return false;
-        }
+        if (before.empty()) return false;
         it = store_.emplace(path, NodeSnapshot{path, before, before, false, before, dev, ino}).first;
     }
     uint64_t cur_dev = 0;
@@ -634,7 +660,9 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
             it->second.ino = cur_ino;
             it->second.is_modified = false;
         }
-        rollback_locked();
+        // Reconcile only the failed path. A write admission/readback failure for
+        // one controller must never roll back another controller's active nodes.
+        if (!actual.empty()) (void)persist_locked();
         return false;
     }
     if (it->second.active_value == new_value && actual == new_value) return true;
@@ -651,17 +679,26 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         it->second.is_modified = previous_modified;
         it->second.active_value = previous_value;
         it->second.prior_value = previous_prior;
-        rollback_locked();
+        if (!persist_locked()) {
+            std::cerr << "[CoreFlow] BaselineStore: failed to restore journal after rejected mutation on "
+                      << path << "\\n";
+        }
         return false;
     }
     if (!write_raw_node(path, new_value, cur_dev, cur_ino)) {
-        rollback_locked();
+        if (!rollback_path_locked(path)) {
+            std::cerr << "[CoreFlow] BaselineStore: path-scoped rollback failed after write error on "
+                      << path << "\\n";
+        }
         return false;
     }
     it->second.active_value = new_value;
     it->second.is_modified = new_value != it->second.factory_value;
     if (!persist_locked()) {
-        rollback_locked();
+        if (!rollback_path_locked(path)) {
+            std::cerr << "[CoreFlow] BaselineStore: path-scoped rollback failed after journal update error on "
+                      << path << "\\n";
+        }
         return false;
     }
     return true;
@@ -669,31 +706,7 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
 
 bool BaselineStore::rollback(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = store_.find(path);
-    if (it == store_.end() || !it->second.is_modified) return true;
-    uint64_t cur_dev = 0;
-    uint64_t cur_ino = 0;
-    const std::string actual = read_raw_node(path, &cur_dev, &cur_ino);
-    if (actual.empty()) return false;
-
-    const bool inode_replaced =
-        it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino);
-
-    if (inode_replaced ||
-        (!readback_matches(path, it->second.active_value, actual) &&
-         !readback_matches(path, it->second.prior_value, actual) &&
-         !readback_matches(path, it->second.factory_value, actual))) {
-        it->second.factory_value = actual;
-        it->second.dev = cur_dev;
-        it->second.ino = cur_ino;
-    } else if (!readback_matches(path, it->second.factory_value, actual) &&
-               !write_raw_node(path, it->second.factory_value, it->second.dev, it->second.ino)) {
-        return false;
-    }
-    it->second.is_modified = false;
-    it->second.active_value = it->second.factory_value;
-    it->second.prior_value = it->second.factory_value;
-    return persist_locked();
+    return rollback_path_locked(path);
 }
 
 size_t BaselineStore::rollback_all() {
