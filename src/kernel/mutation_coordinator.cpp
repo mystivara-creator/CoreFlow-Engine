@@ -170,14 +170,9 @@ bool CentralMutationCoordinator::dispatch_preemption(
         handler = it->second.handler;
     }
 
-    bool acknowledged = false;
-    try {
-        // Invoke controller code outside the coordinator mutex. The in-flight
-        // reference keeps unregister/destruction from invalidating its target.
-        acknowledged = handler(domain, transaction_id, reason);
-    } catch (...) {
-        acknowledged = false;
-    }
+    // Controller handlers are required to be non-throwing. Invoke outside the
+    // coordinator mutex; the in-flight reference protects handler lifetime.
+    const bool acknowledged = handler(domain, transaction_id, reason);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
