@@ -869,6 +869,37 @@ int main() {
     assert(unregister_finished.load(std::memory_order_acquire));
     assert(coordinator.active_leases().empty());
 
+    // Emergency recovery closes admission before asking active owners to roll back.
+    // A new controller must not acquire a free domain until recovery completes.
+    coordinator.reset();
+    bool gate_acknowledged = false;
+    assert(coordinator.register_preemption_handler("EmergencyGateController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            gate_acknowledged = true;
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyGateController", "gate-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.begin_emergency_recovery();
+    std::string gate_conflict;
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
+        coreflow::ControllerPriority::EmergencySafety, &gate_conflict));
+    assert(gate_conflict.find("admission is closed") != std::string::npos);
+    assert(!coordinator.complete_emergency_recovery()); // Active owner has not acknowledged yet.
+    coordinator.emergency_preempt_all("test-emergency-admission-barrier");
+    assert(gate_acknowledged);
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
+        coreflow::ControllerPriority::EmergencySafety));
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx");
+    coordinator.unregister_preemption_handler("EmergencyGateController");
+    assert(coordinator.active_leases().empty());
+
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
     return 0;
