@@ -248,6 +248,12 @@ int main(int argc, char* argv[]) {
     assert(!std::filesystem::exists(external_state + "/baseline.journal"));
     assert(!std::filesystem::exists(external_state + "/baseline.journal.tmp"));
 
+    // A clear in-memory state is not enough: the empty journal must also be
+    // written durably before an orphaned coordinator lease can be retired.
+    assert(!store.has_active_mutations());
+    assert(store.verify_and_persist_clear_state());
+    assert(std::filesystem::file_size(safe_state + "/baseline.journal") > 0);
+
     std::filesystem::remove_all(state_dir);
     std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode + state-path symlink invariants PASS\n";
     return 0;
