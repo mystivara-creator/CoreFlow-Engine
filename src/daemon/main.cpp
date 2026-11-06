@@ -1011,11 +1011,13 @@ int main(int argc, char* argv[]) {
         // rollback failed. Detect only leases whose callback has been fully
         // unregistered; this is an explicit owner-lifetime signal, not a timeout
         // or permission to steal from a live controller.
-        const auto leases_at_tick = CentralMutationCoordinator::instance().active_leases();
+        auto& mutation_coordinator = CentralMutationCoordinator::instance();
+        const auto leases_at_tick = mutation_coordinator.active_leases();
         const bool detached_owner_present = std::any_of(
             leases_at_tick.begin(), leases_at_tick.end(),
             [](const DomainLease& lease) { return lease.active && lease.owner_detached; });
-        if (detached_owner_present) {
+        const bool recovery_retry_pending = mutation_coordinator.is_emergency_recovery_active();
+        if (detached_owner_present || recovery_retry_pending) {
             emit_log(true, "[CoreFlow][Safety] Detached mutation owner detected; starting verified journal recovery.");
             if (!coordinated_rollback(
                     baseline, "Detached controller owner detected by daemon monitor")) {
