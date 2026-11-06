@@ -193,6 +193,7 @@ private:
     struct PreemptionHandlerEntry {
         PreemptionHandler handler;
         size_t in_flight{0};
+        bool callback_dispatch_in_flight{false};
         bool unregistering{false};
     };
     std::condition_variable preemption_cv_;
