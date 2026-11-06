@@ -151,6 +151,16 @@ bool CgroupV2Controller::write_node(const std::string& path, std::string_view va
     }();
     if (!snapshot_before) return false;
 
+    const bool path_already_owned = std::find(
+        active_mutation_paths_.begin(), active_mutation_paths_.end(), path) !=
+        active_mutation_paths_.end();
+    if (snapshot_before->is_modified && !path_already_owned) {
+        // BaselineStore has a live mutation on this path, but this controller
+        // did not add it to its transaction. Never extend or overwrite a foreign
+        // or legacy mutation merely because this controller already owns the domain.
+        return false;
+    }
+
     // Verify every node still belongs to this transaction before adding another
     // CPU-policy mutation. An OEM change causes a verified handoff, never reassertion.
     if (!active_mutation_paths_.empty()) {
