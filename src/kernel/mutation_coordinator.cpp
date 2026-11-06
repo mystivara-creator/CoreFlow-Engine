@@ -121,6 +121,7 @@ void CentralMutationCoordinator::release_lease(
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
+            lease.preemption_dispatch_in_flight = false;
             lease.owner_detached = false;
         }
     }
@@ -151,10 +152,9 @@ bool CentralMutationCoordinator::register_preemption_handler(
         });
     if (has_detached_owner_lease) return false;
     const auto it = preemption_handlers_.find(key);
-    if (it != preemption_handlers_.end() &&
-        (it->second.unregistering || it->second.in_flight != 0)) {
-        return false;
-    }
+    // A controller identity represents one controller lifetime and exactly
+    // one callback registration. Never silently replace a live owner's handler.
+    if (it != preemption_handlers_.end()) return false;
     preemption_handlers_[key] = PreemptionHandlerEntry{
         .handler = std::move(handler),
         .in_flight = 0,
@@ -201,17 +201,24 @@ bool CentralMutationCoordinator::dispatch_preemption(
     const std::string key(controller_name);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const bool lease_is_current = std::any_of(leases_.begin(), leases_.end(),
+        const auto lease_it = std::find_if(leases_.begin(), leases_.end(),
             [&](const DomainLease& lease) {
                 return lease.domain == domain && lease.active &&
                        lease.owner_controller == controller_name &&
                        lease.transaction_id == transaction_id && lease.preemption_requested;
             });
-        if (!lease_is_current) return false;
-        const auto it = preemption_handlers_.find(key);
-        if (it == preemption_handlers_.end() || it->second.unregistering) return false;
-        ++it->second.in_flight;
-        handler = it->second.handler;
+        if (lease_it == leases_.end() || lease_it->preemption_dispatch_in_flight) {
+            // Another dispatcher already owns the callback for this exact
+            // lease. It will either acknowledge or clear the in-flight flag.
+            return false;
+        }
+        const auto handler_it = preemption_handlers_.find(key);
+        if (handler_it == preemption_handlers_.end() || handler_it->second.unregistering) {
+            return false;
+        }
+        lease_it->preemption_dispatch_in_flight = true;
+        ++handler_it->second.in_flight;
+        handler = handler_it->second.handler;
     }
 
     // Invoke outside the coordinator mutex; the in-flight reference protects
@@ -222,17 +229,34 @@ bool CentralMutationCoordinator::dispatch_preemption(
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = preemption_handlers_.find(key);
-        if (it != preemption_handlers_.end() && it->second.in_flight > 0) {
-            --it->second.in_flight;
+        const auto handler_it = preemption_handlers_.find(key);
+        if (handler_it != preemption_handlers_.end() && handler_it->second.in_flight > 0) {
+            --handler_it->second.in_flight;
+        }
+
+        // Resolve only the exact transaction observed before callback dispatch.
+        // On a failed acknowledgement, clear the dispatch marker so a later
+        // monitor/emergency pass can retry. On success, release atomically under
+        // this same lock so a competing dispatcher cannot enter between ack and
+        // lease release.
+        for (auto& lease : leases_) {
+            if (lease.domain != domain || !lease.active ||
+                lease.owner_controller != controller_name ||
+                lease.transaction_id != transaction_id) {
+                continue;
+            }
+            if (acknowledged) {
+                lease.active = false;
+                lease.transaction_id.clear();
+                lease.preemption_requested = false;
+                lease.preemption_dispatch_in_flight = false;
+                lease.owner_detached = false;
+            } else {
+                lease.preemption_dispatch_in_flight = false;
+            }
+            break;
         }
         preemption_cv_.notify_all();
-    }
-
-    if (acknowledged) {
-        // Transaction-scoped release prevents a delayed acknowledgement from
-        // clearing a newer lease acquired by the same controller/domain.
-        release_lease(domain, controller_name, transaction_id);
     }
     return acknowledged;
 }
