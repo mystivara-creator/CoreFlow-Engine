@@ -84,11 +84,18 @@ int main() {
     assert(coordinator.active_leases().size() == 1);
     assert(coordinator.conflict_rejections() == 11);
     const auto winning_lease = coordinator.active_leases().front();
-    coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller);
+    coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller, winning_lease.transaction_id);
     assert(coordinator.active_leases().empty());
     assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx", coreflow::ControllerPriority::WorkloadOptimization));
     assert(coordinator.active_leases().size() == 1);
-    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement");
+    // A stale completion from an earlier transaction must not release a newer lease
+    // held by the same controller/domain.
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2", coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx");
+    const auto protected_lease = coordinator.active_leases();
+    assert(protected_lease.size() == 1);
+    assert(protected_lease.front().transaction_id == "replacement-tx-2");
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2");
 
     // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
     const auto incomplete_psi = tuner.step({
@@ -362,7 +369,7 @@ int main() {
     assert(emergency_leases[0].transaction_id == "tx-uclamp-before-emergency");
     assert(emergency_leases[0].preemption_requested);
     emergency_coord.release_lease(
-        coreflow::MutationDomain::UclampCgroup, "ExternalUclampController");
+        coreflow::MutationDomain::UclampCgroup, "ExternalUclampController", "tx-uclamp-before-emergency");
 
     // P0 regression: failed rollback must preserve recovery state and domain ownership.
     const auto recovery_start = tuner.step({
@@ -406,7 +413,7 @@ int main() {
     }
     assert(gpu_preemption_requested);
     recovery_coord.release_lease(
-        coreflow::MutationDomain::GpuDevfreq, "ExternalGpuController");
+        coreflow::MutationDomain::GpuDevfreq, "ExternalGpuController", "tx-gpu-during-recovery");
 
     // Recreated path has a new inode and already contains OEM baseline; adopt it safely.
     put(up_rate_path, "2000");
@@ -427,7 +434,7 @@ int main() {
         coreflow::ControllerPriority::EmergencySafety,
         &conflict_msg));
     assert(!tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
-    coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
+    coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard", "tx-lock-io");
     assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
 
     // A higher-priority request must not steal a lease from a live transaction.
@@ -457,7 +464,7 @@ int main() {
     assert(pending_preemption[0].active);
     assert(pending_preemption[0].owner_controller == "BackgroundController");
     assert(pending_preemption[0].transaction_id == "tx-background-1");
-    coord.release_lease(coreflow::MutationDomain::CpuPolicy, "BackgroundController");
+    coord.release_lease(coreflow::MutationDomain::CpuPolicy, "BackgroundController", "tx-background-1");
     assert(coord.active_leases().empty());
 
     // 13. Thermal Decision Correctness & False-Positive Elimination (TASK 01)
