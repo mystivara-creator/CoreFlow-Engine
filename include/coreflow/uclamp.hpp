@@ -13,6 +13,7 @@
 
 namespace coreflow {
 enum class MutationDomain : uint8_t;
+enum class ControllerPriority : uint8_t;
 
 class UclampGovernor {
 public:
@@ -58,13 +59,13 @@ private:
     uint32_t last_max_{1024};
 
     void discover(std::string_view explicit_root);
-    bool acquire_mutation_lease_locked();
+    bool acquire_mutation_lease_locked(ControllerPriority priority);
     void release_mutation_lease_locked() noexcept;
     bool rollback_transaction_locked() noexcept;
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
     bool owned_values_intact_locked();
     bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;
-    bool write_top_app(uint32_t min_val, uint32_t max_val);
+    bool write_top_app(uint32_t min_val, uint32_t max_val, ControllerPriority priority);
     [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
     [[nodiscard]] uint32_t read_uclamp_node(const std::string& path) const;
 };
