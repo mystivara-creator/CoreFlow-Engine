@@ -571,8 +571,7 @@ Workflow run [42291892269](https://github.com/mystivara-creator/CoreFlow-Engine/
 ### Vulkan semantics review — evidence boundary
 
 - ARM's Mali driver ABI documents the `power_policy` sysfs attribute and lists `coarse_demand` and `always_on` as supported values, with the active policy bracketed in readback. See [Android common kernel Mali sysfs ABI](https://android.googlesource.com/kernel/google-modules/gpu/+/3372cb0ffe779efd9b7507174c61d0e48822b5e2/mali_kbase/Documentation/ABI/testing/sysfs-device-mali). This supports the token vocabulary, but does not replace per-device discovery and OEM regression testing.
-- The current code also probes Qualcomm KGSL `devfreq/adrenoboost`, `bus_split`, and `throttling` nodes and applies numeric targets. The review did not identify a normative, version-matched ABI for their accepted values and thermal meaning across the supported Qualcomm kernels. Presence/readability and an initial value are not sufficient proof of safe mutation semantics.
-- Therefore these Adreno mutations remain a release acceptance gate. Before enabling them for a device family, collect exact kernel-source/ABI evidence, discover accepted values at runtime where the driver exposes them, test readback and OEM arbitration on the target firmware, and verify rollback. Unknown or unverified semantics must remain observation-only.
+- At the time of this earlier review, the implementation still applied numeric targets to Qualcomm KGSL `devfreq/adrenoboost`, `bus_split`, and `throttling`. No normative, version-matched ABI had been established for the target device. Section 21 supersedes that implementation and disables these writes while retaining read-only observations.
 
 ### Remaining acceptance gates
 
@@ -589,7 +588,7 @@ Workflow run [42291892269](https://github.com/mystivara-creator/CoreFlow-Engine/
 
 A follow-up consistency pass found two state-normalization details after introducing `preemption_dispatch_in_flight`:
 
-- Bulk controller lease release now clears the in-flight marker in addition to the active, transaction, and preemption fields.
+- At this point in the branch history, the bulk controller release helper cleared the in-flight marker in addition to the active, transaction, and preemption fields. That unscoped API was subsequently removed in Sections 20 and 21.
 - Detached-owner reconciliation now explicitly rejects a lease whose callback-dispatch marker is still set, and clears that marker when the orphan record is retired.
 
 This is defense in depth: unregister already waits for registered callbacks to drain before marking the owner detached, but orphan eligibility now independently encodes the no-callback-in-flight requirement rather than relying only on the unregister implementation.
@@ -679,3 +678,36 @@ The source removal/follow-up fix commit is `e0439d8b0cc06db62794d98505079cf9cb38
 - Long-running concurrent stress, target Xiaomi/HyperOS tests, thermal/OEM arbitration, interrupted-write recovery, and actual vendor KGSL source matching remain open. Adreno policy writes must stay disabled until the ABI contract is verified.
 
 **Status: UNVERIFIED ADRENO KGSL WRITES DISABLED; EMPTY TRANSACTION-ID WILDCARD RELEASE CLOSED; EXACT-HEAD CI AND TARGET-DEVICE VALIDATION PENDING. PR #7 MUST REMAIN DRAFT; NOT READY FOR 3.1.0 FREEZE.**
+## 22. Controller-wide single-flight callback dispatch
+
+**Source/test heads:**
+- `6ea5fc789ece2bcab1c6c84c74ff841fcc978694` — add handler-level dispatch state
+- `de8636cc57d72e151924f0765c8dabcb39993865` — serialize callback dispatch per controller identity
+- `dd8a317f4b481a0bd6b7157fe6fec6fb6a4132cc` — deterministic multi-domain regression test
+
+### Race addressed
+
+Per-lease single-flight prevented duplicate callbacks for the same transaction, but did not prevent the same callback object from being invoked concurrently for two different leases owned by one controller. Controllers with more than one domain can legitimately hold multiple leases; their callback object must not be assumed reentrant or thread-safe.
+
+### Correction
+
+- Added `PreemptionHandlerEntry::callback_dispatch_in_flight`, guarded by the coordinator mutex.
+- `dispatch_preemption()` now claims both the exact lease and the controller callback before releasing the coordinator lock and invoking the handler.
+- While one callback for a controller identity is running, dispatch attempts for any other lease owned by that identity are skipped without setting a lease-dispatch marker. The owning emergency pass can continue to the next lease once the first callback returns; a later monitor/emergency pass remains able to retry any still-pending lease.
+- Handler in-flight accounting is decremented and the controller-wide marker cleared after callback completion. Unregister still waits for all in-flight callbacks before retiring the identity.
+- Successful callback acknowledgement remains scoped to the exact domain/controller/transaction. No other lease is released by the acknowledgement.
+
+### Regression coverage
+
+- A deterministic two-domain test gives one controller both a CPU-policy and GPU-devfreq lease.
+- The CPU callback is blocked while a second emergency-preemption pass runs. The callback count stays at one, both leases remain present, and the GPU lease is not incorrectly marked in-flight.
+- After the first callback returns, the original emergency pass processes the GPU lease serially; both exact transactions are acknowledged and released, with exactly two total callback invocations.
+- This complements the earlier same-lease duplicate-dispatch test and multi-domain exact-release/empty-transaction-ID tests.
+
+### CI status and remaining gates
+
+- The preceding exact-head run [42293823121](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42293823121) passed all seven jobs at head `91a338323c811fd4bb9ff706ac8faa6865d349fd`. That head included the observation-only KGSL changes and strict empty-ID transaction release, but not this controller-wide callback change.
+- Exact latest head `dd8a317f4b481a0bd6b7157fe6fec6fb6a4132cc` has a CI run pending/in progress and must complete before this additional concurrency change is marked validated.
+- Repeated long-running scheduler stress, physical Xiaomi/HyperOS validation, target-specific KGSL source proof, and interrupted-write recovery remain open.
+
+**Status: CONTROLLER-WIDE CALLBACK SINGLE-FLIGHT IMPLEMENTED WITH DETERMINISTIC MULTI-DOMAIN TEST; EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT; NOT READY FOR 3.1.0 FREEZE.**
