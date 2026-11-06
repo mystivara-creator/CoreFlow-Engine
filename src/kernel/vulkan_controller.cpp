@@ -1035,13 +1035,22 @@ bool VulkanController::apply_workload_policy(
         if (path.empty()) return true;
         const std::string current = read_first_line(path);
         if (current.empty()) return false;
-        if (current == value) return true;
 
         const auto audit = baseline.get_audit_trail();
         const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
             return node.path == path;
         });
         if (snapshot == audit.end()) return false;
+        const bool path_already_owned = std::find(
+            active_mutation_paths_.begin(), active_mutation_paths_.end(), path) !=
+            active_mutation_paths_.end();
+        if (snapshot->is_modified && !path_already_owned) {
+            // A GPU path with a pre-existing BaselineStore mutation is not owned
+            // by this Vulkan transaction, even when its current value matches our
+            // requested target. Never adopt a foreign value as successful policy.
+            return false;
+        }
+        if (current == value) return true;
 
         if (value == snapshot->factory_value) {
             if (!baseline.rollback(path) || read_first_line(path) != snapshot->factory_value) return false;
