@@ -1086,6 +1086,25 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
     return true;
 }
 
+bool AutonomousTuner::emergency_rollback(std::string_view reason) {
+    CentralMutationCoordinator::instance().emergency_preempt_all("EmergencyRollback");
+    current_objective_ = OptimizationObjective::EmergencyMitigation;
+    if (transaction_active_) {
+        last_verdict_ = "ABORTED";
+        last_verdict_enum_ = TunerVerdict::Aborted;
+        ++total_rolled_back_;
+    }
+    const bool restored = rollback_active(reason);
+    if (!restored) {
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+    } else {
+        current_intent_ = "ThermalHoldAndProtect";
+    }
+    save_persisted_stats();
+    return restored;
+}
+
 bool AutonomousTuner::apply_transaction(
     std::string_view candidate_id,
     std::string_view candidate_label,
