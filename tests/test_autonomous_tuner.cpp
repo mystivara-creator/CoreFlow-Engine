@@ -62,7 +62,27 @@ int main() {
     assert(initial.block_queues[0].nr_requests == 64);
     assert(initial.block_queues[0].rq_affinity == 1);
 
-    // 1. Idle equilibrium: no need -> must hold baseline without mutating
+    // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
+    const auto incomplete_psi = tuner.step({
+        .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
+        .cpu_psi_valid = false, .memory_psi_valid = false, .io_psi_valid = false,
+        .thermal_pressure = 42.0,
+    });
+    assert(incomplete_psi.last_verdict == "INCONCLUSIVE");
+    assert(incomplete_psi.objective == coreflow::OptimizationObjective::HoldBaseline);
+    assert(incomplete_psi.stage == "PLANNED");
+    assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
+
+    // Independent thermal evidence must still take precedence when PSI is unavailable.
+    const auto thermal_without_psi = tuner.step({
+        .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
+        .cpu_psi_valid = false, .memory_psi_valid = false, .io_psi_valid = false,
+        .thermal_pressure = 70.0,
+    });
+    assert(thermal_without_psi.objective == coreflow::OptimizationObjective::ThermalStabilization);
+    assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
+
+    // 1a. Idle equilibrium: no need -> must hold baseline without mutating
     tuner.step({.cpu_psi = 1.0, .memory_psi = 0.2, .io_psi = 0.3, .thermal_pressure = 42.0});
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
