@@ -250,9 +250,11 @@ export const ThermalMatrixCard: React.FC<Props> = ({
                       <div className="font-mono tabular-nums text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
                         {sensor.velocityValid
                           ? `${sensor.velocityCelsiusPerSec! > 0 ? '+' : ''}${sensor.velocityCelsiusPerSec!.toFixed(2)} °C/s`
-                          : sensor.velocitySamples !== undefined
-                            ? `Trend warming up (${sensor.velocitySamples}/2)`
-                            : nativeMode ? 'Trend unavailable' : 'Preview trend'}
+                          : !sensor.valid
+                            ? 'Trend unavailable'
+                            : sensor.velocitySamples !== undefined
+                              ? `Trend warming up (${sensor.velocitySamples}/2)`
+                              : nativeMode ? 'Trend unavailable' : 'Preview trend'}
                       </div>
                     </div>
                   </div>
