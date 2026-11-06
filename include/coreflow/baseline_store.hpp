@@ -51,6 +51,10 @@ public:
     /// Query if any system node currently differs from factory baseline
     [[nodiscard]] bool has_active_mutations() const;
 
+    /// Verify no node remains modified and atomically persist an empty journal.
+    /// Used before recovering detached controller leases.
+    [[nodiscard]] bool verify_and_persist_clear_state();
+
     /// Check whether a captured node still matches its expected value and inode/device identity
     [[nodiscard]] bool owns_expected_state(const std::string& path, const std::string& expected_value) const;
 
