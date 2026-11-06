@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 namespace fs = std::filesystem;
 static void put(const fs::path& p, const std::string& value) { fs::create_directories(p.parent_path()); std::ofstream(p) << value; }
@@ -67,6 +68,21 @@ int main() {
     assert(get(second_cpu / "scaling_max_freq") == "1800000");
     assert(get(second_gpu / "max_freq") == "700000000");
     assert(coordinator.active_leases().empty());
+
+    // A CPU frequency write rejected by filesystem permissions must not strand
+    // a CPU lease, while an independently successful GPU-domain mutation remains
+    // leased and is restored through the normal emergency callback.
+    assert(::chmod((cpu / "scaling_max_freq").c_str(), 0444) == 0);
+    assert(!controller.apply(0.75));
+    assert(get(cpu / "scaling_max_freq") == "2000000");
+    assert(get(gpu / "max_freq") == "600000000");
+    const auto failed_write_leases = coordinator.active_leases();
+    assert(failed_write_leases.size() == 1);
+    assert(failed_write_leases.front().domain == coreflow::MutationDomain::GpuDevfreq);
+    coordinator.emergency_preempt_all("test-frequency-partial-domain-failure");
+    assert(get(gpu / "max_freq") == "800000000");
+    assert(coordinator.active_leases().empty());
+    assert(::chmod((cpu / "scaling_max_freq").c_str(), 0644) == 0);
 
     // A subsequent authorized policy cycle may acquire fresh transaction identities.
     assert(controller.apply(0.75));
