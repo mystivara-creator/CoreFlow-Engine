@@ -9,6 +9,25 @@ MOD_DIR="$TMP_ROOT/mod"
 LIVE_MOD="$TMP_ROOT/live_mod"
 mkdir -p "$MOD_DIR/system/bin" "$MOD_DIR/system/etc/coreflow" "$MOD_DIR/webroot"
 
+# Mock Xiaomi property tools so the memory-tier policy can be tested on host.
+MOCK_BIN="$TMP_ROOT/mock-bin"
+mkdir -p "$MOCK_BIN"
+cat <<'EOF' > "$MOCK_BIN/getprop"
+#!/bin/sh
+case "${1:-}" in
+  ro.product.brand|ro.product.manufacturer) echo "Xiaomi" ;;
+  *) echo "" ;;
+esac
+EOF
+cat <<'EOF' > "$MOCK_BIN/resetprop"
+#!/bin/sh
+printf '%s\n' "$*" >> "$COREFLOW_PROP_LOG"
+EOF
+chmod +x "$MOCK_BIN/getprop" "$MOCK_BIN/resetprop"
+export PATH="$MOCK_BIN:$PATH"
+export COREFLOW_PROP_LOG="$TMP_ROOT/resetprop.log"
+export COREFLOW_MEMINFO_PATH="$TMP_ROOT/meminfo"
+
 cp "$(dirname "$0")/../module/post-fs-data.sh" "$MOD_DIR/post-fs-data.sh"
 cp "$(dirname "$0")/../module/service.sh" "$MOD_DIR/service.sh"
 cp "$(dirname "$0")/../module/customize.sh" "$MOD_DIR/customize.sh"
@@ -52,6 +71,18 @@ EPOCH_1="$(cat "$STATE_DIR/boot_epoch")"
 [ -n "$EPOCH_1" ] || { echo "FAIL: boot_epoch is empty"; exit 1; }
 [ "$(cat "$STATE_DIR/boot_attempts")" = "1" ] || { echo "FAIL: boot_attempts != 1"; exit 1; }
 [ -f "$STATE_DIR/coreflow.conf" ] || { echo "FAIL: default.conf not copied"; exit 1; }
+grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: Xiaomi low_ram policy not applied"; exit 1; }
+grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 0' "$COREFLOW_PROP_LOG" || { echo "FAIL: unreadable RAM did not use safe zero threshold"; exit 1; }
+
+# Verify dynamic RAM tiers: 6 GiB -> 5, 8 GiB -> 7.
+printf 'MemTotal:       6291456 kB\n' > "$COREFLOW_MEMINFO_PATH"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: 6 GiB threshold should be 5"; exit 1; }
+printf 'MemTotal:       7864320 kB\n' > "$COREFLOW_MEMINFO_PATH"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 7' "$COREFLOW_PROP_LOG" || { echo "FAIL: 8 GiB threshold should be 7"; exit 1; }
 
 # 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger
 for i in 2 3 4 5; do
