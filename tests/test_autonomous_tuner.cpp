@@ -987,6 +987,46 @@ int main() {
     assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 2);
     coordinator.unregister_preemption_handler("MultiDomainController");
 
+    // Admission cannot reopen merely because a callback released its exact
+    // lease before returning its acknowledgement. The callback itself must drain.
+    coordinator.reset();
+    std::mutex barrier_callback_mutex;
+    std::condition_variable barrier_callback_cv;
+    bool barrier_callback_entered = false;
+    bool barrier_callback_release = false;
+    assert(coordinator.register_preemption_handler("EmergencyCompletionController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            coordinator.release_lease(
+                domain, "EmergencyCompletionController", tx);
+            std::unique_lock<std::mutex> lock(barrier_callback_mutex);
+            barrier_callback_entered = true;
+            barrier_callback_cv.notify_all();
+            barrier_callback_cv.wait(lock, [&] { return barrier_callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyCompletionController", "completion-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.begin_emergency_recovery();
+    std::thread barrier_dispatcher([&] {
+        coordinator.emergency_preempt_all("callback-drain-barrier-test");
+    });
+    {
+        std::unique_lock<std::mutex> lock(barrier_callback_mutex);
+        barrier_callback_cv.wait(lock, [&] { return barrier_callback_entered; });
+    }
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.is_emergency_recovery_active());
+    assert(!coordinator.complete_emergency_recovery());
+    {
+        std::lock_guard<std::mutex> lock(barrier_callback_mutex);
+        barrier_callback_release = true;
+    }
+    barrier_callback_cv.notify_all();
+    barrier_dispatcher.join();
+    assert(coordinator.complete_emergency_recovery());
+    coordinator.unregister_preemption_handler("EmergencyCompletionController");
+
     // Handler teardown must wait for callbacks already copied by dispatch.
     coordinator.reset();
     std::mutex callback_mutex;
