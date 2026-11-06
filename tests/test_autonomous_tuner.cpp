@@ -316,6 +316,32 @@ int main() {
     emergency_coord.release_lease(
         coreflow::MutationDomain::UclampCgroup, "ExternalUclampController");
 
+    // P0 regression: failed rollback must preserve recovery state and domain ownership.
+    const auto recovery_start = tuner.step({
+        .cpu_psi = 11.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .thermal_guard_active = true,
+    });
+    assert(recovery_start.thermal_stabilization_active);
+    const fs::path up_rate_path = schedutil_dir / "up_rate_limit_us";
+    assert(get(up_rate_path) == "4000");
+    assert(std::filesystem::remove(up_rate_path));
+    tuner.reset(); // rollback of the missing node must fail closed
+    const auto recovery_snapshot = tuner.snapshot();
+    assert(recovery_snapshot.recovery_required);
+    const auto recovery_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
+    assert(recovery_leases.size() == 1);
+    assert(recovery_leases[0].owner_controller == "AutonomousTuner");
+    assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
+    // Recreated path has a new inode and already contains OEM baseline; adopt it safely.
+    put(up_rate_path, "2000");
+    tuner.reset();
+    assert(!tuner.snapshot().recovery_required);
+    assert(coreflow::CentralMutationCoordinator::instance().active_leases().empty());
+    assert(get(up_rate_path) == "2000");
+
     // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
     tuner.reset();
     auto& coord = coreflow::CentralMutationCoordinator::instance();
