@@ -190,10 +190,43 @@ Validation for the complete candidate head `49ab32fcb781d9096f83e2d9b9020ef400e3
 
 These changes harden the coordinator itself; they do **not** complete system-wide mutation ownership. The following remain unresolved:
 
-- Coordinator preemption still records a request flag; registered controller callbacks, cancellation acknowledgement, and transaction-scoped rollback dispatch are not yet implemented.
-- FrequencyController, UclampGovernor, VulkanController, and HardwareLongevityManager are not yet all integrated with coordinator leases for their complete transaction lifetimes.
+- Coordinator preemption now dispatches registered controller callbacks outside the coordinator lock and releases a lease only after an explicit successful acknowledgement. The callback contract is implemented, but timeout policy, controller-disappearance recovery, and complete integration coverage remain open.
+- FrequencyController, UclampGovernor, and VulkanController now acquire domain leases and implement verified rollback callbacks. HardwareLongevityManager is still not integrated with the coordinator for its battery and storage transactions.
 - Cross-controller multi-domain acquisition and partial-acquisition cleanup are not yet demonstrated with real controller integration tests.
 - Daemon lifecycle writes still require checked, allowlisted operations and readback verification.
 - Physical-device behavior remains unvalidated; CI success is not device validation.
 
 **Status remains: NOT COMPLETE.** Do not treat this audit or the passing CI run as approval to merge or declare the 3.1.0 freeze ready.
+
+
+## 10. Implementation update — controller integration and persistence hardening
+
+Since the previous update, the audit branch has advanced with the following verified changes:
+
+### Coordinator and transaction ownership
+- Added registered preemption handlers. Emergency and higher-priority requests are dispatched outside the coordinator mutex.
+- A controller acknowledgement releases only the matching domain and transaction ID; failed or missing acknowledgement leaves the lease active.
+- Same-owner requests cannot silently replace an unresolved transaction. A controller must release the current transaction before acquiring a different transaction ID.
+- FrequencyController now coordinates CPU policy and GPU devfreq domains separately, retains leases while mutations are active, and verifies rollback before release.
+- UclampGovernor now coordinates the coupled `cpu.uclamp.min` / `cpu.uclamp.max` transaction and preserves fail-closed behavior when resynchronization cannot be verified.
+- VulkanController now coordinates GPU sysfs mutations and has an emergency rollback path with readback checks.
+
+### Persistence
+- Baseline journal directory traversal now opens each directory component with `O_NOFOLLOW`.
+- Journal temporary creation, rename, and recovery use directory-file-descriptor-relative operations (`openat`, `renameat`, `unlinkat`) to avoid parent-directory symlink substitution.
+- Added a regression test proving a symlinked journal state directory cannot redirect a journal write into its target.
+
+### Validation
+- Candidate SHA: `6d8aea73c1b427f43bd83cab2d500da492958c4a`.
+- [GitHub Actions run 42270168256](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42270168256) passed all seven jobs.
+- Host C++ suite: 12/12 tests passed, including BaselineRollbackTest, FrequencyOwnershipTest, UclampTest, and VulkanControllerTest.
+- ASan/UBSan, Rust/Clippy, WebUI, Module validation, Android ARM64 production package, and CI gate all passed on that exact SHA.
+
+### Remaining work before the 3.1.0 freeze
+- Integrate HardwareLongevityManager battery and storage mutations with separate PowerLongevity and BlockIo leases, callbacks, and verified rollback.
+- Replace daemon lifecycle direct writes with allowlisted, checked operations and readback.
+- Complete cross-controller multi-domain and partial-acquisition recovery tests.
+- Review Vulkan sysfs policy values against discovered per-node semantics and allowed values; path existence alone is not sufficient capability evidence.
+- Validate actual behavior on supported physical devices. CI does not establish device compatibility or thermal safety.
+
+**Status remains: NOT COMPLETE.** The passing CI run validates the candidate commit, not the entire 3.1.0 freeze criteria. Do not merge or publish the freeze until the remaining ownership and device-validation gates are closed.
