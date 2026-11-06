@@ -36,9 +36,8 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-          cache: npm
       - name: Install locked dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-package-lock --no-audit --no-fund
       - name: Run Node.js TypeScript tests
         run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
       - name: Type-check WebUI
@@ -67,6 +66,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
           rustup override set "${RUST_TOOLCHAIN}"
+          rustup component add rustfmt clippy --toolchain "${RUST_TOOLCHAIN}"
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - name: Run Rust tests
