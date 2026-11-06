@@ -225,7 +225,6 @@ int main() {
 
     // Re-advertise scheduler choices and ensure the tuner can acquire a fresh lease.
     put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
-    tuner.discover(sys_root.string(), proc_root.string());
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
     const auto observing1 = tuner.snapshot();
     assert(observing1.stage == "OBSERVING");
