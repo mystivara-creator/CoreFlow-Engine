@@ -285,6 +285,21 @@ void UclampGovernor::discover(std::string_view explicit_root) {
         MountKind kind;
     };
     std::vector<RootEntry> roots;
+    const auto clean_baseline = [](const std::string& directory) {
+        auto& store = BaselineStore::instance();
+        const std::string min_path = directory + "/cpu.uclamp.min";
+        const std::string max_path = directory + "/cpu.uclamp.max";
+        if (!store.capture(min_path) || !store.capture(max_path)) return false;
+        const auto audit = store.get_audit_trail();
+        const auto min_snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == min_path;
+        });
+        const auto max_snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == max_path;
+        });
+        return min_snapshot != audit.end() && max_snapshot != audit.end() &&
+               !min_snapshot->is_modified && !max_snapshot->is_modified;
+    };
     if (!explicit_root.empty()) {
         roots.push_back(RootEntry{std::string(explicit_root), MountKind::Auto});
     } else {
@@ -310,7 +325,8 @@ void UclampGovernor::discover(std::string_view explicit_root) {
 
             Encoding candidate_encoding = Encoding::Unknown;
             if (current.path.filename() == "top-app" &&
-                validate_target(current.path.string(), root.kind, candidate_encoding)) {
+                validate_target(current.path.string(), root.kind, candidate_encoding) &&
+                clean_baseline(current.path.string())) {
                 target_path_ = current.path.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
@@ -323,7 +339,8 @@ void UclampGovernor::discover(std::string_view explicit_root) {
 
             // Common case: controller mount directly owns top-app.
             const fs::path direct = current.path / "top-app";
-            if (validate_target(direct.string(), root.kind, candidate_encoding)) {
+            if (validate_target(direct.string(), root.kind, candidate_encoding) &&
+                clean_baseline(direct.string())) {
                 target_path_ = direct.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
