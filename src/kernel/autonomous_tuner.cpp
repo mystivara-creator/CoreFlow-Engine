@@ -289,44 +289,44 @@ bool CentralMutationCoordinator::dispatch_preemption(
     std::string_view controller_name,
     std::string_view transaction_id,
     std::string_view reason) noexcept {
-    try {
-        PreemptionHandler handler;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = preemption_handlers_.find(std::string(controller_name));
-            if (it == preemption_handlers_.end()) return false;
-            handler = it->second;
-        }
-        // Never invoke controller code while holding the coordinator mutex.
-        const bool acknowledged = handler(domain, transaction_id, reason);
-        if (acknowledged) {
-            // Transaction-scoped release prevents a delayed acknowledgement from
-            // clearing a newer lease acquired by the same controller/domain.
-            release_lease(domain, controller_name, transaction_id);
-        }
-        return acknowledged;
-    } catch (...) {
-        return false;
+    PreemptionHandler handler;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool lease_is_current = std::any_of(leases_.begin(), leases_.end(),
+            [&](const DomainLease& lease) {
+                return lease.domain == domain && lease.active &&
+                       lease.owner_controller == controller_name &&
+                       lease.transaction_id == transaction_id && lease.preemption_requested;
+            });
+        if (!lease_is_current) return false;
+        const auto it = preemption_handlers_.find(std::string(controller_name));
+        if (it == preemption_handlers_.end()) return false;
+        handler = it->second;
     }
+    // Controller callbacks are required to be non-throwing and are never invoked
+    // while holding the coordinator mutex.
+    const bool acknowledged = handler(domain, transaction_id, reason);
+    if (acknowledged) {
+        // Transaction-scoped release prevents a delayed acknowledgement from
+        // clearing a newer lease acquired by the same controller/domain.
+        release_lease(domain, controller_name, transaction_id);
+    }
+    return acknowledged;
 }
 
 void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
-    try {
-        std::vector<DomainLease> pending;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (auto& lease : leases_) {
-                if (!lease.active) continue;
-                // Preserve owner and transaction identity until an acknowledgement.
-                lease.preemption_requested = true;
-                pending.push_back(lease);
-            }
+    std::vector<DomainLease> pending;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& lease : leases_) {
+            if (!lease.active) continue;
+            // Preserve owner and transaction identity until an acknowledgement.
+            lease.preemption_requested = true;
+            pending.push_back(lease);
         }
-        for (const auto& lease : pending) {
-            (void)dispatch_preemption(lease.domain, lease.owner_controller, lease.transaction_id, reason);
-        }
-    } catch (...) {
-        // A failed dispatch remains fail-closed: preemption flags stay set and leases remain owned.
+    }
+    for (const auto& lease : pending) {
+        (void)dispatch_preemption(lease.domain, lease.owner_controller, lease.transaction_id, reason);
     }
 }
 
