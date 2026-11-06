@@ -115,6 +115,7 @@ void CentralMutationCoordinator::release_lease(
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
+            lease.owner_detached = false;
         }
     }
 }
@@ -126,6 +127,7 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
+            lease.owner_detached = false;
         }
     }
 }
@@ -151,16 +153,28 @@ bool CentralMutationCoordinator::register_preemption_handler(
 
 void CentralMutationCoordinator::unregister_preemption_handler(
     std::string_view controller_name) noexcept {
+    if (controller_name.empty()) return;
     std::unique_lock<std::mutex> lock(mutex_);
     const std::string key(controller_name);
     auto it = preemption_handlers_.find(key);
-    if (it == preemption_handlers_.end()) return;
-    it->second.unregistering = true;
-    preemption_cv_.wait(lock, [&] {
-        const auto current = preemption_handlers_.find(key);
-        return current == preemption_handlers_.end() || current->second.in_flight == 0;
-    });
-    preemption_handlers_.erase(key);
+    if (it != preemption_handlers_.end()) {
+        it->second.unregistering = true;
+        preemption_cv_.wait(lock, [&] {
+            const auto current = preemption_handlers_.find(key);
+            return current == preemption_handlers_.end() || current->second.in_flight == 0;
+        });
+        preemption_handlers_.erase(key);
+    }
+
+    // A controller destructor calls this only after its own best-effort
+    // rollback. Any lease still active now has no callback capable of
+    // acknowledging it. Preserve ownership as an explicit orphan; never
+    // release it here because BaselineStore may still contain live mutations.
+    for (auto& lease : leases_) {
+        if (lease.active && lease.owner_controller == key) {
+            lease.owner_detached = true;
+        }
+    }
 }
 
 bool CentralMutationCoordinator::dispatch_preemption(
@@ -219,6 +233,32 @@ bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
         [](const DomainLease& lease) { return lease.active; });
     if (leases_remaining) return false;
     emergency_recovery_active_ = false;
+    return true;
+}
+
+bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery(
+    bool baseline_store_clear) noexcept {
+    if (!baseline_store_clear) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!emergency_recovery_active_) return false;
+
+    // Do not use a global journal sweep to steal from a live owner that
+    // refused or has not yet acknowledged preemption.
+    for (const auto& lease : leases_) {
+        if (!lease.active) continue;
+        if (!lease.owner_detached) return false;
+        if (preemption_handlers_.find(lease.owner_controller) != preemption_handlers_.end()) {
+            return false;
+        }
+    }
+
+    for (auto& lease : leases_) {
+        if (!lease.active || !lease.owner_detached) continue;
+        lease.active = false;
+        lease.transaction_id.clear();
+        lease.preemption_requested = false;
+        lease.owner_detached = false;
+    }
     return true;
 }
 
