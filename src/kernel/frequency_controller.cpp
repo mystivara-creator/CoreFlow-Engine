@@ -271,11 +271,9 @@ bool FrequencyController::apply(double scale) {
         if (!applied || !readback_valid || readback != target) {
             ok = false;
             if (!readback_valid) {
-                // The node became unreadable while a transaction may still be active.
-                // Retain the lease and recovery metadata rather than claiming it is safe.
-                if (store_still_owns_node || domain.mutation_active) {
-                    domain.mutation_active = true;
-                }
+                // The node became unreadable after a write attempt. Retain the lease
+                // and recovery metadata regardless of the journal's last visible state.
+                domain.mutation_active = true;
                 continue;
             }
 
@@ -285,7 +283,21 @@ bool FrequencyController::apply(double scale) {
                 // considering its lease releasable.
                 domain.mutation_active = true;
                 domain.last = readback;
-                if (!restore_owned_domain(domain)) continue;
+                if (!restore_owned_domain(domain)) {
+                    const auto after_audit = store.get_audit_trail();
+                    const auto after_snapshot = std::find_if(
+                        after_audit.begin(), after_audit.end(), [&](const NodeSnapshot& node) {
+                            return node.path == domain.maximum;
+                        });
+                    if (after_snapshot == after_audit.end() || !after_snapshot->is_modified) {
+                        // BaselineStore adopted an OEM/external value during rollback.
+                        // Relinquish and retire instead of reasserting on a later tick.
+                        domain.mutation_active = false;
+                        domain.retired = true;
+                        domain.last = readback;
+                    }
+                    continue;
+                }
             } else {
                 // BaselineStore no longer recognizes this as our mutation. Preserve
                 // an OEM/external value and retire the path instead of reasserting.
