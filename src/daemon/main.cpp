@@ -996,6 +996,7 @@ int main(int argc, char* argv[]) {
             std::clamp(pressure.cpu, 0.0, 100.0),
             std::clamp(pressure.memory, 0.0, 100.0),
             std::clamp(pressure.io, 0.0, 100.0),
+            cpu_psi.has_value(), memory_psi.has_value(), io_psi.has_value(),
             85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
