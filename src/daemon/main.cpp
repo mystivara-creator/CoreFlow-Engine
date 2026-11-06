@@ -918,8 +918,12 @@ int main(int argc, char* argv[]) {
             thermal_ready = false;
             cooling_feedback.reset();
             temp_tracker.reset();
+            // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
+            // do not rely on the unrelated PID applied flag to decide whether it rolls back.
+            (void)AutonomousTuner::instance().emergency_rollback(
+                "Thermal telemetry unavailable; restoring verified OEM baseline.");
+            if (baseline.has_active_mutations()) (void)baseline.rollback_all();
             if (applied) {
-                (void)baseline.rollback_all();
                 applied = false;
                 controller->reset();
                 (void)governor.resync();
@@ -939,7 +943,9 @@ int main(int argc, char* argv[]) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
-            (void)baseline.rollback_all();
+            (void)AutonomousTuner::instance().emergency_rollback(
+                "Extreme physical thermal threshold reached; restoring verified OEM baseline.");
+            if (baseline.has_active_mutations()) (void)baseline.rollback_all();
             applied = false;
             return;
         }
