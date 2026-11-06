@@ -1,0 +1,104 @@
+name: CoreFlow Release Publisher
+
+on:
+  workflow_run:
+    workflows: ["CoreFlow Engine CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coreflow-release-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish validated version tag
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Validate source run and semantic version tag
+        id: source
+        shell: bash
+        env:
+          TAG: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_WORKFLOW" == "CoreFlow Engine CI" ]]
+          [[ "$SOURCE_CONCLUSION" == "success" ]]
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Refusing to publish non-semver version tag: $TAG"
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact validated source commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Download package from successful CI run
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: CFAE-System-Framework-*-package
+          path: release-artifacts
+          merge-multiple: true
+      - name: Verify package and version identity
+        shell: bash
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find release-artifacts -type f -name 'CFAE-System-Framework-*-arm64.zip')
+          [[ "${#packages[@]}" -eq 1 ]] || {
+            echo "::error::Expected exactly one flashable ZIP, found ${#packages[@]}."
+            find release-artifacts -maxdepth 3 -type f -print
+            exit 1
+          }
+          PACKAGE="${packages[0]}"
+          unzip -t "$PACKAGE"
+          unzip -p "$PACKAGE" module.prop > "$RUNNER_TEMP/module.prop"
+          VERSION="$(awk -F= '$1=="version" {print $2; exit}' "$RUNNER_TEMP/module.prop" | tr -d '[:space:]')"
+          [[ "$VERSION" == "$TAG" ]] || {
+            echo "::error::Tag ($TAG) does not match packaged module version ($VERSION)."
+            exit 1
+          }
+          echo "Verified release package: $PACKAGE ($VERSION)"
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PACKAGE="$(find release-artifacts -type f -name 'CFAE-System-Framework-*-arm64.zip' -print -quit)"
+          awk -v ver="$TAG" '
+            $0 ~ "^## " ver { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "::error::CHANGELOG.md has no section for $TAG; refusing to publish incomplete release notes."
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "CFAE System Framework $TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$TAG" "$PACKAGE" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$PACKAGE" --repo "$GITHUB_REPOSITORY" \
+              --title "CFAE System Framework $TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
