@@ -239,22 +239,28 @@ bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
 
 bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery(
     BaselineStore& baseline_store) noexcept {
-    // Confirm both the in-memory baseline and durable write-ahead journal are
-    // clear before acquiring the coordinator lock or retiring any orphan.
-    if (!baseline_store.verify_and_persist_clear_state()) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!emergency_recovery_active_) return false;
-
-    // Do not use a global journal sweep to steal from a live owner that
-    // refused or has not yet acknowledged preemption.
-    for (const auto& lease : leases_) {
-        if (!lease.active) continue;
-        if (!lease.owner_detached) return false;
-        if (preemption_handlers_.find(lease.owner_controller) != preemption_handlers_.end()) {
-            return false;
+    const auto all_active_owners_are_detached = [&]() {
+        for (const auto& lease : leases_) {
+            if (!lease.active) continue;
+            if (!lease.owner_detached) return false;
+            if (preemption_handlers_.find(lease.owner_controller) != preemption_handlers_.end()) {
+                return false;
+            }
         }
-    }
+        return true;
+    };
 
+    // Check admission and ownership before the filesystem operation, perform
+    // the durable BaselineStore verification without holding the coordinator
+    // mutex, then recheck because callbacks/destructors may have completed.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!emergency_recovery_active_ || !all_active_owners_are_detached()) return false;
+    }
+    if (!baseline_store.verify_and_persist_clear_state()) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!emergency_recovery_active_ || !all_active_owners_are_detached()) return false;
     for (auto& lease : leases_) {
         if (!lease.active || !lease.owner_detached) continue;
         lease.active = false;
