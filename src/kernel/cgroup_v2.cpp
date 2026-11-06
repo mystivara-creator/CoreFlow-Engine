@@ -22,8 +22,7 @@ namespace fs = std::filesystem;
 
 CgroupV2Controller::CgroupV2Controller(std::string_view root_path)
     : root_path_(root_path),
-      controller_name_("CgroupV2Controller@" +
-                       std::to_string(reinterpret_cast<uintptr_t>(this))) {
+      controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")) {
     const std::string controllers_file = root_path_ + "/cgroup.controllers";
     supported_ = fs::exists(controllers_file);
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
