@@ -288,7 +288,14 @@ int main() {
     assert(get(schedutil_dir / "up_rate_limit_us") == "4000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "500");
 
-    // Emergency thermal spike immediately aborts and restores OEM baseline
+    // Emergency thermal spike must request preemption from every live domain owner
+    // before the tuner attempts to roll back its own transaction.
+    auto& emergency_coord = coreflow::CentralMutationCoordinator::instance();
+    assert(emergency_coord.acquire_lease(
+        coreflow::MutationDomain::UclampCgroup,
+        "ExternalUclampController",
+        "tx-uclamp-before-emergency",
+        coreflow::ControllerPriority::WorkloadOptimization));
     const auto therm_emerg = tuner.step({
         .cpu_psi = 11.0,
         .memory_psi = 0.5,
@@ -301,6 +308,13 @@ int main() {
     assert(therm_emerg.stage == "PLANNED");
     assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
+    const auto emergency_leases = emergency_coord.active_leases();
+    assert(emergency_leases.size() == 1);
+    assert(emergency_leases[0].owner_controller == "ExternalUclampController");
+    assert(emergency_leases[0].transaction_id == "tx-uclamp-before-emergency");
+    assert(emergency_leases[0].preemption_requested);
+    emergency_coord.release_lease(
+        coreflow::MutationDomain::UclampCgroup, "ExternalUclampController");
 
     // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
     tuner.reset();
