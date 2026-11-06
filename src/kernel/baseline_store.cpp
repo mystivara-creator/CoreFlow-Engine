@@ -49,7 +49,7 @@ UniqueFd open_directory_chain_nofollow(const std::string& path, bool create) {
 }
 
 std::string read_line_at(int directory_fd, const char* name) {
-    if (directory_fd < 0 || name == nullptr || *name == '\0' || std::strchr(name, '/') != nullptr) return {};
+    if (directory_fd < 0 || name == nullptr || *name == '\0' || std::string_view(name).find('/') != std::string_view::npos) return {};
     UniqueFd fd(::openat(directory_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return {};
     struct stat st{};
