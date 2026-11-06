@@ -247,6 +247,11 @@ struct TunerTelemetryInput {
     double cpu_psi{0.0};
     double memory_psi{0.0};
     double io_psi{0.0};
+    // Missing PSI is not a measured zero. Defaults preserve legacy test/caller semantics;
+    // production telemetry must set these from the corresponding read result.
+    bool cpu_psi_valid{true};
+    bool memory_psi_valid{true};
+    bool io_psi_valid{true};
 
     // Explicitly Separated Thermal Telemetry Domains:
     // 1. Thermal Pressure (dimensionless policy-relative index [0.0 .. 130.0])
