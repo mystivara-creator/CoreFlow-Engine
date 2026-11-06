@@ -133,6 +133,14 @@ bool FrequencyController::apply(double scale) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& store = BaselineStore::instance();
     bool ok = true;
+    const auto restore_owned_domain = [&](Domain& domain) {
+        if (!store.rollback(domain.maximum)) return false;
+        uint64_t restored = 0;
+        if (!number(domain.maximum, restored) || restored != domain.baseline) return false;
+        domain.last = domain.baseline;
+        domain.mutation_active = false;
+        return true;
+    };
     bool cpu_needs_lease = false;
     bool gpu_needs_lease = false;
 
@@ -207,8 +215,7 @@ bool FrequencyController::apply(double scale) {
             const auto next = std::lower_bound(domain.frequencies.begin(), domain.frequencies.end(), floor);
             if (next == domain.frequencies.end()) {
                 domain.retired = true;
-                ok = store.rollback(domain.maximum) && ok;
-                domain.mutation_active = false;
+                if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
                 continue;
             }
             target = *next;
@@ -216,10 +223,7 @@ bool FrequencyController::apply(double scale) {
         if (scale == 1.0) target = domain.baseline;
         if (target < floor || target > domain.baseline) {
             domain.retired = true;
-            if (domain.mutation_active) {
-                ok = store.rollback(domain.maximum) && ok;
-                domain.mutation_active = false;
-            }
+            if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
             continue;
         }
         if (target == actual) continue;
@@ -243,16 +247,14 @@ bool FrequencyController::apply(double scale) {
             ok = false;
             continue;
         }
+        domain.mutation_active = true;
         uint64_t readback = 0;
         if (!number(domain.maximum, readback) || readback != target) {
             ok = false;
-            if (!store.rollback(domain.maximum)) continue;
-            domain.last = domain.baseline;
-            domain.mutation_active = false;
+            if (!restore_owned_domain(domain)) continue;
             continue;
         }
         domain.last = target;
-        domain.mutation_active = true;
     }
 
     for (const bool gpu : {false, true}) {
