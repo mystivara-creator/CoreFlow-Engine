@@ -138,6 +138,8 @@ int main() {
     // Multi-domain acquisition is all-or-nothing before the first write. If a
     // different controller already owns GPU devfreq, FrequencyController must
     // release the CPU lease it acquired first and leave both nodes untouched.
+    const fs::path cpu_policy = root / "devices/system/cpu/cpufreq/policy0";
+    const fs::path gpu_policy = root / "class/devfreq/gpu";
     const std::string gpu_owner = "PartialAcquisitionGpuOwner";
     assert(coordinator.register_preemption_handler(
         gpu_owner,
