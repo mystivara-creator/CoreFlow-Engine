@@ -77,15 +77,25 @@ if [ ! -e "$STATE/coreflow.conf" ] && [ ! -L "$STATE/coreflow.conf" ] && [ -f "$
   fi
 fi
 
-# Modifikasi prop khusus Xiaomi/HyperOS untuk mematikan efek Low RAM
-BRAND=$(getprop ro.product.brand | tr '[:upper:]' '[:lower:]')
-MANUFACTURER=$(getprop ro.product.manufacturer | tr '[:upper:]' '[:lower:]')
+# Xiaomi/HyperOS: disable the OEM's overly broad middle-RAM cutoff without
+# lying about the device's memory capacity. The threshold is one whole GiB
+# below the detected physical-RAM tier (e.g. 8 GiB -> 7). If MemTotal cannot
+# be read, use 0 (the empirically documented no-threshold value).
+BRAND="$(getprop ro.product.brand 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+MANUFACTURER="$(getprop ro.product.manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 
 if case "$BRAND" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac || \
    case "$MANUFACTURER" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac; then
-    
+    MEMINFO_PATH="${COREFLOW_MEMINFO_PATH:-/proc/meminfo}"
+    TOTAL_KB="$(awk '$1 == "MemTotal:" && $2 ~ /^[0-9]+$/ { print $2; exit }' "$MEMINFO_PATH" 2>/dev/null)"
+    case "$TOTAL_KB" in
+      ''|*[!0-9]*) RAM_THRESHOLD_GB=0 ;;
+      *)
+        RAM_TIER_GB=$(((TOTAL_KB + 1048575) / 1048576))
+        RAM_THRESHOLD_GB=$((RAM_TIER_GB > 0 ? RAM_TIER_GB - 1 : 0))
+        ;;
+    esac
+
     resetprop -n ro.config.low_ram false
-    resetprop -n ro.config.low_ram.middle.threshold_gb 1
-else
-    echo "CFAE System Framework"
+    resetprop -n ro.config.low_ram.middle.threshold_gb "$RAM_THRESHOLD_GB"
 fi
