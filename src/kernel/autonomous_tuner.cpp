@@ -228,10 +228,14 @@ bool CentralMutationCoordinator::acquire_lease(
     return true;
 }
 
-void CentralMutationCoordinator::release_lease(MutationDomain domain, std::string_view controller_name) noexcept {
+void CentralMutationCoordinator::release_lease(
+    MutationDomain domain,
+    std::string_view controller_name,
+    std::string_view transaction_id) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& lease : leases_) {
-        if (lease.domain == domain && lease.active && lease.owner_controller == controller_name) {
+        if (lease.domain == domain && lease.active && lease.owner_controller == controller_name &&
+            (transaction_id.empty() || lease.transaction_id == transaction_id)) {
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
@@ -1172,7 +1176,7 @@ bool AutonomousTuner::apply_transaction(
                                 store.capture(step.path);
         if (is_required && !accessible) {
             // Abort entire transaction before any write occurs
-            CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+            CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
             return false;
         }
         if (accessible) {
