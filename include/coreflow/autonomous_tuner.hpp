@@ -167,6 +167,7 @@ public:
     // Close mutation admission before dispatching emergency rollback callbacks.
     // Admission reopens only after all leases and BaselineStore mutations are cleared.
     void begin_emergency_recovery() noexcept;
+    [[nodiscard]] bool is_emergency_recovery_active() const noexcept;
     [[nodiscard]] bool complete_emergency_recovery() noexcept;
 
     [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
