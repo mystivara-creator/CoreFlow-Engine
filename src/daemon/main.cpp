@@ -315,16 +315,19 @@ void print_status() {
     UclampGovernor governor;
     const auto battery = ThermalMonitor::instance().battery_celsius();
     const auto skin = ThermalMonitor::instance().skin_celsius();
-    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu").value_or(0.0);
-    const auto mem_psi = read_psi_avg10("/proc/pressure/memory").value_or(0.0);
-    const auto io_psi = read_psi_avg10("/proc/pressure/io").value_or(0.0);
+    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+    const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
+    const auto io_psi = read_psi_avg10("/proc/pressure/io");
     const auto ai = NeuralPredictor::instance().infer_and_learn({
-        std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
-        std::clamp(safe_json_double(cpu_psi), 0.0, 100.0),
-        std::clamp(safe_json_double(mem_psi), 0.0, 100.0),
-        std::clamp(safe_json_double(io_psi), 0.0, 100.0),
-        1.0,
-        1.0,
+        .thermal_pressure = std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
+        .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
+        .memory_psi = std::clamp(mem_psi.value_or(0.0), 0.0, 100.0),
+        .io_psi = std::clamp(io_psi.value_or(0.0), 0.0, 100.0),
+        .cpu_psi_valid = cpu_psi.has_value(),
+        .memory_psi_valid = mem_psi.has_value(),
+        .io_psi_valid = io_psi.has_value(),
+        .current_scale = 1.0,
+        .elapsed_seconds = 1.0,
     });
     AutonomousTuner::instance().discover();
     const auto tuner = AutonomousTuner::instance().snapshot();
