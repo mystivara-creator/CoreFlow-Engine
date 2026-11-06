@@ -1069,7 +1069,7 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (!has_anchor || planned.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
         return false;
     }
 
@@ -1096,7 +1096,7 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (committed.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
         return false;
     }
 
