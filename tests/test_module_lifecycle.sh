@@ -142,6 +142,7 @@ grep -q 'Invalid Xiaomi UI mode' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { ech
 # A resetprop failure must be visible and must not be reported as applied.
 printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
 : > "$COREFLOW_PROP_LOG"
+: > "$STATE_DIR/logs/xiaomi_ui_policy.log"
 COREFLOW_RESETPROP_FAIL="ro.config.low_ram" sh "$MOD_DIR/post-fs-data.sh"
 grep -q 'resetprop failed: ro.config.low_ram=false' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { echo "FAIL: resetprop failure was not reported"; exit 1; }
 if grep -q 'applied and verified: ro.config.low_ram=false' "$STATE_DIR/logs/xiaomi_ui_policy.log"; then
