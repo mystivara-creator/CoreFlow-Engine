@@ -931,10 +931,60 @@ int main() {
     assert(unresolved_leases.size() == 1);
     assert(unresolved_leases.front().preemption_requested);
     assert(!coordinator.complete_emergency_recovery());
+    // A failed acknowledgement from a still-registered owner must never be
+    // bypassed by the detached-owner recovery API.
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(true));
     coordinator.release_lease(
         coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx");
     assert(coordinator.complete_emergency_recovery());
     coordinator.unregister_preemption_handler("UnresolvedController");
+    assert(coordinator.active_leases().empty());
+
+    // Controller disappearance is different from a live owner refusing
+    // preemption. Its destructor unregisters the callback but deliberately
+    // leaves the lease active; only a verified BaselineStore sweep may retire it.
+    coordinator.reset();
+    const fs::path orphan_node = sda_q / "read_ahead_kb";
+    put(orphan_node, "128");
+    assert(!baseline.has_active_mutations());
+    assert(baseline.capture(orphan_node.string()));
+    assert(baseline.apply_mutation(orphan_node.string(), "256"));
+    assert(get(orphan_node) == "256");
+    assert(coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "VanishedController", "vanished-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.unregister_preemption_handler("VanishedController");
+    auto orphaned = coordinator.active_leases();
+    assert(orphaned.size() == 1);
+    assert(orphaned.front().owner_detached);
+    assert(orphaned.front().owner_controller == "VanishedController");
+
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all("test-detached-owner-recovery");
+    orphaned = coordinator.active_leases();
+    assert(orphaned.size() == 1 && orphaned.front().owner_detached);
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(false));
+    assert(coordinator.active_leases().size() == 1);
+    assert(baseline.has_active_mutations());
+    assert(baseline.rollback_all() > 0);
+    assert(!baseline.has_active_mutations());
+    assert(get(orphan_node) == "128");
+    assert(coordinator.release_orphaned_leases_after_verified_recovery(true));
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
+
+    // Admission is reopened only after the baseline and orphan lease are both
+    // reconciled; a fresh controller can then acquire the domain.
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.release_lease(
+        coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx");
     assert(coordinator.active_leases().empty());
 
     fs::remove_all(root);
