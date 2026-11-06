@@ -139,6 +139,11 @@ bool CentralMutationCoordinator::register_preemption_handler(
     if (controller_name.empty() || !handler) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     const std::string key(controller_name);
+    const bool has_detached_owner_lease = std::any_of(
+        leases_.begin(), leases_.end(), [&](const DomainLease& lease) {
+            return lease.active && lease.owner_controller == key && lease.owner_detached;
+        });
+    if (has_detached_owner_lease) return false;
     const auto it = preemption_handlers_.find(key);
     if (it != preemption_handlers_.end() &&
         (it->second.unregistering || it->second.in_flight != 0)) {
