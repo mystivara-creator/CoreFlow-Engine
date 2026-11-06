@@ -16,6 +16,8 @@
 #include <vector>
 
 namespace coreflow {
+enum class MutationDomain : uint8_t;
+enum class ControllerPriority : uint8_t;
 
 enum class VulkanLayerMode : uint8_t {
     Disabled = 0,               ///< Passive native inspection only; zero layer override
@@ -174,7 +176,10 @@ public:
     static const char* vendor_name(GpuVendor vendor) noexcept;
 
 private:
-    VulkanController() = default;
+    VulkanController();
+    ~VulkanController();
+    VulkanController(const VulkanController&) = delete;
+    VulkanController& operator=(const VulkanController&) = delete;
 
     void probe_native_vulkan_icd() noexcept;
     void discover_gpu_kernel_surface(const std::string& root_override) noexcept;
@@ -193,6 +198,13 @@ private:
     uint32_t missing_override_exts_{7};
     uint32_t raw_api_version_{0};
     bool hw_probed_{false};
+    std::string transaction_id_;
+    uint64_t transaction_generation_{0};
+    std::vector<std::string> active_mutation_paths_;
+    bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
+    bool rollback_gpu_transaction_locked() noexcept;
+    bool acquire_gpu_lease_locked(ControllerPriority priority);
+    void release_gpu_lease_locked() noexcept;
 };
 
 } // namespace coreflow
