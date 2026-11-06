@@ -641,3 +641,41 @@ The shell install/service scripts also write boot tokens, attempt counters, safe
 The source removal/follow-up fix commit is `e0439d8b0cc06db62794d98505079cf9cb38270e`. The earlier CI run `42292602289` failed compilation because the original `AutonomousTuner::rollback_active()` call remained; it is now changed to exact domain/transaction release. The following audit-document commit and its exact-head CoreFlow CI must complete before this PR head is recorded as validated. No local build is claimed.
 
 **Status: INTERNAL UNOWNED BULK-RELEASE API REMOVED; REVIEWED WRITE SURFACES CLASSIFIED; EXACT-HEAD CI AND PHYSICAL DEVICE VALIDATION STILL REQUIRED.**
+## 21. Qualcomm KGSL controls downgraded to observation-only; strict transaction release
+
+**Source/test heads:**
+- `bf7b4ee68779c04ad6a54ed4c7ae858b1bdee975` — disable unverified Qualcomm KGSL mutations
+- `164cab8234e5410e9b0583e591302cfb7f18a160` — clarify raw KGSL observation fields
+- `29599e0ec27ecef62b946e624f74db07eee7f249` — observation-only regression tests
+- `71234465d43f34e945a5fdabfb5a11a9b52b4ff1` — reject empty transaction IDs
+- `cf392676a93c7db1ffeb3d5e9c8a5868c36b95b9` — test empty transaction ID rejection
+
+### Device-specific ABI evidence boundary
+
+- The public [kunzite kernel development repository](https://github.com/xiaomi-kunzite/android_device_xiaomi_kunzite-kernel) contains extracted kernel images and device trees; it is not a version-matched KGSL driver source tree for the target HyperOS kernel.
+- The Xiaomi GPL source request for [Redmi Note 15 5G / POCO M8 5G, codename kunzite](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/issues/41125) remains open in the repository's issue tracker as reviewed for this audit.
+- Upstream Qualcomm KGSL source shows `_throttling_store()` delegates to `_pwrctrl_store(..., ADRENO_THROTTLING_CTRL)`, while `_throttling_show()` reads the driver's `pwrctrl_flag`. That is not evidence that this node toggles the OEM hardware thermal-protection mechanism. The previous code comment implying it preserved/controlled OEM thermal throttling was therefore not defensible without the target driver source.
+- Upstream evidence for a related KGSL `bus_split` implementation describes a boolean bus-control setting, but that generic implementation does not establish the exact accepted semantics or safety contract of the target firmware's vendor driver. Likewise, no normative, version-matched definition for `adrenoboost` and its `0/1/2` values was established.
+
+### Source correction
+
+- `VulkanController::discover_gpu_kernel_surface()` continues to read `adrenoboost`, `bus_split`, and `throttling` into diagnostic snapshot fields. These fields are explicitly documented as raw observations and do not authorize mutation.
+- `VulkanController::apply_workload_policy()` now treats Qualcomm Adreno KGSL as observation-only and returns a safe no-op without acquiring a GPU policy lease or writing any of the three nodes.
+- If an earlier in-process transaction still owns mutation paths when this policy path is reached, it first attempts `rollback_gpu_transaction_locked()` and keeps the lease/recovery state if verified rollback fails.
+- ARM Mali `power_policy` remains separately gated to the documented `coarse_demand`/`always_on` token set; its evidence still does not replace actual device validation.
+
+### Regression tests
+
+- The synthetic Adreno fixture now asserts sustained-load and balanced requests leave `adrenoboost`, `bus_split`, and `throttling` unchanged and create no GPU mutation lease.
+- A pre-existing journaled external change to `adrenoboost` is preserved; the observation-only policy does not adopt or overwrite it.
+- Existing Mali test continues to exercise `always_on` to `coarse_demand` and emergency rollback to its OEM baseline.
+- `release_lease()` now rejects an empty controller identity or transaction ID and compares the exact transaction ID unconditionally. Removing the default argument in the public declaration was not enough by itself because the implementation previously treated an explicitly empty string as a wildcard.
+- Multi-domain regression coverage proves a CPU release cannot affect a GPU lease for the same controller, and an empty transaction ID leaves both leases active.
+
+### Validation and remaining gates
+
+- The previous exact-head CoreFlow CI run [42293276595](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42293276595) passed for source/test head `ae597ac66f19708d7d1cfd72b0c97af7306550b4` before the new KGSL observation-only and strict empty-ID changes. It does not validate this section's new changes.
+- Exact-head CI is required for the final head containing `bf7b4ee`, `164cab8`, `29599e0`, `7123446`, and `cf39267`.
+- Long-running concurrent stress, target Xiaomi/HyperOS tests, thermal/OEM arbitration, interrupted-write recovery, and actual vendor KGSL source matching remain open. Adreno policy writes must stay disabled until the ABI contract is verified.
+
+**Status: UNVERIFIED ADRENO KGSL WRITES DISABLED; EMPTY TRANSACTION-ID WILDCARD RELEASE CLOSED; EXACT-HEAD CI AND TARGET-DEVICE VALIDATION PENDING. PR #7 MUST REMAIN DRAFT; NOT READY FOR 3.1.0 FREEZE.**
