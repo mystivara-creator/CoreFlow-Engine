@@ -338,3 +338,21 @@ Passing CI validates this candidate's host tests, sanitizers, Rust, WebUI, modul
 - Physical-device validation is still required for supported firmware/device combinations. No device behavior or thermal safety is inferred from CI.
 
 **Status: CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device based only on this CI result.
+
+## 14. Audit correction — HardwareLongevityManager coordinator integration
+
+A final source inspection of the current branch confirms that the HardwareLongevityManager integration blocker listed in Section 13 is **already implemented** in the candidate tree and must not be reported as outstanding.
+
+The current implementation in `include/coreflow/hardware_longevity.hpp` and `src/kernel/hardware_longevity.cpp`:
+
+- Registers a per-instance preemption handler.
+- Uses separate `PowerLongevity` and `BlockIo` domain leases with transaction IDs.
+- Rolls battery-current and storage-weight paths back independently.
+- Verifies BaselineStore state and node readback before releasing each lease.
+- Rejects foreign or unresolved journal ownership rather than adopting it as an OEM baseline.
+- Preserves lease/recovery state when rollback cannot be verified.
+
+`tests/test_longevity.cpp` exercises battery and storage lease acquisition, emergency preemption, baseline restoration, foreign-journal rejection, and preservation of an OEM thermal-service update.
+
+Accordingly, the HardwareLongevityManager coordinator integration is **implemented and host-tested**; it is not a remaining blocker. The remaining system-wide gates are cross-controller multi-domain/partial-acquisition and disappearance/timeout recovery coverage, full final write-path audit, Vulkan semantic validation against actual device capability evidence, and physical-device validation. This correction does not change the CI result or claim that the remaining gates are complete.
+
