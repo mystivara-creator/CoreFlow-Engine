@@ -51,8 +51,12 @@ struct GpuKernelSurface {
     uint32_t current_freq_mhz{0};
     uint32_t max_freq_mhz{0};
     uint32_t min_freq_mhz{0};
+    // Raw KGSL observations only. These values do not authorize mutation
+    // without a driver/version-specific ABI and thermal-semantics contract.
     uint32_t adrenoboost_level{0};
     bool bus_split_enabled{true};
+    // Raw driver flag only; do not interpret as proof that hardware thermal
+    // protection is enabled or disabled.
     bool throttling_enabled{true};
 };
 
