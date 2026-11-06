@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <atomic>
 #include <functional>
+#include <condition_variable>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -166,7 +168,13 @@ private:
         std::string_view reason) noexcept;
     mutable std::mutex mutex_;
     std::vector<DomainLease> leases_;
-    std::unordered_map<std::string, PreemptionHandler> preemption_handlers_;
+    struct PreemptionHandlerEntry {
+        PreemptionHandler handler;
+        size_t in_flight{0};
+        bool unregistering{false};
+    };
+    std::condition_variable preemption_cv_;
+    std::unordered_map<std::string, PreemptionHandlerEntry> preemption_handlers_;
     std::atomic<uint64_t> conflict_rejections_{0};
 };
 
