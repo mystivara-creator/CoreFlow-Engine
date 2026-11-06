@@ -85,12 +85,11 @@ int main() {
     assert(::chmod((cpu / "scaling_max_freq").c_str(), 0644) == 0);
 
     // A CPUFreq path that became journaled by another/legacy owner after
-    // discovery must be retired without overwriting its value. The independent
-    // GPU domain may still run under its own lease and must roll back normally.
+    // discovery must be rejected without overwriting its value. The independent
+    // GPU domain may still apply its own mutation even though the aggregate result
+    // is false because the CPU part of the requested policy was rejected.
     assert(baseline.apply_mutation((cpu / "scaling_max_freq").string(), "1700000"));
-    // The CPU domain was retired after the previous OEM handoff; an independent
-    // GPU policy remains eligible and must not cause the CPU foreign value to move.
-    assert(controller.apply(0.75));
+    assert(!controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1700000");
     assert(get(gpu / "max_freq") == "600000000");
     const auto foreign_cpu_leases = coordinator.active_leases();
