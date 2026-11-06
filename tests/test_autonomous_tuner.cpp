@@ -1333,7 +1333,7 @@ int main() {
     assert(baseline.rollback_all() > 0);
     assert(!baseline.has_active_mutations());
     assert(get(disappeared_path) == disappeared_factory_value);
-    baseline.verify_and_persist_clear_state();
+    assert(baseline.verify_and_persist_clear_state());
     assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
