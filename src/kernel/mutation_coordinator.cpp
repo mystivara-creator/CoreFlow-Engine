@@ -120,13 +120,32 @@ bool CentralMutationCoordinator::register_preemption_handler(
     PreemptionHandler handler) {
     if (controller_name.empty() || !handler) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    preemption_handlers_[std::string(controller_name)] = std::move(handler);
+    const std::string key(controller_name);
+    const auto it = preemption_handlers_.find(key);
+    if (it != preemption_handlers_.end() &&
+        (it->second.unregistering || it->second.in_flight != 0)) {
+        return false;
+    }
+    preemption_handlers_[key] = PreemptionHandlerEntry{
+        .handler = std::move(handler),
+        .in_flight = 0,
+        .unregistering = false,
+    };
     return true;
 }
 
-void CentralMutationCoordinator::unregister_preemption_handler(std::string_view controller_name) noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    preemption_handlers_.erase(std::string(controller_name));
+void CentralMutationCoordinator::unregister_preemption_handler(
+    std::string_view controller_name) noexcept {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const std::string key(controller_name);
+    auto it = preemption_handlers_.find(key);
+    if (it == preemption_handlers_.end()) return;
+    it->second.unregistering = true;
+    preemption_cv_.wait(lock, [&] {
+        const auto current = preemption_handlers_.find(key);
+        return current == preemption_handlers_.end() || current->second.in_flight == 0;
+    });
+    preemption_handlers_.erase(key);
 }
 
 bool CentralMutationCoordinator::dispatch_preemption(
@@ -135,6 +154,7 @@ bool CentralMutationCoordinator::dispatch_preemption(
     std::string_view transaction_id,
     std::string_view reason) noexcept {
     PreemptionHandler handler;
+    const std::string key(controller_name);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const bool lease_is_current = std::any_of(leases_.begin(), leases_.end(),
@@ -144,13 +164,30 @@ bool CentralMutationCoordinator::dispatch_preemption(
                        lease.transaction_id == transaction_id && lease.preemption_requested;
             });
         if (!lease_is_current) return false;
-        const auto it = preemption_handlers_.find(std::string(controller_name));
-        if (it == preemption_handlers_.end()) return false;
-        handler = it->second;
+        const auto it = preemption_handlers_.find(key);
+        if (it == preemption_handlers_.end() || it->second.unregistering) return false;
+        ++it->second.in_flight;
+        handler = it->second.handler;
     }
-    // Controller callbacks are required to be non-throwing and are never invoked
-    // while holding the coordinator mutex.
-    const bool acknowledged = handler(domain, transaction_id, reason);
+
+    bool acknowledged = false;
+    try {
+        // Invoke controller code outside the coordinator mutex. The in-flight
+        // reference keeps unregister/destruction from invalidating its target.
+        acknowledged = handler(domain, transaction_id, reason);
+    } catch (...) {
+        acknowledged = false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = preemption_handlers_.find(key);
+        if (it != preemption_handlers_.end() && it->second.in_flight > 0) {
+            --it->second.in_flight;
+        }
+        preemption_cv_.notify_all();
+    }
+
     if (acknowledged) {
         // Transaction-scoped release prevents a delayed acknowledgement from
         // clearing a newer lease acquired by the same controller/domain.
