@@ -272,3 +272,34 @@ Since the previous update, the audit branch has advanced with the following veri
 - No update to `main`, merge, release publication, or device flashing was performed.
 
 **Status remains: NOT COMPLETE.** The remaining acceptance gate is a successful complete CI run on the resulting latest PR head, followed by physical-device validation and a final audit of every mutation path and controller interaction. Do not mark PR #7 ready or merge it solely on the basis of source-level review.
+
+
+
+## 12. CI-driven correction — no-exceptions toolchain compatibility
+
+**Audit basis before this note:** `5c334c5f6b11a813ec29e5af990b3f12c58a80a6`.
+
+### CI result and root cause
+
+Workflow run [42281445106](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42281445106) failed on that exact head. Rust, WebUI and Module validation passed; Host C++, Android ARM64 and ASan/UBSan failed during compilation.
+
+Two introduced compile defects were confirmed from the job logs:
+
+1. The production C++ toolchain explicitly compiles with `-fno-exceptions`. A `try/catch` block in the coordinator and a test callback that used `throw` therefore failed to compile.
+2. Clang/Android NDK rejected the placement of the `[[deprecated]]` attribute before the class declaration.
+
+### Corrections applied
+
+- Removed exception syntax from the coordinator. The callback contract now explicitly requires non-throwing handlers; failed recovery is represented by a normal `false` acknowledgement, preserving the lease and closed admission.
+- Replaced the throwing callback test with a non-throwing handler that returns `false`, testing the supported fail-closed contract under `-fno-exceptions`.
+- Moved the deprecation attribute to the class declaration position accepted by Clang/NDK.
+- Adjusted the CPUFreq foreign-baseline regression so an OEM-retired CPU domain does not incorrectly require an independent GPU domain operation to fail.
+
+### Current validation
+
+- Run [42281951246](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42281951246), on an intermediate source head, was cancelled when a newer commit arrived before its full matrix completed.
+- Run [42281996391](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42281996391) was created for the corrected CPUFreq regression head `014efe418bd5f4b93f0bd44fbd949c2a0fc38524`; it was pending when this note was written.
+- The exact latest PR head must receive a complete successful workflow result before the code can be considered CI-validated.
+- No local compiler/test execution or physical-device validation is claimed.
+
+**Status remains: NOT COMPLETE / DO NOT MERGE.** Reinspect the next exact-head CI result and address all additional compiler, test, sanitizer and Android packaging failures before moving PR #7 out of Draft.
