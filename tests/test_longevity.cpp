@@ -53,6 +53,12 @@ int main() {
     coordinator.emergency_preempt_all("test-storage-preemption");
     assert(get(root / "fs/cgroup/top-app/io.weight") == "default 100");
     assert(coordinator.active_leases().empty());
+
+    assert(guard.apply_storage_pacing());
+    put(root / "fs/cgroup/top-app/io.weight", "default 200"); // OEM takes ownership.
+    assert(!guard.apply_storage_pacing());
+    assert(get(root / "fs/cgroup/top-app/io.weight") == "default 200");
+    assert(coordinator.active_leases().empty());
     assert(!baseline.has_active_mutations());
     fs::remove_all(root);
 }
