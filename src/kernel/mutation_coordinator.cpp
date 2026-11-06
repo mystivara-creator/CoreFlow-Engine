@@ -134,6 +134,7 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
+            lease.preemption_dispatch_in_flight = false;
             lease.owner_detached = false;
         }
     }
@@ -285,7 +286,8 @@ bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery
     const auto all_active_owners_are_detached = [&]() {
         for (const auto& lease : leases_) {
             if (!lease.active) continue;
-            if (!lease.owner_detached || !lease.preemption_requested) return false;
+            if (!lease.owner_detached || !lease.preemption_requested ||
+                lease.preemption_dispatch_in_flight) return false;
             if (preemption_handlers_.find(lease.owner_controller) != preemption_handlers_.end()) {
                 return false;
             }
@@ -309,6 +311,7 @@ bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery
         lease.active = false;
         lease.transaction_id.clear();
         lease.preemption_requested = false;
+        lease.preemption_dispatch_in_flight = false;
         lease.owner_detached = false;
     }
     return true;
