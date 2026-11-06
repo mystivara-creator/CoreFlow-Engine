@@ -427,15 +427,21 @@ void VulkanController::release_gpu_lease_locked() noexcept {
 bool VulkanController::rollback_gpu_transaction_locked() noexcept {
     if (transaction_id_.empty()) return active_mutation_paths_.empty();
     auto& baseline = BaselineStore::instance();
-    const auto audit = baseline.get_audit_trail();
     for (const auto& path : active_mutation_paths_) {
         if (!baseline.rollback(path)) return false;
-        const auto it = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        const auto restored_audit = baseline.get_audit_trail();
+        const auto it = std::find_if(restored_audit.begin(), restored_audit.end(), [&](const NodeSnapshot& node) {
             return node.path == path;
         });
-        if (it == audit.end() || it->is_modified || read_first_line(path) != it->factory_value) {
+        if (it == restored_audit.end() || it->is_modified ||
+            read_first_line(path) != it->factory_value) {
             return false;
         }
+        if (path == adrenoboost_node_) {
+            snap_.gpu_surface.adrenoboost_level = read_uint32_node(path, 0);
+        }
+        if (path == bus_split_node_) snap_.gpu_surface.bus_split_enabled = read_uint32_node(path, 1) != 0;
+        if (path == throttling_node_) snap_.gpu_surface.throttling_enabled = read_uint32_node(path, 1) != 0;
     }
     active_mutation_paths_.clear();
     release_gpu_lease_locked();
@@ -1033,12 +1039,14 @@ bool VulkanController::apply_workload_policy(
         }
 
         if (!acquire_gpu_lease_locked(priority)) return false;
-        if (!baseline.apply_mutation(path, value)) return false;
-        if (read_first_line(path) != value) return false;
-        if (std::find(active_mutation_paths_.begin(), active_mutation_paths_.end(), path) ==
-            active_mutation_paths_.end()) {
+        const bool applied = baseline.apply_mutation(path, value);
+        const std::string readback = read_first_line(path);
+        if (readback != snapshot->factory_value &&
+            std::find(active_mutation_paths_.begin(), active_mutation_paths_.end(), path) ==
+                active_mutation_paths_.end()) {
             active_mutation_paths_.push_back(path);
         }
+        if (!applied || readback != value) return false;
         return true;
     };
 
