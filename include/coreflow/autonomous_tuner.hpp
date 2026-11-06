@@ -13,6 +13,8 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -140,13 +142,16 @@ public:
                                                  std::string_view controller_name,
                                                  ControllerPriority requester_priority) const noexcept;
     [[nodiscard]] std::vector<DomainLease> active_leases() const;
-    [[nodiscard]] uint64_t conflict_rejections() const noexcept { return conflict_rejections_; }
+    [[nodiscard]] uint64_t conflict_rejections() const noexcept {
+        return conflict_rejections_.load(std::memory_order_relaxed);
+    }
     void reset() noexcept;
 
 private:
     CentralMutationCoordinator() = default;
+    mutable std::mutex mutex_;
     std::vector<DomainLease> leases_;
-    uint64_t conflict_rejections_{0};
+    std::atomic<uint64_t> conflict_rejections_{0};
 };
 
 struct BlockQueueSurface {
