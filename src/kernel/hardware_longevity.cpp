@@ -174,6 +174,16 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
     if (!config_.enable_battery_step_charging || battery_node_.empty()) return false;
 
     auto& store = BaselineStore::instance();
+    const auto battery_audit = store.get_audit_trail();
+    const auto* battery_snapshot = find_snapshot(battery_audit, battery_node_);
+    if (!battery_snapshot ||
+        (battery_snapshot->is_modified && battery_transaction_id_.empty())) {
+        // A journaled charging mutation not owned by this manager must never be
+        // treated as its OEM baseline, even if the current value looks familiar.
+        battery_node_.clear();
+        battery_stepped_ = false;
+        return false;
+    }
     uint64_t current = 0;
     if (!positive(line(battery_node_), current)) {
         if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
