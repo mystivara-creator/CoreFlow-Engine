@@ -516,31 +516,31 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
         (telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
         return WorkloadClass::ThermalConstrained;
     }
-    if (telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
+    if (telemetry.memory_psi_valid && telemetry.io_psi_valid && telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
         return WorkloadClass::HeavyMultitasking;
     }
-    if (telemetry.memory_psi >= 2.0) {
+    if (telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0) {
         return WorkloadClass::MemoryPressure;
     }
-    if (telemetry.io_psi >= 5.0 && telemetry.cpu_psi >= 10.0) {
+    if (telemetry.io_psi_valid && telemetry.cpu_psi_valid && telemetry.io_psi >= 5.0 && telemetry.cpu_psi >= 10.0) {
         return WorkloadClass::HeavyMultitasking;
     }
-    if (telemetry.io_psi >= 2.2) {
+    if (telemetry.io_psi_valid && telemetry.io_psi >= 2.2) {
         return WorkloadClass::StorageIoPressure;
     }
-    if (telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure >= 50.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure >= 50.0) {
         return WorkloadClass::Gaming;
     }
-    if (telemetry.cpu_psi >= 10.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 10.0) {
         return WorkloadClass::CpuBound;
     }
-    if (telemetry.cpu_psi >= 6.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 6.0) {
         return WorkloadClass::ScrollingAndAnimation;
     }
-    if (telemetry.cpu_psi >= 2.5 || telemetry.io_psi >= 1.0) {
+    if ((telemetry.cpu_psi_valid && telemetry.cpu_psi >= 2.5) || (telemetry.io_psi_valid && telemetry.io_psi >= 1.0)) {
         return WorkloadClass::GeneralInteraction;
     }
-    if (telemetry.cpu_psi >= 1.2) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 1.2) {
         return WorkloadClass::BackgroundWorkload;
     }
     return WorkloadClass::Idle;
@@ -555,16 +555,16 @@ BottleneckKind AutonomousTuner::diagnose_bottleneck(
     if (workload == WorkloadClass::ThermalConstrained) {
         return BottleneckKind::ThermalHeadroomDepletion;
     }
-    if (telemetry.io_psi >= 4.5 && telemetry.cpu_psi >= 9.0) {
+    if (telemetry.io_psi_valid && telemetry.cpu_psi_valid && telemetry.io_psi >= 4.5 && telemetry.cpu_psi >= 9.0) {
         return BottleneckKind::ConcurrentCpuIoContention;
     }
-    if (telemetry.io_psi >= 2.2) {
+    if (telemetry.io_psi_valid && telemetry.io_psi >= 2.2) {
         return BottleneckKind::IoQueueContention;
     }
-    if (telemetry.memory_psi >= 2.0) {
+    if (telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0) {
         return BottleneckKind::MemorySwapThrashing;
     }
-    if (telemetry.cpu_psi >= 8.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0) {
         return BottleneckKind::CpuSchedulingLatency;
     }
     return BottleneckKind::None;
@@ -1611,6 +1611,39 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         // Exiting ThermalStabilization -> release thermal damping mutation and enter hysteresis recovery
         (void)rollback_active("Thermal pressure subsided below hysteresis threshold; entering ThermalRecovery.");
         thermal_recovery_ticks_ = 2;
+    }
+
+    // Workload optimization currently evaluates a three-domain before/after utility vector.
+    // If any PSI source is unavailable, do not treat its placeholder as zero or mutate based on
+    // incomplete evidence. Thermal stabilization above remains independently actionable.
+    const bool psi_evidence_complete =
+        telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
+    if (!psi_evidence_complete) {
+        if (observing_ || transaction_active_) {
+            last_verdict_ = "INCONCLUSIVE";
+            last_verdict_enum_ = TunerVerdict::Inconclusive;
+            ++total_inconclusive_;
+            ++total_rolled_back_;
+            if (auto* stats = find_candidate(current_candidate_id_)) {
+                ++stats->inconclusive_count;
+                ++stats->consecutive_non_improved;
+                stats->last_rollback_reason = "Incomplete PSI evidence during observation/retention";
+            }
+            const bool restored = rollback_active(
+                "Incomplete PSI evidence; releasing candidate and restoring OEM baseline.");
+            if (!restored) {
+                last_verdict_ = "RECOVERY_REQUIRED";
+                last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            }
+            save_persisted_stats();
+        } else {
+            current_objective_ = OptimizationObjective::HoldBaseline;
+            current_intent_ = "HoldEquilibrium";
+            current_rationale_ = "PSI evidence incomplete; workload mutation withheld while thermal policy remains active.";
+            last_verdict_ = "INCONCLUSIVE";
+            last_verdict_enum_ = TunerVerdict::Inconclusive;
+        }
+        return snapshot();
     }
 
     const bool in_thermal_recovery = (thermal_recovery_ticks_ > 0);
