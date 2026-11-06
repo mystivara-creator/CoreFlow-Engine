@@ -1,6 +1,9 @@
-name: CoreFlow Engine Modern CI
+name: CoreFlow Engine CI
 
 on:
+  pull_request:
+    branches: [main]
+  push:
   workflow_dispatch:
     inputs:
       android_min_api:
@@ -8,55 +11,99 @@ on:
         required: false
         default: "35"
         type: string
-  push:
-    paths:
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - "rust/**"
-      - "config/**"
-      - "android/**"
-      - "docs/EQUILIBRIUM_BLUEPRINT.md"
-      - "include/**"
-      - "src/**"
-      - "tests/**"
-      - "webui/**"
-      - "package.json"
-      - "package-lock.json"
-      - "vite.config.ts"
-      - "index.html"
-      - "module/**"
-      - ".github/workflows/build.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: coreflow-engine-${{ github.ref }}
+  group: coreflow-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   ANDROID_MIN_API: ${{ inputs.android_min_api || '35' }}
-  ANDROID_ABI: "arm64-v8a"
+  ANDROID_ABI: arm64-v8a
+  RUST_TOOLCHAIN: 1.85.1
 
 jobs:
-  host-tests:
-    name: Host deterministic tests
+  webui:
+    name: WebUI validation
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run Node.js TypeScript tests
+        run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
+      - name: Type-check WebUI
+        run: npm run lint
+      - name: Build WebUI
+        run: npm run build
+      - name: Upload WebUI build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coreflow-webui-build
+          path: module/webroot/
+          if-no-files-found: ignore
+          retention-days: 14
 
-      - name: Set up Rust 2024 toolchain
+  rust:
+    name: Rust validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
-          rustup target add aarch64-linux-android
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup override set "${RUST_TOOLCHAIN}"
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+      - name: Run Rust tests
+        run: cargo test --manifest-path rust/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features
 
+  module:
+    name: Module validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Validate shell syntax and lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in module/*.sh tests/test_module_lifecycle.sh; do
+            sh -n "$file"
+          done
+          sh tests/test_module_lifecycle.sh
 
-      - name: Verify host build toolchain
+  host-tests:
+    name: Host C++ tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Rust toolchain for the C++/Rust bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup override set "${RUST_TOOLCHAIN}"
+      - name: Verify host build tools
         shell: bash
         run: |
           set -euo pipefail
@@ -69,109 +116,99 @@ jobs:
           cmake --version | head -n1
           ninja --version
           g++ --version | head -n1
-
-      - name: Setup Node.js for WebUI build
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-
-      - name: Build offline React WebUI into module/webroot
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-package-lock --no-audit --no-fund
-          fi
-          node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
-          npm run build
-
-      - name: Validate module shell syntax & lifecycle
-        shell: bash
-        run: |
-          set -euo pipefail
-          for file in module/*.sh tests/test_module_lifecycle.sh; do sh -n "$file"; done
-          sh tests/test_module_lifecycle.sh
-
-      - name: Run Rust controller tests
-        run: cargo test --manifest-path rust/Cargo.toml
-
       - name: Configure host tests
         run: |
-          set -euo pipefail
-          cmake \
-            -S . \
-            -B build/host \
-            -G Ninja \
+          cmake -S . -B build/host -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCORE_FLOW_BUILD_TESTS=ON
-
       - name: Build host tests
+        run: cmake --build build/host --parallel "$(nproc)"
+      - name: Run CTest with persistent diagnostics
+        shell: bash
         run: |
-          set -euo pipefail
-          cmake --build build/host --parallel $(nproc)
+          set -uo pipefail
+          mkdir -p build/host/ci-diagnostics
+          ctest --test-dir build/host --output-on-failure --no-tests=error \
+            --output-log build/host/ci-diagnostics/ctest.log
+          result=$?
+          if [ -f build/host/Testing/Temporary/LastTest.log ]; then
+            cp build/host/Testing/Temporary/LastTest.log build/host/ci-diagnostics/
+          fi
+          exit "$result"
+      - name: Upload host test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coreflow-host-test-diagnostics
+          path: |
+            build/host/ci-diagnostics/
+            build/host/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 30
 
-      - name: Run host tests
-        run: |
-          set -euo pipefail
-          ctest --test-dir build/host --output-on-failure --no-tests=error
-
-  sanitizer:
-    name: ASan + UBSan Memory Sanitizer
+  sanitizers:
+    name: ASan and UBSan
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    needs: host-tests
-
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set up Rust 2024 toolchain
+      - name: Set up Rust toolchain for the C++/Rust bridge
         shell: bash
         run: |
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
-          rustup target add aarch64-linux-android
-
-
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup override set "${RUST_TOOLCHAIN}"
       - name: Configure sanitized host build
         run: |
-          set -euo pipefail
           cmake -S . -B build/sanitize -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCORE_FLOW_BUILD_TESTS=ON \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
-
       - name: Build sanitized tests
         run: cmake --build build/sanitize --parallel "$(nproc)"
-
-      - name: Run sanitized tests
+      - name: Run sanitized tests with diagnostics
+        shell: bash
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
-        run: ctest --test-dir build/sanitize --output-on-failure --no-tests=error
+        run: |
+          set -uo pipefail
+          mkdir -p build/sanitize/ci-diagnostics
+          ctest --test-dir build/sanitize --output-on-failure --no-tests=error \
+            --output-log build/sanitize/ci-diagnostics/ctest.log
+          result=$?
+          if [ -f build/sanitize/Testing/Temporary/LastTest.log ]; then
+            cp build/sanitize/Testing/Temporary/LastTest.log build/sanitize/ci-diagnostics/
+          fi
+          exit "$result"
+      - name: Upload sanitizer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coreflow-sanitizer-diagnostics
+          path: |
+            build/sanitize/ci-diagnostics/
+            build/sanitize/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 30
 
   android:
-    name: Android 15+ ARM64 Production Build
+    name: Android ARM64 production package
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    needs: [host-tests, sanitizer]
-
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set up Rust 2024 toolchain
+      - name: Set up Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup override set "${RUST_TOOLCHAIN}"
           rustup target add aarch64-linux-android
-
-
       - name: Verify release version alignment
         id: version_info
         shell: bash
@@ -184,193 +221,124 @@ jobs:
           EXPECTED_CODE="$(awk -F. '{printf "%d", $1 * 10000 + $2 * 1000 + $3 * 100}' <<< "$CMAKE_VERSION")"
           test "$MODULE_CODE" = "$EXPECTED_CODE"
           test "$MODULE_VERSION" = "v${CMAKE_VERSION}"
-          test "$MODULE_VERSION" = "v3.1.0"
           echo "version=${MODULE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "code=${MODULE_CODE}" >> "$GITHUB_OUTPUT"
           echo "Release version aligned: ${CMAKE_VERSION} (${MODULE_VERSION}, code ${MODULE_CODE})"
-
-      - name: Setup Android NDK
+      - name: Set up Android NDK
         shell: bash
         run: |
           set -euo pipefail
           if [ -d "${ANDROID_HOME}/ndk" ] && [ -n "$(ls -A "${ANDROID_HOME}/ndk" 2>/dev/null)" ]; then
             LATEST_NDK="$(ls -d "${ANDROID_HOME}/ndk/"* | sort -V | tail -n 1)"
-            echo "Using runner NDK at ${LATEST_NDK}"
             echo "ANDROID_NDK_HOME=${LATEST_NDK}" >> "$GITHUB_ENV"
           else
-            echo "Installing Android NDK via sdkmanager..."
             sdkmanager --install "ndk;27.2.12479018"
             echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
           fi
-
-      - name: Setup Node.js for WebUI bundle
+      - name: Build WebUI payload
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-
-      - name: Build offline React WebUI into module/webroot
-        shell: bash
+          cache: npm
+      - name: Install WebUI dependencies and build
         run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-package-lock --no-audit --no-fund
-          fi
+          npm ci --no-audit --no-fund
           npm run build
-
-      - name: Verify WebUI payload
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s module/webroot/index.html
-          test -s module/webroot/app.js
-          test -s module/webroot/style.css
-          test -s module/post-fs-data.sh
-          test -s module/uninstall.sh
-
-      - name: Configure Android ARM64 Release
-        shell: bash
+      - name: Configure Android ARM64 release
         run: |
           set -euo pipefail
           test "${ANDROID_MIN_API}" -ge 35
-          cmake \
-            -S . \
-            -B build/android-arm64 \
-            -G Ninja \
+          cmake -S . -B build/android-arm64 -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="${ANDROID_ABI}" \
             -DANDROID_PLATFORM="android-${ANDROID_MIN_API}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCORE_FLOW_BUILD_TESTS=OFF
-
-      - name: Build and Strip Binary
+      - name: Build and validate Android binaries
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build/android-arm64 --parallel $(nproc) --verbose
-
-          BINARY="$(
-            find build/android-arm64 \
-              -type f \
-              -name coreflowd \
-              -perm -u+x \
-              | head -n 1
-          )"
-
+          cmake --build build/android-arm64 --parallel "$(nproc)" --verbose
+          BINARY="$(find build/android-arm64 -type f -name coreflowd -perm -u+x | head -n1)"
           test -n "$BINARY"
           file "$BINARY" | grep -E "ELF 64-bit.*ARM aarch64"
-          
-          STRIP_BIN="$(find "$ANDROID_NDK_HOME" -name "llvm-strip" -type f | head -n 1)"
+          STRIP_BIN="$(find "$ANDROID_NDK_HOME" -name llvm-strip -type f | head -n1)"
           if [ -n "$STRIP_BIN" ] && [ -x "$STRIP_BIN" ]; then
             "$STRIP_BIN" --strip-all "$BINARY"
           fi
-
-      - name: Assemble Module Package
+      - name: Assemble and validate flashable module
+        id: package
         shell: bash
         run: |
           set -euo pipefail
-
-          BINARY="$(
-            find build/android-arm64 \
-              -type f \
-              -name coreflowd \
-              -perm -u+x \
-              | head -n 1
-          )"
-          VK_LAYER_SO="$(
-            find build/android-arm64 \
-              -type f \
-              -name "libVkLayer_coreflow.so" \
-              | head -n 1
-          )"
-
+          BINARY="$(find build/android-arm64 -type f -name coreflowd -perm -u+x | head -n1)"
+          VK_LAYER_SO="$(find build/android-arm64 -type f -name libVkLayer_coreflow.so | head -n1)"
           MODULE_DIR="artifacts/CFAE-System-Framework"
-          mkdir -p "${MODULE_DIR}/system/bin"
-          mkdir -p "${MODULE_DIR}/system/lib64"
-          mkdir -p "${MODULE_DIR}/system/etc/coreflow"
-          mkdir -p "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d"
-
+          mkdir -p "${MODULE_DIR}/system/bin" "${MODULE_DIR}/system/lib64" \
+            "${MODULE_DIR}/system/etc/coreflow" \
+            "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d"
           cp "$BINARY" "${MODULE_DIR}/system/bin/coreflowd"
           if [ -n "$VK_LAYER_SO" ] && [ -f "$VK_LAYER_SO" ]; then
             cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
             chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
           fi
-          cp module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
-          cp module/module.prop "${MODULE_DIR}/module.prop"
-          cp module/customize.sh "${MODULE_DIR}/customize.sh"
-          cp module/service.sh "${MODULE_DIR}/service.sh"
-          cp module/post-fs-data.sh "${MODULE_DIR}/post-fs-data.sh"
-          cp module/uninstall.sh "${MODULE_DIR}/uninstall.sh"
-          cp module/sepolicy.rule "${MODULE_DIR}/sepolicy.rule"
-          cp module/system/etc/coreflow/default.conf "${MODULE_DIR}/system/etc/coreflow/default.conf"
+          cp module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/"
+          cp module/module.prop module/customize.sh module/service.sh module/post-fs-data.sh \
+            module/uninstall.sh module/sepolicy.rule "${MODULE_DIR}/"
+          cp module/system/etc/coreflow/default.conf "${MODULE_DIR}/system/etc/coreflow/"
           cp -R module/webroot "${MODULE_DIR}/webroot"
-
-          chmod 0755 "${MODULE_DIR}/system/bin/coreflowd"
-          chmod 0755 "${MODULE_DIR}/customize.sh"
-          chmod 0755 "${MODULE_DIR}/service.sh"
-          chmod 0755 "${MODULE_DIR}/post-fs-data.sh"
-          chmod 0755 "${MODULE_DIR}/uninstall.sh"
-          chmod 0644 "${MODULE_DIR}/sepolicy.rule"
-          chmod 0644 "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
+          chmod 0755 "${MODULE_DIR}/system/bin/coreflowd" "${MODULE_DIR}/customize.sh" \
+            "${MODULE_DIR}/service.sh" "${MODULE_DIR}/post-fs-data.sh" "${MODULE_DIR}/uninstall.sh"
+          chmod 0644 "${MODULE_DIR}/sepolicy.rule" "${MODULE_DIR}/module.prop" \
+            "${MODULE_DIR}/system/etc/coreflow/default.conf" \
+            "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
           find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
-          chmod 0644 "${MODULE_DIR}/module.prop"
-          chmod 0644 "${MODULE_DIR}/system/etc/coreflow/default.conf"
-
-      - name: Package Standalone Flashable Zip
-        id: package_zip
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
+          test -s "${MODULE_DIR}/system/bin/coreflowd"
+          test -s "${MODULE_DIR}/webroot/index.html"
+          VERSION="${{ steps.version_info.outputs.version }}"
           ZIP_NAME="CFAE-System-Framework-${VERSION}-arm64.zip"
-
-          cd artifacts/CFAE-System-Framework
-          zip -r9 "../../artifacts/${ZIP_NAME}" .
-          echo "zip_path=artifacts/${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          mkdir -p artifacts
+          (cd "${MODULE_DIR}" && zip -qr9 "../${ZIP_NAME}" .)
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload Direct Flashable Module (No Nested Zip)
+      - name: Upload flashable package for inspection
         uses: actions/upload-artifact@v4
         with:
-          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-arm64
+          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-package
+          path: artifacts/CFAE-System-Framework-*-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload unpacked module
+        uses: actions/upload-artifact@v4
+        with:
+          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-unpacked
           path: artifacts/CFAE-System-Framework/
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub Release with Functional Feature Changelog
+  ci-gate:
+    name: CoreFlow CI gate
+    if: always()
+    needs: [webui, rust, module, host-tests, sanitizers, android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every validation job to succeed
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WEBUI: ${{ needs.webui.result }}
+          RUST: ${{ needs.rust.result }}
+          MODULE: ${{ needs.module.result }}
+          HOST_CPP: ${{ needs.host-tests.result }}
+          SANITIZERS: ${{ needs.sanitizers.result }}
+          ANDROID: ${{ needs.android.result }}
         run: |
           set -euo pipefail
-          VERSION="$(awk -F= '$1=="version" {print $2; exit}' module/module.prop | tr -d '[:space:]')"
-          TAG="${VERSION}"
-          ZIP="${{ steps.package_zip.outputs.zip_path }}"
-
-          # Extract curated functional feature changelog for this version from CHANGELOG.md (excluding commit messages)
-          awk -v ver="$VERSION" '
-            $0 ~ "^## " ver { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > /tmp/release_notes.md
-
-          if [ ! -s /tmp/release_notes.md ]; then
-            printf '### CFAE System Framework %s\n\n' "$VERSION" > /tmp/release_notes.md
-            printf 'Autonomous mutation-safe system framework with coordinated optimization transactions, semantic UClamp 2.0, multi-sensor thermal matrix, hardware longevity, and idempotent baseline recovery.\n' >> /tmp/release_notes.md
-          fi
-
-          echo "Publishing release for ${TAG} with functional changelog..."
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Updating existing release ${TAG}..."
-            gh release edit "$TAG" \
-              --title "CFAE System Framework ${TAG}" \
-              --notes-file /tmp/release_notes.md
-            gh release upload "$TAG" "$ZIP" --clobber
-          else
-            echo "Creating new release ${TAG}..."
-            gh release create "$TAG" "$ZIP" \
-              --title "CFAE System Framework ${TAG}" \
-              --notes-file /tmp/release_notes.md
-          fi
+          failed=0
+          for check in WEBUI RUST MODULE HOST_CPP SANITIZERS ANDROID; do
+            value="${!check}"
+            echo "${check}: ${value}"
+            if [ "$value" != "success" ]; then
+              echo "::error::Required validation job $check did not succeed ($value)."
+              failed=1
+            fi
+          done
+          exit "$failed"
