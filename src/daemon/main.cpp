@@ -393,7 +393,11 @@ void print_status() {
             << ",\"category\":" << reading.category
             << ",\"valid\":" << (reading.valid ? "true" : "false")
             << ",\"celsius\":" << (reading.valid && std::isfinite(reading.celsius) ? std::to_string(reading.celsius) : "null")
-            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false") << '}';
+            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false")
+            << ",\"velocityValid\":" << (reading.velocity_valid ? "true" : "false")
+            << ",\"velocityCelsiusPerSec\":" << (reading.velocity_valid ? std::to_string(reading.velocity_celsius_per_sec) : "null")
+            << ",\"velocitySamples\":" << reading.velocity_samples_count
+            << ",\"velocityDurationSec\":" << std::to_string(reading.velocity_sample_duration_sec) << '}';
     }
     out << "]"
         << ",\"batteryTempCelsius\":" << (std::isfinite(battery) && battery >= 0 ? std::to_string(battery) : "null")
@@ -975,7 +979,19 @@ int main(int argc, char* argv[]) {
         if (temp >= 0.0f && std::isfinite(temp)) {
             temp_tracker.record_sample(temp, now_ns);
         }
-        const auto temp_vel = temp_tracker.evaluate_velocity();
+        auto temp_vel = temp_tracker.evaluate_velocity();
+        // A composite average can hide one rapidly warming die. Use the fastest
+        // valid compute/board sensor trend as the conservative physical trend.
+        for (const auto& reading : thermal.readings) {
+            if (!reading.velocity_valid || (reading.category != 1 && reading.category != 4)) continue;
+            if (!temp_vel.valid || reading.velocity_celsius_per_sec > temp_vel.velocity_celsius_per_sec) {
+                temp_vel.velocity_celsius_per_sec = reading.velocity_celsius_per_sec;
+                temp_vel.valid = true;
+                temp_vel.valid_samples_count = reading.velocity_samples_count;
+                temp_vel.sample_duration_sec = reading.velocity_sample_duration_sec;
+                temp_vel.current_temperature_celsius = reading.celsius;
+            }
+        }
         const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
