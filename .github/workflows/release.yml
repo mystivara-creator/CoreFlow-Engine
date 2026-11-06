@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || {
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::Refusing non-semver version tag: $TAG"
             exit 1
           }
