@@ -178,6 +178,19 @@ bool FrequencyController::apply(double scale) {
             ok = false;
             continue;
         }
+        const auto ownership_audit = store.get_audit_trail();
+        const auto ownership_snapshot = std::find_if(
+            ownership_audit.begin(), ownership_audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == domain.maximum;
+            });
+        if (ownership_snapshot == ownership_audit.end() ||
+            (ownership_snapshot->is_modified && !domain.mutation_active)) {
+            // A journaled mutation appeared after discovery but is not owned by
+            // this controller instance. Retire instead of adopting its active value.
+            domain.retired = true;
+            ok = false;
+            continue;
+        }
         if (actual != domain.last) {
             // An external owner changed the node. Do not overwrite its value.
             domain.retired = true;
