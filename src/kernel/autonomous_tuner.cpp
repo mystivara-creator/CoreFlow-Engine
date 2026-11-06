@@ -1455,6 +1455,15 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     prev_thermal_pressure_ = telemetry.thermal_pressure;
     has_prev_thermal_ = true;
 
+    // Emergency arbitration must run before recovery retries: a failed rollback can
+    // return early, but it must never suppress the emergency preemption request.
+    const bool emergency_boundary =
+        telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0;
+    if (emergency_boundary) {
+        current_objective_ = OptimizationObjective::EmergencyMitigation;
+        CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
+    }
+
     if (recovery_required_) {
         // Attempt recovery again; do not allow new mutations while recovery_required_ is true
         if (!rollback_active("Retrying pending rollback recovery")) {
@@ -1483,7 +1492,6 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // immediately rolls back all mutations and preempts domain leases.
     if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
-        CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
         if (transaction_active_) {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
