@@ -4,7 +4,7 @@
 int main() {
     using namespace coreflow::engine;
     auto controller = new_controller({2.5, 0.15, 1.2, 70});
-    Snapshot input{10, 1, 30, 0, 0, 85, 65, 15, 25, 15, 15, true};
+    Snapshot input{10, 1, 30, 0, 0, true, true, true, 85, 65, 15, 25, 15, 15, true};
     auto decision = controller->step(input);
     assert(decision.valid && decision.state == 1);
     input.thermal_pressure = 95;
