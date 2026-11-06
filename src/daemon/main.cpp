@@ -90,12 +90,12 @@ bool coordinated_rollback(BaselineStore& baseline, std::string_view reason) {
     // acknowledged, then every path must be verified clear before orphan leases
     // are retired.
     if (baseline.has_active_mutations()) (void)baseline.rollback_all();
-    if (baseline.has_active_mutations()) {
-        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery remains incomplete; orphan leases and mutation admission stay closed.");
+    if (baseline.has_active_mutations() || !baseline.verify_and_persist_clear_state()) {
+        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery or durable empty-journal verification failed; orphan leases and mutation admission stay closed.");
         return false;
     }
     if (!remaining.empty() &&
-        !coordinator.release_orphaned_leases_after_verified_recovery(true)) {
+        !coordinator.release_orphaned_leases_after_verified_recovery(baseline)) {
         emit_log(true, "[CoreFlow][Safety] Detached-owner leases could not be reconciled; mutation admission stays closed.");
         return false;
     }
