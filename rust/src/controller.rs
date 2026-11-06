@@ -26,10 +26,12 @@ impl Controller {
     pub fn step(&mut self, input: Snapshot) -> Decision {
         let p = &self.parameters;
         let finite = [p.kp, p.ki, p.kd, p.target, input.thermal_pressure,
-            input.elapsed_seconds, input.cpu_pressure, input.memory_pressure,
-            input.io_pressure, input.trip, input.recover, input.headroom,
+            input.elapsed_seconds, input.trip, input.recover, input.headroom,
             input.cpu_threshold, input.memory_threshold, input.io_threshold]
-            .iter().all(|x| x.is_finite());
+            .iter().all(|x| x.is_finite())
+            && (!input.cpu_pressure_valid || input.cpu_pressure.is_finite())
+            && (!input.memory_pressure_valid || input.memory_pressure.is_finite())
+            && (!input.io_pressure_valid || input.io_pressure.is_finite());
         let pressures_valid = [input.cpu_threshold, input.memory_threshold, input.io_threshold]
             .iter().all(|x| (0.0..=100.0).contains(x))
             && (!input.cpu_pressure_valid || (0.0..=100.0).contains(&input.cpu_pressure))
@@ -115,6 +117,9 @@ mod tests {
         s.cpu_pressure = 0.0;
         s.memory_pressure = 0.0;
         s.io_pressure = 0.0;
+        s.cpu_pressure = f64::NAN;
+        s.memory_pressure = f64::NAN;
+        s.io_pressure = f64::NAN;
         assert_eq!(c.step(s).state, 0);
 
         let mut s = sample(38.0);
