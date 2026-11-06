@@ -1048,9 +1048,9 @@ bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     }
 
     if (store.has_active_mutations()) (void)store.rollback_all();
-    if (store.has_active_mutations() ||
+    if (store.has_active_mutations() || !store.verify_and_persist_clear_state() ||
         (!remaining.empty() &&
-         !coordinator.release_orphaned_leases_after_verified_recovery(true))) {
+         !coordinator.release_orphaned_leases_after_verified_recovery(store))) {
         recovery_required_ = true;
         last_verdict_ = "RECOVERY_REQUIRED";
         last_verdict_enum_ = TunerVerdict::RecoveryRequired;
