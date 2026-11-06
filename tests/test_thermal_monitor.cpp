@@ -8,6 +8,8 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <algorithm>
+#include <thread>
 #include <unistd.h>
 
 using namespace coreflow;
@@ -151,6 +153,44 @@ int main() {
     // Unknown diagnostic sensor (99C) must be recorded in readings but NOT pollute compute hottest/composite
     assert(std::fabs(hwmon_mon.hottest_celsius() - 60.0f) < 0.01f);
     assert(hwmon_mon.assess().readings.size() == 3);
+
+    // Per-sensor histories must remain independent: a warming compute die must not be
+    // averaged away by a cooling board sensor, and a failed read resets only that sensor.
+    const auto trend_root = root + "/sensor_trends";
+    create_zone(trend_root, 0, "cpu-cluster0", "40000");
+    create_zone(trend_root, 1, "ap_therm", "35000");
+    ThermalMonitor per_sensor(trend_root);
+    const auto trend_first = per_sensor.assess();
+    assert(trend_first.readings.size() == 2);
+    for (const auto& reading : trend_first.readings) {
+        assert(!reading.velocity_valid);
+        assert(reading.velocity_samples_count == 1);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+    create_zone(trend_root, 0, "cpu-cluster0", "42000");
+    create_zone(trend_root, 1, "ap_therm", "34000");
+    const auto trend_second = per_sensor.assess();
+    const auto cpu_trend = std::find_if(trend_second.readings.begin(), trend_second.readings.end(),
+        [](const ThermalSensorReading& reading) { return reading.type == "cpu-cluster0"; });
+    const auto board_trend = std::find_if(trend_second.readings.begin(), trend_second.readings.end(),
+        [](const ThermalSensorReading& reading) { return reading.type == "ap_therm"; });
+    assert(cpu_trend != trend_second.readings.end() && cpu_trend->velocity_valid);
+    assert(board_trend != trend_second.readings.end() && board_trend->velocity_valid);
+    assert(cpu_trend->velocity_celsius_per_sec > 1.5);
+    assert(board_trend->velocity_celsius_per_sec < -0.5);
+
+    // A transient sensor read failure invalidates that sensor's old trend history.
+    create_zone(trend_root, 0, "cpu-cluster0", "unavailable");
+    const auto trend_failed = per_sensor.assess();
+    const auto failed_cpu = std::find_if(trend_failed.readings.begin(), trend_failed.readings.end(),
+        [](const ThermalSensorReading& reading) { return reading.type == "cpu-cluster0"; });
+    assert(failed_cpu != trend_failed.readings.end() && !failed_cpu->velocity_valid);
+    create_zone(trend_root, 0, "cpu-cluster0", "43000");
+    const auto trend_recovered = per_sensor.assess();
+    const auto recovered_cpu = std::find_if(trend_recovered.readings.begin(), trend_recovered.readings.end(),
+        [](const ThermalSensorReading& reading) { return reading.type == "cpu-cluster0"; });
+    assert(recovered_cpu != trend_recovered.readings.end());
+    assert(!recovered_cpu->velocity_valid && recovered_cpu->velocity_samples_count == 1);
 
     const auto invalid = root + "/invalid";
     create_zone(invalid, 0, "cpu", "-40000");
