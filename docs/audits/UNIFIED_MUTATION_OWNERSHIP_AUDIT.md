@@ -186,17 +186,17 @@ The following coordinator and telemetry hardening has now been implemented on th
 Validation for the complete candidate head `49ab32fcb781d9096f83e2d9b9020ef400e3a7c7`:
 - [GitHub Actions run 42266487313](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42266487313) passed all seven jobs: Host C++, ASan/UBSan, Rust/Clippy, WebUI, Module validation, Android ARM64 package, and CI gate.
 
-### Remaining ownership blockers
+### Remaining ownership blockers at the 2026-11-06 baseline
 
-These changes harden the coordinator itself; they do **not** complete system-wide mutation ownership. The following remain unresolved:
+At this historical candidate, the following work was still unresolved and is superseded by the implementation update below:
 
-- Coordinator preemption now dispatches registered controller callbacks outside the coordinator lock and releases a lease only after an explicit successful acknowledgement. The callback contract is implemented, but timeout policy, controller-disappearance recovery, and complete integration coverage remain open.
-- FrequencyController, UclampGovernor, and VulkanController now acquire domain leases and implement verified rollback callbacks. HardwareLongevityManager is still not integrated with the coordinator for its battery and storage transactions.
-- Cross-controller multi-domain acquisition and partial-acquisition cleanup are not yet demonstrated with real controller integration tests.
-- Daemon lifecycle writes still require checked, allowlisted operations and readback verification.
-- Physical-device behavior remains unvalidated; CI success is not device validation.
+- Timeout policy and controller-disappearance recovery.
+- HardwareLongevityManager coordinator integration.
+- Real cross-controller conflict and partial-failure integration tests.
+- Checked, allowlisted daemon lifecycle writes with readback.
+- Physical-device behavior validation.
 
-**Status remains: NOT COMPLETE.** Do not treat this audit or the passing CI run as approval to merge or declare the 3.1.0 freeze ready.
+**Status at that candidate: NOT COMPLETE.**
 
 
 ## 10. Implementation update — controller integration and persistence hardening
@@ -356,3 +356,46 @@ The current implementation in `include/coreflow/hardware_longevity.hpp` and `src
 
 Accordingly, the HardwareLongevityManager coordinator integration is **implemented and host-tested**; it is not a remaining blocker. The remaining system-wide gates are cross-controller multi-domain/partial-acquisition and disappearance/timeout recovery coverage, full final write-path audit, Vulkan semantic validation against actual device capability evidence, and physical-device validation. This correction does not change the CI result or claim that the remaining gates are complete.
 
+
+
+## 11. Implementation update — path-scoped recovery and controller integration
+
+**Current remediation head at this update:** `dc447993a09044bb33c5590e8e3b6bfdf42d03c2`.
+
+### BaselineStore transaction isolation
+
+- Runtime mutation admission failures no longer invoke the global `rollback_locked()` sweep. Invalid input, unreadable nodes, and write/journal failures are scoped to the path being operated on.
+- Added `rollback_path_locked()` for single-resource recovery. Global rollback remains reserved for explicit recovery/safety sweep paths.
+- Added regression coverage proving a rejected operation on one path does not reset unrelated active paths.
+- AutonomousTuner now inspects the journal after a failed step and includes any still-modified resource in reverse-order recovery. Optional failed steps are also explicitly restored if their path remains journaled as active.
+
+### Emergency admission barrier
+
+- `begin_emergency_recovery()` closes new lease admission before emergency callbacks are dispatched.
+- New lease attempts are rejected while recovery is active, including higher-priority requests for otherwise-free domains.
+- Admission reopens only after every active lease has acknowledged rollback and the BaselineStore journal has no active mutations.
+- Failed/missing callback acknowledgement retains the original owner and lease. Regression tests cover admission closure and unresolved recovery.
+
+### Controller identity, partial failure, and cross-controller isolation
+
+- FrequencyController now uses a per-instance handler identity rather than one shared static name. Failed writes are evaluated against both actual readback and BaselineStore ownership; unreadable or unresolved nodes retain recovery ownership.
+- CgroupV2Controller restores its existing transaction if a later node write fails, and releases a lease only after verified rollback.
+- HardwareLongevityManager now registers an acknowledged preemption handler for separate PowerLongevity and BlockIo transactions. Battery and storage rollback are verified before their respective leases are released.
+- Existing UclampGovernor and VulkanController callback integrations remain in place.
+- New CgroupV2/ FrequencyController integration coverage verifies that both compete for the CpuPolicy domain and that the cgroup mutation proceeds only after frequency rollback completes.
+- Controller-specific tests cover battery and storage preemption, UClamp emergency rollback, Vulkan emergency rollback, frequency partial failures, and cgroup partial failures.
+
+### Daemon lifecycle operations
+
+- Replaced the silent lifecycle write helper with an allowlisted operation for the known cgroup membership targets and `/proc/self/oom_score_adj`.
+- The operation rejects non-allowlisted paths, rejects symlink final components, checks complete write length, reopens the target, and requires readback confirmation.
+- Failed migration or OOM adjustment is logged as unverified rather than reported as success. These lifecycle writes remain separate from adaptive optimization leases.
+
+### Remaining acceptance gates
+
+- The coordinator intentionally retains a lease and keeps admission closed when an owner cannot acknowledge rollback. There is no automatic timeout-based lease theft; operational recovery after controller disappearance still requires an explicit recovery/restart path and must be validated.
+- The full write-path scan must remain part of acceptance; this update scanned the current C++/Rust/shell source tree for direct write primitives, but static searches cannot prove the absence of indirect writes in dynamically loaded vendor code.
+- The latest verified full CI result must correspond to the exact final PR head. A prior green run is not evidence for a later commit.
+- Physical-device validation remains mandatory for supported Xiaomi/HyperOS targets. Host CI cannot validate actual sysfs semantics, OEM thermal arbitration, or charging behavior.
+
+**Status: NOT COMPLETE.** These changes materially reduce cross-controller rollback risk but do not authorize merge or the 3.1.0 freeze until the remaining acceptance gates are closed.
