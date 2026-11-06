@@ -81,6 +81,19 @@ int main() {
         assert(!controller.migrate_task(::getpid(), coreflow::CgroupTarget::Background));
         assert(!controller.unlock_vendor_restrictions());
 
+        // A controller that already owns TopApp must still reject a different
+        // path whose BaselineStore entry is modified by an unrelated legacy owner.
+        const fs::path foreign_weight = root / "foreground/cpu.weight";
+        put(foreign_weight, "100");
+        assert(baseline.capture(foreign_weight.string()));
+        assert(baseline.apply_mutation(foreign_weight.string(), "900"));
+        assert(!controller.set_cpu_weight(coreflow::CgroupTarget::Foreground, 500));
+        assert(get(foreign_weight) == "900");
+        assert(get(weight) == "600");
+        assert(coordinator.active_leases().empty());
+        assert(baseline.rollback(foreign_weight.string()));
+        assert(get(foreign_weight) == "100");
+
         // Destruction must synchronously restore any still-owned transaction.
         assert(controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 300));
         assert(coordinator.active_leases().size() == 1);
