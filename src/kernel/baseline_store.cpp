@@ -746,8 +746,30 @@ std::vector<NodeSnapshot> BaselineStore::get_audit_trail() const {
 }
 
 ScopedBaselineLock::ScopedBaselineLock(std::vector<std::pair<std::string, std::string>> mutations) {
+    auto& store = BaselineStore::instance();
     for (const auto& [path, value] : mutations) {
-        if (BaselineStore::instance().apply_mutation(path, value)) modified_paths_.push_back(path);
+        const auto before = store.get_audit_trail();
+        const auto before_snapshot = std::find_if(before.begin(), before.end(),
+            [&](const NodeSnapshot& node) { return node.path == path; });
+        // This legacy helper is deliberately restricted to paths that are not
+        // already journaled as active. It has no coordinator owner identity.
+        if (before_snapshot != before.end() && before_snapshot->is_modified) continue;
+        if (!store.capture(path)) continue;
+
+        if (store.apply_mutation(path, value)) {
+            modified_paths_.push_back(path);
+            continue;
+        }
+
+        // Path-scoped BaselineStore failures can remain journaled when a physical
+        // rollback cannot be verified. Track only a path that was unmodified before
+        // this helper attempted it, so the destructor can make one final safe retry.
+        const auto after = store.get_audit_trail();
+        const auto after_snapshot = std::find_if(after.begin(), after.end(),
+            [&](const NodeSnapshot& node) { return node.path == path; });
+        if (after_snapshot != after.end() && after_snapshot->is_modified) {
+            modified_paths_.push_back(path);
+        }
     }
 }
 
