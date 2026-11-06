@@ -32,6 +32,14 @@ bool CentralMutationCoordinator::acquire_lease(
     std::string_view transaction_id,
     ControllerPriority priority,
     std::string* conflict_reason) {
+    if (controller_name.empty() || transaction_id.empty()) {
+        conflict_rejections_.fetch_add(1, std::memory_order_relaxed);
+        if (conflict_reason != nullptr) {
+            *conflict_reason = "Controller identity and transaction ID must be non-empty";
+        }
+        return false;
+    }
+
     bool conflict = false;
     bool dispatch = false;
     std::string pending_owner;
