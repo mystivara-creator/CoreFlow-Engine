@@ -51,8 +51,8 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
-    // A journal write failure on one path must not silently reset a different
-    // active path. Explicit owner rollback remains responsible for that path.
+    // A rejected operation on one path must not silently reset other
+    // active paths. Their owners remain responsible for explicit rollback.
     assert(store.capture(a));
     assert(store.capture(b));
     assert(store.apply_mutation(a, "610"));
