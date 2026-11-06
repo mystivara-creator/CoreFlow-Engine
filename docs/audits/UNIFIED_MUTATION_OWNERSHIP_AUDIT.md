@@ -741,3 +741,26 @@ A controller callback may complete its BaselineStore rollback and release its ex
 - The documentation update following this section will require its own exact-head CI result. No local build or physical-device result is claimed.
 
 **Status: EARLY ADMISSION REOPEN WINDOW CLOSED IN SOURCE; DETERMINISTIC TEST ADDED; EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT; NOT READY FOR 3.1.0 FREEZE.**
+## 24. Remove unowned legacy BaselineStore RAII mutation helper
+
+**Source heads:**
+- `bf85eb041a9b2c1fdd13ad044ad6026a98e76f87` — remove deprecated `ScopedBaselineLock` public declaration
+- `db9528b9dc5d633d2b1eaba5cc03acd961672f43` — remove its implementation
+
+### Rationale
+
+`ScopedBaselineLock` directly called `BaselineStore::capture()` and `apply_mutation()` and later attempted per-path rollback from its destructor. It had no controller identity, mutation domain, transaction ID, coordinator lease, or explicit rollback acknowledgement contract. Deprecation alone did not prevent future code from using this bypass around the owner protocol.
+
+### Repository reference audit
+
+- The latest tracked C++/Rust/module/test tree was scanned for `ScopedBaselineLock` references. No source, runtime, or test caller remained; only the declaration and implementation were found in the branch before removal.
+- The public class and implementation were removed. BaselineStore's underlying journal and verified write/rollback methods remain available to coordinator-owned controllers; this change removes only the unowned RAII wrapper.
+- The removal is intended to make the transaction ownership model structural: runtime actuators must use their controller/domain lease and transaction-scoped rollback rather than an implicit destructor side effect.
+
+### Validation
+
+- Host C++ and ASan/UBSan both completed successfully on the prior source/test head `13b0d8a2b988b8a691f5e83a73664f6573dc3427` in run [42294993542](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42294993542).
+- Latest head `db9528b9dc5d633d2b1eaba5cc03acd961672f43` has run [42295262377](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42295262377); Host C++, ASan/UBSan, Rust, WebUI, and Module jobs are successful. Android ARM64 production packaging was still running when this entry was written.
+- This audit-document commit and its exact-head CI must complete before the latest PR head can be called fully green. No local compilation or physical-device testing is claimed.
+
+**Status: UNOWNED LEGACY RAII MUTATION PATH REMOVED; HOST/SANITIZER/RUST/WEBUI/MODULE JOBS GREEN ON SOURCE HEAD; ANDROID PACKAGE AND FINAL EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT.**
