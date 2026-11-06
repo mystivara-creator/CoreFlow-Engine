@@ -70,6 +70,13 @@ int main() {
     // Concurrent requests for one domain must have a single lease winner.
     auto& coordinator = coreflow::CentralMutationCoordinator::instance();
     coordinator.reset();
+    const auto first_frequency_identity =
+        coreflow::CentralMutationCoordinator::make_controller_identity("FrequencyController");
+    const auto second_frequency_identity =
+        coreflow::CentralMutationCoordinator::make_controller_identity("FrequencyController");
+    assert(first_frequency_identity.rfind("FrequencyController@", 0) == 0);
+    assert(second_frequency_identity.rfind("FrequencyController@", 0) == 0);
+    assert(first_frequency_identity != second_frequency_identity);
     std::atomic<uint32_t> acquired{0};
     std::vector<std::thread> contenders;
     for (uint32_t i = 0; i < 12; ++i) {
