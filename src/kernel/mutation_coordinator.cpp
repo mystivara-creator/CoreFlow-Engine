@@ -269,7 +269,12 @@ bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool leases_remaining = std::any_of(leases_.begin(), leases_.end(),
         [](const DomainLease& lease) { return lease.active; });
-    if (leases_remaining) return false;
+    const bool callbacks_in_flight = std::any_of(
+        preemption_handlers_.begin(), preemption_handlers_.end(),
+        [](const auto& entry) {
+            return entry.second.in_flight != 0 || entry.second.callback_dispatch_in_flight;
+        });
+    if (leases_remaining || callbacks_in_flight) return false;
     emergency_recovery_active_ = false;
     return true;
 }
@@ -287,18 +292,27 @@ bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery
         }
         return true;
     };
+    const auto all_callbacks_are_drained = [&]() {
+        return std::all_of(preemption_handlers_.begin(), preemption_handlers_.end(),
+            [](const auto& entry) {
+                return entry.second.in_flight == 0 &&
+                       !entry.second.callback_dispatch_in_flight;
+            });
+    };
 
     // Check admission and ownership before the filesystem operation, perform
     // the durable BaselineStore verification without holding the coordinator
     // mutex, then recheck because callbacks/destructors may have completed.
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!emergency_recovery_active_ || !all_active_owners_are_detached()) return false;
+        if (!emergency_recovery_active_ || !all_active_owners_are_detached() ||
+            !all_callbacks_are_drained()) return false;
     }
     if (!baseline_store.verify_and_persist_clear_state()) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!emergency_recovery_active_ || !all_active_owners_are_detached()) return false;
+    if (!emergency_recovery_active_ || !all_active_owners_are_detached() ||
+        !all_callbacks_are_drained()) return false;
     for (auto& lease : leases_) {
         if (!lease.active || !lease.owner_detached) continue;
         lease.active = false;
