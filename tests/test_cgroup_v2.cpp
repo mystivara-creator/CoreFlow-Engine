@@ -1,4 +1,5 @@
 #include "coreflow/cgroup_v2.hpp"
+#include "coreflow/frequency_controller.hpp"
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
 
@@ -45,6 +46,31 @@ int main() {
     {
         coreflow::CgroupV2Controller controller(root.string());
         assert(controller.is_supported());
+
+        // FrequencyController and CgroupV2Controller share the conservative
+        // CpuPolicy ownership domain. The second controller must not write while
+        // the first owns it; emergency preemption must roll frequency back before
+        // cgroup policy can acquire the domain.
+        const auto cpu_policy = root / "devices/system/cpu/cpufreq/policy0";
+        put(cpu_policy / "scaling_max_freq", "2000000");
+        put(cpu_policy / "scaling_min_freq", "500000");
+        put(cpu_policy / "scaling_available_frequencies", "500000 1000000 1500000 2000000");
+        const auto gpu_policy = root / "class/devfreq/gpu";
+        put(gpu_policy / "max_freq", "800000000");
+        put(gpu_policy / "min_freq", "200000000");
+        put(gpu_policy / "available_frequencies", "200000000 400000000 600000000 800000000");
+        coreflow::FrequencyController frequencies(root.string());
+        frequencies.discover(true, true);
+        assert(frequencies.apply(0.75));
+        assert(get(cpu_policy / "scaling_max_freq") == "1500000");
+        assert(!controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 500));
+        assert(get(weight) == "100");
+        assert(coordinator.active_leases().size() == 2);
+        coordinator.emergency_preempt_all("test-frequency-to-cgroup-domain-handoff");
+        assert(get(cpu_policy / "scaling_max_freq") == "2000000");
+        assert(get(gpu_policy / "max_freq") == "800000000");
+        assert(coordinator.active_leases().empty());
+
         assert(controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 500));
         assert(controller.set_cpuset(coreflow::CgroupTarget::TopApp, "0-1"));
         assert(get(weight) == "500");
