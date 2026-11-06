@@ -53,6 +53,7 @@ public:
 
 private:
     std::string root_;
+    std::string controller_name_;
     mutable std::mutex mutex_;
 
     LongevityConfig config_;
