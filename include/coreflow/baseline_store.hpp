@@ -80,6 +80,9 @@ private:
 
     void init_paths_and_boot_id_locked();
     bool persist_locked();
+    // Transaction/runtime rollback for one path; rollback_locked remains reserved
+    // for crash recovery and an explicit global safety sweep.
+    bool rollback_path_locked(const std::string& path);
     size_t rollback_locked();
 
     std::string read_raw_node(const std::string& path, uint64_t* out_dev = nullptr, uint64_t* out_ino = nullptr) const;
