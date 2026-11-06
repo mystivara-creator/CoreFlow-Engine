@@ -99,6 +99,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_cgroup_v2
         tests/test_cgroup_v2.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/frequency_controller.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
