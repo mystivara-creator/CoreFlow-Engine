@@ -14,10 +14,12 @@
 
 #include <cstdint>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace coreflow {
@@ -126,6 +128,9 @@ struct DomainLease {
 
 class CentralMutationCoordinator {
 public:
+    using PreemptionHandler = std::function<bool(
+        MutationDomain, std::string_view, std::string_view)>;
+
     static CentralMutationCoordinator& instance();
 
     bool acquire_lease(MutationDomain domain,
@@ -139,6 +144,8 @@ public:
         std::string_view controller_name,
         std::string_view transaction_id = {}) noexcept;
     void release_all_for_controller(std::string_view controller_name) noexcept;
+    bool register_preemption_handler(std::string_view controller_name, PreemptionHandler handler);
+    void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
 
     [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
@@ -152,8 +159,14 @@ public:
 
 private:
     CentralMutationCoordinator() = default;
+    bool dispatch_preemption(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id,
+        std::string_view reason) noexcept;
     mutable std::mutex mutex_;
     std::vector<DomainLease> leases_;
+    std::unordered_map<std::string, PreemptionHandler> preemption_handlers_;
     std::atomic<uint64_t> conflict_rejections_{0};
 };
 
