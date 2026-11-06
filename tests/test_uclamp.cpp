@@ -54,6 +54,7 @@ int main() {
     assert(read_token(percent_top + "/cpu.uclamp.min") == "10.00");
     assert(BaselineStore::instance().rollback(percent_top + "/cpu.uclamp.min"));
     assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
+    assert(percentage.resync());
 
     assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(read_token(percent_top + "/cpu.uclamp.min") == "31.25");
