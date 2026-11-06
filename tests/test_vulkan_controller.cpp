@@ -616,6 +616,18 @@ int main() {
     assert(snap_safe.gpu_surface.current_freq_mhz == 950U);
     assert(snap_safe.gpu_surface.max_freq_mhz == 1100U);
 
+    // A pre-existing journaled GPU policy value belongs to another owner.
+    // Vulkan must reject the candidate rather than report an already-matching
+    // target as applied or overwrite the foreign value.
+    const fs::path adrenoboost = kgsl / "devfreq/adrenoboost";
+    assert(baseline.capture(adrenoboost.string()));
+    assert(baseline.apply_mutation(adrenoboost.string(), "1"));
+    assert(!vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
+    assert(read_file(adrenoboost) == "1");
+    assert(coordinator.active_leases().empty());
+    assert(baseline.rollback(adrenoboost.string()));
+    assert(read_file(adrenoboost) == "0");
+
     // Verify workload policy boosts adrenoboost under SustainedLoad and rolls back cleanly
     assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
     assert(read_file(kgsl / "devfreq/adrenoboost") == "2");
