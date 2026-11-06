@@ -130,7 +130,10 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
     if (this == &other) return *this;
     std::scoped_lock lock(mutex_, other.mutex_);
     // Never discard a live transaction if its paired rollback cannot be verified.
-    if (!transaction_id_.empty() && !rollback_transaction_locked()) return *this;
+    if (!transaction_id_.empty() && !rollback_transaction_locked()) {
+        supported_ = false; // Fail closed; retain the lease and handler for later recovery.
+        return *this;
+    }
 
     auto& coordinator = CentralMutationCoordinator::instance();
     if (!controller_name_.empty()) {
@@ -389,8 +392,6 @@ bool UclampGovernor::validate_target(const std::string& directory,
 bool UclampGovernor::apply_state(WorkloadState state,
                                  uint32_t balanced_min,
                                  uint32_t balanced_max) {
-    if (!supported_) return false;
-
     if (!owned_values_intact()) return false;
     // A user/OEM ceiling is authoritative, including a temporary thermal cap.
     const uint32_t base_max = std::min({balanced_max, oem_max_, 1024u});
@@ -439,7 +440,7 @@ std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
 
 bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
                                  uint32_t ceiling, uint32_t capacity) {
-    if (!supported_ || !owned_values_intact() || capacity > 1024u) return false;
+    if (capacity > 1024u || !owned_values_intact()) return false;
     const auto base_max = std::min({ceiling, oem_max_, 1024u});
     const auto maximum = (base_max * capacity) / 1024u;
     uint32_t minimum = floor > base_max ? 0u : std::min(floor, base_max);
