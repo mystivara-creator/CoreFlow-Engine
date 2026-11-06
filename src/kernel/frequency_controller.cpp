@@ -114,7 +114,15 @@ void FrequencyController::add(const std::string& dir, bool gpu) {
     if (!table.eof() || values.empty()) return;
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
-    if (!BaselineStore::instance().capture(max)) return;
+    auto& store = BaselineStore::instance();
+    if (!store.capture(max)) return;
+    const auto audit = store.get_audit_trail();
+    const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == max;
+    });
+    // A pre-existing journaled mutation has no ownership relationship to this
+    // newly discovered controller instance. Do not adopt it as an OEM baseline.
+    if (snapshot == audit.end() || snapshot->is_modified) return;
     domains_.push_back({max, min, ceiling, ceiling, std::move(values), gpu});
 }
 void FrequencyController::discover(bool cpu, bool gpu) {
