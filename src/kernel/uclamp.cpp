@@ -127,7 +127,10 @@ UclampGovernor::~UclampGovernor() {
     }
 }
 bool UclampGovernor::acquire_mutation_lease_locked(ControllerPriority priority) {
-    if (!transaction_id_.empty()) return true;
+    if (!transaction_id_.empty()) {
+        return CentralMutationCoordinator::instance().acquire_lease(
+            MutationDomain::UclampCgroup, controller_name_, transaction_id_, priority);
+    }
     transaction_id_ = "uclamp-" + std::to_string(++transaction_generation_);
     if (!CentralMutationCoordinator::instance().acquire_lease(
             MutationDomain::UclampCgroup, controller_name_, transaction_id_,
