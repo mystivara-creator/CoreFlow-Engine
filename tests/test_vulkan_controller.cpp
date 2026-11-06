@@ -627,6 +627,12 @@ int main() {
     assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
     assert(coordinator.active_leases().empty());
 
+    assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
+    write_file(kgsl / "devfreq/adrenoboost", "1\n"); // OEM thermal service takes ownership.
+    assert(!vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
+    assert(read_file(kgsl / "devfreq/adrenoboost") == "1");
+    assert(coordinator.active_leases().empty());
+
     // 2. Test legacy FullCapabilityOverride request is clamped to SafeHardware and never spoofs hardware
     vk.configure(VulkanConfig{
         .mode = VulkanLayerMode::FullCapabilityOverride,
