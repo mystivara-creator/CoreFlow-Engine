@@ -10,7 +10,6 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <string_view>
 
 namespace coreflow {
 enum class MutationDomain : uint8_t;
@@ -52,6 +51,8 @@ private:
     bool has_written_{false};
     uint32_t oem_min_{0};
     uint32_t oem_max_{1024};
+    std::string oem_min_raw_;
+    std::string oem_max_raw_;
     bool mutation_active_{false};
     uint32_t last_min_{0};
     uint32_t last_max_{1024};
