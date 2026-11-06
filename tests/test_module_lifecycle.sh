@@ -132,6 +132,16 @@ printf 'disabled\n' > "$STATE_DIR/xiaomi_ui_mode"
 sh "$MOD_DIR/post-fs-data.sh"
 [ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: disabled mode changed Xiaomi properties"; exit 1; }
 
+# A symlinked mode file must fail closed; it must not fall back to the enabling default.
+printf 'both\n' > "$TMP_ROOT/xiaomi_ui_mode_target"
+ln -sf "$TMP_ROOT/xiaomi_ui_mode_target" "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+: > "$STATE_DIR/logs/xiaomi_ui_policy.log"
+sh "$MOD_DIR/post-fs-data.sh"
+[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: symlinked Xiaomi mode must not mutate properties"; exit 1; }
+grep -q 'Symlinked Xiaomi UI mode rejected' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { echo "FAIL: symlinked Xiaomi mode was not reported"; exit 1; }
+rm -f "$STATE_DIR/xiaomi_ui_mode" "$TMP_ROOT/xiaomi_ui_mode_target"
+
 # Invalid modes must fail closed instead of silently applying a partial policy.
 printf 'unknown_mode\n' > "$STATE_DIR/xiaomi_ui_mode"
 : > "$COREFLOW_PROP_LOG"
