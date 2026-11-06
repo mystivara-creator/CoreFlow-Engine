@@ -96,7 +96,7 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_frequency_controller PRIVATE m)
     add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
 
-    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
 
