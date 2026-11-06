@@ -172,8 +172,7 @@ bool FrequencyController::apply(double scale) {
             const auto next = std::lower_bound(domain.frequencies.begin(), domain.frequencies.end(), floor);
             if (next == domain.frequencies.end()) {
                 domain.retired = true;
-                if (domain.mutation_active && !store.rollback(domain.maximum)) ok = false;
-                else domain.mutation_active = false;
+                if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
                 continue;
             }
             target = *next;
@@ -181,8 +180,7 @@ bool FrequencyController::apply(double scale) {
         if (scale == 1.0) target = domain.baseline;
         if (target < floor || target > domain.baseline) {
             domain.retired = true;
-            if (domain.mutation_active && !store.rollback(domain.maximum)) ok = false;
-            else domain.mutation_active = false;
+            if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
             continue;
         }
         if (target == actual) continue;
