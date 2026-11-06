@@ -117,6 +117,9 @@ struct DomainLease {
     std::string transaction_id;
     ControllerPriority priority{ControllerPriority::WorkloadOptimization};
     bool active{false};
+    // A higher-priority requester or emergency may request preemption, but the
+    // current owner retains the lease until it has cancelled and verified rollback.
+    bool preemption_requested{false};
 };
 
 class CentralMutationCoordinator {
