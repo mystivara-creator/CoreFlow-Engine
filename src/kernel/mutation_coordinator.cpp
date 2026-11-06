@@ -178,14 +178,10 @@ bool CentralMutationCoordinator::dispatch_preemption(
     }
 
     // Invoke outside the coordinator mutex; the in-flight reference protects
-    // handler lifetime. A faulty external handler must fail closed, not terminate
-    // the daemon or strand the in-flight reference permanently.
-    bool acknowledged = false;
-    try {
-        acknowledged = handler(domain, transaction_id, reason);
-    } catch (...) {
-        acknowledged = false;
-    }
+    // handler lifetime. CFAE production builds use -fno-exceptions: every
+    // registered callback is therefore required to be non-throwing and must
+    // report failure through a false acknowledgement.
+    const bool acknowledged = handler(domain, transaction_id, reason);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
