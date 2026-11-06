@@ -67,16 +67,31 @@ void emit_log(bool is_error, const std::string& message) {
 
 bool coordinated_rollback(BaselineStore& baseline, std::string_view reason) {
     auto& coordinator = CentralMutationCoordinator::instance();
+
+    // Close admission before taking the lease snapshot. Existing owners may finish
+    // their current write, but every active transaction must acknowledge rollback
+    // before the global recovery sweep can begin.
+    coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all(reason);
     const auto remaining = coordinator.active_leases();
     if (!remaining.empty()) {
         emit_log(true, "[CoreFlow][Safety] Rollback acknowledgement missing from " +
                        std::to_string(remaining.size()) +
-                       " mutation domain(s); global rollback is withheld to preserve ownership.");
+                       " mutation domain(s); admission remains closed and global rollback is withheld.");
         return false;
     }
+
     if (baseline.has_active_mutations()) (void)baseline.rollback_all();
-    return !baseline.has_active_mutations();
+    if (baseline.has_active_mutations()) {
+        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery remains incomplete; mutation admission stays closed.");
+        return false;
+    }
+
+    if (!coordinator.complete_emergency_recovery()) {
+        emit_log(true, "[CoreFlow][Safety] Mutation ownership changed during recovery; admission remains closed.");
+        return false;
+    }
+    return true;
 }
 
 // Fatal signal handlers cannot lock mutexes, perform stream I/O, or allocate.
@@ -853,7 +868,6 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    (void)AutonomousTuner::instance().rollback_active("Configuration reloaded on SIGHUP");
                     if (!coordinated_rollback(baseline, "Configuration reload on SIGHUP")) {
                         emit_log(true, "[CoreFlow] SIGHUP reload deferred; active mutation ownership requires recovery.");
                         continue;
@@ -947,8 +961,6 @@ int main(int argc, char* argv[]) {
             temp_tracker.reset();
             // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
             // do not rely on the unrelated PID applied flag to decide whether it rolls back.
-            (void)AutonomousTuner::instance().emergency_rollback(
-                "Thermal telemetry unavailable; restoring verified OEM baseline.");
             if (!coordinated_rollback(
                     baseline, "Thermal telemetry unavailable; restore OEM baseline.")) {
                 return;
@@ -973,8 +985,6 @@ int main(int argc, char* argv[]) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
-            (void)AutonomousTuner::instance().emergency_rollback(
-                "Extreme physical thermal threshold reached; restoring verified OEM baseline.");
             if (!coordinated_rollback(
                     baseline, "Extreme physical thermal threshold reached.")) {
                 return;
