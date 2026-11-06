@@ -1033,12 +1033,29 @@ bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     // global recovery decision.
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all(reason);
-    if (!coordinator.active_leases().empty()) {
+    const auto remaining = coordinator.active_leases();
+    const bool live_owner_pending = std::any_of(
+        remaining.begin(), remaining.end(),
+        [](const DomainLease& lease) { return !lease.owner_detached; });
+    if (live_owner_pending) {
         recovery_required_ = true;
         last_verdict_ = "RECOVERY_REQUIRED";
         last_verdict_enum_ = TunerVerdict::RecoveryRequired;
         current_rationale_ = std::string(reason) +
-            " [EMERGENCY PREEMPTION ACKNOWLEDGEMENT PENDING]";
+            " [LIVE OWNER PREEMPTION ACKNOWLEDGEMENT PENDING]";
+        save_persisted_stats();
+        return false;
+    }
+
+    if (store.has_active_mutations()) (void)store.rollback_all();
+    if (store.has_active_mutations() ||
+        (!remaining.empty() &&
+         !coordinator.release_orphaned_leases_after_verified_recovery(true))) {
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) +
+            " [ORPHANED OWNER RECOVERY INCOMPLETE; MUTATION ADMISSION REMAINS CLOSED]";
         save_persisted_stats();
         return false;
     }
