@@ -22,6 +22,56 @@
 namespace coreflow {
 namespace {
 
+UniqueFd open_directory_chain_nofollow(const std::string& path, bool create) {
+    if (path.empty() || path.front() != '/') {
+        errno = EINVAL;
+        return {};
+    }
+    UniqueFd current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!current.valid()) return {};
+    for (const auto& component : std::filesystem::path(path).relative_path()) {
+        const std::string name = component.string();
+        if (name.empty() || name == ".") continue;
+        if (name == ".." || name.find('/') != std::string::npos) {
+            errno = EINVAL;
+            return {};
+        }
+        if (create && ::mkdirat(current.get(), name.c_str(), 0700) != 0 && errno != EEXIST) {
+            return {};
+        }
+        UniqueFd next(::openat(
+            current.get(), name.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+        if (!next.valid()) return {};
+        current = std::move(next);
+    }
+    return current;
+}
+
+std::string read_line_at(int directory_fd, const char* name) {
+    if (directory_fd < 0 || name == nullptr || *name == '\0' || std::strchr(name, '/') != nullptr) return {};
+    UniqueFd fd(::openat(directory_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return {};
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return {};
+    char buffer[4096];
+    std::string raw;
+    while (raw.size() < sizeof(buffer)) {
+        const ssize_t n = ::read(fd.get(), buffer, sizeof(buffer) - raw.size());
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return {};
+        }
+        if (n == 0) break;
+        raw.append(buffer, static_cast<size_t>(n));
+        if (raw.find('\n') != std::string::npos) break;
+    }
+    const size_t nl = raw.find('\n');
+    if (nl != std::string::npos) raw.resize(nl);
+    if (!raw.empty() && raw.back() == '\r') raw.pop_back();
+    return raw;
+}
+
 std::string read_line_with_stat(
     const std::string& path,
     uint64_t* out_dev = nullptr,
@@ -163,14 +213,6 @@ bool write_all(int fd, std::string_view data) {
     return true;
 }
 
-bool sync_directory(const std::string& path) {
-    const auto pos = path.find_last_of('/');
-    if (pos == std::string::npos) return false;
-    const std::string dir = pos == 0 ? "/" : path.substr(0, pos);
-    UniqueFd fd(::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-    return fd.valid() && ::fsync(fd.get()) == 0;
-}
-
 std::string extract_selector_token(const std::string& path, std::string raw) {
     if (path.find("/queue/scheduler") != std::string::npos) {
         const size_t open_b = raw.find('[');
@@ -218,7 +260,8 @@ void BaselineStore::init_paths_and_boot_id_locked() {
     std::string candidate = read_line_with_stat(kernel_boot_path);
     if (!valid_boot_token(candidate)) {
         // Secondary fallback: per-boot epoch token generated once per boot by post-fs-data.sh
-        candidate = read_line_with_stat(state_dir_ + "/boot_epoch");
+        UniqueFd state_dir_fd = open_directory_chain_nofollow(state_dir_, false);
+        if (state_dir_fd.valid()) candidate = read_line_at(state_dir_fd.get(), "boot_epoch");
     }
 
     if (valid_boot_token(candidate)) {
@@ -298,11 +341,9 @@ bool BaselineStore::write_raw_node(
 
 bool BaselineStore::persist_locked() {
     if (identity_unavailable_ || !valid_boot_token(boot_id_)) return false;
-    std::error_code error;
     const auto parent = std::filesystem::path(journal_path_).parent_path();
-    std::filesystem::create_directories(parent, error);
-    if (error) return false;
-    (void)::chmod(parent.c_str(), 0700);
+    UniqueFd directory_fd = open_directory_chain_nofollow(parent.string(), true);
+    if (!directory_fd.valid() || ::fchmod(directory_fd.get(), 0700) != 0) return false;
 
     std::string payload = "CFJ4\t" + boot_id_ + "\n";
     for (const auto& [path, snap] : store_) {
@@ -317,19 +358,22 @@ bool BaselineStore::persist_locked() {
         }
     }
 
-    const std::string temp = journal_path_ + ".tmp";
-    (void)::unlink(temp.c_str());
-    UniqueFd fd(::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+    constexpr const char* journal_name = "baseline.journal";
+    constexpr const char* temp_name = "baseline.journal.tmp";
+    (void)::unlinkat(directory_fd.get(), temp_name, 0);
+    UniqueFd fd(::openat(
+        directory_fd.get(), temp_name,
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
     if (!fd.valid() || !write_all(fd.get(), payload) || ::fsync(fd.get()) != 0) {
-        (void)::unlink(temp.c_str());
+        (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
     fd.reset();
-    if (::rename(temp.c_str(), journal_path_.c_str()) != 0) {
-        (void)::unlink(temp.c_str());
+    if (::renameat(directory_fd.get(), temp_name, directory_fd.get(), journal_name) != 0) {
+        (void)::unlinkat(directory_fd.get(), temp_name, 0);
         return false;
     }
-    return sync_directory(journal_path_);
+    return ::fsync(directory_fd.get()) == 0;
 }
 
 bool BaselineStore::recover_pending() {
@@ -344,7 +388,17 @@ bool BaselineStore::recover_pending() {
     }
     if (recovery_checked_) return true;
 
-    UniqueFd fd(::open(journal_path_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    UniqueFd directory_fd = open_directory_chain_nofollow(state_dir_, false);
+    if (!directory_fd.valid()) {
+        if (errno == ENOENT) {
+            recovery_checked_ = true;
+            return true;
+        }
+        return false;
+    }
+    UniqueFd fd(::openat(
+        directory_fd.get(), "baseline.journal",
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) {
         if (errno == ENOENT) {
             recovery_checked_ = true;
@@ -394,7 +448,7 @@ bool BaselineStore::recover_pending() {
 
     if (journal_boot != boot_id_) {
         // Kernel settings reset on reboot; never overwrite the new boot's OEM state.
-        if (::unlink(journal_path_.c_str()) != 0 && errno != ENOENT) return false;
+        if (::unlinkat(directory_fd.get(), "baseline.journal", 0) != 0 && errno != ENOENT) return false;
         recovery_checked_ = true;
         return true;
     }
