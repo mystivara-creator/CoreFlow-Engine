@@ -52,6 +52,14 @@ int main() {
     assert(controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1500000");
     assert(get(gpu / "max_freq") == "600000000");
+    assert(controller.apply(1.0));
+    assert(get(cpu / "scaling_max_freq") == "2000000");
+    assert(get(gpu / "max_freq") == "800000000");
+    assert(coordinator.active_leases().empty());
+
+    assert(controller.apply(0.75));
+    assert(get(cpu / "scaling_max_freq") == "1500000");
+    assert(get(gpu / "max_freq") == "600000000");
     put(cpu / "scaling_max_freq", "1000000"); // OEM changed its cap.
     assert(controller.apply(1.0));
     assert(get(cpu / "scaling_max_freq") == "1000000");
