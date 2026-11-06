@@ -71,8 +71,20 @@ bool FrequencyController::rollback_domain(bool gpu) {
         if (item.gpu != gpu || !item.mutation_active) continue;
         if (!store.rollback(item.maximum)) return false;
         uint64_t actual = 0;
-        if (!number(item.maximum, actual) || actual != item.baseline) return false;
-        item.last = item.baseline;
+        if (!number(item.maximum, actual)) return false;
+        const auto audit = store.get_audit_trail();
+        const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.maximum;
+        });
+        if (snapshot == audit.end() || snapshot->is_modified ||
+            snapshot->factory_value != std::to_string(actual)) return false;
+        if (actual != item.baseline) {
+            // OEM/kernel ownership changed while the lease was active. Preserve the
+            // adopted external value and retire this discovered domain until rescan.
+            item.baseline = actual;
+            item.retired = true;
+        }
+        item.last = actual;
         item.mutation_active = false;
     }
     release_domain_lease(gpu);
