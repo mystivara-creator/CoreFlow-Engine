@@ -1,20 +1,14 @@
 /**
  * @file autonomous_tuner.hpp
- * @brief Self-Directed Multi-Domain Transaction Planner & Empirical Outcome Evaluator
+ * @brief Self-Directed Multi-Domain Transaction Planner, Central Mutation Coordinator & Empirical Outcome Evaluator
  * @license MIT
  *
- * Extends CFAE beyond UClamp to autonomously discover, plan, apply, and empirically
- * evaluate coordinated kernel transactions across:
+ * Extends CFAE beyond UClamp to autonomously discover, classify, plan, coordinate, apply, and
+ * empirically evaluate kernel transactions across:
  *   1. Block I/O Schedulers (mq-deadline, kyber, bfq, none) & iosched/<tunable> queue tunables
  *   2. VM / Memory Subsystem (/proc/sys/vm/page-cluster, vfs_cache_pressure, watermark_scale_factor)
  *   3. CPUFreq Governor & rate-limit tunables (schedutil/walt up_rate_limit_us / down_rate_limit_us)
- *
- * Every mutation requires a measured system bottleneck (PSI/thermal evidence),
- * respects dependency provenance (Required-before / Coupled-with), executes via
- * BaselineStore write-ahead journal + readback verification, and is evaluated over
- * a Before/After observation window. Beneficial changes (IMPROVED) are retained;
- * NEUTRAL or REGRESSED trials are rolled back in reverse dependency order and
- * learned via an online Upper Confidence Bound (UCB1) bandit.
+ *   4. Active Thermal Stabilization & Hysteresis Recovery (damped governor & I/O burst pacing)
  */
 #pragma once
 
@@ -36,12 +30,120 @@ enum class TunerVerdict : uint8_t {
     OwnershipLost = 6,
     Inconclusive = 7,
     RecoveryRequired = 8,
+    Rejected = 9,
 };
 
 enum class StepRelation : uint8_t {
     RequiredAnchor = 0,
     RequiredDependent = 1,
     OptionalIndependent = 2,
+};
+
+enum class ResourcePermissionClass : uint8_t {
+    ReadOnly = 0,
+    Writable = 1,
+    WritableButUnsafe = 2,
+    UnknownSemantic = 3,
+    VerifiedConstraints = 4,
+    IncompleteMetadata = 5,
+};
+
+enum class WorkloadClass : uint8_t {
+    Idle = 0,
+    GeneralInteraction = 1,
+    ScrollingAndAnimation = 2,
+    Gaming = 3,
+    HeavyMultitasking = 4,
+    CpuBound = 5,
+    GpuBound = 6,
+    MemoryPressure = 7,
+    StorageIoPressure = 8,
+    ThermalConstrained = 9,
+    BackgroundWorkload = 10,
+};
+
+enum class BottleneckKind : uint8_t {
+    None = 0,
+    CpuSchedulingLatency = 1,
+    IoQueueContention = 2,
+    ConcurrentCpuIoContention = 3,
+    MemorySwapThrashing = 4,
+    ThermalHeadroomDepletion = 5,
+    ThermalEmergency = 6,
+};
+
+enum class OptimizationObjective : uint8_t {
+    HoldBaseline = 0,
+    InteractiveLatency = 1,
+    ThroughputBalance = 2,
+    MemoryRelief = 3,
+    IoLatencyRelief = 4,
+    ThermalStabilization = 5,
+    ThermalRecovery = 6,
+    EmergencyMitigation = 7,
+};
+
+enum class MutationDomain : uint8_t {
+    CpuPolicy = 0,
+    BlockIo = 1,
+    VmMemory = 2,
+    UclampCgroup = 3,
+    GpuDevfreq = 4,
+    PowerLongevity = 5,
+    ThermalCore = 6,
+};
+
+enum class ControllerPriority : uint8_t {
+    BackgroundEfficiency = 20,
+    WorkloadOptimization = 40,
+    PressureGuard = 60,
+    ThermalStabilization = 80,
+    EmergencySafety = 100,
+};
+
+struct DiscoveredResourceMetadata {
+    std::string path;
+    MutationDomain domain{MutationDomain::BlockIo};
+    ResourcePermissionClass permission_class{ResourcePermissionClass::UnknownSemantic};
+    std::string unit;
+    std::string range_provenance;
+    std::string baseline_value;
+    std::string reason;
+};
+
+struct DomainLease {
+    MutationDomain domain{MutationDomain::CpuPolicy};
+    std::string owner_controller;
+    std::string transaction_id;
+    ControllerPriority priority{ControllerPriority::WorkloadOptimization};
+    bool active{false};
+};
+
+class CentralMutationCoordinator {
+public:
+    static CentralMutationCoordinator& instance();
+
+    bool acquire_lease(MutationDomain domain,
+                       std::string_view controller_name,
+                       std::string_view transaction_id,
+                       ControllerPriority priority,
+                       std::string* conflict_reason = nullptr);
+
+    void release_lease(MutationDomain domain, std::string_view controller_name) noexcept;
+    void release_all_for_controller(std::string_view controller_name) noexcept;
+    void emergency_preempt_all(std::string_view reason) noexcept;
+
+    [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
+                                                 std::string_view controller_name,
+                                                 ControllerPriority requester_priority) const noexcept;
+    [[nodiscard]] std::vector<DomainLease> active_leases() const;
+    [[nodiscard]] uint64_t conflict_rejections() const noexcept { return conflict_rejections_; }
+    void reset() noexcept;
+
+private:
+    CentralMutationCoordinator() = default;
+    std::vector<DomainLease> leases_;
+    uint64_t conflict_rejections_{0};
 };
 
 struct BlockQueueSurface {
@@ -65,38 +167,56 @@ struct BlockQueueSurface {
 
 struct CandidateStats {
     std::string id;
-    std::string domain;                 // "io", "vm", "cpufreq"
+    std::string domain;                 // "io", "vm", "cpufreq", "thermal"
     std::string label;
     double mean_utility{0.5};           // Empirical utility score Q_k
     double mean_utility_delta{0.0};     // Empirical mean ΔU
     double ucb_score{0.65};             // Upper Confidence Bound (UCB1) score
+    double adaptive_scale{1.0};         // Step-sizing factor [0.25..1.0] reduced on rollback
+    uint32_t settling_ticks{1};         // Domain-specific post-mutation settling ticks
     uint32_t trials{0};
     uint32_t improved_count{0};
     uint32_t successes{0};
     uint32_t regressed_count{0};
     uint32_t rollbacks{0};
+    uint32_t inconclusive_count{0};
+    uint32_t rejected_count{0};
     uint32_t cooldown_ticks{0};
     uint32_t consecutive_non_improved{0};
+    WorkloadClass last_workload{WorkloadClass::Idle};
+    uint8_t last_thermal_bucket{0};
+    std::string last_before_summary;
+    std::string last_after_summary;
+    std::string last_rollback_reason;
 };
 
 struct AutonomousDecisionSnapshot {
-    std::string stage{"RETAINED"};      // PLANNED, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
+    std::string stage{"RETAINED"};      // PLANNED, SETTLING, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
     std::string active_intent{"HoldEquilibrium"};
     std::string intent{"HoldEquilibrium"};
+    WorkloadClass workload_class{WorkloadClass::Idle};
+    std::string workload_name{"Idle"};
+    BottleneckKind bottleneck{BottleneckKind::None};
+    std::string bottleneck_name{"None"};
+    OptimizationObjective objective{OptimizationObjective::HoldBaseline};
+    std::string objective_name{"HoldBaseline"};
+    std::string capability_fingerprint;
     std::string active_candidate_id{"baseline"};
     std::string active_candidate_label{"OEM Verified Baseline"};
     std::string decision_rationale{"System in low-pressure equilibrium; no mutation required."};
     std::string rationale{"System in low-pressure equilibrium; no mutation required."};
-    std::string last_verdict{"IMPROVED"}; // IMPROVED, NEUTRAL, REGRESSED, INCONCLUSIVE, OWNERSHIP_LOST, HOLD, ABORTED, RECOVERY_REQUIRED
+    std::string last_verdict{"IMPROVED"}; // IMPROVED, NEUTRAL, REGRESSED, INCONCLUSIVE, OWNERSHIP_LOST, HOLD, ABORTED, RECOVERY_REQUIRED, REJECTED
     TunerVerdict verdict{TunerVerdict::Improved};
     double last_utility_delta{0.0};
     double utility_delta{0.0};
+    double noise_floor{0.05};
     double before_io_psi{0.0};
     double after_io_psi{0.0};
     double before_mem_psi{0.0};
     double after_mem_psi{0.0};
     double before_cpu_psi{0.0};
     double after_cpu_psi{0.0};
+    uint32_t settling_ticks_remaining{0};
     uint32_t observation_tick{0};
     uint32_t observation_window{3};
     uint32_t total_trials{0};
@@ -104,9 +224,14 @@ struct AutonomousDecisionSnapshot {
     uint32_t improved_count{0};
     uint32_t total_rolled_back{0};
     uint32_t rolled_back_count{0};
+    uint32_t total_inconclusive{0};
+    uint32_t total_rejected{0};
     bool recovery_required{false};
+    bool thermal_stabilization_active{false};
+    bool thermal_recovery_active{false};
     std::vector<BlockQueueSurface> block_queues;
     std::vector<CandidateStats> candidates;
+    std::vector<DiscoveredResourceMetadata> discovered_resources;
     std::string vm_page_cluster;
     std::string vm_vfs_cache_pressure;
 };
@@ -118,6 +243,8 @@ struct TunerTelemetryInput {
     double thermal_pressure{45.0};
     bool thermal_guard_active{false};
     bool thermal_emergency{false};
+    double thermal_headroom{-1.0};      // <0 if unavailable, [0.0..1.0+] when valid
+    double thermal_trend_celsius{0.0};  // Positive = rising, negative = cooling
 };
 
 class AutonomousTuner {
@@ -139,8 +266,20 @@ public:
     void reset();
 
     [[nodiscard]] bool is_candidate_eligible(std::string_view id) const noexcept;
+    [[nodiscard]] bool is_candidate_eligible_for_context(std::string_view id,
+                                                         WorkloadClass workload,
+                                                         uint8_t thermal_bucket) const noexcept;
 
     [[nodiscard]] AutonomousDecisionSnapshot snapshot() const;
+
+    [[nodiscard]] static WorkloadClass classify_workload(const TunerTelemetryInput& telemetry) noexcept;
+    [[nodiscard]] static BottleneckKind diagnose_bottleneck(const TunerTelemetryInput& telemetry,
+                                                            WorkloadClass workload) noexcept;
+    [[nodiscard]] static OptimizationObjective select_objective(const TunerTelemetryInput& telemetry,
+                                                                WorkloadClass workload,
+                                                                BottleneckKind bottleneck,
+                                                                bool in_thermal_recovery) noexcept;
+    [[nodiscard]] static uint8_t compute_thermal_bucket(const TunerTelemetryInput& telemetry) noexcept;
 
     static constexpr std::string_view stage_name(std::string_view stage) noexcept {
         return stage.empty() ? "PLANNED" : stage;
@@ -165,8 +304,65 @@ public:
             case TunerVerdict::OwnershipLost: return "OWNERSHIP_LOST";
             case TunerVerdict::Inconclusive: return "INCONCLUSIVE";
             case TunerVerdict::RecoveryRequired: return "RECOVERY_REQUIRED";
+            case TunerVerdict::Rejected: return "REJECTED";
         }
         return "HOLD";
+    }
+
+    static constexpr std::string_view permission_class_name(ResourcePermissionClass pc) noexcept {
+        switch (pc) {
+            case ResourcePermissionClass::ReadOnly: return "ReadOnly";
+            case ResourcePermissionClass::Writable: return "Writable";
+            case ResourcePermissionClass::WritableButUnsafe: return "WritableButUnsafe";
+            case ResourcePermissionClass::UnknownSemantic: return "UnknownSemantic";
+            case ResourcePermissionClass::VerifiedConstraints: return "VerifiedConstraints";
+            case ResourcePermissionClass::IncompleteMetadata: return "IncompleteMetadata";
+        }
+        return "UnknownSemantic";
+    }
+
+    static constexpr std::string_view workload_class_name(WorkloadClass wc) noexcept {
+        switch (wc) {
+            case WorkloadClass::Idle: return "Idle";
+            case WorkloadClass::GeneralInteraction: return "GeneralInteraction";
+            case WorkloadClass::ScrollingAndAnimation: return "ScrollingAndAnimation";
+            case WorkloadClass::Gaming: return "Gaming";
+            case WorkloadClass::HeavyMultitasking: return "HeavyMultitasking";
+            case WorkloadClass::CpuBound: return "CpuBound";
+            case WorkloadClass::GpuBound: return "GpuBound";
+            case WorkloadClass::MemoryPressure: return "MemoryPressure";
+            case WorkloadClass::StorageIoPressure: return "StorageIoPressure";
+            case WorkloadClass::ThermalConstrained: return "ThermalConstrained";
+            case WorkloadClass::BackgroundWorkload: return "BackgroundWorkload";
+        }
+        return "Idle";
+    }
+
+    static constexpr std::string_view bottleneck_kind_name(BottleneckKind bk) noexcept {
+        switch (bk) {
+            case BottleneckKind::None: return "None";
+            case BottleneckKind::CpuSchedulingLatency: return "CpuSchedulingLatency";
+            case BottleneckKind::IoQueueContention: return "IoQueueContention";
+            case BottleneckKind::ConcurrentCpuIoContention: return "ConcurrentCpuIoContention";
+            case BottleneckKind::MemorySwapThrashing: return "MemorySwapThrashing";
+            case BottleneckKind::ThermalHeadroomDepletion: return "ThermalHeadroomDepletion";
+            case BottleneckKind::ThermalEmergency: return "ThermalEmergency";
+        }
+        return "None";
+    }
+
+    static constexpr std::string_view objective_name(OptimizationObjective obj) noexcept {
+        switch (obj) {
+            case OptimizationObjective::HoldBaseline: return "HoldBaseline";
+            case OptimizationObjective::InteractiveLatency: return "InteractiveLatency";
+            case OptimizationObjective::ThroughputBalance: return "ThroughputBalance";
+            case OptimizationObjective::MemoryRelief: return "MemoryRelief";
+            case OptimizationObjective::IoLatencyRelief: return "IoLatencyRelief";
+            case OptimizationObjective::ThermalStabilization: return "ThermalStabilization";
+            case OptimizationObjective::ThermalRecovery: return "ThermalRecovery";
+            case OptimizationObjective::EmergencyMitigation: return "EmergencyMitigation";
+        }
+        return "HoldBaseline";
     }
 
 private:
@@ -182,11 +378,22 @@ private:
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
     std::vector<CandidateStats> candidates_;
+    std::vector<DiscoveredResourceMetadata> discovered_resources_;
     bool zram_active_{false};
 
     bool transaction_active_{false};
     bool observing_{false};
     bool recovery_required_{false};
+    bool thermal_stabilization_active_{false};
+    uint32_t thermal_recovery_ticks_{0};
+    double prev_thermal_pressure_{45.0};
+    bool has_prev_thermal_{false};
+    double noise_floor_{0.05};
+    uint32_t settling_ticks_remaining_{0};
+
+    WorkloadClass current_workload_{WorkloadClass::Idle};
+    BottleneckKind current_bottleneck_{BottleneckKind::None};
+    OptimizationObjective current_objective_{OptimizationObjective::HoldBaseline};
     std::string current_candidate_id_{"baseline"};
     std::string current_candidate_label_{"OEM Verified Baseline"};
     std::string current_intent_{"HoldEquilibrium"};
@@ -213,16 +420,21 @@ private:
     uint32_t total_trials_{0};
     uint32_t total_improved_{0};
     uint32_t total_rolled_back_{0};
+    uint32_t total_inconclusive_{0};
+    uint32_t total_rejected_{0};
 
     std::vector<MutationStep> applied_steps_;
 
     void init_candidates();
     void update_ucb_scores();
     void refresh_surface_readings();
+    void classify_discovered_resources();
     std::string compute_fingerprint() const;
     void save_persisted_stats() const;
     void load_persisted_stats();
     bool verify_active_ownership() const;
+    MutationDomain domain_for_candidate(std::string_view candidate_id) const noexcept;
+    ControllerPriority priority_for_candidate(std::string_view candidate_id) const noexcept;
     bool apply_transaction(
         std::string_view candidate_id,
         std::string_view candidate_label,
@@ -230,9 +442,10 @@ private:
         std::string_view rationale,
         const std::vector<MutationStep>& steps,
         const TunerTelemetryInput& telemetry);
-    void evaluate_observation_window();
+    void evaluate_observation_window(const TunerTelemetryInput& latest_telemetry);
     CandidateStats* find_candidate(std::string_view id);
     const CandidateStats* find_candidate(std::string_view id) const;
 };
 
 } // namespace coreflow
+

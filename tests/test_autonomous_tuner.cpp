@@ -212,7 +212,106 @@ int main() {
     assert(get(proc_root / "sys/vm/vfs_cache_pressure") == "80");
 
     tuner.reset();
+
+    // 9. Section 13.1: Resource Permission Classification (VerifiedConstraints vs WritableButUnsafe vs UnknownSemantic)
+    put(sys_root / "block/custom0/queue/scheduler", "mystery_token");
+    tuner.discover(sys_root.string(), proc_root.string());
+    bool found_sda_verified = false;
+    bool found_zram_unsafe = false;
+    bool found_custom_unknown = false;
+    for (const auto& res : tuner.snapshot().discovered_resources) {
+        if (res.path.find("block/sda/queue/scheduler") != std::string::npos) {
+            assert(res.permission_class == coreflow::ResourcePermissionClass::VerifiedConstraints);
+            found_sda_verified = true;
+        } else if (res.path.find("block/zram0/queue/scheduler") != std::string::npos) {
+            assert(res.permission_class == coreflow::ResourcePermissionClass::WritableButUnsafe);
+            found_zram_unsafe = true;
+        } else if (res.path.find("block/custom0/queue/scheduler") != std::string::npos) {
+            assert(res.permission_class == coreflow::ResourcePermissionClass::UnknownSemantic);
+            found_custom_unknown = true;
+        }
+    }
+    assert(found_sda_verified && found_zram_unsafe && found_custom_unknown);
+
+    // 10. Section 13.2: Adaptive Step Sizing, Context-Aware Anti-Repeat & CFTS2 Persistence
+    put(sda_q / "scheduler", "[none] mq-deadline");
+    put(sda_q / "read_ahead_kb", "128");
+    put(sda_q / "iosched/read_expire", "500");
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.0, .thermal_pressure = 46.0});
+    assert(tuner.snapshot().active_candidate_id == "io.mq_deadline_low_latency");
+    assert(get(sda_q / "read_ahead_kb") == "256"); // 1.0 adaptive_scale -> full 2.0x = 256
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({.cpu_psi = 7.0, .memory_psi = 0.5, .io_psi = 12.0, .thermal_pressure = 48.0});
+    }
+    assert(tuner.snapshot().verdict == coreflow::TunerVerdict::Regressed);
+    // Verify CFTS2 persisted adaptive_scale < 1.0 and rollback reason across discover()
+    put(sda_q / "scheduler", "[none] mq-deadline");
+    tuner.discover(sys_root.string(), proc_root.string());
+    double mq_scale = 1.0;
+    for (const auto& c : tuner.snapshot().candidates) {
+        if (c.id == "io.mq_deadline_low_latency") {
+            mq_scale = c.adaptive_scale;
+            assert(!c.last_rollback_reason.empty());
+        }
+    }
+    assert(mq_scale < 1.0);
+    tuner.reset();
+
+    // 11. Section 13.4: Active Thermal Stabilization Mode & Hysteresis Recovery
+    put(policy0_dir / "scaling_governor", "schedutil");
+    put(schedutil_dir / "up_rate_limit_us", "2000");
+    put(schedutil_dir / "down_rate_limit_us", "1000");
+    tuner.discover(sys_root.string(), proc_root.string());
+    const auto therm_stab = tuner.step({
+        .cpu_psi = 11.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .thermal_guard_active = true,
+        .thermal_emergency = false,
+        .thermal_headroom = 0.15,
+        .thermal_trend_celsius = 0.9,
+    });
+    assert(therm_stab.workload_class == coreflow::WorkloadClass::ThermalConstrained);
+    assert(therm_stab.objective == coreflow::OptimizationObjective::ThermalStabilization);
+    assert(therm_stab.intent == "ThermalStabilization");
+    assert(therm_stab.active_candidate_id == "thermal.schedutil_damped_pacing");
+    assert(therm_stab.thermal_stabilization_active);
+    assert(get(schedutil_dir / "up_rate_limit_us") == "4000");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "500");
+
+    // Emergency thermal spike immediately aborts and restores OEM baseline
+    const auto therm_emerg = tuner.step({
+        .cpu_psi = 11.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 92.0,
+        .thermal_guard_active = true,
+        .thermal_emergency = true,
+    });
+    assert(therm_emerg.objective == coreflow::OptimizationObjective::EmergencyMitigation);
+    assert(therm_emerg.stage == "PLANNED");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
+
+    // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
+    tuner.reset();
+    auto& coord = coreflow::CentralMutationCoordinator::instance();
+    coord.reset();
+    std::string conflict_msg;
+    assert(coord.acquire_lease(
+        coreflow::MutationDomain::BlockIo,
+        "ExternalSafetyGuard",
+        "tx-lock-io",
+        coreflow::ControllerPriority::EmergencySafety,
+        &conflict_msg));
+    assert(!tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
+    coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
+    assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
+
+    tuner.reset();
     fs::remove_all(root);
-    std::cout << "[PASS] AutonomousTuner atomic transactions, cooldowns, and domain preconditions succeeded.\n";
+    std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and adaptive feedback succeeded.\n";
     return 0;
 }

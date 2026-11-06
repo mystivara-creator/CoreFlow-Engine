@@ -888,6 +888,17 @@ export function stepAutonomousSimulation(
     tunerImproved += 1;
     tunerRationale =
       `Memory PSI=${memory.toFixed(1)}% elevated; applied vm.page-cluster=0 & vfs_cache_pressure=80 | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+  } else if (mode === 'thermal_guard') {
+    tunerStage = 'OBSERVING';
+    tunerIntent = 'ThermalStabilization';
+    tunerCandidateId = 'thermal.schedutil_damped_pacing';
+    tunerCandidateLabel = 'Thermal Stabilization Governor Damping (2.0x up / 0.5x down rate-limit)';
+    tunerVerdict = 'IMPROVED';
+    tunerUtilityDelta = Number((2.8 + Math.random() * 1.9).toFixed(2));
+    tunerTrials += 1;
+    tunerImproved += 1;
+    tunerRationale =
+      `Thermal headroom constrained (${nextTemp.toFixed(1)}°C); switched objective to ThermalStabilization and damped EAS governor ramp rate (2.0x up / 0.5x down relative to OEM baseline).`;
   } else if (forced === 'cpu' || cpu >= 8.5) {
     tunerStage = 'RETAINED';
     tunerIntent = 'InteractiveCpuPacing';
@@ -971,3 +982,425 @@ function createPreviewEvent(
       `cpu=${next.cpuPressurePct}% mem=${next.memoryPressurePct}% io=${next.ioPressurePct}% temp=${next.socTempCelsius}C`,
   };
 }
+
+// ============================================================================
+// Pure Architecture Models (Discovery, Workload/Thermal Reasoning, Coordinator,
+// Settling & Noise-Floor Feedback, Context-Aware Anti-Repeat & Adaptive Sizing)
+// ============================================================================
+
+export type ResourcePermissionClass =
+  | 'ReadOnly'
+  | 'Writable'
+  | 'WritableButUnsafe'
+  | 'UnknownSemantic'
+  | 'VerifiedConstraints'
+  | 'IncompleteMetadata';
+
+export type WorkloadClass =
+  | 'Idle'
+  | 'GeneralInteraction'
+  | 'ScrollingAndAnimation'
+  | 'Gaming'
+  | 'HeavyMultitasking'
+  | 'CpuBound'
+  | 'GpuBound'
+  | 'MemoryPressure'
+  | 'StorageIoPressure'
+  | 'ThermalConstrained'
+  | 'BackgroundWorkload';
+
+export type BottleneckKind =
+  | 'None'
+  | 'CpuSchedulingLatency'
+  | 'IoQueueContention'
+  | 'ConcurrentCpuIoContention'
+  | 'MemorySwapThrashing'
+  | 'ThermalHeadroomDepletion'
+  | 'ThermalEmergency';
+
+export type OptimizationObjective =
+  | 'HoldBaseline'
+  | 'InteractiveLatency'
+  | 'ThroughputBalance'
+  | 'MemoryRelief'
+  | 'IoLatencyRelief'
+  | 'ThermalStabilization'
+  | 'ThermalRecovery'
+  | 'EmergencyMitigation';
+
+export type MutationDomain =
+  | 'CpuPolicy'
+  | 'BlockIo'
+  | 'VmMemory'
+  | 'UclampCgroup'
+  | 'GpuDevfreq'
+  | 'PowerLongevity'
+  | 'ThermalCore';
+
+export enum ControllerPriority {
+  BackgroundEfficiency = 20,
+  WorkloadOptimization = 40,
+  PressureGuard = 60,
+  ThermalStabilization = 80,
+  EmergencySafety = 100,
+}
+
+export interface ResourceProbeInput {
+  path: string;
+  writable: boolean;
+  rawValue: string;
+  companionNodesComplete?: boolean;
+  activeGovernor?: string;
+  targetGovernor?: string;
+  zramSwapActive?: boolean;
+}
+
+export function classifyResourcePermission(probe: ResourceProbeInput): {
+  permissionClass: ResourcePermissionClass;
+  mutatable: boolean;
+  reason: string;
+} {
+  if (probe.companionNodesComplete === false) {
+    return {
+      permissionClass: 'IncompleteMetadata',
+      mutatable: false,
+      reason: 'Missing required coupled companion node or constraint table',
+    };
+  }
+
+  const blockMatch = probe.path.match(/\/block\/([^/]+)\/queue\//);
+  if (blockMatch) {
+    const dev = blockMatch[1];
+    if (/^(loop|ram|zram|dm-|md|nbd)/.test(dev)) {
+      return {
+        permissionClass: 'WritableButUnsafe',
+        mutatable: false,
+        reason: `Virtual block device (${dev}) excluded from scheduler/queue mutation`,
+      };
+    }
+    if (!/^(sd|mmcblk|nvme)/.test(dev)) {
+      return {
+        permissionClass: 'UnknownSemantic',
+        mutatable: false,
+        reason: `Unrecognized block device prefix (${dev}); semantics unverified`,
+      };
+    }
+  }
+
+  if (
+    probe.targetGovernor &&
+    probe.activeGovernor &&
+    probe.activeGovernor !== probe.targetGovernor
+  ) {
+    return {
+      permissionClass: 'WritableButUnsafe',
+      mutatable: false,
+      reason: `Active governor (${probe.activeGovernor}) does not match target (${probe.targetGovernor})`,
+    };
+  }
+
+  if (probe.path.includes('/sys/vm/') && probe.zramSwapActive === false) {
+    return {
+      permissionClass: 'WritableButUnsafe',
+      mutatable: false,
+      reason: 'VM tunable gated because zram swap is inactive',
+    };
+  }
+
+  const trimmed = probe.rawValue.trim();
+  if (!trimmed) {
+    return {
+      permissionClass: 'IncompleteMetadata',
+      mutatable: false,
+      reason: 'Empty sysfs/procfs reading',
+    };
+  }
+
+  const isSchedulerNode = probe.path.endsWith('/scheduler');
+  if (isSchedulerNode) {
+    const tokens = trimmed.split(/\s+/).filter(Boolean);
+    const hasKnownScheduler = tokens.some((t) =>
+      ['none', 'mq-deadline', 'kyber', 'bfq', '[none]', '[mq-deadline]', '[kyber]', '[bfq]'].includes(t)
+    );
+    if (!hasKnownScheduler) {
+      return {
+        permissionClass: 'UnknownSemantic',
+        mutatable: false,
+        reason: 'Scheduler node contains no recognized kernel scheduler tokens',
+      };
+    }
+  } else {
+    const num = Number(trimmed);
+    if (!Number.isFinite(num) || num < 0) {
+      return {
+        permissionClass: 'UnknownSemantic',
+        mutatable: false,
+        reason: 'Non-numeric or negative value in numeric tunable node',
+      };
+    }
+  }
+
+  if (!probe.writable) {
+    return {
+      permissionClass: 'ReadOnly',
+      mutatable: false,
+      reason: 'Node is read-only',
+    };
+  }
+
+  return {
+    permissionClass: 'VerifiedConstraints',
+    mutatable: true,
+    reason: 'Verified constraints, baseline captured, and dependencies satisfied',
+  };
+}
+
+export interface TelemetryReasoningInput {
+  cpuPsi: number;
+  memoryPsi: number;
+  ioPsi: number;
+  thermalPressure: number;
+  thermalGuardActive?: boolean;
+  thermalEmergency?: boolean;
+  thermalHeadroom?: number; // < 0 if unavailable, [0..1] remaining headroom
+  thermalTrendCelsius?: number;
+  inThermalRecovery?: boolean;
+}
+
+export function classifyWorkload(t: TelemetryReasoningInput): WorkloadClass {
+  if (
+    t.thermalEmergency ||
+    t.thermalGuardActive ||
+    t.thermalPressure >= 65.0 ||
+    (t.thermalHeadroom !== undefined && t.thermalHeadroom >= 0 && t.thermalHeadroom <= 0.20) ||
+    (t.thermalPressure >= 56.0 && (t.thermalTrendCelsius ?? 0) >= 0.8)
+  ) {
+    return 'ThermalConstrained';
+  }
+  if (t.memoryPsi >= 3.5 && t.ioPsi >= 3.0) return 'HeavyMultitasking';
+  if (t.memoryPsi >= 2.0) return 'MemoryPressure';
+  if (t.ioPsi >= 5.0 && t.cpuPsi >= 10.0) return 'HeavyMultitasking';
+  if (t.ioPsi >= 2.2) return 'StorageIoPressure';
+  if (t.cpuPsi >= 16.0 && t.thermalPressure >= 50.0) return 'Gaming';
+  if (t.cpuPsi >= 10.0) return 'CpuBound';
+  if (t.cpuPsi >= 6.0) return 'ScrollingAndAnimation';
+  if (t.cpuPsi >= 2.5 || t.ioPsi >= 1.0) return 'GeneralInteraction';
+  if (t.cpuPsi >= 1.2) return 'BackgroundWorkload';
+  return 'Idle';
+}
+
+export function diagnoseBottleneck(
+  t: TelemetryReasoningInput,
+  workload: WorkloadClass = classifyWorkload(t)
+): BottleneckKind {
+  if (t.thermalEmergency || t.thermalPressure >= 88.0) return 'ThermalEmergency';
+  if (workload === 'ThermalConstrained') return 'ThermalHeadroomDepletion';
+  if (t.ioPsi >= 4.5 && t.cpuPsi >= 9.0) return 'ConcurrentCpuIoContention';
+  if (t.ioPsi >= 2.2) return 'IoQueueContention';
+  if (t.memoryPsi >= 2.0) return 'MemorySwapThrashing';
+  if (t.cpuPsi >= 8.0) return 'CpuSchedulingLatency';
+  return 'None';
+}
+
+export function selectOptimizationObjective(
+  t: TelemetryReasoningInput,
+  workload: WorkloadClass = classifyWorkload(t),
+  bottleneck: BottleneckKind = diagnoseBottleneck(t, workload)
+): OptimizationObjective {
+  if (bottleneck === 'ThermalEmergency') return 'EmergencyMitigation';
+  if (bottleneck === 'ThermalHeadroomDepletion' || workload === 'ThermalConstrained') {
+    return 'ThermalStabilization';
+  }
+  if (t.inThermalRecovery) return 'ThermalRecovery';
+  switch (bottleneck) {
+    case 'ConcurrentCpuIoContention':
+      return 'ThroughputBalance';
+    case 'IoQueueContention':
+      return 'IoLatencyRelief';
+    case 'MemorySwapThrashing':
+      return 'MemoryRelief';
+    case 'CpuSchedulingLatency':
+      return workload === 'Gaming' ? 'ThroughputBalance' : 'InteractiveLatency';
+    default:
+      return 'HoldBaseline';
+  }
+}
+
+export function computeRelativeTunableValue(
+  factoryBaseline: number,
+  targetRatio: number,
+  minBound: number,
+  maxBound: number,
+  adaptiveScale = 1.0
+): number {
+  const clampedScale = Math.max(0.25, Math.min(1.0, adaptiveScale));
+  const effectiveRatio = 1.0 + (targetRatio - 1.0) * clampedScale;
+  const raw = Math.max(1, Math.round(factoryBaseline * effectiveRatio));
+  return Math.max(minBound, Math.min(maxBound, raw));
+}
+
+export interface FeedbackEvaluationInput {
+  intent: 'IoLatencyRelief' | 'MemoryStallRelief' | 'InteractiveCpuPacing' | 'ThermalStabilization';
+  beforeIoPsi: number;
+  afterIoPsiSamples: number[];
+  beforeMemPsi: number;
+  afterMemPsiSamples: number[];
+  beforeCpuPsi: number;
+  afterCpuPsiSamples: number[];
+  beforeThermal: number;
+  afterThermalSamples: number[];
+  thermalTrendCelsius?: number;
+  ownershipIntact: boolean;
+  currentAdaptiveScale: number;
+  consecutiveNonImproved: number;
+}
+
+export interface FeedbackEvaluationResult {
+  verdict: 'IMPROVED' | 'NEUTRAL' | 'REGRESSED' | 'INCONCLUSIVE' | 'OWNERSHIP_LOST';
+  action: 'RETAIN' | 'ROLLBACK';
+  utilityDelta: number;
+  nextAdaptiveScale: number;
+  cooldownTicks: number;
+  nextConsecutiveNonImproved: number;
+}
+
+export function evaluateAdaptiveFeedback(input: FeedbackEvaluationInput): FeedbackEvaluationResult {
+  if (!input.ownershipIntact) {
+    return {
+      verdict: 'OWNERSHIP_LOST',
+      action: 'ROLLBACK',
+      utilityDelta: 0,
+      nextAdaptiveScale: input.currentAdaptiveScale,
+      cooldownTicks: 4,
+      nextConsecutiveNonImproved: input.consecutiveNonImproved + 1,
+    };
+  }
+
+  const avg = (arr: number[], fallback: number) =>
+    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : fallback;
+
+  const afterIo = avg(input.afterIoPsiSamples, input.beforeIoPsi);
+  const afterMem = avg(input.afterMemPsiSamples, input.beforeMemPsi);
+  const afterCpu = avg(input.afterCpuPsiSamples, input.beforeCpuPsi);
+  const afterTherm = avg(input.afterThermalSamples, input.beforeThermal);
+
+  const ioGain = input.beforeIoPsi - afterIo;
+  const memGain = input.beforeMemPsi - afterMem;
+  const cpuGain = input.beforeCpuPsi - afterCpu;
+  const thermGain = input.beforeThermal - afterTherm;
+  const thermPenalty = Math.max(0, afterTherm - input.beforeThermal - 2.0);
+
+  let utilityDelta = 0;
+  if (input.intent === 'ThermalStabilization') {
+    const trendBonus = (input.thermalTrendCelsius ?? 0) <= 0 ? 0.35 : -0.30;
+    utilityDelta = 0.65 * thermGain + trendBonus + 0.20 * ioGain + 0.15 * cpuGain;
+  } else if (input.intent === 'IoLatencyRelief') {
+    utilityDelta = 1.40 * ioGain + 0.35 * cpuGain - 0.60 * thermPenalty;
+  } else if (input.intent === 'MemoryStallRelief') {
+    utilityDelta = 1.60 * memGain + 0.45 * ioGain - 0.60 * thermPenalty;
+  } else {
+    utilityDelta = 1.50 * cpuGain + 0.35 * ioGain - 0.65 * thermPenalty;
+  }
+
+  const ioSpread =
+    input.afterIoPsiSamples.length > 1
+      ? Math.max(...input.afterIoPsiSamples) - Math.min(...input.afterIoPsiSamples)
+      : 0;
+  if (ioSpread > Math.max(6.0, input.beforeIoPsi * 1.2) && Math.abs(utilityDelta) < 0.50) {
+    const nextNonImp = input.consecutiveNonImproved + 1;
+    const shift = Math.min(3, nextNonImp - 1);
+    return {
+      verdict: 'INCONCLUSIVE',
+      action: 'ROLLBACK',
+      utilityDelta: Number(utilityDelta.toFixed(3)),
+      nextAdaptiveScale: input.currentAdaptiveScale,
+      cooldownTicks: Math.min(32, 4 * (1 << shift)),
+      nextConsecutiveNonImproved: nextNonImp,
+    };
+  }
+
+  if (utilityDelta >= 0.25) {
+    return {
+      verdict: 'IMPROVED',
+      action: 'RETAIN',
+      utilityDelta: Number(utilityDelta.toFixed(3)),
+      nextAdaptiveScale: Math.min(1.0, Number((input.currentAdaptiveScale + 0.15).toFixed(2))),
+      cooldownTicks: 0,
+      nextConsecutiveNonImproved: 0,
+    };
+  }
+
+  if (utilityDelta < -0.20) {
+    const nextNonImp = input.consecutiveNonImproved + 1;
+    const shift = Math.min(3, nextNonImp - 1);
+    return {
+      verdict: 'REGRESSED',
+      action: 'ROLLBACK',
+      utilityDelta: Number(utilityDelta.toFixed(3)),
+      nextAdaptiveScale: Math.max(0.25, Number((input.currentAdaptiveScale * 0.75).toFixed(3))),
+      cooldownTicks: Math.min(64, 8 * (1 << shift)),
+      nextConsecutiveNonImproved: nextNonImp,
+    };
+  }
+
+  const nextNonImp = input.consecutiveNonImproved + 1;
+  const shift = Math.min(3, nextNonImp - 1);
+  return {
+    verdict: 'NEUTRAL',
+    action: 'ROLLBACK',
+    utilityDelta: Number(utilityDelta.toFixed(3)),
+    nextAdaptiveScale: Math.max(0.50, Number((input.currentAdaptiveScale * 0.90).toFixed(3))),
+    cooldownTicks: Math.min(32, 4 * (1 << shift)),
+    nextConsecutiveNonImproved: nextNonImp,
+  };
+}
+
+export class CentralMutationCoordinatorModel {
+  private leases = new Map<
+    MutationDomain,
+    { owner: string; transactionId: string; priority: ControllerPriority }
+  >();
+  public conflictRejections = 0;
+
+  acquireLease(
+    domain: MutationDomain,
+    controller: string,
+    transactionId: string,
+    priority: ControllerPriority
+  ): { granted: boolean; reason?: string } {
+    const existing = this.leases.get(domain);
+    if (existing && existing.owner !== controller) {
+      if (priority <= existing.priority) {
+        this.conflictRejections += 1;
+        return {
+          granted: false,
+          reason: `Domain ${domain} locked by ${existing.owner} (${existing.transactionId}) at priority ${existing.priority}`,
+        };
+      }
+    }
+    this.leases.set(domain, { owner: controller, transactionId, priority });
+    return { granted: true };
+  }
+
+  releaseLease(domain: MutationDomain, controller: string): void {
+    const existing = this.leases.get(domain);
+    if (existing && existing.owner === controller) {
+      this.leases.delete(domain);
+    }
+  }
+
+  emergencyPreemptAll(): void {
+    this.leases.clear();
+  }
+
+  isLockedByOther(
+    domain: MutationDomain,
+    controller: string,
+    priority: ControllerPriority
+  ): boolean {
+    const existing = this.leases.get(domain);
+    if (!existing || existing.owner === controller) return false;
+    return priority <= existing.priority;
+  }
+}
+

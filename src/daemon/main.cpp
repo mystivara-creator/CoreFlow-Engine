@@ -401,14 +401,23 @@ void print_status() {
         << ",\"aiSamples\":" << ai.samples_observed
         << ",\"tunerStage\":" << json_string(AutonomousTuner::stage_name(tuner.stage))
         << ",\"tunerIntent\":" << json_string(AutonomousTuner::intent_name(tuner.intent))
+        << ",\"tunerWorkload\":" << json_string(tuner.workload_name)
+        << ",\"tunerBottleneck\":" << json_string(tuner.bottleneck_name)
+        << ",\"tunerObjective\":" << json_string(tuner.objective_name)
+        << ",\"tunerCapabilityFingerprint\":" << json_string(tuner.capability_fingerprint)
         << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
         << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
         << ",\"tunerRationale\":" << json_string(tuner.rationale)
         << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
         << ",\"tunerUtilityDelta\":" << safe_json_double(tuner.utility_delta)
+        << ",\"tunerNoiseFloor\":" << safe_json_double(tuner.noise_floor, 0.05)
         << ",\"tunerTrials\":" << tuner.total_trials
         << ",\"tunerImproved\":" << tuner.improved_count
         << ",\"tunerRolledBack\":" << tuner.rolled_back_count
+        << ",\"tunerInconclusive\":" << tuner.total_inconclusive
+        << ",\"tunerRejected\":" << tuner.total_rejected
+        << ",\"tunerThermalStabilization\":" << (tuner.thermal_stabilization_active ? "true" : "false")
+        << ",\"tunerThermalRecovery\":" << (tuner.thermal_recovery_active ? "true" : "false")
         << ",\"blockQueues\":[";
     bool first_queue = true;
     for (const auto& q : tuner.block_queues) {
@@ -443,6 +452,9 @@ void print_status() {
             << ",\"trials\":" << c.trials
             << ",\"successes\":" << c.successes
             << ",\"rollbacks\":" << c.rollbacks
+            << ",\"inconclusive\":" << c.inconclusive_count
+            << ",\"rejected\":" << c.rejected_count
+            << ",\"adaptiveScale\":" << safe_json_double(c.adaptive_scale, 1.0)
             << ",\"meanDelta\":" << safe_json_double(c.mean_utility_delta)
             << ",\"ucbScore\":" << safe_json_double(c.ucb_score)
             << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
@@ -1021,14 +1033,19 @@ int main(int argc, char* argv[]) {
         (void)VulkanController::instance().apply_workload_policy(
             desired, active_capacity_scale, thermal_limit_hit);
 
-        // Multi-domain autonomous scheduler & VM tunable evaluation (mq-deadline, kyber, bfq, iosched, vm, cpufreq)
+        // Multi-domain autonomous scheduler, VM & active thermal stabilization evaluation
+        const double remaining_headroom = thermal.headroom_valid
+            ? std::max(0.0, 1.0 - static_cast<double>(thermal.headroom_value))
+            : -1.0;
         const auto tuner_snap = AutonomousTuner::instance().step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .thermal_guard_active = thermal_limit_hit,
-            .thermal_emergency = thermal_limit_hit,
+            .thermal_emergency = thermal.emergency,
+            .thermal_headroom = remaining_headroom,
+            .thermal_trend_celsius = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
         });
         if (tuner_snap.active_candidate_id != last_tuner_candidate ||
             tuner_snap.verdict != last_tuner_verdict) {
