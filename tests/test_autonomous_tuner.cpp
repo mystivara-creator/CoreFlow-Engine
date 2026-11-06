@@ -86,6 +86,9 @@ int main() {
     const auto winning_lease = coordinator.active_leases().front();
     coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller);
     assert(coordinator.active_leases().empty());
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx", coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.active_leases().size() == 1);
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement");
 
     // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
     const auto incomplete_psi = tuner.step({
