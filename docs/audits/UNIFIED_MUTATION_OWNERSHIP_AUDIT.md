@@ -483,3 +483,57 @@ Workflow run [42286398292](https://github.com/mystivara-creator/CoreFlow-Engine/
 - Perform physical-device validation on supported Xiaomi/HyperOS firmware combinations. Host CI cannot establish OEM arbitration or thermal safety.
 
 **Status: EXACT-HEAD CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft and do not merge, publish a release, or flash a device until all remaining acceptance gates are reviewed.
+
+## 17. Detached-controller recovery — durable orphan reconciliation and monitor retry
+
+**Source head validated:** `de67bbb2e116e7a086ce87588217d8a0b408833d`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### Lifecycle state and ownership retention
+
+- `DomainLease` now records `owner_detached`. The coordinator sets it only when `unregister_preemption_handler()` has completed its wait for all in-flight callbacks and the controller can no longer acknowledge rollback.
+- Unregister does not release the lease. The active lease remains visible and continues to block its domain.
+- Controller identities are retired for the rest of the process lifetime. Registration and acquisition attempts using a retired identity are rejected, including attempts after orphan reconciliation. A new controller must receive a new process-lifetime identity.
+- Orphan retirement also requires the lease to have an explicit `preemption_requested` marker and no remaining registered handler. An active owner that refuses or has not yet acknowledged preemption cannot be treated as detached.
+
+### Controlled recovery procedure
+
+1. Emergency recovery closes mutation admission and requests preemption from all active owners.
+2. If any still-live owner has not acknowledged, recovery stops. The global journal sweep is withheld and admission stays closed.
+3. Detached-owner leases are eligible for reconciliation only after all remaining live owners have acknowledged.
+4. `BaselineStore::verify_and_persist_clear_state()` checks that no tracked node is marked modified and atomically rewrites an empty CFJ4 journal, including file and directory durability checks.
+5. Only after that verification succeeds may the coordinator retire detached-owner leases. Emergency admission reopens only when no active lease remains.
+6. The daemon monitor checks for detached owners and for an already-active recovery barrier on each tick. It retries incomplete recovery without a timeout-based lease steal; if recovery remains unresolved, mutation admission remains closed and the next monitor tick retries.
+
+The durable empty-journal check is deliberately stronger than an in-memory `has_active_mutations()` check. A prior rollback can clear in-memory flags while a stale write-ahead record remains on disk after a persistence failure; the explicit empty-journal write must succeed before orphan leases can be retired.
+
+### Regression coverage
+
+- A live controller that returns a failed preemption acknowledgement cannot be released by the orphan API, even if the caller presents a clear BaselineStore.
+- Simulated controller disappearance unregisters its callback while preserving its active lease; the lease is marked detached and remains active.
+- Orphan retirement is rejected while BaselineStore still has a mutation and while the durable empty-journal check fails.
+- After verified path rollback and durable empty-journal persistence, the orphan lease is retired, the admission barrier reopens, and a controller with a fresh identity can acquire the domain.
+- A detached identity cannot register a replacement callback or acquire a new lease after recovery.
+- Baseline journal tests prove a symlinked state directory fails closed and that durable empty-journal verification succeeds only after the state path is repaired.
+
+### Exact-head validation
+
+Workflow run [42290529938](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42290529938) completed with **success** on exact source head `de67bbb2e116e7a086ce87588217d8a0b408833d`. All seven jobs passed:
+
+- Host C++ tests: 13/13 CTest tests passed.
+- ASan and UBSan: 13/13 CTest tests passed.
+- Android ARM64 production package.
+- Rust validation.
+- WebUI validation.
+- Module validation.
+- Aggregate CoreFlow CI gate.
+
+### Remaining acceptance gates
+
+- The detached-owner recovery path is implemented and host-tested. It still requires physical/operational validation that the daemon monitor observes a real controller teardown on supported Android firmware and that OEM-owned node changes are preserved during the global BaselineStore sweep.
+- Expand concurrency testing beyond deterministic callback/unregister and admission tests to stress overlapping controller destruction, preemption dispatch, multi-path rollback, and monitor retries under real scheduler pressure.
+- Validate Vulkan node semantics and accepted values from actual per-device/vendor capability evidence; path presence alone is insufficient.
+- Complete the final source/write-path audit, including indirect and dynamically loaded vendor paths.
+- Perform physical-device validation on supported Xiaomi/HyperOS firmware combinations, including OEM arbitration, thermal behavior, and rollback after interrupted writes.
+
+**Status: EXACT-HEAD CI-VALIDATED CANDIDATE, DETACHED-OWNER RECOVERY IMPLEMENTED, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device until remaining concurrency, source-audit, Vulkan-semantic, and device-validation gates are reviewed.
