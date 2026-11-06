@@ -64,6 +64,8 @@ int main() {
     coordinator.emergency_preempt_all("test-thermal-emergency");
     assert(get(cpu / "scaling_max_freq") == "2000000");
     assert(get(gpu / "max_freq") == "800000000");
+    assert(get(second_cpu / "scaling_max_freq") == "1800000");
+    assert(get(second_gpu / "max_freq") == "700000000");
     assert(coordinator.active_leases().empty());
 
     // A subsequent authorized policy cycle may acquire fresh transaction identities.
