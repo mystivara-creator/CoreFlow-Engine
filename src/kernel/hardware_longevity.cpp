@@ -236,8 +236,7 @@ bool HardwareLongevityManager::apply_storage_pacing() {
     if (!config_.enable_ufs_burst_pacing) return true;
 
     auto& store = BaselineStore::instance();
-    if (storage_paced_) {
-        if (storage_transaction_id_.empty()) return true;
+    if (!storage_transaction_id_.empty()) {
         const auto audit = store.get_audit_trail();
         for (const auto& path : storage_mutation_paths_) {
             const auto* snapshot = find_snapshot(audit, path);
@@ -246,8 +245,8 @@ bool HardwareLongevityManager::apply_storage_pacing() {
                 return false; // OEM ownership changed; do not reassert in this cycle.
             }
         }
-        return true;
     }
+    if (storage_paced_) return true;
     bool available = false;
     for (const auto& [group, weight] : {
         std::pair{"top-app", config_.top_app_io_weight},
