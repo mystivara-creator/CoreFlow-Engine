@@ -230,3 +230,45 @@ Since the previous update, the audit branch has advanced with the following veri
 - Validate actual behavior on supported physical devices. CI does not establish device compatibility or thermal safety.
 
 **Status remains: NOT COMPLETE.** The passing CI run validates the candidate commit, not the entire 3.1.0 freeze criteria. Do not merge or publish the freeze until the remaining ownership and device-validation gates are closed.
+
+
+
+## 11. Implementation update — transaction isolation and recovery hardening
+
+**Audit basis:** PR head `1de5d818af6c5298506b382d15372645c36b6638`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### Implemented on the remediation branch
+
+- `BaselineStore::apply_mutation()` no longer invokes a global rollback when one path fails. Runtime failure recovery is path-scoped; global `rollback_locked()` remains reserved for journal recovery and an explicit global safety sweep.
+- Added two-path regression coverage proving that a failed mutation on a missing path does not roll back unrelated active mutations.
+- Added coordinator emergency-admission barrier. Daemon safety recovery closes lease admission before controller callbacks, waits for all active owners to acknowledge, performs the global BaselineStore sweep only after leases are clear, and reopens admission only after no active mutations remain.
+- Preemption callback exceptions are contained. An exception is a failed acknowledgement: the lease remains active and emergency admission remains closed.
+- FrequencyController handler identity is per instance. Frequency discovery and apply preflight reject a journaled path that is not owned by that controller; failed write/readback paths retain or recover ownership conservatively.
+- CgroupV2Controller rejects a foreign journaled path even when it already owns a different path in the CPU-policy domain. Failed multi-node writes roll back only its own transaction.
+- Uclamp discovery, apply, and resync reject pre-modified clamp nodes that are not owned by the governor.
+- HardwareLongevityManager rejects foreign journaled battery-current and storage-weight entries before using them as a baseline.
+- VulkanController refuses to treat a foreign journaled GPU value as an already-applied policy.
+- AutonomousTuner preflight rejects journaled paths left active by another or unresolved owner. Partially committed failed steps are retained in rollback state rather than dropped.
+- Daemon lifecycle cgroup migration and `oom_score_adj` writes now use exact allowlisted paths, full-write checks, and readback verification.
+- Legacy `ScopedBaselineLock` is deprecated because it has no coordinator ownership identity. Its implementation now skips already-active journal paths and tracks unresolved path-scoped rollback for a final retry.
+
+### Regression coverage added or extended
+
+- Baseline path-scoped rollback isolation.
+- Coordinator admission remains closed until leases are resolved.
+- Throwing preemption callbacks do not terminate dispatch or release ownership.
+- Cgroup failed-write lease cleanup and foreign-node isolation while another Cgroup path remains leased.
+- FrequencyController multiple-instance callback identity, failed CPU write handling, and foreign journaled CPUFreq path isolation while GPU remains independently coordinated.
+- Uclamp foreign journal ownership rejection before apply/resync.
+- HardwareLongevityManager foreign battery and storage journal rejection.
+- Vulkan foreign GPU policy journal rejection.
+
+### Validation state
+
+- Workflow run [42281030503](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42281030503) was observed on the exact source head `1de5d818af6c5298506b382d15372645c36b6638` and was **pending** at the time of this update.
+- The documentation-only commit that adds this section does not alter runtime source. The resulting new PR head must still be checked for its own CI result.
+- No local build/test execution or physical-device validation is claimed.
+- No update to `main`, merge, release publication, or device flashing was performed.
+
+**Status remains: NOT COMPLETE.** The remaining acceptance gate is a successful complete CI run on the resulting latest PR head, followed by physical-device validation and a final audit of every mutation path and controller interaction. Do not mark PR #7 ready or merge it solely on the basis of source-level review.
