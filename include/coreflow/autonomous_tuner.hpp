@@ -126,6 +126,10 @@ struct DomainLease {
     // A higher-priority requester or emergency may request preemption, but the
     // current owner retains the lease until it has cancelled and verified rollback.
     bool preemption_requested{false};
+    // Set only after unregister waits for all in-flight callbacks and the
+    // controller can no longer acknowledge rollback. The lease remains active
+    // until a verified global recovery explicitly retires it.
+    bool owner_detached{false};
 };
 
 class CentralMutationCoordinator {
@@ -152,6 +156,10 @@ public:
     bool register_preemption_handler(std::string_view controller_name, PreemptionHandler handler);
     void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
+    // Retire detached-owner leases only after BaselineStore has independently
+    // verified that no journaled mutations remain. Requires closed admission.
+    [[nodiscard]] bool release_orphaned_leases_after_verified_recovery(
+        bool baseline_store_clear) noexcept;
 
     // Close mutation admission before dispatching emergency rollback callbacks.
     // Admission reopens only after all leases and BaselineStore mutations are cleared.
