@@ -30,9 +30,11 @@ impl Controller {
             input.io_pressure, input.trip, input.recover, input.headroom,
             input.cpu_threshold, input.memory_threshold, input.io_threshold]
             .iter().all(|x| x.is_finite());
-        let pressures_valid = [input.cpu_pressure, input.memory_pressure, input.io_pressure,
-            input.cpu_threshold, input.memory_threshold, input.io_threshold]
-            .iter().all(|x| (0.0..=100.0).contains(x));
+        let pressures_valid = [input.cpu_threshold, input.memory_threshold, input.io_threshold]
+            .iter().all(|x| (0.0..=100.0).contains(x))
+            && (!input.cpu_pressure_valid || (0.0..=100.0).contains(&input.cpu_pressure))
+            && (!input.memory_pressure_valid || (0.0..=100.0).contains(&input.memory_pressure))
+            && (!input.io_pressure_valid || (0.0..=100.0).contains(&input.io_pressure));
         if !finite || !pressures_valid || !(0.0..=130.0).contains(&input.thermal_pressure)
             || input.elapsed_seconds <= 0.0 || input.elapsed_seconds > 120.0
             || input.recover >= input.trip || input.headroom < 0.0
@@ -45,9 +47,9 @@ impl Controller {
         self.thermal_guard = input.thermal_pressure >= input.trip
             || (self.thermal_guard && input.thermal_pressure > input.recover);
         let state = if self.thermal_guard { 3 }
-            else if input.memory_pressure >= input.memory_threshold
-                 || input.io_pressure >= input.io_threshold { 2 }
-            else if input.cpu_pressure >= input.cpu_threshold
+            else if (input.memory_pressure_valid && input.memory_pressure >= input.memory_threshold)
+                 || (input.io_pressure_valid && input.io_pressure >= input.io_threshold) { 2 }
+            else if input.cpu_pressure_valid && input.cpu_pressure >= input.cpu_threshold
                  && input.thermal_pressure <= input.trip - input.headroom { 1 }
             else { 0 };
 
@@ -76,7 +78,8 @@ mod tests {
     use super::*;
     fn sample(temp: f64) -> Snapshot {
         Snapshot { thermal_pressure: temp, elapsed_seconds: 1.0, cpu_pressure: 30.0,
-            memory_pressure: 0.0, io_pressure: 0.0, trip: 44.0, recover: 40.0,
+            memory_pressure: 0.0, io_pressure: 0.0, cpu_pressure_valid: true,
+            memory_pressure_valid: true, io_pressure_valid: true, trip: 44.0, recover: 40.0,
             headroom: 3.0, cpu_threshold: 25.0, memory_threshold: 15.0,
             io_threshold: 15.0, pid_enabled: true }
     }
@@ -101,6 +104,33 @@ mod tests {
         assert!(!c.step(s).valid);
         let mut s = sample(35.0); s.elapsed_seconds = 200.0;
         assert!(!c.step(s).valid);
+    }
+    #[test]
+    fn unavailable_psi_is_not_interpreted_as_zero_or_as_a_cpu_boost() {
+        let mut c = controller();
+        let mut s = sample(38.0);
+        s.cpu_pressure_valid = false;
+        s.memory_pressure_valid = false;
+        s.io_pressure_valid = false;
+        s.cpu_pressure = 0.0;
+        s.memory_pressure = 0.0;
+        s.io_pressure = 0.0;
+        assert_eq!(c.step(s).state, 0);
+
+        let mut s = sample(38.0);
+        s.cpu_pressure_valid = false;
+        s.cpu_pressure = 0.0;
+        assert_eq!(c.step(s).state, 0);
+    }
+    #[test]
+    fn available_pressure_domains_remain_independently_actionable() {
+        let mut c = controller();
+        let mut s = sample(38.0);
+        s.memory_pressure_valid = false;
+        s.io_pressure_valid = false;
+        s.memory_pressure = 0.0;
+        s.io_pressure = 0.0;
+        assert_eq!(c.step(s).state, 1);
     }
     #[test]
     fn pressure_wins_over_cpu_boost_and_scale_stays_bounded() {
