@@ -996,6 +996,62 @@ int main() {
     assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 2);
     coordinator.unregister_preemption_handler("MultiDomainController");
 
+    // Repeat the multi-domain overlap under competing emergency dispatchers.
+    // Condition variables force the critical interleaving; no scheduling sleep
+    // is used to make the expected callback count deterministic.
+    for (uint32_t round = 0; round < 24; ++round) {
+        coordinator.reset();
+        const std::string owner = "RepeatedDispatchController@" + std::to_string(round);
+        std::mutex stress_mutex;
+        std::condition_variable stress_cv;
+        bool first_callback_entered = false;
+        bool release_first_callback = false;
+        std::atomic<uint32_t> stress_callback_calls{0};
+        assert(coordinator.register_preemption_handler(owner,
+            [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+                const uint32_t call = stress_callback_calls.fetch_add(1, std::memory_order_relaxed);
+                if (call == 0) {
+                    std::unique_lock<std::mutex> lock(stress_mutex);
+                    first_callback_entered = true;
+                    stress_cv.notify_all();
+                    stress_cv.wait(lock, [&] { return release_first_callback; });
+                }
+                return true;
+            }));
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::CpuPolicy, owner, "stress-cpu-" + std::to_string(round),
+            coreflow::ControllerPriority::WorkloadOptimization));
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::GpuDevfreq, owner, "stress-gpu-" + std::to_string(round),
+            coreflow::ControllerPriority::WorkloadOptimization));
+        std::thread primary_dispatcher([&] {
+            coordinator.emergency_preempt_all("repeated-multi-domain-primary");
+        });
+        {
+            std::unique_lock<std::mutex> lock(stress_mutex);
+            stress_cv.wait(lock, [&] { return first_callback_entered; });
+        }
+        std::vector<std::thread> competing_dispatchers;
+        for (uint32_t contender = 0; contender < 4; ++contender) {
+            competing_dispatchers.emplace_back([&] {
+                coordinator.emergency_preempt_all("repeated-multi-domain-contender");
+            });
+        }
+        for (auto& dispatcher : competing_dispatchers) dispatcher.join();
+        assert(stress_callback_calls.load(std::memory_order_relaxed) == 1);
+        const auto stress_pending = coordinator.active_leases();
+        assert(stress_pending.size() == 2);
+        {
+            std::lock_guard<std::mutex> lock(stress_mutex);
+            release_first_callback = true;
+        }
+        stress_cv.notify_all();
+        primary_dispatcher.join();
+        assert(stress_callback_calls.load(std::memory_order_relaxed) == 2);
+        assert(coordinator.active_leases().empty());
+        coordinator.unregister_preemption_handler(owner);
+    }
+
     // Admission cannot reopen merely because a callback released its exact
     // lease before returning its acknowledgement. The callback itself must drain.
     coordinator.reset();
