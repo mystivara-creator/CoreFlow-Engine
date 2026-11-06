@@ -34,6 +34,10 @@ export interface ThermalSensorDetail {
   celsius: number | null;
   valid: boolean;
   policyAvailable: boolean;
+  velocityValid?: boolean;
+  velocityCelsiusPerSec?: number | null;
+  velocitySamples?: number;
+  velocityDurationSec?: number;
 }
 
 export interface BlockQueueTelemetry {
