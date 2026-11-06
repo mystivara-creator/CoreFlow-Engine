@@ -185,8 +185,7 @@ AutonomousTuner& AutonomousTuner::instance() {
 }
 
 AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root)
-    : controller_name_("AutonomousTuner@" +
-                       std::to_string(reinterpret_cast<uintptr_t>(this))),
+    : controller_name_(CentralMutationCoordinator::make_controller_identity("AutonomousTuner")),
       sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
         controller_name_,
