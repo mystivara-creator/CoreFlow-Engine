@@ -154,9 +154,15 @@ void HardwareLongevityManager::discover_battery_node() {
     const std::string candidate =
         root_ + "/class/power_supply/battery/constant_charge_current_max";
     uint64_t current = 0;
+    auto& store = BaselineStore::instance();
     if (::access(candidate.c_str(), R_OK | W_OK) == 0 &&
         positive(line(candidate), current) && current <= 20000000 &&
-        BaselineStore::instance().capture(candidate)) {
+        store.capture(candidate)) {
+        const auto audit = store.get_audit_trail();
+        const auto* snapshot = find_snapshot(audit, candidate);
+        // A journaled value from another or unresolved owner is not an OEM
+        // charging baseline and must never be adopted by this manager.
+        if (!snapshot || snapshot->is_modified) return;
         battery_node_ = candidate;
         charge_baseline_ua_ = current;
         last_charge_ua_ = current;
@@ -257,6 +263,17 @@ bool HardwareLongevityManager::apply_storage_pacing() {
         uint64_t old_weight = 0;
         if (!positive(before.substr(8), old_weight) || old_weight > 10000) continue;
         if (!store.capture(path)) continue;
+        const auto audit_before = store.get_audit_trail();
+        const auto* snapshot_before = find_snapshot(audit_before, path);
+        const bool path_already_owned = std::find(
+            storage_mutation_paths_.begin(), storage_mutation_paths_.end(), path) !=
+            storage_mutation_paths_.end();
+        if (!snapshot_before ||
+            (snapshot_before->is_modified && !path_already_owned)) {
+            // Do not extend this controller's BlockIo transaction onto a path
+            // already modified by another or unresolved owner.
+            continue;
+        }
         const std::string target =
             "default " + std::to_string(std::clamp(weight, 1u, 10000u));
         if (before == target) {
