@@ -96,6 +96,19 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_frequency_controller PRIVATE m)
     add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
 
+    add_executable(test_cgroup_v2
+        tests/test_cgroup_v2.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_cgroup_v2 PRIVATE include)
+    target_link_libraries(test_cgroup_v2 PRIVATE m)
+    if(ANDROID)
+        target_link_libraries(test_cgroup_v2 PRIVATE log)
+    endif()
+    add_test(NAME CgroupV2OwnershipTest COMMAND test_cgroup_v2)
+
     add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
