@@ -317,6 +317,36 @@ int main() {
     coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
     assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
 
+    // A higher-priority request must not steal a lease from a live transaction.
+    coord.reset();
+    assert(coord.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy,
+        "BackgroundController",
+        "tx-background-1",
+        coreflow::ControllerPriority::BackgroundEfficiency));
+    assert(!coord.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy,
+        "EmergencyController",
+        "tx-emergency-1",
+        coreflow::ControllerPriority::EmergencySafety,
+        &conflict_msg));
+    auto pending_preemption = coord.active_leases();
+    assert(pending_preemption.size() == 1);
+    assert(pending_preemption[0].active);
+    assert(pending_preemption[0].owner_controller == "BackgroundController");
+    assert(pending_preemption[0].transaction_id == "tx-background-1");
+    assert(pending_preemption[0].preemption_requested);
+
+    // Emergency arbitration requests owner resolution; it must not erase the lease.
+    coord.emergency_preempt_all("thermal-emergency");
+    pending_preemption = coord.active_leases();
+    assert(pending_preemption.size() == 1);
+    assert(pending_preemption[0].active);
+    assert(pending_preemption[0].owner_controller == "BackgroundController");
+    assert(pending_preemption[0].transaction_id == "tx-background-1");
+    coord.release_lease(coreflow::MutationDomain::CpuPolicy, "BackgroundController");
+    assert(coord.active_leases().empty());
+
     // 13. Thermal Decision Correctness & False-Positive Elimination (TASK 01)
     // 13.1 Constant thermal pressure must NOT yield false-positive IMPROVED
     tuner.reset();
