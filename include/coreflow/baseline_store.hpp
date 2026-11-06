@@ -91,8 +91,8 @@ private:
 
 // Legacy RAII helper for isolated, single-controller tests or bring-up only.
 // It is not a replacement for a coordinator-owned controller transaction.
-[[deprecated("Use a coordinator-owned controller transaction for runtime mutations")]]
-class ScopedBaselineLock {
+class [[deprecated("Use a coordinator-owned controller transaction for runtime mutations")]]
+ScopedBaselineLock {
 public:
     explicit ScopedBaselineLock(std::vector<std::pair<std::string, std::string>> mutations);
     ~ScopedBaselineLock();
