@@ -285,6 +285,10 @@ public:
     // Returns false and enters RECOVERY_REQUIRED if any node fails to restore.
     bool rollback_active(std::string_view reason = "Operator or thermal rollback");
 
+    // Requests global emergency preemption, then rolls back this tuner's transaction.
+    // Other owners retain their leases until they complete their own verified rollback.
+    bool emergency_rollback(std::string_view reason = "Emergency rollback");
+
     // Resets all active mutations, bandit statistics, and observation state.
     void reset();
 
