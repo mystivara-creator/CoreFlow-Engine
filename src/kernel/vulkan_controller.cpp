@@ -1019,6 +1019,18 @@ bool VulkanController::apply_workload_policy(
 
     auto& baseline = BaselineStore::instance();
     bool ok = true;
+    if (!active_mutation_paths_.empty()) {
+        const auto audit = baseline.get_audit_trail();
+        for (const auto& path : active_mutation_paths_) {
+            const auto it = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == path;
+            });
+            if (it == audit.end() || !baseline.owns_expected_state(path, it->active_value)) {
+                if (!rollback_gpu_transaction_locked()) return false;
+                return false; // An OEM/kernel owner changed the node; do not reassert this tick.
+            }
+        }
+    }
     const auto mutate = [&](const std::string& path, const std::string& value) {
         if (path.empty()) return true;
         const std::string current = read_first_line(path);
