@@ -21,12 +21,12 @@ bool number(const std::string& path, uint64_t& value) {
     return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value > 0;
 }
 }
-namespace {
-constexpr std::string_view kFrequencyControllerName = "FrequencyController";
-}
-FrequencyController::FrequencyController(std::string root) : root_(std::move(root)) {
+FrequencyController::FrequencyController(std::string root)
+    : root_(std::move(root)),
+      controller_name_("FrequencyController@" +
+                       std::to_string(reinterpret_cast<uintptr_t>(this))) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
-        kFrequencyControllerName,
+        controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
             return handle_preemption(domain, transaction_id);
         });
@@ -37,20 +37,20 @@ FrequencyController::~FrequencyController() {
         if (!cpu_transaction_id_.empty()) (void)rollback_domain(false);
         if (!gpu_transaction_id_.empty()) (void)rollback_domain(true);
     }
-    CentralMutationCoordinator::instance().unregister_preemption_handler(kFrequencyControllerName);
+    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
 }
 bool FrequencyController::acquire_domain_lease(bool gpu) {
     auto& transaction_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
     const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
     if (!transaction_id.empty()) {
         return CentralMutationCoordinator::instance().acquire_lease(
-            domain, kFrequencyControllerName, transaction_id,
+            domain, controller_name_, transaction_id,
             ControllerPriority::WorkloadOptimization);
     }
     transaction_id = "frequency-" + std::string(gpu ? "gpu-" : "cpu-") +
                      std::to_string(++lease_generation_);
     if (!CentralMutationCoordinator::instance().acquire_lease(
-            domain, kFrequencyControllerName, transaction_id,
+            domain, controller_name_, transaction_id,
             ControllerPriority::WorkloadOptimization)) {
         transaction_id.clear();
         return false;
@@ -62,7 +62,7 @@ void FrequencyController::release_domain_lease(bool gpu) noexcept {
     if (transaction_id.empty()) return;
     const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
     CentralMutationCoordinator::instance().release_lease(
-        domain, kFrequencyControllerName, transaction_id);
+        domain, controller_name_, transaction_id);
     transaction_id.clear();
 }
 bool FrequencyController::rollback_domain(bool gpu) {
