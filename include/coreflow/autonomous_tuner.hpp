@@ -157,7 +157,7 @@ public:
     void release_lease(
         MutationDomain domain,
         std::string_view controller_name,
-        std::string_view transaction_id = {}) noexcept;
+        std::string_view transaction_id) noexcept;
     bool register_preemption_handler(std::string_view controller_name, PreemptionHandler handler);
     void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
