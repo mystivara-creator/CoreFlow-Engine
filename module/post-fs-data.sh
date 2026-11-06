@@ -85,7 +85,7 @@ if case "$BRAND" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac || \
    case "$MANUFACTURER" in *xiaomi*|*redmi*|*poco*) true;; *) false;; esac; then
     
     resetprop -n ro.config.low_ram false
-    resetprop -n ro.config.low_ram.middle.threshold_gb 0
+    resetprop -n ro.config.low_ram.middle.threshold_gb 1
 else
     echo "CFAE System Framework"
 fi
