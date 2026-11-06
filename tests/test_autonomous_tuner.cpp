@@ -907,27 +907,27 @@ int main() {
     coordinator.unregister_preemption_handler("EmergencyGateController");
     assert(coordinator.active_leases().empty());
 
-    // A throwing third-party callback must not terminate the daemon or make the
-    // coordinator release ownership. The failed acknowledgement keeps admission
-    // closed until an operator/recovery path resolves the retained lease.
+    // A controller that cannot safely restore must return a failed
+    // acknowledgement. Ownership remains active and admission stays closed
+    // until an explicit recovery path resolves the retained lease.
     coordinator.reset();
-    assert(coordinator.register_preemption_handler("ThrowingController",
-        [](coreflow::MutationDomain, std::string_view, std::string_view) -> bool {
-            throw 1;
+    assert(coordinator.register_preemption_handler("UnresolvedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return false;
         }));
     assert(coordinator.acquire_lease(
-        coreflow::MutationDomain::ThermalCore, "ThrowingController", "throwing-tx",
+        coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx",
         coreflow::ControllerPriority::WorkloadOptimization));
     coordinator.begin_emergency_recovery();
-    coordinator.emergency_preempt_all("test-throwing-preemption-handler");
-    const auto throwing_leases = coordinator.active_leases();
-    assert(throwing_leases.size() == 1);
-    assert(throwing_leases.front().preemption_requested);
+    coordinator.emergency_preempt_all("test-failed-preemption-acknowledgement");
+    const auto unresolved_leases = coordinator.active_leases();
+    assert(unresolved_leases.size() == 1);
+    assert(unresolved_leases.front().preemption_requested);
     assert(!coordinator.complete_emergency_recovery());
     coordinator.release_lease(
-        coreflow::MutationDomain::ThermalCore, "ThrowingController", "throwing-tx");
+        coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx");
     assert(coordinator.complete_emergency_recovery());
-    coordinator.unregister_preemption_handler("ThrowingController");
+    coordinator.unregister_preemption_handler("UnresolvedController");
     assert(coordinator.active_leases().empty());
 
     fs::remove_all(root);
