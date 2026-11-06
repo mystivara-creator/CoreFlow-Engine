@@ -66,7 +66,14 @@ int main() {
         assert(!baseline.has_active_mutations());
         assert(!controller.migrate_task(::getpid(), coreflow::CgroupTarget::Background));
         assert(!controller.unlock_vendor_restrictions());
+
+        // Destruction must synchronously restore any still-owned transaction.
+        assert(controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 300));
+        assert(coordinator.active_leases().size() == 1);
     }
+    assert(get(weight) == "600");
+    assert(coordinator.active_leases().empty());
+    assert(!baseline.has_active_mutations());
 
     fs::remove_all(root);
     return 0;
