@@ -335,6 +335,31 @@ int main() {
     assert(recovery_leases.size() == 1);
     assert(recovery_leases[0].owner_controller == "AutonomousTuner");
     assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
+
+    // Emergency must still preempt other owners even when the recovery retry fails early.
+    auto& recovery_coord = coreflow::CentralMutationCoordinator::instance();
+    assert(recovery_coord.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq,
+        "ExternalGpuController",
+        "tx-gpu-during-recovery",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    const auto emergency_during_recovery = tuner.step({
+        .thermal_pressure = 92.0,
+        .thermal_emergency = true,
+    });
+    assert(emergency_during_recovery.recovery_required);
+    const auto leases_during_recovery = recovery_coord.active_leases();
+    bool gpu_preemption_requested = false;
+    for (const auto& lease : leases_during_recovery) {
+        if (lease.owner_controller == "ExternalGpuController" &&
+            lease.transaction_id == "tx-gpu-during-recovery") {
+            gpu_preemption_requested = lease.preemption_requested;
+        }
+    }
+    assert(gpu_preemption_requested);
+    recovery_coord.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ExternalGpuController");
+
     // Recreated path has a new inode and already contains OEM baseline; adopt it safely.
     put(up_rate_path, "2000");
     tuner.reset();
