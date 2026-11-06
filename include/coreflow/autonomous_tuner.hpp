@@ -13,6 +13,8 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -132,18 +134,45 @@ public:
     void release_lease(MutationDomain domain, std::string_view controller_name) noexcept;
     void release_all_for_controller(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
+    void complete_emergency_recovery(bool baseline_verified) noexcept;
+    [[nodiscard]] bool emergency_active() const noexcept;
+    [[nodiscard]] bool authorize_mutation(MutationDomain domain,
+        std::string_view controller_name, std::string_view transaction_id,
+        ControllerPriority priority) const noexcept;
+    [[nodiscard]] bool allow_unscoped_mutation(MutationDomain domain) const noexcept;
 
     [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
                                                  std::string_view controller_name,
                                                  ControllerPriority requester_priority) const noexcept;
     [[nodiscard]] std::vector<DomainLease> active_leases() const;
-    [[nodiscard]] uint64_t conflict_rejections() const noexcept { return conflict_rejections_; }
+    [[nodiscard]] uint64_t conflict_rejections() const noexcept;
     void reset() noexcept;
 
 private:
     CentralMutationCoordinator() = default;
+    mutable std::mutex mutex_;
     std::vector<DomainLease> leases_;
     uint64_t conflict_rejections_{0};
+    bool emergency_latched_{false};
+    std::string emergency_reason_;
+};
+
+// Every controller must hold a domain lease for the full synchronous mutation
+// window. Higher priority never steals an active lease; it must wait for release.
+class MutationLeaseGuard {
+public:
+    MutationLeaseGuard(std::string_view owner, std::string_view transaction,
+                       ControllerPriority priority);
+    ~MutationLeaseGuard();
+    MutationLeaseGuard(const MutationLeaseGuard&) = delete;
+    MutationLeaseGuard& operator=(const MutationLeaseGuard&) = delete;
+    bool acquire(MutationDomain domain, std::string* conflict_reason = nullptr);
+    [[nodiscard]] bool owns(MutationDomain domain) const noexcept;
+private:
+    std::string owner_;
+    std::vector<MutationDomain> acquired_;
+    std::string transaction_;
+    ControllerPriority priority_;
 };
 
 struct BlockQueueSurface {
@@ -284,6 +313,7 @@ public:
 
     // Resets all active mutations, bandit statistics, and observation state.
     void reset();
+    bool emergency_stop(std::string_view reason);
 
     [[nodiscard]] bool is_candidate_eligible(std::string_view id) const noexcept;
     [[nodiscard]] bool is_candidate_eligible_for_context(std::string_view id,
@@ -409,6 +439,7 @@ private:
     double prev_thermal_pressure_{45.0};
     bool has_prev_thermal_{false};
     double noise_floor_{0.05};
+    std::array<double, 7> domain_noise_floors_{{0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05}};
     uint32_t settling_ticks_remaining_{0};
 
     WorkloadClass current_workload_{WorkloadClass::Idle};
@@ -440,6 +471,12 @@ private:
     double latest_pressure_velocity_{0.0};
     double min_after_io_psi_{0.0};
     double max_after_io_psi_{0.0};
+    double min_after_mem_psi_{0.0};
+    double max_after_mem_psi_{0.0};
+    double min_after_cpu_psi_{0.0};
+    double max_after_cpu_psi_{0.0};
+    double min_after_thermal_{0.0};
+    double max_after_thermal_{0.0};
     uint32_t obs_ticks_{0};
     uint32_t obs_window_{3};
     uint32_t idle_streak_{0};

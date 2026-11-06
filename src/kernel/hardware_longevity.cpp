@@ -1,5 +1,6 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -41,6 +42,9 @@ void HardwareLongevityManager::discover_battery_node() {
 }
 bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
     if (!config_.enable_battery_step_charging || battery_node_.empty()) return false;
+    MutationLeaseGuard lease("HardwareLongevityManager", "battery-thermal-charge-limit",
+                             ControllerPriority::ThermalStabilization);
+    if (!lease.acquire(MutationDomain::PowerLongevity)) return false;
     auto& store = BaselineStore::instance();
     uint64_t current = 0;
     if (!positive(line(battery_node_), current) || current != last_charge_ua_) {
@@ -63,7 +67,10 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
     if (temperature >= config_.battery_step_temp_threshold && !battery_stepped_) {
         const auto target = std::min(charge_baseline_ua_, static_cast<uint64_t>(config_.stepped_charge_current_ma) * 1000);
         if (target >= current) return false; // Never raise an OEM charging limit.
-        if (store.apply_mutation(battery_node_, std::to_string(target))) {
+        if (store.apply_mutation_authorized(
+                battery_node_, std::to_string(target), MutationDomain::PowerLongevity,
+                "HardwareLongevityManager", "battery-thermal-charge-limit",
+                ControllerPriority::ThermalStabilization)) {
             last_charge_ua_ = target; battery_stepped_ = true; return true;
         }
     } else if (temperature <= config_.battery_step_temp_threshold - 3.0 && battery_stepped_) {
@@ -76,6 +83,9 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
 bool HardwareLongevityManager::apply_storage_pacing() {
     if (!config_.enable_ufs_burst_pacing) return true;
     if (storage_paced_) return true;
+    MutationLeaseGuard lease("HardwareLongevityManager", "storage-io-pacing",
+                             ControllerPriority::BackgroundEfficiency);
+    if (!lease.acquire(MutationDomain::PowerLongevity)) return true;
     auto& store = BaselineStore::instance();
     bool available = false;
     for (const auto& [group, weight] : {
@@ -86,7 +96,10 @@ bool HardwareLongevityManager::apply_storage_pacing() {
         if (before.rfind("default ", 0) != 0 || ::access(path.c_str(), W_OK) != 0) continue;
         uint64_t old_weight = 0;
         if (!positive(before.substr(8), old_weight) || old_weight > 10000) continue;
-        if (!store.capture(path) || !store.apply_mutation(path, "default " + std::to_string(std::clamp(weight, 1u, 10000u)))) return false;
+        if (!store.capture(path) || !store.apply_mutation_authorized(
+                path, "default " + std::to_string(std::clamp(weight, 1u, 10000u)),
+                MutationDomain::PowerLongevity, "HardwareLongevityManager",
+                "storage-io-pacing", ControllerPriority::BackgroundEfficiency)) return false;
         available = true;
     }
     // io.weight is relative arbitration, not a bandwidth cap or a UFS health guarantee.

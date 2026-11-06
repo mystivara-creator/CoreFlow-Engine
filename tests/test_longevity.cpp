@@ -1,5 +1,6 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -29,11 +30,24 @@ int main() {
     assert(!stepped.monitor_battery_thermals(95)); // CPU junction heat is not battery temperature.
     assert(get(other_node) == "2000000");
     put(other_node.parent_path() / "temp", "420");
+    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coordinator.reset();
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::PowerLongevity,
+        "ExternalSafetyGuard", "battery-held", coreflow::ControllerPriority::EmergencySafety));
+    assert(!stepped.monitor_battery_thermals(44));
+    assert(get(other_node) == "2000000");
+    coordinator.release_lease(coreflow::MutationDomain::PowerLongevity, "ExternalSafetyGuard");
     assert(stepped.monitor_battery_thermals(44)); assert(get(other_node) == "1500000");
     put(other_node, "700000"); // A newer OEM thermal limit wins.
     assert(!stepped.monitor_battery_thermals(44)); baseline.rollback_all(); assert(get(other_node) == "700000");
     put(root / "fs/cgroup/top-app/io.weight", "default 100");
-    assert(guard.apply_storage_pacing()); assert(get(root / "fs/cgroup/top-app/io.weight") == "default 800");
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::PowerLongevity,
+        "ExternalSafetyGuard", "storage-held", coreflow::ControllerPriority::EmergencySafety));
+    assert(guard.apply_storage_pacing());
+    assert(get(root / "fs/cgroup/top-app/io.weight") == "default 100");
+    coordinator.release_lease(coreflow::MutationDomain::PowerLongevity, "ExternalSafetyGuard");
+    assert(guard.apply_storage_pacing());
+    assert(get(root / "fs/cgroup/top-app/io.weight") == "default 800");
     baseline.rollback_all(); assert(get(root / "fs/cgroup/top-app/io.weight") == "default 100");
     fs::remove_all(root);
 }

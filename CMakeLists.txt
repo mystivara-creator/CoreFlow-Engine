@@ -83,7 +83,7 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
 
-    add_executable(test_vulkan_controller tests/test_vulkan_controller.cpp src/kernel/vulkan_controller.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_vulkan_controller tests/test_vulkan_controller.cpp src/kernel/vulkan_controller.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_vulkan_controller PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     add_test(NAME VulkanControllerTest COMMAND test_vulkan_controller)
 
@@ -91,11 +91,11 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_neural_predictor PRIVATE ${CMAKE_DL_LIBS} m)
     add_test(NAME NeuralPredictorTest COMMAND test_neural_predictor)
 
-    add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_frequency_controller tests/test_frequency_controller.cpp src/kernel/frequency_controller.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_frequency_controller PRIVATE m)
     add_test(NAME FrequencyOwnershipTest COMMAND test_frequency_controller)
 
-    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/autonomous_tuner.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
 
@@ -109,6 +109,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_baseline_rollback
         tests/test_baseline_rollback.cpp
         src/kernel/baseline_store.cpp
+        src/kernel/autonomous_tuner.cpp
     )
     target_include_directories(test_baseline_rollback PRIVATE include)
     target_link_libraries(test_baseline_rollback PRIVATE m)
@@ -150,6 +151,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_uclamp
         tests/test_uclamp.cpp
         src/kernel/uclamp.cpp
+        src/kernel/autonomous_tuner.cpp
         src/kernel/baseline_store.cpp
     )
     target_include_directories(test_uclamp PRIVATE include)

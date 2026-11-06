@@ -878,6 +878,17 @@ int main(int argc, char* argv[]) {
             return;
         }
 
+        auto& mutation_coordinator = CentralMutationCoordinator::instance();
+        if (mutation_coordinator.emergency_active()) {
+            (void)baseline.rollback_all();
+            if (!baseline.has_active_mutations()) {
+                mutation_coordinator.complete_emergency_recovery(true);
+            } else {
+                emit_log(true, "[CoreFlow][Safety] Emergency latch remains active: OEM restoration is not yet verified.");
+                return;
+            }
+        }
+
         // If an OEM PowerHAL touch boost temporarily wrote to UClamp, yield for the active boost
         // and resynchronize ownership rather than terminating the daemon.
         bool uclamp_yield_this_tick = false;
@@ -933,14 +944,27 @@ int main(int argc, char* argv[]) {
             thermal_ready = true; unavailable_reported = false;
         }
 
-        // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
+        // Global emergency gate must run before any controller can mutate this tick.
+        // Lease preemption alone is insufficient: stop admission, unwind the tuner, then
+        // verify restoration of every controller-owned node through the shared BaselineStore.
         const float batt = ThermalMonitor::instance().battery_celsius();
-        if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
-            emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
-                     std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
-                     "°C). Rolling back mutations to hardware fail-safe baseline.");
+        const bool catastrophic_thermal =
+            thermal.emergency || thermal.pressure >= 88.0 ||
+            (batt > 0.0f && batt >= 58.0f) || temp >= 95.0f;
+        if (catastrophic_thermal) {
+            mutation_coordinator.emergency_preempt_all("CatastrophicThermalEmergency");
+            const bool tuner_restored =
+                AutonomousTuner::instance().emergency_stop("Catastrophic thermal boundary reached.");
             (void)baseline.rollback_all();
+            HardwareLongevityManager::instance().restore_oem_baseline();
+            const bool baseline_verified = !baseline.has_active_mutations();
+            mutation_coordinator.complete_emergency_recovery(baseline_verified);
             applied = false;
+            emit_log(true, "[CoreFlow][Safety] Emergency recovery " +
+                std::string(baseline_verified ? "verified" : "incomplete") +
+                "; tuner_rollback=" + std::string(tuner_restored ? "verified" : "pending") +
+                ". New mutations remain blocked until OEM baseline restoration is verified.");
+            last_tick = std::chrono::steady_clock::now();
             return;
         }
 
@@ -1038,7 +1062,7 @@ int main(int argc, char* argv[]) {
         }
 
         // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
-        if (!frequencies.apply(active_capacity_scale)) {
+        if (!frequencies.apply(active_capacity_scale, thermal_limit_hit)) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
         (void)HardwareLongevityManager::instance().apply_storage_pacing();

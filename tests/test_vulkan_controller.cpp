@@ -6,6 +6,7 @@
 
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -612,6 +613,15 @@ int main() {
     assert(snap_safe.gpu_surface.vendor == GpuVendor::QualcommAdreno);
     assert(snap_safe.gpu_surface.current_freq_mhz == 950U);
     assert(snap_safe.gpu_surface.max_freq_mhz == 1100U);
+
+    // Verify the GPU domain cannot be mutated while another controller owns its lease.
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.reset();
+    assert(coordinator.acquire_lease(MutationDomain::GpuDevfreq,
+        "ExternalSafetyGuard", "gpu-held", ControllerPriority::EmergencySafety));
+    assert(!vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
+    assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
+    coordinator.release_lease(MutationDomain::GpuDevfreq, "ExternalSafetyGuard");
 
     // Verify workload policy boosts adrenoboost under SustainedLoad and rolls back cleanly
     assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));

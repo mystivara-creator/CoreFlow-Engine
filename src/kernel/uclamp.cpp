@@ -5,6 +5,7 @@
  * @license MIT
  */
 #include "coreflow/uclamp.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
@@ -265,7 +266,12 @@ bool UclampGovernor::apply_state(WorkloadState state,
             top.uclamp_max = base_max == 0 ? 0u : std::max(1u, (base_max * 7u) / 8u);
             break;
     }
-    return write_top_app(top.uclamp_min, top.uclamp_max);
+    const auto priority = state == WorkloadState::ThermalGuard
+        ? ControllerPriority::ThermalStabilization
+        : state == WorkloadState::PressureGuard
+            ? ControllerPriority::PressureGuard
+            : ControllerPriority::WorkloadOptimization;
+    return write_top_app(top.uclamp_min, top.uclamp_max, priority);
 }
 
 std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
@@ -293,14 +299,23 @@ bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
     if (state == WorkloadState::ThermalGuard) minimum = 0;
     else if (state == WorkloadState::PressureGuard) minimum /= 4;
     else if (state == WorkloadState::SustainedLoad) minimum += minimum / 2;
-    return write_top_app(std::min(minimum, maximum), maximum);
+    const auto priority = state == WorkloadState::ThermalGuard
+        ? ControllerPriority::ThermalStabilization
+        : state == WorkloadState::PressureGuard
+            ? ControllerPriority::PressureGuard
+            : ControllerPriority::WorkloadOptimization;
+    return write_top_app(std::min(minimum, maximum), maximum, priority);
 }
 
-bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
+bool UclampGovernor::write_top_app(
+    uint32_t min_val, uint32_t max_val, ControllerPriority priority) {
     if (!supported_) return false;
     if (!owned_values_intact()) return false;
     min_val = std::clamp(min_val, 0u, 1024u);
     max_val = std::clamp(max_val, min_val, 1024u);
+
+    MutationLeaseGuard lease("UclampGovernor", "top-app-uclamp-budget", priority);
+    if (!lease.acquire(MutationDomain::UclampCgroup)) return false;
 
     auto& baseline = BaselineStore::instance();
     const std::string min_path = target_path_ + "/cpu.uclamp.min";
@@ -309,11 +324,19 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
 
     bool success = false;
     if (max_val < current_min) {
-        success = baseline.apply_mutation(min_path, encode(min_val, false)) &&
-                  baseline.apply_mutation(max_path, encode(max_val, true));
+        success = baseline.apply_mutation_authorized(
+                      min_path, encode(min_val, false), MutationDomain::UclampCgroup,
+                      "UclampGovernor", "top-app-uclamp-budget", priority) &&
+                  baseline.apply_mutation_authorized(
+                      max_path, encode(max_val, true), MutationDomain::UclampCgroup,
+                      "UclampGovernor", "top-app-uclamp-budget", priority);
     } else {
-        success = baseline.apply_mutation(max_path, encode(max_val, true)) &&
-                  baseline.apply_mutation(min_path, encode(min_val, false));
+        success = baseline.apply_mutation_authorized(
+                      max_path, encode(max_val, true), MutationDomain::UclampCgroup,
+                      "UclampGovernor", "top-app-uclamp-budget", priority) &&
+                  baseline.apply_mutation_authorized(
+                      min_path, encode(min_val, false), MutationDomain::UclampCgroup,
+                      "UclampGovernor", "top-app-uclamp-budget", priority);
     }
     if (success) {
         last_min_ = get_top_app_min();

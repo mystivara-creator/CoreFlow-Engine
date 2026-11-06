@@ -84,7 +84,7 @@ jobs:
           else
             npm install --no-package-lock --no-audit --no-fund
           fi
-          node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
+          node --experimental-strip-types --experimental-transform-types --test webui/engine/__tests__/autonomousEngine.test.ts
           npm run build
 
       - name: Validate module shell syntax & lifecycle
@@ -339,6 +339,7 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub Release with Functional Feature Changelog
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

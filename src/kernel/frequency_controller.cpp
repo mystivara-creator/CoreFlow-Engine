@@ -1,5 +1,6 @@
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -62,11 +63,17 @@ void FrequencyController::discover(bool cpu, bool gpu) {
     if (cpu) scan(root_ + "/devices/system/cpu/cpufreq", false);
     if (gpu) scan(root_ + "/class/devfreq", true);
 }
-bool FrequencyController::apply(double scale) {
+bool FrequencyController::apply(double scale, bool thermal_guard) {
     if (!std::isfinite(scale) || scale < 0.4 || scale > 1.0) return false;
     auto& store = BaselineStore::instance();
+    const auto priority = thermal_guard
+        ? ControllerPriority::ThermalStabilization
+        : ControllerPriority::WorkloadOptimization;
+    MutationLeaseGuard lease("FrequencyController", "frequency-capacity-budget", priority);
+    const bool cpu_owned = cpu_count() == 0 || lease.acquire(MutationDomain::CpuPolicy);
+    const bool gpu_owned = gpu_count() == 0 || lease.acquire(MutationDomain::GpuDevfreq);
     for (auto& domain : domains_) {
-        if (domain.retired) continue;
+        if (domain.retired || (domain.gpu ? !gpu_owned : !cpu_owned)) continue;
         uint64_t actual = 0, floor = 0;
         if (!number(domain.maximum, actual) || !number(domain.minimum, floor) || actual != domain.last) {
             // OEM ownership changes retire this domain for the process lifetime.
@@ -94,7 +101,10 @@ bool FrequencyController::apply(double scale) {
             continue;
         }
         if (target == actual) continue;
-        if (!store.apply_mutation(domain.maximum, std::to_string(target))) {
+        if (!store.apply_mutation_authorized(
+                domain.maximum, std::to_string(target),
+                domain.gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy,
+                "FrequencyController", "frequency-capacity-budget", priority)) {
             domain.retired = true;
             (void)store.rollback(domain.maximum);
             continue;

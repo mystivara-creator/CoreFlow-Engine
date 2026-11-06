@@ -10,6 +10,7 @@
 #include <string_view>
 
 namespace coreflow {
+enum class ControllerPriority : uint8_t;
 
 class UclampGovernor {
 public:
@@ -48,7 +49,7 @@ private:
 
     void discover(std::string_view explicit_root);
     bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;
-    bool write_top_app(uint32_t min_val, uint32_t max_val);
+    bool write_top_app(uint32_t min_val, uint32_t max_val, ControllerPriority priority);
     [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
     [[nodiscard]] uint32_t read_uclamp_node(const std::string& path) const;
 };

@@ -4,6 +4,7 @@
  * Never call these methods from a POSIX fatal signal handler.
  */
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
 #include <cerrno>
@@ -135,6 +136,19 @@ bool hex_decode(std::string_view input, std::string& out) {
         out.push_back(static_cast<char>((high << 4) | low));
     }
     return !out.empty();
+}
+
+MutationDomain infer_mutation_domain(const std::string& path) noexcept {
+    if (path.find("/queue/") != std::string::npos) return MutationDomain::BlockIo;
+    if (path.find("/cpufreq/") != std::string::npos) return MutationDomain::CpuPolicy;
+    if (path.find("/devfreq/") != std::string::npos) return MutationDomain::GpuDevfreq;
+    if (path.find("/sys/vm/") != std::string::npos) return MutationDomain::VmMemory;
+    if (path.find("/cpu.uclamp.") != std::string::npos ||
+        path.find("/cpu.weight") != std::string::npos ||
+        path.find("/cpuset.cpus") != std::string::npos) return MutationDomain::UclampCgroup;
+    if (path.find("/power_supply/") != std::string::npos ||
+        path.find("/fs/cgroup/") != std::string::npos) return MutationDomain::PowerLongevity;
+    return MutationDomain::ThermalCore;
 }
 
 bool readback_matches(const std::string& path, const std::string& expected, const std::string& actual) {
@@ -484,8 +498,13 @@ bool BaselineStore::capture(const std::string& path) {
         uint64_t cur_ino = 0;
         const std::string current = read_raw_node(path, &cur_dev, &cur_ino);
         if (current.empty()) return false;
-        if (!it->second.is_modified &&
-            (it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino))) {
+        const bool inode_replaced =
+            it->second.ino != 0 && (cur_dev != it->second.dev || cur_ino != it->second.ino);
+        const bool value_replaced =
+            !readback_matches(path, it->second.active_value, current);
+        if (!it->second.is_modified && (inode_replaced || value_replaced)) {
+            // With no active CoreFlow mutation, an external writer's new value is
+            // the latest OEM/system baseline even when the inode remains unchanged.
             it->second.factory_value = current;
             it->second.active_value = current;
             it->second.prior_value = current;
@@ -546,9 +565,42 @@ size_t BaselineStore::rollback_locked() {
     return restored;
 }
 
-bool BaselineStore::apply_mutation(const std::string& path, const std::string& new_value) {
+bool BaselineStore::apply_mutation(
+    const std::string& path, const std::string& new_value) {
+    // Production writes must carry an explicit controller lease. The unscoped
+    // overload exists only for isolated deterministic tests and recovery fixtures.
+    const char* test_dir = std::getenv("COREFLOW_TEST_STATE_DIR");
+    if (test_dir == nullptr || *test_dir == '\0') return false;
+    return apply_mutation_impl(path, new_value, false, infer_mutation_domain(path),
+                               {}, {}, ControllerPriority::BackgroundEfficiency);
+}
+
+bool BaselineStore::apply_mutation_authorized(
+    const std::string& path, const std::string& new_value,
+    MutationDomain domain, std::string_view controller_name,
+    std::string_view transaction_id, ControllerPriority priority) {
+    return apply_mutation_impl(path, new_value, true, domain,
+                               controller_name, transaction_id, priority);
+}
+
+bool BaselineStore::apply_mutation_impl(
+    const std::string& path, const std::string& new_value, bool authorized,
+    MutationDomain domain, std::string_view controller_name,
+    std::string_view transaction_id, ControllerPriority priority) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!recovery_checked_ || identity_unavailable_) return false;
+
+    auto mutation_allowed = [&]() {
+        const auto& coordinator = CentralMutationCoordinator::instance();
+        return authorized
+            ? coordinator.authorize_mutation(domain, controller_name, transaction_id, priority)
+            : coordinator.allow_unscoped_mutation(domain);
+    };
+    // The coordinator is checked while holding the store lock, and checked again
+    // immediately before the kernel write. This closes the emergency-preemption
+    // window between write-ahead journal commit and the actual sysfs/procfs write.
+    if (!mutation_allowed()) return false;
+
     if (!path_safe(path) || new_value.empty()) {
         rollback_locked();
         return false;
@@ -584,6 +636,7 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         return false;
     }
     if (it->second.active_value == new_value && actual == new_value) return true;
+
     // Write-ahead: fsync original value and inode identity before any kernel write.
     const bool previous_modified = it->second.is_modified;
     const std::string previous_value = it->second.active_value;
@@ -598,6 +651,14 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         it->second.active_value = previous_value;
         it->second.prior_value = previous_prior;
         rollback_locked();
+        return false;
+    }
+
+    if (!mutation_allowed()) {
+        it->second.is_modified = previous_modified;
+        it->second.active_value = previous_value;
+        it->second.prior_value = previous_prior;
+        if (!persist_locked()) rollback_locked();
         return false;
     }
     if (!write_raw_node(path, new_value, cur_dev, cur_ino)) {

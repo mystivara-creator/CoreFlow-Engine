@@ -13,11 +13,14 @@
 
 #include "types.hpp"
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <mutex>
 #include <vector>
 
 namespace coreflow {
+enum class MutationDomain : uint8_t;
+enum class ControllerPriority : uint8_t;
 
 struct NodeSnapshot {
     std::string path;
@@ -38,6 +41,9 @@ public:
 
     /// Record a planned mutation; returns false if node wasn't snapshotted or write failed
     bool apply_mutation(const std::string& path, const std::string& new_value);
+    bool apply_mutation_authorized(const std::string& path, const std::string& new_value,
+        MutationDomain domain, std::string_view controller_name,
+        std::string_view transaction_id, ControllerPriority priority);
 
     /// Roll back a specific node to factory value
     bool rollback(const std::string& path);
@@ -81,6 +87,9 @@ private:
     void init_paths_and_boot_id_locked();
     bool persist_locked();
     size_t rollback_locked();
+    bool apply_mutation_impl(const std::string& path, const std::string& new_value,
+        bool authorized, MutationDomain domain, std::string_view controller_name,
+        std::string_view transaction_id, ControllerPriority priority);
 
     std::string read_raw_node(const std::string& path, uint64_t* out_dev = nullptr, uint64_t* out_ino = nullptr) const;
     bool write_raw_node(const std::string& path, const std::string& value, uint64_t expected_dev = 0, uint64_t expected_ino = 0);

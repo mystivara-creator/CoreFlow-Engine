@@ -8,6 +8,7 @@
 
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
@@ -933,6 +934,12 @@ bool VulkanController::apply_workload_policy(
     std::lock_guard<std::mutex> lock(mutex_);
     if (!snap_.gpu_surface.available) return true;
 
+    MutationLeaseGuard lease(
+        "VulkanController", "gpu-workload-policy",
+        thermal_guard ? ControllerPriority::ThermalStabilization
+                      : ControllerPriority::WorkloadOptimization);
+    if (!lease.acquire(MutationDomain::GpuDevfreq)) return false;
+
     auto& baseline = BaselineStore::instance();
     bool ok = true;
 
@@ -948,7 +955,11 @@ bool VulkanController::apply_workload_policy(
                 target_boost_num = 1;
                 target_boost = "1";
             }
-            if (baseline.apply_mutation(adrenoboost_node_, target_boost)) {
+            if (baseline.apply_mutation_authorized(
+                    adrenoboost_node_, target_boost, MutationDomain::GpuDevfreq,
+                    "VulkanController", "gpu-workload-policy",
+                    thermal_guard ? ControllerPriority::ThermalStabilization
+                                  : ControllerPriority::WorkloadOptimization)) {
                 snap_.gpu_surface.adrenoboost_level = target_boost_num;
             } else {
                 ok = false;
@@ -956,14 +967,22 @@ bool VulkanController::apply_workload_policy(
         }
         if (!bus_split_node_.empty()) {
             const std::string bus_val = "1";
-            if (baseline.apply_mutation(bus_split_node_, bus_val)) {
+            if (baseline.apply_mutation_authorized(
+                    bus_split_node_, bus_val, MutationDomain::GpuDevfreq,
+                    "VulkanController", "gpu-workload-policy",
+                    thermal_guard ? ControllerPriority::ThermalStabilization
+                                  : ControllerPriority::WorkloadOptimization)) {
                 snap_.gpu_surface.bus_split_enabled = true;
             }
         }
         if (!throttling_node_.empty()) {
             // Always keep hardware thermal throttling safety enabled
             const std::string throt_val = "1";
-            if (baseline.apply_mutation(throttling_node_, throt_val)) {
+            if (baseline.apply_mutation_authorized(
+                    throttling_node_, throt_val, MutationDomain::GpuDevfreq,
+                    "VulkanController", "gpu-workload-policy",
+                    thermal_guard ? ControllerPriority::ThermalStabilization
+                                  : ControllerPriority::WorkloadOptimization)) {
                 snap_.gpu_surface.throttling_enabled = true;
             }
         }
@@ -973,7 +992,11 @@ bool VulkanController::apply_workload_policy(
     if (snap_.gpu_surface.vendor == GpuVendor::ArmMali && !mali_policy_node_.empty()) {
         const std::string cur_policy = read_first_line(mali_policy_node_);
         if (cur_policy == "coarse_demand" || cur_policy == "always_on") {
-            (void)baseline.apply_mutation(mali_policy_node_, "coarse_demand");
+            (void)baseline.apply_mutation_authorized(
+                mali_policy_node_, "coarse_demand", MutationDomain::GpuDevfreq,
+                "VulkanController", "gpu-workload-policy",
+                thermal_guard ? ControllerPriority::ThermalStabilization
+                              : ControllerPriority::WorkloadOptimization);
         }
     }
 

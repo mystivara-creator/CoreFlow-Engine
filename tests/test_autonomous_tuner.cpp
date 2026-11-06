@@ -91,9 +91,17 @@ int main() {
     assert(get(sda_q / "iosched/read_expire") == "250");
     assert(get(sda_q / "iosched/fifo_batch") == "8");
     assert(get(sda_q / "read_ahead_kb") == "256");
+    const fs::path tuner_state = root / "tuner_stats.state";
+    assert(get(tuner_state).rfind("CFTS3\t", 0) == 0);
+    struct stat tuner_state_stat{};
+    assert(::stat(tuner_state.c_str(), &tuner_state_stat) == 0);
+    assert((tuner_state_stat.st_mode & 0777) == 0600);
+    struct stat tuner_dir_stat{};
+    assert(::stat(root.c_str(), &tuner_dir_stat) == 0);
+    assert((tuner_dir_stat.st_mode & 0777) == 0700);
 
-    // 3. Simulate regression during 3-tick observation window (io_psi worsens from 7.5 to 11.0)
-    for (int i = 0; i < 3; ++i) {
+    // 3. Simulate regression during settling + 3-tick observation window (io_psi worsens from 7.5 to 11.0)
+    for (int i = 0; i < 4; ++i) {
         tuner.step({.cpu_psi = 8.0, .memory_psi = 0.5, .io_psi = 11.0, .thermal_pressure = 50.0});
     }
     const auto after_regress = tuner.snapshot();
@@ -119,7 +127,7 @@ int main() {
     assert(get(sda_q / "nr_requests") == "128");
 
     // 5. Simulate measurable benefit during 3-tick observation window (io_psi drops from 8.5 to 1.8)
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({.cpu_psi = 5.0, .memory_psi = 0.4, .io_psi = 1.8, .thermal_pressure = 47.0});
     }
     const auto retained = tuner.snapshot();
@@ -144,7 +152,7 @@ int main() {
     tuner.discover(sys_root.string(), proc_root.string());
     tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 8.5, .thermal_pressure = 48.0});
     assert(tuner.snapshot().active_candidate_id == "io.kyber_token_bucket");
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({.cpu_psi = 14.0, .memory_psi = 0.5, .io_psi = 12.0, .thermal_pressure = 50.0});
     }
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::Regressed);
@@ -233,7 +241,7 @@ int main() {
     }
     assert(found_sda_verified && found_zram_unsafe && found_custom_unknown);
 
-    // 10. Section 13.2: Adaptive Step Sizing, Context-Aware Anti-Repeat & CFTS2 Persistence
+    // 10. Section 13.2: Adaptive Step Sizing, Context-Aware Anti-Repeat & CFTS3 Persistence
     put(sda_q / "scheduler", "[none] mq-deadline");
     put(sda_q / "read_ahead_kb", "128");
     put(sda_q / "iosched/read_expire", "500");
@@ -241,11 +249,11 @@ int main() {
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.0, .thermal_pressure = 46.0});
     assert(tuner.snapshot().active_candidate_id == "io.mq_deadline_low_latency");
     assert(get(sda_q / "read_ahead_kb") == "256"); // 1.0 adaptive_scale -> full 2.0x = 256
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({.cpu_psi = 7.0, .memory_psi = 0.5, .io_psi = 12.0, .thermal_pressure = 48.0});
     }
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::Regressed);
-    // Verify CFTS2 persisted adaptive_scale < 1.0 and rollback reason across discover()
+    // Verify CFTS3 persisted adaptive_scale < 1.0 and rollback reason across discover()
     put(sda_q / "scheduler", "[none] mq-deadline");
     tuner.discover(sys_root.string(), proc_root.string());
     double mq_scale = 1.0;
@@ -310,6 +318,39 @@ int main() {
     coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
     assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
 
+    // Task 02: higher priority must not steal an in-flight lease.
+    coord.reset();
+    assert(coord.acquire_lease(coreflow::MutationDomain::CpuPolicy,
+        "FrequencyController", "freq-tx", coreflow::ControllerPriority::WorkloadOptimization));
+    assert(!coord.acquire_lease(coreflow::MutationDomain::CpuPolicy,
+        "EmergencySafety", "emergency-tx", coreflow::ControllerPriority::EmergencySafety));
+    assert(coord.active_leases().size() == 1);
+    assert(coord.active_leases().front().owner_controller == "FrequencyController");
+
+    // Emergency admission closes immediately, while the current owner remains visible
+    // until rollback/recovery is explicitly completed.
+    coord.emergency_preempt_all("test-emergency");
+    assert(coord.emergency_active());
+    assert(coord.active_leases().size() == 1);
+    assert(!coord.acquire_lease(coreflow::MutationDomain::BlockIo,
+        "AutonomousTuner", "blocked-tx", coreflow::ControllerPriority::ThermalStabilization));
+    const std::string emergency_node = (sda_q / "read_ahead_kb").string();
+    assert(!baseline.apply_mutation(emergency_node, "256"));
+    assert(!baseline.apply_mutation_authorized(
+        emergency_node, "256", coreflow::MutationDomain::CpuPolicy,
+        "FrequencyController", "freq-tx", coreflow::ControllerPriority::WorkloadOptimization));
+    coord.release_lease(coreflow::MutationDomain::CpuPolicy, "FrequencyController");
+    coord.complete_emergency_recovery(false);
+    assert(coord.emergency_active());
+    assert(!baseline.apply_mutation(emergency_node, "256"));
+    coord.complete_emergency_recovery(true);
+    assert(!coord.emergency_active());
+    assert(coord.active_leases().empty());
+    assert(baseline.apply_mutation(emergency_node, "256"));
+    assert(get(sda_q / "read_ahead_kb") == "256");
+    assert(baseline.rollback(emergency_node));
+    assert(get(sda_q / "read_ahead_kb") == "128");
+
     // 13. Thermal Decision Correctness & False-Positive Elimination (TASK 01)
     // 13.1 Constant thermal pressure must NOT yield false-positive IMPROVED
     tuner.reset();
@@ -327,8 +368,9 @@ int main() {
     });
     assert(t1_start.thermal_stabilization_active);
     assert(t1_start.stage == "OBSERVING");
-    // Feed 3 observation ticks with constant pressure (68.0) and zero temp trend
-    for (int i = 0; i < 3; ++i) {
+    assert(t1_start.settling_ticks_remaining == 1);
+    // First post-mutation sample is settling-only and must not enter the observation window.
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -340,6 +382,11 @@ int main() {
             .temperature_samples_count = 3,
             .thermal_guard_active = true,
         });
+        if (i == 0) {
+            const auto settling = tuner.snapshot();
+            assert(settling.observation_tick == 0);
+            assert(settling.settling_ticks_remaining == 0);
+        }
     }
     const auto t1_eval = tuner.snapshot();
     assert(t1_eval.last_verdict != "IMPROVED");
@@ -364,7 +411,7 @@ int main() {
         .temperature_samples_count = 3,
         .thermal_guard_active = true,
     });
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -396,7 +443,7 @@ int main() {
         .thermal_guard_active = true,
     });
     // Even if thermal_pressure decreases by 4.0 points, temperature is warming by +0.40 °C/s
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -427,7 +474,7 @@ int main() {
         .temperature_samples_count = 3,
         .thermal_guard_active = true,
     });
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -458,7 +505,7 @@ int main() {
         .temperature_samples_count = 3,
         .thermal_guard_active = true,
     });
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -490,7 +537,7 @@ int main() {
         .thermal_guard_active = true,
     });
     // Negative pressure velocity (-2.5 /s) but positive temperature velocity (+0.45 °C/s)
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -523,7 +570,7 @@ int main() {
         .thermal_guard_active = true,
     });
     // Trend within noise floor (-0.02 °C/s) and pressure variation within noise
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
@@ -556,7 +603,7 @@ int main() {
     });
     // Thermal pressure dropped significantly (60.0) and cooling (-0.30 °C/s),
     // but io_psi spiked from 1.0 to 12.0 (massive stall)
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,

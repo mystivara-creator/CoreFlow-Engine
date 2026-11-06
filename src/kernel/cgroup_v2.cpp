@@ -9,6 +9,7 @@
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/unique_fd.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <filesystem>
@@ -78,8 +79,14 @@ bool CgroupV2Controller::unlock_vendor_restrictions() {
 }
 
 bool CgroupV2Controller::write_node(const std::string& path, std::string_view value) {
+    MutationLeaseGuard lease("CgroupV2Controller", "cgroup-v2-policy",
+                             ControllerPriority::WorkloadOptimization);
+    if (!lease.acquire(MutationDomain::UclampCgroup)) return false;
     return BaselineStore::instance().capture(path) &&
-           BaselineStore::instance().apply_mutation(path, std::string(value));
+           BaselineStore::instance().apply_mutation_authorized(
+               path, std::string(value), MutationDomain::UclampCgroup,
+               "CgroupV2Controller", "cgroup-v2-policy",
+               ControllerPriority::WorkloadOptimization);
 }
 
 std::string CgroupV2Controller::read_node(const std::string& path) const {

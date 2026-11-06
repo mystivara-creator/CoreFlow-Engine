@@ -1,5 +1,6 @@
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,15 @@ int main() {
     put(gpu / "available_frequencies", "200000000 400000000 600000000 800000000");
     coreflow::FrequencyController controller(root.string()); controller.discover(true, true);
     assert(controller.cpu_count() == 1 && controller.gpu_count() == 1);
+    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coordinator.reset();
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::CpuPolicy,
+        "ExternalSafetyGuard", "cpu-cap-held", coreflow::ControllerPriority::EmergencySafety));
+    // CPU domain is held by another owner; GPU remains independently admissible.
+    assert(controller.apply(0.75));
+    assert(get(cpu / "scaling_max_freq") == "2000000");
+    assert(get(gpu / "max_freq") == "600000000");
+    coordinator.release_lease(coreflow::MutationDomain::CpuPolicy, "ExternalSafetyGuard");
     assert(controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1500000");
     assert(get(gpu / "max_freq") == "600000000");

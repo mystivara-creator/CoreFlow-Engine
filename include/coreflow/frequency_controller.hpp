@@ -9,7 +9,7 @@ class FrequencyController {
 public:
     explicit FrequencyController(std::string sys_root = "/sys");
     void discover(bool cpu, bool gpu);
-    bool apply(double capacity_scale);
+    bool apply(double capacity_scale, bool thermal_guard = false);
     [[nodiscard]] size_t cpu_count() const noexcept;
     [[nodiscard]] size_t gpu_count() const noexcept;
 private:

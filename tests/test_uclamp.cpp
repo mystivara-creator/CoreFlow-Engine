@@ -1,5 +1,6 @@
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -40,6 +41,13 @@ int main() {
     assert(percentage.is_supported());
     assert(percentage.encoding_name() == "percentage");
     assert(percentage.target_path() == percent_top);
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.reset();
+    assert(coordinator.acquire_lease(MutationDomain::UclampCgroup,
+        "ExternalSafetyGuard", "uclamp-held", ControllerPriority::EmergencySafety));
+    assert(!percentage.apply_state(WorkloadState::Balanced, 320, 1024));
+    assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
+    coordinator.release_lease(MutationDomain::UclampCgroup, "ExternalSafetyGuard");
     assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(read_token(percent_top + "/cpu.uclamp.min") == "31.25");
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
