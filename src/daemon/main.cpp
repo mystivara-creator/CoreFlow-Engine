@@ -348,9 +348,12 @@ void print_status() {
         << ",\"uclampMin\":" << governor.get_top_app_min()
         << ",\"uclampMax\":" << governor.get_top_app_max()
         << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
-        << ",\"cpuPressurePct\":" << safe_json_double(cpu_psi)
-        << ",\"memoryPressurePct\":" << safe_json_double(mem_psi)
-        << ",\"ioPressurePct\":" << safe_json_double(io_psi)
+        << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
+        << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
+        << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
+        << ",\"cpuPressureValid\":" << (cpu_psi.has_value() ? "true" : "false")
+        << ",\"memoryPressureValid\":" << (mem_psi.has_value() ? "true" : "false")
+        << ",\"ioPressureValid\":" << (io_psi.has_value() ? "true" : "false")
         << ",\"baselineNodesSnapshotted\":" << journal_nodes
         << ",\"socTempCelsius\":";
     if (std::isfinite(temp) && temp >= 0.0f) {
@@ -960,6 +963,9 @@ int main(int argc, char* argv[]) {
             .cpu = cpu_psi.value_or(0.0),
             .memory = memory_psi.value_or(0.0),
             .io = io_psi.value_or(0.0),
+            .cpu_valid = cpu_psi.has_value(),
+            .memory_valid = memory_psi.has_value(),
+            .io_valid = io_psi.has_value(),
         };
 
         const auto now_tick = std::chrono::steady_clock::now();
@@ -980,6 +986,9 @@ int main(int argc, char* argv[]) {
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .cpu_psi_valid = cpu_psi.has_value(),
+            .memory_psi_valid = memory_psi.has_value(),
+            .io_psi_valid = io_psi.has_value(),
             .current_scale = last_capacity_scale,
             .elapsed_seconds = elapsed,
         });
@@ -1064,6 +1073,9 @@ int main(int argc, char* argv[]) {
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .cpu_psi_valid = cpu_psi.has_value(),
+            .memory_psi_valid = memory_psi.has_value(),
+            .io_psi_valid = io_psi.has_value(),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .thermal_pressure_velocity = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
             .current_temperature_celsius = temp,
