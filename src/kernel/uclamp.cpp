@@ -105,7 +105,7 @@ std::string read_token(const fs::path& path) {
 UclampGovernor::UclampGovernor(std::string_view explicit_root) {
     discover(explicit_root);
     if (supported_) {
-        controller_name_ = "UclampGovernor@" + std::to_string(reinterpret_cast<uintptr_t>(this));
+        controller_name_ = CentralMutationCoordinator::make_controller_identity("UclampGovernor");
         (void)CentralMutationCoordinator::instance().register_preemption_handler(
             controller_name_,
             [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
@@ -152,8 +152,7 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         encoding_ = other.encoding_;
         supported_ = other.supported_;
         if (supported_ && controller_name_.empty()) {
-            controller_name_ = "UclampGovernor@" +
-                               std::to_string(reinterpret_cast<uintptr_t>(this));
+            controller_name_ = CentralMutationCoordinator::make_controller_identity("UclampGovernor");
             register_this_handler = true;
         }
         has_written_ = false;
