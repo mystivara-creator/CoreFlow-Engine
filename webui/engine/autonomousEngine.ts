@@ -493,6 +493,9 @@ export interface AutonomousTelemetry {
   cpuPressurePct: number;
   memoryPressurePct: number;
   ioPressurePct: number;
+  cpuPressureValid?: boolean;
+  memoryPressureValid?: boolean;
+  ioPressureValid?: boolean;
   baselineNodesSnapshotted: number;
   baselineStatus: 'protected' | 'restored';
   transactionStage?: TransactionStage;
@@ -628,6 +631,9 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
     ioPressurePct: 0.4,
+    cpuPressureValid: true,
+    memoryPressureValid: true,
+    ioPressureValid: true,
     baselineNodesSnapshotted: 6,
     baselineStatus: 'protected',
     transactionStage: 'RETAINED',
