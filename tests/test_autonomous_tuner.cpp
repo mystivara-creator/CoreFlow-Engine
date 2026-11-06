@@ -97,6 +97,51 @@ int main() {
     assert(protected_lease.front().transaction_id == "replacement-tx-2");
     coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2");
 
+    // Controller callbacks must run outside the coordinator lock and only release
+    // the exact transaction after the controller acknowledges successful rollback.
+    coordinator.reset();
+    std::atomic<uint32_t> acknowledged_callbacks{0};
+    assert(coordinator.register_preemption_handler("AckController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view reason) {
+            assert(domain == coreflow::MutationDomain::GpuDevfreq);
+            assert(tx == "tx-ack");
+            assert(reason == "thermal-emergency");
+            const auto active = coordinator.active_leases(); // Would deadlock if callback held the lock.
+            assert(active.size() == 1 && active.front().preemption_requested);
+            acknowledged_callbacks.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "AckController", "tx-ack",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("thermal-emergency");
+    assert(acknowledged_callbacks.load(std::memory_order_relaxed) == 1);
+    assert(coordinator.active_leases().empty());
+    coordinator.unregister_preemption_handler("AckController");
+
+    std::atomic<uint32_t> refused_callbacks{0};
+    assert(coordinator.register_preemption_handler("RefusingController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            assert(domain == coreflow::MutationDomain::CpuPolicy);
+            assert(tx == "tx-refuse");
+            refused_callbacks.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse",
+        coreflow::ControllerPriority::BackgroundEfficiency));
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyRequester", "tx-emergency",
+        coreflow::ControllerPriority::EmergencySafety));
+    assert(refused_callbacks.load(std::memory_order_relaxed) == 1);
+    const auto refused_lease = coordinator.active_leases();
+    assert(refused_lease.size() == 1);
+    assert(refused_lease.front().owner_controller == "RefusingController");
+    assert(refused_lease.front().preemption_requested);
+    coordinator.unregister_preemption_handler("RefusingController");
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse");
+
     // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
     const auto incomplete_psi = tuner.step({
         .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
