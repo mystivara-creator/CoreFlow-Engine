@@ -15,6 +15,8 @@
 #include <string_view>
 
 namespace coreflow {
+enum class MutationDomain : uint8_t;
+enum class ControllerPriority : uint8_t;
 
 struct LongevityConfig {
     bool enable_battery_step_charging{true};
