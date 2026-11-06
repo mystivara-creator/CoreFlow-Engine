@@ -114,10 +114,11 @@ void CentralMutationCoordinator::release_lease(
     MutationDomain domain,
     std::string_view controller_name,
     std::string_view transaction_id) noexcept {
+    if (controller_name.empty() || transaction_id.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& lease : leases_) {
         if (lease.domain == domain && lease.active && lease.owner_controller == controller_name &&
-            (transaction_id.empty() || lease.transaction_id == transaction_id)) {
+            lease.transaction_id == transaction_id) {
             lease.active = false;
             lease.transaction_id.clear();
             lease.preemption_requested = false;
