@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace coreflow {
 enum class MutationDomain : uint8_t;
@@ -21,6 +22,9 @@ public:
     // An explicit root exists only for deterministic tests or controlled bring-up.
     explicit UclampGovernor(std::string_view explicit_root = {});
     ~UclampGovernor();
+    UclampGovernor(const UclampGovernor&) = delete;
+    UclampGovernor& operator=(const UclampGovernor&) = delete;
+    UclampGovernor& operator=(UclampGovernor&& other) noexcept;
 
     [[nodiscard]] bool is_supported() const noexcept;
     [[nodiscard]] std::string_view target_path() const noexcept { return target_path_; }
