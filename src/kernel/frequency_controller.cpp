@@ -23,8 +23,7 @@ bool number(const std::string& path, uint64_t& value) {
 }
 FrequencyController::FrequencyController(std::string root)
     : root_(std::move(root)),
-      controller_name_("FrequencyController@" +
-                       std::to_string(reinterpret_cast<uintptr_t>(this))) {
+      controller_name_(CentralMutationCoordinator::make_controller_identity("FrequencyController")) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
