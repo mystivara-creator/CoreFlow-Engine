@@ -39,6 +39,8 @@ EOF
 chmod +x "$MOCK_BIN/getprop" "$MOCK_BIN/resetprop"
 export PATH="$MOCK_BIN:$PATH"
 export COREFLOW_PROP_LOG="$TMP_ROOT/resetprop.log"
+export COREFLOW_PROP_STATE="$TMP_ROOT/property-state"
+: > "$COREFLOW_PROP_STATE"
 export COREFLOW_MEMINFO_PATH="$TMP_ROOT/meminfo"
 
 cp "$(dirname "$0")/../module/post-fs-data.sh" "$MOD_DIR/post-fs-data.sh"
