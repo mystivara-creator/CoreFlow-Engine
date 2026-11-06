@@ -985,9 +985,17 @@ int main() {
     assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "VanishedController", "reused-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(!coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return true;
+        }));
 
     // Admission is reopened only after the baseline and orphan lease are both
-    // reconciled; a fresh controller can then acquire the domain.
+    // reconciled; a fresh controller with a new identity can acquire the domain.
     assert(coordinator.acquire_lease(
         coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx",
         coreflow::ControllerPriority::WorkloadOptimization));
