@@ -257,17 +257,46 @@ bool FrequencyController::apply(double scale) {
             continue;
         }
 
-        if (!store.apply_mutation(domain.maximum, std::to_string(target))) {
-            ok = false;
-            continue;
-        }
-        domain.mutation_active = true;
+        const bool applied = store.apply_mutation(domain.maximum, std::to_string(target));
         uint64_t readback = 0;
-        if (!number(domain.maximum, readback) || readback != target) {
+        const bool readback_valid = number(domain.maximum, readback);
+        const auto audit = store.get_audit_trail();
+        const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == domain.maximum;
+        });
+        const bool store_still_owns_node =
+            snapshot != audit.end() && snapshot->is_modified &&
+            store.owns_expected_state(domain.maximum, snapshot->active_value);
+
+        if (!applied || !readback_valid || readback != target) {
             ok = false;
-            if (!restore_owned_domain(domain)) continue;
+            if (!readback_valid) {
+                // The node became unreadable while a transaction may still be active.
+                // Retain the lease and recovery metadata rather than claiming it is safe.
+                if (store_still_owns_node || domain.mutation_active) {
+                    domain.mutation_active = true;
+                }
+                continue;
+            }
+
+            if (store_still_owns_node) {
+                // A failed apply can leave either the prior CoreFlow value or a
+                // partially committed target. Restore this controller's path before
+                // considering its lease releasable.
+                domain.mutation_active = true;
+                domain.last = readback;
+                if (!restore_owned_domain(domain)) continue;
+            } else {
+                // BaselineStore no longer recognizes this as our mutation. Preserve
+                // an OEM/external value and retire the path instead of reasserting.
+                domain.mutation_active = false;
+                domain.last = readback;
+                if (readback != domain.baseline) domain.retired = true;
+            }
             continue;
         }
+
+        domain.mutation_active = true;
         domain.last = target;
     }
 
