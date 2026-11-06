@@ -597,3 +597,47 @@ This is defense in depth: unregister already waits for registered callbacks to d
 Workflow run [42292156748](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42292156748) was created for exact source head `eba8e0b601ba2f5130c21032607804c33a621b61` and was pending at the time of this entry. Earlier runs for intermediate heads `f99ab067` and `a375149a` were cancelled when subsequent commits arrived; they do not count as validation.
 
 **Status: SOURCE STATE NORMALIZATION APPLIED; EXACT-HEAD CI PENDING.**
+## 20. Mutation write-path inventory and removal of unscoped lease release
+
+**Source implementation head:** `deb3c3fdaf49adb100898180ca18eca973f517f8`
+
+### Write-path inventory
+
+The source review separated kernel-control mutations from daemon lifecycle/state-file operations:
+
+| Surface | Observed write path | Ownership / verification |
+|---|---|---|
+| Sysfs/procfs tuning nodes | `BaselineStore::write_raw_node()` | Canonical mutation path; no-follow open, descriptor type and inode identity checks, write-ahead CFJ4 persistence, readback verification, path-scoped rollback |
+| AutonomousTuner | `BaselineStore::apply_mutation()` | Mutations are journaled and tracked through the coordinator's transaction/domain ownership |
+| CPU/GPU frequency | `BaselineStore::apply_mutation()` | CPU and GPU domains acquire separate leases; rollback verifies the restored baseline and journal ownership |
+| Cgroup v2 CPU policy | `BaselineStore::apply_mutation()` | CPU-policy lease, transaction path set, verified multi-node rollback; task migration remains disabled rather than using an unverified direct membership write |
+| UClamp | `BaselineStore::apply_mutation()` | CPU-policy/cgroup lease; paired min/max writes are rolled back together and checked by readback |
+| Battery charge / storage pacing | `BaselineStore::apply_mutation()` | Separate PowerLongevity and BlockIo leases; charging control is restricted to the documented `constant_charge_current_max` node and never raises the OEM limit |
+| Vulkan GPU policy | `BaselineStore::apply_mutation()` | GpuDevfreq lease; active node set is rolled back and verified before lease release |
+| Daemon cgroup / OOM lifecycle | `write_sys_node_verified()` | Exact target allowlist, `O_NOFOLLOW`, complete write, reopen/readback; intentionally separate from adaptive mutation domains |
+| Daemon PID and Vulkan layer state | Direct file writes | State/coordination files, not kernel tuning controls; PID file uses exclusive flock and fsync; Vulkan state uses a temporary file and rename |
+| Reactor shutdown signal | `write(eventfd)` | Event notification only, not a system policy mutation |
+| Xiaomi boot properties | `resetprop -n` in `post-fs-data.sh` | Xiaomi/Redmi/POCO brand gate, explicit mode validation, property readback against requested value, failure logged and ignored rather than reported as success |
+| Rust bridge / Vulkan layer / power bridge / telemetry helpers | No direct mutation primitive found in the reviewed files | Operate as bridge, rendering, or telemetry surface; adaptive node writes remain routed through the C++ controller/BaselineStore layer |
+
+The shell install/service scripts also write boot tokens, attempt counters, safety markers, module files, and logs. These are installer/boot-state operations, not adaptive kernel tunables. Their state-directory and file replacement paths are subject to the script's symlink checks and temporary-file/rename pattern; they still require target-firmware installation testing.
+
+### Unscoped lease release API removed
+
+- Repository search found `release_all_for_controller()` only at its declaration and implementation; no internal caller existed.
+- The API could mark every active lease belonging to a controller inactive without a domain/transaction identifier, rollback acknowledgement, or BaselineStore verification.
+- Removed the declaration and implementation. Normal release remains transaction-scoped through `release_lease(domain, controller, transaction_id)`; the detached-owner path remains a distinct, explicitly verified global recovery operation.
+- This removes an unneeded coordinator escape hatch rather than relying on every future caller to remember its rollback contract.
+
+### Scope and residual limitations
+
+- This inventory covers the repository's current tracked C++/Rust/module shell implementation, not behavior inside opaque vendor services, dynamically loaded GPU drivers, root-manager internals, or firmware daemons.
+- File writes used for logs, configuration, PID coordination, and Vulkan layer state are not sysfs/procfs tunable writes, but their state-directory hardening and crash durability remain independent review topics.
+- Device-level ownership is not proven by host fixtures: Xiaomi thermal services and kernel drivers may change a node between read, write, and readback. The engine must preserve OEM values when ownership/readback changes and leave unknown semantics observation-only.
+- The Qualcomm KGSL `adrenoboost`, `bus_split`, and `throttling` mutation semantics remain unapproved for production enablement until matched to the target kernel source/ABI and validated on target firmware.
+
+### Exact-head validation
+
+The source removal commit is `deb3c3fdaf49adb100898180ca18eca973f517f8`. The following audit-document commit and its exact-head CoreFlow CI must complete before this PR head is recorded as validated. No local build is claimed.
+
+**Status: INTERNAL UNOWNED BULK-RELEASE API REMOVED; REVIEWED WRITE SURFACES CLASSIFIED; EXACT-HEAD CI AND PHYSICAL DEVICE VALIDATION STILL REQUIRED.**
