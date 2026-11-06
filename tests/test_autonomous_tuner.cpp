@@ -1,5 +1,6 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
+#include <algorithm>
 #include <cassert>
 #include <atomic>
 #include <chrono>
@@ -1255,6 +1256,76 @@ int main() {
     coordinator.release_lease(
         coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx");
     assert(coordinator.active_leases().empty());
+
+    // Exercise detached-owner recovery through a real controller lifetime rather
+    // than a synthetic callback identity. The controller commits a real tuner
+    // candidate, one owned mock node disappears, and its destructor must retain
+    // the unresolved lease instead of silently releasing ownership.
+    coordinator.reset();
+    const fs::path teardown_sys = root / "teardown_sys";
+    const fs::path teardown_proc = root / "teardown_proc";
+    const fs::path teardown_queue = teardown_sys / "block/sdb/queue";
+    put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
+    put(teardown_queue / "read_ahead_kb", "128");
+    put(teardown_queue / "nr_requests", "64");
+    put(teardown_queue / "rq_affinity", "1");
+    put(teardown_queue / "iosched/read_expire", "500");
+    put(teardown_queue / "iosched/writes_starved", "2");
+    put(teardown_queue / "iosched/fifo_batch", "16");
+
+    std::string disappeared_path;
+    std::string disappeared_active_value;
+    std::string disappeared_factory_value;
+    {
+        coreflow::AutonomousTuner doomed(teardown_sys.string(), teardown_proc.string());
+        const auto applied = doomed.step({
+            .cpu_psi = 6.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(applied.stage == "OBSERVING");
+        assert(applied.active_candidate_id != "baseline");
+
+        const auto teardown_audit = baseline.get_audit_trail();
+        const auto changed_node = std::find_if(
+            teardown_audit.begin(), teardown_audit.end(),
+            [&](const coreflow::NodeSnapshot& node) {
+                return node.path.rfind(teardown_sys.string() + "/", 0) == 0 && node.is_modified;
+            });
+        assert(changed_node != teardown_audit.end());
+        disappeared_path = changed_node->path;
+        disappeared_active_value = changed_node->active_value;
+        disappeared_factory_value = changed_node->factory_value;
+        assert(!disappeared_active_value.empty());
+        assert(!disappeared_factory_value.empty());
+        assert(fs::remove(disappeared_path));
+    } // Actual AutonomousTuner destructor attempts rollback, then retires its handler.
+
+    auto teardown_orphans = coordinator.active_leases();
+    assert(teardown_orphans.size() == 1);
+    assert(teardown_orphans.front().owner_detached);
+    assert(teardown_orphans.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
+    assert(teardown_orphans.front().preemption_requested == false);
+
+    // Simulate the sysfs node becoming readable again before monitor recovery.
+    // No detached controller callback exists; BaselineStore must restore and
+    // verify the exact factory value before the orphan lease can be retired.
+    put(disappeared_path, disappeared_active_value);
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all("actual-controller-teardown-recovery");
+    teardown_orphans = coordinator.active_leases();
+    assert(teardown_orphans.size() == 1 && teardown_orphans.front().owner_detached);
+    assert(teardown_orphans.front().preemption_requested);
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(baseline.has_active_mutations());
+    assert(baseline.rollback_all() > 0);
+    assert(!baseline.has_active_mutations());
+    assert(get(disappeared_path) == disappeared_factory_value);
+    assert(baseline.verify_and_persist_clear_state());
+    assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
 
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
