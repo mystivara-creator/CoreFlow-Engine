@@ -88,7 +88,9 @@ int main() {
     // discovery must be retired without overwriting its value. The independent
     // GPU domain may still run under its own lease and must roll back normally.
     assert(baseline.apply_mutation((cpu / "scaling_max_freq").string(), "1700000"));
-    assert(!controller.apply(0.75));
+    // The CPU domain was retired after the previous OEM handoff; an independent
+    // GPU policy remains eligible and must not cause the CPU foreign value to move.
+    assert(controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1700000");
     assert(get(gpu / "max_freq") == "600000000");
     const auto foreign_cpu_leases = coordinator.active_leases();
