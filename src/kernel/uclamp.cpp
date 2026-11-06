@@ -491,6 +491,16 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val, Controlle
     auto& baseline = BaselineStore::instance();
     const std::string min_path = target_path_ + "/cpu.uclamp.min";
     const std::string max_path = target_path_ + "/cpu.uclamp.max";
+    const auto audit_before = baseline.get_audit_trail();
+    const auto min_snapshot = std::find_if(audit_before.begin(), audit_before.end(),
+        [&](const NodeSnapshot& node) { return node.path == min_path; });
+    const auto max_snapshot = std::find_if(audit_before.begin(), audit_before.end(),
+        [&](const NodeSnapshot& node) { return node.path == max_path; });
+    if (min_snapshot == audit_before.end() || max_snapshot == audit_before.end()) return false;
+    if (!mutation_active_ && (min_snapshot->is_modified || max_snapshot->is_modified)) {
+        // Do not adopt a pre-existing journaled pair that this governor did not mutate.
+        return false;
+    }
     const uint32_t current_min = read_uclamp_node(min_path);
     if (read_uclamp_node(max_path) == max_val && current_min == min_val) return true;
     if (!acquire_mutation_lease_locked(priority)) return false;
@@ -543,8 +553,20 @@ bool UclampGovernor::resync() noexcept {
         return false;
     }
     auto& baseline = BaselineStore::instance();
-    if (!baseline.rollback(target_path_ + "/cpu.uclamp.min") ||
-        !baseline.rollback(target_path_ + "/cpu.uclamp.max")) {
+    const std::string min_path = target_path_ + "/cpu.uclamp.min";
+    const std::string max_path = target_path_ + "/cpu.uclamp.max";
+    const auto audit_before = baseline.get_audit_trail();
+    const auto min_snapshot = std::find_if(audit_before.begin(), audit_before.end(),
+        [&](const NodeSnapshot& node) { return node.path == min_path; });
+    const auto max_snapshot = std::find_if(audit_before.begin(), audit_before.end(),
+        [&](const NodeSnapshot& node) { return node.path == max_path; });
+    if (min_snapshot == audit_before.end() || max_snapshot == audit_before.end() ||
+        min_snapshot->is_modified || max_snapshot->is_modified) {
+        // Resync may not globally adopt or roll back a pair owned by another controller.
+        supported_ = false;
+        return false;
+    }
+    if (!baseline.rollback(min_path) || !baseline.rollback(max_path)) {
         supported_ = false;
         return false;
     }
