@@ -231,9 +231,20 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
 bool HardwareLongevityManager::apply_storage_pacing() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!config_.enable_ufs_burst_pacing) return true;
-    if (storage_paced_) return true;
 
     auto& store = BaselineStore::instance();
+    if (storage_paced_) {
+        if (storage_transaction_id_.empty()) return true;
+        const auto audit = store.get_audit_trail();
+        for (const auto& path : storage_mutation_paths_) {
+            const auto* snapshot = find_snapshot(audit, path);
+            if (!snapshot || !store.owns_expected_state(path, snapshot->active_value)) {
+                if (!rollback_storage_locked()) return false;
+                return false; // OEM ownership changed; do not reassert in this cycle.
+            }
+        }
+        return true;
+    }
     bool available = false;
     for (const auto& [group, weight] : {
         std::pair{"top-app", config_.top_app_io_weight},
@@ -287,6 +298,7 @@ void HardwareLongevityManager::restore_oem_baseline() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
     if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
+    if (storage_transaction_id_.empty() && storage_mutation_paths_.empty()) storage_paced_ = false;
 }
 
 bool HardwareLongevityManager::is_battery_guarded() const noexcept {
