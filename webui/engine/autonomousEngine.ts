@@ -239,7 +239,7 @@ export function computeVulkanTelemetry(
     pushDescriptors: hwPushDescriptors,
     globalPriorityQuery: hwGlobalPriorityQuery,
     shaderFloatControls2: hwShaderFloatControls2,
-    maxPushDescriptors: base?.maxPushDescriptors ?? 32,
+    maxPushDescriptors: base?.maxPushDescriptors ?? (hwPushDescriptors ? 32 : 0),
     // Highlights
     maintenance5: hwMaintenance5,
     maintenance6: hwMaintenance6,
@@ -664,7 +664,7 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     tunerCandidates: [
       {
         id: 'io.mq_deadline_low_latency',
-        label: 'mq-deadline + Low-Latency Read Expiry (250ms / batch 8)',
+        label: 'mq-deadline + Low-Latency Read Expiry (0.5x OEM baseline / batch 0.5x)',
         domain: 'io',
         trials: 2,
         successes: 2,
@@ -758,7 +758,7 @@ export function createInitialLogs(): ReactionLogEvent[] {
       timestamp: stamp(3),
       type: 'INFO',
       tag: 'AutonomousTuner',
-      message: 'Preview: sda queue/scheduler switched none -> mq-deadline (read_expire=250ms, fifo_batch=8) | delta_u=+7.4 -> IMPROVED.',
+      message: 'Preview: sda queue/scheduler switched none -> mq-deadline (read_expire 0.5x, fifo_batch 0.5x) | delta_u=+7.4 -> IMPROVED.',
     },
   ];
 }
@@ -854,14 +854,14 @@ export function stepAutonomousSimulation(
     tunerStage = 'RETAINED';
     tunerIntent = 'IoLatencyRelief';
     tunerCandidateId = 'io.mq_deadline_low_latency';
-    tunerCandidateLabel = 'mq-deadline + Low-Latency Read Expiry (250ms / batch 8)';
+    tunerCandidateLabel = 'mq-deadline + Low-Latency Read Expiry (0.5x OEM baseline / batch 0.5x)';
     tunerVerdict = 'IMPROVED';
     tunerUtilityDelta = Number((5.2 + Math.random() * 4.5).toFixed(2));
     tunerTrials += 1;
     tunerImproved += 1;
     tunerRationale =
       `I/O PSI=${io.toFixed(1)}% exceeded threshold; switched sda scheduler none -> mq-deadline ` +
-      `(read_expire=250ms, writes_starved=3, fifo_batch=8, read_ahead_kb=256) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
+      `(read_expire=0.5x, writes_starved=1.5x, fifo_batch=0.5x, read_ahead_kb=2.0x) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
     if (updatedQueues.length > 0) {
       updatedQueues[0].activeScheduler = 'mq-deadline';
       updatedQueues[0].readExpireMs = 250;

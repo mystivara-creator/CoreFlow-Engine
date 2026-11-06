@@ -117,6 +117,29 @@ bool check_zram_swap_active(const std::string& proc_root, const std::string& sys
     return fs::exists(fs::path(sys_root) / "block/zram0", ec) && !ec;
 }
 
+uint64_t compute_relative_u64(
+    const std::string& path,
+    uint64_t fallback_baseline,
+    double ratio,
+    uint64_t min_bound,
+    uint64_t max_bound) {
+    uint64_t baseline = fallback_baseline;
+    const auto audit = BaselineStore::instance().get_audit_trail();
+    for (const auto& item : audit) {
+        if (item.path == path) {
+            uint64_t parsed = 0;
+            if (parse_u64(item.factory_value, parsed) && parsed > 0) {
+                baseline = parsed;
+                break;
+            }
+        }
+    }
+    if (baseline == 0) baseline = fallback_baseline;
+    const double calc = static_cast<double>(baseline) * ratio;
+    const uint64_t rounded = std::max<uint64_t>(1U, static_cast<uint64_t>(std::round(calc)));
+    return std::clamp(rounded, min_bound, max_bound);
+}
+
 } // namespace
 
 AutonomousTuner& AutonomousTuner::instance() {
@@ -135,7 +158,7 @@ void AutonomousTuner::init_candidates() {
         CandidateStats{
             .id = "io.mq_deadline_low_latency",
             .domain = "io",
-            .label = "mq-deadline + Low-Latency Read Expiry (250ms / batch 8)",
+            .label = "mq-deadline + Low-Latency Read Expiry (0.5x OEM baseline / batch 0.5x)",
             .mean_utility = 0.65,
             .mean_utility_delta = 0.0,
             .ucb_score = 0.86,
@@ -180,7 +203,7 @@ void AutonomousTuner::init_candidates() {
         CandidateStats{
             .id = "io.queue_readahead_pacing",
             .domain = "io",
-            .label = "Adaptive Block Queue Read-Ahead & Request Depth (256KB / 128 req)",
+            .label = "Adaptive Block Queue Read-Ahead & Request Depth (2.0x OEM baseline)",
             .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
             .ucb_score = 0.71,
@@ -940,20 +963,31 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
                 if (!contains_token(q.available_schedulers, "mq-deadline")) continue;
                 steps.push_back({q.queue_dir + "/scheduler", "mq-deadline", "Anchor (Required-before)", StepRelation::RequiredAnchor});
                 if (q.has_iosched_tunables) {
-                    steps.push_back({q.queue_dir + "/iosched/read_expire", "250", "Coupled-with", StepRelation::RequiredDependent});
-                    steps.push_back({q.queue_dir + "/iosched/writes_starved", "3", "Coupled-with", StepRelation::RequiredDependent});
-                    steps.push_back({q.queue_dir + "/iosched/fifo_batch", "8", "Coupled-with", StepRelation::RequiredDependent});
+                    const std::string read_exp_path = q.queue_dir + "/iosched/read_expire";
+                    const uint64_t rel_read_expire = compute_relative_u64(read_exp_path, q.read_expire_ms, 0.50, 100, 2000);
+                    steps.push_back({read_exp_path, std::to_string(rel_read_expire), "Coupled-with", StepRelation::RequiredDependent});
+
+                    const std::string starved_path = q.queue_dir + "/iosched/writes_starved";
+                    const uint64_t rel_starved = compute_relative_u64(starved_path, q.writes_starved, 1.50, 1, 32);
+                    steps.push_back({starved_path, std::to_string(rel_starved), "Coupled-with", StepRelation::RequiredDependent});
+
+                    const std::string fifo_path = q.queue_dir + "/iosched/fifo_batch";
+                    const uint64_t rel_fifo = compute_relative_u64(fifo_path, q.fifo_batch, 0.50, 1, 64);
+                    steps.push_back({fifo_path, std::to_string(rel_fifo), "Coupled-with", StepRelation::RequiredDependent});
                 }
                 steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with", StepRelation::RequiredDependent});
+
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048);
+                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.mq_deadline_low_latency",
-                "mq-deadline + Low-Latency Read Expiry (250ms / batch 8)",
+                "mq-deadline + Low-Latency Read Expiry (0.5x OEM baseline / batch 0.5x)",
                 "IoLatencyRelief",
                 "Measured I/O PSI stall (" + std::to_string(telemetry.io_psi).substr(0, 4) +
                     "%); switching scheduler from " + primary_q.active_scheduler +
-                    " to mq-deadline with 250ms read expiry & fifo_batch=8 to prevent write starvation.",
+                    " to mq-deadline with relative 0.5x read_expire & fifo_batch scaling from OEM baseline.",
                 steps,
                 telemetry);
             return snapshot();
@@ -964,8 +998,13 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "kyber")) continue;
                 steps.push_back({q.queue_dir + "/scheduler", "kyber", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with", StepRelation::RequiredDependent});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "128", "Coupled-with", StepRelation::RequiredDependent});
+                const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512);
+                steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
+
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 1.00, 64, 2048);
+                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
                 steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
@@ -974,7 +1013,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
                 "IoLatencyRelief",
                 "Concurrent I/O (" + std::to_string(telemetry.io_psi).substr(0, 4) +
                     "%) & CPU load selected via UCB1 bandit; switching scheduler from " +
-                    primary_q.active_scheduler + " to kyber token-bucket arbitration.",
+                    primary_q.active_scheduler + " to kyber token-bucket arbitration with relative baseline scaling.",
                 steps,
                 telemetry);
             return snapshot();
@@ -985,14 +1024,16 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "bfq")) continue;
                 steps.push_back({q.queue_dir + "/scheduler", "bfq", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Coupled-with", StepRelation::RequiredDependent});
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048);
+                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.bfq_interactive_fairness",
                 "bfq Proportional-Share Interactive I/O Scheduler",
                 "IoLatencyRelief",
                 "Sustained I/O contention (" + std::to_string(telemetry.io_psi).substr(0, 4) +
-                    "%); evaluating bfq proportional-share scheduler against OEM baseline.",
+                    "%); evaluating bfq proportional-share scheduler against OEM baseline with relative read-ahead scaling.",
                 steps,
                 telemetry);
             return snapshot();
@@ -1001,14 +1042,19 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& tele
         if (best_id == "io.queue_readahead_pacing") {
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
-                steps.push_back({q.queue_dir + "/read_ahead_kb", "256", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                steps.push_back({q.queue_dir + "/nr_requests", "128", "Coupled-with", StepRelation::RequiredDependent});
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048);
+                steps.push_back({readahead_path, std::to_string(rel_readahead), "Anchor (Required-before)", StepRelation::RequiredAnchor});
+
+                const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512);
+                steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.queue_readahead_pacing",
-                "Adaptive Block Queue Read-Ahead & Request Depth (256KB / 128 req)",
+                "Adaptive Block Queue Read-Ahead & Request Depth (2.0x OEM baseline)",
                 "IoLatencyRelief",
-                "I/O stall pressure elevated; tuning block queue read_ahead_kb=256 and nr_requests=128.",
+                "I/O stall pressure elevated; relative scaling of block queue read_ahead_kb and nr_requests from OEM baseline.",
                 steps,
                 telemetry);
             return snapshot();

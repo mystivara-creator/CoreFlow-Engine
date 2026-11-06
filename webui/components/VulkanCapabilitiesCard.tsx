@@ -344,7 +344,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               />
               <CapabilityRow
                 label="Push descriptors"
-                value={vk.pushDescriptors ? 'Yes (promoted)' : 'No'}
+                value={vk.pushDescriptors}
                 note={badgeFor(vk.pushDescriptors, vk.hwPushDescriptors)}
               />
               <CapabilityRow

@@ -4,11 +4,19 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, Plugin } from 'vite';
 
+// Ensure Vite does not exit on stdin EOF when spawned non-interactively by the container pre-warmer.
+process.env.CI = 'true';
+
 // Mirrors the production web bundle into module/webroot so both standard web
 // deployments (dist/) and KernelSU/Magisk Android packaging stay synchronized.
 function syncModuleWebroot(): Plugin {
   return {
     name: 'sync-module-webroot',
+    configureServer(server) {
+      process.stdin.removeAllListeners('end');
+      const keepAlive = setInterval(() => {}, 1 << 30);
+      server.httpServer?.once('close', () => clearInterval(keepAlive));
+    },
     closeBundle() {
       const distDir = path.resolve('dist');
       const webrootDir = path.resolve('module/webroot');
