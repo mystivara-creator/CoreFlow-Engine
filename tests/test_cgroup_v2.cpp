@@ -57,6 +57,19 @@ int main() {
         assert(get(cpuset) == "0-3");
         assert(coordinator.active_leases().empty());
 
+        // If a later node in the same controller transaction is unwritable,
+        // the controller must restore its already-mutated node and release the
+        // lease. It must not strand a CPU-policy lease with no active mutation.
+        assert(controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 500));
+        assert(get(weight) == "500");
+        assert(::chmod(cpuset.c_str(), 0444) == 0);
+        assert(!controller.set_cpuset(coreflow::CgroupTarget::TopApp, "0-1"));
+        assert(get(weight) == "100");
+        assert(get(cpuset) == "0-3");
+        assert(coordinator.active_leases().empty());
+        assert(!baseline.has_active_mutations());
+        assert(::chmod(cpuset.c_str(), 0644) == 0);
+
         assert(controller.set_cpu_weight(coreflow::CgroupTarget::TopApp, 400));
         put(weight, "600"); // OEM changes the active node while the lease is held.
         assert(!controller.set_cpuset(coreflow::CgroupTarget::TopApp, "0-2"));
