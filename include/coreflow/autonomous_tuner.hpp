@@ -150,6 +150,11 @@ public:
     void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
 
+    // Close mutation admission before dispatching emergency rollback callbacks.
+    // Admission reopens only after all leases and BaselineStore mutations are cleared.
+    void begin_emergency_recovery() noexcept;
+    [[nodiscard]] bool complete_emergency_recovery() noexcept;
+
     [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
                                                  std::string_view controller_name,
                                                  ControllerPriority requester_priority) const noexcept;
@@ -175,6 +180,7 @@ private:
     };
     std::condition_variable preemption_cv_;
     std::unordered_map<std::string, PreemptionHandlerEntry> preemption_handlers_;
+    bool emergency_recovery_active_{false};
     std::atomic<uint64_t> conflict_rejections_{0};
 };
 
