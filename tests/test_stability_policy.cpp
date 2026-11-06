@@ -37,6 +37,17 @@ int main() {
     assert(select_stability_state(39.5f, quiet, WorkloadState::ThermalGuard, true, cfg) ==
            WorkloadState::Balanced);
 
+    PressureSnapshot unavailable{.cpu = 0.0, .memory = 0.0, .io = 0.0,
+                                 .cpu_valid = false, .memory_valid = false, .io_valid = false};
+    assert(select_stability_state(38.0f, unavailable, WorkloadState::Balanced, false, cfg) ==
+           WorkloadState::Balanced);
+    unavailable.memory = 99.0;
+    assert(select_stability_state(38.0f, unavailable, WorkloadState::Balanced, false, cfg) ==
+           WorkloadState::Balanced);
+    unavailable.memory_valid = true;
+    assert(select_stability_state(38.0f, unavailable, WorkloadState::Balanced, false, cfg) ==
+           WorkloadState::PressureGuard);
+
     assert(!emergency_thermal_exit(47.9f, cfg));
     assert(emergency_thermal_exit(48.0f, cfg));
 
