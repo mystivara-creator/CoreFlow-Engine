@@ -44,9 +44,12 @@ HardwareLongevityManager::HardwareLongevityManager(std::string sys_root)
 }
 
 HardwareLongevityManager::~HardwareLongevityManager() {
-    // Do not leave a callback capturing a destroyed stack instance. Any unverified
-    // transaction lease remains fail-closed and its durable BaselineStore journal
-    // is available to daemon recovery on the next process start.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
+        if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
+    }
+    // unregister waits for any callback that was already dispatched.
     CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
 }
 
