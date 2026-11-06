@@ -1019,23 +1019,47 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 
 bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& store = BaselineStore::instance();
     const bool had_active_transaction = transaction_active_;
     current_objective_ = OptimizationObjective::EmergencyMitigation;
     if (had_active_transaction) {
         last_verdict_ = "ABORTED";
         last_verdict_enum_ = TunerVerdict::Aborted;
-        ++total_rolled_back_;
     }
-    CentralMutationCoordinator::instance().emergency_preempt_all(reason);
-    const bool restored = rollback_active(reason);
-    if (!restored) {
+
+    // This public entry point must provide the same admission guarantee as the
+    // daemon's coordinated recovery path. Closing admission first prevents a
+    // new controller from acquiring a domain between owner rollback and the
+    // global recovery decision.
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all(reason);
+    if (!coordinator.active_leases().empty()) {
+        recovery_required_ = true;
         last_verdict_ = "RECOVERY_REQUIRED";
         last_verdict_enum_ = TunerVerdict::RecoveryRequired;
-    } else {
-        current_intent_ = "ThermalHoldAndProtect";
+        current_rationale_ = std::string(reason) +
+            " [EMERGENCY PREEMPTION ACKNOWLEDGEMENT PENDING]";
+        save_persisted_stats();
+        return false;
     }
+
+    const bool restored = rollback_active(reason);
+    if (!restored || store.has_active_mutations() ||
+        !coordinator.complete_emergency_recovery()) {
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) +
+            " [GLOBAL RECOVERY INCOMPLETE; MUTATION ADMISSION REMAINS CLOSED]";
+        save_persisted_stats();
+        return false;
+    }
+
+    if (had_active_transaction) ++total_rolled_back_;
+    current_intent_ = "ThermalHoldAndProtect";
     save_persisted_stats();
-    return restored;
+    return true;
 }
 
 bool AutonomousTuner::apply_transaction(
