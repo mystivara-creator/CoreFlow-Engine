@@ -2,6 +2,9 @@
 #include "coreflow/baseline_store.hpp"
 #include <cassert>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -802,6 +805,49 @@ int main() {
     assert(t9_eval.stage == "PLANNED");
 
     tuner.reset();
+
+    // Handler teardown must wait for callbacks already copied by dispatch.
+    coordinator.reset();
+    std::mutex callback_mutex;
+    std::condition_variable callback_cv;
+    bool callback_entered = false;
+    bool callback_release = false;
+    std::atomic<bool> unregister_started{false};
+    std::atomic<bool> unregister_finished{false};
+    assert(coordinator.register_preemption_handler("LifetimeController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            std::unique_lock<std::mutex> lock(callback_mutex);
+            callback_entered = true;
+            callback_cv.notify_all();
+            callback_cv.wait(lock, [&] { return callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "LifetimeController", "lifetime-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread dispatcher([&] { coordinator.emergency_preempt_all("lifetime-test"); });
+    {
+        std::unique_lock<std::mutex> lock(callback_mutex);
+        callback_cv.wait(lock, [&] { return callback_entered; });
+    }
+    std::thread unregisterer([&] {
+        unregister_started.store(true, std::memory_order_release);
+        coordinator.unregister_preemption_handler("LifetimeController");
+        unregister_finished.store(true, std::memory_order_release);
+    });
+    while (!unregister_started.load(std::memory_order_acquire)) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!unregister_finished.load(std::memory_order_acquire));
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex);
+        callback_release = true;
+    }
+    callback_cv.notify_all();
+    dispatcher.join();
+    unregisterer.join();
+    assert(unregister_finished.load(std::memory_order_acquire));
+    assert(coordinator.active_leases().empty());
+
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
     return 0;
