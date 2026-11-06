@@ -135,6 +135,41 @@ int main() {
     assert(coordinator.active_leases().empty());
     assert(!baseline.has_active_mutations());
 
+    // Multi-domain acquisition is all-or-nothing before the first write. If a
+    // different controller already owns GPU devfreq, FrequencyController must
+    // release the CPU lease it acquired first and leave both nodes untouched.
+    const std::string gpu_owner = "PartialAcquisitionGpuOwner";
+    assert(coordinator.register_preemption_handler(
+        gpu_owner,
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq,
+        gpu_owner,
+        "partial-acquisition-gpu-reservation",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    {
+        coreflow::FrequencyController combined(root.string());
+        combined.discover(true, true);
+        assert(combined.cpu_count() == 1);
+        assert(combined.gpu_count() == 1);
+        assert(!combined.apply(0.75));
+        const auto retained = coordinator.active_leases();
+        assert(retained.size() == 1);
+        assert(retained.front().owner_controller == gpu_owner);
+        assert(retained.front().domain == coreflow::MutationDomain::GpuDevfreq);
+        assert(get(cpu_policy / "scaling_max_freq") == "2000000");
+        assert(get(gpu_policy / "max_freq") == "800000000");
+        assert(!baseline.has_active_mutations());
+    }
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq,
+        gpu_owner,
+        "partial-acquisition-gpu-reservation");
+    coordinator.unregister_preemption_handler(gpu_owner);
+    assert(coordinator.active_leases().empty());
+
     fs::remove_all(root);
     return 0;
 }
