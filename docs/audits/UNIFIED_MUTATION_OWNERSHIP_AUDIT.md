@@ -399,3 +399,46 @@ Accordingly, the HardwareLongevityManager coordinator integration is **implement
 - Physical-device validation remains mandatory for supported Xiaomi/HyperOS targets. Host CI cannot validate actual sysfs semantics, OEM thermal arbitration, or charging behavior.
 
 **Status: NOT COMPLETE.** These changes materially reduce cross-controller rollback risk but do not authorize merge or the 3.1.0 freeze until the remaining acceptance gates are closed.
+
+## 15. Exact-head correction — CMake test linkage and multi-domain acquisition coverage
+
+**Source head validated:** `82f30edc189727ec1d2623dc01548175aa9a35f0`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### CI failure and correction
+
+- Workflow run [42284168051](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42284168051) failed on the preceding head because `test_cgroup_v2` began exercising `FrequencyController` but its CMake target did not include `src/kernel/frequency_controller.cpp`.
+- Added the missing implementation source to the `test_cgroup_v2` executable. This was a test-target linkage defect, not a production-daemon link failure.
+- Workflow run [42284536538](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42284536538) passed all seven jobs on the corrected source head `e0ff3c0a7ea82c32bb272fcd72f8ad0ca953cc0d`.
+
+### Multi-domain partial-acquisition regression
+
+- Extended `tests/test_cgroup_v2.cpp` to reserve the `GpuDevfreq` domain under a separate test owner while leaving CPU/GPU frequency nodes at their discovered baselines.
+- A second `FrequencyController` discovers both domains and requests a combined operation. CPU lease acquisition succeeds, GPU lease acquisition is rejected because the test owner holds it, and the operation must return failure before writing either node.
+- The test asserts that the temporary CPU lease is released, the original GPU reservation remains the only active lease, both frequency nodes remain unchanged, and BaselineStore has no active mutation.
+- The explicit cleanup then releases the test reservation and verifies that the coordinator has no remaining leases.
+- The test-source scope correction is included in the validated head `82f30edc189727ec1d2623dc01548175aa9a35f0`.
+
+### Exact-head validation
+
+Workflow run [42285053683](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42285053683) completed with **success** on exact source head `82f30edc189727ec1d2623dc01548175aa9a35f0`. All seven jobs passed:
+
+- Host C++ tests: all 13 CTest tests passed, including the expanded `CgroupV2OwnershipTest`.
+- ASan and UBSan.
+- Android ARM64 production package.
+- Rust validation.
+- WebUI validation.
+- Module validation.
+- Aggregate CoreFlow CI gate.
+
+### Corrected remaining acceptance gates
+
+The CPU/GPU partial-acquisition path now has explicit host regression coverage. This does not close every multi-domain failure mode or establish physical-device behavior. Remaining gates are:
+
+- Controller disappearance while the daemon remains alive: unresolved leases intentionally remain held and emergency admission remains closed. No automatic timeout-based lease theft is permitted. The controlled recovery/restart procedure still needs operational validation.
+- Additional concurrency coverage for simultaneous controller destruction, preemption dispatch, and multi-path rollback under real scheduling pressure.
+- Vulkan node semantics and accepted values require evidence from actual device/vendor capability discovery; host path fixtures are not sufficient.
+- The final mutation-path inventory must continue to be checked against direct sysfs/procfs, lifecycle, resetprop, Rust bridge, and dynamically loaded vendor paths. Static source scanning cannot prove behavior of opaque vendor code.
+- Physical-device validation remains mandatory for supported Xiaomi/HyperOS firmware combinations, including OEM arbitration, thermal behavior, and rollback after interrupted writes.
+
+**Status: EXACT-HEAD CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device until remaining operational and device-validation gates are independently reviewed.
