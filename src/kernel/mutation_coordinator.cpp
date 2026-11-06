@@ -45,6 +45,11 @@ bool CentralMutationCoordinator::acquire_lease(
             }
             return false;
         }
+        if (retired_controller_ids_.find(std::string(controller_name)) != retired_controller_ids_.end()) {
+            ++conflict_rejections_;
+            if (conflict_reason != nullptr) *conflict_reason = "Controller identity has been retired";
+            return false;
+        }
         for (auto& lease : leases_) {
             if (lease.domain != domain || !lease.active) continue;
             if (lease.owner_controller == controller_name) {
@@ -139,6 +144,7 @@ bool CentralMutationCoordinator::register_preemption_handler(
     if (controller_name.empty() || !handler) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     const std::string key(controller_name);
+    if (retired_controller_ids_.find(key) != retired_controller_ids_.end()) return false;
     const bool has_detached_owner_lease = std::any_of(
         leases_.begin(), leases_.end(), [&](const DomainLease& lease) {
             return lease.active && lease.owner_controller == key && lease.owner_detached;
@@ -162,6 +168,9 @@ void CentralMutationCoordinator::unregister_preemption_handler(
     if (controller_name.empty()) return;
     std::unique_lock<std::mutex> lock(mutex_);
     const std::string key(controller_name);
+    // Tombstone before waiting: no concurrent caller may reacquire or register
+    // this identity while its last callback is still draining.
+    retired_controller_ids_.insert(key);
     auto it = preemption_handlers_.find(key);
     if (it != preemption_handlers_.end()) {
         it->second.unregistering = true;
