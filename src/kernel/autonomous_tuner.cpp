@@ -185,9 +185,35 @@ AutonomousTuner& AutonomousTuner::instance() {
 }
 
 AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root)
-    : sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
+    : controller_name_("AutonomousTuner@" +
+                       std::to_string(reinterpret_cast<uintptr_t>(this))),
+      sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
+    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+        controller_name_,
+        [this](MutationDomain domain, std::string_view transaction_id,
+               std::string_view reason) noexcept {
+            return handle_preemption(domain, transaction_id, reason);
+        });
     init_candidates();
     discover(sys_root_, proc_root_);
+}
+
+AutonomousTuner::~AutonomousTuner() {
+    {
+        std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+        if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
+    }
+    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+}
+
+bool AutonomousTuner::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id, std::string_view reason) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (!transaction_active_ || current_candidate_id_ != transaction_id ||
+        domain_for_candidate(current_candidate_id_) != domain) {
+        return false;
+    }
+    return rollback_active(reason);
 }
 
 void AutonomousTuner::init_candidates() {
@@ -287,6 +313,7 @@ void AutonomousTuner::update_ucb_scores() {
 }
 
 void AutonomousTuner::reset() {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     // rollback_active releases the lease only after verified recovery. Do not
     // clear ownership here when rollback failed; recovery must remain fail-closed.
     if (!rollback_active("Autonomous tuner reset to verified OEM baseline.")) {
@@ -350,6 +377,7 @@ ControllerPriority AutonomousTuner::priority_for_candidate(std::string_view cand
 }
 
 bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
     if (c == nullptr || c->cooldown_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
@@ -362,7 +390,7 @@ bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept 
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, "AutonomousTuner", prio)) {
+    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     return true;
@@ -372,6 +400,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     std::string_view id,
     WorkloadClass workload,
     uint8_t thermal_bucket) const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
     if (c == nullptr) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
@@ -384,7 +413,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, "AutonomousTuner", prio)) {
+    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     if (c->cooldown_ticks > 0) {
@@ -784,6 +813,7 @@ void AutonomousTuner::classify_discovered_resources() {
 }
 
 void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_root) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     sys_root_ = std::string(sys_root);
     proc_root_ = std::string(proc_root);
     block_queues_.clear();
@@ -948,6 +978,7 @@ bool AutonomousTuner::verify_active_ownership() const {
 }
 
 bool AutonomousTuner::rollback_active(std::string_view reason) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     auto& store = BaselineStore::instance();
     std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
@@ -973,7 +1004,7 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 
     // Release ownership only after every rollback has succeeded and its
     // BaselineStore readback verification has completed.
-    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
+    CentralMutationCoordinator::instance().release_all_for_controller(controller_name_);
     applied_steps_.clear();
     transaction_active_ = false;
     recovery_required_ = false;
@@ -987,6 +1018,7 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 }
 
 bool AutonomousTuner::emergency_rollback(std::string_view reason) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     CentralMutationCoordinator::instance().emergency_preempt_all("EmergencyRollback");
     current_objective_ = OptimizationObjective::EmergencyMitigation;
     if (transaction_active_) {
@@ -1029,7 +1061,7 @@ bool AutonomousTuner::apply_transaction(
     const ControllerPriority prio = priority_for_candidate(candidate_id);
     std::string conflict_reason;
     if (!CentralMutationCoordinator::instance().acquire_lease(
-            dom, "AutonomousTuner", candidate_id, prio, &conflict_reason)) {
+            dom, controller_name_, candidate_id, prio, &conflict_reason)) {
         last_verdict_ = "REJECTED";
         last_verdict_enum_ = TunerVerdict::Rejected;
         ++total_rejected_;
@@ -1055,7 +1087,7 @@ bool AutonomousTuner::apply_transaction(
                                 store.capture(step.path);
         if (is_required && !accessible) {
             // Abort entire transaction before any write occurs
-            CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
+            CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
             return false;
         }
         if (accessible) {
@@ -1069,7 +1101,7 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (!has_anchor || planned.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
+        CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
         return false;
     }
 
@@ -1096,7 +1128,7 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (committed.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner", candidate_id);
+        CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
         return false;
     }
 
@@ -1350,6 +1382,7 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 }
 
 AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_telemetry) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     TunerTelemetryInput telemetry = raw_telemetry;
     latest_current_temperature_ = telemetry.current_temperature_celsius;
     latest_temperature_velocity_ = telemetry.temperature_velocity_celsius_per_sec;
@@ -1862,6 +1895,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 }
 
 AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     AutonomousDecisionSnapshot out{};
     if (recovery_required_) {
         out.stage = "RECOVERY_REQUIRED";
