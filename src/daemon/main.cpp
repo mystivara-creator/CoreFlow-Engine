@@ -65,6 +65,20 @@ void emit_log(bool is_error, const std::string& message) {
 #endif
 }
 
+bool coordinated_rollback(BaselineStore& baseline, std::string_view reason) {
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.emergency_preempt_all(reason);
+    const auto remaining = coordinator.active_leases();
+    if (!remaining.empty()) {
+        emit_log(true, "[CoreFlow][Safety] Rollback acknowledgement missing from " +
+                       std::to_string(remaining.size()) +
+                       " mutation domain(s); global rollback is withheld to preserve ownership.");
+        return false;
+    }
+    if (baseline.has_active_mutations()) (void)baseline.rollback_all();
+    return !baseline.has_active_mutations();
+}
+
 // Fatal signal handlers cannot lock mutexes, perform stream I/O, or allocate.
 void on_fatal_signal(int signum) {
     constexpr char line[] = "[CoreFlow] Fatal signal. Next start will recover journal.\n";
@@ -840,7 +854,10 @@ int main(int argc, char* argv[]) {
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
                     (void)AutonomousTuner::instance().rollback_active("Configuration reloaded on SIGHUP");
-                    (void)baseline.rollback_all();
+                    if (!coordinated_rollback(baseline, "Configuration reload on SIGHUP")) {
+                        emit_log(true, "[CoreFlow] SIGHUP reload deferred; active mutation ownership requires recovery.");
+                        continue;
+                    }
                     config = DaemonConfig::load_best_available();
                     if (!governor.resync()) {
                         std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
@@ -932,7 +949,10 @@ int main(int argc, char* argv[]) {
             // do not rely on the unrelated PID applied flag to decide whether it rolls back.
             (void)AutonomousTuner::instance().emergency_rollback(
                 "Thermal telemetry unavailable; restoring verified OEM baseline.");
-            if (baseline.has_active_mutations()) (void)baseline.rollback_all();
+            if (!coordinated_rollback(
+                    baseline, "Thermal telemetry unavailable; restore OEM baseline.")) {
+                return;
+            }
             if (applied) {
                 applied = false;
                 controller->reset();
@@ -955,7 +975,10 @@ int main(int argc, char* argv[]) {
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
             (void)AutonomousTuner::instance().emergency_rollback(
                 "Extreme physical thermal threshold reached; restoring verified OEM baseline.");
-            if (baseline.has_active_mutations()) (void)baseline.rollback_all();
+            if (!coordinated_rollback(
+                    baseline, "Extreme physical thermal threshold reached.")) {
+                return;
+            }
             applied = false;
             return;
         }
@@ -1160,8 +1183,8 @@ int main(int argc, char* argv[]) {
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
-    baseline.rollback_all();
-    const bool restored = !baseline.has_active_mutations() && journal_clear();
+    const bool restored = coordinated_rollback(baseline, "Daemon shutdown") &&
+                          !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
 }
