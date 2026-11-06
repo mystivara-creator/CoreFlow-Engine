@@ -84,6 +84,25 @@ int main() {
     assert(coordinator.active_leases().empty());
     assert(::chmod((cpu / "scaling_max_freq").c_str(), 0644) == 0);
 
+    // A CPUFreq path that became journaled by another/legacy owner after
+    // discovery must be retired without overwriting its value. The independent
+    // GPU domain may still run under its own lease and must roll back normally.
+    assert(baseline.apply_mutation((cpu / "scaling_max_freq").string(), "1700000"));
+    assert(!controller.apply(0.75));
+    assert(get(cpu / "scaling_max_freq") == "1700000");
+    assert(get(gpu / "max_freq") == "600000000");
+    const auto foreign_cpu_leases = coordinator.active_leases();
+    assert(foreign_cpu_leases.size() == 1);
+    assert(foreign_cpu_leases.front().domain == coreflow::MutationDomain::GpuDevfreq);
+    coordinator.emergency_preempt_all("test-frequency-foreign-baseline");
+    assert(get(gpu / "max_freq") == "800000000");
+    assert(get(cpu / "scaling_max_freq") == "1700000");
+    assert(coordinator.active_leases().empty());
+    assert(baseline.rollback((cpu / "scaling_max_freq").string()));
+    assert(get(cpu / "scaling_max_freq") == "2000000");
+    controller.discover(true, true);
+    assert(controller.cpu_count() == 1 && controller.gpu_count() == 1);
+
     // A subsequent authorized policy cycle may acquire fresh transaction identities.
     assert(controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1500000");
