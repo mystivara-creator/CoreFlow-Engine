@@ -1,11 +1,13 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
 #include <cassert>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -61,6 +63,29 @@ int main() {
     assert(initial.block_queues[0].read_ahead_kb == 128);
     assert(initial.block_queues[0].nr_requests == 64);
     assert(initial.block_queues[0].rq_affinity == 1);
+
+    // Concurrent requests for one domain must have a single lease winner.
+    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coordinator.reset();
+    std::atomic<uint32_t> acquired{0};
+    std::vector<std::thread> contenders;
+    for (uint32_t i = 0; i < 12; ++i) {
+        contenders.emplace_back([&, i] {
+            const std::string owner = "concurrent-controller-" + std::to_string(i);
+            if (coordinator.acquire_lease(
+                    coreflow::MutationDomain::BlockIo, owner, "tx-" + std::to_string(i),
+                    coreflow::ControllerPriority::WorkloadOptimization)) {
+                acquired.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& contender : contenders) contender.join();
+    assert(acquired.load(std::memory_order_relaxed) == 1);
+    assert(coordinator.active_leases().size() == 1);
+    assert(coordinator.conflict_rejections() == 11);
+    const auto winning_lease = coordinator.active_leases().front();
+    coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller);
+    assert(coordinator.active_leases().empty());
 
     // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
     const auto incomplete_psi = tuner.step({
