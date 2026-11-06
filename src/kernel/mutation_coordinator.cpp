@@ -29,6 +29,13 @@ bool CentralMutationCoordinator::acquire_lease(
     std::string pending_transaction;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (emergency_recovery_active_) {
+            ++conflict_rejections_;
+            if (conflict_reason != nullptr) {
+                *conflict_reason = "Mutation admission is closed during emergency recovery";
+            }
+            return false;
+        }
         for (auto& lease : leases_) {
             if (lease.domain != domain || !lease.active) continue;
             if (lease.owner_controller == controller_name) {
@@ -191,6 +198,20 @@ bool CentralMutationCoordinator::dispatch_preemption(
     return acknowledged;
 }
 
+void CentralMutationCoordinator::begin_emergency_recovery() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    emergency_recovery_active_ = true;
+}
+
+bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool leases_remaining = std::any_of(leases_.begin(), leases_.end(),
+        [](const DomainLease& lease) { return lease.active; });
+    if (leases_remaining) return false;
+    emergency_recovery_active_ = false;
+    return true;
+}
+
 void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
     std::vector<DomainLease> pending;
     {
@@ -234,6 +255,7 @@ std::vector<DomainLease> CentralMutationCoordinator::active_leases() const {
 void CentralMutationCoordinator::reset() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     leases_.clear();
+    emergency_recovery_active_ = false;
     conflict_rejections_.store(0, std::memory_order_relaxed);
 }
 
