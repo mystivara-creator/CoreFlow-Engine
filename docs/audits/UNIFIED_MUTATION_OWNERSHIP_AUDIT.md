@@ -786,3 +786,31 @@ This is repeated host scheduling stress around the controller-wide single-flight
 - New stress-test source head `8ea9ff3bacb74e385e74f29f473c267028c47338` requires exact-head CI. No result from `cce9d9e` is substituted for this test change.
 
 **Status: 24-ROUND MULTI-DOMAIN DISPATCH STRESS ADDED; EXACT-HEAD CI PENDING; DEVICE VALIDATION REMAINS OPEN. PR #7 REMAINS DRAFT.**
+
+## 26. Real AutonomousTuner teardown and detached-owner recovery fixture
+
+**Source/test head:** `487afbbdda2d8a124eda52154b8eec842f587a60`
+
+### Scenario
+
+- Extend the prior synthetic detached-owner coverage with an actual `AutonomousTuner` object and a separate temporary sysfs/proc fixture.
+- Drive the tuner into an I/O candidate transaction and identify a BaselineStore-owned, modified node from its audit trail.
+- Temporarily move that exact mock node out of its path while preserving its inode. The real controller destructor then attempts rollback, cannot read the missing path, retains the failed step and lease, and unregisters its callback.
+- Verify the coordinator reports exactly one detached `AutonomousTuner` lease and does not release it on teardown.
+- Restore the original inode at the original path. Run the same recovery sequence used by the daemon: close admission, request emergency preemption, reject orphan retirement while the journal is still active, restore the factory value through BaselineStore, verify/persist the empty journal, retire the detached lease, and only then reopen admission.
+- Assert the restored value equals the original factory value and no active lease remains.
+
+### Validation
+
+- Exact head `487afbbdda2d8a124eda52154b8eec842f587a60` passed all seven jobs in [run 42296929397](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42296929397): Host C++ (13/13 CTest), ASan/UBSan (13/13 CTest), Rust, WebUI, Android ARM64 production package, Module validation, and aggregate CI gate.
+- The same exact head includes the 24-round condition-variable multi-domain dispatcher stress from Section 25.
+- The initial test-fixture compile failure was corrected before this exact-head run; the successful result above is for the corrected test source, not the failed intermediate commit.
+
+### Evidence boundary and remaining work
+
+- This is a host-level test of a real controller destructor plus coordinator/BaselineStore recovery. It does not instantiate the daemon's timerfd monitor loop or prove Android kernel sysfs behavior.
+- The temporary rename preserves the mock inode specifically to test transient path unavailability without simulating an OEM replacement. Real device node removal/recreation and external OEM writes can produce different inode and ownership semantics.
+- The 24-round test stresses competing emergency dispatches across two leases, while the new lifecycle fixture tests one real controller teardown. A combined high-contention test of multiple real controller destructions and monitor retries under scheduler pressure remains unproven.
+- Physical validation on supported Xiaomi/HyperOS firmware remains required for controller teardown, OEM takeover, thermal response, interrupted writes, and durable recovery.
+
+**Status: REAL AUTONOMOUS TUNER TEARDOWN/RECOVERY HOST FIXTURE ADDED; EXACT-HEAD CI GREEN; COMBINED MULTI-CONTROLLER/MONITOR STRESS AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
