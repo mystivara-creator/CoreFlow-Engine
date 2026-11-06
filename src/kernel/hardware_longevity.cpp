@@ -34,8 +34,7 @@ const NodeSnapshot* find_snapshot(const std::vector<NodeSnapshot>& audit,
 
 HardwareLongevityManager::HardwareLongevityManager(std::string sys_root)
     : root_(std::move(sys_root)),
-      controller_name_("HardwareLongevityManager@" +
-                       std::to_string(reinterpret_cast<uintptr_t>(this))) {
+      controller_name_(CentralMutationCoordinator::make_controller_identity("HardwareLongevityManager")) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
