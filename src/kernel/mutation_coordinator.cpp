@@ -32,7 +32,16 @@ bool CentralMutationCoordinator::acquire_lease(
         for (auto& lease : leases_) {
             if (lease.domain != domain || !lease.active) continue;
             if (lease.owner_controller == controller_name) {
-                lease.transaction_id = std::string(transaction_id);
+                if (lease.preemption_requested || lease.transaction_id != transaction_id) {
+                    conflict = true;
+                    ++conflict_rejections_;
+                    if (conflict_reason != nullptr) {
+                        *conflict_reason = lease.preemption_requested
+                            ? "Controller transaction has a pending preemption request"
+                            : "Controller must release its current transaction before acquiring a new one";
+                    }
+                    break;
+                }
                 lease.priority = priority;
                 return true;
             }
