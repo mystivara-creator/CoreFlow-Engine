@@ -127,19 +127,6 @@ void CentralMutationCoordinator::release_lease(
     }
 }
 
-void CentralMutationCoordinator::release_all_for_controller(std::string_view controller_name) noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& lease : leases_) {
-        if (lease.active && lease.owner_controller == controller_name) {
-            lease.active = false;
-            lease.transaction_id.clear();
-            lease.preemption_requested = false;
-            lease.preemption_dispatch_in_flight = false;
-            lease.owner_detached = false;
-        }
-    }
-}
-
 bool CentralMutationCoordinator::register_preemption_handler(
     std::string_view controller_name,
     PreemptionHandler handler) {
