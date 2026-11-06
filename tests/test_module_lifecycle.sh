@@ -84,7 +84,9 @@ printf 'MemTotal:       7864320 kB\n' > "$COREFLOW_MEMINFO_PATH"
 sh "$MOD_DIR/post-fs-data.sh"
 grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 7' "$COREFLOW_PROP_LOG" || { echo "FAIL: 8 GiB threshold should be 7"; exit 1; }
 
-# 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger
+# 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger. Reset the
+# counter because the preceding RAM-tier cases intentionally ran extra boots.
+printf '1\n' > "$STATE_DIR/boot_attempts"
 for i in 2 3 4 5; do
   sh "$MOD_DIR/post-fs-data.sh"
 done
