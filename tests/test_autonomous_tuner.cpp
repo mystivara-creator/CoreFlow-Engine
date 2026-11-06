@@ -167,6 +167,13 @@ int main() {
     put(sda_q / "read_ahead_kb", "128");
     tuner.reset();
 
+    // The ownership-loss scenario deliberately adopts the external value (512) as
+    // the new factory baseline. This test restores the mock node to 128 to start a
+    // fresh fixture, so reinitialize the store before later cases recapture baselines.
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+    tuner.discover(sys_root.string(), proc_root.string());
+
     // 7. Smart CPUFreq schedutil governor rate-limit tuning under CPU PSI bottleneck
     // First verify scaling_governor mismatch blocks schedutil rate-limit mutation (TUNER-02)
     const fs::path policy0_dir = sys_root / "devices/system/cpu/cpufreq/policy0";
