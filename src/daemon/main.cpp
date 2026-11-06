@@ -28,6 +28,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <pthread.h>
 #include <sstream>
