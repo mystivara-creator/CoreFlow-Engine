@@ -6,6 +6,7 @@
  */
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
 #include <algorithm>
@@ -104,11 +105,103 @@ std::string read_token(const fs::path& path) {
 UclampGovernor::UclampGovernor(std::string_view explicit_root) {
     discover(explicit_root);
     if (supported_) {
+        controller_name_ = "UclampGovernor:" + target_path_;
+        (void)CentralMutationCoordinator::instance().register_preemption_handler(
+            controller_name_,
+            [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
+                return handle_preemption(domain, transaction_id);
+            });
         std::cerr << "[CoreFlow][Uclamp] discovered " << target_path_
                   << " (" << encoding_name() << ")\n";
     } else {
         std::cerr << "[CoreFlow][Uclamp] no writable semantic top-app UClamp target found\n";
     }
+}
+UclampGovernor::~UclampGovernor() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!transaction_id_.empty()) (void)rollback_transaction_locked();
+    }
+    if (!controller_name_.empty()) {
+        CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+    }
+}
+bool UclampGovernor::acquire_mutation_lease_locked() {
+    if (!transaction_id_.empty()) return true;
+    transaction_id_ = "uclamp-" + std::to_string(++transaction_generation_);
+    if (!CentralMutationCoordinator::instance().acquire_lease(
+            MutationDomain::UclampCgroup, controller_name_, transaction_id_,
+            ControllerPriority::WorkloadOptimization)) {
+        transaction_id_.clear();
+        return false;
+    }
+    return true;
+}
+void UclampGovernor::release_mutation_lease_locked() noexcept {
+    if (transaction_id_.empty()) return;
+    CentralMutationCoordinator::instance().release_lease(
+        MutationDomain::UclampCgroup, controller_name_, transaction_id_);
+    transaction_id_.clear();
+}
+bool UclampGovernor::rollback_transaction_locked() noexcept {
+    if (transaction_id_.empty()) return !mutation_active_;
+    auto& store = BaselineStore::instance();
+    const std::string min_path = target_path_ + "/cpu.uclamp.min";
+    const std::string max_path = target_path_ + "/cpu.uclamp.max";
+    const bool min_ok = store.rollback(min_path);
+    const bool max_ok = store.rollback(max_path);
+    if (!min_ok || !max_ok) return false;
+
+    const std::string min_raw = read_token(min_path);
+    const std::string max_raw = read_token(max_path);
+    if (min_raw.empty() || max_raw.empty()) return false;
+    const auto audit = store.get_audit_trail();
+    const auto matches_store = [&](const std::string& path, const std::string& raw,
+                                   const std::string& expected) {
+        const auto it = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == path;
+        });
+        if (it == audit.end()) return raw == expected;
+        return !it->is_modified && it->factory_value == raw;
+    };
+    if (!matches_store(min_path, min_raw, encode(oem_min_, false)) ||
+        !matches_store(max_path, max_raw, encode(oem_max_, true))) {
+        return false;
+    }
+
+    const uint32_t restored_min = read_uclamp_node(min_path);
+    const uint32_t restored_max = read_uclamp_node(max_path);
+    const bool original_baseline_restored =
+        restored_min == oem_min_ && restored_max == oem_max_;
+    last_min_ = restored_min;
+    last_max_ = restored_max;
+    mutation_active_ = false;
+    has_written_ = false;
+    if (!original_baseline_restored) {
+        // BaselineStore adopted a changed OEM value after detecting an external owner.
+        // The transaction is now relinquished, but this controller must rediscover.
+        supported_ = false;
+    }
+    release_mutation_lease_locked();
+    return true;
+}
+bool UclampGovernor::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id) noexcept {
+    if (domain != MutationDomain::UclampCgroup) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (transaction_id_.empty() || transaction_id_ != transaction_id) return false;
+    return rollback_transaction_locked();
+}
+bool UclampGovernor::owned_values_intact_locked() {
+    if (!supported_) return false;
+    if (!has_written_) return !mutation_active_;
+    if (get_top_app_min() == last_min_ && get_top_app_max() == last_max_) return true;
+    // An external actor changed one of the paired values. Reconcile the journal,
+    // relinquish the lease only after both nodes are verified, then disable control.
+    std::cerr << "[CoreFlow][Uclamp] external clamp change; relinquishing control\n";
+    if (!transaction_id_.empty()) (void)rollback_transaction_locked();
+    supported_ = false;
+    return false;
 }
 
 bool UclampGovernor::is_supported() const noexcept {
@@ -163,6 +256,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 target_path_ = current.path.string();
                 encoding_ = candidate_encoding;
                 supported_ = true;
+                oem_min_ = get_top_app_min();
                 oem_max_ = get_top_app_max();
                 return;
             }
@@ -297,8 +391,8 @@ bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
 }
 
 bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
-    if (!supported_) return false;
-    if (!owned_values_intact()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!supported_ || !owned_values_intact_locked()) return false;
     min_val = std::clamp(min_val, 0u, 1024u);
     max_val = std::clamp(max_val, min_val, 1024u);
 
@@ -306,6 +400,8 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
     const std::string min_path = target_path_ + "/cpu.uclamp.min";
     const std::string max_path = target_path_ + "/cpu.uclamp.max";
     const uint32_t current_min = read_uclamp_node(min_path);
+    if (read_uclamp_node(max_path) == max_val && current_min == min_val) return true;
+    if (!acquire_mutation_lease_locked()) return false;
 
     bool success = false;
     if (max_val < current_min) {
@@ -315,33 +411,48 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val) {
         success = baseline.apply_mutation(max_path, encode(max_val, true)) &&
                   baseline.apply_mutation(min_path, encode(min_val, false));
     }
-    if (success) {
-        last_min_ = get_top_app_min();
-        last_max_ = get_top_app_max();
-        has_written_ = true;
+    if (!success) {
+        mutation_active_ = true; // A paired write may have partially committed.
+        if (!rollback_transaction_locked()) return false;
+        return false;
     }
-    return success;
+
+    mutation_active_ = true;
+    last_min_ = get_top_app_min();
+    last_max_ = get_top_app_max();
+    if (last_min_ != min_val || last_max_ != max_val) {
+        if (!rollback_transaction_locked()) return false;
+        return false;
+    }
+    has_written_ = true;
+    if (last_min_ == oem_min_ && last_max_ == oem_max_) {
+        mutation_active_ = false;
+        has_written_ = false;
+        release_mutation_lease_locked();
+    }
+    return true;
 }
 
 bool UclampGovernor::owned_values_intact() {
-    if (!supported_ || !has_written_) return supported_;
-    if (get_top_app_min() == last_min_ && get_top_app_max() == last_max_) return true;
-    // Another system component took ownership. Do not reassert our policy.
-    supported_ = false;
-    std::cerr << "[CoreFlow][Uclamp] external clamp change; relinquishing control\n";
-    return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return owned_values_intact_locked();
 }
 
 bool UclampGovernor::resync() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (target_path_.empty()) return false;
+    if (!transaction_id_.empty() && !rollback_transaction_locked()) return false;
     supported_ = true;
     has_written_ = false;
+    mutation_active_ = false;
     auto& baseline = BaselineStore::instance();
-    (void)baseline.rollback(target_path_ + "/cpu.uclamp.min");
-    (void)baseline.rollback(target_path_ + "/cpu.uclamp.max");
-    const uint32_t current_max = get_top_app_max();
-    oem_max_ = current_max > 0 ? current_max : 1024u;
-    last_min_ = get_top_app_min();
+    if (!baseline.rollback(target_path_ + "/cpu.uclamp.min") ||
+        !baseline.rollback(target_path_ + "/cpu.uclamp.max")) {
+        return false;
+    }
+    oem_min_ = get_top_app_min();
+    oem_max_ = get_top_app_max();
+    last_min_ = oem_min_;
     last_max_ = oem_max_;
     return true;
 }
