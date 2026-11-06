@@ -229,6 +229,10 @@ struct AutonomousDecisionSnapshot {
     bool recovery_required{false};
     bool thermal_stabilization_active{false};
     bool thermal_recovery_active{false};
+    double current_temperature_celsius{-1.0};
+    double temperature_velocity_celsius_per_sec{0.0};
+    bool temperature_velocity_valid{false};
+    double thermal_pressure_velocity{0.0};
     std::vector<BlockQueueSurface> block_queues;
     std::vector<CandidateStats> candidates;
     std::vector<DiscoveredResourceMetadata> discovered_resources;
@@ -240,11 +244,27 @@ struct TunerTelemetryInput {
     double cpu_psi{0.0};
     double memory_psi{0.0};
     double io_psi{0.0};
+
+    // Explicitly Separated Thermal Telemetry Domains:
+    // 1. Thermal Pressure (dimensionless policy-relative index [0.0 .. 130.0])
     double thermal_pressure{45.0};
+
+    // 2. Thermal Pressure Velocity (rate of change of pressure index points per second, [/s])
+    double thermal_pressure_velocity{0.0};
+
+    // 3. Physical Temperature Readings & Velocity in °C/s
+    double current_temperature_celsius{-1.0};           // Current physical temperature in °C (< 0 if unavailable)
+    double temperature_velocity_celsius_per_sec{0.0};   // Physical temperature velocity in °C/s (negative = cooling)
+    bool temperature_velocity_valid{false};             // True only when backed by valid physical sensors across sufficient window
+    uint32_t temperature_samples_count{0};              // Number of valid physical sensor samples in the window
+    double temperature_sample_duration_sec{0.0};        // Duration in seconds over which temperature samples were collected
+
     bool thermal_guard_active{false};
     bool thermal_emergency{false};
-    double thermal_headroom{-1.0};      // <0 if unavailable, [0.0..1.0+] when valid
-    double thermal_trend_celsius{0.0};  // Positive = rising, negative = cooling
+    double thermal_headroom{-1.0};                      // <0 if unavailable, [0.0..1.0+] when valid
+
+    // Telemetry trend alias (for backwards compatibility)
+    double thermal_trend_celsius{0.0};
 };
 
 class AutonomousTuner {
@@ -407,10 +427,17 @@ private:
     double before_mem_psi_{0.0};
     double before_cpu_psi_{0.0};
     double before_thermal_{0.0};
+    double before_temperature_celsius_{-1.0};
     double sum_after_io_psi_{0.0};
     double sum_after_mem_psi_{0.0};
     double sum_after_cpu_psi_{0.0};
     double sum_after_thermal_{0.0};
+    double sum_after_temp_vel_{0.0};
+    uint32_t valid_thermal_samples_in_window_{0};
+    double latest_temperature_velocity_{0.0};
+    bool latest_temperature_velocity_valid_{false};
+    double latest_current_temperature_{-1.0};
+    double latest_pressure_velocity_{0.0};
     double min_after_io_psi_{0.0};
     double max_after_io_psi_{0.0};
     uint32_t obs_ticks_{0};

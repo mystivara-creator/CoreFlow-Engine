@@ -528,6 +528,115 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             result.source = "sysfs-oem-trips"; result.sensor = sensor.type;
         }
     }
-    return fuse_thermal_assessments(std::move(platform), std::move(result));
+    auto fused = fuse_thermal_assessments(std::move(platform), std::move(result));
+    const float comp = composite_celsius();
+    if (comp >= 0.0f) {
+        const auto now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        record_temperature_sample(comp, now_ns);
+    }
+    fused.temperature_velocity = current_temperature_velocity();
+    return fused;
 }
+
+TemperatureTrendTracker::TemperatureTrendTracker(size_t capacity) noexcept
+    : capacity_(std::clamp<size_t>(capacity, 3, kMaxSamples)) {}
+
+void TemperatureTrendTracker::record_sample(float celsius, uint64_t timestamp_ns) noexcept {
+    if (!std::isfinite(celsius) || celsius < 0.0f || celsius > 130.0f || timestamp_ns == 0) {
+        return;
+    }
+
+    if (count_ > 0) {
+        const uint64_t prev_ts = samples_[count_ - 1].timestamp_ns;
+        if (timestamp_ns <= prev_ts) {
+            return;
+        }
+        // If elapsed time since last sample exceeds 10 seconds (deep sleep, pause, or stall),
+        // reset history so stale measurements are never bridged.
+        if (timestamp_ns - prev_ts > 10000000000ULL) {
+            reset();
+        }
+    }
+
+    if (count_ >= capacity_) {
+        for (size_t i = 1; i < count_; ++i) {
+            samples_[i - 1] = samples_[i];
+        }
+        --count_;
+    }
+
+    samples_[count_++] = TemperatureTrendSample{celsius, timestamp_ns};
+}
+
+TemperatureVelocityReading TemperatureTrendTracker::evaluate_velocity() const noexcept {
+    TemperatureVelocityReading out{};
+    if (count_ < 2) {
+        out.valid = false;
+        out.valid_samples_count = static_cast<uint32_t>(count_);
+        if (count_ == 1) {
+            out.current_temperature_celsius = samples_[0].celsius;
+            out.timestamp_ns = samples_[0].timestamp_ns;
+        }
+        return out;
+    }
+
+    const uint64_t t0 = samples_[0].timestamp_ns;
+    const uint64_t t_last = samples_[count_ - 1].timestamp_ns;
+    const double duration_sec = static_cast<double>(t_last - t0) / 1e9;
+
+    out.sample_duration_sec = duration_sec;
+    out.valid_samples_count = static_cast<uint32_t>(count_);
+    out.current_temperature_celsius = samples_[count_ - 1].celsius;
+    out.timestamp_ns = t_last;
+
+    if (duration_sec < 0.8 || count_ < 2) {
+        out.valid = false;
+        return out;
+    }
+
+    double sum_t = 0.0;
+    double sum_temp = 0.0;
+    for (size_t i = 0; i < count_; ++i) {
+        const double t_sec = static_cast<double>(samples_[i].timestamp_ns - t0) / 1e9;
+        sum_t += t_sec;
+        sum_temp += static_cast<double>(samples_[i].celsius);
+    }
+    const double mean_t = sum_t / static_cast<double>(count_);
+    const double mean_temp = sum_temp / static_cast<double>(count_);
+
+    double s_tt = 0.0;
+    double s_t_temp = 0.0;
+    for (size_t i = 0; i < count_; ++i) {
+        const double t_sec = static_cast<double>(samples_[i].timestamp_ns - t0) / 1e9;
+        const double dt = t_sec - mean_t;
+        const double d_temp = static_cast<double>(samples_[i].celsius) - mean_temp;
+        s_tt += dt * dt;
+        s_t_temp += dt * d_temp;
+    }
+
+    if (s_tt < 1e-7) {
+        out.valid = false;
+        return out;
+    }
+
+    out.velocity_celsius_per_sec = s_t_temp / s_tt;
+    out.valid = true;
+    return out;
+}
+
+void TemperatureTrendTracker::reset() noexcept {
+    count_ = 0;
+}
+
+TemperatureVelocityReading ThermalMonitor::current_temperature_velocity() const {
+    return trend_tracker_.evaluate_velocity();
+}
+
+void ThermalMonitor::record_temperature_sample(float celsius, uint64_t timestamp_ns) const {
+    trend_tracker_.record_sample(celsius, timestamp_ns);
+}
+
 } // namespace coreflow
+

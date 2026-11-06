@@ -418,6 +418,9 @@ void print_status() {
         << ",\"tunerRejected\":" << tuner.total_rejected
         << ",\"tunerThermalStabilization\":" << (tuner.thermal_stabilization_active ? "true" : "false")
         << ",\"tunerThermalRecovery\":" << (tuner.thermal_recovery_active ? "true" : "false")
+        << ",\"tunerThermalPressureVelocity\":" << safe_json_double(tuner.thermal_pressure_velocity)
+        << ",\"tunerTemperatureVelocity\":" << safe_json_double(tuner.temperature_velocity_celsius_per_sec)
+        << ",\"tunerTemperatureVelocityValid\":" << (tuner.temperature_velocity_valid ? "true" : "false")
         << ",\"blockQueues\":[";
     bool first_queue = true;
     for (const auto& q : tuner.block_queues) {
@@ -802,6 +805,7 @@ int main(int argc, char* argv[]) {
     auto last_tick = std::chrono::steady_clock::now();
     bool applied = false;
     CoolingFeedback cooling_feedback;
+    TemperatureTrendTracker temp_tracker(8);
     bool thermal_ready = false;
     bool unavailable_reported = false;
     WorkloadState current = WorkloadState::Balanced;
@@ -855,6 +859,7 @@ int main(int argc, char* argv[]) {
                     applied = false;
                     thermal_ready = false;
                     cooling_feedback.reset();
+                    temp_tracker.reset();
                     emit_log(false, "[CoreFlow] Configuration reloaded on SIGHUP.");
                 } else {
                     reactor.stop();
@@ -912,6 +917,7 @@ int main(int argc, char* argv[]) {
             }
             thermal_ready = false;
             cooling_feedback.reset();
+            temp_tracker.reset();
             if (applied) {
                 (void)baseline.rollback_all();
                 applied = false;
@@ -948,6 +954,13 @@ int main(int argc, char* argv[]) {
         };
 
         const auto now_tick = std::chrono::steady_clock::now();
+        const auto now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                now_tick.time_since_epoch()).count());
+        if (temp >= 0.0f && std::isfinite(temp)) {
+            temp_tracker.record_sample(temp, now_ns);
+        }
+        const auto temp_vel = temp_tracker.evaluate_velocity();
         const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
@@ -1042,10 +1055,16 @@ int main(int argc, char* argv[]) {
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
+            .thermal_pressure_velocity = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
+            .current_temperature_celsius = temp,
+            .temperature_velocity_celsius_per_sec = temp_vel.valid ? temp_vel.velocity_celsius_per_sec : 0.0,
+            .temperature_velocity_valid = temp_vel.valid,
+            .temperature_samples_count = temp_vel.valid_samples_count,
+            .temperature_sample_duration_sec = temp_vel.sample_duration_sec,
             .thermal_guard_active = thermal_limit_hit,
             .thermal_emergency = thermal.emergency,
             .thermal_headroom = remaining_headroom,
-            .thermal_trend_celsius = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
+            .thermal_trend_celsius = temp_vel.valid ? temp_vel.velocity_celsius_per_sec : 0.0,
         });
         if (tuner_snap.active_candidate_id != last_tuner_candidate ||
             tuner_snap.verdict != last_tuner_verdict) {

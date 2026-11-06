@@ -161,7 +161,62 @@ int main() {
     const auto units = root + "/units";
     create_zone(units, 0, "cpu", "100");
     assert(std::fabs(ThermalMonitor(units).hottest_celsius() - 0.1f) < 0.001f);
+
+    // THERMAL-DECISION-CORRECTNESS: TemperatureTrendTracker & Physical Velocity Verification
+    TemperatureTrendTracker tracker(8);
+    assert(!tracker.evaluate_velocity().valid);
+    assert(tracker.sample_count() == 0);
+
+    // Single sample is insufficient for velocity
+    tracker.record_sample(45.0f, 1000000000ULL);
+    assert(!tracker.evaluate_velocity().valid);
+    assert(tracker.sample_count() == 1);
+
+    // Out of order / duplicate timestamp rejected
+    tracker.record_sample(44.0f, 1000000000ULL);
+    assert(tracker.sample_count() == 1);
+
+    // Time gap > 10s resets history
+    tracker.record_sample(45.0f, 15000000000ULL); // 14s later
+    assert(tracker.sample_count() == 1);
+    assert(!tracker.evaluate_velocity().valid);
+
+    // Constant temperature -> velocity 0.0 °C/s, valid == true
+    tracker.reset();
+    tracker.record_sample(45.0f, 1000000000ULL);
+    tracker.record_sample(45.0f, 2000000000ULL);
+    tracker.record_sample(45.0f, 3000000000ULL);
+    const auto const_vel = tracker.evaluate_velocity();
+    assert(const_vel.valid);
+    assert(const_vel.valid_samples_count == 3);
+    assert(std::abs(const_vel.velocity_celsius_per_sec) < 1e-5);
+    assert(std::abs(const_vel.sample_duration_sec - 2.0) < 0.01);
+
+    // Negative temperature trend (physical cooling)
+    tracker.reset();
+    tracker.record_sample(46.0f, 1000000000ULL);
+    tracker.record_sample(45.5f, 2000000000ULL);
+    tracker.record_sample(45.0f, 3000000000ULL);
+    const auto cool_vel = tracker.evaluate_velocity();
+    assert(cool_vel.valid);
+    assert(cool_vel.valid_samples_count == 3);
+    assert(cool_vel.velocity_celsius_per_sec < -0.45 && cool_vel.velocity_celsius_per_sec > -0.55);
+
+    // Positive temperature trend (warming)
+    tracker.reset();
+    tracker.record_sample(42.0f, 1000000000ULL);
+    tracker.record_sample(42.6f, 2000000000ULL);
+    tracker.record_sample(43.2f, 3000000000ULL);
+    const auto warm_vel = tracker.evaluate_velocity();
+    assert(warm_vel.valid);
+    assert(warm_vel.velocity_celsius_per_sec > 0.55 && warm_vel.velocity_celsius_per_sec < 0.65);
+
+    // Non-finite and negative temperatures are safely rejected without corrupting history
+    tracker.record_sample(-1.0f, 4000000000ULL);
+    tracker.record_sample(std::numeric_limits<float>::quiet_NaN(), 5000000000ULL);
+    assert(tracker.sample_count() == 3);
+
     std::filesystem::remove_all(root);
-    std::cout << "ThermalMonitor cluster discovery, fusion, headroom, and hwmon PASS\n";
+    std::cout << "ThermalMonitor cluster discovery, fusion, headroom, hwmon, and TemperatureTrendTracker PASS\n";
     return 0;
 }

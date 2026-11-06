@@ -310,8 +310,271 @@ int main() {
     coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
     assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
 
+    // 13. Thermal Decision Correctness & False-Positive Elimination (TASK 01)
+    // 13.1 Constant thermal pressure must NOT yield false-positive IMPROVED
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    const auto t1_start = tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 45.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    assert(t1_start.thermal_stabilization_active);
+    assert(t1_start.stage == "OBSERVING");
+    // Feed 3 observation ticks with constant pressure (68.0) and zero temp trend
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 68.0,
+            .current_temperature_celsius = 45.0,
+            .temperature_velocity_celsius_per_sec = 0.0,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t1_eval = tuner.snapshot();
+    assert(t1_eval.last_verdict != "IMPROVED");
+    assert(t1_eval.last_verdict == "NEUTRAL");
+    assert(t1_eval.stage == "PLANNED");
+
+    // 13.2 Zero temperature trend is NOT evidence of cooling
+    // Evaluated in 13.1 above: utility delta was 0.0, receiving 0 trend bonus and resulting in NEUTRAL rollback.
+    assert(t1_eval.utility_delta < 0.25);
+
+    // 13.3 Negative temperature trend indicates genuine cooling when samples are valid
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 46.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 67.0,
+            .current_temperature_celsius = 45.0,
+            .temperature_velocity_celsius_per_sec = -0.35,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t3_eval = tuner.snapshot();
+    assert(t3_eval.last_verdict == "IMPROVED");
+    assert(t3_eval.stage == "RETAINED");
+
+    // 13.4 Positive temperature trend (warming) must NEVER be considered improved
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 44.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    // Even if thermal_pressure decreases by 4.0 points, temperature is warming by +0.40 °C/s
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 64.0,
+            .current_temperature_celsius = 45.5,
+            .temperature_velocity_celsius_per_sec = 0.40,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t4_eval = tuner.snapshot();
+    assert(t4_eval.last_verdict != "IMPROVED");
+    assert(t4_eval.stage == "PLANNED");
+
+    // 13.5 Sensor unavailable yields INCONCLUSIVE
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 45.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 67.0,
+            .current_temperature_celsius = -1.0, // Sensor unavailable
+            .temperature_velocity_celsius_per_sec = 0.0,
+            .temperature_velocity_valid = false,
+            .temperature_samples_count = 0,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t5_eval = tuner.snapshot();
+    assert(t5_eval.last_verdict == "INCONCLUSIVE");
+    assert(t5_eval.stage == "PLANNED");
+
+    // 13.6 Insufficient sample count yields INCONCLUSIVE
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 45.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 67.0,
+            .current_temperature_celsius = 45.0,
+            .temperature_velocity_celsius_per_sec = -0.20,
+            .temperature_velocity_valid = false, // Not enough samples
+            .temperature_samples_count = 1,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t6_eval = tuner.snapshot();
+    assert(t6_eval.last_verdict == "INCONCLUSIVE");
+    assert(t6_eval.stage == "PLANNED");
+
+    // 13.7 Pressure velocity and temperature velocity must NOT be swapped
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 45.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    // Negative pressure velocity (-2.5 /s) but positive temperature velocity (+0.45 °C/s)
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 68.0,
+            .thermal_pressure_velocity = -2.5,
+            .current_temperature_celsius = 45.5,
+            .temperature_velocity_celsius_per_sec = 0.45,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t7_eval = tuner.snapshot();
+    assert(t7_eval.last_verdict != "IMPROVED");
+    assert(t7_eval.stage == "PLANNED");
+
+    // 13.8 Sub-noise sensor jitter does NOT yield false-positive IMPROVED
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 45.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    // Trend within noise floor (-0.02 °C/s) and pressure variation within noise
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 1.0,
+            .thermal_pressure = 67.5,
+            .current_temperature_celsius = 45.0,
+            .temperature_velocity_celsius_per_sec = -0.02,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t8_eval = tuner.snapshot();
+    assert(t8_eval.last_verdict != "IMPROVED");
+    assert(t8_eval.last_verdict == "NEUTRAL");
+
+    // 13.9 Thermal pressure drop must NOT mask workload regression
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 46.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    // Thermal pressure dropped significantly (60.0) and cooling (-0.30 °C/s),
+    // but io_psi spiked from 1.0 to 12.0 (massive stall)
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 60.0,
+            .current_temperature_celsius = 45.0,
+            .temperature_velocity_celsius_per_sec = -0.30,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t9_eval = tuner.snapshot();
+    assert(t9_eval.last_verdict == "REGRESSED");
+    assert(t9_eval.stage == "PLANNED");
+
     tuner.reset();
     fs::remove_all(root);
-    std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and adaptive feedback succeeded.\n";
+    std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
     return 0;
 }

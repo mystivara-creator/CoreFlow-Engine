@@ -3,6 +3,8 @@
 #include <chrono>
 #include <string_view>
 #include <vector>
+#include <array>
+#include <cstdint>
 
 namespace coreflow {
 struct ThermalSensorReading {
@@ -12,6 +14,43 @@ struct ThermalSensorReading {
     bool valid{false}, policy_available{false};
     double pressure{0};
 };
+struct TemperatureTrendSample {
+    float celsius{-1.0f};
+    uint64_t timestamp_ns{0};
+};
+
+struct TemperatureVelocityReading {
+    double velocity_celsius_per_sec{0.0}; // d(temp)/dt in °C/s. Negative = cooling, positive = warming.
+    bool valid{false};                   // True only if backed by valid actual physical sensor readings.
+    uint32_t valid_samples_count{0};     // Number of valid actual temperature sensor samples in window.
+    double sample_duration_sec{0.0};     // Time delta elapsed across the samples in seconds.
+    float current_temperature_celsius{-1.0f}; // Most recent valid temperature in °C.
+    uint64_t timestamp_ns{0};            // Monotonic timestamp of the reading in nanoseconds.
+};
+
+class TemperatureTrendTracker {
+public:
+    explicit TemperatureTrendTracker(size_t capacity = 8) noexcept;
+
+    // Records an actual physical temperature reading with an explicit nanosecond monotonic timestamp.
+    // Invalid readings (celsius < 0.0f, NaN, or non-finite) do not enter history.
+    void record_sample(float celsius, uint64_t timestamp_ns) noexcept;
+
+    // Evaluates current temperature velocity in °C/s via linear regression across the sample window.
+    [[nodiscard]] TemperatureVelocityReading evaluate_velocity() const noexcept;
+
+    // Clears all history (e.g. on sensor failure, stall, or state reset).
+    void reset() noexcept;
+
+    [[nodiscard]] size_t sample_count() const noexcept { return count_; }
+
+private:
+    static constexpr size_t kMaxSamples = 16;
+    std::array<TemperatureTrendSample, kMaxSamples> samples_{};
+    size_t count_{0};
+    size_t capacity_{8};
+};
+
 struct ThermalAssessment {
     bool available{false};
     bool emergency{false};
@@ -20,6 +59,7 @@ struct ThermalAssessment {
     std::string source{"unavailable"};
     std::string sensor;
     std::vector<ThermalSensorReading> readings;
+    TemperatureVelocityReading temperature_velocity{};
     bool incomplete{false};
     bool degraded{false};
     bool platform_status_valid{false};
@@ -56,6 +96,8 @@ public:
     [[nodiscard]] float skin_celsius() const;
     [[nodiscard]] MultiSensorProfile multi_sensor_profile() const;
     [[nodiscard]] ThermalAssessment assess(bool headroom = true) const;
+    [[nodiscard]] TemperatureVelocityReading current_temperature_velocity() const;
+    void record_temperature_sample(float celsius, uint64_t timestamp_ns) const;
 private:
     struct Sensor {
         std::string path;
@@ -67,6 +109,7 @@ private:
     std::string sysfs_root_;
     mutable std::vector<Sensor> sensors_;
     mutable std::chrono::steady_clock::time_point discovery_at_{};
+    mutable TemperatureTrendTracker trend_tracker_{8};
     void discover_sensors() const;
     float hottest_category(int category) const;
 };

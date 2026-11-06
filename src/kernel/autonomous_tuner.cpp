@@ -502,9 +502,12 @@ uint8_t AutonomousTuner::compute_thermal_bucket(const TunerTelemetryInput& telem
 }
 
 WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& telemetry) noexcept {
+    const bool rapid_temp_rise =
+        (telemetry.temperature_velocity_valid && telemetry.temperature_velocity_celsius_per_sec >= 0.8) ||
+        (telemetry.thermal_trend_celsius >= 0.8);
     if (telemetry.thermal_emergency || telemetry.thermal_guard_active || telemetry.thermal_pressure >= 65.0 ||
         (telemetry.thermal_headroom >= 0.0 && telemetry.thermal_headroom <= 0.20) ||
-        (telemetry.thermal_pressure >= 56.0 && telemetry.thermal_trend_celsius >= 0.8)) {
+        (telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
         return WorkloadClass::ThermalConstrained;
     }
     if (telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
@@ -1185,11 +1188,14 @@ bool AutonomousTuner::apply_transaction(
     before_mem_psi_ = telemetry.memory_psi;
     before_cpu_psi_ = telemetry.cpu_psi;
     before_thermal_ = telemetry.thermal_pressure;
+    before_temperature_celsius_ = telemetry.current_temperature_celsius;
 
     sum_after_io_psi_ = 0.0;
     sum_after_mem_psi_ = 0.0;
     sum_after_cpu_psi_ = 0.0;
     sum_after_thermal_ = 0.0;
+    sum_after_temp_vel_ = 0.0;
+    valid_thermal_samples_in_window_ = 0;
     min_after_io_psi_ = 1e9;
     max_after_io_psi_ = 0.0;
     ++total_trials_;
@@ -1241,9 +1247,70 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 
     double utility_delta = 0.0;
     if (current_intent_ == "ThermalStabilization") {
-        // Under ThermalStabilization, lowering or stabilizing thermal pressure and trend is the primary objective
-        const double trend_bonus = (latest_telemetry.thermal_trend_celsius <= 0.0) ? 0.35 : -0.30;
-        utility_delta = 0.65 * therm_gain + trend_bonus + 0.20 * io_gain + 0.15 * cpu_gain;
+        // Requirements 6 & 7: Check if physical thermal evidence is available and adequate.
+        // A candidate under ThermalStabilization can ONLY be retained if valid physical sensor telemetry is available.
+        const bool has_thermal_evidence =
+            (valid_thermal_samples_in_window_ > 0) ||
+            (latest_telemetry.temperature_velocity_valid && latest_telemetry.temperature_samples_count >= 2);
+
+        if (!has_thermal_evidence || (latest_telemetry.current_temperature_celsius < 0.0 && !latest_telemetry.temperature_velocity_valid)) {
+            // Sensor unavailable or insufficient samples -> INCONCLUSIVE per Requirement 6 & 7
+            last_verdict_ = "INCONCLUSIVE";
+            last_verdict_enum_ = TunerVerdict::Inconclusive;
+            last_utility_delta_ = 0.0;
+            observing_ = false;
+            settling_ticks_remaining_ = 0;
+            ++total_rolled_back_;
+            ++total_inconclusive_;
+            if (auto* stats = find_candidate(current_candidate_id_)) {
+                ++stats->inconclusive_count;
+                ++stats->consecutive_non_improved;
+                stats->last_rollback_reason = "Inconclusive: thermal sensor telemetry unavailable or insufficient samples";
+                const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
+                stats->cooldown_ticks = std::min<uint32_t>(32U, 4U * (1U << shift));
+            }
+            const std::string msg =
+                "Trial " + current_candidate_id_ + " inconclusive due to missing thermal sensor evidence; reverted to OEM baseline.";
+            (void)rollback_active(msg);
+            save_persisted_stats();
+            return;
+        }
+
+        const double avg_temp_vel = (valid_thermal_samples_in_window_ > 0)
+            ? (sum_after_temp_vel_ / static_cast<double>(valid_thermal_samples_in_window_))
+            : latest_telemetry.temperature_velocity_celsius_per_sec;
+
+        // Requirements 4, 5, 8:
+        // Measurement noise margin: |avg_temp_vel| <= 0.05 °C/s is within the thermistor sensor noise floor.
+        // A zero or near-zero temperature trend is NOT evidence of cooling (zero bonus!).
+        // Genuine cooling requires avg_temp_vel < -0.05 °C/s.
+        // If temperature is rising (avg_temp_vel > +0.05 °C/s), it is warming and cannot be considered improved.
+
+        if (avg_temp_vel > 0.05) {
+            // Warming trend: device is getting hotter
+            const double warming_penalty = std::min(1.5, avg_temp_vel * 1.5);
+            utility_delta = 0.40 * therm_gain - warming_penalty + 0.20 * io_gain + 0.15 * cpu_gain;
+            if (utility_delta >= 0.25) {
+                utility_delta = 0.10; // Cap below IMPROVED threshold
+            }
+        } else if (avg_temp_vel < -0.05) {
+            // Genuine physical cooling evidence beyond sensor noise
+            const double cooling_gain = std::min(1.2, (-avg_temp_vel) * 1.5);
+            utility_delta = 0.45 * therm_gain + cooling_gain + 0.20 * io_gain + 0.15 * cpu_gain;
+        } else {
+            // Flat / zero temperature trend (|avg_temp_vel| <= 0.05):
+            // Zero is NOT evidence of cooling. Zero trend bonus!
+            // Thermal pressure reduction must significantly exceed noise floor (>= 2.5 index points).
+            const double effective_therm_gain = (therm_gain >= 2.5) ? (therm_gain * 0.40) : 0.0;
+            utility_delta = effective_therm_gain + 0.20 * io_gain + 0.15 * cpu_gain;
+        }
+
+        // Requirement 9: Thermal pressure reduction must not mask workload or stability regression.
+        if (io_gain < -1.5 || cpu_gain < -3.0 || mem_gain < -1.5) {
+            if (utility_delta >= 0.25) {
+                utility_delta = -0.25; // Force regressed verdict
+            }
+        }
     } else if (current_intent_ == "IoLatencyRelief") {
         utility_delta = 1.40 * io_gain + 0.35 * cpu_gain - 0.60 * therm_penalty;
     } else if (current_intent_ == "MemoryStallRelief") {
@@ -1358,8 +1425,25 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 
 AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_telemetry) {
     TunerTelemetryInput telemetry = raw_telemetry;
-    if (has_prev_thermal_ && std::abs(telemetry.thermal_trend_celsius) < 1e-6) {
-        telemetry.thermal_trend_celsius = telemetry.thermal_pressure - prev_thermal_pressure_;
+    latest_current_temperature_ = telemetry.current_temperature_celsius;
+    latest_temperature_velocity_ = telemetry.temperature_velocity_celsius_per_sec;
+    latest_temperature_velocity_valid_ = telemetry.temperature_velocity_valid;
+    latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
+
+    // Backward compatibility: if caller set thermal_trend_celsius without setting temperature_velocity_valid,
+    // adopt it only if non-zero, but keep them distinct.
+    if (!telemetry.temperature_velocity_valid && std::abs(telemetry.thermal_trend_celsius) > 1e-6) {
+        telemetry.temperature_velocity_celsius_per_sec = telemetry.thermal_trend_celsius;
+        telemetry.temperature_velocity_valid = true;
+        telemetry.temperature_samples_count = std::max(telemetry.temperature_samples_count, 2U);
+        latest_temperature_velocity_ = telemetry.temperature_velocity_celsius_per_sec;
+        latest_temperature_velocity_valid_ = true;
+    }
+
+    // Keep pressure velocity updated from pressure difference if not provided by neural predictor
+    if (has_prev_thermal_ && std::abs(telemetry.thermal_pressure_velocity) < 1e-6) {
+        telemetry.thermal_pressure_velocity = telemetry.thermal_pressure - prev_thermal_pressure_;
+        latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
     }
     prev_thermal_pressure_ = telemetry.thermal_pressure;
     has_prev_thermal_ = true;
@@ -1497,7 +1581,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     const bool in_thermal_recovery = (thermal_recovery_ticks_ > 0);
     if (thermal_recovery_ticks_ > 0) {
-        if (telemetry.thermal_pressure <= 46.0 && telemetry.thermal_trend_celsius <= 0.0) {
+        const bool temp_stable_or_falling =
+            (!telemetry.temperature_velocity_valid) ||
+            (telemetry.temperature_velocity_celsius_per_sec <= 0.05);
+        if (telemetry.thermal_pressure <= 46.0 && temp_stable_or_falling) {
             thermal_recovery_ticks_ = 0;
         } else {
             --thermal_recovery_ticks_;
@@ -1525,6 +1612,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         sum_after_mem_psi_ += telemetry.memory_psi;
         sum_after_cpu_psi_ += telemetry.cpu_psi;
         sum_after_thermal_ += telemetry.thermal_pressure;
+        if (telemetry.temperature_velocity_valid) {
+            sum_after_temp_vel_ += telemetry.temperature_velocity_celsius_per_sec;
+            ++valid_thermal_samples_in_window_;
+        }
         min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
         max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi);
         ++obs_ticks_;
@@ -1851,6 +1942,10 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.recovery_required = recovery_required_;
     out.thermal_stabilization_active = thermal_stabilization_active_;
     out.thermal_recovery_active = (thermal_recovery_ticks_ > 0);
+    out.current_temperature_celsius = latest_current_temperature_;
+    out.temperature_velocity_celsius_per_sec = latest_temperature_velocity_;
+    out.temperature_velocity_valid = latest_temperature_velocity_valid_;
+    out.thermal_pressure_velocity = latest_pressure_velocity_;
     out.block_queues = block_queues_;
     out.candidates = candidates_;
     out.discovered_resources = discovered_resources_;
