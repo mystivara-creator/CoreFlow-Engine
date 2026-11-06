@@ -722,6 +722,17 @@ bool BaselineStore::has_active_mutations() const {
     return false;
 }
 
+bool BaselineStore::verify_and_persist_clear_state() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recovery_checked_ || identity_unavailable_) return false;
+    for (const auto& [_, snap] : store_) {
+        if (snap.is_modified) return false;
+    }
+    // Replacing the journal with a durable empty CFJ4 header removes stale
+    // write-ahead records left by an earlier failed persist operation.
+    return persist_locked();
+}
+
 bool BaselineStore::owns_expected_state(const std::string& path, const std::string& expected_value) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = store_.find(path);
