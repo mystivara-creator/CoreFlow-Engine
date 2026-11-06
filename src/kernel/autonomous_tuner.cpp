@@ -1115,12 +1115,33 @@ bool AutonomousTuner::apply_transaction(
         if (!store.apply_mutation(step.path, step.target_value)) {
             const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                       step.relation == StepRelation::RequiredDependent);
+            const auto audit = store.get_audit_trail();
+            const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == step.path;
+            });
+            const bool unresolved_path_mutation =
+                snapshot != audit.end() && snapshot->is_modified;
+
             if (!is_required) {
+                // BaselineStore now performs path-scoped failure recovery. If the
+                // optional write remains journaled as active, explicitly restore
+                // that path before continuing with the independent candidate steps.
+                if (unresolved_path_mutation && !store.rollback(step.path)) {
+                    committed.push_back(step);
+                    applied_steps_ = std::move(committed);
+                    (void)rollback_active(
+                        "Optional step failed and its path-scoped rollback is unresolved.");
+                    return false;
+                }
                 continue;
             }
-            // Dependency or readback failure on required step: unwind committed steps in reverse order
+
+            // Include a partially committed required path in reverse-order unwind.
+            // rollback(path) is safe for a path already restored by BaselineStore.
+            if (unresolved_path_mutation) committed.push_back(step);
             applied_steps_ = std::move(committed);
-            (void)rollback_active("Transaction aborted on failed required step; rolled back to baseline.");
+            (void)rollback_active(
+                "Transaction aborted on failed required step; rolled back to baseline.");
             return false;
         }
         if (!after_summary.empty()) after_summary += ",";
