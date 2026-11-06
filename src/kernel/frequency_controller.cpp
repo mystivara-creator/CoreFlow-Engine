@@ -32,8 +32,11 @@ FrequencyController::FrequencyController(std::string root) : root_(std::move(roo
         });
 }
 FrequencyController::~FrequencyController() {
-    (void)handle_preemption(MutationDomain::CpuPolicy, cpu_transaction_id_);
-    (void)handle_preemption(MutationDomain::GpuDevfreq, gpu_transaction_id_);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!cpu_transaction_id_.empty()) (void)rollback_domain(false);
+        if (!gpu_transaction_id_.empty()) (void)rollback_domain(true);
+    }
     CentralMutationCoordinator::instance().unregister_preemption_handler(kFrequencyControllerName);
 }
 bool FrequencyController::acquire_domain_lease(bool gpu) {
@@ -58,19 +61,16 @@ void FrequencyController::release_domain_lease(bool gpu) noexcept {
         domain, kFrequencyControllerName, transaction_id);
     transaction_id.clear();
 }
-bool FrequencyController::rollback_domain(bool gpu, std::string_view transaction_id) {
+bool FrequencyController::rollback_domain(bool gpu) {
     auto& store = BaselineStore::instance();
-    bool found = false;
     for (auto& item : domains_) {
         if (item.gpu != gpu || !item.mutation_active) continue;
-        found = true;
         if (!store.rollback(item.maximum)) return false;
         uint64_t actual = 0;
         if (!number(item.maximum, actual) || actual != item.baseline) return false;
         item.last = item.baseline;
         item.mutation_active = false;
     }
-    (void)found;
     release_domain_lease(gpu);
     return true;
 }
@@ -81,7 +81,7 @@ bool FrequencyController::handle_preemption(
     std::lock_guard<std::mutex> lock(mutex_);
     const auto& active_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
     if (active_id.empty() || active_id != transaction_id) return false;
-    return rollback_domain(gpu, transaction_id);
+    return rollback_domain(gpu);
 }
 void FrequencyController::add(const std::string& dir, bool gpu) {
     const auto max = dir + (gpu ? "/max_freq" : "/scaling_max_freq");
