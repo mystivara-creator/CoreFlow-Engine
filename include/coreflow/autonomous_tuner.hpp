@@ -309,6 +309,9 @@ public:
     static AutonomousTuner& instance();
 
     explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc");
+    ~AutonomousTuner();
+    AutonomousTuner(const AutonomousTuner&) = delete;
+    AutonomousTuner& operator=(const AutonomousTuner&) = delete;
 
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
 
@@ -434,6 +437,8 @@ private:
         StepRelation relation{StepRelation::RequiredDependent};
     };
 
+    mutable std::recursive_mutex tuner_mutex_;
+    std::string controller_name_;
     std::string sys_root_;
     std::string proc_root_;
     std::vector<BlockQueueSurface> block_queues_;
@@ -493,6 +498,8 @@ private:
 
     std::vector<MutationStep> applied_steps_;
 
+    bool handle_preemption(MutationDomain domain, std::string_view transaction_id,
+                           std::string_view reason) noexcept;
     void init_candidates();
     void update_ucb_scores();
     void refresh_surface_readings();
