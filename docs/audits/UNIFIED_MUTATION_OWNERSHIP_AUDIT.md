@@ -599,7 +599,7 @@ Workflow run [42292156748](https://github.com/mystivara-creator/CoreFlow-Engine/
 **Status: SOURCE STATE NORMALIZATION APPLIED; EXACT-HEAD CI PENDING.**
 ## 20. Mutation write-path inventory and removal of unscoped lease release
 
-**Source implementation head:** `deb3c3fdaf49adb100898180ca18eca973f517f8`
+**Source implementation head:** `e0439d8b0cc06db62794d98505079cf9cb38270e`
 
 ### Write-path inventory
 
@@ -624,10 +624,10 @@ The shell install/service scripts also write boot tokens, attempt counters, safe
 
 ### Unscoped lease release API removed
 
-- Repository search found `release_all_for_controller()` only at its declaration and implementation; no internal caller existed.
 - The API could mark every active lease belonging to a controller inactive without a domain/transaction identifier, rollback acknowledgement, or BaselineStore verification.
-- Removed the declaration and implementation. Normal release remains transaction-scoped through `release_lease(domain, controller, transaction_id)`; the detached-owner path remains a distinct, explicitly verified global recovery operation.
-- This removes an unneeded coordinator escape hatch rather than relying on every future caller to remember its rollback contract.
+- The first removal exposed one internal caller in `AutonomousTuner::rollback_active()` through Host C++ CI. That caller was corrected to release only `domain_for_candidate(current_candidate_id_)` plus the exact candidate transaction ID, and only after all tracked paths passed rollback/readback verification.
+- Removed the unscoped declaration and implementation. Normal release is transaction-scoped through `release_lease(domain, controller, transaction_id)`; the detached-owner path remains a distinct, explicitly verified global recovery operation.
+- The CI compile failure at source head `deb3c3fdaf49adb100898180ca18eca973f517f8` was therefore a real integration regression, not dismissed as a transient runner issue. The fix is in source head `e0439d8b0cc06db62794d98505079cf9cb38270e` and must be validated by a subsequent exact-head CI run.
 
 ### Scope and residual limitations
 
@@ -638,6 +638,6 @@ The shell install/service scripts also write boot tokens, attempt counters, safe
 
 ### Exact-head validation
 
-The source removal commit is `deb3c3fdaf49adb100898180ca18eca973f517f8`. The following audit-document commit and its exact-head CoreFlow CI must complete before this PR head is recorded as validated. No local build is claimed.
+The source removal/follow-up fix commit is `e0439d8b0cc06db62794d98505079cf9cb38270e`. The earlier CI run `42292602289` failed compilation because the original `AutonomousTuner::rollback_active()` call remained; it is now changed to exact domain/transaction release. The following audit-document commit and its exact-head CoreFlow CI must complete before this PR head is recorded as validated. No local build is claimed.
 
 **Status: INTERNAL UNOWNED BULK-RELEASE API REMOVED; REVIEWED WRITE SURFACES CLASSIFIED; EXACT-HEAD CI AND PHYSICAL DEVICE VALIDATION STILL REQUIRED.**
