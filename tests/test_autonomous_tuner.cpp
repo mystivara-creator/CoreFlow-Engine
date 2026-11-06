@@ -149,6 +149,10 @@ int main() {
     assert(refused_lease.size() == 1);
     assert(refused_lease.front().owner_controller == "RefusingController");
     assert(refused_lease.front().preemption_requested);
+    // A failed callback clears its dispatch marker; a later recovery pass may retry.
+    coordinator.emergency_preempt_all("retry-failed-preemption");
+    assert(refused_callbacks.load(std::memory_order_relaxed) == 2);
+    assert(coordinator.active_leases().size() == 1);
     assert(!coordinator.acquire_lease(
         coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse",
         coreflow::ControllerPriority::BackgroundEfficiency));
@@ -840,6 +844,75 @@ int main() {
         coordinator.release_lease(
             coreflow::MutationDomain::ThermalCore, "PostEmergencyAdmission", "post-emergency-tx");
     }
+
+    // One controller identity cannot silently replace an already-registered callback.
+    coordinator.reset();
+    std::atomic<uint32_t> original_handler_calls{0};
+    assert(coordinator.register_preemption_handler("SingleHandlerController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            original_handler_calls.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }));
+    assert(!coordinator.register_preemption_handler("SingleHandlerController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) {
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "SingleHandlerController", "single-handler-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("single-handler-registration-test");
+    assert(original_handler_calls.load(std::memory_order_relaxed) == 1);
+    const auto single_handler_lease = coordinator.active_leases();
+    assert(single_handler_lease.size() == 1);
+    assert(single_handler_lease.front().preemption_requested);
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "SingleHandlerController", "single-handler-tx");
+    coordinator.unregister_preemption_handler("SingleHandlerController");
+
+    // Concurrent emergency dispatchers must not execute the same owner's rollback
+    // callback twice for one lease. A failed callback is retryable (covered above).
+    coordinator.reset();
+    std::mutex dispatch_mutex;
+    std::condition_variable dispatch_cv;
+    bool dispatch_callback_entered = false;
+    bool dispatch_callback_release = false;
+    std::atomic<uint32_t> concurrent_callback_calls{0};
+    assert(coordinator.register_preemption_handler("ConcurrentDispatchController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            concurrent_callback_calls.fetch_add(1, std::memory_order_relaxed);
+            std::unique_lock<std::mutex> lock(dispatch_mutex);
+            dispatch_callback_entered = true;
+            dispatch_cv.notify_all();
+            dispatch_cv.wait(lock, [&] { return dispatch_callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "ConcurrentDispatchController", "concurrent-dispatch-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread first_dispatcher([&] {
+        coordinator.emergency_preempt_all("concurrent-dispatch-first");
+    });
+    {
+        std::unique_lock<std::mutex> lock(dispatch_mutex);
+        dispatch_cv.wait(lock, [&] { return dispatch_callback_entered; });
+    }
+    std::thread second_dispatcher([&] {
+        coordinator.emergency_preempt_all("concurrent-dispatch-second");
+    });
+    second_dispatcher.join();
+    assert(concurrent_callback_calls.load(std::memory_order_relaxed) == 1);
+    const auto in_flight_lease = coordinator.active_leases();
+    assert(in_flight_lease.size() == 1);
+    assert(in_flight_lease.front().preemption_dispatch_in_flight);
+    {
+        std::lock_guard<std::mutex> lock(dispatch_mutex);
+        dispatch_callback_release = true;
+    }
+    dispatch_cv.notify_all();
+    first_dispatcher.join();
+    assert(coordinator.active_leases().empty());
+    assert(concurrent_callback_calls.load(std::memory_order_relaxed) == 1);
+    coordinator.unregister_preemption_handler("ConcurrentDispatchController");
 
     // Handler teardown must wait for callbacks already copied by dispatch.
     coordinator.reset();
