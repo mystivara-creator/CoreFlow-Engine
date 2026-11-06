@@ -75,16 +75,32 @@ bool coordinated_rollback(BaselineStore& baseline, std::string_view reason) {
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all(reason);
     const auto remaining = coordinator.active_leases();
-    if (!remaining.empty()) {
+    const auto live_owner_pending = std::count_if(
+        remaining.begin(), remaining.end(),
+        [](const DomainLease& lease) { return !lease.owner_detached; });
+    if (live_owner_pending != 0) {
         emit_log(true, "[CoreFlow][Safety] Rollback acknowledgement missing from " +
-                       std::to_string(remaining.size()) +
-                       " mutation domain(s); admission remains closed and global rollback is withheld.");
+                       std::to_string(live_owner_pending) +
+                       " live mutation owner(s); admission remains closed and global rollback is withheld.");
         return false;
     }
 
+    // Detached owners cannot acknowledge through a callback anymore. A global
+    // journal rollback is permitted only after every still-live owner has
+    // acknowledged, then every path must be verified clear before orphan leases
+    // are retired.
     if (baseline.has_active_mutations()) (void)baseline.rollback_all();
     if (baseline.has_active_mutations()) {
-        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery remains incomplete; mutation admission stays closed.");
+        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery remains incomplete; orphan leases and mutation admission stay closed.");
+        return false;
+    }
+    if (!remaining.empty() &&
+        !coordinator.release_orphaned_leases_after_verified_recovery(true)) {
+        emit_log(true, "[CoreFlow][Safety] Detached-owner leases could not be reconciled; mutation admission stays closed.");
+        return false;
+    }
+    if (!coordinator.active_leases().empty()) {
+        emit_log(true, "[CoreFlow][Safety] Active mutation leases remain after recovery; admission stays closed.");
         return false;
     }
 
