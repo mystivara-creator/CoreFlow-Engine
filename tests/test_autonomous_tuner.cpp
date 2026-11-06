@@ -936,6 +936,57 @@ int main() {
     assert(concurrent_callback_calls.load(std::memory_order_relaxed) == 1);
     coordinator.unregister_preemption_handler("ConcurrentDispatchController");
 
+    // One callback object may own several domains, but the coordinator must not
+    // invoke that same object concurrently for different transactions either.
+    coordinator.reset();
+    std::mutex multi_domain_mutex;
+    std::condition_variable multi_domain_cv;
+    bool cpu_callback_entered = false;
+    bool release_cpu_callback = false;
+    std::atomic<uint32_t> multi_domain_callback_calls{0};
+    assert(coordinator.register_preemption_handler("MultiDomainController",
+        [&](coreflow::MutationDomain domain, std::string_view, std::string_view) {
+            multi_domain_callback_calls.fetch_add(1, std::memory_order_relaxed);
+            if (domain == coreflow::MutationDomain::CpuPolicy) {
+                std::unique_lock<std::mutex> lock(multi_domain_mutex);
+                cpu_callback_entered = true;
+                multi_domain_cv.notify_all();
+                multi_domain_cv.wait(lock, [&] { return release_cpu_callback; });
+            }
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "MultiDomainController", "multi-cpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "MultiDomainController", "multi-gpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread multi_domain_first([&] {
+        coordinator.emergency_preempt_all("multi-domain-first-dispatch");
+    });
+    {
+        std::unique_lock<std::mutex> lock(multi_domain_mutex);
+        multi_domain_cv.wait(lock, [&] { return cpu_callback_entered; });
+    }
+    std::thread multi_domain_second([&] {
+        coordinator.emergency_preempt_all("multi-domain-second-dispatch");
+    });
+    multi_domain_second.join();
+    assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 1);
+    const auto multi_domain_pending = coordinator.active_leases();
+    assert(multi_domain_pending.size() == 2);
+    assert(multi_domain_pending[0].preemption_dispatch_in_flight);
+    assert(!multi_domain_pending[1].preemption_dispatch_in_flight);
+    {
+        std::lock_guard<std::mutex> lock(multi_domain_mutex);
+        release_cpu_callback = true;
+    }
+    multi_domain_cv.notify_all();
+    multi_domain_first.join();
+    assert(coordinator.active_leases().empty());
+    assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 2);
+    coordinator.unregister_preemption_handler("MultiDomainController");
+
     // Handler teardown must wait for callbacks already copied by dispatch.
     coordinator.reset();
     std::mutex callback_mutex;
