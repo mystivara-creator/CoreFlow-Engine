@@ -134,7 +134,10 @@ public:
                        ControllerPriority priority,
                        std::string* conflict_reason = nullptr);
 
-    void release_lease(MutationDomain domain, std::string_view controller_name) noexcept;
+    void release_lease(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id = {}) noexcept;
     void release_all_for_controller(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
 
