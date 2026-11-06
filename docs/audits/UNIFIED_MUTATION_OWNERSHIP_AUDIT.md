@@ -711,3 +711,33 @@ Per-lease single-flight prevented duplicate callbacks for the same transaction, 
 - Repeated long-running scheduler stress, physical Xiaomi/HyperOS validation, target-specific KGSL source proof, and interrupted-write recovery remain open.
 
 **Status: CONTROLLER-WIDE CALLBACK SINGLE-FLIGHT IMPLEMENTED WITH DETERMINISTIC MULTI-DOMAIN TEST; EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT; NOT READY FOR 3.1.0 FREEZE.**
+## 23. Recovery admission waits for preemption callback drain
+
+**Source/test heads:**
+- `d30d9d3ac559f4eef64f955f426046b784a7c361` — require callback drain in recovery completion and orphan reconciliation
+- `b8373e17ddd9dbb96bd3ec16ed0d998d6446f757` — deterministic early-release callback regression test
+
+### Race addressed
+
+A controller callback may complete its BaselineStore rollback and release its exact lease from inside the callback, then execute a small amount of callback epilogue before returning its acknowledgement. During that interval the active-lease list can be empty while the coordinator still has a callback copied and executing. Checking only active leases could therefore reopen mutation admission before callback execution has drained.
+
+### Correction
+
+- `complete_emergency_recovery()` now requires both zero active leases and zero in-flight preemption callbacks across the handler registry.
+- `release_orphaned_leases_after_verified_recovery()` now checks that all callbacks are drained both before the durable BaselineStore clear-state verification and again after it. This is in addition to requiring every remaining active lease to be detached, preemption-requested, and free of lease-level dispatch.
+- The checks use the coordinator mutex; callback invocation remains outside that mutex. Callback completion decrements in-flight accounting and notifies the condition variable.
+- If callback execution remains in flight, the recovery barrier stays closed and the daemon's later monitor retry can complete recovery after the callback drains.
+
+### Regression coverage
+
+- The test callback releases its exact lease from inside the callback, signals that the lease list is empty, then blocks before returning its acknowledgement.
+- While the callback is still executing, `active_leases()` is empty but `complete_emergency_recovery()` must return false and leave the emergency barrier active.
+- After the callback is released and the dispatcher joins, recovery completion succeeds. This proves the barrier tracks callback lifetime, not only lease lifetime.
+
+### Validation
+
+- Exact preceding head `109cef2215906854450725b9af8e25a141ceaf9b` passed all seven CoreFlow CI jobs in [run 42294428826](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42294428826).
+- Latest source/test head `b8373e17ddd9dbb96bd3ec16ed0d998d6446f757` has workflow run [42294756956](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42294756956) in progress; it is not yet recorded as passed.
+- The documentation update following this section will require its own exact-head CI result. No local build or physical-device result is claimed.
+
+**Status: EARLY ADMISSION REOPEN WINDOW CLOSED IN SOURCE; DETERMINISTIC TEST ADDED; EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT; NOT READY FOR 3.1.0 FREEZE.**
