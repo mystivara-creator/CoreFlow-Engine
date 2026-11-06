@@ -24,6 +24,7 @@ private:
         bool gpu, retired{false}, mutation_active{false};
     };
     std::string root_;
+    std::string controller_name_;
     mutable std::mutex mutex_;
     std::vector<Domain> domains_;
     std::string cpu_transaction_id_;
