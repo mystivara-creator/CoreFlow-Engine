@@ -93,6 +93,15 @@ int main() {
     assert(acquired.load(std::memory_order_relaxed) == 1);
     assert(coordinator.active_leases().size() == 1);
     assert(coordinator.conflict_rejections() == 11);
+    std::string invalid_lease_reason;
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "", "invalid-owner-tx",
+        coreflow::ControllerPriority::WorkloadOptimization, &invalid_lease_reason));
+    assert(!invalid_lease_reason.empty());
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "InvalidTransactionController", "",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.active_leases().size() == 1);
     const auto winning_lease = coordinator.active_leases().front();
     coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller, winning_lease.transaction_id);
     assert(coordinator.active_leases().empty());
