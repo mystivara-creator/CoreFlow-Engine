@@ -4,6 +4,7 @@
  * @license MIT
  */
 #include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/baseline_store.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -237,8 +238,10 @@ bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
 }
 
 bool CentralMutationCoordinator::release_orphaned_leases_after_verified_recovery(
-    bool baseline_store_clear) noexcept {
-    if (!baseline_store_clear) return false;
+    BaselineStore& baseline_store) noexcept {
+    // Confirm both the in-memory baseline and durable write-ahead journal are
+    // clear before acquiring the coordinator lock or retiring any orphan.
+    if (!baseline_store.verify_and_persist_clear_state()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     if (!emergency_recovery_active_) return false;
 
