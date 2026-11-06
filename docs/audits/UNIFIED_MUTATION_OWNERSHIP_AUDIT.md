@@ -303,3 +303,38 @@ Two introduced compile defects were confirmed from the job logs:
 - No local compiler/test execution or physical-device validation is claimed.
 
 **Status remains: NOT COMPLETE / DO NOT MERGE.** Reinspect the next exact-head CI result and address all additional compiler, test, sanitizer and Android packaging failures before moving PR #7 out of Draft.
+
+## 13. Implementation update — exact-head CI recovery and remaining acceptance gates
+
+**Source head validated:** `65960da3303ab57a9a984030cf5b822468937aaf`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### Exact-head validation
+
+GitHub Actions run [42282266384](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42282266384) completed with **success** on the exact source head above. All seven jobs passed:
+
+- Host C++ tests, including the complete CTest suite.
+- Android ARM64 production package build and module assembly validation.
+- Rust tests and Clippy.
+- ASan and UBSan build plus sanitized test execution.
+- WebUI tests, type-check, and production build.
+- Module lifecycle and shell validation.
+- Aggregate CoreFlow CI gate.
+
+The CPUFreq foreign-ownership regression was corrected so the aggregate CPU/GPU policy call correctly reports failure when CPU policy is rejected, while an independently valid GPU operation may still succeed and retain its own lease. The test verifies GPU emergency rollback and preserves the foreign CPU value until its explicit owner restores it.
+
+### Correction to earlier audit wording
+
+This production build uses `-fno-exceptions`. Therefore the earlier Section 11 wording that described callback exceptions as contained is not an accurate description of the final implementation. Exception handling is not used: preemption handlers are required to be non-throwing and must communicate unsuccessful recovery by returning `false`. A failed acknowledgement does not release the lease and does not reopen emergency admission. Section 12's description of the final supported callback contract supersedes the earlier wording.
+
+### Remaining blockers — system-wide audit is still incomplete
+
+Passing CI validates this candidate's host tests, sanitizers, Rust, WebUI, module checks, and Android ARM64 compilation/package assembly. It does **not** close these remaining acceptance gates:
+
+- HardwareLongevityManager has foreign-journal protections, but its battery-current and storage mutations are not yet fully mediated by coordinator-owned PowerLongevity and BlockIo leases with transaction-scoped callbacks and verified release.
+- Cross-controller multi-domain acquisition, partial-acquisition cleanup, controller disappearance, and bounded timeout/recovery policy still need explicit integration coverage.
+- Vulkan node semantics and allowed values must be validated from discovered vendor/device capability evidence; path existence alone is insufficient.
+- The complete mutation-path inventory must be rechecked against the final tree, including all direct sysfs/procfs, resetprop, Rust bridge, and lifecycle paths.
+- Physical-device validation is still required for supported firmware/device combinations. No device behavior or thermal safety is inferred from CI.
+
+**Status: CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device based only on this CI result.
