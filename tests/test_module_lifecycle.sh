@@ -15,7 +15,8 @@ mkdir -p "$MOCK_BIN"
 cat <<'EOF' > "$MOCK_BIN/getprop"
 #!/bin/sh
 case "${1:-}" in
-  ro.product.brand|ro.product.manufacturer) echo "Xiaomi" ;;
+  ro.product.brand) echo "${COREFLOW_TEST_BRAND:-Xiaomi}" ;;
+  ro.product.manufacturer) echo "${COREFLOW_TEST_MANUFACTURER:-Xiaomi}" ;;
   *) echo "" ;;
 esac
 EOF
@@ -72,7 +73,10 @@ EPOCH_1="$(cat "$STATE_DIR/boot_epoch")"
 [ "$(cat "$STATE_DIR/boot_attempts")" = "1" ] || { echo "FAIL: boot_attempts != 1"; exit 1; }
 [ -f "$STATE_DIR/coreflow.conf" ] || { echo "FAIL: default.conf not copied"; exit 1; }
 grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: Xiaomi low_ram policy not applied"; exit 1; }
-grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 0' "$COREFLOW_PROP_LOG" || { echo "FAIL: unreadable RAM did not use safe zero threshold"; exit 1; }
+if grep -Fq -- 'ro.config.low_ram.middle.threshold_gb' "$COREFLOW_PROP_LOG"; then
+  echo "FAIL: unreadable RAM must preserve the OEM threshold"
+  exit 1
+fi
 
 # Verify dynamic RAM tiers: 6 GiB -> 5, 8 GiB -> 7.
 printf 'MemTotal:       6291456 kB\n' > "$COREFLOW_MEMINFO_PATH"
@@ -84,8 +88,53 @@ printf 'MemTotal:       7864320 kB\n' > "$COREFLOW_MEMINFO_PATH"
 sh "$MOD_DIR/post-fs-data.sh"
 grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 7' "$COREFLOW_PROP_LOG" || { echo "FAIL: 8 GiB threshold should be 7"; exit 1; }
 
+# Verify that the two Xiaomi properties can be isolated independently.
+printf 'MemTotal:       6291456 kB\n' > "$COREFLOW_MEMINFO_PATH"
+
+printf 'low_ram_only\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: low_ram_only did not set low_ram"; exit 1; }
+if grep -Fq -- 'ro.config.low_ram.middle.threshold_gb' "$COREFLOW_PROP_LOG"; then
+  echo "FAIL: low_ram_only unexpectedly changed the threshold"
+  exit 1
+fi
+
+printf 'threshold_only\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: threshold_only did not set dynamic threshold"; exit 1; }
+if grep -Fq -- 'ro.config.low_ram false' "$COREFLOW_PROP_LOG"; then
+  echo "FAIL: threshold_only unexpectedly changed low_ram"
+  exit 1
+fi
+
+printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: both mode did not set low_ram"; exit 1; }
+grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: both mode did not set threshold"; exit 1; }
+
+printf 'disabled\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: disabled mode changed Xiaomi properties"; exit 1; }
+
+# Non-Xiaomi devices must never receive either Xiaomi-specific property.
+printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_PROP_LOG"
+COREFLOW_TEST_BRAND="Google" COREFLOW_TEST_MANUFACTURER="Google" sh "$MOD_DIR/post-fs-data.sh"
+[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: Xiaomi properties leaked to a non-Xiaomi device"; exit 1; }
+
+# If physical RAM cannot be detected, do not write an unverified threshold.
+printf 'threshold_only\n' > "$STATE_DIR/xiaomi_ui_mode"
+: > "$COREFLOW_MEMINFO_PATH"
+: > "$COREFLOW_PROP_LOG"
+sh "$MOD_DIR/post-fs-data.sh"
+[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: missing MemTotal should not mutate properties"; exit 1; }
+
 # 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger. Reset the
-# counter because the preceding RAM-tier cases intentionally ran extra boots.
+# counter because the preceding policy cases intentionally ran extra boots.
 printf '1\n' > "$STATE_DIR/boot_attempts"
 for i in 2 3 4 5; do
   sh "$MOD_DIR/post-fs-data.sh"
