@@ -4,7 +4,7 @@ This document describes the repository-side CI contract and the one-time GitHub 
 
 ## CI contract
 
-The `CoreFlow Engine CI` workflow runs for every pull request targeting `main`, pushes, and manual dispatches. It separates WebUI, Rust, module lifecycle, host C++, sanitizers, and Android ARM64 packaging into independent jobs. A failure in one validation job does not prevent the others from running.
+The `CoreFlow Engine CI` workflow runs for every pull request targeting `main`, pushes to `main`, version-tag pushes (`v*`), and manual dispatches. It separates WebUI, Rust, module lifecycle, host C++, sanitizers, and Android ARM64 packaging into independent jobs. A failure in one validation job does not prevent the others from running.
 
 The stable required status check is **CoreFlow CI gate**. The gate succeeds only when all six validation jobs succeed:
 
@@ -15,7 +15,7 @@ The stable required status check is **CoreFlow CI gate**. The gate succeeds only
 - ASan and UBSan
 - Android ARM64 production package
 
-CTest logs are uploaded as workflow artifacts even when host tests fail. The workflow does not use `continue-on-error` to conceal test failures.
+CTest logs are uploaded as workflow artifacts even when host tests fail. The workflow does not use `continue-on-error` to conceal test failures. The repository currently has no npm lockfile, so CI uses `npm install --no-package-lock`; this keeps the existing build working but does not provide lockfile-level dependency reproducibility. Add and review a committed `package-lock.json` in a dedicated dependency-maintenance change before switching these steps to `npm ci` and enabling npm cache.
 
 ## Release safety
 
