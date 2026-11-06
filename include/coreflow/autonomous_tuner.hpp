@@ -134,6 +134,9 @@ public:
         MutationDomain, std::string_view, std::string_view)>;
 
     static CentralMutationCoordinator& instance();
+    // Process-lifetime unique identity; unlike object addresses, IDs are not reused
+    // when an allocator recycles storage after controller destruction.
+    [[nodiscard]] static std::string make_controller_identity(std::string_view controller_type);
 
     bool acquire_lease(MutationDomain domain,
                        std::string_view controller_name,
