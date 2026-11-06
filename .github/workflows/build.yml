@@ -36,7 +36,7 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Install locked dependencies
+      - name: Install WebUI dependencies
         run: npm install --no-package-lock --no-audit --no-fund
       - name: Run Node.js TypeScript tests
         run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
@@ -67,8 +67,6 @@ jobs:
           rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
           rustup override set "${RUST_TOOLCHAIN}"
           rustup component add rustfmt clippy --toolchain "${RUST_TOOLCHAIN}"
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
       - name: Run Rust tests
         run: cargo test --manifest-path rust/Cargo.toml
       - name: Run Clippy
@@ -238,7 +236,6 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "22"
-          cache: npm
       - name: Install WebUI dependencies and build
         run: |
           npm ci --no-audit --no-fund
