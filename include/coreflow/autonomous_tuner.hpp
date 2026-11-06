@@ -26,6 +26,8 @@
 
 namespace coreflow {
 
+class BaselineStore;
+
 enum class TunerVerdict : uint8_t {
     Pending = 0,
     Hold = 1,
@@ -159,7 +161,7 @@ public:
     // Retire detached-owner leases only after BaselineStore has independently
     // verified that no journaled mutations remain. Requires closed admission.
     [[nodiscard]] bool release_orphaned_leases_after_verified_recovery(
-        bool baseline_store_clear) noexcept;
+        BaselineStore& baseline_store) noexcept;
 
     // Close mutation admission before dispatching emergency rollback callbacks.
     // Admission reopens only after all leases and BaselineStore mutations are cleared.
