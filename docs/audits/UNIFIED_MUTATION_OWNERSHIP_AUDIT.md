@@ -442,3 +442,44 @@ The CPU/GPU partial-acquisition path now has explicit host regression coverage. 
 - Physical-device validation remains mandatory for supported Xiaomi/HyperOS firmware combinations, including OEM arbitration, thermal behavior, and rollback after interrupted writes.
 
 **Status: EXACT-HEAD CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft. Do not merge, publish a release, or flash a device until remaining operational and device-validation gates are independently reviewed.
+
+## 16. Controller identity lifetime hardening
+
+**Source head validated:** `e49d389493709f9649450d80f919aa56b176b683`  
+**Base:** `5ccc5a23598471833fc058f61e45ae9a13b74bf7`
+
+### Finding
+
+Using an object address (`this`) as a controller identity is unique only while two objects occupy different addresses. After a controller is destroyed, an allocator may reuse its address. If the previous controller left an unresolved lease because rollback could not be verified, a replacement instance could receive the same controller key. Per-instance transaction counters can also restart from the same initial value. That makes address-derived identity weaker than the coordinator's lifetime ownership contract.
+
+### Correction
+
+- Added `CentralMutationCoordinator::make_controller_identity()`, backed by a process-wide atomic monotonic counter.
+- Migrated `AutonomousTuner`, `CgroupV2Controller`, `FrequencyController`, `HardwareLongevityManager`, and `UclampGovernor` from address-derived keys to non-reusable process-lifetime identities.
+- Kept the diagnostic prefix format (`ControllerType@N`) stable, so existing log filtering and owner-prefix checks remain compatible.
+- Kept `VulkanController` on its fixed identity because its constructor is private and the class is an enforced singleton.
+- Added regression assertions that two identities for the same controller type are distinct.
+
+This prevents an object-address reuse from silently making a newly constructed controller appear to be the owner of an older unresolved lease. It does not automatically recover that unresolved lease; the coordinator remains fail-closed until explicit recovery.
+
+### Exact-head validation
+
+Workflow run [42286398292](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42286398292) completed with **success** on exact source head `e49d389493709f9649450d80f919aa56b176b683`. All seven jobs passed:
+
+- Host C++ tests: 13/13 CTest tests passed.
+- ASan and UBSan: 13/13 CTest tests passed.
+- Android ARM64 production package.
+- Rust validation.
+- WebUI validation.
+- Module validation.
+- Aggregate CoreFlow CI gate.
+
+### Remaining acceptance gates
+
+- Controlled recovery after controller disappearance while the daemon remains alive still needs an explicit operational contract and validation. No timeout-based lease theft is permitted.
+- Expand concurrency coverage for overlapping destruction, callback dispatch, multiple owned paths, and emergency recovery under real scheduler pressure.
+- Validate Vulkan per-node semantics and accepted values from device/vendor capability evidence; path presence is insufficient.
+- Complete the final source/write-path audit, including indirect and dynamically loaded vendor paths.
+- Perform physical-device validation on supported Xiaomi/HyperOS firmware combinations. Host CI cannot establish OEM arbitration or thermal safety.
+
+**Status: EXACT-HEAD CI-VALIDATED CANDIDATE, NOT SYSTEM-WIDE OWNERSHIP COMPLETE, NOT READY FOR 3.1.0 FREEZE.** Keep PR #7 Draft and do not merge, publish a release, or flash a device until all remaining acceptance gates are reviewed.
