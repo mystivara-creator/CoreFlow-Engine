@@ -582,3 +582,18 @@ Workflow run [42291892269](https://github.com/mystivara-creator/CoreFlow-Engine/
 - Complete the final source/write-path inventory and perform physical Xiaomi/HyperOS validation, including OEM arbitration and interrupted-write recovery.
 
 **Status: PREEMPTION DUPLICATE-DISPATCH RACE ADDRESSED IN SOURCE, EXACT-HEAD CI PENDING, VULKAN ADRENO WRITE SEMANTICS AND DEVICE VALIDATION OPEN. PR #7 MUST REMAIN DRAFT; NOT READY FOR 3.1.0 FREEZE.**
+
+## 19. Lease-retirement state normalization
+
+**Source head:** `eba8e0b601ba2f5130c21032607804c33a621b61`
+
+A follow-up consistency pass found two state-normalization details after introducing `preemption_dispatch_in_flight`:
+
+- Bulk controller lease release now clears the in-flight marker in addition to the active, transaction, and preemption fields.
+- Detached-owner reconciliation now explicitly rejects a lease whose callback-dispatch marker is still set, and clears that marker when the orphan record is retired.
+
+This is defense in depth: unregister already waits for registered callbacks to drain before marking the owner detached, but orphan eligibility now independently encodes the no-callback-in-flight requirement rather than relying only on the unregister implementation.
+
+Workflow run [42292156748](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42292156748) was created for exact source head `eba8e0b601ba2f5130c21032607804c33a621b61` and was pending at the time of this entry. Earlier runs for intermediate heads `f99ab067` and `a375149a` were cancelled when subsequent commits arrived; they do not count as validation.
+
+**Status: SOURCE STATE NORMALIZATION APPLIED; EXACT-HEAD CI PENDING.**
