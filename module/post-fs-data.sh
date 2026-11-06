@@ -84,7 +84,12 @@ MANUF=$(getprop ro.product.manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]'
 case "$BRAND $MANUF" in
   *xiaomi*|*redmi*|*poco*)
     XIAOMI_MODE="both"
-    if [ -f "$STATE/xiaomi_ui_mode" ] && [ ! -L "$STATE/xiaomi_ui_mode" ]; then
+    if [ -L "$STATE/xiaomi_ui_mode" ]; then
+      # A symlinked preference is untrusted input: fail closed instead of
+      # silently falling back to the enabling default.
+      printf '%s Symlinked Xiaomi UI mode rejected; policy disabled\n' "$(date)" >> "$LOGS/xiaomi_ui_policy.log"
+      XIAOMI_MODE="disabled"
+    elif [ -f "$STATE/xiaomi_ui_mode" ]; then
       XIAOMI_MODE=$(cat "$STATE/xiaomi_ui_mode" 2>/dev/null | tr -d '[:space:]')
     fi
     case "$XIAOMI_MODE" in
