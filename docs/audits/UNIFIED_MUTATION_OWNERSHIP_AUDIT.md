@@ -764,3 +764,25 @@ A controller callback may complete its BaselineStore rollback and release its ex
 - This audit-document commit and its exact-head CI must complete before the latest PR head can be called fully green. No local compilation or physical-device testing is claimed.
 
 **Status: UNOWNED LEGACY RAII MUTATION PATH REMOVED; HOST/SANITIZER/RUST/WEBUI/MODULE JOBS GREEN ON SOURCE HEAD; ANDROID PACKAGE AND FINAL EXACT-HEAD CI PENDING. PR #7 REMAINS DRAFT.**
+## 25. Repeated multi-domain preemption scheduling stress
+
+**Source/test head:** `8ea9ff3bacb74e385e74f29f473c267028c47338`
+
+### Stress scenario
+
+- Added 24 repeated rounds using one controller identity per round and two simultaneous leases: CPU policy and GPU devfreq.
+- The first callback is deliberately blocked at a condition-variable rendezvous. Four competing threads concurrently call `emergency_preempt_all()` while that callback is active.
+- The test asserts only one callback has entered while blocked, both domain leases remain visible, then releases the first callback and requires exactly two total callbacks and zero active leases.
+- All synchronization is condition-variable based; no `sleep()` or timing threshold is used to force the desired interleaving.
+- Every round unregisters the handler before the next coordinator reset, ensuring the test exercises identity retirement and registration lifetime rather than reusing a live handler.
+
+### Interpretation
+
+This is repeated host scheduling stress around the controller-wide single-flight invariant, not exhaustive proof against every possible scheduler interleaving. It complements the isolated same-lease duplicate-dispatch test, the CPU+GPU deterministic overlap test, and the callback-drain recovery barrier test. Android OEM services and kernel arbitration still require physical-device validation.
+
+### Validation
+
+- Exact audit head `cce9d9ef490c164ab67e0d72815d6d96ddf4f43`, including the removal of `ScopedBaselineLock`, passed all seven jobs in [run 42295450623](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42295450623): Host C++, ASan/UBSan, Android ARM64, Rust, WebUI, Module, and aggregate gate.
+- New stress-test source head `8ea9ff3bacb74e385e74f29f473c267028c47338` requires exact-head CI. No result from `cce9d9e` is substituted for this test change.
+
+**Status: 24-ROUND MULTI-DOMAIN DISPATCH STRESS ADDED; EXACT-HEAD CI PENDING; DEVICE VALIDATION REMAINS OPEN. PR #7 REMAINS DRAFT.**
