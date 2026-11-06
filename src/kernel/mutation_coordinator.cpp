@@ -242,6 +242,11 @@ void CentralMutationCoordinator::begin_emergency_recovery() noexcept {
     emergency_recovery_active_ = true;
 }
 
+bool CentralMutationCoordinator::is_emergency_recovery_active() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return emergency_recovery_active_;
+}
+
 bool CentralMutationCoordinator::complete_emergency_recovery() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool leases_remaining = std::any_of(leases_.begin(), leases_.end(),
