@@ -57,6 +57,9 @@ int main() {
     assert(read_token(percent_top + "/cpu.uclamp.min") == "0.00");
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
     assert(coordinator.active_leases().empty());
+    // SIGHUP-style replacement must retain the destination object's callback identity.
+    percentage = UclampGovernor(percent_root);
+    assert(percentage.is_supported());
     assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(coordinator.active_leases().size() == 1);
     // OEM changes must not be overwritten during subsequent policy transitions or stop.
