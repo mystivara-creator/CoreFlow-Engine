@@ -187,45 +187,61 @@ bool CentralMutationCoordinator::acquire_lease(
     std::string_view transaction_id,
     ControllerPriority priority,
     std::string* conflict_reason) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& lease : leases_) {
-        if (lease.domain == domain && lease.active) {
+    bool conflict = false;
+    bool dispatch = false;
+    std::string pending_owner;
+    std::string pending_transaction;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& lease : leases_) {
+            if (lease.domain != domain || !lease.active) continue;
             if (lease.owner_controller == controller_name) {
                 lease.transaction_id = std::string(transaction_id);
                 lease.priority = priority;
                 return true;
             }
+            conflict = true;
             if (static_cast<uint8_t>(priority) > static_cast<uint8_t>(lease.priority)) {
-                // Priority requests cancellation; it never transfers a live lease.
-                // The current owner must finish rollback and readback before release.
+                // A higher-priority request is delivered to the current owner after
+                // releasing the coordinator lock. Ownership is never transferred here.
                 lease.preemption_requested = true;
+                pending_owner = lease.owner_controller;
+                pending_transaction = lease.transaction_id;
+                dispatch = true;
             }
             ++conflict_rejections_;
             if (conflict_reason != nullptr) {
                 *conflict_reason = "Domain remains owned by controller '" +
                                    lease.owner_controller + "' (tx: " + lease.transaction_id +
-                                   "); higher-priority preemption is pending owner resolution";
+                                   "); owner resolution is required before acquisition";
             }
-            return false;
+            break;
+        }
+        if (!conflict) {
+            const auto reusable = std::find_if(leases_.begin(), leases_.end(), [domain](const DomainLease& lease) {
+                return lease.domain == domain && !lease.active;
+            });
+            const DomainLease next{
+                .domain = domain,
+                .owner_controller = std::string(controller_name),
+                .transaction_id = std::string(transaction_id),
+                .priority = priority,
+                .active = true,
+                .preemption_requested = false,
+            };
+            if (reusable != leases_.end()) {
+                *reusable = next;
+            } else {
+                leases_.push_back(next);
+            }
+            return true;
         }
     }
-    const auto reusable = std::find_if(leases_.begin(), leases_.end(), [domain](const DomainLease& lease) {
-        return lease.domain == domain && !lease.active;
-    });
-    const DomainLease next{
-        .domain = domain,
-        .owner_controller = std::string(controller_name),
-        .transaction_id = std::string(transaction_id),
-        .priority = priority,
-        .active = true,
-        .preemption_requested = false,
-    };
-    if (reusable != leases_.end()) {
-        *reusable = next;
-    } else {
-        leases_.push_back(next);
+    if (dispatch) {
+        (void)dispatch_preemption(
+            domain, pending_owner, pending_transaction, "higher-priority domain request");
     }
-    return true;
+    return false;
 }
 
 void CentralMutationCoordinator::release_lease(
@@ -254,15 +270,63 @@ void CentralMutationCoordinator::release_all_for_controller(std::string_view con
     }
 }
 
-void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
+bool CentralMutationCoordinator::register_preemption_handler(
+    std::string_view controller_name,
+    PreemptionHandler handler) {
+    if (controller_name.empty() || !handler) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    (void)reason; // The caller reports the emergency; ownership must remain intact.
-    for (auto& lease : leases_) {
-        if (lease.active) {
-            // Preserve owner and transaction identity until that owner verifies
-            // cancellation/rollback and explicitly releases the lease.
-            lease.preemption_requested = true;
+    preemption_handlers_[std::string(controller_name)] = std::move(handler);
+    return true;
+}
+
+void CentralMutationCoordinator::unregister_preemption_handler(std::string_view controller_name) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    preemption_handlers_.erase(std::string(controller_name));
+}
+
+bool CentralMutationCoordinator::dispatch_preemption(
+    MutationDomain domain,
+    std::string_view controller_name,
+    std::string_view transaction_id,
+    std::string_view reason) noexcept {
+    try {
+        PreemptionHandler handler;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto it = preemption_handlers_.find(std::string(controller_name));
+            if (it == preemption_handlers_.end()) return false;
+            handler = it->second;
         }
+        // Never invoke controller code while holding the coordinator mutex.
+        const bool acknowledged = handler(domain, transaction_id, reason);
+        if (acknowledged) {
+            // Transaction-scoped release prevents a delayed acknowledgement from
+            // clearing a newer lease acquired by the same controller/domain.
+            release_lease(domain, controller_name, transaction_id);
+        }
+        return acknowledged;
+    } catch (...) {
+        return false;
+    }
+}
+
+void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
+    try {
+        std::vector<DomainLease> pending;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto& lease : leases_) {
+                if (!lease.active) continue;
+                // Preserve owner and transaction identity until an acknowledgement.
+                lease.preemption_requested = true;
+                pending.push_back(lease);
+            }
+        }
+        for (const auto& lease : pending) {
+            (void)dispatch_preemption(lease.domain, lease.owner_controller, lease.transaction_id, reason);
+        }
+    } catch (...) {
+        // A failed dispatch remains fail-closed: preemption flags stay set and leases remain owned.
     }
 }
 
