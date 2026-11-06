@@ -933,7 +933,7 @@ int main() {
     assert(!coordinator.complete_emergency_recovery());
     // A failed acknowledgement from a still-registered owner must never be
     // bypassed by the detached-owner recovery API.
-    assert(!coordinator.release_orphaned_leases_after_verified_recovery(true));
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     coordinator.release_lease(
         coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx");
     assert(coordinator.complete_emergency_recovery());
@@ -968,13 +968,13 @@ int main() {
     coordinator.emergency_preempt_all("test-detached-owner-recovery");
     orphaned = coordinator.active_leases();
     assert(orphaned.size() == 1 && orphaned.front().owner_detached);
-    assert(!coordinator.release_orphaned_leases_after_verified_recovery(false));
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().size() == 1);
     assert(baseline.has_active_mutations());
     assert(baseline.rollback_all() > 0);
     assert(!baseline.has_active_mutations());
     assert(get(orphan_node) == "128");
-    assert(coordinator.release_orphaned_leases_after_verified_recovery(true));
+    assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
 
