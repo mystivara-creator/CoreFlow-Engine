@@ -151,6 +151,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_uclamp
         tests/test_uclamp.cpp
         src/kernel/uclamp.cpp
+        src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
     target_include_directories(test_uclamp PRIVATE include)
