@@ -108,6 +108,24 @@ int main() {
     assert(protected_lease.front().transaction_id == "replacement-tx-2");
     coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2");
 
+    // A controller that owns more than one domain must release each exact
+    // transaction independently; domain scope alone is not sufficient.
+    coordinator.reset();
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "scoped-cpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ScopedReleaseController", "scoped-gpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "scoped-cpu-tx");
+    const auto scoped_remaining = coordinator.active_leases();
+    assert(scoped_remaining.size() == 1);
+    assert(scoped_remaining.front().domain == coreflow::MutationDomain::GpuDevfreq);
+    assert(scoped_remaining.front().transaction_id == "scoped-gpu-tx");
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ScopedReleaseController", "scoped-gpu-tx");
+
     // Controller callbacks must run outside the coordinator lock and only release
     // the exact transaction after the controller acknowledges successful rollback.
     coordinator.reset();
