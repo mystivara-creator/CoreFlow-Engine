@@ -12,6 +12,7 @@ import { ThermalMatrixCard } from './components/ThermalMatrixCard';
 import { HardwareLongevityCard } from './components/HardwareLongevityCard';
 import { AndroidQuickSettingsCard } from './components/AndroidQuickSettingsCard';
 import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
+import { DeviceValidationSuiteCard } from './components/DeviceValidationSuiteCard';
 import { VulkanCapabilitiesCard } from './components/VulkanCapabilitiesCard';
 import {
   AutonomousConfig,
@@ -178,7 +179,7 @@ export const App: React.FC = () => {
       : initial;
   });
   const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
-  type NavTab = 'dashboard' | 'vulkan' | 'thermal' | 'longevity' | 'android' | 'console';
+  type NavTab = 'dashboard' | 'vulkan' | 'thermal' | 'longevity' | 'android' | 'console' | 'validation';
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({
     ...DEFAULT_LONGEVITY_CONFIG,
@@ -760,6 +761,7 @@ export const App: React.FC = () => {
     { id: 'longevity', label: 'Hardware Longevity', Icon: ShieldCheck },
     { id: 'android', label: 'Quick Settings', Icon: Smartphone },
     { id: 'console', label: 'RPC Console', Icon: Terminal },
+    { id: 'validation', label: 'Device Validation', Icon: Activity },
   ];
 
   return (
@@ -1000,6 +1002,15 @@ export const App: React.FC = () => {
                 engineActive={telemetry.engineActive}
                 nativeMode={isNativeBridge}
               />
+            </section>
+          </div>
+        )}
+
+        {/* Tab 6: CoreFlow Device Validation Suite */}
+        {activeTab === 'validation' && (
+          <div className="space-y-6 m3-stage">
+            <section aria-label="Device validation and evidence export">
+              <DeviceValidationSuiteCard nativeMode={isNativeBridge} />
             </section>
           </div>
         )}
