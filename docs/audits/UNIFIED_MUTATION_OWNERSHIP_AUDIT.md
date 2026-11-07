@@ -848,3 +848,20 @@ This is repeated host scheduling stress around the controller-wide single-flight
 - The stress uses two real controller classes across BlockIo and PowerLongevity, with two concurrent destructors and four competing dispatchers over eight rounds. It does not imply coverage for every controller class or opaque vendor callback.
 
 **Status: SHARED TIMERFD RECOVERY PATH AND EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER HOST EPOLL/TIMERFD STRESS PASSED EXACT-HEAD CI; ANDROID TARGET TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
+
+## 28. Ownership-loss quarantine and PMIC indicator sensor filtering
+
+### Ownership retry policy
+- An `OWNERSHIP_LOST` outcome now records candidate-specific quarantine instead of immediately making the same mutation eligible on the next daemon tick.
+- The quarantine backoff increases with repeated ownership loss: 8, 16, 32, then 64 monitor ticks. It is a hard eligibility gate and cannot be bypassed by a workload-class or thermal-bucket change.
+- Quarantine state is persisted in the CFTS3 tuner-statistics format. The reader remains backward-compatible with CFTS2 and CFTS1 state files; counters are bounded during restore.
+- Both observation-window and retained-transaction ownership-loss paths use the same quarantine recorder. Verified rollback/lease handling remains unchanged: failed rollback keeps the exact lease and recovery gate active.
+
+### Thermal sensor classification
+- Apply the existing non-thermal peripheral filter to `thermal_zone*/type` discovery as well as hwmon labels. BCL/IBAT level indicators are excluded before PMIC family matching can classify them as board/AP temperatures.
+- Regression fixtures inject high synthetic PMIC BCL/IBAT values and verify that they do not inflate board averages, thermal composite inputs, hottest compute temperature, or sensor policy readings.
+
+### Validation scope
+- Host regression coverage checks first-loss quarantine, hard rejection after a workload/thermal context change, and persistence across a discovery refresh.
+- The thermal fixture checks case-insensitive BCL/IBAT rejection with valid CPU/AP readings retained.
+- Exact-head CI is required after this update. Android timerfd delivery, OEM arbitration, actual PMIC sensor semantics, and physical-device thermal behavior remain separate target-device acceptance gates.
