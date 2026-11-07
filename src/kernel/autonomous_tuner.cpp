@@ -817,7 +817,16 @@ void AutonomousTuner::load_persisted_stats() {
             if (saved.reward_samples > saved.trials) return;
         } else {
             if (!(ls >> saved.improved >> saved.regressed >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            // Pre-R1 trial totals mixed attempts with outcomes, so their historical
+            // utility estimate has no defensible sample denominator. Preserve the
+            // counters for diagnostics, but restart learning from an uninformative
+            // prior until new ownership-verified reward samples are collected.
+            saved.mean_utility = 0.5;
             saved.mean_utility_delta = 0.0;
+            saved.reward_samples = 0;
+            saved.neutral = 0;
+            saved.aborted = 0;
+            saved.recovery_required = 0;
         }
 
         if (!(ls >> saved.adaptive_scale >> saved.inconclusive >> saved.rejected >>
