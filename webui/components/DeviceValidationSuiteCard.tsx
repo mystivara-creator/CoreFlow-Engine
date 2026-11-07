@@ -92,7 +92,7 @@ function createStoredZip(files: Payload[]): Blob {
     u16(localView, 6, 0);
     u16(localView, 8, 0);
     u16(localView, 10, 0);
-    u16(localView, 12, 0);
+    u16(localView, 12, 0x21);
     u32(localView, 14, crc);
     u32(localView, 18, data.length);
     u32(localView, 22, data.length);
@@ -109,7 +109,7 @@ function createStoredZip(files: Payload[]): Blob {
     u16(centralView, 8, 0);
     u16(centralView, 10, 0);
     u16(centralView, 12, 0);
-    u16(centralView, 14, 0);
+    u16(centralView, 14, 0x21);
     u32(centralView, 16, crc);
     u32(centralView, 20, data.length);
     u32(centralView, 24, data.length);
@@ -214,7 +214,7 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
   const readPayload = async (id: string, name: PayloadName): Promise<Payload> => {
     const command =
       `${RESOLVE_BIN}; DIR="/data/adb/coreflow/cf-dvs/${id}"; ` +
-      '[ -d "$DIR" ] && [ ! -L "$DIR" ] || exit 1; ' +
+      'ROOT="/data/adb/coreflow/cf-dvs"; [ -d "$ROOT" ] && [ ! -L "$ROOT" ] && [ -d "$DIR" ] && [ ! -L "$DIR" ] || exit 1; ' +
       `FILE="$DIR/${name}"; [ -f "$FILE" ] && [ ! -L "$FILE" ] || exit 1; ` +
       'base64 "$FILE" 2>/dev/null | tr -d "\\r\\n"';
     const result = await execNativeKsuShell(command, 30000);
