@@ -44,7 +44,7 @@ const PAYLOAD_NAMES: PayloadName[] = [
   'summary.txt',
   'manifest.json',
 ];
-const MAX_BUNDLE_BYTES = 8 *  1024 * 1024 + 256 * 1024;
+const MAX_BUNDLE_BYTES = 9 * 1024 * 1024;
 
 function decodeBase64(value: string): Uint8Array {
   const normalized = value.replace(/\\s+/g, '');
@@ -153,6 +153,7 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
   const [error, setError] = useState<string | null>(null);
   const [bundleSummary, setBundleSummary] = useState<string | null>(null);
   const [bundleVerdict, setBundleVerdict] = useState<string | null>(null);
+  const [bundleMetadata, setBundleMetadata] = useState<string | null>(null);
   const [checkResults, setCheckResults] = useState<{ id: string; status: string; detail: string }[]>([]);
   const bridgeAvailable = nativeMode && hasNativeKernelSuBridge();
 
@@ -277,10 +278,19 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     const report = JSON.parse(new TextDecoder().decode(reportFile.bytes)) as {
       verdict?: string;
       checks?: { id?: string; status?: string; detail?: string }[];
+      session?: { device?: { manufacturer?: string; model?: string; android_api?: number } };
+      build?: { commit?: string };
     };
     const summary = new TextDecoder().decode(summaryFile.bytes);
     const verdict = typeof report.verdict === 'string' ? report.verdict : 'UNKNOWN';
     setBundleVerdict(verdict);
+    const device = report.session?.device;
+    setBundleMetadata([
+      `Manufacturer: ${device?.manufacturer ?? 'not reported'}`,
+      `Model: ${device?.model ?? 'not reported'}`,
+      `Android API: ${device?.android_api ?? 'not reported'}`,
+      `Build commit: ${report.build?.commit ?? 'unknown'}`,
+    ].join(' · '));
     setCheckResults(Array.isArray(report.checks) ? report.checks.map((check) => ({
       id: typeof check.id === 'string' ? check.id : 'unknown',
       status: typeof check.status === 'string' ? check.status : 'inconclusive',
@@ -419,6 +429,7 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
             The WebUI verifies each payload size and SHA-256 against the native manifest before building a ZIP archive. A mismatch blocks export.
           </p>
           {bundleVerdict && <div className="text-xs font-semibold">Captured verdict: {bundleVerdict}</div>}
+          {bundleMetadata && <p className="text-[11px] text-slate-500 dark:text-slate-400">{bundleMetadata}</p>}
           {checkResults.length > 0 && <ul className="space-y-2 text-xs">{checkResults.map((check) => (
             <li key={check.id} className="flex items-start justify-between gap-3">
               <span className="min-w-0"><span className="font-medium">{check.id}</span><span className="block text-slate-500 dark:text-slate-400">{check.detail}</span></span>
