@@ -652,6 +652,7 @@ void AutonomousTuner::load_persisted_stats() {
             total_rejected_ = rej;
             noise_floor_ = std::clamp(nf, 0.02, 0.45);
         }
+        evaluation_noise_floors_.fill(noise_floor_);
     } else if (magic == "CFTS1") {
         std::string v1_fp = current_fp;
         if (v1_fp.rfind("v2|", 0) == 0) v1_fp.replace(0, 3, "v1|");
