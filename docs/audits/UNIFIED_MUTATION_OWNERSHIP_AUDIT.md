@@ -786,3 +786,59 @@ This is repeated host scheduling stress around the controller-wide single-flight
 - New stress-test source head `8ea9ff3bacb74e385e74f29f473c267028c47338` requires exact-head CI. No result from `cce9d9e` is substituted for this test change.
 
 **Status: 24-ROUND MULTI-DOMAIN DISPATCH STRESS ADDED; EXACT-HEAD CI PENDING; DEVICE VALIDATION REMAINS OPEN. PR #7 REMAINS DRAFT.**
+
+## 26. Real AutonomousTuner teardown and detached-owner recovery fixture
+
+**Source/test head:** `487afbbdda2d8a124eda52154b8eec842f587a60`
+
+### Scenario
+
+- Extend the prior synthetic detached-owner coverage with an actual `AutonomousTuner` object and a separate temporary sysfs/proc fixture.
+- Drive the tuner into an I/O candidate transaction and identify a BaselineStore-owned, modified node from its audit trail.
+- Temporarily move that exact mock node out of its path while preserving its inode. The real controller destructor then attempts rollback, cannot read the missing path, retains the failed step and lease, and unregisters its callback.
+- Verify the coordinator reports exactly one detached `AutonomousTuner` lease and does not release it on teardown.
+- Restore the original inode at the original path. Run the same recovery sequence used by the daemon: close admission, request emergency preemption, reject orphan retirement while the journal is still active, restore the factory value through BaselineStore, verify/persist the empty journal, retire the detached lease, and only then reopen admission.
+- Assert the restored value equals the original factory value and no active lease remains.
+
+### Validation
+
+- Exact head `487afbbdda2d8a124eda52154b8eec842f587a60` passed all seven jobs in [run 42296929397](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42296929397): Host C++ (13/13 CTest), ASan/UBSan (13/13 CTest), Rust, WebUI, Android ARM64 production package, Module validation, and aggregate CI gate.
+- The same exact head includes the 24-round condition-variable multi-domain dispatcher stress from Section 25.
+- The initial test-fixture compile failure was corrected before this exact-head run; the successful result above is for the corrected test source, not the failed intermediate commit.
+
+### Evidence boundary and remaining work
+
+- This is a host-level test of a real controller destructor plus coordinator/BaselineStore recovery. It does not instantiate the daemon's timerfd monitor loop or prove Android kernel sysfs behavior.
+- The temporary rename preserves the mock inode specifically to test transient path unavailability without simulating an OEM replacement. Real device node removal/recreation and external OEM writes can produce different inode and ownership semantics.
+- The 24-round test stresses competing emergency dispatches across two leases, while the new lifecycle fixture tests one real controller teardown. A combined high-contention test of multiple real controller destructions and monitor retries under scheduler pressure remains unproven.
+- Physical validation on supported Xiaomi/HyperOS firmware remains required for controller teardown, OEM takeover, thermal response, interrupted writes, and durable recovery.
+
+**Status: REAL AUTONOMOUS TUNER TEARDOWN/RECOVERY HOST FIXTURE ADDED; EXACT-HEAD CI GREEN; COMBINED MULTI-CONTROLLER/MONITOR STRESS AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
+
+
+## 27. Daemon timerfd recovery monitor and concurrent multi-controller teardown stress
+
+**Implementation head:** `dda9f4c7147cd5a547925492c0f8b1e785e92708`
+
+### Production integration
+
+- Extract the verified global recovery sequence into `MutationRecoveryMonitor` and `coordinated_rollback()` in `recovery_monitor.hpp/.cpp`.
+- The daemon's actual timerfd callback now calls `MutationRecoveryMonitor::on_timer_tick()`; it no longer duplicates detached-lease detection or recovery admission logic inline.
+- The same coordinator/journal sequence is used for SIGHUP, telemetry loss, extreme thermal shutdown, and daemon shutdown. The call sites now preserve explicit recovery status instead of relying on a bool-only result.
+- Distinct recovery outcomes report live-owner acknowledgement pending, journal rollback pending, orphan lease retirement pending, active lease pending, and callback drain pending. Admission stays closed for every incomplete outcome.
+
+### Combined stress scenario
+
+- Added `RecoveryMonitorTest`, which instantiates real `AutonomousTuner` and `HardwareLongevityManager` controllers with independent temporary sysfs fixtures and active BlockIo/PowerLongevity leases.
+- Each round temporarily removes one node from each controller while preserving inode identity, then starts both real destructors and four competing `emergency_preempt_all()` dispatchers behind one condition-variable-free barrier.
+- Both destructors must retain detached leases after their own rollback fails. The monitor's first timer-tick call must report journal recovery pending and must not reopen admission.
+- After both exact inodes return, the next monitor tick must restore both factory values, durably verify the empty journal, retire both detached leases, and only then reopen mutation admission.
+- The scenario repeats for eight rounds; no scheduler sleep or timing threshold is used to force the interleaving.
+
+### Evidence boundary
+
+- The host test invokes the exact `MutationRecoveryMonitor::on_timer_tick()` method wired to the production timerfd callback, but it does not run an Android epoll/timerfd kernel loop. Device-level timer delivery and vendor sysfs behavior remain physical validation gates.
+- The stress uses two different real controller classes and two domains. It does not imply coverage for every controller class or opaque vendor callback.
+- This implementation is not yet accepted until the current exact-head CI, including Host C++, ASan/UBSan, Android ARM64, Rust, WebUI, Module, and aggregate gate, completes successfully.
+
+**Status: TIMERFD RECOVERY LOGIC FACTORED INTO TESTED SHARED MONITOR; EIGHT-ROUND TWO-CONTROLLER/FOUR-DISPATCHER HOST STRESS ADDED; EXACT-HEAD CI REQUIRED. PR #7 REMAINS DRAFT.**

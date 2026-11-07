@@ -123,7 +123,10 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
-    target_link_libraries(test_recovery_monitor PRIVATE m pthread)
+    target_link_libraries(test_recovery_monitor PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_recovery_monitor PRIVATE pthread)
+    endif()
     add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
     add_executable(test_rust_bridge tests/test_rust_bridge.cpp)
