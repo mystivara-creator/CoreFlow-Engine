@@ -1750,8 +1750,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
             return snapshot();
         }
-    } else if (thermal_stabilization_active_) {
-        // Exiting ThermalStabilization -> release thermal damping mutation and enter hysteresis recovery
+    } else if (thermal_stabilization_active_ && telemetry.thermal_pressure_valid && !telemetry.thermal_guard_active) {
+        // Exit thermal stabilization only with valid pressure evidence that the guard subsided.
         (void)rollback_active("Thermal pressure subsided below hysteresis threshold; entering ThermalRecovery.");
         thermal_recovery_ticks_ = 2;
     }
