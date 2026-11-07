@@ -117,6 +117,7 @@ if(CORE_FLOW_BUILD_TESTS)
 
     add_executable(test_recovery_monitor
         tests/test_recovery_monitor.cpp
+        src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
         src/kernel/hardware_longevity.cpp

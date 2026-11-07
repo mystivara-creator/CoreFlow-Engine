@@ -2,8 +2,11 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/recovery_monitor.hpp"
+#include "coreflow/reactor.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <array>
 #include <barrier>
 #include <cassert>
@@ -11,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -171,28 +175,89 @@ int main() {
         assert(baseline.has_active_mutations());
 
         MutationRecoveryMonitor monitor(baseline);
-        const auto blocked = monitor.on_timer_tick("combined controller teardown test");
-        assert(blocked.status == RecoveryStatus::JournalRecoveryPending);
-        assert(coordinator.is_emergency_recovery_active());
-        assert(coordinator.active_leases().size() == 2);
-        assert(baseline.has_active_mutations());
-        assert(!coordinator.acquire_lease(
-            MutationDomain::CpuPolicy,
-            "LateController@" + std::to_string(round),
-            "must-remain-closed",
-            ControllerPriority::EmergencySafety));
+        EpollReactor reactor;
+        std::mutex tick_mutex;
+        std::condition_variable tick_cv;
+        bool first_attempt_done = false;
+        bool recovery_done = false;
+        RecoveryStatus first_attempt_status = RecoveryStatus::NoRecoveryRequired;
 
-        // The same inodes return. The next production monitor tick must restore
-        // both original factory values, persist the empty journal, retire both
+        // Exercise the same Linux epoll/timerfd dispatch primitive as coreflowd.
+        // The first periodic tick must remain fail-closed while both owned nodes
+        // are unavailable; later ticks retry until the original inodes return.
+        const int recovery_timer = reactor.create_timerfd(
+            std::chrono::milliseconds(20),
+            [&](uint32_t) {
+                bool first_attempt = false;
+                {
+                    std::lock_guard<std::mutex> lock(tick_mutex);
+                    first_attempt = !first_attempt_done;
+                }
+                if (first_attempt) {
+                    const auto result = monitor.on_timer_tick("combined controller teardown test");
+                    {
+                        std::lock_guard<std::mutex> lock(tick_mutex);
+                        first_attempt_status = result.status;
+                        first_attempt_done = true;
+                    }
+                    tick_cv.notify_all();
+                    return;
+                }
+
+                const auto result = monitor.on_timer_tick("combined controller teardown periodic retry");
+                if (result.recovered()) {
+                    {
+                        std::lock_guard<std::mutex> lock(tick_mutex);
+                        recovery_done = true;
+                    }
+                    tick_cv.notify_all();
+                    reactor.stop();
+                }
+            });
+        assert(recovery_timer >= 0);
+        std::thread reactor_thread([&] { reactor.run(); });
+
+        bool first_tick_seen = false;
+        {
+            std::unique_lock<std::mutex> lock(tick_mutex);
+            first_tick_seen = tick_cv.wait_for(
+                lock, std::chrono::seconds(3), [&] { return first_attempt_done; });
+        }
+        if (!first_tick_seen) {
+            reactor.stop();
+            reactor_thread.join();
+            assert(first_tick_seen);
+        }
+
+        bool admission_stayed_closed = coordinator.is_emergency_recovery_active() &&
+            coordinator.active_leases().size() == 2 &&
+            baseline.has_active_mutations() &&
+            !coordinator.acquire_lease(
+                MutationDomain::CpuPolicy,
+                "LateController@" + std::to_string(round),
+                "must-remain-closed",
+                ControllerPriority::EmergencySafety);
+
+        // The same inodes return. The next real timerfd event must restore both
+        // original factory values, persist the empty journal, retire both
         // detached leases, and reopen admission only after callback drain.
         fs::rename(hidden_tuner, tuner_path);
         fs::rename(hidden_battery, battery_node);
         assert(get(tuner_path) == tuner_active);
         assert(get(battery_node) == battery_active);
 
-        const auto recovered = monitor.on_timer_tick("combined controller teardown retry");
-        assert(recovered.recovered());
-        assert(recovered.status == RecoveryStatus::Recovered);
+        bool timerfd_recovered = false;
+        {
+            std::unique_lock<std::mutex> lock(tick_mutex);
+            timerfd_recovered = tick_cv.wait_for(
+                lock, std::chrono::seconds(5), [&] { return recovery_done; });
+        }
+        if (!timerfd_recovered) reactor.stop();
+        reactor_thread.join();
+
+        assert(first_attempt_status == RecoveryStatus::JournalRecoveryPending);
+        assert(admission_stayed_closed);
+        assert(timerfd_recovered);
         assert(get(tuner_path) == tuner_factory);
         assert(get(battery_node) == battery_factory);
         assert(!baseline.has_active_mutations());
