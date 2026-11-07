@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <sys/stat.h>
@@ -1405,6 +1406,74 @@ int main() {
     assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
+
+    // R3 persistence integrity: CFTS6 checksum, restrictive file mode, round-trip,
+    // corruption rejection, and symlink-safe state-directory/file handling.
+    const fs::path state_file = root / "tuner_stats.state";
+    assert(fs::exists(state_file));
+    struct stat state_stat{};
+    assert(::stat(state_file.c_str(), &state_stat) == 0);
+    assert(S_ISREG(state_stat.st_mode));
+    assert((state_stat.st_mode & 0777) == 0600);
+
+    std::ifstream state_input(state_file, std::ios::binary);
+    const std::string state_payload((std::istreambuf_iterator<char>(state_input)),
+                                    std::istreambuf_iterator<char>());
+    assert(state_payload.rfind("CFTS6\t", 0) == 0);
+    assert(state_payload.find("CFTS6_END\t") != std::string::npos);
+
+    for (const auto& entry : fs::directory_iterator(root)) {
+        assert(entry.path().filename().string().rfind("tuner_stats.state.tmp.", 0) != 0);
+    }
+
+    {
+        coreflow::AutonomousTuner persistence_reader(teardown_sys.string(), teardown_proc.string());
+        const auto restored = persistence_reader.snapshot();
+        assert(restored.total_trials > 0);
+    }
+
+    const fs::path corrupt_dir = root / "corrupt-state";
+    fs::create_directories(corrupt_dir);
+    std::string corrupt_payload = state_payload;
+    const size_t corrupt_byte = corrupt_payload.find('\n');
+    assert(corrupt_byte != std::string::npos && corrupt_byte + 2 < corrupt_payload.size());
+    corrupt_payload[corrupt_byte + 2] ^= 0x01;
+    put(corrupt_dir / "tuner_stats.state", corrupt_payload);
+    ::setenv("COREFLOW_TEST_STATE_DIR", corrupt_dir.c_str(), 1);
+    {
+        coreflow::AutonomousTuner corrupt_reader(teardown_sys.string(), teardown_proc.string());
+        const auto rejected = corrupt_reader.snapshot();
+        assert(rejected.total_trials == 0);
+        for (const auto& candidate : rejected.candidates) assert(candidate.trials == 0);
+    }
+
+    const fs::path symlink_file_dir = root / "symlink-file-state";
+    fs::create_directories(symlink_file_dir);
+    const fs::path external_state = root / "external-state.txt";
+    put(external_state, "external sentinel");
+    const fs::path symlink_state_file = symlink_file_dir / "tuner_stats.state";
+    fs::create_symlink(external_state, symlink_state_file);
+    ::setenv("COREFLOW_TEST_STATE_DIR", symlink_file_dir.c_str(), 1);
+    {
+        coreflow::AutonomousTuner symlink_file_reader(teardown_sys.string(), teardown_proc.string());
+        assert(symlink_file_reader.snapshot().total_trials == 0);
+        symlink_file_reader.reset(); // unlink the link itself, never its target
+    }
+    assert(!fs::exists(symlink_state_file));
+    assert(get(external_state) == "external sentinel");
+
+    const fs::path real_parent = root / "real-state-parent";
+    const fs::path real_nested = real_parent / "nested";
+    fs::create_directories(real_nested);
+    fs::copy_file(state_file, real_nested / "tuner_stats.state", fs::copy_options::overwrite_existing);
+    const fs::path linked_parent = root / "linked-state-parent";
+    fs::create_directory_symlink(real_parent, linked_parent);
+    ::setenv("COREFLOW_TEST_STATE_DIR", (linked_parent / "nested").c_str(), 1);
+    {
+        coreflow::AutonomousTuner symlink_ancestor_reader(teardown_sys.string(), teardown_proc.string());
+        assert(symlink_ancestor_reader.snapshot().total_trials == 0);
+    }
+    ::setenv("COREFLOW_TEST_STATE_DIR", root.c_str(), 1);
 
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
