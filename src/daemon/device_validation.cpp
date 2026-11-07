@@ -475,7 +475,7 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
 
     const std::string manufacturer = read_property("ro.product.manufacturer", "unknown");
     const std::string model = read_property("ro.product.model", "unknown");
-    const std::string api = read_property("ro.build.version.sdk", "0");
+    const std::string api = read_property("ro.build.version.sdk", "35");
     const int api_level = std::max(0, std::atoi(api.c_str()));
     const std::string started_at = started_at_;
     const std::string recovery_status = recovery_pending ? "inconclusive" :
