@@ -420,32 +420,38 @@ export const App: React.FC = () => {
     };
 
     let pollInFlight = false;
+    let previousLogSnapshot = '';
     const pollNativeTelemetry = async () => {
       if (pollInFlight || disposed) return;
       pollInFlight = true;
       try {
+        // Keep native bridge work away from the interaction hot path.
         await refreshNative();
 
-        const logResult = await execNativeKsuShell(`/system/bin/tail -n 40 ${LOG} 2>/dev/null`);
+        const logResult = await execNativeKsuShell(`/system/bin/tail -n 12 ${LOG} 2>/dev/null`);
         if (!disposed && logResult.errno === 0) {
-          const lines = logResult.stdout
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .slice(-40)
-            .reverse();
-          setLogs(
-            lines.map((message, index) => ({
-              id: `native-${index}-${message}`,
-              timestamp: '--:--:--',
-              type:
-                message.includes('[Stability]') && message.includes('thermal')
-                  ? ('THERMAL' as const)
-                  : ('INFO' as const),
-              tag: 'Daemon',
-              message: message.slice(0, 512),
-            }))
-          );
+          const snapshot = logResult.stdout.trim();
+          if (snapshot && snapshot !== previousLogSnapshot) {
+            previousLogSnapshot = snapshot;
+            const lines = snapshot
+              .split('\\n')
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .slice(-12)
+              .reverse();
+            setLogs(
+              lines.map((message, index) => ({
+                id: `native-${index}-${message}`,
+                timestamp: '--:--:--',
+                type:
+                  message.includes('[Stability]') && message.includes('thermal')
+                    ? ('THERMAL' as const)
+                    : ('INFO' as const),
+                tag: 'Daemon',
+                message: message.slice(0, 384),
+              }))
+            );
+          }
         }
       } catch (error) {
         if (!disposed) setNativeError(String(error));
@@ -456,7 +462,7 @@ export const App: React.FC = () => {
 
     void loadInitialConfig();
     void pollNativeTelemetry();
-    const timer = window.setInterval(() => void pollNativeTelemetry(), 5000);
+    const timer = window.setInterval(() => void pollNativeTelemetry(), 10000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
