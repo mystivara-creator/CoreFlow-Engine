@@ -32,12 +32,14 @@ The suite must distinguish what was measured, what was unavailable, what was inf
 - Deterministic tests for verdict precedence, missing evidence, path safety, and integrity checks.
 - Operator workflow and acceptance semantics.
 
-### Phase 2 (runtime capture)
+### Phase 2 (runtime capture — implemented in this branch)
 
-- C++ daemon session recorder using existing telemetry snapshots and event points.
-- Bounded event ring / session file writer, correlation IDs, and explicit session start/stop commands.
-- Read-only data adapters; no controller or mutation-path changes.
-- Atomic finalization and manifest generation.
+- C++ daemon session recorder using the existing daemon control tick; no additional sampling timer is installed.
+- Bounded JSONL event capture and CSV metrics export with per-session correlation IDs.
+- Explicit local daemon commands over a root-only Unix-domain `SOCK_SEQPACKET` socket.
+- Read-only telemetry capture; the recorder never acquires mutation leases or calls controller actuation APIs.
+- Private session directories (`0700`) and payload files (`0600`), bounded session duration/event volume, SHA-256 manifest, and final directory rename.
+- Device acceptance remains `INCONCLUSIVE` in this capture-only phase. Captured data is not a performance pass.
 
 ### Phase 3 (operator experience)
 
@@ -45,7 +47,7 @@ The suite must distinguish what was measured, what was unavailable, what was inf
 - Bundle export through the existing privileged bridge with strict path allowlisting.
 - Human-readable summary and upload-ready ZIP. User explicitly chooses when to share.
 
-Phase 1 intentionally does not modify the production tuning path or add periodic daemon work.
+CF-DVS Phase 1 and Phase 2 do not modify the production tuning decisions. Phase 2 only adds a read-only sample hook to the existing daemon tick; no extra polling cadence is created.
 
 ## 4. Session profiles
 
@@ -129,7 +131,23 @@ A profile defines checks with `required: true|false` and `status: pass|fail|warn
 
 If collection fails, preserve the partial report with `INCONCLUSIVE` or `RECOVERY_REQUIRED`; never report success because the collector exited cleanly.
 
-## 10. Phase 1 validator
+## 10. Phase 2 runtime capture
+
+The daemon exposes the following local commands while `coreflowd` is running:
+
+```bash
+coreflowd --dvs-start INTERACTIVE_CPU
+coreflowd --dvs-status
+coreflowd --dvs-stop
+```
+
+Supported profiles are the eight values listed in Section 4. Only one session may be active. Sessions are stored under `/data/adb/coreflow/cf-dvs/<session-uuid>/`; a `.partial` directory is retained if finalization fails. The control socket is `/data/adb/coreflow/cf-dvs-control.sock`, protected by the private state directory and mode `0600`.
+
+The recorder samples at the daemon's existing control-loop cadence (configured 1–60 seconds), and stops accepting samples after 30 minutes, 20,000 events, or an 8 MiB event log bound. It writes `events.jsonl`, `metrics.csv`, `report.json`, `summary.txt`, and `manifest.json`. No ZIP is created yet; ZIP export belongs to Phase 3. A daemon shutdown attempts to finalize an active session.
+
+The report's `device.acceptance` check is deliberately `inconclusive`. It records evidence for later engineering review and does not claim that the selected workload passed. If no sample was captured, recovery state remains unknown/inconclusive rather than being fabricated as a pending recovery.
+
+## 11. Phase 1 validator
 
 Run from the repository root:
 
@@ -140,7 +158,7 @@ python3 -m unittest discover -s tests -p 'test_cf_dvs_validator.py' -v
 
 The validator uses only Python's standard library. Exit codes: `0` valid bundle, `1` invalid/integrity failure, `2` usage or unreadable input. The validator checks the manifest hashes, report structure, required files, check statuses, and computed verdict. It does not claim that the device behavior itself is correct; it validates report completeness and integrity.
 
-## 11. Explicit non-goals
+## 12. Explicit non-goals
 
 - No cloud telemetry or automatic upload.
 - No continuous background monitoring.
