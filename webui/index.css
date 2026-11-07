@@ -194,3 +194,35 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+
+/* Embedded Android WebView performance profile.
+   Frosted-glass blur across many scrolling cards is expensive on mobile GPUs.
+   Keep Material 3 tonal surfaces, but render them without backdrop filters. */
+.m3-card {
+  background-color: var(--m3-surface-container);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.m3-tonal-block {
+  background-color: var(--m3-surface-tonal);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+@media (max-width: 768px) {
+  .m3-card,
+  .m3-tonal-block {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    box-shadow: none;
+  }
+  .m3-stage { animation: none; }
+  button, input, select, summary, a {
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      border-color 120ms ease,
+      opacity 120ms ease;
+  }
+  button:enabled:active { transform: none; }
+}
