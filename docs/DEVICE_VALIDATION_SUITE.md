@@ -160,7 +160,15 @@ python3 -m unittest discover -s tests -p 'test_cf_dvs_validator.py' -v
 
 The validator uses only Python's standard library. Exit codes: `0` valid bundle, `1` invalid/integrity failure, `2` usage or unreadable input. The validator checks the manifest hashes, report structure, required files, check statuses, and computed verdict. It does not claim that the device behavior itself is correct; it validates report completeness and integrity.
 
-## 12. Phase 3 WebUI export contract\n\nThe WebUI uses the existing KernelSU shell bridge and the daemon's `--dvs-start`, `--dvs-status`, and `--dvs-stop` commands. It does not access the control socket directly. The export path is accepted only when it matches `/data/adb/coreflow/cf-dvs/<UUID>` and the UUID matches the active session. Payload access is limited to `events.jsonl`, `metrics.csv`, `report.json`, `summary.txt`, and `manifest.json`; symlinks and non-regular files are rejected by shell checks.\n\nThe browser-side ZIP writer uses ZIP Store (no compression) to avoid an additional runtime dependency. ZIP entries are created only after validating the native SHA-256 manifest and file sizes. Export has a bounded total-size guard. A WebView without Web Crypto SHA-256 support fails closed and does not create an archive. The WebUI never uploads, posts, or automatically shares the bundle.\n\nThe report's current metadata includes manufacturer, model, Android API level, and build commit; it does not include a serial number, Android ID, account identifier, SSID, or precise location. Operators must review the report before sharing.\n\n## 13. Explicit non-goals
+## 12. Phase 3 WebUI export contract
+
+The WebUI uses the existing KernelSU shell bridge and the daemon's `--dvs-start`, `--dvs-status`, and `--dvs-stop` commands. It does not access the control socket directly. The export path is accepted only when it matches `/data/adb/coreflow/cf-dvs/<UUID>` and the UUID matches the active session. Payload access is limited to `events.jsonl`, `metrics.csv`, `report.json`, `summary.txt`, and `manifest.json`; symlinks and non-regular files are rejected by shell checks.
+
+The browser-side ZIP writer uses ZIP Store (no compression) to avoid an additional runtime dependency. ZIP entries are created only after validating the native SHA-256 manifest and file sizes. Export has a bounded total-size guard. A WebView without Web Crypto SHA-256 support fails closed and does not create an archive. The WebUI never uploads, posts, or automatically shares the bundle.
+
+The report's current metadata includes manufacturer, model, Android API level, and build commit; it does not include a serial number, Android ID, account identifier, SSID, or precise location. Operators must review the report before sharing.
+
+## 13. Explicit non-goals
 
 - No cloud telemetry or automatic upload.
 - No continuous background monitoring.
