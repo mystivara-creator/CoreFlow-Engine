@@ -28,6 +28,8 @@ constexpr uint64_t kMaxSessionNs = 30ULL * 60ULL * 1000000000ULL;
 constexpr uint64_t kMaxEventBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaxEvents = 20000ULL;
 constexpr uint32_t kFsyncEverySamples = 5;
+constexpr size_t kMaxQueuedWrites = 64;
+constexpr size_t kMaxQueuedBytes = 256 * 1024;
 
 bool write_all(int fd, std::string_view data) noexcept {
     size_t offset = 0;
@@ -356,6 +358,23 @@ bool DeviceValidationRecorder::start(std::string_view profile, std::string* erro
     }
     active_ = true;
     failed_ = false;
+    writer_failed_ = false;
+    writer_stop_ = false;
+    writer_started_ = false;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        queue_.clear();
+        queued_bytes_ = 0;
+        writer_samples_ = 0;
+    }
+    const int thread_rc = ::pthread_create(&writer_thread_, nullptr, &DeviceValidationRecorder::writer_entry, this);
+    if (thread_rc != 0) {
+        active_ = false;
+        close_files();
+        if (error) *error = "unable to start isolated CF-DVS writer thread";
+        return false;
+    }
+    writer_started_ = true;
     sequence_ = 0;
     started_ns_ = monotonic_ns();
     started_at_ = utc_now();
@@ -370,6 +389,58 @@ bool DeviceValidationRecorder::start(std::string_view profile, std::string* erro
         return false;
     }
     return true;
+}
+
+void* DeviceValidationRecorder::writer_entry(void* context) noexcept {
+    if (context != nullptr) static_cast<DeviceValidationRecorder*>(context)->writer_loop();
+    return nullptr;
+}
+
+bool DeviceValidationRecorder::enqueue_write(std::string events, std::string metrics) noexcept {
+    const size_t bytes = events.size() + metrics.size();
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (writer_stop_ || queue_.size() >= kMaxQueuedWrites || queued_bytes_ + bytes > kMaxQueuedBytes) {
+            failed_ = true;
+            return false;
+        }
+        queue_.push_back({std::move(events), std::move(metrics)});
+        queued_bytes_ += bytes;
+    }
+    queue_cv_.notify_one();
+    return true;
+}
+
+void DeviceValidationRecorder::writer_loop() noexcept {
+    for (;;) {
+        QueuedWrite item;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this] { return writer_stop_ || !queue_.empty(); });
+            if (queue_.empty() && writer_stop_) break;
+            item = std::move(queue_.front());
+            queued_bytes_ -= item.events.size() + item.metrics.size();
+            queue_.pop_front();
+        }
+        bool ok = true;
+        if (!item.events.empty()) ok = write_all(events_fd_, item.events) && ok;
+        if (!item.metrics.empty()) {
+            ok = write_all(metrics_fd_, item.metrics) && ok;
+            ++writer_samples_;
+            if (writer_samples_ % kFsyncEverySamples == 0) {
+                ok = (::fdatasync(events_fd_) == 0) && ok;
+                ok = (::fdatasync(metrics_fd_) == 0) && ok;
+            }
+        }
+        if (!ok) {
+            writer_failed_ = true;
+            failed_ = true;
+        }
+    }
+    if (::fdatasync(events_fd_) != 0 || ::fdatasync(metrics_fd_) != 0) {
+        writer_failed_ = true;
+        failed_ = true;
+    }
 }
 
 bool DeviceValidationRecorder::append_event(std::string_view type,
@@ -388,7 +459,7 @@ bool DeviceValidationRecorder::append_event(std::string_view type,
         ",\"event_type\":\"" + json_escape(type) +
         "\",\"correlation_id\":\"" + json_escape(correlation_id) +
         "\",\"data\":" + std::string(data_json) + "}\n";
-    if (event_bytes_ + line.size() > kMaxEventBytes || !write_all(events_fd_, line)) {
+    if (event_bytes_ + line.size() > kMaxEventBytes || !enqueue_write(line)) {
         failed_ = true;
         return false;
     }
@@ -433,17 +504,8 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         number_or_null(sample.io_psi) + "," + number_or_null(sample.thermal_pressure) + "," +
         number_or_null(sample.temperature_celsius) + "," + number_or_null(sample.thermal_headroom) + "," +
         number_or_null(sample.ai_prediction_10s) + "," + number_or_null(sample.ai_confidence) + "\n";
-    if (!write_all(metrics_fd_, csv)) {
-        failed_ = true;
-        return false;
-    }
+    if (!enqueue_write({}, csv)) return false;
     ++samples_;
-    if (samples_ % kFsyncEverySamples == 0) {
-        if (::fdatasync(events_fd_) != 0 || ::fdatasync(metrics_fd_) != 0) {
-            failed_ = true;
-            return false;
-        }
-    }
     return true;
 }
 
@@ -466,6 +528,16 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
     const std::string data = "{\"samples\":" + std::to_string(samples_) +
         ",\"capture_complete\":" + ((!failed_ && samples_ > 0) ? "true" : "false") + "}";
     if (!append_event("session.stopped", session_id_, data)) failed_ = true;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        writer_stop_ = true;
+    }
+    queue_cv_.notify_one();
+    if (writer_started_) {
+        if (::pthread_join(writer_thread_, nullptr) != 0) failed_ = true;
+        writer_started_ = false;
+    }
+    if (writer_failed_) failed_ = true;
     if (::fdatasync(events_fd_) != 0 || ::fdatasync(metrics_fd_) != 0) failed_ = true;
     close_files();
     const bool capture_ok = !failed_ && samples_ > 0;
