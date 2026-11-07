@@ -40,6 +40,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
+    src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
     src/kernel/thermal_monitor.cpp
@@ -113,6 +114,17 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
+
+    add_executable(test_recovery_monitor
+        tests/test_recovery_monitor.cpp
+        src/kernel/recovery_monitor.cpp
+        src/kernel/autonomous_tuner.cpp
+        src/kernel/hardware_longevity.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_link_libraries(test_recovery_monitor PRIVATE m pthread)
+    add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
     add_executable(test_rust_bridge tests/test_rust_bridge.cpp)
     target_link_libraries(test_rust_bridge PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)

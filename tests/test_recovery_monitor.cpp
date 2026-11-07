@@ -1,0 +1,211 @@
+#include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/baseline_store.hpp"
+#include "coreflow/hardware_longevity.hpp"
+#include "coreflow/recovery_monitor.hpp"
+
+#include <algorithm>
+#include <array>
+#include <barrier>
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+using namespace coreflow;
+
+namespace {
+void put(const fs::path& path, const std::string& value) {
+    fs::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::trunc);
+    out << value;
+    assert(out.good());
+}
+
+std::string get(const fs::path& path) {
+    std::ifstream in(path);
+    std::string value;
+    std::getline(in, value);
+    return value;
+}
+} // namespace
+
+int main() {
+    char state_template[] = "/tmp/coreflow-recovery-monitor-XXXXXX";
+    const char* state_dir = ::mkdtemp(state_template);
+    assert(state_dir != nullptr);
+    assert(::setenv("COREFLOW_TEST_STATE_DIR", state_dir, 1) == 0);
+
+    auto& baseline = BaselineStore::instance();
+    assert(baseline.recover_pending());
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.reset();
+
+    // Repeat real multi-controller teardown while emergency dispatchers race
+    // with object destruction. A missing sysfs path forces each owner's own
+    // rollback to fail, so only monitor-driven journal recovery may retire it.
+    constexpr uint32_t kRounds = 8;
+    constexpr uint32_t kDispatchers = 4;
+    for (uint32_t round = 0; round < kRounds; ++round) {
+        assert(coordinator.active_leases().empty());
+        assert(!coordinator.is_emergency_recovery_active());
+        assert(!baseline.has_active_mutations());
+
+        const fs::path round_root = fs::path(state_dir) / ("round-" + std::to_string(round));
+        const fs::path tuner_sys = round_root / "tuner-sys";
+        const fs::path queue = tuner_sys / "block/sdb/queue";
+        const fs::path longevity_sys = round_root / "longevity-sys";
+        const fs::path battery_dir = longevity_sys / "class/power_supply/battery";
+        const fs::path battery_node = battery_dir / "constant_charge_current_max";
+
+        put(queue / "scheduler", "[none] mq-deadline kyber bfq");
+        put(queue / "read_ahead_kb", "128");
+        put(queue / "nr_requests", "64");
+        put(queue / "rq_affinity", "1");
+        put(queue / "iosched/read_expire", "500");
+        put(queue / "iosched/writes_starved", "2");
+        put(queue / "iosched/fifo_batch", "16");
+
+        put(battery_node, "2000000");
+        put(battery_dir / "temp", "420");
+        put(battery_dir / "status", "Charging");
+
+        auto tuner = std::make_unique<AutonomousTuner>(tuner_sys.string(), (round_root / "proc").string());
+        const auto tuner_state = tuner->step({
+            .cpu_psi = 6.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(tuner_state.stage == "OBSERVING");
+        assert(tuner_state.active_candidate_id.rfind("io.", 0) == 0);
+
+        LongevityConfig longevity_config{};
+        auto longevity = std::make_unique<HardwareLongevityManager>(longevity_sys.string());
+        longevity->initialize(longevity_config);
+        assert(longevity->battery_node_path() == battery_node.string());
+        assert(longevity->monitor_battery_thermals(44.0f));
+        assert(get(battery_node) == "1500000");
+
+        const auto audit = baseline.get_audit_trail();
+        const auto tuner_mutation = std::find_if(
+            audit.begin(), audit.end(),
+            [&](const NodeSnapshot& node) {
+                return node.path.rfind(tuner_sys.string() + "/", 0) == 0 && node.is_modified;
+            });
+        const auto battery_mutation = std::find_if(
+            audit.begin(), audit.end(),
+            [&](const NodeSnapshot& node) { return node.path == battery_node.string() && node.is_modified; });
+        assert(tuner_mutation != audit.end());
+        assert(battery_mutation != audit.end());
+        const std::string tuner_path = tuner_mutation->path;
+        const std::string tuner_active = tuner_mutation->active_value;
+        const std::string tuner_factory = tuner_mutation->factory_value;
+        const std::string battery_active = battery_mutation->active_value;
+        const std::string battery_factory = battery_mutation->factory_value;
+        assert(!tuner_active.empty() && !tuner_factory.empty());
+        assert(!battery_active.empty() && !battery_factory.empty());
+
+        auto leases = coordinator.active_leases();
+        assert(leases.size() == 2);
+        std::set<MutationDomain> domains;
+        for (const auto& lease : leases) domains.insert(lease.domain);
+        assert(domains.size() == 2);
+        assert(domains.count(MutationDomain::BlockIo) == 1);
+        assert(domains.count(MutationDomain::PowerLongevity) == 1);
+
+        // Rename preserves the original inode while making the owned sysfs-like
+        // paths temporarily unavailable to both real controller destructors.
+        const fs::path hidden_tuner = tuner_path + ".hidden";
+        const fs::path hidden_battery = battery_node.string() + ".hidden";
+        fs::rename(tuner_path, hidden_tuner);
+        fs::rename(battery_node, hidden_battery);
+        assert(!fs::exists(tuner_path) && fs::exists(hidden_tuner));
+        assert(!fs::exists(battery_node) && fs::exists(hidden_battery));
+
+        coordinator.begin_emergency_recovery();
+
+        // Two real controller destructors and four competing emergency
+        // dispatchers begin at one barrier. The coordinator must serialize each
+        // controller callback, drain in-flight callbacks, and retain failed leases.
+        std::barrier start_gate(static_cast<std::ptrdiff_t>(kDispatchers + 3));
+        std::thread tuner_destroyer([&] {
+            start_gate.arrive_and_wait();
+            tuner.reset();
+        });
+        std::thread longevity_destroyer([&] {
+            start_gate.arrive_and_wait();
+            longevity.reset();
+        });
+        std::vector<std::thread> dispatchers;
+        dispatchers.reserve(kDispatchers);
+        for (uint32_t index = 0; index < kDispatchers; ++index) {
+            dispatchers.emplace_back([&, index] {
+                start_gate.arrive_and_wait();
+                for (uint32_t pass = 0; pass < 12; ++pass) {
+                    coordinator.emergency_preempt_all(
+                        "combined-controller-teardown-" + std::to_string(round) +
+                        "-dispatcher-" + std::to_string(index));
+                }
+            });
+        }
+        start_gate.arrive_and_wait();
+        tuner_destroyer.join();
+        longevity_destroyer.join();
+        for (auto& dispatcher : dispatchers) dispatcher.join();
+
+        leases = coordinator.active_leases();
+        assert(leases.size() == 2);
+        for (const auto& lease : leases) {
+            assert(lease.active);
+            assert(lease.owner_detached);
+            assert(lease.preemption_requested);
+        }
+        assert(coordinator.is_emergency_recovery_active());
+        assert(baseline.has_active_mutations());
+
+        MutationRecoveryMonitor monitor(baseline);
+        const auto blocked = monitor.on_timer_tick("combined controller teardown test");
+        assert(blocked.status == RecoveryStatus::JournalRecoveryPending);
+        assert(coordinator.is_emergency_recovery_active());
+        assert(coordinator.active_leases().size() == 2);
+        assert(baseline.has_active_mutations());
+        assert(!coordinator.acquire_lease(
+            MutationDomain::CpuPolicy,
+            "LateController@" + std::to_string(round),
+            "must-remain-closed",
+            ControllerPriority::EmergencySafety));
+
+        // The same inodes return. The next production monitor tick must restore
+        // both original factory values, persist the empty journal, retire both
+        // detached leases, and reopen admission only after callback drain.
+        fs::rename(hidden_tuner, tuner_path);
+        fs::rename(hidden_battery, battery_node);
+        assert(get(tuner_path) == tuner_active);
+        assert(get(battery_node) == battery_active);
+
+        const auto recovered = monitor.on_timer_tick("combined controller teardown retry");
+        assert(recovered.recovered());
+        assert(recovered.status == RecoveryStatus::Recovered);
+        assert(get(tuner_path) == tuner_factory);
+        assert(get(battery_node) == battery_factory);
+        assert(!baseline.has_active_mutations());
+        assert(baseline.verify_and_persist_clear_state());
+        assert(coordinator.active_leases().empty());
+        assert(!coordinator.is_emergency_recovery_active());
+        assert(monitor.on_timer_tick().status == RecoveryStatus::NoRecoveryRequired);
+
+        fs::remove_all(round_root);
+    }
+
+    assert(baseline.verify_and_persist_clear_state());
+    assert(coordinator.active_leases().empty());
+    fs::remove_all(state_dir);
+    return 0;
+}

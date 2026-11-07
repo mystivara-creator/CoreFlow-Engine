@@ -4,6 +4,7 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/recovery_monitor.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/cooling_feedback.hpp"
 #include "coreflow/unique_fd.hpp"
@@ -64,51 +65,6 @@ void emit_log(bool is_error, const std::string& message) {
         "CoreFlow",
         message.c_str());
 #endif
-}
-
-bool coordinated_rollback(BaselineStore& baseline, std::string_view reason) {
-    auto& coordinator = CentralMutationCoordinator::instance();
-
-    // Close admission before taking the lease snapshot. Existing owners may finish
-    // their current write, but every active transaction must acknowledge rollback
-    // before the global recovery sweep can begin.
-    coordinator.begin_emergency_recovery();
-    coordinator.emergency_preempt_all(reason);
-    const auto remaining = coordinator.active_leases();
-    const auto live_owner_pending = std::count_if(
-        remaining.begin(), remaining.end(),
-        [](const DomainLease& lease) { return !lease.owner_detached; });
-    if (live_owner_pending != 0) {
-        emit_log(true, "[CoreFlow][Safety] Rollback acknowledgement missing from " +
-                       std::to_string(live_owner_pending) +
-                       " live mutation owner(s); admission remains closed and global rollback is withheld.");
-        return false;
-    }
-
-    // Detached owners cannot acknowledge through a callback anymore. A global
-    // journal rollback is permitted only after every still-live owner has
-    // acknowledged, then every path must be verified clear before orphan leases
-    // are retired.
-    if (baseline.has_active_mutations()) (void)baseline.rollback_all();
-    if (baseline.has_active_mutations() || !baseline.verify_and_persist_clear_state()) {
-        emit_log(true, "[CoreFlow][Safety] BaselineStore recovery or durable empty-journal verification failed; orphan leases and mutation admission stay closed.");
-        return false;
-    }
-    if (!remaining.empty() &&
-        !coordinator.release_orphaned_leases_after_verified_recovery(baseline)) {
-        emit_log(true, "[CoreFlow][Safety] Detached-owner leases could not be reconciled; mutation admission stays closed.");
-        return false;
-    }
-    if (!coordinator.active_leases().empty()) {
-        emit_log(true, "[CoreFlow][Safety] Active mutation leases remain after recovery; admission stays closed.");
-        return false;
-    }
-
-    if (!coordinator.complete_emergency_recovery()) {
-        emit_log(true, "[CoreFlow][Safety] Mutation ownership changed during recovery; admission remains closed.");
-        return false;
-    }
-    return true;
 }
 
 // Fatal signal handlers cannot lock mutexes, perform stream I/O, or allocate.
@@ -901,6 +857,7 @@ int main(int argc, char* argv[]) {
         clear_pid(pid_lock);
         return 1;
     }
+    MutationRecoveryMonitor recovery_monitor(baseline);
 
     DaemonConfig config = DaemonConfig::load_best_available();
     UclampGovernor governor;
@@ -956,8 +913,10 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    if (!coordinated_rollback(baseline, "Configuration reload on SIGHUP")) {
-                        emit_log(true, "[CoreFlow] SIGHUP reload deferred; active mutation ownership requires recovery.");
+                    const auto recovery = coordinated_rollback(baseline, "Configuration reload on SIGHUP");
+                    if (!recovery.recovered()) {
+                        emit_log(true, "[CoreFlow] SIGHUP reload deferred; recovery status=" +
+                                 std::string(recovery_status_name(recovery.status)));
                         continue;
                     }
                     config = DaemonConfig::load_best_available();
@@ -1007,21 +966,15 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        // A controller destructor may leave an unresolved lease after its own
-        // rollback failed. Detect only leases whose callback has been fully
-        // unregistered; this is an explicit owner-lifetime signal, not a timeout
-        // or permission to steal from a live controller.
-        auto& mutation_coordinator = CentralMutationCoordinator::instance();
-        const auto leases_at_tick = mutation_coordinator.active_leases();
-        const bool detached_owner_present = std::any_of(
-            leases_at_tick.begin(), leases_at_tick.end(),
-            [](const DomainLease& lease) { return lease.active && lease.owner_detached; });
-        const bool recovery_retry_pending = mutation_coordinator.is_emergency_recovery_active();
-        if (detached_owner_present || recovery_retry_pending) {
-            emit_log(true, "[CoreFlow][Safety] Detached mutation owner detected; starting verified journal recovery.");
-            if (!coordinated_rollback(
-                    baseline, "Detached controller owner detected by daemon monitor")) {
-                return; // Admission stays closed; the next monitor tick retries safely.
+        // The timerfd safety cadence shares the same tested recovery monitor as
+        // host stress tests. Failed journal restoration remains pending and is
+        // retried on the next tick without reopening mutation admission.
+        const auto monitor_recovery = recovery_monitor.on_timer_tick();
+        if (monitor_recovery.status != RecoveryStatus::NoRecoveryRequired) {
+            if (!monitor_recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Detached-owner recovery pending; status=" +
+                         std::string(recovery_status_name(monitor_recovery.status)));
+                return;
             }
             applied = false;
             thermal_ready = false;
@@ -1075,8 +1028,11 @@ int main(int argc, char* argv[]) {
             temp_tracker.reset();
             // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
             // do not rely on the unrelated PID applied flag to decide whether it rolls back.
-            if (!coordinated_rollback(
-                    baseline, "Thermal telemetry unavailable; restore OEM baseline.")) {
+            const auto recovery = coordinated_rollback(
+                baseline, "Thermal telemetry unavailable; restore OEM baseline.");
+            if (!recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Thermal rollback pending; status=" +
+                         std::string(recovery_status_name(recovery.status)));
                 return;
             }
             if (applied) {
@@ -1099,8 +1055,11 @@ int main(int argc, char* argv[]) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
-            if (!coordinated_rollback(
-                    baseline, "Extreme physical thermal threshold reached.")) {
+            const auto recovery = coordinated_rollback(
+                baseline, "Extreme physical thermal threshold reached.");
+            if (!recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Extreme thermal rollback pending; status=" +
+                         std::string(recovery_status_name(recovery.status)));
                 return;
             }
             applied = false;
@@ -1307,7 +1266,8 @@ int main(int argc, char* argv[]) {
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
-    const bool restored = coordinated_rollback(baseline, "Daemon shutdown") &&
+    const auto shutdown_recovery = coordinated_rollback(baseline, "Daemon shutdown");
+    const bool restored = shutdown_recovery.recovered() &&
                           !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
