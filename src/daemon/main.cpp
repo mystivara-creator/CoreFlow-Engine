@@ -38,6 +38,7 @@
 #include <sys/file.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
@@ -803,7 +804,7 @@ int main(int argc, char* argv[]) {
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
         return 2;
     }
 
