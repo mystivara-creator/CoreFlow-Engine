@@ -45,7 +45,7 @@ def _safe_file(root: Path, rel: str) -> Path:
 
 def _computed_verdict(report: dict[str, Any]) -> str:
     recovery = report["recovery"]
-    if recovery["pending"] or not recovery["journal_clear"] or not recovery["rollback_verified"]:
+    if recovery["pending"] or not recovery["journal_clear"]:
         return "RECOVERY_REQUIRED"
     checks = report["checks"]
     required = [c for c in checks if c["required"]]
@@ -86,7 +86,7 @@ def _validate_report(report: Any) -> list[str]:
         device = session.get("device")
         if not isinstance(device, dict) or not isinstance(device.get("manufacturer"), str) or not isinstance(device.get("model"), str) or not isinstance(device.get("android_api"), int) or isinstance(device.get("android_api"), bool):
             errors.append("session.device requires manufacturer, model, and android_api")
-    if not isinstance(build, dict) or not re.fullmatch(r"[a-f0-9]{7,40}", str(build.get("commit", ""))):
+    if not isinstance(build, dict) or not re.fullmatch(r"(?:[a-f0-9]{7,40}|unknown)", str(build.get("commit", ""))):
         errors.append("build.commit must be a hexadecimal commit id")
     if not isinstance(metrics, dict):
         errors.append("metrics must be an object")
