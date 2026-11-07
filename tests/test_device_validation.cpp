@@ -10,11 +10,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int main() {
-    std::string pattern = (std::filesystem::temp_directory_path() / "cf-dvs-test-XXXXXX").string();
-    char* created = ::mkdtemp(pattern.data());
-    assert(created != nullptr);
-    const std::filesystem::path root(created);
+int main(int argc, char* argv[]) {
+    const bool own_root = argc < 2;
+    std::filesystem::path root;
+    if (own_root) {
+        std::string pattern = (std::filesystem::temp_directory_path() / "cf-dvs-test-XXXXXX").string();
+        char* created = ::mkdtemp(pattern.data());
+        assert(created != nullptr);
+        root = created;
+    } else {
+        root = argv[1];
+        std::filesystem::create_directories(root);
+    }
 
     coreflow::DeviceValidationRecorder recorder(root.string());
     std::string error;
@@ -72,7 +79,8 @@ int main() {
     assert(::stat(bundle.c_str(), &st) == 0);
     assert((st.st_mode & 0777) == 0700);
 
-    std::filesystem::remove_all(root);
+    std::cout << "CF_DVS_BUNDLE=" << bundle << "\n";
+    if (own_root) std::filesystem::remove_all(root);
     std::cout << "CF-DVS runtime session capture, bounded report, and privacy permissions PASS\n";
     return 0;
 }
