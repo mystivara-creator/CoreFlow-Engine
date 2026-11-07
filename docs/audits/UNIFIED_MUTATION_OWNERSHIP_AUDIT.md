@@ -818,7 +818,7 @@ This is repeated host scheduling stress around the controller-wide single-flight
 
 ## 27. Daemon timerfd recovery monitor and concurrent multi-controller teardown stress
 
-**Implementation head:** `dda9f4c7147cd5a547925492c0f8b1e785e92708`
+**Implementation/test head:** `374149205bd7695b4389a5bb20652fd1962ab09f`
 
 ### Production integration
 
@@ -835,10 +835,16 @@ This is repeated host scheduling stress around the controller-wide single-flight
 - After both exact inodes return, the next monitor tick must restore both factory values, durably verify the empty journal, retire both detached leases, and only then reopen mutation admission.
 - The scenario repeats for eight rounds; no scheduler sleep or timing threshold is used to force the interleaving.
 
+### Exact-head validation
+
+- Exact head `374149205bd7695b4389a5bb20652fd1962ab09f` passed all seven jobs in [CI run 42337805966](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42337805966).
+- Host C++ passed **14/14 CTest**, including `RecoveryMonitorTest` (eight rounds); ASan/UBSan also passed **14/14** with the same monitor and concurrency fixture.
+- Android ARM64 production package, Rust validation, WebUI validation, Module validation, and the aggregate CI gate all passed.
+- The intermediate integration tree `dda9f4c7147cd5a547925492c0f8b1e785e92708` was built from an outdated base tree and failed Host C++ validation because it reintroduced already-fixed test assertions. The current head restores the full parent tree `89c42e5` before applying the recovery integration; that intermediate failure is not represented as a pass.
+
 ### Evidence boundary
 
-- The host test invokes the exact `MutationRecoveryMonitor::on_timer_tick()` method wired to the production timerfd callback, but it does not run an Android epoll/timerfd kernel loop. Device-level timer delivery and vendor sysfs behavior remain physical validation gates.
-- The stress uses two different real controller classes and two domains. It does not imply coverage for every controller class or opaque vendor callback.
-- This implementation is not yet accepted until the current exact-head CI, including Host C++, ASan/UBSan, Android ARM64, Rust, WebUI, Module, and aggregate gate, completes successfully.
+- The host test invokes the exact `MutationRecoveryMonitor::on_timer_tick()` method wired to the production timerfd callback, but it does not run an Android epoll/timerfd kernel loop. Actual timer delivery, lifecycle under Android scheduling, and vendor sysfs behavior remain physical validation gates.
+- The stress uses two real controller classes across BlockIo and PowerLongevity, with two concurrent destructors and four competing dispatchers over eight rounds. It does not imply coverage for every controller class or opaque vendor callback.
 
-**Status: TIMERFD RECOVERY LOGIC FACTORED INTO TESTED SHARED MONITOR; EIGHT-ROUND TWO-CONTROLLER/FOUR-DISPATCHER HOST STRESS ADDED; EXACT-HEAD CI REQUIRED. PR #7 REMAINS DRAFT.**
+**Status: SHARED TIMERFD RECOVERY PATH IMPLEMENTED AND HOST-TESTED; EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER STRESS PASSED; EXACT-HEAD CI GREEN; ANDROID TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
