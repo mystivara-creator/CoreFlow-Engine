@@ -70,8 +70,8 @@ def _validate_report(report: Any) -> list[str]:
         errors.append("missing report fields: " + ", ".join(missing))
         return errors
     if report["schema_version"] != "1.0": errors.append("unsupported schema_version")
-    if report["profile"] not in PROFILES: errors.append("unknown profile")
-    if report["verdict"] not in VERDICTS: errors.append("unknown verdict")
+    if not isinstance(report["profile"], str) or report["profile"] not in PROFILES: errors.append("unknown profile")
+    if not isinstance(report["verdict"], str) or report["verdict"] not in VERDICTS: errors.append("unknown verdict")
     session, build, metrics, checks, recovery = (report[k] for k in ("session", "build", "metrics", "checks", "recovery"))
     if not isinstance(session, dict) or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session.get("id", ""))):
         errors.append("session.id must be a UUID")
@@ -84,7 +84,7 @@ def _validate_report(report: Any) -> list[str]:
             except (KeyError, ValueError):
                 errors.append(f"session.{field} must be an RFC 3339 UTC timestamp ending in Z")
         device = session.get("device")
-        if not isinstance(device, dict) or not isinstance(device.get("manufacturer"), str) or not isinstance(device.get("model"), str) or not isinstance(device.get("android_api"), int):
+        if not isinstance(device, dict) or not isinstance(device.get("manufacturer"), str) or not isinstance(device.get("model"), str) or not isinstance(device.get("android_api"), int) or isinstance(device.get("android_api"), bool):
             errors.append("session.device requires manufacturer, model, and android_api")
     if not isinstance(build, dict) or not re.fullmatch(r"[a-f0-9]{7,40}", str(build.get("commit", ""))):
         errors.append("build.commit must be a hexadecimal commit id")
@@ -97,11 +97,13 @@ def _validate_report(report: Any) -> list[str]:
                 continue
             for key in ("value", "unit", "validity", "source", "observed_at"):
                 if key not in metric: errors.append(f"metric {name}: missing {key}")
-            if metric.get("validity") not in VALIDITY: errors.append(f"metric {name}: invalid validity")
+            if not isinstance(metric.get("validity"), str) or metric.get("validity") not in VALIDITY: errors.append(f"metric {name}: invalid validity")
             if metric.get("value") is None and not metric.get("reason"):
                 errors.append(f"metric {name}: null value requires reason")
             value = metric.get("value")
-            if isinstance(value, float) and not math.isfinite(value): errors.append(f"metric {name}: non-finite value")
+            if value is not None and not isinstance(value, (int, float, str, bool)): errors.append(f"metric {name}: value must be scalar or null")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and not math.isfinite(value): errors.append(f"metric {name}: non-finite value")
+            if not isinstance(metric.get("source"), str) or not metric.get("source"): errors.append(f"metric {name}: source must be non-empty")
     if not isinstance(checks, list):
         errors.append("checks must be an array")
     else:
@@ -115,7 +117,8 @@ def _validate_report(report: Any) -> list[str]:
                 errors.append("check has invalid id")
             elif ident in seen:
                 errors.append(f"duplicate check id: {ident}")
-            seen.add(ident)
+            else:
+                seen.add(ident)
             if not isinstance(check.get("required"), bool): errors.append(f"check {ident}: required must be boolean")
             if check.get("status") not in CHECK_STATUS: errors.append(f"check {ident}: invalid status")
     if not isinstance(recovery, dict) or any(not isinstance(recovery.get(k), bool) for k in ("pending", "journal_clear", "rollback_verified")):
