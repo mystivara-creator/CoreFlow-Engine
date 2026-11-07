@@ -26,4 +26,29 @@
 
   const year = document.getElementById("year");
   if (year) year.textContent = String(new Date().getFullYear());
+
+  // Progressive enhancement: content stays visible if motion APIs are unavailable.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  if (!reduceMotion.matches && "IntersectionObserver" in window) {
+    const revealTargets = document.querySelectorAll(
+      ".intro-content, .feature-card, .workflow-copy, .workflow-step, .compatibility-grid > div, .download-panel > div, .faq-grid > div"
+    );
+
+    if (revealTargets.length) {
+      document.documentElement.classList.add("motion-ready");
+      const observer = new IntersectionObserver((entries, activeObserver) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            activeObserver.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.12, rootMargin: "0px 0px -36px 0px" });
+
+      revealTargets.forEach((element) => {
+        element.classList.add("reveal");
+        observer.observe(element);
+      });
+    }
+  }
 })();
