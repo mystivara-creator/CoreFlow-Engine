@@ -1,6 +1,7 @@
 #include "coreflow/device_validation.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
