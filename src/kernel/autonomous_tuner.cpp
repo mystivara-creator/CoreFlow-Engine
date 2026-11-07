@@ -1531,6 +1531,7 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
             "); reverted to OEM baseline per Invariant 8 (no unverified retention).";
         (void)rollback_active(msg);
     }
+    update_ucb_scores();
     save_persisted_stats();
 }
 

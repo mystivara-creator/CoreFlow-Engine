@@ -656,6 +656,17 @@ int main() {
     assert(t1_eval.last_verdict != "IMPROVED");
     assert(t1_eval.last_verdict == "NEUTRAL");
     assert(t1_eval.stage == "PLANNED");
+    uint32_t t1_attempts = 0, t1_rewards = 0, t1_neutral = 0, t1_inconclusive = 0;
+    for (const auto& candidate : t1_eval.candidates) {
+        t1_attempts += candidate.trials;
+        t1_rewards += candidate.reward_samples;
+        t1_neutral += candidate.neutral_count;
+        t1_inconclusive += candidate.inconclusive_count;
+    }
+    assert(t1_attempts == 1);
+    assert(t1_rewards == 1);
+    assert(t1_neutral == 1);
+    assert(t1_inconclusive == 0);
 
     // 13.2 Zero temperature trend is NOT evidence of cooling
     // Evaluated in 13.1 above: utility delta was 0.0, receiving 0 trend bonus and resulting in NEUTRAL rollback.
@@ -754,6 +765,15 @@ int main() {
     const auto t5_eval = tuner.snapshot();
     assert(t5_eval.last_verdict == "INCONCLUSIVE");
     assert(t5_eval.stage == "PLANNED");
+    uint32_t t5_attempts = 0, t5_rewards = 0, t5_inconclusive = 0;
+    for (const auto& candidate : t5_eval.candidates) {
+        t5_attempts += candidate.trials;
+        t5_rewards += candidate.reward_samples;
+        t5_inconclusive += candidate.inconclusive_count;
+    }
+    assert(t5_attempts == 1);
+    assert(t5_rewards == 0);
+    assert(t5_inconclusive == 1);
 
     // 13.6 Insufficient sample count yields INCONCLUSIVE
     tuner.reset();
