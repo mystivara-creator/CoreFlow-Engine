@@ -82,6 +82,18 @@ class CfDvsValidatorTest(unittest.TestCase):
             self.assertFalse(valid)
             self.assertTrue(any("unsafe manifest path" in e for e in errors))
 
+    def test_malformed_untrusted_report_is_rejected_without_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_bundle(root)
+            report = json.loads((root / "report.json").read_text())
+            report["profile"] = ["unexpected", "array"]
+            report["metrics"]["cpu_psi_some_avg10"]["validity"] = {"unexpected": "object"}
+            (root / "report.json").write_text(json.dumps(report), encoding="utf-8")
+            valid, errors = validate_bundle(root)
+            self.assertFalse(valid)
+            self.assertTrue(errors)
+
     def test_verdict_cannot_claim_pass_with_missing_required_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
