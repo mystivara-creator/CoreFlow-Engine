@@ -628,7 +628,7 @@ int main() {
     const auto t1_start = tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,

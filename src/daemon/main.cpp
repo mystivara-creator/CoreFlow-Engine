@@ -1198,6 +1198,7 @@ int main(int argc, char* argv[]) {
             .cpu_psi_valid = cpu_psi.has_value(),
             .memory_psi_valid = memory_psi.has_value(),
             .io_psi_valid = io_psi.has_value(),
+            .thermal_pressure_valid = thermal.available && std::isfinite(thermal.pressure),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .thermal_pressure_velocity = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
             .current_temperature_celsius = temp,
