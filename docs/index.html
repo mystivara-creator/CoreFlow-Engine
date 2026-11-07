@@ -11,11 +11,13 @@
   <meta property="og:image" content="https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/main/docs/assets/coreflow-banner.svg">
   <title>CoreFlow — CFAE System Framework</title>
   <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./assets/site.css?v=20261108-motion1">
-  <script src="./assets/site.js?v=20261108-motion1" defer></script>
+  <link rel="stylesheet" href="./assets/site.css?v=20261108-interactive1">
+  <script src="./assets/site.js?v=20261108-interactive1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Lewati ke konten</a>
+
+  <div class="scroll-progress" aria-hidden="true"><span id="scroll-progress-bar"></span></div>
 
   <header class="topbar">
     <div class="container topbar-inner">
@@ -72,11 +74,15 @@
             </div>
             <span class="art-node node-one">01</span><span class="art-node node-two">02</span><span class="art-node node-three">03</span><span class="art-node node-four">04</span>
           </div>
-          <div class="art-flow">
-            <div><b>01</b><span>DISCOVER</span></div><i></i>
-            <div><b>02</b><span>EVALUATE</span></div><i></i>
-            <div><b>03</b><span>ACTUATE</span></div><i></i>
-            <div><b>04</b><span>VERIFY</span></div>
+          <div class="art-flow" role="group" aria-label="Pilih tahap pipeline CoreFlow">
+            <button class="flow-step is-active" type="button" data-step="0" aria-pressed="true"><b>01</b><span>DISCOVER</span></button><i></i>
+            <button class="flow-step" type="button" data-step="1" aria-pressed="false"><b>02</b><span>EVALUATE</span></button><i></i>
+            <button class="flow-step" type="button" data-step="2" aria-pressed="false"><b>03</b><span>ACTUATE</span></button><i></i>
+            <button class="flow-step" type="button" data-step="3" aria-pressed="false"><b>04</b><span>VERIFY</span></button>
+          </div>
+          <div class="art-step-detail" aria-live="polite" aria-atomic="true">
+            <span id="art-step-title">01 / CAPABILITY DISCOVERY</span>
+            <p id="art-step-description">CoreFlow mengenali kemampuan perangkat dan semantik antarmuka sistem sebelum menentukan tindakan.</p>
           </div>
           <div class="art-foot"><span>CAPABILITY-DRIVEN</span><span>BASELINE-AWARE</span><span>REVERSIBLE</span></div>
         </div>
@@ -206,6 +212,8 @@
       </div>
     </section>
   </main>
+
+  <button class="back-to-top" type="button" aria-label="Kembali ke atas" title="Kembali ke atas" hidden><span aria-hidden="true">↑</span></button>
 
   <footer class="footer">
     <div class="container footer-main">
