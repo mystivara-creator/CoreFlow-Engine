@@ -170,6 +170,20 @@ std::string sanitize_tsv_field(std::string_view input) {
     return out.empty() ? "-" : out;
 }
 
+void record_ownership_loss(CandidateStats* stats) {
+    if (stats == nullptr) return;
+
+    // Escalate quarantine after repeated OEM/external takeovers: 8, 16, 32, then
+    // 64 monitor ticks (bounded to avoid permanent suppression from stale state).
+    stats->ownership_loss_count = std::min<uint32_t>(stats->ownership_loss_count, 15U) + 1U;
+    const uint32_t exponent = std::min<uint32_t>(stats->ownership_loss_count - 1U, 3U);
+    const uint32_t backoff_ticks = std::min<uint32_t>(64U, 8U << exponent);
+    stats->ownership_quarantine_ticks = std::max(stats->ownership_quarantine_ticks, backoff_ticks);
+    stats->cooldown_ticks = std::max(stats->cooldown_ticks, backoff_ticks);
+    stats->last_rollback_reason =
+        "External ownership lost; candidate quarantined for " + std::to_string(backoff_ticks) + " ticks";
+}
+
 } // namespace
 
 // ============================================================================
@@ -378,7 +392,7 @@ ControllerPriority AutonomousTuner::priority_for_candidate(std::string_view cand
 bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
-    if (c == nullptr || c->cooldown_ticks > 0) return false;
+    if (c == nullptr || c->ownership_quarantine_ticks > 0 || c->cooldown_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
@@ -401,7 +415,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     uint8_t thermal_bucket) const noexcept {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
-    if (c == nullptr) return false;
+    if (c == nullptr || c->ownership_quarantine_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
@@ -555,7 +569,7 @@ void AutonomousTuner::save_persisted_stats() const {
     const fs::path final_path = state_dir / "tuner_stats.state";
     std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return;
-    out << "CFTS2\t" << compute_fingerprint() << "\t"
+    out << "CFTS3\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
         << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_ << "\n";
     for (const auto& c : candidates_) {
@@ -572,6 +586,8 @@ void AutonomousTuner::save_persisted_stats() const {
             << c.rejected_count << "\t"
             << static_cast<uint32_t>(c.last_workload) << "\t"
             << static_cast<uint32_t>(c.last_thermal_bucket) << "\t"
+            << c.ownership_loss_count << "\t"
+            << c.ownership_quarantine_ticks << "\t"
             << sanitize_tsv_field(c.last_rollback_reason) << "\n";
     }
     out.flush();
@@ -591,8 +607,8 @@ void AutonomousTuner::load_persisted_stats() {
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
 
     const std::string current_fp = compute_fingerprint();
-    // Accept CFTS2 with matching v2 fingerprint, or legacy CFTS1 if base topology matches
-    if (magic == "CFTS2") {
+    // CFTS3 adds ownership quarantine state. CFTS2 and CFTS1 remain readable.
+    if (magic == "CFTS3" || magic == "CFTS2") {
         if (fp != current_fp) return;
         uint32_t inconc = 0, rej = 0;
         double nf = 0.05;
@@ -636,13 +652,25 @@ void AutonomousTuner::load_persisted_stats() {
 
             double scale = 1.0;
             uint32_t inconc = 0, rej = 0, wl = 0, tb = 0;
+            uint32_t ownership_losses = 0, quarantine_ticks = 0;
             std::string reason;
-            if (ls >> scale >> inconc >> rej >> wl >> tb >> reason) {
+            bool restored_extended_stats = false;
+            if (magic == "CFTS3") {
+                restored_extended_stats = static_cast<bool>(
+                    ls >> scale >> inconc >> rej >> wl >> tb >>
+                    ownership_losses >> quarantine_ticks >> reason);
+            } else {
+                restored_extended_stats = static_cast<bool>(
+                    ls >> scale >> inconc >> rej >> wl >> tb >> reason);
+            }
+            if (restored_extended_stats) {
                 c->adaptive_scale = std::clamp(scale, 0.25, 1.0);
                 c->inconclusive_count = inconc;
                 c->rejected_count = rej;
                 c->last_workload = static_cast<WorkloadClass>(std::min<uint32_t>(wl, 10U));
                 c->last_thermal_bucket = static_cast<uint8_t>(std::min<uint32_t>(tb, 4U));
+                c->ownership_loss_count = std::min<uint32_t>(ownership_losses, 16U);
+                c->ownership_quarantine_ticks = std::min<uint32_t>(quarantine_ticks, 64U);
                 c->last_rollback_reason = (reason == "-") ? "" : reason;
             }
         }
@@ -1263,9 +1291,7 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_ = "OWNERSHIP_LOST";
         last_verdict_enum_ = TunerVerdict::OwnershipLost;
         ++total_rolled_back_;
-        if (auto* stats = find_candidate(current_candidate_id_)) {
-            stats->last_rollback_reason = "External ownership lost during observation";
-        }
+        record_ownership_loss(find_candidate(current_candidate_id_));
         (void)rollback_active("External node ownership lost during observation window.");
         save_persisted_stats();
         return;
@@ -1506,6 +1532,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             --c.cooldown_ticks;
             cooldown_changed = true;
         }
+        if (c.ownership_quarantine_ticks > 0) {
+            --c.ownership_quarantine_ticks;
+            cooldown_changed = true;
+        }
     }
     if (cooldown_changed) {
         save_persisted_stats();
@@ -1715,6 +1745,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
+            record_ownership_loss(find_candidate(current_candidate_id_));
             (void)rollback_active("External node ownership lost while transaction was retained.");
             save_persisted_stats();
             return snapshot();
