@@ -522,3 +522,182 @@ h1 span,.section-heading h2 span,.workflow-copy h2 span,.compat-layout h2 span,
 @media(prefers-reduced-motion:reduce){
   .reveal{opacity:1;transform:none}
 }
+
+
+/* --------------------------------------------------------------------------
+   Mobile layout correction — narrow Android viewports
+   -------------------------------------------------------------------------- */
+@media (max-width: 760px) {
+  html { scroll-padding-top: 76px; }
+  body { overflow-x: clip; }
+  .container { width: min(var(--max), calc(100% - 36px)); min-width: 0; }
+
+  .site-header { height: 68px; }
+  .nav-wrap { gap: 12px; }
+  .brand { min-width: 0; gap: 9px; }
+  .brand-mark { flex: 0 0 36px; width: 36px; height: 36px; }
+  .brand-name { font-size: 15px; white-space: nowrap; }
+  .brand-name small { font-size: 7px; letter-spacing: 1.25px; }
+  .menu-toggle { flex: 0 0 44px; width: 44px; height: 44px; }
+
+  .hero {
+    min-height: 0;
+    padding: 48px 0 28px;
+    overflow: hidden;
+  }
+  .hero-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 20px;
+  }
+  .hero-copy {
+    width: 100%;
+    max-width: 640px;
+    min-width: 0;
+  }
+  /* Keep the primary message visible even when scroll-reveal has not initialized. */
+  .hero-copy.reveal,
+  .hero-visual.reveal {
+    opacity: 1;
+    transform: none;
+  }
+  .eyebrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-bottom: 20px;
+    font-size: 9px;
+    line-height: 1.5;
+    letter-spacing: 1px;
+  }
+  .eyebrow-line { flex: 0 0 22px; }
+  h1 {
+    max-width: 15ch;
+    margin-bottom: 18px;
+    font-size: clamp(36px, 8.6vw, 54px);
+    line-height: 1.08;
+    letter-spacing: -.055em;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+  .hero-lead {
+    max-width: 45ch;
+    margin-bottom: 22px;
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .hero-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    max-width: 420px;
+  }
+  .hero-actions .button { width: 100%; min-width: 0; }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin-top: 18px;
+    font-size: 10px;
+    line-height: 1.5;
+    letter-spacing: .2px;
+  }
+
+  .hero-visual {
+    width: 100%;
+    max-width: 390px;
+    height: 270px;
+    margin: 4px auto 0;
+    overflow: hidden;
+  }
+  .visual-core { width: 142px; height: 142px; }
+  .core-ring.ring-a { inset: -16px; }
+  .core-ring.ring-b { inset: -32px; }
+  .core-symbol { width: 62px; height: 62px; border-radius: 20px; }
+  .core-symbol svg { width: 46px; }
+  .orbit-a { width: min(270px, 86vw); height: 128px; }
+  .orbit-b { width: min(300px, 92vw); height: 172px; }
+  .orbit-label {
+    max-width: 55%;
+    padding: 7px 10px;
+    font-size: 7px;
+    line-height: 1.35;
+    letter-spacing: .55px;
+    white-space: nowrap;
+  }
+  .label-top { top: 14px; left: 0; }
+  .label-right { top: 47%; right: 0; }
+  .label-bottom { bottom: 35px; left: 8%; }
+  .visual-caption {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding-top: 10px;
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+  .hero-bottom {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+    margin-top: 12px;
+    font-size: 8px;
+    line-height: 1.45;
+    letter-spacing: .8px;
+  }
+  .hero-bottom > span { min-width: 0; }
+  .scroll-cue { text-align: left; }
+  .hero-bottom .scroll-cue b { margin-left: 5px; }
+
+  .intro { padding: 62px 0; }
+  .intro-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .intro h2,
+  .section-heading h2,
+  .workflow-copy h2,
+  .compat-layout h2,
+  .install-layout h2,
+  .faq-layout h2,
+  .community-inner h2 {
+    font-size: clamp(32px, 8vw, 42px);
+    line-height: 1.14;
+    letter-spacing: -.045em;
+    overflow-wrap: normal;
+  }
+  .intro-copy { font-size: 17px; line-height: 1.65; }
+  .muted-copy { font-size: 13px; }
+
+  .feature-grid { grid-template-columns: minmax(0, 1fr); }
+  .feature-card { min-height: 0; padding-bottom: 54px; }
+  .workflow-layout,
+  .compat-layout,
+  .install-layout,
+  .faq-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 30px;
+  }
+  .download-card { grid-template-columns: minmax(0, 1fr); }
+  .compat-panel { min-width: 0; }
+  .compat-row { min-width: 0; }
+  .compat-row > div { min-width: 0; }
+  .compat-row b { overflow-wrap: anywhere; }
+  .community-actions { display: flex; flex-direction: column; }
+  .community-actions .button { width: 100%; }
+  .footer-top,
+  .footer-bottom { min-width: 0; }
+  .footer-bottom div { flex-wrap: wrap; }
+}
+
+@media (max-width: 380px) {
+  .container { width: calc(100% - 32px); }
+  .hero { padding-top: 40px; }
+  .eyebrow { font-size: 8px; letter-spacing: .7px; }
+  h1 { font-size: clamp(34px, 9.4vw, 40px); }
+  .hero-visual { height: 248px; }
+  .label-top { top: 9px; }
+  .label-bottom { bottom: 32px; }
+  .feature-card { padding-left: 19px; padding-right: 19px; }
+  .feature-foot { left: 19px; }
+}
