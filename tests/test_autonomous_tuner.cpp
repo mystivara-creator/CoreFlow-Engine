@@ -287,6 +287,10 @@ int main() {
     const auto observing2 = tuner.snapshot();
     assert(observing2.stage == "OBSERVING");
     assert(observing2.active_candidate_id == "io.kyber_token_bucket");
+    // A new trial must not inherit the preceding mq-deadline REGRESSED verdict or delta.
+    assert(observing2.last_verdict == "PENDING");
+    assert(observing2.verdict == coreflow::TunerVerdict::Pending);
+    assert(observing2.last_utility_delta == 0.0);
     assert(get(sda_q / "scheduler") == "kyber");
     assert(get(sda_q / "nr_requests") == "128");
 
@@ -891,7 +895,14 @@ int main() {
         assert(tuner_lease.size() == 1);
         assert(tuner_lease.front().domain == coreflow::MutationDomain::BlockIo);
         assert(tuner_lease.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
-        assert(preemption_tuner.emergency_rollback("test-autonomous-tuner-preemption"));
+        coordinator.begin_emergency_recovery();
+        coordinator.emergency_preempt_all("test-autonomous-tuner-preemption");
+        const auto preempted = preemption_tuner.snapshot();
+        assert(preempted.stage == "PLANNED");
+        assert(preempted.last_verdict == "ABORTED");
+        assert(preempted.verdict == coreflow::TunerVerdict::Aborted);
+        assert(coordinator.active_leases().empty());
+        assert(coordinator.complete_emergency_recovery());
         assert(get(sda_q / "scheduler") == "none");
         assert(get(sda_q / "iosched/read_expire") == "500");
         assert(get(sda_q / "read_ahead_kb") == "128");
