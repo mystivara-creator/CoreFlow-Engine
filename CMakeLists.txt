@@ -192,6 +192,14 @@ if(CORE_FLOW_BUILD_TESTS)
     add_test(NAME UclampTest COMMAND test_uclamp)
 
     if(NOT ANDROID)
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND)
+            add_test(
+                NAME DeviceValidationBundleTest
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cf_dvs_validator.py
+            )
+        endif()
+
         add_test(
             NAME ModuleLifecycleTest
             COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/tests/test_module_lifecycle.sh
