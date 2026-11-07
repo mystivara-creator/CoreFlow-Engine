@@ -743,3 +743,69 @@ h1 span,.section-heading h2 span,.workflow-copy h2 span,.compat-layout h2 span,
   .visual-caption { font-size: 7px; }
   .hero-meta { gap: 7px 11px; }
 }
+
+
+/* --------------------------------------------------------------------------
+   Compact viewport fallback (including Android browsers requesting desktop
+   layout). Some mobile browsers report a CSS layout width wider than the
+   physical screen; use a single-column composition through 1024 CSS pixels.
+   -------------------------------------------------------------------------- */
+@media (max-width: 1024px) {
+  .hero-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 26px;
+    align-items: start;
+  }
+  .hero-copy {
+    width: 100%;
+    max-width: 760px;
+    min-width: 0;
+    margin-inline: auto;
+  }
+  .hero-copy.reveal { opacity: 1; transform: none; }
+  .hero-copy h1 {
+    max-width: 15ch;
+    font-size: clamp(42px, 6.2vw, 62px);
+    line-height: 1.08;
+    letter-spacing: -.05em;
+    text-wrap: balance;
+  }
+  .hero-copy .hero-lead { max-width: 54ch; }
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .hero-actions .button {
+    width: auto;
+    min-width: 210px;
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px 18px;
+  }
+  .hero-visual {
+    width: 100%;
+    max-width: 480px;
+    height: 300px;
+    margin: 0 auto;
+  }
+  .hero-bottom {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+    line-height: 1.5;
+  }
+  .hero-bottom .scroll-cue { text-align: left; }
+}
+@media (max-width: 760px) {
+  .hero-copy h1 {
+    font-size: clamp(38px, 9vw, 52px);
+    max-width: 13ch;
+  }
+  .hero-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .hero-actions .button { width: 100%; min-width: 0; }
+  .hero-visual { height: 270px; }
+}
