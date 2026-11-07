@@ -1429,6 +1429,7 @@ int main() {
     {
         coreflow::AutonomousTuner persistence_reader(teardown_sys.string(), teardown_proc.string());
         const auto restored = persistence_reader.snapshot();
+        std::cerr << "[R3] state payload:\n" << state_payload << "\n[R3] restored trials=" << restored.total_trials << " candidates=" << restored.candidates.size() << "\n";
         assert(restored.total_trials > 0);
     }
 

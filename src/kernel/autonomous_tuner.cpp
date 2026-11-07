@@ -805,7 +805,7 @@ void AutonomousTuner::load_persisted_stats() {
         if (!(ls >> saved.id >> saved.mean_utility >> saved.mean_utility_delta >> saved.trials)) return;
         if (saved.id.empty() || saved.id.size() > 128 || !seen_ids.insert(saved.id).second ||
             !std::isfinite(saved.mean_utility) || saved.mean_utility < 0.05 || saved.mean_utility > 2.50 ||
-            !std::isfinite(saved.mean_utility_delta) || std::abs(saved.mean_utility_delta) > 100.0) return;
+            !std::isfinite(saved.mean_utility_delta)) return;
 
         const bool current_schema = magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
         if (current_schema) {
