@@ -411,6 +411,7 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         ",\"io_psi_pct\":" + number_or_null(sample.io_psi) +
         ",\"thermal_pressure\":" + number_or_null(sample.thermal_pressure) +
         ",\"temperature_c\":" + number_or_null(sample.temperature_celsius) +
+        ",\"temperature_velocity_c_per_sec\":" + number_or_null(sample.temperature_velocity_celsius_per_sec) +
         ",\"thermal_headroom\":" + number_or_null(sample.thermal_headroom) +
         ",\"ai_prediction_10s\":" + number_or_null(sample.ai_prediction_10s) +
         ",\"ai_confidence\":" + number_or_null(sample.ai_confidence) +
@@ -425,7 +426,7 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         ",\"recovery_pending\":" + (sample.recovery_pending ? "true" : "false") +
         ",\"journal_clear\":" + (sample.journal_clear ? "true" : "false") +
         ",\"rollback_verified\":" + (sample.rollback_verified ? "true" : "false") + "}";
-    if (!append_event("telemetry.sample", session_id_, data)) return false;
+    if (!append_event("telemetry.sample", sample.candidate, data)) return false;
 
     const std::string csv = std::to_string(sequence_) + "," + utc_now() + "," +
         number_or_null(sample.cpu_psi) + "," + number_or_null(sample.memory_psi) + "," +
@@ -462,16 +463,16 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
         if (error) *error = "no active CF-DVS session";
         return false;
     }
-    const bool capture_ok = !failed_ && samples_ > 0;
-    const bool journal_clear = latest_.journal_clear;
-    const bool recovery_pending = latest_.recovery_pending || !journal_clear;
-    const bool rollback_verified = latest_.rollback_verified && journal_clear;
-    const std::string ended_at = utc_now();
     const std::string data = "{\"samples\":" + std::to_string(samples_) +
-        ",\"capture_complete\":" + (capture_ok ? "true" : "false") + "}";
-    (void)append_event("session.stopped", session_id_, data);
+        ",\"capture_complete\":" + ((!failed_ && samples_ > 0) ? "true" : "false") + "}";
+    if (!append_event("session.stopped", session_id_, data)) failed_ = true;
     if (::fdatasync(events_fd_) != 0 || ::fdatasync(metrics_fd_) != 0) failed_ = true;
     close_files();
+    const bool capture_ok = !failed_ && samples_ > 0;
+    const bool journal_clear = samples_ > 0 && latest_.journal_clear;
+    const bool recovery_pending = samples_ > 0 && (latest_.recovery_pending || !journal_clear);
+    const bool rollback_verified = samples_ > 0 && latest_.rollback_verified && journal_clear;
+    const std::string ended_at = utc_now();
 
     const std::string manufacturer = read_property("ro.product.manufacturer", "unknown");
     const std::string model = read_property("ro.product.model", "unknown");
@@ -499,6 +500,7 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
         "\"io_psi_avg10\":" + metric_json(latest_.io_psi, "%", "procfs.psi.io", ended_at, "I/O PSI unavailable") + ",\n"
         "\"thermal_pressure\":" + metric_json(latest_.thermal_pressure, "index", "thermal.assessment", ended_at, "Thermal pressure unavailable") + ",\n"
         "\"temperature_celsius\":" + metric_json(latest_.temperature_celsius, "C", "thermal.soc_composite", ended_at, "Physical temperature unavailable") + ",\n"
+        "\"temperature_velocity_celsius_per_sec\":" + metric_json(latest_.temperature_velocity_celsius_per_sec, "C/s", "thermal.temperature_trend", ended_at, "Thermal trend unavailable") + ",\n"
         "\"thermal_headroom\":" + metric_json(latest_.thermal_headroom, "ratio", "thermal.headroom", ended_at, "Thermal headroom unavailable") + ",\n"
         "\"ai_prediction_10s\":" + metric_json(latest_.ai_prediction_10s, "index", "neural.predictor", ended_at, "AI prediction unavailable") + ",\n"
         "\"ai_confidence\":" + metric_json(latest_.ai_confidence, "ratio", "neural.predictor", ended_at, "AI confidence unavailable") + "\n"
