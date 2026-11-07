@@ -9,6 +9,7 @@
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <fcntl.h>
@@ -107,6 +108,75 @@ TunerVerdict verdict_from_string(std::string_view v) noexcept {
 std::string resolve_state_dir() {
     const char* test = std::getenv("COREFLOW_TEST_STATE_DIR");
     return (test && *test) ? std::string(test) : "/data/adb/coreflow";
+}
+
+// Open every directory component relative to the already verified parent. This
+// rejects symlinked ancestors as well as a symlink at the final state directory.
+UniqueFd open_state_directory(std::string_view path, bool create) noexcept {
+    if (path.empty() || path.front() != '/') return {};
+    UniqueFd current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!current.valid()) return {};
+    size_t pos = 1;
+    while (pos < path.size()) {
+        while (pos < path.size() && path[pos] == '/') ++pos;
+        if (pos >= path.size()) break;
+        const size_t end = path.find('/', pos);
+        const size_t count = (end == std::string_view::npos ? path.size() : end) - pos;
+        const std::string component(path.substr(pos, count));
+        pos = (end == std::string_view::npos) ? path.size() : end + 1;
+        if (component.empty() || component == ".") continue;
+        if (component == "..") return {};
+        int next = ::openat(current.get(), component.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (next < 0 && errno == ENOENT && create) {
+            if (::mkdirat(current.get(), component.c_str(), 0700) != 0 && errno != EEXIST) return {};
+            next = ::openat(current.get(), component.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        }
+        if (next < 0) return {};
+        struct stat st{};
+        if (::fstat(next, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            (void)::close(next);
+            return {};
+        }
+        current.reset(next);
+    }
+    return current;
+}
+
+bool write_all(int fd, std::string_view data) noexcept {
+    size_t offset = 0;
+    while (offset < data.size()) {
+        const ssize_t written = ::write(fd, data.data() + offset, data.size() - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return false;
+        offset += static_cast<size_t>(written);
+    }
+    return true;
+}
+
+bool read_bounded_regular_file(int fd, std::string& output, size_t max_bytes) {
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        static_cast<uint64_t>(st.st_size) > max_bytes) return false;
+    output.clear();
+    output.reserve(static_cast<size_t>(st.st_size));
+    char buffer[4096];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof(buffer));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return false;
+        if (n == 0) return true;
+        const size_t count = static_cast<size_t>(n);
+        if (output.size() > max_bytes - count) return false;
+        output.append(buffer, count);
+    }
+}
+
+void remove_persisted_tuner_state() noexcept {
+    UniqueFd dir = open_state_directory(resolve_state_dir(), false);
+    if (!dir.valid()) return;
+    if (::unlinkat(dir.get(), "tuner_stats.state", 0) == 0) (void)::fsync(dir.get());
 }
 
 bool check_zram_swap_active(const std::string& proc_root, const std::string& sys_root) {
@@ -364,8 +434,7 @@ void AutonomousTuner::reset() {
     last_verdict_enum_ = TunerVerdict::Hold;
     last_utility_delta_ = 0.0;
     idle_streak_ = 0;
-    std::error_code ec;
-    fs::remove(fs::path(resolve_state_dir()) / "tuner_stats.state", ec);
+    remove_persisted_tuner_state();
 }
 
 CandidateStats* AutonomousTuner::find_candidate(std::string_view id) {
@@ -579,50 +648,65 @@ std::string AutonomousTuner::compute_fingerprint() const {
 }
 
 void AutonomousTuner::save_persisted_stats() const {
-    const fs::path state_dir = resolve_state_dir();
-    std::error_code ec;
-    fs::create_directories(state_dir, ec);
-    if (ec) return;
-    const fs::path tmp_path = state_dir / "tuner_stats.state.tmp";
-    const fs::path final_path = state_dir / "tuner_stats.state";
-    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) return;
-    out << "CFTS5\t" << compute_fingerprint() << "\t"
-        << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
-        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
-    for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
-    out << "\n";
+    std::ostringstream out;
+    out << "CFTS5\\t" << compute_fingerprint() << "\\t"
+        << total_trials_ << "\\t" << total_improved_ << "\\t" << total_rolled_back_ << "\\t"
+        << total_reward_samples_ << "\\t" << total_inconclusive_ << "\\t" << total_rejected_ << "\\t" << noise_floor_;
+    for (const double floor : evaluation_noise_floors_) out << "\\t" << floor;
+    out << "\\n";
     for (const auto& c : candidates_) {
-        out << c.id << "\t"
-            << c.mean_utility << "\t"
-            << c.mean_utility_delta << "\t"
-            << c.trials << "\t"
-            << c.reward_samples << "\t"
-            << c.improved_count << "\t"
-            << c.regressed_count << "\t"
-            << c.neutral_count << "\t"
-            << c.aborted_count << "\t"
-            << c.recovery_required_count << "\t"
-            << c.cooldown_ticks << "\t"
-            << c.consecutive_non_improved << "\t"
-            << c.adaptive_scale << "\t"
-            << c.inconclusive_count << "\t"
-            << c.rejected_count << "\t"
-            << static_cast<uint32_t>(c.last_workload) << "\t"
-            << static_cast<uint32_t>(c.last_thermal_bucket) << "\t"
-            << c.ownership_loss_count << "\t"
-            << c.ownership_quarantine_ticks << "\t"
-            << sanitize_tsv_field(c.last_rollback_reason) << "\n";
+        out << c.id << "\\t" << c.mean_utility << "\\t" << c.mean_utility_delta << "\\t"
+            << c.trials << "\\t" << c.reward_samples << "\\t" << c.improved_count << "\\t"
+            << c.regressed_count << "\\t" << c.neutral_count << "\\t" << c.aborted_count << "\\t"
+            << c.recovery_required_count << "\\t" << c.cooldown_ticks << "\\t"
+            << c.consecutive_non_improved << "\\t" << c.adaptive_scale << "\\t"
+            << c.inconclusive_count << "\\t" << c.rejected_count << "\\t"
+            << static_cast<uint32_t>(c.last_workload) << "\\t"
+            << static_cast<uint32_t>(c.last_thermal_bucket) << "\\t"
+            << c.ownership_loss_count << "\\t" << c.ownership_quarantine_ticks << "\\t"
+            << sanitize_tsv_field(c.last_rollback_reason) << "\\n";
     }
-    out.flush();
-    out.close();
-    fs::rename(tmp_path, final_path, ec);
+    const std::string payload = out.str();
+    if (!out.good() || payload.size() > 256U * 1024U) return;
+
+    UniqueFd dir = open_state_directory(resolve_state_dir(), true);
+    if (!dir.valid()) return;
+
+    static std::atomic<uint64_t> temp_nonce{0};
+    std::string temp_name;
+    UniqueFd temp_fd;
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        temp_name = "tuner_stats.state.tmp." + std::to_string(::getpid()) + "." +
+                    std::to_string(temp_nonce.fetch_add(1, std::memory_order_relaxed));
+        const int fd = ::openat(dir.get(), temp_name.c_str(),
+                                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) { temp_fd.reset(fd); break; }
+        if (errno != EEXIST) return;
+    }
+    if (!temp_fd.valid()) return;
+
+    struct stat temp_stat{};
+    if (::fstat(temp_fd.get(), &temp_stat) != 0 || !S_ISREG(temp_stat.st_mode) ||
+        ::fchmod(temp_fd.get(), 0600) != 0 || !write_all(temp_fd.get(), payload) ||
+        ::fsync(temp_fd.get()) != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return;
+    }
+    if (::renameat(dir.get(), temp_name.c_str(), dir.get(), "tuner_stats.state") != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return;
+    }
+    (void)::fsync(dir.get());
 }
 
 void AutonomousTuner::load_persisted_stats() {
-    const fs::path final_path = fs::path(resolve_state_dir()) / "tuner_stats.state";
-    std::ifstream in(final_path);
-    if (!in.is_open()) return;
+    UniqueFd dir = open_state_directory(resolve_state_dir(), false);
+    if (!dir.valid()) return;
+    UniqueFd state_fd(::openat(dir.get(), "tuner_stats.state", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!state_fd.valid()) return;
+    std::string payload;
+    if (!read_bounded_regular_file(state_fd.get(), payload, 256U * 1024U)) return;
+    std::istringstream in(payload);
     std::string header;
     if (!std::getline(in, header)) return;
     std::istringstream hs(header);
