@@ -1486,6 +1486,7 @@ bool AutonomousTuner::apply_transaction(
 
     if (committed.empty()) {
         CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
+        current_candidate_id_ = "baseline";
         return false;
     }
 
