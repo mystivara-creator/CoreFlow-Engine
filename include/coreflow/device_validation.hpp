@@ -84,7 +84,8 @@ private:
     [[nodiscard]] bool enqueue_write(std::string events, std::string metrics = {}) noexcept;
     [[nodiscard]] bool append_event(std::string_view type,
                                     std::string_view correlation_id,
-                                    std::string_view data_json) noexcept;
+                                    std::string_view data_json,
+                                    std::string_view metrics_line = {}) noexcept;
     void close_files() noexcept;
 };
 
