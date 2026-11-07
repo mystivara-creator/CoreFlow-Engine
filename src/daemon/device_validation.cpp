@@ -446,7 +446,8 @@ void DeviceValidationRecorder::writer_loop() noexcept {
 
 bool DeviceValidationRecorder::append_event(std::string_view type,
                                              std::string_view correlation_id,
-                                             std::string_view data_json) noexcept {
+                                             std::string_view data_json,
+                                             std::string_view metrics_line) noexcept {
     if (!active_ || events_fd_ < 0 || sequence_ >= kMaxEvents || event_bytes_ >= kMaxEventBytes) {
         failed_ = true;
         return false;
@@ -460,7 +461,7 @@ bool DeviceValidationRecorder::append_event(std::string_view type,
         ",\"event_type\":\"" + json_escape(type) +
         "\",\"correlation_id\":\"" + json_escape(correlation_id) +
         "\",\"data\":" + std::string(data_json) + "}\n";
-    if (event_bytes_ + line.size() > kMaxEventBytes || !enqueue_write(line)) {
+    if (event_bytes_ + line.size() > kMaxEventBytes || !enqueue_write(line, std::string(metrics_line))) {
         failed_ = true;
         return false;
     }
@@ -498,14 +499,12 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         ",\"recovery_pending\":" + (sample.recovery_pending ? "true" : "false") +
         ",\"journal_clear\":" + (sample.journal_clear ? "true" : "false") +
         ",\"rollback_verified\":" + (sample.rollback_verified ? "true" : "false") + "}";
-    if (!append_event("telemetry.sample", sample.candidate, data)) return false;
-
-    const std::string csv = std::to_string(sequence_) + "," + utc_now() + "," +
+    const std::string csv = std::to_string(sequence_ + 1) + "," + utc_now() + "," +
         number_or_null(sample.cpu_psi) + "," + number_or_null(sample.memory_psi) + "," +
         number_or_null(sample.io_psi) + "," + number_or_null(sample.thermal_pressure) + "," +
         number_or_null(sample.temperature_celsius) + "," + number_or_null(sample.thermal_headroom) + "," +
         number_or_null(sample.ai_prediction_10s) + "," + number_or_null(sample.ai_confidence) + "\n";
-    if (!enqueue_write({}, csv)) return false;
+    if (!append_event("telemetry.sample", sample.candidate, data, csv)) return false;
     ++samples_;
     return true;
 }
@@ -637,8 +636,14 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
 
     if (ok) {
         const std::string final_dir = root_ + "/" + session_id_;
-        if (::rename(session_dir_.c_str(), final_dir.c_str()) != 0) ok = false;
-        else session_dir_ = final_dir;
+        if (::rename(session_dir_.c_str(), final_dir.c_str()) != 0) {
+            ok = false;
+        } else {
+            session_dir_ = final_dir;
+            const int root_fd = ::open(root_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            if (root_fd < 0 || ::fsync(root_fd) != 0) ok = false;
+            if (root_fd >= 0) (void)::close(root_fd);
+        }
     }
     active_ = false;
     if (!ok) {
