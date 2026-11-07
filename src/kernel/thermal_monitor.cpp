@@ -171,6 +171,8 @@ void ThermalMonitor::discover_sensors() const {
         if (it->path().filename().string().rfind("thermal_zone", 0) != 0) continue;
         std::string type;
         if (!read_sysfs_line(it->path().string() + "/type", type)) continue;
+        // BCL/IBAT and similar PMIC indicator zones are not physical temperature sensors.
+        if (is_excluded_non_thermal_peripheral(type)) continue;
         const int category = classify_thermal_type(type);
         if (category > 0) {
             sensors_.push_back({
