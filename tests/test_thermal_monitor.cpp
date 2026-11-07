@@ -60,6 +60,21 @@ int main() {
     ThermalMonitor cold_monitor(cold_root);
     assert(std::fabs(cold_monitor.hottest_celsius() - 0.5f) < 0.01f);
 
+    // PMIC BCL/IBAT levels are indicator values, not physical temperatures. They must
+    // be excluded from both sensor readings and board/AP composite calculations.
+    const auto pmic_indicator_root = root + "/pmic_indicators";
+    create_zone(pmic_indicator_root, 0, "cpu-cluster0", "45000");
+    create_zone(pmic_indicator_root, 1, "ap_therm", "48000");
+    create_zone(pmic_indicator_root, 2, "pm7250b-ibat-lvl1", "120000");
+    create_zone(pmic_indicator_root, 3, "PM7250B-BCL-LVL1", "125000");
+    ThermalMonitor pmic_indicator_monitor(pmic_indicator_root);
+    const auto pmic_profile = pmic_indicator_monitor.multi_sensor_profile();
+    assert(pmic_profile.total_valid_sensors == 2);
+    assert(pmic_profile.valid_cpu_count == 1);
+    assert(std::fabs(pmic_profile.board_average - 48.0f) < 0.01f);
+    assert(std::fabs(pmic_indicator_monitor.hottest_celsius() - 45.0f) < 0.01f);
+    assert(pmic_indicator_monitor.assess().readings.size() == 2);
+
     // No per-model tuning: hotter CPU junction and cooler battery use their own trips.
     const auto oem = root + "/oem";
     create_zone(oem, 150, "cpuss-0", "78000");
