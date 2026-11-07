@@ -136,6 +136,9 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_device_validation PRIVATE include)
     target_compile_definitions(test_device_validation PRIVATE COREFLOW_BUILD_COMMIT="${COREFLOW_BUILD_COMMIT}")
+    if(NOT ANDROID)
+        target_link_libraries(test_device_validation PRIVATE pthread)
+    endif()
     add_test(NAME DeviceValidationRuntimeTest COMMAND test_device_validation)
 
     add_executable(test_config
@@ -186,6 +189,12 @@ if(CORE_FLOW_BUILD_TESTS)
             add_test(
                 NAME DeviceValidationBundleTest
                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cf_dvs_validator.py
+            )
+            add_test(
+                NAME DeviceValidationRuntimeContractTest
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_cf_dvs_runtime_bundle.py
+                    $<TARGET_FILE:test_device_validation>
             )
         endif()
 
