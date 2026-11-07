@@ -1406,6 +1406,9 @@ int main() {
     assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
     assert(coordinator.active_leases().empty());
     assert(coordinator.complete_emergency_recovery());
+    // A regular file mock loses the scheduler capability list when the baseline
+    // writer stores only the active scheduler. Restore the sysfs readback shape.
+    put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
 
     // R3 persistence integrity: CFTS6 checksum, restrictive file mode, round-trip,
     // corruption rejection, and symlink-safe state-directory/file handling.
@@ -1429,7 +1432,6 @@ int main() {
     {
         coreflow::AutonomousTuner persistence_reader(teardown_sys.string(), teardown_proc.string());
         const auto restored = persistence_reader.snapshot();
-        std::cerr << "[R3] state payload:\n" << state_payload << "\n[R3] restored fingerprint=" << restored.capability_fingerprint << " trials=" << restored.total_trials << " candidates=" << restored.candidates.size() << "\n";
         assert(restored.total_trials > 0);
     }
 
