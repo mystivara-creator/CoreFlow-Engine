@@ -233,12 +233,17 @@ struct CandidateStats {
     double ucb_score{0.65};             // Upper Confidence Bound (UCB1) score
     double adaptive_scale{1.0};         // Step-sizing factor [0.25..1.0] reduced on rollback
     uint32_t settling_ticks{1};         // Domain-specific post-mutation settling ticks
+    // Attempts are not empirical rewards.
     uint32_t trials{0};
+    uint32_t reward_samples{0};
     uint32_t improved_count{0};
     uint32_t successes{0};
     uint32_t regressed_count{0};
     uint32_t rollbacks{0};
     uint32_t inconclusive_count{0};
+    uint32_t neutral_count{0};
+    uint32_t aborted_count{0};
+    uint32_t recovery_required_count{0};
     uint32_t rejected_count{0};
     uint32_t cooldown_ticks{0};
     uint32_t consecutive_non_improved{0};
@@ -520,7 +525,8 @@ private:
     uint32_t obs_window_{3};
     uint32_t idle_streak_{0};
 
-    uint32_t total_trials_{0};
+    uint32_t total_trials_{0}; // started transaction attempts
+    uint32_t total_reward_samples_{0}; // complete, eligible evaluation windows
     uint32_t total_improved_{0};
     uint32_t total_rolled_back_{0};
     uint32_t total_inconclusive_{0};

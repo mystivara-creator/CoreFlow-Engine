@@ -231,6 +231,7 @@ bool AutonomousTuner::handle_preemption(
     // ownership loss or regression. Record it explicitly before restoring baseline.
     last_verdict_ = "ABORTED";
     last_verdict_enum_ = TunerVerdict::Aborted;
+    if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
     ++total_rolled_back_;
     const bool restored = rollback_active(reason);
     if (!restored) {
@@ -328,11 +329,11 @@ void AutonomousTuner::init_candidates() {
 }
 
 void AutonomousTuner::update_ucb_scores() {
-    const double total_n = std::max(1.0, static_cast<double>(total_trials_));
+    const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
     for (auto& c : candidates_) {
         c.successes = c.improved_count;
         c.rollbacks = c.regressed_count;
-        const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(c.trials + 1));
+        const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(c.reward_samples + 1));
         c.ucb_score = c.mean_utility + explore;
     }
 }
@@ -350,9 +351,10 @@ void AutonomousTuner::reset() {
     noise_floor_ = 0.05;
     settling_ticks_remaining_ = 0;
     applied_steps_.clear();
-    init_candidates();
     total_trials_ = 0;
+    total_reward_samples_ = 0;
     total_improved_ = 0;
+    init_candidates();
     total_rolled_back_ = 0;
     total_inconclusive_ = 0;
     total_rejected_ = 0;
@@ -581,16 +583,20 @@ void AutonomousTuner::save_persisted_stats() const {
     const fs::path final_path = state_dir / "tuner_stats.state";
     std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return;
-    out << "CFTS3\t" << compute_fingerprint() << "\t"
+    out << "CFTS4\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
-        << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_ << "\n";
+        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_ << "\n";
     for (const auto& c : candidates_) {
         out << c.id << "\t"
             << c.mean_utility << "\t"
             << c.mean_utility_delta << "\t"
             << c.trials << "\t"
+            << c.reward_samples << "\t"
             << c.improved_count << "\t"
             << c.regressed_count << "\t"
+            << c.neutral_count << "\t"
+            << c.aborted_count << "\t"
+            << c.recovery_required_count << "\t"
             << c.cooldown_ticks << "\t"
             << c.consecutive_non_improved << "\t"
             << c.adaptive_scale << "\t"
@@ -619,8 +625,17 @@ void AutonomousTuner::load_persisted_stats() {
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
 
     const std::string current_fp = compute_fingerprint();
-    // CFTS3 adds ownership quarantine state. CFTS2 and CFTS1 remain readable.
-    if (magic == "CFTS3" || magic == "CFTS2") {
+    // Legacy trial counts are attempts; never promote them to reward samples.
+    uint32_t persisted_reward_samples = 0;
+    if (magic == "CFTS4") {
+        uint32_t inconc = 0, rej = 0;
+        double nf = 0.05;
+        if (fp != current_fp || !(hs >> persisted_reward_samples >> inconc >> rej >> nf) ||
+            persisted_reward_samples > trials) return;
+        total_inconclusive_ = inconc;
+        total_rejected_ = rej;
+        noise_floor_ = std::clamp(nf, 0.02, 0.45);
+    } else if (magic == "CFTS3" || magic == "CFTS2") {
         if (fp != current_fp) return;
         uint32_t inconc = 0, rej = 0;
         double nf = 0.05;
@@ -638,6 +653,7 @@ void AutonomousTuner::load_persisted_stats() {
     }
 
     total_trials_ = trials;
+    total_reward_samples_ = persisted_reward_samples;
     total_improved_ = improved;
     total_rolled_back_ = rolled_back;
 
@@ -647,14 +663,24 @@ void AutonomousTuner::load_persisted_stats() {
         std::istringstream ls(line);
         std::string id;
         double mean_u = 0.5, mean_du = 0.0;
-        uint32_t c_trials = 0, c_imp = 0, c_reg = 0, c_cool = 0, c_non_imp = 0;
-        if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_imp >> c_reg >> c_cool >> c_non_imp)) {
-            continue;
+        uint32_t c_trials = 0, c_reward = 0, c_imp = 0, c_reg = 0;
+        uint32_t c_neutral = 0, c_aborted = 0, c_recovery = 0, c_cool = 0, c_non_imp = 0;
+        if (magic == "CFTS4") {
+            if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_reward >> c_imp >> c_reg >>
+                  c_neutral >> c_aborted >> c_recovery >> c_cool >> c_non_imp) ||
+                c_reward > c_trials || static_cast<uint64_t>(c_imp) + c_reg + c_neutral > c_reward) continue;
+        } else {
+            if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_imp >> c_reg >> c_cool >> c_non_imp)) continue;
+            mean_du = 0.0; // legacy denominator was attempt count, not valid reward count
         }
         if (auto* c = find_candidate(id)) {
             c->mean_utility = std::clamp(mean_u, 0.05, 2.50);
             c->mean_utility_delta = mean_du;
             c->trials = c_trials;
+            c->reward_samples = c_reward;
+            c->neutral_count = c_neutral;
+            c->aborted_count = c_aborted;
+            c->recovery_required_count = c_recovery;
             c->improved_count = c_imp;
             c->successes = c_imp;
             c->regressed_count = c_reg;
@@ -667,7 +693,7 @@ void AutonomousTuner::load_persisted_stats() {
             uint32_t ownership_losses = 0, quarantine_ticks = 0;
             std::string reason;
             bool restored_extended_stats = false;
-            if (magic == "CFTS3") {
+            if (magic == "CFTS4" || magic == "CFTS3") {
                 restored_extended_stats = static_cast<bool>(
                     ls >> scale >> inconc >> rej >> wl >> tb >>
                     ownership_losses >> quarantine_ticks >> reason);
@@ -1033,6 +1059,9 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
         std::reverse(failed_steps.begin(), failed_steps.end());
         applied_steps_ = std::move(failed_steps);
         transaction_active_ = false;
+        if (!recovery_required_) {
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->recovery_required_count;
+        }
         recovery_required_ = true;
         last_verdict_ = "RECOVERY_REQUIRED";
         last_verdict_enum_ = TunerVerdict::RecoveryRequired;
@@ -1404,11 +1433,6 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
     settling_ticks_remaining_ = 0;
 
     auto* stats = find_candidate(current_candidate_id_);
-    if (stats != nullptr) {
-        const double prev_trials = static_cast<double>(std::max(1u, stats->trials) - 1u);
-        stats->mean_utility_delta =
-            (stats->mean_utility_delta * prev_trials + utility_delta) / static_cast<double>(std::max(1u, stats->trials));
-    }
 
     // Update running noise floor estimate from sample spread
     const double io_spread = (max_after_io_psi_ >= min_after_io_psi_) ? (max_after_io_psi_ - min_after_io_psi_) : 0.0;
@@ -1434,6 +1458,15 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         (void)rollback_active(msg);
         save_persisted_stats();
         return;
+    }
+
+    // Only an ownership-verified, complete, low-variance window is eligible reward.
+    ++total_reward_samples_;
+    if (stats != nullptr) {
+        const double previous = static_cast<double>(stats->reward_samples);
+        ++stats->reward_samples;
+        stats->mean_utility_delta = (stats->mean_utility_delta * previous + utility_delta) /
+                                    static_cast<double>(stats->reward_samples);
     }
 
     if (utility_delta >= 0.25) {
@@ -1483,11 +1516,11 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_ = "NEUTRAL";
         last_verdict_enum_ = TunerVerdict::Neutral;
         ++total_rolled_back_;
-        ++total_inconclusive_;
         if (stats != nullptr) {
-            ++stats->inconclusive_count;
+            ++stats->neutral_count;
             ++stats->consecutive_non_improved;
             stats->adaptive_scale = std::max(0.50, stats->adaptive_scale * 0.90);
+            stats->mean_utility = std::clamp(stats->mean_utility + 0.30 * (0.50 - stats->mean_utility), 0.05, 2.50);
             stats->last_rollback_reason = "Within noise floor; reverted per Invariant 8";
             const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
             stats->cooldown_ticks = std::min<uint32_t>(32U, 4U * (1U << shift));
@@ -1807,14 +1840,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // Priority A: I/O Latency & Queue Bottleneck -> Select highest-UCB1 eligible I/O candidate
     if (io_bottleneck && !block_queues_.empty()) {
         const auto& primary_q = block_queues_.front();
-        const double total_n = std::max(1.0, static_cast<double>(total_trials_));
+        const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
 
         auto score_candidate = [&](std::string_view id, double domain_bonus = 0.0) -> double {
             // Strict admission gate BEFORE any UCB1 or domain bonus calculation
             if (!is_candidate_eligible_for_context(id, current_workload_, thermal_bucket)) return -1.0;
             const auto* s = find_candidate(id);
             if (s == nullptr) return -1.0;
-            const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->trials + 1));
+            const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->reward_samples + 1));
             return s->mean_utility + explore + domain_bonus;
         };
 

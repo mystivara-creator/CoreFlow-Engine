@@ -61,6 +61,11 @@ int main() {
     coreflow::AutonomousTuner tuner(sys_root.string(), proc_root.string());
     const auto initial = tuner.snapshot();
     assert(initial.block_queues.size() == 1);
+    for (const auto& candidate : initial.candidates) {
+        assert(candidate.trials == 0);
+        assert(candidate.reward_samples == 0);
+        assert(candidate.neutral_count == 0);
+    }
     assert(initial.block_queues[0].device_name == "sda");
     assert(initial.block_queues[0].active_scheduler == "none");
     assert(initial.block_queues[0].available_schedulers.size() == 4);
