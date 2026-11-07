@@ -187,6 +187,12 @@ int main() {
     assert(refused_lease.size() == 1);
     assert(refused_lease.front().owner_controller == "RefusingController");
     assert(refused_lease.front().preemption_requested);
+    assert(coordinator.is_preemption_requested(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse"));
+    assert(!coordinator.is_preemption_requested(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "another-transaction"));
+    assert(!coordinator.is_preemption_requested(
+        coreflow::MutationDomain::GpuDevfreq, "RefusingController", "tx-refuse"));
     // A failed callback clears its dispatch marker; a later recovery pass may retry.
     coordinator.emergency_preempt_all("retry-failed-preemption");
     assert(refused_callbacks.load(std::memory_order_relaxed) == 2);

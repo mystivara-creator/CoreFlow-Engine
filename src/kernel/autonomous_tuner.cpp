@@ -307,17 +307,17 @@ bool AutonomousTuner::handle_preemption(
     // steps are installed immediately after lease acquisition, so preemption
     // can still retry that exact rollback even when transaction_active_ is false.
     if (current_candidate_id_ != transaction_id ||
-        domain_for_candidate(current_candidate_id_) != domain ||
-        applied_steps_.empty()) {
+        domain_for_candidate(current_candidate_id_) != domain) {
         return false;
     }
 
-    // Coordinator preemption is an intentional interruption, not an empirical
-    // ownership loss or regression. Record it explicitly before restoring baseline.
+    // A request can arrive at a safe point before the first write. rollback_active()
+    // also acknowledges this no-write case and retires only this exact lease.
+    const bool had_applied_steps = !applied_steps_.empty();
     last_verdict_ = "ABORTED";
     last_verdict_enum_ = TunerVerdict::Aborted;
     if (auto* stats = find_candidate(current_candidate_id_)) ++stats->preempted_count;
-    ++total_rolled_back_;
+    if (had_applied_steps) ++total_rolled_back_;
     const bool restored = rollback_active(reason);
     if (!restored) {
         last_verdict_ = "RECOVERY_REQUIRED";
@@ -1441,12 +1441,27 @@ bool AutonomousTuner::apply_transaction(
         return false;
     }
 
+    auto& coordinator = CentralMutationCoordinator::instance();
+    // Preflight is read-only. If a preemption arrived during discovery, do not
+    // start the first mutation; leave this exact lease for callback acknowledgement.
+    if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
+        return false;
+    }
+
     // Phase 2: Ordered Execution (RequiredAnchor before RequiredDependent)
     std::vector<MutationStep> committed;
     committed.reserve(planned.size());
     std::string after_summary;
 
     for (const auto& step : planned) {
+        // Never start a subsequent write after a priority/emergency request.
+        // The registered callback rolls back the committed prefix at this safe point.
+        if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
+            applied_steps_ = std::move(committed);
+            observing_ = false;
+            transaction_active_ = false;
+            return false;
+        }
         if (!store.apply_mutation(step.path, step.target_value)) {
             const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                       step.relation == StepRelation::RequiredDependent);
@@ -1482,6 +1497,15 @@ bool AutonomousTuner::apply_transaction(
         if (!after_summary.empty()) after_summary += ",";
         after_summary += fs::path(step.path).filename().string() + "=" + step.target_value;
         committed.push_back(step);
+    }
+
+    // Check after the final in-flight write too; there may be no following loop
+    // iteration in which to observe a request that arrived during that write.
+    if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
+        applied_steps_ = std::move(committed);
+        observing_ = false;
+        transaction_active_ = false;
+        return false;
     }
 
     if (committed.empty()) {

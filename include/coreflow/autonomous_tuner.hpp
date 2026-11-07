@@ -155,6 +155,11 @@ public:
         MutationDomain domain,
         std::string_view controller_name,
         std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool is_preemption_requested(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id) const noexcept;
+    void dispatch_pending_preemptions(std::string_view reason) noexcept;
     bool register_preemption_handler(std::string_view controller_name, PreemptionHandler handler);
     void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;

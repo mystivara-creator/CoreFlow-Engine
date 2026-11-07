@@ -51,6 +51,81 @@ int main() {
     auto& coordinator = CentralMutationCoordinator::instance();
     coordinator.reset();
 
+    // A higher-priority request can arrive for a second domain while the same
+    // controller callback is still resolving its first domain. The second lease
+    // must remain pending and the timer-driven monitor must retry it later.
+    const std::string pending_owner = "PendingMultiDomainController";
+    std::mutex pending_mutex;
+    std::condition_variable pending_cv;
+    bool cpu_callback_entered = false;
+    bool release_cpu_callback = false;
+    uint32_t pending_callbacks = 0;
+    assert(coordinator.register_preemption_handler(
+        pending_owner,
+        [&](MutationDomain domain, std::string_view, std::string_view) {
+            if (domain == MutationDomain::CpuPolicy) {
+                std::unique_lock<std::mutex> lock(pending_mutex);
+                ++pending_callbacks;
+                cpu_callback_entered = true;
+                pending_cv.notify_all();
+                pending_cv.wait(lock, [&] { return release_cpu_callback; });
+                return true;
+            }
+            if (domain == MutationDomain::GpuDevfreq) {
+                std::lock_guard<std::mutex> lock(pending_mutex);
+                ++pending_callbacks;
+                return true;
+            }
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        MutationDomain::CpuPolicy, pending_owner, "pending-cpu-tx",
+        ControllerPriority::BackgroundEfficiency));
+    assert(coordinator.acquire_lease(
+        MutationDomain::GpuDevfreq, pending_owner, "pending-gpu-tx",
+        ControllerPriority::BackgroundEfficiency));
+
+    std::thread cpu_preempt_request([&] {
+        assert(!coordinator.acquire_lease(
+            MutationDomain::CpuPolicy, "CpuEmergencyRequester", "cpu-emergency-tx",
+            ControllerPriority::EmergencySafety));
+    });
+    bool cpu_callback_started = false;
+    {
+        std::unique_lock<std::mutex> lock(pending_mutex);
+        cpu_callback_started = pending_cv.wait_for(
+            lock, std::chrono::seconds(3), [&] { return cpu_callback_entered; });
+    }
+
+    bool gpu_request_rejected = false;
+    if (cpu_callback_started) {
+        gpu_request_rejected = !coordinator.acquire_lease(
+            MutationDomain::GpuDevfreq, "GpuEmergencyRequester", "gpu-emergency-tx",
+            ControllerPriority::EmergencySafety);
+    }
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        release_cpu_callback = true;
+    }
+    pending_cv.notify_all();
+    cpu_preempt_request.join();
+    assert(cpu_callback_started);
+    assert(gpu_request_rejected);
+
+    const auto queued_leases = coordinator.active_leases();
+    assert(queued_leases.size() == 1);
+    assert(queued_leases.front().domain == MutationDomain::GpuDevfreq);
+    assert(coordinator.is_preemption_requested(
+        MutationDomain::GpuDevfreq, pending_owner, "pending-gpu-tx"));
+
+    MutationRecoveryMonitor pending_monitor(baseline);
+    const RecoveryResult pending_retry =
+        pending_monitor.on_timer_tick("retry pending multi-domain preemption");
+    assert(pending_retry.status == RecoveryStatus::NoRecoveryRequired);
+    assert(pending_callbacks == 2);
+    assert(coordinator.active_leases().empty());
+    coordinator.unregister_preemption_handler(pending_owner);
+
     // Repeat real multi-controller teardown while emergency dispatchers race
     // with object destruction. A missing sysfs path forces each owner's own
     // rollback to fail, so only monitor-driven journal recovery may retire it.

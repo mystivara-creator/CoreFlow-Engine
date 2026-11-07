@@ -75,10 +75,33 @@ RecoveryResult MutationRecoveryMonitor::on_timer_tick(std::string_view reason) {
         leases.begin(), leases.end(),
         [](const DomainLease& lease) { return lease.active && lease.owner_detached; });
     const bool recovery_retry_pending = coordinator.is_emergency_recovery_active();
+    const bool preemption_pending = std::any_of(
+        leases.begin(), leases.end(),
+        [](const DomainLease& lease) {
+            return lease.active && lease.preemption_requested && !lease.owner_detached;
+        });
 
-    if (!detached_owner_present && !recovery_retry_pending) {
+    if (!detached_owner_present && !recovery_retry_pending && !preemption_pending) {
         return {RecoveryStatus::NoRecoveryRequired, leases.size(), 0};
     }
+
+    // Priority preemption is not a global rollback. Retry only exact leases
+    // already marked PREEMPTION_REQUESTED, preserving unrelated active domains.
+    if (!detached_owner_present && !recovery_retry_pending && preemption_pending) {
+        coordinator.dispatch_pending_preemptions(reason);
+        const auto remaining = coordinator.active_leases();
+        const auto live_pending = static_cast<size_t>(std::count_if(
+            remaining.begin(), remaining.end(),
+            [](const DomainLease& lease) {
+                return lease.active && lease.preemption_requested && !lease.owner_detached;
+            }));
+        return {
+            live_pending == 0 ? RecoveryStatus::NoRecoveryRequired : RecoveryStatus::LiveOwnerPending,
+            remaining.size(),
+            live_pending,
+        };
+    }
+
     return coordinated_rollback(baseline_, reason);
 }
 
