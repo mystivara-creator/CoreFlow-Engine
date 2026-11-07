@@ -345,15 +345,22 @@ int main() {
     // Even a completely different workload/thermal context cannot bypass ownership quarantine.
     assert(!tuner.is_candidate_eligible_for_context(
         "io.bfq_interactive_fairness", coreflow::WorkloadClass::Gaming, 4));
-    // Persist the quarantine across rediscovery/reconstruction of the capability surface.
-    tuner.discover(sys_root.string(), proc_root.string());
-    const auto rediscovered = tuner.snapshot();
-    const auto persisted_bfq = std::find_if(
-        rediscovered.candidates.begin(), rediscovered.candidates.end(),
-        [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
-    assert(persisted_bfq != rediscovered.candidates.end());
-    assert(persisted_bfq->ownership_loss_count == 1);
-    assert(persisted_bfq->ownership_quarantine_ticks == 8);
+    // Verify durable serialization by constructing a fresh tuner instance against
+    // the same state directory and capability fingerprint (not merely rereading
+    // into already-populated in-memory CandidateStats).
+    {
+        coreflow::AutonomousTuner reloaded_tuner(sys_root.string(), proc_root.string());
+        const auto reloaded = reloaded_tuner.snapshot();
+        const auto persisted_bfq = std::find_if(
+            reloaded.candidates.begin(), reloaded.candidates.end(),
+            [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
+        assert(persisted_bfq != reloaded.candidates.end());
+        assert(persisted_bfq->ownership_loss_count == 1);
+        assert(persisted_bfq->ownership_quarantine_ticks == 8);
+        assert(!reloaded_tuner.is_candidate_eligible("io.bfq_interactive_fairness"));
+        assert(!reloaded_tuner.is_candidate_eligible_for_context(
+            "io.bfq_interactive_fairness", coreflow::WorkloadClass::Gaming, 4));
+    }
     // External writer's value (512) is preserved, while our other node (scheduler) is rolled back to "none"
     assert(get(sda_q / "read_ahead_kb") == "512");
     assert(get(sda_q / "scheduler") == "none");
