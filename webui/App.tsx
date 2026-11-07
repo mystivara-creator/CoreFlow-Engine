@@ -332,10 +332,14 @@ export const App: React.FC = () => {
         : 'Daemon Stopped',
       modeDescription: status.running
         ? isThermalThrottling
-          ? 'Thermal guard active: reducing workload/power demand via clocks and UClamp floor'
+          ? status.uclampSupported
+            ? 'Thermal guard active: applying supported clock and UClamp mitigation paths'
+            : 'Thermal guard active: UClamp is unavailable; mitigation is limited to other validated actuator paths'
           : status.recoveryPending
-          ? `Thermal source: ${status.thermalSource ?? 'oem_policy'}; write-ahead CFJ4 journal armed`
-          : 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
+            ? `Thermal source: ${status.thermalSource ?? 'oem_policy'}; write-ahead CFJ4 journal armed`
+            : status.uclampSupported
+              ? 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
+              : 'Daemon active; UClamp capability unavailable. Other controls remain capability-gated and independently verified.'
         : 'OEM baseline restored',
       timestamp: Date.now(),
     }));
