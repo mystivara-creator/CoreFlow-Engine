@@ -242,7 +242,7 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     if (manifest.manifest_version !== '1.0' || !Array.isArray(manifest.files)) {
       throw new Error('Unsupported CF-DVS manifest version');
     }
-    const expectedPayloads = PAYLOAD_NAMES.filter((name) => name !== 'manifest.json');
+    const expectedPayloads: PayloadName[] = PAYLOAD_NAMES.filter((name) => name !== 'manifest.json');
     if (manifest.files.length !== expectedPayloads.length) {
       throw new Error('Manifest payload inventory is incomplete');
     }
