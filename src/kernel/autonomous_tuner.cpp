@@ -226,7 +226,19 @@ bool AutonomousTuner::handle_preemption(
         domain_for_candidate(current_candidate_id_) != domain) {
         return false;
     }
-    return rollback_active(reason);
+
+    // Coordinator preemption is an intentional interruption, not an empirical
+    // ownership loss or regression. Record it explicitly before restoring baseline.
+    last_verdict_ = "ABORTED";
+    last_verdict_enum_ = TunerVerdict::Aborted;
+    ++total_rolled_back_;
+    const bool restored = rollback_active(reason);
+    if (!restored) {
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+    }
+    save_persisted_stats();
+    return restored;
 }
 
 void AutonomousTuner::init_candidates() {
@@ -1245,6 +1257,12 @@ bool AutonomousTuner::apply_transaction(
     current_candidate_label_ = std::string(candidate_label);
     current_intent_ = std::string(intent);
     current_rationale_ = std::string(rationale);
+
+    // The verdict and utility shown while OBSERVING belong to this new trial.
+    // Never carry the previous candidate's verdict/delta onto a different candidate.
+    last_verdict_ = "PENDING";
+    last_verdict_enum_ = TunerVerdict::Pending;
+    last_utility_delta_ = 0.0;
 
     before_io_psi_ = telemetry.io_psi;
     before_mem_psi_ = telemetry.memory_psi;
