@@ -701,3 +701,45 @@ h1 span,.section-heading h2 span,.workflow-copy h2 span,.compat-layout h2 span,
   .feature-card { padding-left: 19px; padding-right: 19px; }
   .feature-foot { left: 19px; }
 }
+
+
+/* Final mobile composition pass: avoid clipped hero content and uneven section rhythm. */
+@media (max-width: 760px) {
+  .hero-layout, .hero-copy, .hero-visual, .hero-bottom { min-width: 0; }
+  .hero-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .hero-copy { display: block; }
+  .hero-copy h1 {
+    width: 100%;
+    max-width: 13ch;
+    font-size: clamp(36px, 9vw, 50px);
+    line-height: 1.08;
+    text-wrap: balance;
+  }
+  .hero-copy .hero-lead { width: 100%; max-width: 42ch; }
+  .hero-actions { max-width: 100%; }
+  .hero-visual { max-width: 100%; }
+  .hero-bottom { width: 100%; }
+  .hero-bottom > span { overflow-wrap: anywhere; }
+  .intro-layout, .workflow-layout, .compat-layout, .install-layout, .faq-layout {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .section-kicker { color: #47718f; }
+  .features-section .section-kicker,
+  .workflow-section .section-kicker,
+  .faq-section .section-kicker,
+  .download-section .section-kicker,
+  .community-section .section-kicker { color: var(--md-primary); }
+  .intro h2 { max-width: 16ch; }
+  .intro-copy { max-width: 38ch; }
+  .muted-copy { max-width: 48ch; }
+  .compat-panel { width: 100%; }
+  .download-card { width: 100%; }
+  .footer-bottom { gap: 14px; }
+}
+@media (max-width: 420px) {
+  .hero-visual { height: 246px; }
+  .orbit-label { max-width: 58%; font-size: 7px; }
+  .visual-caption { font-size: 7px; }
+  .hero-meta { gap: 7px 11px; }
+}
