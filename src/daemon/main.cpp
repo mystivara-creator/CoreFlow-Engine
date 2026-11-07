@@ -7,6 +7,7 @@
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/cooling_feedback.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/device_validation.hpp"
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/power_bridge.hpp"
 #include "coreflow/device_profiler.hpp"
@@ -30,11 +31,14 @@
 #include <iostream>
 #include <optional>
 #include <pthread.h>
+#include <poll.h>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <sys/file.h>
 #include <sys/signalfd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <thread>
@@ -677,6 +681,60 @@ bool daemonize_process() noexcept {
     return true;
 }
 
+
+constexpr char kDvsSocketPath[] = "/data/adb/coreflow/cf-dvs-control.sock";
+
+bool create_dvs_listener(UniqueFd& listener) noexcept {
+    if (!ensure_secure_state_dir()) return false;
+    struct stat st{};
+    if (::lstat(kDvsSocketPath, &st) == 0) {
+        if (!S_ISSOCK(st.st_mode) || ::unlink(kDvsSocketPath) != 0) return false;
+    } else if (errno != ENOENT) {
+        return false;
+    }
+    listener.reset(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
+    if (!listener.valid()) return false;
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
+    if (::bind(listener.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::chmod(kDvsSocketPath, 0600) != 0 ||
+        ::listen(listener.get(), 4) != 0) {
+        (void)::unlink(kDvsSocketPath);
+        listener.reset();
+        return false;
+    }
+    return true;
+}
+
+int send_dvs_command(std::string_view command) {
+    UniqueFd fd(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0));
+    if (!fd.valid()) return 1;
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
+    if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        std::cerr << "CF-DVS daemon control socket unavailable; is coreflowd running?\n";
+        return 1;
+    }
+    if (::send(fd.get(), command.data(), command.size(), MSG_NOSIGNAL) !=
+        static_cast<ssize_t>(command.size())) {
+        std::cerr << "CF-DVS command delivery failed.\n";
+        return 1;
+    }
+    pollfd wait{fd.get(), POLLIN, 0};
+    if (::poll(&wait, 1, 3000) <= 0 || !(wait.revents & POLLIN)) {
+        std::cerr << "CF-DVS daemon did not acknowledge the command.\n";
+        return 1;
+    }
+    char response[512]{};
+    const ssize_t n = ::recv(fd.get(), response, sizeof(response) - 1, 0);
+    if (n <= 0) return 1;
+    response[static_cast<size_t>(n)] = '\0';
+    std::cout << response << "\n";
+    return std::string_view(response).rfind("OK ", 0) == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -685,6 +743,20 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
+    if (argc >= 2) {
+        const std::string_view command(argv[1]);
+        if (command == "--dvs-start") {
+            if (argc != 3) {
+                std::cerr << "Usage: coreflowd --dvs-start PROFILE\n";
+                return 2;
+            }
+            return send_dvs_command("START " + std::string(argv[2]));
+        }
+        if (command == "--dvs-stop" || command == "--dvs-status") {
+            if (argc != 2) return 2;
+            return send_dvs_command(command == "--dvs-stop" ? "STOP" : "STATUS");
+        }
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
         if (argc < 3) {
             std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
@@ -727,7 +799,7 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
