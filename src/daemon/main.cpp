@@ -7,6 +7,7 @@
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/cooling_feedback.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/device_validation.hpp"
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/power_bridge.hpp"
 #include "coreflow/device_profiler.hpp"
@@ -30,11 +31,15 @@
 #include <iostream>
 #include <optional>
 #include <pthread.h>
+#include <poll.h>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <sys/file.h>
 #include <sys/signalfd.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <thread>
@@ -677,6 +682,60 @@ bool daemonize_process() noexcept {
     return true;
 }
 
+
+constexpr char kDvsSocketPath[] = "/data/adb/coreflow/cf-dvs-control.sock";
+
+bool create_dvs_listener(UniqueFd& listener) noexcept {
+    if (!ensure_secure_state_dir()) return false;
+    struct stat st{};
+    if (::lstat(kDvsSocketPath, &st) == 0) {
+        if (!S_ISSOCK(st.st_mode) || ::unlink(kDvsSocketPath) != 0) return false;
+    } else if (errno != ENOENT) {
+        return false;
+    }
+    listener.reset(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
+    if (!listener.valid()) return false;
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
+    if (::bind(listener.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::chmod(kDvsSocketPath, 0600) != 0 ||
+        ::listen(listener.get(), 4) != 0) {
+        (void)::unlink(kDvsSocketPath);
+        listener.reset();
+        return false;
+    }
+    return true;
+}
+
+int send_dvs_command(std::string_view command) {
+    UniqueFd fd(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0));
+    if (!fd.valid()) return 1;
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
+    if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        std::cerr << "CF-DVS daemon control socket unavailable; is coreflowd running?\n";
+        return 1;
+    }
+    if (::send(fd.get(), command.data(), command.size(), MSG_NOSIGNAL) !=
+        static_cast<ssize_t>(command.size())) {
+        std::cerr << "CF-DVS command delivery failed.\n";
+        return 1;
+    }
+    pollfd wait{fd.get(), POLLIN, 0};
+    if (::poll(&wait, 1, 3000) <= 0 || !(wait.revents & POLLIN)) {
+        std::cerr << "CF-DVS daemon did not acknowledge the command.\n";
+        return 1;
+    }
+    char response[512]{};
+    const ssize_t n = ::recv(fd.get(), response, sizeof(response) - 1, 0);
+    if (n <= 0) return 1;
+    response[static_cast<size_t>(n)] = '\0';
+    std::cout << response << "\n";
+    return std::string_view(response).rfind("OK ", 0) == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -685,6 +744,20 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
+    if (argc >= 2) {
+        const std::string_view command(argv[1]);
+        if (command == "--dvs-start") {
+            if (argc != 3) {
+                std::cerr << "Usage: coreflowd --dvs-start PROFILE\n";
+                return 2;
+            }
+            return send_dvs_command("START " + std::string(argv[2]));
+        }
+        if (command == "--dvs-stop" || command == "--dvs-status") {
+            if (argc != 2) return 2;
+            return send_dvs_command(command == "--dvs-stop" ? "STOP" : "STATUS");
+        }
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
         if (argc < 3) {
             std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
@@ -727,11 +800,11 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -790,6 +863,48 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; Binder interception and NPU offload unavailable without platform integration.");
     EpollReactor reactor;
+    DeviceValidationRecorder dvs_recorder;
+    UniqueFd dvs_listener;
+    if (create_dvs_listener(dvs_listener)) {
+        if (!reactor.register_fd(dvs_listener.get(), EPOLLIN, [&](uint32_t) {
+            for (;;) {
+                UniqueFd client(::accept4(dvs_listener.get(), nullptr, nullptr, SOCK_CLOEXEC));
+                if (!client.valid()) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                timeval timeout{2, 0};
+                (void)::setsockopt(client.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                char command[128]{};
+                const ssize_t received = ::recv(client.get(), command, sizeof(command) - 1, 0);
+                if (received <= 0) continue;
+                command[static_cast<size_t>(received)] = '\0';
+                const std::string_view request(command, static_cast<size_t>(received));
+                std::string response = "ERR invalid command";
+                if (request.rfind("START ", 0) == 0 && request.size() <= 80) {
+                    std::string error;
+                    const std::string_view profile = request.substr(6);
+                    if (dvs_recorder.start(profile, &error)) response = "OK ACTIVE " + dvs_recorder.session_id();
+                    else response = "ERR " + error;
+                } else if (request == "STOP") {
+                    std::string path, error;
+                    if (dvs_recorder.stop(&path, &error)) response = "OK STOPPED " + path;
+                    else response = "ERR " + error;
+                } else if (request == "STATUS") {
+                    response = dvs_recorder.active() ? "OK ACTIVE " + dvs_recorder.session_id() : "OK INACTIVE";
+                }
+                (void)::send(client.get(), response.data(), response.size(), MSG_NOSIGNAL);
+            }
+        })) {
+            emit_log(true, "[CoreFlow][CF-DVS] Unable to register control socket; session capture unavailable.");
+            (void)::unlink(kDvsSocketPath);
+            dvs_listener.reset();
+        } else {
+            emit_log(false, "[CoreFlow][CF-DVS] Local session control endpoint ready.");
+        }
+    } else {
+        emit_log(true, "[CoreFlow][CF-DVS] Local session control endpoint unavailable; optimizer remains unaffected.");
+    }
 
     sigset_t mask;
     sigemptyset(&mask);
@@ -893,6 +1008,45 @@ int main(int argc, char* argv[]) {
         auto thermal = ThermalMonitor::instance().assess();
         const auto profile = ThermalMonitor::instance().multi_sensor_profile();
         const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
+        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
+        const auto io_psi = read_psi_avg10("/proc/pressure/io");
+
+        const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
+                                           std::optional<double> confidence = std::nullopt,
+                                           std::optional<double> temperature_velocity = std::nullopt) {
+            if (!dvs_recorder.active()) return;
+            const auto tuner_state = AutonomousTuner::instance().snapshot();
+            const bool clear = journal_clear();
+            DeviceValidationSample sample;
+            sample.cpu_psi = cpu_psi;
+            sample.memory_psi = memory_psi;
+            sample.io_psi = io_psi;
+            if (thermal.available) sample.thermal_pressure = thermal.pressure;
+            if (temp >= 0.0f && std::isfinite(temp)) sample.temperature_celsius = temp;
+            sample.temperature_velocity_celsius_per_sec = temperature_velocity;
+            if (thermal.headroom_valid && std::isfinite(thermal.headroom_value)) {
+                sample.thermal_headroom = static_cast<double>(thermal.headroom_value);
+            }
+            sample.ai_prediction_10s = prediction;
+            sample.ai_confidence = confidence;
+            sample.thermal_source = thermal.available ? thermal.source : "unavailable";
+            sample.workload = state_name(current);
+            sample.tuner_stage = std::string(AutonomousTuner::stage_name(tuner_state.stage));
+            sample.tuner_verdict = std::string(AutonomousTuner::verdict_name(tuner_state.verdict));
+            sample.candidate = tuner_state.active_candidate_id;
+            sample.capacity_scale = last_capacity_scale;
+            sample.valid_thermal_sensors = static_cast<uint32_t>(std::min<size_t>(
+                profile.total_valid_sensors, std::numeric_limits<uint32_t>::max()));
+            sample.recovery_pending = !clear;
+            sample.journal_clear = clear;
+            sample.rollback_verified = clear && !baseline.has_active_mutations();
+            if (!dvs_recorder.record_sample(sample)) {
+                std::string bundle, error;
+                (void)dvs_recorder.stop(&bundle, &error);
+                emit_log(true, "[CoreFlow][CF-DVS] Capture stopped safely after a recorder limit or I/O failure: " + error);
+            }
+        };
 
         if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
             const double recover_deg = static_cast<double>(config.thermal_recover_celsius);
@@ -918,6 +1072,7 @@ int main(int argc, char* argv[]) {
             thermal_ready = false;
             cooling_feedback.reset();
             temp_tracker.reset();
+            record_dvs_sample();
             if (applied) {
                 (void)baseline.rollback_all();
                 applied = false;
@@ -941,12 +1096,10 @@ int main(int argc, char* argv[]) {
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
             (void)baseline.rollback_all();
             applied = false;
+            record_dvs_sample();
             return;
         }
 
-        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
-        const auto io_psi = read_psi_avg10("/proc/pressure/io");
         const PressureSnapshot pressure{
             .cpu = cpu_psi.value_or(0.0),
             .memory = memory_psi.value_or(0.0),
@@ -995,6 +1148,9 @@ int main(int argc, char* argv[]) {
             config.enable_pid_equilibrium});
         if (!decision.valid) {
             controller->reset();
+            record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
+                              ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
+                              temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
             return;
         }
 
@@ -1114,6 +1270,9 @@ int main(int argc, char* argv[]) {
                 emit_log(true, line.str());
             }
         }
+        record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
+                          ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
+                          temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
     });
     if (timer_fd < 0) {
         clear_pid(pid_lock);
@@ -1122,6 +1281,16 @@ int main(int argc, char* argv[]) {
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
+    if (dvs_recorder.active()) {
+        std::string bundle, error;
+        if (dvs_recorder.stop(&bundle, &error)) {
+            emit_log(false, "[CoreFlow][CF-DVS] Session finalized during daemon shutdown: " + bundle);
+        } else {
+            emit_log(true, "[CoreFlow][CF-DVS] Session finalization incomplete: " + error);
+        }
+    }
+    dvs_listener.reset();
+    (void)::unlink(kDvsSocketPath);
     baseline.rollback_all();
     const bool restored = !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);

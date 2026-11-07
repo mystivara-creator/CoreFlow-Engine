@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coreflow.invalid/schemas/cf-dvs-report.schema.json",
+  "title": "CoreFlow Device Validation Suite Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "session", "profile", "build", "metrics", "checks", "recovery", "verdict"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "started_at", "ended_at", "device"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "ended_at": {"type": "string", "format": "date-time"},
+        "device": {"type": "object", "additionalProperties": false,
+          "required": ["manufacturer", "model", "android_api"],
+          "properties": {
+            "manufacturer": {"type": "string", "minLength": 1, "maxLength": 64},
+            "model": {"type": "string", "minLength": 1, "maxLength": 96},
+            "android_api": {"type": "integer", "minimum": 29},
+            "build_fingerprint_hash": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+          }
+        }
+      }
+    },
+    "profile": {"enum": ["BOOT_STABILITY", "IDLE_EQUILIBRIUM", "INTERACTIVE_CPU", "GAMING_LOAD", "MULTITASKING", "THERMAL_RECOVERY", "OWNERSHIP_CONFLICT", "ROLLBACK_RECOVERY"]},
+    "build": {"type": "object", "additionalProperties": false, "required": ["version", "commit"], "properties": {"version": {"type": "string"}, "commit": {"type": "string", "pattern": "^(?:[a-f0-9]{7,40}|unknown)$"}}},
+    "metrics": {"type": "object", "additionalProperties": {"$ref": "#/$defs/metric"}},
+    "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+    "recovery": {"type": "object", "additionalProperties": false, "required": ["pending", "journal_clear", "rollback_verified"], "properties": {"pending": {"type": "boolean"}, "journal_clear": {"type": "boolean"}, "rollback_verified": {"type": "boolean"}}},
+    "verdict": {"enum": ["PASS", "PASS_WITH_WARNINGS", "INCONCLUSIVE", "FAIL", "RECOVERY_REQUIRED"]},
+    "notes": {"type": "array", "items": {"type": "string", "maxLength": 500}}
+  },
+  "$defs": {
+    "metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["value", "unit", "validity", "source", "observed_at"],
+      "properties": {
+        "value": {"type": ["number", "string", "boolean", "null"]},
+        "unit": {"type": ["string", "null"], "maxLength": 24},
+        "validity": {"enum": ["valid", "unavailable", "unsupported", "permission_denied", "stale", "invalid"]},
+        "source": {"type": "string", "minLength": 1, "maxLength": 64},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string", "maxLength": 240}
+      }
+    },
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "required", "status"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,63}$"},
+        "required": {"type": "boolean"},
+        "status": {"enum": ["pass", "fail", "warning", "inconclusive", "not_applicable"]},
+        "detail": {"type": "string", "maxLength": 500}
+      }
+    }
+  }
+}
