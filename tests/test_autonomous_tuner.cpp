@@ -333,6 +333,27 @@ int main() {
     tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
     assert(tuner.snapshot().stage == "PLANNED");
+    const auto ownership_lost_snapshot = tuner.snapshot();
+    const auto quarantined_bfq = std::find_if(
+        ownership_lost_snapshot.candidates.begin(), ownership_lost_snapshot.candidates.end(),
+        [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
+    assert(quarantined_bfq != ownership_lost_snapshot.candidates.end());
+    assert(quarantined_bfq->ownership_loss_count == 1);
+    assert(quarantined_bfq->ownership_quarantine_ticks == 8);
+    assert(quarantined_bfq->cooldown_ticks >= 8);
+    assert(!tuner.is_candidate_eligible("io.bfq_interactive_fairness"));
+    // Even a completely different workload/thermal context cannot bypass ownership quarantine.
+    assert(!tuner.is_candidate_eligible_for_context(
+        "io.bfq_interactive_fairness", coreflow::WorkloadClass::Gaming, 4));
+    // Persist the quarantine across rediscovery/reconstruction of the capability surface.
+    tuner.discover(sys_root.string(), proc_root.string());
+    const auto rediscovered = tuner.snapshot();
+    const auto persisted_bfq = std::find_if(
+        rediscovered.candidates.begin(), rediscovered.candidates.end(),
+        [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
+    assert(persisted_bfq != rediscovered.candidates.end());
+    assert(persisted_bfq->ownership_loss_count == 1);
+    assert(persisted_bfq->ownership_quarantine_ticks == 8);
     // External writer's value (512) is preserved, while our other node (scheduler) is rolled back to "none"
     assert(get(sda_q / "read_ahead_kb") == "512");
     assert(get(sda_q / "scheduler") == "none");
