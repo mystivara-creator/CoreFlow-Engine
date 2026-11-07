@@ -1704,9 +1704,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
-            if (auto* stats = find_candidate(current_candidate_id_)) {
-                stats->last_rollback_reason = "External ownership lost during observation";
-            }
+            record_ownership_loss(find_candidate(current_candidate_id_));
             (void)rollback_active("External node ownership lost during observation window.");
             save_persisted_stats();
             return snapshot();
