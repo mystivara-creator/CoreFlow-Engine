@@ -1276,6 +1276,16 @@ int main(int argc, char* argv[]) {
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
+    if (dvs_recorder.active()) {
+        std::string bundle, error;
+        if (dvs_recorder.stop(&bundle, &error)) {
+            emit_log(false, "[CoreFlow][CF-DVS] Session finalized during daemon shutdown: " + bundle);
+        } else {
+            emit_log(true, "[CoreFlow][CF-DVS] Session finalization incomplete: " + error);
+        }
+    }
+    dvs_listener.reset();
+    (void)::unlink(kDvsSocketPath);
     baseline.rollback_all();
     const bool restored = !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
