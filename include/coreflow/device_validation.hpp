@@ -1,6 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <pthread.h>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -58,9 +63,25 @@ private:
     uint64_t event_bytes_{0};
     uint32_t samples_{0};
     bool active_{false};
-    bool failed_{false};
+    std::atomic<bool> failed_{false};
+    std::atomic<bool> writer_failed_{false};
+    pthread_t writer_thread_{};
+    bool writer_started_{false};
+    bool writer_stop_{false};
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    struct QueuedWrite {
+        std::string events;
+        std::string metrics;
+    };
+    std::deque<QueuedWrite> queue_;
+    size_t queued_bytes_{0};
+    uint32_t writer_samples_{0};
     DeviceValidationSample latest_{};
 
+    static void* writer_entry(void* context) noexcept;
+    void writer_loop() noexcept;
+    [[nodiscard]] bool enqueue_write(std::string events, std::string metrics = {}) noexcept;
     [[nodiscard]] bool append_event(std::string_view type,
                                     std::string_view correlation_id,
                                     std::string_view data_json) noexcept;
