@@ -818,7 +818,7 @@ This is repeated host scheduling stress around the controller-wide single-flight
 
 ## 27. Daemon timerfd recovery monitor and concurrent multi-controller teardown stress
 
-**Implementation/test head:** `374149205bd7695b4389a5bb20652fd1962ab09f`
+**Latest implementation/test head:** `eb135230dfe155fc1dbefccf5e9a14cf4505495d`
 
 ### Production integration
 
@@ -837,14 +837,14 @@ This is repeated host scheduling stress around the controller-wide single-flight
 
 ### Exact-head validation
 
-- Exact head `374149205bd7695b4389a5bb20652fd1962ab09f` passed all seven jobs in [CI run 42337805966](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42337805966).
-- Host C++ passed **14/14 CTest**, including `RecoveryMonitorTest` (eight rounds); ASan/UBSan also passed **14/14** with the same monitor and concurrency fixture.
-- Android ARM64 production package, Rust validation, WebUI validation, Module validation, and the aggregate CI gate all passed.
-- The intermediate integration tree `dda9f4c7147cd5a547925492c0f8b1e785e92708` was built from an outdated base tree and failed Host C++ validation because it reintroduced already-fixed test assertions. The current head restores the full parent tree `89c42e5` before applying the recovery integration; that intermediate failure is not represented as a pass.
+- Initial shared-monitor implementation head `374149205bd7695b4389a5bb20652fd1962ab09f` passed all seven jobs in [CI run 42337805966](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42337805966), with Host C++ 14/14 and ASan/UBSan 14/14.
+- Latest epoll/timerfd test head `eb135230dfe155fc1dbefccf5e9a14cf4505495d` passed all seven jobs in [CI run 42338066841](https://github.com/mystivara-creator/CoreFlow-Engine/actions/runs/42338066841).
+- On the latest head, Host C++ passed **14/14 CTest**, including the eight-round real epoll/timerfd recovery stress; ASan/UBSan also passed **14/14**. Android ARM64 production package, Rust, WebUI, Module, and aggregate CI gate all passed.
+- The intermediate integration tree `dda9f4c7147cd5a547925492c0f8b1e785e92708` used an outdated base tree and failed Host C++ validation after reintroducing already-fixed test assertions. The corrected tree was rebuilt from the full parent tree before the current changes. Its intermediate failure is not represented as a pass.
 
 ### Evidence boundary
 
 - The host test now runs `EpollReactor::create_timerfd()` with a real `CLOCK_MONOTONIC` timerfd and epoll loop, and invokes the same `MutationRecoveryMonitor::on_timer_tick()` method wired by the production daemon. It validates repeated host timer delivery, but Android target timerfd behavior, lifecycle under OEM scheduling, and vendor sysfs behavior remain physical validation gates.
 - The stress uses two real controller classes across BlockIo and PowerLongevity, with two concurrent destructors and four competing dispatchers over eight rounds. It does not imply coverage for every controller class or opaque vendor callback.
 
-**Status: SHARED TIMERFD RECOVERY PATH IMPLEMENTED; EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER STRESS NOW RUNS THROUGH REAL HOST EPOLL/TIMERFD EVENTS; EXACT-HEAD CI REQUIRED; ANDROID TARGET TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
+**Status: SHARED TIMERFD RECOVERY PATH AND EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER HOST EPOLL/TIMERFD STRESS PASSED EXACT-HEAD CI; ANDROID TARGET TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
