@@ -11,8 +11,8 @@
   <meta property="og:image" content="https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/main/docs/assets/coreflow-banner.svg">
   <title>CoreFlow — CFAE System Framework</title>
   <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./assets/site.css?v=20261108-interactive1">
-  <script src="./assets/site.js?v=20261108-interactive1" defer></script>
+  <link rel="stylesheet" href="./assets/site.css?v=20261108-technical1">
+  <script src="./assets/site.js?v=20261108-technical1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Lewati ke konten</a>
@@ -39,6 +39,7 @@
         <a href="#fitur">Fitur</a>
         <a href="#alur">Cara kerja</a>
         <a href="#kompatibilitas">Kompatibilitas</a>
+        <a href="#teknis">Teknis</a>
         <a href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/main/README.md">Dokumentasi</a>
         <a class="nav-download" href="https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest">Unduh <span aria-hidden="true">↗</span></a>
       </nav>
@@ -183,7 +184,7 @@
     <section class="download section" id="unduh">
       <div class="container download-panel">
         <div>
-          <div class="section-label">05 / MULAI GUNAKAN</div>
+          <div class="section-label">06 / MULAI GUNAKAN</div>
           <h2>Kenali CoreFlow<br>lebih dekat.</h2>
           <p>Unduh paket resmi dan baca panduan sebelum memasang. Pastikan perangkat memenuhi persyaratan.</p>
         </div>
@@ -195,10 +196,91 @@
       </div>
     </section>
 
+    <section class="technical section" id="teknis">
+      <div class="container">
+        <div class="section-heading technical-heading">
+          <div>
+            <div class="section-label">05 / DI BALIK FRAMEWORK</div>
+            <h2>Teknologi yang bekerja<br>di balik optimasi.</h2>
+          </div>
+          <p>CoreFlow bukan satu tweak tunggal. Ini rangkaian komponen native yang saling berkoordinasi untuk mengambil keputusan, mengubah sistem, lalu memverifikasi dampaknya.</p>
+        </div>
+
+        <div class="technical-stack">
+          <article class="stack-card stack-cpp">
+            <div class="stack-top"><span class="stack-language">C++23</span><span class="stack-role">NATIVE ENGINE</span></div>
+            <h3>Runtime &amp; Mutation Core</h3>
+            <p>Daemon native menjadi pusat eksekusi, penemuan kapabilitas kernel, koordinasi controller, dan transaksi perubahan sistem.</p>
+            <div class="tech-tags"><span>epoll</span><span>timerfd</span><span>signalfd</span><span>sysfs</span><span>cgroup v2</span></div>
+          </article>
+          <article class="stack-card stack-rust">
+            <div class="stack-top"><span class="stack-language">Rust 2024</span><span class="stack-role">DECISION CONTROL</span></div>
+            <h3>Thermal &amp; Pressure Controller</h3>
+            <p>State machine, hysteresis, validasi sampel, dan PID dengan perubahan kapasitas yang dibatasi agar respons tidak melonjak.</p>
+            <div class="tech-tags"><span>PID</span><span>Hysteresis</span><span>PSI arbitration</span><span>cxx FFI</span></div>
+          </article>
+          <article class="stack-card stack-kotlin">
+            <div class="stack-top"><span class="stack-language">Kotlin 2.1</span><span class="stack-role">ANDROID INTEGRATION</span></div>
+            <h3>Native Android Services</h3>
+            <p>Integrasi Android menyediakan Quick Settings TileService dan penerimaan event termal untuk interaksi sistem.</p>
+            <div class="tech-tags"><span>Android 15 / API 35</span><span>TileService</span><span>Thermal receiver</span></div>
+          </article>
+          <article class="stack-card stack-web">
+            <div class="stack-top"><span class="stack-language">TypeScript / React</span><span class="stack-role">CONTROL SURFACE</span></div>
+            <h3>WebUI &amp; Architecture Studio</h3>
+            <p>Dashboard native bridge untuk status daemon, tuning, thermal matrix, longevity, Vulkan capability, console, dan konfigurasi.</p>
+            <div class="tech-tags"><span>React</span><span>Vite</span><span>Native bridge</span><span>Offline assets</span></div>
+          </article>
+        </div>
+
+        <div class="technical-subheading">
+          <div class="section-label">MUTATION TRANSACTION</div>
+          <h3>Bagaimana perubahan sistem dikendalikan?</h3>
+          <p>Enam lapisan mengubah niat optimasi menjadi transaksi yang dapat diperiksa dan dipulihkan.</p>
+        </div>
+        <div class="transaction-list">
+          <article class="transaction-row"><span>01</span><div><h4>Capability classifier</h4><p>Memetakan node sebagai read-only, writable, writable-but-unsafe, unknown semantic, verified constraints, atau incomplete metadata.</p></div><code>DISCOVER</code></article>
+          <article class="transaction-row"><span>02</span><div><h4>Workload &amp; bottleneck reasoning</h4><p>Mengklasifikasikan 11 jenis workload dan menghubungkan CPU, memory, I/O PSI serta kondisi termal untuk memilih objective.</p></div><code>REASON</code></article>
+          <article class="transaction-row"><span>03</span><div><h4>Thermal stabilization &amp; recovery</h4><p>Menjalankan strategi peredaman saat beban termal meningkat, kemudian pulih melalui hysteresis sebelum kandidat agresif diaktifkan kembali.</p></div><code>STABILIZE</code></article>
+          <article class="transaction-row"><span>04</span><div><h4>CentralMutationCoordinator</h4><p>Mengatur lease dan prioritas antar domain agar tidak ada dua controller yang menulis domain yang sama secara bersamaan.</p></div><code>ARBITRATE</code></article>
+          <article class="transaction-row"><span>05</span><div><h4>Safety gate &amp; CFJ4 journal</h4><p>Menyimpan write-ahead journal sebelum mutasi, memeriksa boot identity serta object identity, menjalankan dependency order, dan membaca ulang setiap write.</p></div><code>COMMIT</code></article>
+          <article class="transaction-row"><span>06</span><div><h4>Outcome evaluator &amp; CFTS2 learning</h4><p>Menunggu settling period, membandingkan perubahan terhadap noise floor, lalu retain, rollback, atau menyatakan hasil inconclusive. Pembelajaran disimpan dengan fingerprint kapabilitas.</p></div><code>VERIFY</code></article>
+        </div>
+
+        <div class="technical-subheading">
+          <div class="section-label">CONTROLLERS &amp; SUBSYSTEMS</div>
+          <h3>Domain yang ditangani CoreFlow</h3>
+        </div>
+        <div class="domain-grid">
+          <article><span>CPU</span><h4>Frequency &amp; UClamp</h4><p>CPUFreq policy, governor-aware pacing, dan top-app cgroup UClamp dengan encoding kapasitas yang ditemukan saat runtime.</p></article>
+          <article><span>THERMAL</span><h4>Thermal Matrix</h4><p>Multi-sensor thermal zones, hwmon, Android thermal severity/headroom, OEM trip points, serta tren suhu.</p></article>
+          <article><span>PRESSURE</span><h4>PSI Guard</h4><p>CPU, memory, dan I/O Pressure Stall Information untuk mengenali contention dan menentukan backoff.</p></article>
+          <article><span>GPU</span><h4>Vulkan &amp; Devfreq</h4><p>GPU kernel-surface discovery, kebijakan workload, dan Vulkan pass-through layer yang tidak memalsukan kapabilitas hardware.</p></article>
+          <article><span>LONGEVITY</span><h4>Hardware Longevity</h4><p>Pengaturan terbatas pada kebijakan step-charging baterai dan relative I/O weights ketika didukung.</p></article>
+          <article><span>POWER</span><h4>Power HAL Bridge</h4><p>Penemuan kemampuan Power HAL melalui jalur AIDL non-blocking; integrasi hanya mengklaim kapabilitas yang benar-benar tersedia.</p></article>
+        </div>
+
+        <div class="technical-subheading">
+          <div class="section-label">OBSERVATION &amp; LEARNING</div>
+          <h3>Keputusan harus punya bukti.</h3>
+        </div>
+        <div class="evidence-grid">
+          <div><b>11</b><strong>Workload states</strong><p>Idle, interaction, scrolling, gaming, multitasking, CPU/GPU bound, pressure, thermal, dan background.</p></div>
+          <div><b>CFJ4</b><strong>Write-ahead journal</strong><p>Baseline, boot identity, object identity, readback, dan crash recovery yang idempotent.</p></div>
+          <div><b>CFTS2</b><strong>Persistent learning</strong><p>Utility delta, noise floor, adaptive step size, cooldown, dan capability fingerprint.</p></div>
+        </div>
+
+        <div class="safety-panel">
+          <div><span class="safety-mark">!</span><div><h3>Safety is part of the engine.</h3><p>CoreFlow tidak menulis node yang semantiknya tidak diketahui, tidak mempertahankan hasil yang belum terbukti, dan tidak menimpa perubahan eksternal milik Android/OEM. Jika baseline, ownership, atau validitas data tidak dapat dibuktikan, tindakan yang benar adalah tidak melakukan write.</p></div></div>
+          <a class="inline-link" href="https://github.com/mystivara-creator/CoreFlow-Engine/blob/main/docs/ARCHITECTURE.md">Baca spesifikasi arsitektur lengkap <span>↗</span></a>
+        </div>
+      </div>
+    </section>
+
     <section class="faq section" id="faq">
       <div class="container faq-grid">
         <div>
-          <div class="section-label">06 / FAQ</div>
+          <div class="section-label">07 / FAQ</div>
           <h2>Pertanyaan<br>yang sering muncul.</h2>
           <p class="faq-intro">Informasi lebih lanjut tersedia di dokumentasi dan pusat dukungan.</p>
           <a class="inline-link" href="https://github.com/mystivara-creator/CoreFlow-Engine/issues">Buka GitHub Issues <span>↗</span></a>

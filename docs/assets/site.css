@@ -491,3 +491,58 @@ h1 {
   .hero-art:hover .node-one, .hero-art:hover .node-two,
   .hero-art:hover .node-three, .hero-art:hover .node-four { transform: none !important; }
 }
+
+
+/* Technical deep-dive: readable architecture, not a wall of documentation. */
+.technical { background: #121821; }
+.technical-heading { margin-bottom: 38px; }
+.technical-stack { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 13px; }
+.stack-card { min-width: 0; padding: 23px; border: 1px solid var(--line); border-radius: 14px; background: #19212b; }
+.stack-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.stack-language { color: var(--accent); font-size: 13px; font-weight: 800; }
+.stack-role { color: #8293a3; font-size: 9px; font-weight: 800; letter-spacing: 1.1px; }
+.stack-card h3 { margin-bottom: 8px; font-size: 17px; }
+.stack-card p { min-height: 68px; margin-bottom: 17px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.tech-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tech-tags span { padding: 5px 8px; border: 1px solid #3a4857; border-radius: 6px; color: #b7c6d3; background: #202b37; font-size: 10px; }
+.technical-subheading { margin: 65px 0 24px; }
+.technical-subheading h3 { margin: 0 0 8px; font-size: clamp(23px,3vw,30px); letter-spacing: -.035em; }
+.technical-subheading > p { max-width: 65ch; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.transaction-list { border-top: 1px solid var(--line); }
+.transaction-row { display: grid; grid-template-columns: 38px minmax(0,1fr) 90px; align-items: start; gap: 15px; padding: 18px 8px; border-bottom: 1px solid var(--line); transition: background .22s ease, padding .28s var(--motion-spring); }
+.transaction-row:hover { padding-inline: 14px; background: rgba(168,213,255,.035); }
+.transaction-row > span { color: var(--accent); font-size: 12px; font-weight: 800; }
+.transaction-row h4 { margin: 0 0 5px; font-size: 14px; }
+.transaction-row p { max-width: 78ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.transaction-row code { padding-top: 2px; color: #8ea4b8; font-size: 9px; font-weight: 800; letter-spacing: .8px; text-align: right; }
+.domain-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 11px; }
+.domain-grid article { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.domain-grid article > span { color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: 1.2px; }
+.domain-grid h4 { margin: 8px 0 6px; font-size: 14px; }
+.domain-grid p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.evidence-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.evidence-grid > div { padding: 20px; border: 1px solid #3a4c5e; border-radius: 12px; background: #1a2734; }
+.evidence-grid b { display: block; margin-bottom: 8px; color: var(--accent); font-size: 23px; letter-spacing: -.7px; }
+.evidence-grid strong { display: block; margin-bottom: 7px; font-size: 13px; }
+.evidence-grid p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.safety-panel { display: flex; justify-content: space-between; align-items: end; gap: 30px; margin-top: 38px; padding: 25px; border: 1px solid #536b7f; border-radius: 14px; background: linear-gradient(130deg,#1c3041,#18232f); }
+.safety-panel > div { display: flex; align-items: start; gap: 15px; }
+.safety-mark { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid #7794ab; border-radius: 50%; color: var(--accent); font-weight: 800; }
+.safety-panel h3 { margin: 0 0 7px; font-size: 15px; }
+.safety-panel p { max-width: 74ch; margin: 0; color: #b1bfcc; font-size: 12px; line-height: 1.75; }
+.safety-panel .inline-link { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 800px) {
+  .domain-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .safety-panel { align-items: start; flex-direction: column; }
+}
+@media (max-width: 600px) {
+  .technical-stack, .domain-grid, .evidence-grid { grid-template-columns: minmax(0,1fr); }
+  .stack-card { padding: 19px; }
+  .stack-card p { min-height: 0; }
+  .technical-subheading { margin-top: 48px; }
+  .transaction-row { grid-template-columns: 28px minmax(0,1fr); gap: 10px; padding: 15px 2px; }
+  .transaction-row code { grid-column: 2; text-align: left; }
+  .transaction-row:hover { padding-inline: 7px; }
+  .safety-panel { padding: 19px; }
+  .safety-panel .inline-link { white-space: normal; }
+}

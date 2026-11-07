@@ -96,7 +96,7 @@
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   if (!reduceMotion.matches && "IntersectionObserver" in window) {
     const revealTargets = document.querySelectorAll(
-      ".intro-content, .feature-card, .workflow-copy, .workflow-step, .compatibility-grid > div, .download-panel > div, .faq-grid > div"
+      ".intro-content, .feature-card, .workflow-copy, .workflow-step, .compatibility-grid > div, .download-panel > div, .technical-stack > *, .transaction-row, .domain-grid > *, .evidence-grid > *, .safety-panel, .faq-grid > div"
     );
     if (revealTargets.length) {
       document.documentElement.classList.add("motion-ready");
