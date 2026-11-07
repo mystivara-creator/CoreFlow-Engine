@@ -41,11 +41,13 @@ The suite must distinguish what was measured, what was unavailable, what was inf
 - Private session directories (`0700`) and payload files (`0600`), bounded session duration/event volume, SHA-256 manifest, and final directory rename.
 - Device acceptance remains `INCONCLUSIVE` in this capture-only phase. Captured data is not a performance pass.
 
-### Phase 3 (operator experience)
+### Phase 3 (operator experience — implemented in this branch)
 
-- WebUI session controls and profile selection.
-- Bundle export through the existing privileged bridge with strict path allowlisting.
-- Human-readable summary and upload-ready ZIP. User explicitly chooses when to share.
+- Dedicated WebUI tab with all eight profile choices, active-session recovery on view entry, and explicit start/stop controls.
+- Bundle export through the existing privileged bridge; only a validated UUID session directory and five fixed filenames are read.
+- WebUI verifies the manifest inventory, byte lengths, and SHA-256 digests before constructing a standards-compliant ZIP archive locally.
+- The report verdict, required/optional check statuses, and human-readable summary are shown before the operator shares the archive.
+- No network upload is performed; the operator uses the normal browser/WebView download flow and manually attaches the ZIP.
 
 CF-DVS Phase 1 and Phase 2 do not modify the production tuning decisions. Phase 2 only adds a read-only sample hook to the existing daemon tick; no extra polling cadence is created.
 
@@ -123,11 +125,11 @@ A profile defines checks with `required: true|false` and `status: pass|fail|warn
 ## 9. Operator workflow
 
 1. Install a module artifact built from the exact commit being tested.
-2. Open CF-DVS and select a profile; review the data categories before capture.
+2. Open the Device Validation tab and select a profile; review the data categories before capture.
 3. Start the session, perform the described workload, then stop the session.
-4. Validate the bundle locally. The UI must display verdict, failed/inconclusive checks, missing evidence, and integrity status.
-5. Export the ZIP. Review the summary and redaction report.
-6. Upload the ZIP to the engineering conversation only when explicitly chosen.
+4. The UI reads only the five allowlisted files, verifies manifest byte lengths and SHA-256 digests, and blocks ZIP creation on any mismatch.
+5. Review the displayed report verdict, acceptance checks, and summary. The current report includes manufacturer/model and Android API metadata; review these fields before sharing.
+6. Download the ZIP locally. Attach it to the engineering conversation only when explicitly chosen.
 
 If collection fails, preserve the partial report with `INCONCLUSIVE` or `RECOVERY_REQUIRED`; never report success because the collector exited cleanly.
 
