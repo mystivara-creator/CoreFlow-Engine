@@ -844,7 +844,7 @@ This is repeated host scheduling stress around the controller-wide single-flight
 
 ### Evidence boundary
 
-- The host test invokes the exact `MutationRecoveryMonitor::on_timer_tick()` method wired to the production timerfd callback, but it does not run an Android epoll/timerfd kernel loop. Actual timer delivery, lifecycle under Android scheduling, and vendor sysfs behavior remain physical validation gates.
+- The host test now runs `EpollReactor::create_timerfd()` with a real `CLOCK_MONOTONIC` timerfd and epoll loop, and invokes the same `MutationRecoveryMonitor::on_timer_tick()` method wired by the production daemon. It validates repeated host timer delivery, but Android target timerfd behavior, lifecycle under OEM scheduling, and vendor sysfs behavior remain physical validation gates.
 - The stress uses two real controller classes across BlockIo and PowerLongevity, with two concurrent destructors and four competing dispatchers over eight rounds. It does not imply coverage for every controller class or opaque vendor callback.
 
-**Status: SHARED TIMERFD RECOVERY PATH IMPLEMENTED AND HOST-TESTED; EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER STRESS PASSED; EXACT-HEAD CI GREEN; ANDROID TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
+**Status: SHARED TIMERFD RECOVERY PATH IMPLEMENTED; EIGHT-ROUND MULTI-CONTROLLER/FOUR-DISPATCHER STRESS NOW RUNS THROUGH REAL HOST EPOLL/TIMERFD EVENTS; EXACT-HEAD CI REQUIRED; ANDROID TARGET TIMER DELIVERY AND PHYSICAL-DEVICE ACCEPTANCE REMAIN OPEN. PR #7 REMAINS DRAFT.**
