@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #ifdef __linux__
 #include <sys/random.h>
@@ -468,7 +469,7 @@ bool DeviceValidationRecorder::append_event(std::string_view type,
 }
 
 bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sample) noexcept {
-    if (!active_) return false;
+    if (!active_ || failed_ || writer_failed_) return false;
     const uint64_t elapsed = monotonic_ns();
     if (started_ns_ == 0 || elapsed < started_ns_ || elapsed - started_ns_ > kMaxSessionNs ||
         sequence_ >= kMaxEvents - 1) {
