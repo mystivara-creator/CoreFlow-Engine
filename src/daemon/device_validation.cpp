@@ -536,7 +536,7 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
     if (summary_fd >= 0) (void)::close(summary_fd);
 
     if (ok) {
-        constexpr std::array<const char*, 3> names{"events.jsonl", "metrics.csv", "report.json"};
+        constexpr std::array<const char*, 4> names{"events.jsonl", "metrics.csv", "report.json", "summary.txt"};
         std::string manifest = "{\"manifest_version\":\"1.0\",\"files\":[";
         bool first = true;
         for (const char* name : names) {
