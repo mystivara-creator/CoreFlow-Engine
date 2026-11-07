@@ -34,6 +34,17 @@ add_link_options(
 include_directories(include)
 include(cmake/RustEngine.cmake)
 
+execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE COREFLOW_BUILD_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT COREFLOW_BUILD_COMMIT MATCHES "^[a-f0-9]{7,40}$")
+    set(COREFLOW_BUILD_COMMIT "unknown")
+endif()
+
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
     src/kernel/cgroup_v2.cpp
@@ -65,10 +76,12 @@ endif()
 add_executable(coreflowd
     src/daemon/main.cpp
     src/daemon/reactor.cpp
+    src/daemon/device_validation.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
 target_link_libraries(coreflowd PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
 target_compile_options(coreflowd PRIVATE $<$<CONFIG:Release>:-O2>)
+target_compile_definitions(coreflowd PRIVATE COREFLOW_BUILD_COMMIT="${COREFLOW_BUILD_COMMIT}")
 
 if(ANDROID)
     target_link_libraries(coreflowd PRIVATE log)
@@ -116,6 +129,14 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_baseline_rollback PRIVATE log)
     endif()
     add_test(NAME BaselineRollbackTest COMMAND test_baseline_rollback)
+
+    add_executable(test_device_validation
+        tests/test_device_validation.cpp
+        src/daemon/device_validation.cpp
+    )
+    target_include_directories(test_device_validation PRIVATE include)
+    target_compile_definitions(test_device_validation PRIVATE COREFLOW_BUILD_COMMIT="${COREFLOW_BUILD_COMMIT}")
+    add_test(NAME DeviceValidationRuntimeTest COMMAND test_device_validation)
 
     add_executable(test_config
         tests/test_config.cpp
