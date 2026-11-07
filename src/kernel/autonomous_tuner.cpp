@@ -302,8 +302,13 @@ AutonomousTuner::~AutonomousTuner() {
 bool AutonomousTuner::handle_preemption(
     MutationDomain domain, std::string_view transaction_id, std::string_view reason) noexcept {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
-    if (!transaction_active_ || current_candidate_id_ != transaction_id ||
-        domain_for_candidate(current_candidate_id_) != domain) {
+    // A failed apply may leave a journaled partial transaction before the
+    // normal OBSERVING state is entered. The candidate identity and applied
+    // steps are installed immediately after lease acquisition, so preemption
+    // can still retry that exact rollback even when transaction_active_ is false.
+    if (current_candidate_id_ != transaction_id ||
+        domain_for_candidate(current_candidate_id_) != domain ||
+        applied_steps_.empty()) {
         return false;
     }
 
@@ -1389,6 +1394,11 @@ bool AutonomousTuner::apply_transaction(
         return false;
     }
 
+    // Publish the exact lease identity before preflight. rollback_active() and
+    // the preemption callback must be able to resolve failures that occur before
+    // the transaction reaches OBSERVING.
+    current_candidate_id_ = std::string(candidate_id);
+
     // Phase 1: Full Preflight (All-or-Nothing for RequiredAnchor & RequiredDependent steps)
     std::vector<MutationStep> planned;
     planned.reserve(steps.size());
@@ -1412,6 +1422,7 @@ bool AutonomousTuner::apply_transaction(
         if (is_required && !accessible) {
             // Abort entire transaction before any write occurs
             CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
+            current_candidate_id_ = "baseline";
             return false;
         }
         if (accessible) {
@@ -1426,6 +1437,7 @@ bool AutonomousTuner::apply_transaction(
 
     if (!has_anchor || planned.empty()) {
         CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
+        current_candidate_id_ = "baseline";
         return false;
     }
 
