@@ -1398,6 +1398,35 @@ bool AutonomousTuner::apply_transaction(
     // the preemption callback must be able to resolve failures that occur before
     // the transaction reaches OBSERVING.
     current_candidate_id_ = std::string(candidate_id);
+    auto& coordinator = CentralMutationCoordinator::instance();
+
+    const auto reject_preflight = [&](std::string_view reason) {
+        coordinator.release_lease(dom, controller_name_, candidate_id);
+        current_candidate_id_ = "baseline";
+        current_candidate_label_ = "OEM Verified Baseline";
+        current_intent_ = "HoldEquilibrium";
+        last_verdict_ = "REJECTED";
+        last_verdict_enum_ = TunerVerdict::Rejected;
+        ++total_rejected_;
+        if (auto* stats = find_candidate(candidate_id)) {
+            ++stats->rejected_count;
+            stats->last_rollback_reason = std::string(reason);
+        }
+        current_rationale_ = "Candidate " + std::string(candidate_id) +
+            " rejected during preflight: " + std::string(reason);
+        save_persisted_stats();
+    };
+
+    const auto record_apply_abort = [&](std::string_view reason) {
+        last_verdict_ = "ABORTED";
+        last_verdict_enum_ = TunerVerdict::Aborted;
+        ++total_rolled_back_;
+        if (auto* stats = find_candidate(candidate_id)) {
+            ++stats->aborted_count;
+            stats->last_rollback_reason = std::string(reason);
+        }
+        current_rationale_ = std::string(reason);
+    };
 
     // Phase 1: Full Preflight (All-or-Nothing for RequiredAnchor & RequiredDependent steps)
     std::vector<MutationStep> planned;
@@ -1420,9 +1449,9 @@ bool AutonomousTuner::apply_transaction(
             if (snapshot == audit.end() || snapshot->is_modified) accessible = false;
         }
         if (is_required && !accessible) {
-            // Abort entire transaction before any write occurs
-            CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
-            current_candidate_id_ = "baseline";
+            // No write has started. Classify this as REJECTED, never as an
+            // empirical trial or an aborted mutation transaction.
+            reject_preflight("Required resource unavailable, unsafe, or no longer writable: " + step.path);
             return false;
         }
         if (accessible) {
@@ -1436,12 +1465,9 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (!has_anchor || planned.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
-        current_candidate_id_ = "baseline";
+        reject_preflight("No valid required anchor or mutation steps were available");
         return false;
     }
-
-    auto& coordinator = CentralMutationCoordinator::instance();
     // Preflight is read-only. If a preemption arrived during discovery, do not
     // start the first mutation; leave this exact lease for callback acknowledgement.
     if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
@@ -1479,8 +1505,11 @@ bool AutonomousTuner::apply_transaction(
                 if (unresolved_path_mutation && !store.rollback(step.path)) {
                     committed.push_back(step);
                     applied_steps_ = std::move(committed);
-                    (void)rollback_active(
-                        "Optional step failed and its path-scoped rollback is unresolved.");
+                    const std::string reason =
+                        "Optional step failed and its path-scoped rollback is unresolved.";
+                    record_apply_abort(reason);
+                    (void)rollback_active(reason);
+                    save_persisted_stats();
                     return false;
                 }
                 continue;
@@ -1490,8 +1519,13 @@ bool AutonomousTuner::apply_transaction(
             // rollback(path) is safe for a path already restored by BaselineStore.
             if (unresolved_path_mutation) committed.push_back(step);
             applied_steps_ = std::move(committed);
-            (void)rollback_active(
-                "Transaction aborted on failed required step; rolled back to baseline.");
+            const std::string reason =
+                "Transaction aborted on failed required step; rollback attempted.";
+            record_apply_abort(reason);
+            (void)rollback_active(reason);
+            // rollback_active can upgrade the verdict to RECOVERY_REQUIRED and
+            // increment recovery_required_count when a path remains unresolved.
+            save_persisted_stats();
             return false;
         }
         if (!after_summary.empty()) after_summary += ",";
@@ -1509,8 +1543,7 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (committed.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, controller_name_, candidate_id);
-        current_candidate_id_ = "baseline";
+        reject_preflight("No mutation step was committed");
         return false;
     }
 

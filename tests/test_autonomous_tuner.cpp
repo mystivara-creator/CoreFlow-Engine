@@ -1490,6 +1490,60 @@ int main() {
     }
     ::setenv("COREFLOW_TEST_STATE_DIR", root.c_str(), 1);
 
+    // Required-resource preflight rejection must be visible and counted, while
+    // leaving OEM state untouched and releasing the exact candidate lease.
+    assert(!baseline.has_active_mutations());
+    coordinator.reset();
+    const fs::path preflight_state = root / "preflight-state";
+    fs::create_directories(preflight_state);
+    assert(::setenv("COREFLOW_TEST_STATE_DIR", preflight_state.c_str(), 1) == 0);
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+
+    const fs::path preflight_sys = root / "preflight-sys";
+    const fs::path preflight_proc = root / "preflight-proc";
+    const fs::path preflight_queue = preflight_sys / "block/sda/queue";
+    put(preflight_queue / "scheduler", "[none] mq-deadline");
+    put(preflight_queue / "read_ahead_kb", "128");
+    put(preflight_queue / "nr_requests", "64");
+    put(preflight_queue / "rq_affinity", "1");
+    put(preflight_queue / "iosched/read_expire", "500");
+    put(preflight_queue / "iosched/writes_starved", "2");
+    put(preflight_queue / "iosched/fifo_batch", "16");
+    put(preflight_proc / "sys/vm/page-cluster", "3");
+    put(preflight_proc / "sys/vm/vfs_cache_pressure", "100");
+
+    {
+        coreflow::AutonomousTuner preflight_tuner(preflight_sys.string(), preflight_proc.string());
+        assert(preflight_tuner.snapshot().block_queues.size() == 1);
+        const fs::path scheduler = preflight_queue / "scheduler";
+        const fs::path scheduler_backup = preflight_queue / "scheduler.backup";
+        fs::rename(scheduler, scheduler_backup);
+        fs::create_symlink(preflight_queue / "missing-scheduler-target", scheduler);
+
+        const auto rejected = preflight_tuner.step({
+            .cpu_psi = 6.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(rejected.last_verdict == "REJECTED");
+        assert(rejected.verdict == coreflow::TunerVerdict::Rejected);
+        assert(rejected.active_candidate_id == "baseline");
+        const auto rejected_candidate = std::find_if(
+            rejected.candidates.begin(), rejected.candidates.end(),
+            [](const auto& candidate) { return candidate.id == "io.mq_deadline_low_latency"; });
+        assert(rejected_candidate != rejected.candidates.end());
+        assert(rejected_candidate->rejected_count == 1);
+        assert(rejected_candidate->trials == 0);
+        assert(rejected_candidate->reward_samples == 0);
+        assert(coordinator.active_leases().empty());
+        assert(!baseline.has_active_mutations());
+
+        fs::remove(scheduler);
+        fs::rename(scheduler_backup, scheduler);
+    }
+
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
     return 0;
