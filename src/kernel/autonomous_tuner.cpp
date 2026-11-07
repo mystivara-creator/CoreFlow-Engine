@@ -754,7 +754,7 @@ void AutonomousTuner::load_persisted_stats() {
     if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
         if (fp != current_fp ||
             !(hs >> persisted_reward_samples >> loaded_inconclusive >> loaded_rejected >> loaded_noise_floor) ||
-            persisted_reward_samples > trials || improved > persisted_reward_samples ||
+            persisted_reward_samples > trials ||
             !std::isfinite(loaded_noise_floor) || loaded_noise_floor < 0.02 || loaded_noise_floor > 0.45) return;
         if (magic == "CFTS6" || magic == "CFTS5") {
             for (auto& floor : loaded_domain_floors) {
@@ -811,8 +811,10 @@ void AutonomousTuner::load_persisted_stats() {
         if (current_schema) {
             if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >>
                   saved.aborted >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
-            if (saved.reward_samples > saved.trials ||
-                static_cast<uint64_t>(saved.improved) + saved.regressed + saved.neutral > saved.reward_samples) return;
+            // Legacy CFTS3 counters were retained during the R1 migration while
+            // reward_samples intentionally started at zero. Do not reinterpret those
+            // historical outcome totals as eligible modern reward observations.
+            if (saved.reward_samples > saved.trials) return;
         } else {
             if (!(ls >> saved.improved >> saved.regressed >> saved.cooldown >> saved.consecutive_non_improved)) return;
             saved.mean_utility_delta = 0.0;
@@ -820,9 +822,12 @@ void AutonomousTuner::load_persisted_stats() {
 
         if (!(ls >> saved.adaptive_scale >> saved.inconclusive >> saved.rejected >>
               saved.workload >> saved.thermal_bucket)) return;
-        if (!std::isfinite(saved.adaptive_scale) || saved.adaptive_scale < 0.25 || saved.adaptive_scale > 1.0 ||
-            saved.cooldown > 64 || saved.consecutive_non_improved > 16 ||
-            saved.workload > 10 || saved.thermal_bucket > 4) return;
+        if (!std::isfinite(saved.adaptive_scale)) return;
+        saved.adaptive_scale = std::clamp(saved.adaptive_scale, 0.25, 1.0);
+        saved.cooldown = std::min<uint32_t>(saved.cooldown, 64U);
+        saved.consecutive_non_improved = std::min<uint32_t>(saved.consecutive_non_improved, 16U);
+        saved.workload = std::min<uint32_t>(saved.workload, 10U);
+        saved.thermal_bucket = std::min<uint32_t>(saved.thermal_bucket, 4U);
 
         if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
             if (!(ls >> saved.ownership_losses >> saved.quarantine_ticks)) return;
@@ -832,8 +837,9 @@ void AutonomousTuner::load_persisted_stats() {
             saved.rollback_reason.erase(saved.rollback_reason.begin());
         if (saved.rollback_reason.empty()) saved.rollback_reason = "-";
         if (saved.rollback_reason.size() > 512 ||
-            saved.rollback_reason.find_first_of("\t\r\n") != std::string::npos ||
-            saved.ownership_losses > 16 || saved.quarantine_ticks > 64) return;
+            saved.rollback_reason.find_first_of("\t\r\n") != std::string::npos) return;
+        saved.ownership_losses = std::min<uint32_t>(saved.ownership_losses, 16U);
+        saved.quarantine_ticks = std::min<uint32_t>(saved.quarantine_ticks, 64U);
         std::string trailing;
         if (ls >> trailing) return;
         parsed.push_back(std::move(saved));
