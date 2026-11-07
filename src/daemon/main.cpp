@@ -862,6 +862,48 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; Binder interception and NPU offload unavailable without platform integration.");
     EpollReactor reactor;
+    DeviceValidationRecorder dvs_recorder;
+    UniqueFd dvs_listener;
+    if (create_dvs_listener(dvs_listener)) {
+        if (!reactor.register_fd(dvs_listener.get(), EPOLLIN, [&](uint32_t) {
+            for (;;) {
+                UniqueFd client(::accept4(dvs_listener.get(), nullptr, nullptr, SOCK_CLOEXEC));
+                if (!client.valid()) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                timeval timeout{2, 0};
+                (void)::setsockopt(client.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                char command[128]{};
+                const ssize_t received = ::recv(client.get(), command, sizeof(command) - 1, 0);
+                if (received <= 0) continue;
+                command[static_cast<size_t>(received)] = '\0';
+                const std::string_view request(command, static_cast<size_t>(received));
+                std::string response = "ERR invalid command";
+                if (request.rfind("START ", 0) == 0 && request.size() <= 80) {
+                    std::string error;
+                    const std::string_view profile = request.substr(6);
+                    if (dvs_recorder.start(profile, &error)) response = "OK ACTIVE " + dvs_recorder.session_id();
+                    else response = "ERR " + error;
+                } else if (request == "STOP") {
+                    std::string path, error;
+                    if (dvs_recorder.stop(&path, &error)) response = "OK STOPPED " + path;
+                    else response = "ERR " + error;
+                } else if (request == "STATUS") {
+                    response = dvs_recorder.active() ? "OK ACTIVE " + dvs_recorder.session_id() : "OK INACTIVE";
+                }
+                (void)::send(client.get(), response.data(), response.size(), MSG_NOSIGNAL);
+            }
+        })) {
+            emit_log(true, "[CoreFlow][CF-DVS] Unable to register control socket; session capture unavailable.");
+            (void)::unlink(kDvsSocketPath);
+            dvs_listener.reset();
+        } else {
+            emit_log(false, "[CoreFlow][CF-DVS] Local session control endpoint ready.");
+        }
+    } else {
+        emit_log(true, "[CoreFlow][CF-DVS] Local session control endpoint unavailable; optimizer remains unaffected.");
+    }
 
     sigset_t mask;
     sigemptyset(&mask);
