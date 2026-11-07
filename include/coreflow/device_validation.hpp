@@ -52,6 +52,8 @@ private:
     int events_fd_{-1};
     int metrics_fd_{-1};
     uint64_t sequence_{0};
+    uint64_t started_ns_{0};
+    std::string started_at_;
     uint64_t event_bytes_{0};
     uint32_t samples_{0};
     bool active_{false};
