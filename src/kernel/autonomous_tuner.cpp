@@ -458,8 +458,9 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
 }
 
 uint8_t AutonomousTuner::compute_thermal_bucket(const TunerTelemetryInput& telemetry) noexcept {
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) return 4;
-    if (telemetry.thermal_guard_active || telemetry.thermal_pressure >= 65.0) return 3;
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) return 4;
+    if (telemetry.thermal_guard_active || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 65.0)) return 3;
+    if (!telemetry.thermal_pressure_valid) return 0;
     if (telemetry.thermal_pressure >= 52.0) return 2;
     if (telemetry.thermal_pressure >= 42.0) return 1;
     return 0;
@@ -469,9 +470,10 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
     const bool rapid_temp_rise =
         (telemetry.temperature_velocity_valid && telemetry.temperature_velocity_celsius_per_sec >= 0.8) ||
         (telemetry.thermal_trend_celsius >= 0.8);
-    if (telemetry.thermal_emergency || telemetry.thermal_guard_active || telemetry.thermal_pressure >= 65.0 ||
+    if (telemetry.thermal_emergency || telemetry.thermal_guard_active ||
+        (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 65.0) ||
         (telemetry.thermal_headroom >= 0.0 && telemetry.thermal_headroom <= 0.20) ||
-        (telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
+        (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
         return WorkloadClass::ThermalConstrained;
     }
     if (telemetry.memory_psi_valid && telemetry.io_psi_valid && telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
@@ -486,7 +488,7 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
     if (telemetry.io_psi_valid && telemetry.io_psi >= 2.2) {
         return WorkloadClass::StorageIoPressure;
     }
-    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure >= 50.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 50.0) {
         return WorkloadClass::Gaming;
     }
     if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 10.0) {
@@ -507,7 +509,7 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
 BottleneckKind AutonomousTuner::diagnose_bottleneck(
     const TunerTelemetryInput& telemetry,
     WorkloadClass workload) noexcept {
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) {
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) {
         return BottleneckKind::ThermalEmergency;
     }
     if (workload == WorkloadClass::ThermalConstrained) {
@@ -1598,18 +1600,23 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         latest_temperature_velocity_valid_ = true;
     }
 
-    // Keep pressure velocity updated from pressure difference if not provided by neural predictor
-    if (has_prev_thermal_ && std::abs(telemetry.thermal_pressure_velocity) < 1e-6) {
-        telemetry.thermal_pressure_velocity = telemetry.thermal_pressure - prev_thermal_pressure_;
-        latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
+    // Pressure deltas are meaningful only across valid thermal-pressure samples.
+    if (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure)) {
+        if (has_prev_thermal_ && std::abs(telemetry.thermal_pressure_velocity) < 1e-6) {
+            telemetry.thermal_pressure_velocity = telemetry.thermal_pressure - prev_thermal_pressure_;
+            latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
+        }
+        prev_thermal_pressure_ = telemetry.thermal_pressure;
+        has_prev_thermal_ = true;
+    } else {
+        telemetry.thermal_pressure_velocity = 0.0;
+        latest_pressure_velocity_ = 0.0;
     }
-    prev_thermal_pressure_ = telemetry.thermal_pressure;
-    has_prev_thermal_ = true;
 
     // Emergency arbitration must run before recovery retries: a failed rollback can
     // return early, but it must never suppress the emergency preemption request.
     const bool emergency_boundary =
-        telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0;
+        telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0);
     if (emergency_boundary) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
         CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
@@ -1645,7 +1652,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     // Emergency Safety Gate: Catastrophic thermal emergency (>= 88.0 pressure or emergency flag)
     // immediately rolls back all mutations and preempts domain leases.
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) {
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
         if (transaction_active_) {
             last_verdict_ = "ABORTED";
@@ -1716,7 +1723,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 }
             }
 
-            if (telemetry.io_psi >= 1.5 && !block_queues_.empty() &&
+            if (telemetry.io_psi_valid && telemetry.io_psi >= 1.5 && !block_queues_.empty() &&
                 is_candidate_eligible_for_context("thermal.io_burst_pacing", current_workload_, thermal_bucket)) {
                 const auto* stats = find_candidate("thermal.io_burst_pacing");
                 const double scale = stats ? stats->adaptive_scale : 1.0;
@@ -1754,7 +1761,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // incomplete evidence. Thermal stabilization above remains independently actionable.
     const bool psi_evidence_complete =
         telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
-    if (!psi_evidence_complete) {
+    const bool active_domain_evidence_complete =
+        (current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid);
+    const bool required_evidence_complete = (observing_ || transaction_active_)
+        ? active_domain_evidence_complete : psi_evidence_complete;
+    if (!required_evidence_complete) {
         if (observing_ || transaction_active_) {
             last_verdict_ = "INCONCLUSIVE";
             last_verdict_enum_ = TunerVerdict::Inconclusive;
@@ -1787,7 +1801,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         const bool temp_stable_or_falling =
             (!telemetry.temperature_velocity_valid) ||
             (telemetry.temperature_velocity_celsius_per_sec <= 0.05);
-        if (telemetry.thermal_pressure <= 46.0 && temp_stable_or_falling) {
+        if (telemetry.thermal_pressure_valid && telemetry.thermal_pressure <= 46.0 && temp_stable_or_falling) {
             thermal_recovery_ticks_ = 0;
         } else {
             --thermal_recovery_ticks_;
@@ -1836,12 +1850,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         return snapshot();
     }
 
-    const bool io_bottleneck = telemetry.io_psi >= 2.2;
-    const bool mem_bottleneck = telemetry.memory_psi >= 2.0;
+    const bool io_bottleneck = telemetry.io_psi_valid && telemetry.io_psi >= 2.2;
+    const bool mem_bottleneck = telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0;
     // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery
     const bool cpu_bottleneck =
-        !in_thermal_recovery && telemetry.cpu_psi >= 8.0 &&
-        telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
+        !in_thermal_recovery && telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
+        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
 
     // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
@@ -1854,7 +1868,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             save_persisted_stats();
             return snapshot();
         }
-        if (!io_bottleneck && !mem_bottleneck && telemetry.cpu_psi < 4.0 && !needs_thermal_stabilization) {
+        if (!io_bottleneck && !mem_bottleneck && telemetry.cpu_psi_valid && telemetry.cpu_psi < 4.0 && !needs_thermal_stabilization) {
             if (++idle_streak_ >= 6) {
                 idle_streak_ = 0;
                 last_verdict_ = "HOLD";
@@ -1863,12 +1877,27 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             }
         } else {
             idle_streak_ = 0;
-            // Monitor domain-specific target and guard metrics while retained
-            const bool domain_regressed =
-                (telemetry.io_psi > before_io_psi_ + 4.0) ||
-                (current_intent_ == "MemoryStallRelief" && telemetry.memory_psi > before_mem_psi_ + 3.5) ||
-                (current_intent_ == "InteractiveCpuPacing" &&
-                 (telemetry.cpu_psi > before_cpu_psi_ + 6.0 || telemetry.thermal_pressure > before_thermal_ + 8.0));
+            // Retained-state checks follow the same evaluation domain as trial scoring.
+            bool domain_regressed = false;
+            switch (current_evaluation_domain_) {
+                case EvaluationDomain::Io:
+                    domain_regressed = telemetry.io_psi_valid && before_io_valid_ && telemetry.io_psi > before_io_psi_ + 4.0;
+                    break;
+                case EvaluationDomain::Memory:
+                    domain_regressed = telemetry.memory_psi_valid && before_mem_valid_ && telemetry.memory_psi > before_mem_psi_ + 3.5;
+                    break;
+                case EvaluationDomain::Cpu:
+                    domain_regressed = telemetry.cpu_psi_valid && before_cpu_valid_ && telemetry.cpu_psi > before_cpu_psi_ + 6.0;
+                    if (!domain_regressed && telemetry.thermal_pressure_valid && before_thermal_valid_)
+                        domain_regressed = telemetry.thermal_pressure > before_thermal_ + 8.0;
+                    break;
+                case EvaluationDomain::Thermal:
+                    domain_regressed = telemetry.thermal_pressure_valid && before_thermal_valid_ && telemetry.thermal_pressure > before_thermal_ + 8.0;
+                    if (!domain_regressed && telemetry.temperature_velocity_valid)
+                        domain_regressed = telemetry.temperature_velocity_celsius_per_sec > 0.05;
+                    break;
+                default: break;
+            }
             if (domain_regressed) {
                 if (auto* stats = find_candidate(current_candidate_id_)) {
                     stats->cooldown_ticks = 6;

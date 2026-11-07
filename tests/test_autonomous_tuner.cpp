@@ -646,6 +646,8 @@ int main() {
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
             .io_psi = io_jitter[i],
+            .cpu_psi_valid = false,
+            .memory_psi_valid = false,
             .thermal_pressure = 68.0,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = 0.0,
