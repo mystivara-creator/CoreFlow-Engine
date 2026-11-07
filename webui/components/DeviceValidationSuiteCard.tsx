@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, Archive, CheckCircle2, Download, FileCheck2, LockKeyhole, Play, RefreshCw, ShieldAlert, Square } from 'lucide-react';
+import { Activity, Archive, CheckCircle2, FileCheck2, LockKeyhole, Play, RefreshCw, ShieldAlert, Square } from 'lucide-react';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from '../bridge/daemonBridge';
 
 type Profile =
@@ -241,19 +241,34 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     if (manifest.manifest_version !== '1.0' || !Array.isArray(manifest.files)) {
       throw new Error('Unsupported CF-DVS manifest version');
     }
-    if (manifest.files.length !== 4) throw new Error('Manifest payload inventory is incomplete');
+    const expectedPayloads = PAYLOAD_NAMES.filter((name) => name !== 'manifest.json');
+    if (manifest.files.length !== expectedPayloads.length) {
+      throw new Error('Manifest payload inventory is incomplete');
+    }
+    const seen = new Set<string>();
 
     for (const entry of manifest.files) {
-      if (!PAYLOAD_NAMES.includes(entry.path as PayloadName) || entry.path === 'manifest.json') {
-        throw new Error('Manifest contains a non-allowlisted payload path');
+      if (
+        !expectedPayloads.includes(entry.path as PayloadName) ||
+        seen.has(entry.path) ||
+        !Number.isSafeInteger(entry.size_bytes) ||
+        entry.size_bytes < 0 ||
+        typeof entry.sha256 !== 'string' ||
+        !/^[0-9a-f]{64}$/i.test(entry.sha256)
+      ) {
+        throw new Error('Manifest contains an invalid or duplicate payload entry');
       }
+      seen.add(entry.path);
       const payload = files.find((file) => file.name === entry.path);
       if (!payload || payload.bytes.length !== entry.size_bytes) {
         throw new Error(`Payload size mismatch: ${entry.path}`);
       }
-      if (await sha256(payload.bytes) !== entry.sha256) {
+      if ((await sha256(payload.bytes)) !== entry.sha256.toLowerCase()) {
         throw new Error(`SHA-256 mismatch: ${entry.path}`);
       }
+    }
+    if (expectedPayloads.some((name) => !seen.has(name))) {
+      throw new Error('Manifest omitted a required payload');
     }
 
     const reportFile = files.find((file) => file.name === 'report.json');
