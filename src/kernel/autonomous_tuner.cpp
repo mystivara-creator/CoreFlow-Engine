@@ -311,7 +311,7 @@ bool AutonomousTuner::handle_preemption(
     // ownership loss or regression. Record it explicitly before restoring baseline.
     last_verdict_ = "ABORTED";
     last_verdict_enum_ = TunerVerdict::Aborted;
-    if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
+    if (auto* stats = find_candidate(current_candidate_id_)) ++stats->preempted_count;
     ++total_rolled_back_;
     const bool restored = rollback_active(reason);
     if (!restored) {
@@ -659,7 +659,7 @@ std::string AutonomousTuner::compute_fingerprint() const {
 
 void AutonomousTuner::save_persisted_stats() const {
     std::ostringstream out;
-    out << "CFTS6\t" << compute_fingerprint() << "\t"
+    out << "CFTS7\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
         << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
     for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
@@ -668,7 +668,7 @@ void AutonomousTuner::save_persisted_stats() const {
         out << c.id << "\t" << c.mean_utility << "\t" << c.mean_utility_delta << "\t"
             << c.trials << "\t" << c.reward_samples << "\t" << c.improved_count << "\t"
             << c.regressed_count << "\t" << c.neutral_count << "\t" << c.aborted_count << "\t"
-            << c.recovery_required_count << "\t" << c.cooldown_ticks << "\t"
+            << c.preempted_count << "\t" << c.recovery_required_count << "\t" << c.cooldown_ticks << "\t"
             << c.consecutive_non_improved << "\t" << c.adaptive_scale << "\t"
             << c.inconclusive_count << "\t" << c.rejected_count << "\t"
             << static_cast<uint32_t>(c.last_workload) << "\t"
@@ -678,7 +678,7 @@ void AutonomousTuner::save_persisted_stats() const {
     }
     std::string payload = out.str();
     if (!out.good() || payload.size() > 256U * 1024U - 64U) return;
-    payload += "CFTS6_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
+    payload += "CFTS7_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
 
     UniqueFd dir = open_state_directory(resolve_state_dir(), true);
     if (!dir.valid()) return;
@@ -721,15 +721,20 @@ void AutonomousTuner::load_persisted_stats() {
     if (!read_bounded_regular_file(state_fd.get(), payload, 256U * 1024U)) return;
 
     bool has_checksum = false;
-    const size_t footer_pos = payload.rfind("CFTS6_END\t");
+    std::string checksum_footer_magic;
+    const size_t footer_pos7 = payload.rfind("CFTS7_END\t");
+    const size_t footer_pos6 = payload.rfind("CFTS6_END\t");
+    if (footer_pos7 != std::string::npos && footer_pos6 != std::string::npos) return;
+    const size_t footer_pos = footer_pos7 != std::string::npos ? footer_pos7 : footer_pos6;
     if (footer_pos != std::string::npos) {
         if (footer_pos > 0 && payload[footer_pos - 1] != '\n') return;
         const std::string footer = payload.substr(footer_pos);
         std::istringstream footer_stream(footer);
-        std::string footer_magic, extra;
+        std::string extra;
         uint64_t stored_checksum = 0;
-        if (!(footer_stream >> footer_magic >> stored_checksum) ||
-            footer_magic != "CFTS6_END" || (footer_stream >> extra)) return;
+        if (!(footer_stream >> checksum_footer_magic >> stored_checksum) ||
+            (checksum_footer_magic != "CFTS7_END" && checksum_footer_magic != "CFTS6_END") ||
+            (footer_stream >> extra)) return;
         payload.resize(footer_pos);
         if (tuner_state_checksum(payload) != stored_checksum) return;
         has_checksum = true;
@@ -742,7 +747,9 @@ void AutonomousTuner::load_persisted_stats() {
     std::string magic, fp, extra;
     uint32_t trials = 0, improved = 0, rolled_back = 0;
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
-    if ((magic == "CFTS6" && !has_checksum) || (magic != "CFTS6" && has_checksum)) return;
+    if ((magic == "CFTS7" && (!has_checksum || checksum_footer_magic != "CFTS7_END")) ||
+        (magic == "CFTS6" && (!has_checksum || checksum_footer_magic != "CFTS6_END")) ||
+        (magic != "CFTS7" && magic != "CFTS6" && has_checksum)) return;
 
     const std::string current_fp = compute_fingerprint();
     uint32_t persisted_reward_samples = 0;
@@ -751,12 +758,12 @@ void AutonomousTuner::load_persisted_stats() {
     double loaded_noise_floor = 0.05;
     std::array<double, 4> loaded_domain_floors{{0.05, 0.05, 0.05, 0.05}};
 
-    if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
+    if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
         if (fp != current_fp ||
             !(hs >> persisted_reward_samples >> loaded_inconclusive >> loaded_rejected >> loaded_noise_floor) ||
             persisted_reward_samples > trials ||
             !std::isfinite(loaded_noise_floor) || loaded_noise_floor < 0.02 || loaded_noise_floor > 0.45) return;
-        if (magic == "CFTS6" || magic == "CFTS5") {
+        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5") {
             for (auto& floor : loaded_domain_floors) {
                 if (!(hs >> floor) || !std::isfinite(floor) || floor < 0.02 || floor > 0.45) return;
             }
@@ -789,7 +796,7 @@ void AutonomousTuner::load_persisted_stats() {
         double mean_utility_delta{0.0};
         double adaptive_scale{1.0};
         uint32_t trials{0}, reward_samples{0}, improved{0}, regressed{0}, neutral{0};
-        uint32_t aborted{0}, recovery_required{0}, cooldown{0}, consecutive_non_improved{0};
+        uint32_t aborted{0}, preempted{0}, recovery_required{0}, cooldown{0}, consecutive_non_improved{0};
         uint32_t inconclusive{0}, rejected{0}, workload{0}, thermal_bucket{0};
         uint32_t ownership_losses{0}, quarantine_ticks{0};
         std::string rollback_reason;
@@ -807,10 +814,11 @@ void AutonomousTuner::load_persisted_stats() {
             !std::isfinite(saved.mean_utility) || saved.mean_utility < 0.05 || saved.mean_utility > 2.50 ||
             !std::isfinite(saved.mean_utility_delta)) return;
 
-        const bool current_schema = magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
+        const bool current_schema = magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
         if (current_schema) {
-            if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >>
-                  saved.aborted >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >> saved.aborted)) return;
+            if (magic == "CFTS7" && !(ls >> saved.preempted)) return;
+            if (!(ls >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
             // Legacy CFTS3 counters were retained during the R1 migration while
             // reward_samples intentionally started at zero. Do not reinterpret those
             // historical outcome totals as eligible modern reward observations.
@@ -838,7 +846,7 @@ void AutonomousTuner::load_persisted_stats() {
         saved.workload = std::min<uint32_t>(saved.workload, 10U);
         saved.thermal_bucket = std::min<uint32_t>(saved.thermal_bucket, 4U);
 
-        if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
+        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
             if (!(ls >> saved.ownership_losses >> saved.quarantine_ticks)) return;
         }
         if (!std::getline(ls, saved.rollback_reason)) return;
@@ -880,6 +888,7 @@ void AutonomousTuner::load_persisted_stats() {
             candidate->rollbacks = saved.regressed;
             candidate->neutral_count = saved.neutral;
             candidate->aborted_count = saved.aborted;
+            candidate->preempted_count = saved.preempted;
             candidate->recovery_required_count = saved.recovery_required;
             candidate->cooldown_ticks = saved.cooldown;
             candidate->consecutive_non_improved = saved.consecutive_non_improved;
@@ -1828,6 +1837,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         if (transaction_active_) {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
             ++total_rolled_back_;
             (void)rollback_active("Thermal emergency gate active; restored OEM baseline.");
             save_persisted_stats();
@@ -1852,6 +1862,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         if (transaction_active_ && current_intent_ != "ThermalStabilization") {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
             ++total_rolled_back_;
             (void)rollback_active("Preempting performance mutation for active ThermalStabilization.");
             save_persisted_stats();

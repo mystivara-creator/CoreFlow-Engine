@@ -240,6 +240,7 @@ struct CandidateStats {
     uint32_t inconclusive_count{0};
     uint32_t neutral_count{0};
     uint32_t aborted_count{0};
+    uint32_t preempted_count{0};
     uint32_t recovery_required_count{0};
     uint32_t rejected_count{0};
     uint32_t cooldown_ticks{0};

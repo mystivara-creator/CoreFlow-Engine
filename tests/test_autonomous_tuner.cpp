@@ -931,6 +931,12 @@ int main() {
         assert(preempted.stage == "PLANNED");
         assert(preempted.last_verdict == "ABORTED");
         assert(preempted.verdict == coreflow::TunerVerdict::Aborted);
+        const auto preempted_candidate = std::find_if(
+            preempted.candidates.begin(), preempted.candidates.end(),
+            [&](const auto& candidate) { return candidate.id == active.active_candidate_id; });
+        assert(preempted_candidate != preempted.candidates.end());
+        assert(preempted_candidate->preempted_count == 1);
+        assert(preempted_candidate->aborted_count == 0);
         assert(coordinator.active_leases().empty());
         assert(coordinator.complete_emergency_recovery());
         assert(get(sda_q / "scheduler") == "none");
@@ -1422,8 +1428,8 @@ int main() {
     std::ifstream state_input(state_file, std::ios::binary);
     const std::string state_payload((std::istreambuf_iterator<char>(state_input)),
                                     std::istreambuf_iterator<char>());
-    assert(state_payload.rfind("CFTS6\t", 0) == 0);
-    assert(state_payload.find("CFTS6_END\t") != std::string::npos);
+    assert(state_payload.rfind("CFTS7\t", 0) == 0);
+    assert(state_payload.find("CFTS7_END\t") != std::string::npos);
 
     for (const auto& entry : fs::directory_iterator(root)) {
         assert(entry.path().filename().string().rfind("tuner_stats.state.tmp.", 0) != 0);
