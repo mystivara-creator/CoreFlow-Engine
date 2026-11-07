@@ -13,12 +13,22 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <atomic>
+#include <functional>
+#include <condition_variable>
+#include <cstddef>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace coreflow {
+
+class BaselineStore;
 
 enum class TunerVerdict : uint8_t {
     Pending = 0,
@@ -84,14 +94,10 @@ enum class OptimizationObjective : uint8_t {
 };
 
 enum class MutationDomain : uint8_t {
-    CpuPolicy = 0,
-    BlockIo = 1,
-    VmMemory = 2,
-    UclampCgroup = 3,
-    GpuDevfreq = 4,
-    PowerLongevity = 5,
-    ThermalCore = 6,
+    CpuPolicy = 0, BlockIo = 1, VmMemory = 2, UclampCgroup = 3,
+    GpuDevfreq = 4, PowerLongevity = 5, ThermalCore = 6,
 };
+enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Unavailable = 255 };
 
 enum class ControllerPriority : uint8_t {
     BackgroundEfficiency = 20,
@@ -117,11 +123,27 @@ struct DomainLease {
     std::string transaction_id;
     ControllerPriority priority{ControllerPriority::WorkloadOptimization};
     bool active{false};
+    // A higher-priority requester or emergency may request preemption, but the
+    // current owner retains the lease until it has cancelled and verified rollback.
+    bool preemption_requested{false};
+    // Prevent duplicate concurrent rollback callbacks for the same lease.
+    // Cleared after a failed acknowledgement so the daemon can retry.
+    bool preemption_dispatch_in_flight{false};
+    // Set only after unregister waits for all in-flight callbacks and the
+    // controller can no longer acknowledge rollback. The lease remains active
+    // until a verified global recovery explicitly retires it.
+    bool owner_detached{false};
 };
 
 class CentralMutationCoordinator {
 public:
+    using PreemptionHandler = std::function<bool(
+        MutationDomain, std::string_view, std::string_view)>;
+
     static CentralMutationCoordinator& instance();
+    // Process-lifetime unique identity; unlike object addresses, IDs are not reused
+    // when an allocator recycles storage after controller destruction.
+    [[nodiscard]] static std::string make_controller_identity(std::string_view controller_type);
 
     bool acquire_lease(MutationDomain domain,
                        std::string_view controller_name,
@@ -129,21 +151,60 @@ public:
                        ControllerPriority priority,
                        std::string* conflict_reason = nullptr);
 
-    void release_lease(MutationDomain domain, std::string_view controller_name) noexcept;
-    void release_all_for_controller(std::string_view controller_name) noexcept;
+    void release_lease(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool is_preemption_requested(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id) const noexcept;
+    void dispatch_pending_preemptions(std::string_view reason) noexcept;
+    bool register_preemption_handler(std::string_view controller_name, PreemptionHandler handler);
+    void unregister_preemption_handler(std::string_view controller_name) noexcept;
     void emergency_preempt_all(std::string_view reason) noexcept;
+    // Retire detached-owner leases only after BaselineStore has independently
+    // verified that no journaled mutations remain. Requires closed admission.
+    [[nodiscard]] bool release_orphaned_leases_after_verified_recovery(
+        BaselineStore& baseline_store) noexcept;
+
+    // Close mutation admission before dispatching emergency rollback callbacks.
+    // Admission reopens only after all leases and BaselineStore mutations are cleared.
+    void begin_emergency_recovery() noexcept;
+    [[nodiscard]] bool is_emergency_recovery_active() const noexcept;
+    [[nodiscard]] bool complete_emergency_recovery() noexcept;
 
     [[nodiscard]] bool is_domain_locked_by_other(MutationDomain domain,
                                                  std::string_view controller_name,
                                                  ControllerPriority requester_priority) const noexcept;
     [[nodiscard]] std::vector<DomainLease> active_leases() const;
-    [[nodiscard]] uint64_t conflict_rejections() const noexcept { return conflict_rejections_; }
+    [[nodiscard]] uint64_t conflict_rejections() const noexcept {
+        return conflict_rejections_.load(std::memory_order_relaxed);
+    }
     void reset() noexcept;
 
 private:
     CentralMutationCoordinator() = default;
+    bool dispatch_preemption(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id,
+        std::string_view reason) noexcept;
+    mutable std::mutex mutex_;
     std::vector<DomainLease> leases_;
-    uint64_t conflict_rejections_{0};
+    struct PreemptionHandlerEntry {
+        PreemptionHandler handler;
+        size_t in_flight{0};
+        bool callback_dispatch_in_flight{false};
+        bool unregistering{false};
+    };
+    std::condition_variable preemption_cv_;
+    std::unordered_map<std::string, PreemptionHandlerEntry> preemption_handlers_;
+    // Controller identities are single-lifetime tokens and remain retired
+    // after unregister, even when their final lease was already released.
+    std::unordered_set<std::string> retired_controller_ids_;
+    bool emergency_recovery_active_{false};
+    std::atomic<uint64_t> conflict_rejections_{0};
 };
 
 struct BlockQueueSurface {
@@ -174,15 +235,24 @@ struct CandidateStats {
     double ucb_score{0.65};             // Upper Confidence Bound (UCB1) score
     double adaptive_scale{1.0};         // Step-sizing factor [0.25..1.0] reduced on rollback
     uint32_t settling_ticks{1};         // Domain-specific post-mutation settling ticks
+    // Attempts are not empirical rewards.
     uint32_t trials{0};
+    uint32_t reward_samples{0};
     uint32_t improved_count{0};
     uint32_t successes{0};
     uint32_t regressed_count{0};
     uint32_t rollbacks{0};
     uint32_t inconclusive_count{0};
+    uint32_t neutral_count{0};
+    uint32_t aborted_count{0};
+    uint32_t preempted_count{0};
+    uint32_t recovery_required_count{0};
     uint32_t rejected_count{0};
     uint32_t cooldown_ticks{0};
     uint32_t consecutive_non_improved{0};
+    // Ownership-loss quarantine is persisted and cannot be bypassed by context changes.
+    uint32_t ownership_loss_count{0};
+    uint32_t ownership_quarantine_ticks{0};
     WorkloadClass last_workload{WorkloadClass::Idle};
     uint8_t last_thermal_bucket{0};
     std::string last_before_summary;
@@ -244,6 +314,12 @@ struct TunerTelemetryInput {
     double cpu_psi{0.0};
     double memory_psi{0.0};
     double io_psi{0.0};
+    // Missing PSI is not a measured zero. Defaults preserve legacy test/caller semantics;
+    // production telemetry must set these from the corresponding read result.
+    bool cpu_psi_valid{true};
+    bool memory_psi_valid{true};
+    bool io_psi_valid{true};
+    bool thermal_pressure_valid{true};
 
     // Explicitly Separated Thermal Telemetry Domains:
     // 1. Thermal Pressure (dimensionless policy-relative index [0.0 .. 130.0])
@@ -272,6 +348,9 @@ public:
     static AutonomousTuner& instance();
 
     explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc");
+    ~AutonomousTuner();
+    AutonomousTuner(const AutonomousTuner&) = delete;
+    AutonomousTuner& operator=(const AutonomousTuner&) = delete;
 
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
 
@@ -281,6 +360,10 @@ public:
     // Forces an immediate, dependency-ordered rollback of any active tuner transaction.
     // Returns false and enters RECOVERY_REQUIRED if any node fails to restore.
     bool rollback_active(std::string_view reason = "Operator or thermal rollback");
+
+    // Requests global emergency preemption, then rolls back this tuner's transaction.
+    // Other owners retain their leases until they complete their own verified rollback.
+    bool emergency_rollback(std::string_view reason = "Emergency rollback");
 
     // Resets all active mutations, bandit statistics, and observation state.
     void reset();
@@ -393,6 +476,8 @@ private:
         StepRelation relation{StepRelation::RequiredDependent};
     };
 
+    mutable std::recursive_mutex tuner_mutex_;
+    std::string controller_name_;
     std::string sys_root_;
     std::string proc_root_;
     std::vector<BlockQueueSurface> block_queues_;
@@ -409,6 +494,8 @@ private:
     double prev_thermal_pressure_{45.0};
     bool has_prev_thermal_{false};
     double noise_floor_{0.05};
+    std::array<double, 4> evaluation_noise_floors_{{0.05, 0.05, 0.05, 0.05}};
+    EvaluationDomain current_evaluation_domain_{EvaluationDomain::Unavailable};
     uint32_t settling_ticks_remaining_{0};
 
     WorkloadClass current_workload_{WorkloadClass::Idle};
@@ -428,12 +515,18 @@ private:
     double before_cpu_psi_{0.0};
     double before_thermal_{0.0};
     double before_temperature_celsius_{-1.0};
+    bool before_io_valid_{false}, before_mem_valid_{false}, before_cpu_valid_{false}, before_thermal_valid_{false};
     double sum_after_io_psi_{0.0};
     double sum_after_mem_psi_{0.0};
     double sum_after_cpu_psi_{0.0};
     double sum_after_thermal_{0.0};
     double sum_after_temp_vel_{0.0};
     uint32_t valid_thermal_samples_in_window_{0};
+    uint32_t valid_io_samples_in_window_{0}, valid_mem_samples_in_window_{0};
+    uint32_t valid_cpu_samples_in_window_{0}, valid_pressure_samples_in_window_{0};
+    double min_after_mem_psi_{0.0}, max_after_mem_psi_{0.0};
+    double min_after_cpu_psi_{0.0}, max_after_cpu_psi_{0.0};
+    double min_after_thermal_{0.0}, max_after_thermal_{0.0};
     double latest_temperature_velocity_{0.0};
     bool latest_temperature_velocity_valid_{false};
     double latest_current_temperature_{-1.0};
@@ -444,7 +537,8 @@ private:
     uint32_t obs_window_{3};
     uint32_t idle_streak_{0};
 
-    uint32_t total_trials_{0};
+    uint32_t total_trials_{0}; // started transaction attempts
+    uint32_t total_reward_samples_{0}; // complete, eligible evaluation windows
     uint32_t total_improved_{0};
     uint32_t total_rolled_back_{0};
     uint32_t total_inconclusive_{0};
@@ -452,6 +546,8 @@ private:
 
     std::vector<MutationStep> applied_steps_;
 
+    bool handle_preemption(MutationDomain domain, std::string_view transaction_id,
+                           std::string_view reason) noexcept;
     void init_candidates();
     void update_ucb_scores();
     void refresh_surface_readings();

@@ -239,12 +239,23 @@ export const ThermalMatrixCard: React.FC<Props> = ({
                     <span className="text-slate-500 dark:text-slate-400 hidden sm:inline shrink-0 w-36 truncate">
                       {getCategoryLabel(sensor.category)}
                     </span>
-                    <div className="font-mono tabular-nums font-semibold text-right text-slate-900 dark:text-slate-100 shrink-0 pl-2">
-                      {sensor.celsius !== null && sensor.celsius >= 0 ? (
-                        `${sensor.celsius.toFixed(1)} °C`
-                      ) : (
-                        <span className="text-slate-400 font-normal">Offline</span>
-                      )}
+                    <div className="text-right shrink-0 pl-2">
+                      <div className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
+                        {sensor.celsius !== null && sensor.celsius >= 0 ? (
+                          `${sensor.celsius.toFixed(1)} °C`
+                        ) : (
+                          <span className="text-slate-400 font-normal">Offline</span>
+                        )}
+                      </div>
+                      <div className="font-mono tabular-nums text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {sensor.velocityValid
+                          ? `${sensor.velocityCelsiusPerSec! > 0 ? '+' : ''}${sensor.velocityCelsiusPerSec!.toFixed(2)} °C/s`
+                          : !sensor.valid
+                            ? 'Trend unavailable'
+                            : sensor.velocitySamples !== undefined
+                              ? `Trend warming up (${sensor.velocitySamples}/2)`
+                              : nativeMode ? 'Trend unavailable' : 'Preview trend'}
+                      </div>
                     </div>
                   </div>
                 ))

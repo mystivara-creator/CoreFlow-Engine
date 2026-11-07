@@ -8,6 +8,9 @@ struct PressureSnapshot {
     double cpu{0.0};
     double memory{0.0};
     double io{0.0};
+    bool cpu_valid{true};
+    bool memory_valid{true};
+    bool io_valid{true};
 };
 
 [[nodiscard]] inline bool emergency_thermal_exit(float temp, const DaemonConfig& cfg) noexcept {
@@ -28,12 +31,12 @@ struct PressureSnapshot {
         return WorkloadState::ThermalGuard;
     }
 
-    if (pressure.memory >= cfg.memory_pressure_guard_pct ||
-        pressure.io >= cfg.io_pressure_guard_pct) {
+    if ((pressure.memory_valid && pressure.memory >= cfg.memory_pressure_guard_pct) ||
+        (pressure.io_valid && pressure.io >= cfg.io_pressure_guard_pct)) {
         return WorkloadState::PressureGuard;
     }
 
-    if (pressure.cpu >= cfg.cpu_pressure_boost_pct &&
+    if (pressure.cpu_valid && pressure.cpu >= cfg.cpu_pressure_boost_pct &&
         temp <= cfg.thermal_trip_celsius - cfg.thermal_headroom_celsius) {
         return WorkloadState::SustainedLoad;
     }

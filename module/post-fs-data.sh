@@ -77,48 +77,80 @@ if [ ! -e "$STATE/coreflow.conf" ] && [ ! -L "$STATE/coreflow.conf" ] && [ -f "$
   fi
 fi
 
-# Xiaomi/Redmi/POCO memory tier policy
+# Xiaomi/Redmi/POCO memory-tier policy. These properties are vendor-specific
+# and must never be applied to other manufacturers.
 BRAND=$(getprop ro.product.brand 2>/dev/null | tr '[:upper:]' '[:lower:]')
 MANUF=$(getprop ro.product.manufacturer 2>/dev/null | tr '[:upper:]' '[:lower:]')
 case "$BRAND $MANUF" in
   *xiaomi*|*redmi*|*poco*)
     XIAOMI_MODE="both"
-    if [ -f "$STATE/xiaomi_ui_mode" ]; then
+    if [ -L "$STATE/xiaomi_ui_mode" ]; then
+      # A symlinked preference is untrusted input: fail closed instead of
+      # silently falling back to the enabling default.
+      printf '%s Symlinked Xiaomi UI mode rejected; policy disabled\n' "$(date)" >> "$LOGS/xiaomi_ui_policy.log"
+      XIAOMI_MODE="disabled"
+    elif [ -f "$STATE/xiaomi_ui_mode" ]; then
       XIAOMI_MODE=$(cat "$STATE/xiaomi_ui_mode" 2>/dev/null | tr -d '[:space:]')
     fi
-    if [ "$XIAOMI_MODE" != "disabled" ]; then
+    case "$XIAOMI_MODE" in
+      both|low_ram_only|threshold_only|disabled) ;;
+      *)
+        printf '%s Invalid Xiaomi UI mode; policy disabled: %s\n' "$(date)" "$XIAOMI_MODE" >> "$LOGS/xiaomi_ui_policy.log"
+        XIAOMI_MODE="disabled"
+        ;;
+    esac
+
+    apply_xiaomi_property() {
+      PROP_NAME="$1"
+      PROP_VALUE="$2"
+      if ! command -v resetprop >/dev/null 2>&1; then
+        printf '%s resetprop unavailable; not applied: %s\n' "$(date)" "$PROP_NAME" >> "$LOGS/xiaomi_ui_policy.log"
+        return 1
+      fi
+      if ! resetprop -n "$PROP_NAME" "$PROP_VALUE"; then
+        printf '%s resetprop failed: %s=%s\n' "$(date)" "$PROP_NAME" "$PROP_VALUE" >> "$LOGS/xiaomi_ui_policy.log"
+        return 1
+      fi
+      ACTUAL_VALUE=$(getprop "$PROP_NAME" 2>/dev/null)
+      if [ "$ACTUAL_VALUE" != "$PROP_VALUE" ]; then
+        printf '%s readback mismatch: %s expected=%s actual=%s\n' "$(date)" "$PROP_NAME" "$PROP_VALUE" "$ACTUAL_VALUE" >> "$LOGS/xiaomi_ui_policy.log"
+        return 1
+      fi
+      printf '%s applied and verified: %s=%s\n' "$(date)" "$PROP_NAME" "$PROP_VALUE" >> "$LOGS/xiaomi_ui_policy.log"
+      return 0
+    }
+
+    APPLY_LOW_RAM=0
+    APPLY_THRESHOLD=0
+    case "$XIAOMI_MODE" in
+      low_ram_only) APPLY_LOW_RAM=1 ;;
+      threshold_only) APPLY_THRESHOLD=1 ;;
+      both) APPLY_LOW_RAM=1; APPLY_THRESHOLD=1 ;;
+    esac
+
+    if [ "$APPLY_LOW_RAM" -eq 1 ]; then
+      apply_xiaomi_property "ro.config.low_ram" "false" || :
+    fi
+
+    if [ "$APPLY_THRESHOLD" -eq 1 ]; then
       MEMINFO="${COREFLOW_MEMINFO_PATH:-/proc/meminfo}"
       MEM_TOTAL_KB=0
       if [ -f "$MEMINFO" ] && [ -r "$MEMINFO" ]; then
-        MEM_TOTAL_KB=$(grep -m1 '^MemTotal:' "$MEMINFO" 2>/dev/null | awk '{print $2}')
-        [ -n "$MEM_TOTAL_KB" ] || MEM_TOTAL_KB=0
+        MEM_TOTAL_KB=$(awk '$1 == "MemTotal:" && $2 ~ /^[0-9]+$/ { print $2; exit }' "$MEMINFO" 2>/dev/null)
       fi
-
-      APPLY_LOW_RAM=0
-      APPLY_THRESHOLD=0
-      case "$XIAOMI_MODE" in
-        low_ram_only)
-          APPLY_LOW_RAM=1
-          ;;
-        threshold_only)
-          APPLY_THRESHOLD=1
-          ;;
-        both|"")
-          APPLY_LOW_RAM=1
-          APPLY_THRESHOLD=1
-          ;;
-      esac
-
-      if [ "$APPLY_LOW_RAM" -eq 1 ] && command -v resetprop >/dev/null 2>&1; then
-        resetprop -n ro.config.low_ram false
-      fi
-
-      if [ "$APPLY_THRESHOLD" -eq 1 ] && [ "$MEM_TOTAL_KB" -gt 0 ] && command -v resetprop >/dev/null 2>&1; then
+      case "$MEM_TOTAL_KB" in ''|*[!0-9]*) MEM_TOTAL_KB=0 ;; esac
+      if [ "$MEM_TOTAL_KB" -gt 0 ]; then
+        # Round physical RAM to the nearest GiB, then reserve one GiB for
+        # the middle-tier boundary. Do not invent a threshold on missing data.
         RAM_GB=$(( (MEM_TOTAL_KB + 524288) / 1048576 ))
         if [ "$RAM_GB" -gt 1 ]; then
           THRESH_GB=$(( RAM_GB - 1 ))
-          resetprop -n ro.config.low_ram.middle.threshold_gb "$THRESH_GB"
+          apply_xiaomi_property "ro.config.low_ram.middle.threshold_gb" "$THRESH_GB" || :
+        else
+          printf '%s RAM below threshold-policy minimum; threshold unchanged\n' "$(date)" >> "$LOGS/xiaomi_ui_policy.log"
         fi
+      else
+        printf '%s MemTotal unavailable or invalid; threshold unchanged\n' "$(date)" >> "$LOGS/xiaomi_ui_policy.log"
       fi
     fi
     ;;

@@ -5,6 +5,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 
 namespace coreflow {
 struct ThermalSensorReading {
@@ -13,6 +14,10 @@ struct ThermalSensorReading {
     float celsius{-1};
     bool valid{false}, policy_available{false};
     double pressure{0};
+    double velocity_celsius_per_sec{0.0};
+    bool velocity_valid{false};
+    uint32_t velocity_samples_count{0};
+    double velocity_sample_duration_sec{0.0};
 };
 struct TemperatureTrendSample {
     float celsius{-1.0f};
@@ -110,6 +115,7 @@ private:
     mutable std::vector<Sensor> sensors_;
     mutable std::chrono::steady_clock::time_point discovery_at_{};
     mutable TemperatureTrendTracker trend_tracker_{8};
+    mutable std::unordered_map<std::string, TemperatureTrendTracker> sensor_trend_trackers_;
     void discover_sensors() const;
     float hottest_category(int category) const;
 };

@@ -4,6 +4,7 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/recovery_monitor.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/cooling_feedback.hpp"
 #include "coreflow/unique_fd.hpp"
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <pthread.h>
 #include <sstream>
@@ -315,16 +317,19 @@ void print_status() {
     UclampGovernor governor;
     const auto battery = ThermalMonitor::instance().battery_celsius();
     const auto skin = ThermalMonitor::instance().skin_celsius();
-    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu").value_or(0.0);
-    const auto mem_psi = read_psi_avg10("/proc/pressure/memory").value_or(0.0);
-    const auto io_psi = read_psi_avg10("/proc/pressure/io").value_or(0.0);
+    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+    const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
+    const auto io_psi = read_psi_avg10("/proc/pressure/io");
     const auto ai = NeuralPredictor::instance().infer_and_learn({
-        std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
-        std::clamp(safe_json_double(cpu_psi), 0.0, 100.0),
-        std::clamp(safe_json_double(mem_psi), 0.0, 100.0),
-        std::clamp(safe_json_double(io_psi), 0.0, 100.0),
-        1.0,
-        1.0,
+        .thermal_pressure = std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
+        .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
+        .memory_psi = std::clamp(mem_psi.value_or(0.0), 0.0, 100.0),
+        .io_psi = std::clamp(io_psi.value_or(0.0), 0.0, 100.0),
+        .cpu_psi_valid = cpu_psi.has_value(),
+        .memory_psi_valid = mem_psi.has_value(),
+        .io_psi_valid = io_psi.has_value(),
+        .current_scale = 1.0,
+        .elapsed_seconds = 1.0,
     });
     AutonomousTuner::instance().discover();
     const auto tuner = AutonomousTuner::instance().snapshot();
@@ -345,9 +350,12 @@ void print_status() {
         << ",\"uclampMin\":" << governor.get_top_app_min()
         << ",\"uclampMax\":" << governor.get_top_app_max()
         << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
-        << ",\"cpuPressurePct\":" << safe_json_double(cpu_psi)
-        << ",\"memoryPressurePct\":" << safe_json_double(mem_psi)
-        << ",\"ioPressurePct\":" << safe_json_double(io_psi)
+        << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
+        << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
+        << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
+        << ",\"cpuPressureValid\":" << (cpu_psi.has_value() ? "true" : "false")
+        << ",\"memoryPressureValid\":" << (mem_psi.has_value() ? "true" : "false")
+        << ",\"ioPressureValid\":" << (io_psi.has_value() ? "true" : "false")
         << ",\"baselineNodesSnapshotted\":" << journal_nodes
         << ",\"socTempCelsius\":";
     if (std::isfinite(temp) && temp >= 0.0f) {
@@ -387,7 +395,11 @@ void print_status() {
             << ",\"category\":" << reading.category
             << ",\"valid\":" << (reading.valid ? "true" : "false")
             << ",\"celsius\":" << (reading.valid && std::isfinite(reading.celsius) ? std::to_string(reading.celsius) : "null")
-            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false") << '}';
+            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false")
+            << ",\"velocityValid\":" << (reading.velocity_valid ? "true" : "false")
+            << ",\"velocityCelsiusPerSec\":" << (reading.velocity_valid ? std::to_string(reading.velocity_celsius_per_sec) : "null")
+            << ",\"velocitySamples\":" << reading.velocity_samples_count
+            << ",\"velocityDurationSec\":" << std::to_string(reading.velocity_sample_duration_sec) << '}';
     }
     out << "]"
         << ",\"batteryTempCelsius\":" << (std::isfinite(battery) && battery >= 0 ? std::to_string(battery) : "null")
@@ -608,19 +620,80 @@ void clear_pid(const UniqueFd& lock) noexcept {
     }
 }
 
-void write_sys_node_quiet(const char* path, std::string_view content) noexcept {
-    UniqueFd fd(::open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return;
-    const ssize_t written = ::write(fd.get(), content.data(), content.size());
-    (void)written;
+bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
+    constexpr std::string_view kAllowed[] = {
+        "/sys/fs/cgroup/cgroup.procs",
+        "/dev/cg2_bpf/cgroup.procs",
+        "/acct/cgroup.procs",
+        "/dev/cpuset/system-background/cgroup.procs",
+        "/dev/cpuset/system-background/tasks",
+        "/proc/self/oom_score_adj",
+    };
+    return std::find(std::begin(kAllowed), std::end(kAllowed), path) != std::end(kAllowed);
 }
 
-void escape_app_cgroups_and_protect_oom() noexcept {
-    // When launched from a root manager WebUI (KernelSU / APatch / MMRL), the child
-    // inherits the WebView/Manager app's UID/PID cgroup. When the user closes the WebUI,
-    // Android's libprocessgroup kills all processes remaining in that app's cgroup.
-    // Migrate coreflowd into the root/system cgroups and harden oom_score_adj.
-    const std::string pid_str = std::to_string(::getpid()) + "\n";
+bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
+    if (fd < 0 || expected.empty() || expected.size() > 32) return false;
+    char buffer[4096];
+    std::string line;
+    bool overflow = false;
+    for (;;) {
+        ssize_t count = ::read(fd, buffer, sizeof(buffer));
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (count == 0) {
+            return !overflow && line == expected;
+        }
+        for (ssize_t i = 0; i < count; ++i) {
+            const char ch = buffer[i];
+            if (ch == '\n' || ch == '\r') {
+                if (!overflow && line == expected) return true;
+                line.clear();
+                overflow = false;
+            } else if (!overflow) {
+                if (line.size() < 32) line.push_back(ch);
+                else overflow = true;
+            }
+        }
+    }
+}
+
+bool write_sys_node_verified(
+    std::string_view path,
+    std::string_view content,
+    std::string_view expected_readback_line) {
+    if (!is_allowlisted_lifecycle_target(path) || content.empty() ||
+        expected_readback_line.empty()) {
+        return false;
+    }
+
+    const std::string owned_path(path);
+    UniqueFd fd(::open(owned_path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+
+    // cgroup membership files are command interfaces: a short write is failure,
+    // not a partially successful lifecycle operation.
+    ssize_t written = -1;
+    do {
+        written = ::write(fd.get(), content.data(), content.size());
+    } while (written < 0 && errno == EINTR);
+    if (written < 0 || static_cast<size_t>(written) != content.size()) return false;
+    fd.reset();
+
+    UniqueFd verify_fd(::open(owned_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!verify_fd.valid()) return false;
+    struct stat st{};
+    if (::fstat(verify_fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    return lifecycle_readback_contains_line(verify_fd.get(), expected_readback_line);
+}
+
+void escape_app_cgroups_and_protect_oom() {
+    // This is a lifecycle-only operation, deliberately outside adaptive mutation
+    // domains. Every target is explicitly allowlisted and must pass readback.
+    const std::string pid_token = std::to_string(::getpid());
+    const std::string pid_command = pid_token + "\n";
     constexpr const char* kRootCgroups[] = {
         "/sys/fs/cgroup/cgroup.procs",
         "/dev/cg2_bpf/cgroup.procs",
@@ -628,10 +701,20 @@ void escape_app_cgroups_and_protect_oom() noexcept {
         "/dev/cpuset/system-background/cgroup.procs",
         "/dev/cpuset/system-background/tasks",
     };
+
+    size_t verified_memberships = 0;
     for (const char* cg : kRootCgroups) {
-        write_sys_node_quiet(cg, pid_str);
+        if (write_sys_node_verified(cg, pid_command, pid_token)) {
+            ++verified_memberships;
+        }
     }
-    write_sys_node_quiet("/proc/self/oom_score_adj", "-900\n");
+    if (verified_memberships == 0) {
+        emit_log(true, "[CoreFlow][Lifecycle] No allowlisted cgroup membership write passed readback; inherited membership remains in effect.");
+    }
+
+    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900")) {
+        emit_log(true, "[CoreFlow][Lifecycle] oom_score_adj write was not verified; retaining the kernel-provided value.");
+    }
 }
 
 bool daemonize_process() noexcept {
@@ -774,6 +857,7 @@ int main(int argc, char* argv[]) {
         clear_pid(pid_lock);
         return 1;
     }
+    MutationRecoveryMonitor recovery_monitor(baseline);
 
     DaemonConfig config = DaemonConfig::load_best_available();
     UclampGovernor governor;
@@ -829,11 +913,15 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    (void)AutonomousTuner::instance().rollback_active("Configuration reloaded on SIGHUP");
-                    (void)baseline.rollback_all();
+                    const auto recovery = coordinated_rollback(baseline, "Configuration reload on SIGHUP");
+                    if (!recovery.recovered()) {
+                        emit_log(true, "[CoreFlow] SIGHUP reload deferred; recovery status=" +
+                                 std::string(recovery_status_name(recovery.status)));
+                        continue;
+                    }
                     config = DaemonConfig::load_best_available();
                     if (!governor.resync()) {
-                        governor = UclampGovernor{};
+                        std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
                     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
@@ -878,6 +966,26 @@ int main(int argc, char* argv[]) {
             return;
         }
 
+        // The timerfd safety cadence shares the same tested recovery monitor as
+        // host stress tests. Failed journal restoration remains pending and is
+        // retried on the next tick without reopening mutation admission.
+        const auto monitor_recovery = recovery_monitor.on_timer_tick();
+        if (monitor_recovery.status != RecoveryStatus::NoRecoveryRequired) {
+            if (!monitor_recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Detached-owner recovery pending; status=" +
+                         std::string(recovery_status_name(monitor_recovery.status)));
+                return;
+            }
+            applied = false;
+            thermal_ready = false;
+            controller->reset();
+            (void)governor.resync();
+            cooling_feedback.reset();
+            temp_tracker.reset();
+            last_tick = std::chrono::steady_clock::now();
+            return; // Re-enter normal policy only on a fresh telemetry tick.
+        }
+
         // If an OEM PowerHAL touch boost temporarily wrote to UClamp, yield for the active boost
         // and resynchronize ownership rather than terminating the daemon.
         bool uclamp_yield_this_tick = false;
@@ -918,8 +1026,16 @@ int main(int argc, char* argv[]) {
             thermal_ready = false;
             cooling_feedback.reset();
             temp_tracker.reset();
+            // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
+            // do not rely on the unrelated PID applied flag to decide whether it rolls back.
+            const auto recovery = coordinated_rollback(
+                baseline, "Thermal telemetry unavailable; restore OEM baseline.");
+            if (!recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Thermal rollback pending; status=" +
+                         std::string(recovery_status_name(recovery.status)));
+                return;
+            }
             if (applied) {
-                (void)baseline.rollback_all();
                 applied = false;
                 controller->reset();
                 (void)governor.resync();
@@ -939,7 +1055,13 @@ int main(int argc, char* argv[]) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
-            (void)baseline.rollback_all();
+            const auto recovery = coordinated_rollback(
+                baseline, "Extreme physical thermal threshold reached.");
+            if (!recovery.recovered()) {
+                emit_log(true, "[CoreFlow][Safety] Extreme thermal rollback pending; status=" +
+                         std::string(recovery_status_name(recovery.status)));
+                return;
+            }
             applied = false;
             return;
         }
@@ -951,6 +1073,9 @@ int main(int argc, char* argv[]) {
             .cpu = cpu_psi.value_or(0.0),
             .memory = memory_psi.value_or(0.0),
             .io = io_psi.value_or(0.0),
+            .cpu_valid = cpu_psi.has_value(),
+            .memory_valid = memory_psi.has_value(),
+            .io_valid = io_psi.has_value(),
         };
 
         const auto now_tick = std::chrono::steady_clock::now();
@@ -960,7 +1085,19 @@ int main(int argc, char* argv[]) {
         if (temp >= 0.0f && std::isfinite(temp)) {
             temp_tracker.record_sample(temp, now_ns);
         }
-        const auto temp_vel = temp_tracker.evaluate_velocity();
+        auto temp_vel = temp_tracker.evaluate_velocity();
+        // A composite average can hide one rapidly warming die. Use the fastest
+        // valid compute/board sensor trend as the conservative physical trend.
+        for (const auto& reading : thermal.readings) {
+            if (!reading.velocity_valid || (reading.category != 1 && reading.category != 4)) continue;
+            if (!temp_vel.valid || reading.velocity_celsius_per_sec > temp_vel.velocity_celsius_per_sec) {
+                temp_vel.velocity_celsius_per_sec = reading.velocity_celsius_per_sec;
+                temp_vel.valid = true;
+                temp_vel.valid_samples_count = reading.velocity_samples_count;
+                temp_vel.sample_duration_sec = reading.velocity_sample_duration_sec;
+                temp_vel.current_temperature_celsius = reading.celsius;
+            }
+        }
         const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
@@ -971,6 +1108,9 @@ int main(int argc, char* argv[]) {
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .cpu_psi_valid = cpu_psi.has_value(),
+            .memory_psi_valid = memory_psi.has_value(),
+            .io_psi_valid = io_psi.has_value(),
             .current_scale = last_capacity_scale,
             .elapsed_seconds = elapsed,
         });
@@ -990,6 +1130,7 @@ int main(int argc, char* argv[]) {
             std::clamp(pressure.cpu, 0.0, 100.0),
             std::clamp(pressure.memory, 0.0, 100.0),
             std::clamp(pressure.io, 0.0, 100.0),
+            cpu_psi.has_value(), memory_psi.has_value(), io_psi.has_value(),
             85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
@@ -1054,6 +1195,10 @@ int main(int argc, char* argv[]) {
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .cpu_psi_valid = cpu_psi.has_value(),
+            .memory_psi_valid = memory_psi.has_value(),
+            .io_psi_valid = io_psi.has_value(),
+            .thermal_pressure_valid = thermal.available && std::isfinite(thermal.pressure),
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .thermal_pressure_velocity = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
             .current_temperature_celsius = temp,
@@ -1122,8 +1267,9 @@ int main(int argc, char* argv[]) {
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
-    baseline.rollback_all();
-    const bool restored = !baseline.has_active_mutations() && journal_clear();
+    const auto shutdown_recovery = coordinated_rollback(baseline, "Daemon shutdown");
+    const bool restored = shutdown_recovery.recovered() &&
+                          !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
 }

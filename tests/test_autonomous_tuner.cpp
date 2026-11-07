@@ -1,11 +1,18 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
+#include <algorithm>
 #include <cassert>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
+#include <thread>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -55,6 +62,11 @@ int main() {
     coreflow::AutonomousTuner tuner(sys_root.string(), proc_root.string());
     const auto initial = tuner.snapshot();
     assert(initial.block_queues.size() == 1);
+    for (const auto& candidate : initial.candidates) {
+        assert(candidate.trials == 0);
+        assert(candidate.reward_samples == 0);
+        assert(candidate.neutral_count == 0);
+    }
     assert(initial.block_queues[0].device_name == "sda");
     assert(initial.block_queues[0].active_scheduler == "none");
     assert(initial.block_queues[0].available_schedulers.size() == 4);
@@ -62,7 +74,179 @@ int main() {
     assert(initial.block_queues[0].nr_requests == 64);
     assert(initial.block_queues[0].rq_affinity == 1);
 
-    // 1. Idle equilibrium: no need -> must hold baseline without mutating
+    // Concurrent requests for one domain must have a single lease winner.
+    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coordinator.reset();
+    const auto first_frequency_identity =
+        coreflow::CentralMutationCoordinator::make_controller_identity("FrequencyController");
+    const auto second_frequency_identity =
+        coreflow::CentralMutationCoordinator::make_controller_identity("FrequencyController");
+    assert(first_frequency_identity.rfind("FrequencyController@", 0) == 0);
+    assert(second_frequency_identity.rfind("FrequencyController@", 0) == 0);
+    assert(first_frequency_identity != second_frequency_identity);
+    std::atomic<uint32_t> acquired{0};
+    std::vector<std::thread> contenders;
+    for (uint32_t i = 0; i < 12; ++i) {
+        contenders.emplace_back([&, i] {
+            const std::string owner = "concurrent-controller-" + std::to_string(i);
+            if (coordinator.acquire_lease(
+                    coreflow::MutationDomain::BlockIo, owner, "tx-" + std::to_string(i),
+                    coreflow::ControllerPriority::WorkloadOptimization)) {
+                acquired.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& contender : contenders) contender.join();
+    assert(acquired.load(std::memory_order_relaxed) == 1);
+    assert(coordinator.active_leases().size() == 1);
+    assert(coordinator.conflict_rejections() == 11);
+    std::string invalid_lease_reason;
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "", "invalid-owner-tx",
+        coreflow::ControllerPriority::WorkloadOptimization, &invalid_lease_reason));
+    assert(!invalid_lease_reason.empty());
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "InvalidTransactionController", "",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.active_leases().size() == 1);
+    const auto winning_lease = coordinator.active_leases().front();
+    coordinator.release_lease(winning_lease.domain, winning_lease.owner_controller, winning_lease.transaction_id);
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx", coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.active_leases().size() == 1);
+    // A controller must release the previous transaction before acquiring a new one.
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx");
+    assert(coordinator.acquire_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2", coreflow::ControllerPriority::WorkloadOptimization));
+    // A stale completion from the earlier transaction must not release the newer lease.
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx");
+    const auto protected_lease = coordinator.active_leases();
+    assert(protected_lease.size() == 1);
+    assert(protected_lease.front().transaction_id == "replacement-tx-2");
+    coordinator.release_lease(coreflow::MutationDomain::BlockIo, "replacement", "replacement-tx-2");
+
+    // A controller that owns more than one domain must release each exact
+    // transaction independently; domain scope alone is not sufficient.
+    coordinator.reset();
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "scoped-cpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ScopedReleaseController", "scoped-gpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    // An empty transaction identifier is never a wildcard release.
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "");
+    assert(coordinator.active_leases().size() == 2);
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "ScopedReleaseController", "scoped-cpu-tx");
+    const auto scoped_remaining = coordinator.active_leases();
+    assert(scoped_remaining.size() == 1);
+    assert(scoped_remaining.front().domain == coreflow::MutationDomain::GpuDevfreq);
+    assert(scoped_remaining.front().transaction_id == "scoped-gpu-tx");
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ScopedReleaseController", "scoped-gpu-tx");
+
+    // Controller callbacks must run outside the coordinator lock and only release
+    // the exact transaction after the controller acknowledges successful rollback.
+    coordinator.reset();
+    std::atomic<uint32_t> acknowledged_callbacks{0};
+    assert(coordinator.register_preemption_handler("AckController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view reason) {
+            assert(domain == coreflow::MutationDomain::GpuDevfreq);
+            assert(tx == "tx-ack");
+            assert(reason == "thermal-emergency");
+            const auto active = coordinator.active_leases(); // Would deadlock if callback held the lock.
+            assert(active.size() == 1 && active.front().preemption_requested);
+            acknowledged_callbacks.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "AckController", "tx-ack",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("thermal-emergency");
+    assert(acknowledged_callbacks.load(std::memory_order_relaxed) == 1);
+    assert(coordinator.active_leases().empty());
+    coordinator.unregister_preemption_handler("AckController");
+
+    std::atomic<uint32_t> refused_callbacks{0};
+    assert(coordinator.register_preemption_handler("RefusingController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            assert(domain == coreflow::MutationDomain::CpuPolicy);
+            assert(tx == "tx-refuse");
+            refused_callbacks.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse",
+        coreflow::ControllerPriority::BackgroundEfficiency));
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyRequester", "tx-emergency",
+        coreflow::ControllerPriority::EmergencySafety));
+    assert(refused_callbacks.load(std::memory_order_relaxed) == 1);
+    const auto refused_lease = coordinator.active_leases();
+    assert(refused_lease.size() == 1);
+    assert(refused_lease.front().owner_controller == "RefusingController");
+    assert(refused_lease.front().preemption_requested);
+    assert(coordinator.is_preemption_requested(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse"));
+    assert(!coordinator.is_preemption_requested(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "another-transaction"));
+    assert(!coordinator.is_preemption_requested(
+        coreflow::MutationDomain::GpuDevfreq, "RefusingController", "tx-refuse"));
+    // A failed callback clears its dispatch marker; a later recovery pass may retry.
+    coordinator.emergency_preempt_all("retry-failed-preemption");
+    assert(refused_callbacks.load(std::memory_order_relaxed) == 2);
+    assert(coordinator.active_leases().size() == 1);
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse",
+        coreflow::ControllerPriority::BackgroundEfficiency));
+    coordinator.unregister_preemption_handler("RefusingController");
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "RefusingController", "tx-refuse");
+
+    // A delayed successful acknowledgement must not release a replacement transaction.
+    assert(coordinator.register_preemption_handler("RotatingController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            assert(tx == "tx-old");
+            coordinator.release_lease(domain, "RotatingController", "tx-old");
+            assert(coordinator.acquire_lease(
+                domain, "RotatingController", "tx-new",
+                coreflow::ControllerPriority::ThermalStabilization));
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "RotatingController", "tx-old",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("rotate-transaction");
+    const auto rotated_lease = coordinator.active_leases();
+    assert(rotated_lease.size() == 1);
+    assert(rotated_lease.front().transaction_id == "tx-new");
+    assert(rotated_lease.front().active);
+    coordinator.unregister_preemption_handler("RotatingController");
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "RotatingController", "tx-new");
+
+    // 1. Missing PSI is unavailable evidence, not a measured zero. No workload mutation is allowed.
+    const auto incomplete_psi = tuner.step({
+        .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
+        .cpu_psi_valid = false, .memory_psi_valid = false, .io_psi_valid = false,
+        .thermal_pressure = 42.0,
+    });
+    assert(incomplete_psi.last_verdict == "INCONCLUSIVE");
+    assert(incomplete_psi.objective == coreflow::OptimizationObjective::HoldBaseline);
+    assert(incomplete_psi.stage == "PLANNED");
+    assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
+
+    // Independent thermal evidence must still take precedence when PSI is unavailable.
+    const auto thermal_without_psi = tuner.step({
+        .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
+        .cpu_psi_valid = false, .memory_psi_valid = false, .io_psi_valid = false,
+        .thermal_pressure = 70.0,
+    });
+    assert(thermal_without_psi.objective == coreflow::OptimizationObjective::ThermalStabilization);
+    assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
+
+    // 1a. Idle equilibrium: no need -> must hold baseline without mutating
     tuner.step({.cpu_psi = 1.0, .memory_psi = 0.2, .io_psi = 0.3, .thermal_pressure = 42.0});
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
@@ -115,6 +299,10 @@ int main() {
     const auto observing2 = tuner.snapshot();
     assert(observing2.stage == "OBSERVING");
     assert(observing2.active_candidate_id == "io.kyber_token_bucket");
+    // A new trial must not inherit the preceding mq-deadline REGRESSED verdict or delta.
+    assert(observing2.last_verdict == "PENDING");
+    assert(observing2.verdict == coreflow::TunerVerdict::Pending);
+    assert(observing2.last_utility_delta == 0.0);
     assert(get(sda_q / "scheduler") == "kyber");
     assert(get(sda_q / "nr_requests") == "128");
 
@@ -161,6 +349,34 @@ int main() {
     tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
     assert(tuner.snapshot().stage == "PLANNED");
+    const auto ownership_lost_snapshot = tuner.snapshot();
+    const auto quarantined_bfq = std::find_if(
+        ownership_lost_snapshot.candidates.begin(), ownership_lost_snapshot.candidates.end(),
+        [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
+    assert(quarantined_bfq != ownership_lost_snapshot.candidates.end());
+    assert(quarantined_bfq->ownership_loss_count == 1);
+    assert(quarantined_bfq->ownership_quarantine_ticks == 8);
+    assert(quarantined_bfq->cooldown_ticks >= 8);
+    assert(!tuner.is_candidate_eligible("io.bfq_interactive_fairness"));
+    // Even a completely different workload/thermal context cannot bypass ownership quarantine.
+    assert(!tuner.is_candidate_eligible_for_context(
+        "io.bfq_interactive_fairness", coreflow::WorkloadClass::Gaming, 4));
+    // Verify durable serialization by constructing a fresh tuner instance against
+    // the same state directory and capability fingerprint (not merely rereading
+    // into already-populated in-memory CandidateStats).
+    {
+        coreflow::AutonomousTuner reloaded_tuner(sys_root.string(), proc_root.string());
+        const auto reloaded = reloaded_tuner.snapshot();
+        const auto persisted_bfq = std::find_if(
+            reloaded.candidates.begin(), reloaded.candidates.end(),
+            [](const coreflow::CandidateStats& candidate) { return candidate.id == "io.bfq_interactive_fairness"; });
+        assert(persisted_bfq != reloaded.candidates.end());
+        assert(persisted_bfq->ownership_loss_count == 1);
+        assert(persisted_bfq->ownership_quarantine_ticks == 8);
+        assert(!reloaded_tuner.is_candidate_eligible("io.bfq_interactive_fairness"));
+        assert(!reloaded_tuner.is_candidate_eligible_for_context(
+            "io.bfq_interactive_fairness", coreflow::WorkloadClass::Gaming, 4));
+    }
     // External writer's value (512) is preserved, while our other node (scheduler) is rolled back to "none"
     assert(get(sda_q / "read_ahead_kb") == "512");
     assert(get(sda_q / "scheduler") == "none");
@@ -273,7 +489,7 @@ int main() {
     const auto therm_stab = tuner.step({
         .cpu_psi = 11.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .thermal_guard_active = true,
         .thermal_emergency = false,
@@ -288,7 +504,14 @@ int main() {
     assert(get(schedutil_dir / "up_rate_limit_us") == "4000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "500");
 
-    // Emergency thermal spike immediately aborts and restores OEM baseline
+    // Emergency thermal spike must request preemption from every live domain owner
+    // before the tuner attempts to roll back its own transaction.
+    auto& emergency_coord = coreflow::CentralMutationCoordinator::instance();
+    assert(emergency_coord.acquire_lease(
+        coreflow::MutationDomain::UclampCgroup,
+        "ExternalUclampController",
+        "tx-uclamp-before-emergency",
+        coreflow::ControllerPriority::WorkloadOptimization));
     const auto therm_emerg = tuner.step({
         .cpu_psi = 11.0,
         .memory_psi = 0.5,
@@ -301,6 +524,64 @@ int main() {
     assert(therm_emerg.stage == "PLANNED");
     assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
+    const auto emergency_leases = emergency_coord.active_leases();
+    assert(emergency_leases.size() == 1);
+    assert(emergency_leases[0].owner_controller == "ExternalUclampController");
+    assert(emergency_leases[0].transaction_id == "tx-uclamp-before-emergency");
+    assert(emergency_leases[0].preemption_requested);
+    emergency_coord.release_lease(
+        coreflow::MutationDomain::UclampCgroup, "ExternalUclampController", "tx-uclamp-before-emergency");
+
+    // P0 regression: failed rollback must preserve recovery state and domain ownership.
+    const auto recovery_start = tuner.step({
+        .cpu_psi = 11.0,
+        .memory_psi = 0.5,
+        .io_psi = 1.0,
+        .thermal_pressure = 68.0,
+        .thermal_guard_active = true,
+    });
+    assert(recovery_start.thermal_stabilization_active);
+    const fs::path up_rate_path = schedutil_dir / "up_rate_limit_us";
+    assert(get(up_rate_path) == "4000");
+    assert(std::filesystem::remove(up_rate_path));
+    tuner.reset(); // rollback of the missing node must fail closed
+    const auto recovery_snapshot = tuner.snapshot();
+    assert(recovery_snapshot.recovery_required);
+    const auto recovery_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
+    assert(recovery_leases.size() == 1);
+    assert(recovery_leases[0].owner_controller.rfind("AutonomousTuner@", 0) == 0);
+    assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
+
+    // Emergency must still preempt other owners even when the recovery retry fails early.
+    auto& recovery_coord = coreflow::CentralMutationCoordinator::instance();
+    assert(recovery_coord.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq,
+        "ExternalGpuController",
+        "tx-gpu-during-recovery",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    const auto emergency_during_recovery = tuner.step({
+        .thermal_pressure = 92.0,
+        .thermal_emergency = true,
+    });
+    assert(emergency_during_recovery.recovery_required);
+    const auto leases_during_recovery = recovery_coord.active_leases();
+    bool gpu_preemption_requested = false;
+    for (const auto& lease : leases_during_recovery) {
+        if (lease.owner_controller == "ExternalGpuController" &&
+            lease.transaction_id == "tx-gpu-during-recovery") {
+            gpu_preemption_requested = lease.preemption_requested;
+        }
+    }
+    assert(gpu_preemption_requested);
+    recovery_coord.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "ExternalGpuController", "tx-gpu-during-recovery");
+
+    // Recreated path has a new inode and already contains OEM baseline; adopt it safely.
+    put(up_rate_path, "2000");
+    tuner.reset();
+    assert(!tuner.snapshot().recovery_required);
+    assert(coreflow::CentralMutationCoordinator::instance().active_leases().empty());
+    assert(get(up_rate_path) == "2000");
 
     // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
     tuner.reset();
@@ -314,8 +595,38 @@ int main() {
         coreflow::ControllerPriority::EmergencySafety,
         &conflict_msg));
     assert(!tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
-    coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard");
+    coord.release_lease(coreflow::MutationDomain::BlockIo, "ExternalSafetyGuard", "tx-lock-io");
     assert(tuner.is_candidate_eligible("io.mq_deadline_low_latency"));
+
+    // A higher-priority request must not steal a lease from a live transaction.
+    coord.reset();
+    assert(coord.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy,
+        "BackgroundController",
+        "tx-background-1",
+        coreflow::ControllerPriority::BackgroundEfficiency));
+    assert(!coord.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy,
+        "EmergencyController",
+        "tx-emergency-1",
+        coreflow::ControllerPriority::EmergencySafety,
+        &conflict_msg));
+    auto pending_preemption = coord.active_leases();
+    assert(pending_preemption.size() == 1);
+    assert(pending_preemption[0].active);
+    assert(pending_preemption[0].owner_controller == "BackgroundController");
+    assert(pending_preemption[0].transaction_id == "tx-background-1");
+    assert(pending_preemption[0].preemption_requested);
+
+    // Emergency arbitration requests owner resolution; it must not erase the lease.
+    coord.emergency_preempt_all("thermal-emergency");
+    pending_preemption = coord.active_leases();
+    assert(pending_preemption.size() == 1);
+    assert(pending_preemption[0].active);
+    assert(pending_preemption[0].owner_controller == "BackgroundController");
+    assert(pending_preemption[0].transaction_id == "tx-background-1");
+    coord.release_lease(coreflow::MutationDomain::CpuPolicy, "BackgroundController", "tx-background-1");
+    assert(coord.active_leases().empty());
 
     // 13. Thermal Decision Correctness & False-Positive Elimination (TASK 01)
     // 13.1 Constant thermal pressure must NOT yield false-positive IMPROVED
@@ -324,7 +635,7 @@ int main() {
     const auto t1_start = tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -334,12 +645,16 @@ int main() {
     });
     assert(t1_start.thermal_stabilization_active);
     assert(t1_start.stage == "OBSERVING");
-    // Feed 3 observation ticks with constant pressure (68.0) and zero temp trend
+    // Keep thermal evidence constant while I/O PSI oscillates; I/O noise must not
+    // make a thermal-domain evaluation inconclusive.
+    const double io_jitter[] = {0.0, 10.0, 5.0};
     for (int i = 0; i < 3; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = io_jitter[i],
+            .cpu_psi_valid = false,
+            .memory_psi_valid = false,
             .thermal_pressure = 68.0,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = 0.0,
@@ -352,6 +667,17 @@ int main() {
     assert(t1_eval.last_verdict != "IMPROVED");
     assert(t1_eval.last_verdict == "NEUTRAL");
     assert(t1_eval.stage == "PLANNED");
+    uint32_t t1_attempts = 0, t1_rewards = 0, t1_neutral = 0, t1_inconclusive = 0;
+    for (const auto& candidate : t1_eval.candidates) {
+        t1_attempts += candidate.trials;
+        t1_rewards += candidate.reward_samples;
+        t1_neutral += candidate.neutral_count;
+        t1_inconclusive += candidate.inconclusive_count;
+    }
+    assert(t1_attempts == 1);
+    assert(t1_rewards == 1);
+    assert(t1_neutral == 1);
+    assert(t1_inconclusive == 0);
 
     // 13.2 Zero temperature trend is NOT evidence of cooling
     // Evaluated in 13.1 above: utility delta was 0.0, receiving 0 trend bonus and resulting in NEUTRAL rollback.
@@ -450,6 +776,15 @@ int main() {
     const auto t5_eval = tuner.snapshot();
     assert(t5_eval.last_verdict == "INCONCLUSIVE");
     assert(t5_eval.stage == "PLANNED");
+    uint32_t t5_attempts = 0, t5_rewards = 0, t5_inconclusive = 0;
+    for (const auto& candidate : t5_eval.candidates) {
+        t5_attempts += candidate.trials;
+        t5_rewards += candidate.reward_samples;
+        t5_inconclusive += candidate.inconclusive_count;
+    }
+    assert(t5_attempts == 1);
+    assert(t5_rewards == 0);
+    assert(t5_inconclusive == 1);
 
     // 13.6 Insufficient sample count yields INCONCLUSIVE
     tuner.reset();
@@ -581,6 +916,634 @@ int main() {
     assert(t9_eval.stage == "PLANNED");
 
     tuner.reset();
+
+    // A separate tuner instance verifies that coordinator preemption invokes
+    // its registered callback and restores the active candidate before releasing.
+    {
+        put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
+        coreflow::AutonomousTuner preemption_tuner(sys_root.string(), proc_root.string());
+        preemption_tuner.reset();
+        const auto active = preemption_tuner.step({
+            .cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
+        assert(active.stage == "OBSERVING");
+        assert(active.active_candidate_id.rfind("io.", 0) == 0);
+        const auto tuner_lease = coordinator.active_leases();
+        assert(tuner_lease.size() == 1);
+        assert(tuner_lease.front().domain == coreflow::MutationDomain::BlockIo);
+        assert(tuner_lease.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
+        coordinator.begin_emergency_recovery();
+        coordinator.emergency_preempt_all("test-autonomous-tuner-preemption");
+        const auto preempted = preemption_tuner.snapshot();
+        assert(preempted.stage == "PLANNED");
+        assert(preempted.last_verdict == "ABORTED");
+        assert(preempted.verdict == coreflow::TunerVerdict::Aborted);
+        const auto preempted_candidate = std::find_if(
+            preempted.candidates.begin(), preempted.candidates.end(),
+            [&](const auto& candidate) { return candidate.id == active.active_candidate_id; });
+        assert(preempted_candidate != preempted.candidates.end());
+        assert(preempted_candidate->preempted_count == 1);
+        assert(preempted_candidate->aborted_count == 0);
+        assert(coordinator.active_leases().empty());
+        assert(coordinator.complete_emergency_recovery());
+        assert(get(sda_q / "scheduler") == "none");
+        assert(get(sda_q / "iosched/read_expire") == "500");
+        assert(get(sda_q / "read_ahead_kb") == "128");
+        assert(coordinator.active_leases().empty());
+        // The public emergency API must reopen admission only after the tuner
+        // and every other registered owner have acknowledged verified rollback.
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::ThermalCore, "PostEmergencyAdmission",
+            "post-emergency-tx", coreflow::ControllerPriority::EmergencySafety));
+        coordinator.release_lease(
+            coreflow::MutationDomain::ThermalCore, "PostEmergencyAdmission", "post-emergency-tx");
+    }
+
+    // One controller identity cannot silently replace an already-registered callback.
+    coordinator.reset();
+    std::atomic<uint32_t> original_handler_calls{0};
+    assert(coordinator.register_preemption_handler("SingleHandlerController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            original_handler_calls.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }));
+    assert(!coordinator.register_preemption_handler("SingleHandlerController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) {
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "SingleHandlerController", "single-handler-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.emergency_preempt_all("single-handler-registration-test");
+    assert(original_handler_calls.load(std::memory_order_relaxed) == 1);
+    const auto single_handler_lease = coordinator.active_leases();
+    assert(single_handler_lease.size() == 1);
+    assert(single_handler_lease.front().preemption_requested);
+    coordinator.release_lease(
+        coreflow::MutationDomain::CpuPolicy, "SingleHandlerController", "single-handler-tx");
+    coordinator.unregister_preemption_handler("SingleHandlerController");
+
+    // Concurrent emergency dispatchers must not execute the same owner's rollback
+    // callback twice for one lease. A failed callback is retryable (covered above).
+    coordinator.reset();
+    std::mutex dispatch_mutex;
+    std::condition_variable dispatch_cv;
+    bool dispatch_callback_entered = false;
+    bool dispatch_callback_release = false;
+    std::atomic<uint32_t> concurrent_callback_calls{0};
+    assert(coordinator.register_preemption_handler("ConcurrentDispatchController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            concurrent_callback_calls.fetch_add(1, std::memory_order_relaxed);
+            std::unique_lock<std::mutex> lock(dispatch_mutex);
+            dispatch_callback_entered = true;
+            dispatch_cv.notify_all();
+            dispatch_cv.wait(lock, [&] { return dispatch_callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "ConcurrentDispatchController", "concurrent-dispatch-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread first_dispatcher([&] {
+        coordinator.emergency_preempt_all("concurrent-dispatch-first");
+    });
+    {
+        std::unique_lock<std::mutex> lock(dispatch_mutex);
+        dispatch_cv.wait(lock, [&] { return dispatch_callback_entered; });
+    }
+    std::thread second_dispatcher([&] {
+        coordinator.emergency_preempt_all("concurrent-dispatch-second");
+    });
+    second_dispatcher.join();
+    assert(concurrent_callback_calls.load(std::memory_order_relaxed) == 1);
+    const auto in_flight_lease = coordinator.active_leases();
+    assert(in_flight_lease.size() == 1);
+    assert(in_flight_lease.front().preemption_dispatch_in_flight);
+    {
+        std::lock_guard<std::mutex> lock(dispatch_mutex);
+        dispatch_callback_release = true;
+    }
+    dispatch_cv.notify_all();
+    first_dispatcher.join();
+    assert(coordinator.active_leases().empty());
+    assert(concurrent_callback_calls.load(std::memory_order_relaxed) == 1);
+    coordinator.unregister_preemption_handler("ConcurrentDispatchController");
+
+    // One callback object may own several domains, but the coordinator must not
+    // invoke that same object concurrently for different transactions either.
+    coordinator.reset();
+    std::mutex multi_domain_mutex;
+    std::condition_variable multi_domain_cv;
+    bool cpu_callback_entered = false;
+    bool release_cpu_callback = false;
+    std::atomic<uint32_t> multi_domain_callback_calls{0};
+    assert(coordinator.register_preemption_handler("MultiDomainController",
+        [&](coreflow::MutationDomain domain, std::string_view, std::string_view) {
+            multi_domain_callback_calls.fetch_add(1, std::memory_order_relaxed);
+            if (domain == coreflow::MutationDomain::CpuPolicy) {
+                std::unique_lock<std::mutex> lock(multi_domain_mutex);
+                cpu_callback_entered = true;
+                multi_domain_cv.notify_all();
+                multi_domain_cv.wait(lock, [&] { return release_cpu_callback; });
+            }
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "MultiDomainController", "multi-cpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "MultiDomainController", "multi-gpu-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread multi_domain_first([&] {
+        coordinator.emergency_preempt_all("multi-domain-first-dispatch");
+    });
+    {
+        std::unique_lock<std::mutex> lock(multi_domain_mutex);
+        multi_domain_cv.wait(lock, [&] { return cpu_callback_entered; });
+    }
+    std::thread multi_domain_second([&] {
+        coordinator.emergency_preempt_all("multi-domain-second-dispatch");
+    });
+    multi_domain_second.join();
+    assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 1);
+    const auto multi_domain_pending = coordinator.active_leases();
+    assert(multi_domain_pending.size() == 2);
+    assert(multi_domain_pending[0].preemption_dispatch_in_flight);
+    assert(!multi_domain_pending[1].preemption_dispatch_in_flight);
+    {
+        std::lock_guard<std::mutex> lock(multi_domain_mutex);
+        release_cpu_callback = true;
+    }
+    multi_domain_cv.notify_all();
+    multi_domain_first.join();
+    assert(coordinator.active_leases().empty());
+    assert(multi_domain_callback_calls.load(std::memory_order_relaxed) == 2);
+    coordinator.unregister_preemption_handler("MultiDomainController");
+
+    // Repeat the multi-domain overlap under competing emergency dispatchers.
+    // Condition variables force the critical interleaving; no scheduling sleep
+    // is used to make the expected callback count deterministic.
+    for (uint32_t round = 0; round < 24; ++round) {
+        coordinator.reset();
+        const std::string owner = "RepeatedDispatchController@" + std::to_string(round);
+        std::mutex stress_mutex;
+        std::condition_variable stress_cv;
+        bool first_callback_entered = false;
+        bool release_first_callback = false;
+        std::atomic<uint32_t> stress_callback_calls{0};
+        assert(coordinator.register_preemption_handler(owner,
+            [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+                const uint32_t call = stress_callback_calls.fetch_add(1, std::memory_order_relaxed);
+                if (call == 0) {
+                    std::unique_lock<std::mutex> lock(stress_mutex);
+                    first_callback_entered = true;
+                    stress_cv.notify_all();
+                    stress_cv.wait(lock, [&] { return release_first_callback; });
+                }
+                return true;
+            }));
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::CpuPolicy, owner, "stress-cpu-" + std::to_string(round),
+            coreflow::ControllerPriority::WorkloadOptimization));
+        assert(coordinator.acquire_lease(
+            coreflow::MutationDomain::GpuDevfreq, owner, "stress-gpu-" + std::to_string(round),
+            coreflow::ControllerPriority::WorkloadOptimization));
+        std::thread primary_dispatcher([&] {
+            coordinator.emergency_preempt_all("repeated-multi-domain-primary");
+        });
+        {
+            std::unique_lock<std::mutex> lock(stress_mutex);
+            stress_cv.wait(lock, [&] { return first_callback_entered; });
+        }
+        std::vector<std::thread> competing_dispatchers;
+        for (uint32_t contender = 0; contender < 4; ++contender) {
+            competing_dispatchers.emplace_back([&] {
+                coordinator.emergency_preempt_all("repeated-multi-domain-contender");
+            });
+        }
+        for (auto& dispatcher : competing_dispatchers) dispatcher.join();
+        assert(stress_callback_calls.load(std::memory_order_relaxed) == 1);
+        const auto stress_pending = coordinator.active_leases();
+        assert(stress_pending.size() == 2);
+        {
+            std::lock_guard<std::mutex> lock(stress_mutex);
+            release_first_callback = true;
+        }
+        stress_cv.notify_all();
+        primary_dispatcher.join();
+        assert(stress_callback_calls.load(std::memory_order_relaxed) == 2);
+        assert(coordinator.active_leases().empty());
+        coordinator.unregister_preemption_handler(owner);
+    }
+
+    // Admission cannot reopen merely because a callback released its exact
+    // lease before returning its acknowledgement. The callback itself must drain.
+    coordinator.reset();
+    std::mutex barrier_callback_mutex;
+    std::condition_variable barrier_callback_cv;
+    bool barrier_callback_entered = false;
+    bool barrier_callback_release = false;
+    assert(coordinator.register_preemption_handler("EmergencyCompletionController",
+        [&](coreflow::MutationDomain domain, std::string_view tx, std::string_view) {
+            coordinator.release_lease(
+                domain, "EmergencyCompletionController", tx);
+            std::unique_lock<std::mutex> lock(barrier_callback_mutex);
+            barrier_callback_entered = true;
+            barrier_callback_cv.notify_all();
+            barrier_callback_cv.wait(lock, [&] { return barrier_callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyCompletionController", "completion-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.begin_emergency_recovery();
+    std::thread barrier_dispatcher([&] {
+        coordinator.emergency_preempt_all("callback-drain-barrier-test");
+    });
+    {
+        std::unique_lock<std::mutex> lock(barrier_callback_mutex);
+        barrier_callback_cv.wait(lock, [&] { return barrier_callback_entered; });
+    }
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.is_emergency_recovery_active());
+    assert(!coordinator.complete_emergency_recovery());
+    {
+        std::lock_guard<std::mutex> lock(barrier_callback_mutex);
+        barrier_callback_release = true;
+    }
+    barrier_callback_cv.notify_all();
+    barrier_dispatcher.join();
+    assert(coordinator.complete_emergency_recovery());
+    coordinator.unregister_preemption_handler("EmergencyCompletionController");
+
+    // Handler teardown must wait for callbacks already copied by dispatch.
+    coordinator.reset();
+    std::mutex callback_mutex;
+    std::condition_variable callback_cv;
+    bool callback_entered = false;
+    bool callback_release = false;
+    std::atomic<bool> unregister_started{false};
+    std::atomic<bool> unregister_finished{false};
+    assert(coordinator.register_preemption_handler("LifetimeController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            std::unique_lock<std::mutex> lock(callback_mutex);
+            callback_entered = true;
+            callback_cv.notify_all();
+            callback_cv.wait(lock, [&] { return callback_release; });
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "LifetimeController", "lifetime-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    std::thread dispatcher([&] { coordinator.emergency_preempt_all("lifetime-test"); });
+    {
+        std::unique_lock<std::mutex> lock(callback_mutex);
+        callback_cv.wait(lock, [&] { return callback_entered; });
+    }
+    std::thread unregisterer([&] {
+        unregister_started.store(true, std::memory_order_release);
+        coordinator.unregister_preemption_handler("LifetimeController");
+        unregister_finished.store(true, std::memory_order_release);
+    });
+    while (!unregister_started.load(std::memory_order_acquire)) std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!unregister_finished.load(std::memory_order_acquire));
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex);
+        callback_release = true;
+    }
+    callback_cv.notify_all();
+    dispatcher.join();
+    unregisterer.join();
+    assert(unregister_finished.load(std::memory_order_acquire));
+    assert(coordinator.active_leases().empty());
+
+    // Emergency recovery closes admission before asking active owners to roll back.
+    // A new controller must not acquire a free domain until recovery completes.
+    coordinator.reset();
+    bool gate_acknowledged = false;
+    assert(coordinator.register_preemption_handler("EmergencyGateController",
+        [&](coreflow::MutationDomain, std::string_view, std::string_view) {
+            gate_acknowledged = true;
+            return true;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::CpuPolicy, "EmergencyGateController", "gate-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.begin_emergency_recovery();
+    assert(coordinator.is_emergency_recovery_active());
+    std::string gate_conflict;
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
+        coreflow::ControllerPriority::EmergencySafety, &gate_conflict));
+    assert(gate_conflict.find("admission is closed") != std::string::npos);
+    assert(!coordinator.complete_emergency_recovery()); // Active owner has not acknowledged yet.
+    coordinator.emergency_preempt_all("test-emergency-admission-barrier");
+    assert(gate_acknowledged);
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
+    assert(!coordinator.is_emergency_recovery_active());
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx",
+        coreflow::ControllerPriority::EmergencySafety));
+    coordinator.release_lease(
+        coreflow::MutationDomain::GpuDevfreq, "LateController", "late-tx");
+    coordinator.unregister_preemption_handler("EmergencyGateController");
+    assert(coordinator.active_leases().empty());
+
+    // A controller that cannot safely restore must return a failed
+    // acknowledgement. Ownership remains active and admission stays closed
+    // until an explicit recovery path resolves the retained lease.
+    coordinator.reset();
+    assert(coordinator.register_preemption_handler("UnresolvedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all("test-failed-preemption-acknowledgement");
+    const auto unresolved_leases = coordinator.active_leases();
+    assert(unresolved_leases.size() == 1);
+    assert(unresolved_leases.front().preemption_requested);
+    assert(!coordinator.complete_emergency_recovery());
+    // A failed acknowledgement from a still-registered owner must never be
+    // bypassed by the detached-owner recovery API.
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    coordinator.release_lease(
+        coreflow::MutationDomain::ThermalCore, "UnresolvedController", "unresolved-tx");
+    assert(coordinator.complete_emergency_recovery());
+    coordinator.unregister_preemption_handler("UnresolvedController");
+    assert(coordinator.active_leases().empty());
+
+    // Controller disappearance is different from a live owner refusing
+    // preemption. Its destructor unregisters the callback but deliberately
+    // leaves the lease active; only a verified BaselineStore sweep may retire it.
+    coordinator.reset();
+    const fs::path orphan_node = sda_q / "read_ahead_kb";
+    put(orphan_node, "128");
+    assert(!baseline.has_active_mutations());
+    assert(baseline.capture(orphan_node.string()));
+    assert(baseline.apply_mutation(orphan_node.string(), "256"));
+    assert(get(orphan_node) == "256");
+    assert(coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return false;
+        }));
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "VanishedController", "vanished-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.unregister_preemption_handler("VanishedController");
+    auto orphaned = coordinator.active_leases();
+    assert(orphaned.size() == 1);
+    assert(orphaned.front().owner_detached);
+    assert(orphaned.front().owner_controller == "VanishedController");
+    // A detached identity cannot be rebound to a new callback while its old
+    // lease remains unresolved; process-lifetime IDs must stay one-owner-only.
+    assert(!coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return true;
+        }));
+
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all("test-detached-owner-recovery");
+    orphaned = coordinator.active_leases();
+    assert(orphaned.size() == 1 && orphaned.front().owner_detached);
+    assert(orphaned.front().preemption_requested);
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(coordinator.active_leases().size() == 1);
+    assert(baseline.has_active_mutations());
+    assert(baseline.rollback_all() > 0);
+    assert(!baseline.has_active_mutations());
+    assert(get(orphan_node) == "128");
+    assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
+    assert(!coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "VanishedController", "reused-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    assert(!coordinator.register_preemption_handler(
+        "VanishedController",
+        [](coreflow::MutationDomain, std::string_view, std::string_view) noexcept {
+            return true;
+        }));
+
+    // Admission is reopened only after the baseline and orphan lease are both
+    // reconciled; a fresh controller with a new identity can acquire the domain.
+    assert(coordinator.acquire_lease(
+        coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx",
+        coreflow::ControllerPriority::WorkloadOptimization));
+    coordinator.release_lease(
+        coreflow::MutationDomain::BlockIo, "RecoveredController", "recovered-tx");
+    assert(coordinator.active_leases().empty());
+
+    // Exercise detached-owner recovery through a real controller lifetime rather
+    // than a synthetic callback identity. The controller commits a real tuner
+    // candidate, one owned mock node disappears, and its destructor must retain
+    // the unresolved lease instead of silently releasing ownership.
+    coordinator.reset();
+    const fs::path teardown_sys = root / "teardown_sys";
+    const fs::path teardown_proc = root / "teardown_proc";
+    const fs::path teardown_queue = teardown_sys / "block/sdb/queue";
+    put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
+    put(teardown_queue / "read_ahead_kb", "128");
+    put(teardown_queue / "nr_requests", "64");
+    put(teardown_queue / "rq_affinity", "1");
+    put(teardown_queue / "iosched/read_expire", "500");
+    put(teardown_queue / "iosched/writes_starved", "2");
+    put(teardown_queue / "iosched/fifo_batch", "16");
+
+    std::string disappeared_path;
+    std::string disappeared_active_value;
+    std::string disappeared_factory_value;
+    std::string temporarily_hidden_path;
+    {
+        coreflow::AutonomousTuner doomed(teardown_sys.string(), teardown_proc.string());
+        const auto applied = doomed.step({
+            .cpu_psi = 6.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(applied.stage == "OBSERVING");
+        assert(applied.active_candidate_id != "baseline");
+
+        const auto teardown_audit = baseline.get_audit_trail();
+        const auto changed_node = std::find_if(
+            teardown_audit.begin(), teardown_audit.end(),
+            [&](const coreflow::NodeSnapshot& node) {
+                return node.path.rfind(teardown_sys.string() + "/", 0) == 0 && node.is_modified;
+            });
+        assert(changed_node != teardown_audit.end());
+        disappeared_path = changed_node->path;
+        disappeared_active_value = changed_node->active_value;
+        disappeared_factory_value = changed_node->factory_value;
+        assert(!disappeared_active_value.empty());
+        assert(!disappeared_factory_value.empty());
+        // Move the same inode out of the discovered path. Reusing the original
+        // inode lets BaselineStore distinguish temporary absence from an OEM
+        // replacement when the path is restored after controller teardown.
+        temporarily_hidden_path = disappeared_path + ".temporarily-hidden";
+        fs::rename(disappeared_path, temporarily_hidden_path);
+        assert(!fs::exists(disappeared_path));
+        assert(fs::exists(temporarily_hidden_path));
+    } // Actual AutonomousTuner destructor attempts rollback, then retires its handler.
+
+    auto teardown_orphans = coordinator.active_leases();
+    assert(teardown_orphans.size() == 1);
+    assert(teardown_orphans.front().owner_detached);
+    assert(teardown_orphans.front().owner_controller.rfind("AutonomousTuner@", 0) == 0);
+    assert(teardown_orphans.front().preemption_requested == false);
+
+    // Restore the exact mock node (same inode) before monitor recovery. No
+    // detached controller callback exists; BaselineStore must restore and verify
+    // the factory value rather than misclassifying the unavailable path as OEM
+    // takeover or adopting the transiently hidden active value.
+    fs::rename(temporarily_hidden_path, disappeared_path);
+    assert(fs::exists(disappeared_path));
+    assert(!fs::exists(temporarily_hidden_path));
+    assert(get(disappeared_path) == disappeared_active_value);
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all("actual-controller-teardown-recovery");
+    teardown_orphans = coordinator.active_leases();
+    assert(teardown_orphans.size() == 1 && teardown_orphans.front().owner_detached);
+    assert(teardown_orphans.front().preemption_requested);
+    assert(!coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(baseline.has_active_mutations());
+    assert(baseline.rollback_all() > 0);
+    assert(!baseline.has_active_mutations());
+    assert(get(disappeared_path) == disappeared_factory_value);
+    assert(baseline.verify_and_persist_clear_state());
+    assert(coordinator.release_orphaned_leases_after_verified_recovery(baseline));
+    assert(coordinator.active_leases().empty());
+    assert(coordinator.complete_emergency_recovery());
+    // A regular file mock loses the scheduler capability list when the baseline
+    // writer stores only the active scheduler. Restore the sysfs readback shape.
+    put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
+
+    // R3 persistence integrity: CFTS6 checksum, restrictive file mode, round-trip,
+    // corruption rejection, and symlink-safe state-directory/file handling.
+    const fs::path state_file = root / "tuner_stats.state";
+    assert(fs::exists(state_file));
+    struct stat state_stat{};
+    assert(::stat(state_file.c_str(), &state_stat) == 0);
+    assert(S_ISREG(state_stat.st_mode));
+    assert((state_stat.st_mode & 0777) == 0600);
+
+    std::ifstream state_input(state_file, std::ios::binary);
+    const std::string state_payload((std::istreambuf_iterator<char>(state_input)),
+                                    std::istreambuf_iterator<char>());
+    assert(state_payload.rfind("CFTS7\t", 0) == 0);
+    assert(state_payload.find("CFTS7_END\t") != std::string::npos);
+
+    for (const auto& entry : fs::directory_iterator(root)) {
+        assert(entry.path().filename().string().rfind("tuner_stats.state.tmp.", 0) != 0);
+    }
+
+    {
+        coreflow::AutonomousTuner persistence_reader(teardown_sys.string(), teardown_proc.string());
+        const auto restored = persistence_reader.snapshot();
+        assert(restored.total_trials > 0);
+    }
+
+    const fs::path corrupt_dir = root / "corrupt-state";
+    fs::create_directories(corrupt_dir);
+    std::string corrupt_payload = state_payload;
+    const size_t corrupt_byte = corrupt_payload.find('\n');
+    assert(corrupt_byte != std::string::npos && corrupt_byte + 2 < corrupt_payload.size());
+    corrupt_payload[corrupt_byte + 2] ^= 0x01;
+    put(corrupt_dir / "tuner_stats.state", corrupt_payload);
+    ::setenv("COREFLOW_TEST_STATE_DIR", corrupt_dir.c_str(), 1);
+    {
+        coreflow::AutonomousTuner corrupt_reader(teardown_sys.string(), teardown_proc.string());
+        const auto rejected = corrupt_reader.snapshot();
+        assert(rejected.total_trials == 0);
+        for (const auto& candidate : rejected.candidates) assert(candidate.trials == 0);
+    }
+
+    const fs::path symlink_file_dir = root / "symlink-file-state";
+    fs::create_directories(symlink_file_dir);
+    const fs::path external_state = root / "external-state.txt";
+    put(external_state, "external sentinel");
+    const fs::path symlink_state_file = symlink_file_dir / "tuner_stats.state";
+    fs::create_symlink(external_state, symlink_state_file);
+    ::setenv("COREFLOW_TEST_STATE_DIR", symlink_file_dir.c_str(), 1);
+    {
+        coreflow::AutonomousTuner symlink_file_reader(teardown_sys.string(), teardown_proc.string());
+        assert(symlink_file_reader.snapshot().total_trials == 0);
+        symlink_file_reader.reset(); // unlink the link itself, never its target
+    }
+    assert(!fs::exists(symlink_state_file));
+    assert(get(external_state) == "external sentinel");
+
+    const fs::path real_parent = root / "real-state-parent";
+    const fs::path real_nested = real_parent / "nested";
+    fs::create_directories(real_nested);
+    fs::copy_file(state_file, real_nested / "tuner_stats.state", fs::copy_options::overwrite_existing);
+    const fs::path linked_parent = root / "linked-state-parent";
+    fs::create_directory_symlink(real_parent, linked_parent);
+    ::setenv("COREFLOW_TEST_STATE_DIR", (linked_parent / "nested").c_str(), 1);
+    {
+        coreflow::AutonomousTuner symlink_ancestor_reader(teardown_sys.string(), teardown_proc.string());
+        assert(symlink_ancestor_reader.snapshot().total_trials == 0);
+    }
+    ::setenv("COREFLOW_TEST_STATE_DIR", root.c_str(), 1);
+
+    // Required-resource preflight rejection must be visible and counted, while
+    // leaving OEM state untouched and releasing the exact candidate lease.
+    assert(!baseline.has_active_mutations());
+    coordinator.reset();
+    const fs::path preflight_state = root / "preflight-state";
+    fs::create_directories(preflight_state);
+    assert(::setenv("COREFLOW_TEST_STATE_DIR", preflight_state.c_str(), 1) == 0);
+    baseline.reinitialize();
+    assert(baseline.recover_pending());
+
+    const fs::path preflight_sys = root / "preflight-sys";
+    const fs::path preflight_proc = root / "preflight-proc";
+    const fs::path preflight_queue = preflight_sys / "block/sda/queue";
+    put(preflight_queue / "scheduler", "[none] mq-deadline");
+    put(preflight_queue / "read_ahead_kb", "128");
+    put(preflight_queue / "nr_requests", "64");
+    put(preflight_queue / "rq_affinity", "1");
+    put(preflight_queue / "iosched/read_expire", "500");
+    put(preflight_queue / "iosched/writes_starved", "2");
+    put(preflight_queue / "iosched/fifo_batch", "16");
+    put(preflight_proc / "sys/vm/page-cluster", "3");
+    put(preflight_proc / "sys/vm/vfs_cache_pressure", "100");
+
+    {
+        coreflow::AutonomousTuner preflight_tuner(preflight_sys.string(), preflight_proc.string());
+        assert(preflight_tuner.snapshot().block_queues.size() == 1);
+        const fs::path scheduler = preflight_queue / "scheduler";
+        const fs::path scheduler_backup = preflight_queue / "scheduler.backup";
+        fs::rename(scheduler, scheduler_backup);
+        fs::create_symlink(preflight_queue / "missing-scheduler-target", scheduler);
+
+        const auto rejected = preflight_tuner.step({
+            .cpu_psi = 6.0,
+            .memory_psi = 0.5,
+            .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(rejected.last_verdict == "REJECTED");
+        assert(rejected.verdict == coreflow::TunerVerdict::Rejected);
+        assert(rejected.active_candidate_id == "baseline");
+        const auto rejected_candidate = std::find_if(
+            rejected.candidates.begin(), rejected.candidates.end(),
+            [](const auto& candidate) { return candidate.id == "io.mq_deadline_low_latency"; });
+        assert(rejected_candidate != rejected.candidates.end());
+        assert(rejected_candidate->rejected_count == 1);
+        assert(rejected_candidate->trials == 0);
+        assert(rejected_candidate->reward_samples == 0);
+        assert(coordinator.active_leases().empty());
+        assert(!baseline.has_active_mutations());
+
+        fs::remove(scheduler);
+        fs::rename(scheduler_backup, scheduler);
+    }
+
     fs::remove_all(root);
     std::cout << "[PASS] AutonomousTuner discovery classification, coordinator arbitration, thermal stabilization, and false-positive elimination succeeded.\n";
     return 0;

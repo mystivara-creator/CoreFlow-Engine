@@ -6,6 +6,7 @@
 
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -569,6 +570,8 @@ int main() {
 
     auto& baseline = BaselineStore::instance();
     assert(baseline.recover_pending());
+    auto& coordinator = CentralMutationCoordinator::instance();
+    coordinator.reset();
 
     // 1. Setup synthetic Qualcomm Adreno KGSL sysfs surface
     const fs::path kgsl = adreno_root / "sys/class/kgsl/kgsl-3d0";
@@ -613,11 +616,29 @@ int main() {
     assert(snap_safe.gpu_surface.current_freq_mhz == 950U);
     assert(snap_safe.gpu_surface.max_freq_mhz == 1100U);
 
-    // Verify workload policy boosts adrenoboost under SustainedLoad and rolls back cleanly
+    // Qualcomm KGSL controls are observation-only until the exact OEM driver
+    // ABI and semantics are verified for the target firmware. A journaled
+    // external value must be preserved; no policy lease or guessed write is allowed.
+    const fs::path adrenoboost = kgsl / "devfreq/adrenoboost";
+    assert(baseline.capture(adrenoboost.string()));
+    assert(baseline.apply_mutation(adrenoboost.string(), "1"));
     assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
-    assert(read_file(kgsl / "devfreq/adrenoboost") == "2");
-    assert(baseline.rollback_all() >= 1U);
+    assert(read_file(adrenoboost) == "1");
+    assert(read_file(kgsl / "bus_split") == "1");
+    assert(read_file(kgsl / "throttling") == "1");
+    assert(coordinator.active_leases().empty());
+    assert(baseline.rollback(adrenoboost.string()));
+    assert(read_file(adrenoboost) == "0");
+
+    // Sustained-load and balanced requests remain no-ops on unverified KGSL
+    // actuators. Discovery still exposes raw values for diagnostics.
+    assert(vk.apply_workload_policy(WorkloadState::SustainedLoad, 0.95, false));
     assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
+    assert(vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
+    assert(read_file(kgsl / "devfreq/adrenoboost") == "0");
+    assert(read_file(kgsl / "bus_split") == "1");
+    assert(read_file(kgsl / "throttling") == "1");
+    assert(coordinator.active_leases().empty());
 
     // 2. Test legacy FullCapabilityOverride request is clamped to SafeHardware and never spoofs hardware
     vk.configure(VulkanConfig{
@@ -660,7 +681,7 @@ int main() {
     write_file(mali_dev / "cur_freq", "850000000\n");
     write_file(mali_dev / "max_freq", "1100000000\n");
     write_file(mali_dev / "min_freq", "300000000\n");
-    write_file(mali_dev / "device/power_policy", "coarse_demand\n");
+    write_file(mali_dev / "device/power_policy", "always_on\n");
 
     vk.initialize(
         VulkanConfig{
@@ -678,8 +699,14 @@ int main() {
     assert(snap_mali.gpu_surface.active_governor == "simple_ondemand");
     assert(snap_mali.gpu_surface.current_freq_mhz == 850U);
     assert(snap_mali.gpu_surface.max_freq_mhz == 1100U);
+    assert(vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
+    assert(read_file(mali_dev / "device/power_policy") == "coarse_demand");
+    assert(coordinator.active_leases().size() == 1);
+    coordinator.emergency_preempt_all("test-mali-policy-preemption");
+    assert(read_file(mali_dev / "device/power_policy") == "always_on");
+    assert(coordinator.active_leases().empty());
 
-    (void)baseline.rollback_all();
+    assert(!baseline.has_active_mutations());
     fs::remove_all(tmp_root);
     std::cout << "[PASS] Vulkan Truthful Pass-Through Controller, Layer Dispatch & Multi-Vendor GPU Surface tests succeeded.\n";
     return 0;

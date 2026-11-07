@@ -209,9 +209,9 @@ void NeuralPredictor::initialize(std::string_view model_dir) noexcept {
 
 NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noexcept {
     const bool finite = std::isfinite(input.thermal_pressure) &&
-                        std::isfinite(input.cpu_psi) &&
-                        std::isfinite(input.memory_psi) &&
-                        std::isfinite(input.io_psi) &&
+                        (!input.cpu_psi_valid || std::isfinite(input.cpu_psi)) &&
+                        (!input.memory_psi_valid || std::isfinite(input.memory_psi)) &&
+                        (!input.io_psi_valid || std::isfinite(input.io_psi)) &&
                         std::isfinite(input.current_scale) &&
                         std::isfinite(input.elapsed_seconds);
     if (!finite || input.elapsed_seconds <= 0.0 || input.elapsed_seconds > 120.0 ||
@@ -223,15 +223,17 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
 
     const double dt = std::clamp(input.elapsed_seconds, 0.05, 30.0);
     const double norm_p = std::clamp((input.thermal_pressure - 60.0) / 40.0, -1.5, 2.0);
-    const double norm_cpu = std::clamp(input.cpu_psi / 50.0, 0.0, 2.0);
-    const double norm_mem = std::clamp(input.memory_psi / 25.0, 0.0, 2.0);
-    const double norm_io = std::clamp(input.io_psi / 25.0, 0.0, 2.0);
+    const double norm_cpu = input.cpu_psi_valid ? std::clamp(input.cpu_psi / 50.0, 0.0, 2.0) : 0.0;
+    const double norm_mem = input.memory_psi_valid ? std::clamp(input.memory_psi / 25.0, 0.0, 2.0) : 0.0;
+    const double norm_io = input.io_psi_valid ? std::clamp(input.io_psi / 25.0, 0.0, 2.0) : 0.0;
+    const bool pressure_inputs_valid =
+        input.cpu_psi_valid && input.memory_psi_valid && input.io_psi_valid;
     const double norm_scale = std::clamp((input.current_scale - 0.4) / 0.6, 0.0, 1.0);
 
     double velocity = 0.0;
 
     // Step 1: Online Recursive Least Squares (RLS) + NLMS Output-Layer learning step from previous tick
-    if (prev_pressure_ >= 0.0) {
+    if (pressure_inputs_valid && prev_pressure_ >= 0.0) {
         const double actual_rate = (input.thermal_pressure - prev_pressure_) / dt;
         velocity = std::clamp(actual_rate, -10.0, 10.0);
 
@@ -292,8 +294,13 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
         std::clamp(norm_cpu + 0.5 * norm_io, 0.0, 2.5),
         norm_scale,
     };
-    prev_features_ = current_rls_features;
-    prev_pressure_ = input.thermal_pressure;
+    if (pressure_inputs_valid) {
+        prev_features_ = current_rls_features;
+        prev_pressure_ = input.thermal_pressure;
+    } else {
+        // Do not train across an interval with missing workload-pressure features.
+        prev_pressure_ = -1.0;
+    }
     ++samples_;
 
     // Step 2: RLS 10-second linear horizon projection
@@ -343,7 +350,9 @@ NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noex
 
     const double warmup_factor = std::min(1.0, static_cast<double>(samples_) / 5.0);
     const double error_confidence = 1.0 / (1.0 + 0.35 * ema_abs_error_);
-    const double confidence = std::clamp(0.35 + 0.65 * warmup_factor * error_confidence, 0.10, 0.99);
+    const double confidence = pressure_inputs_valid
+        ? std::clamp(0.35 + 0.65 * warmup_factor * error_confidence, 0.10, 0.99)
+        : std::min(0.35, std::clamp(0.35 + 0.65 * warmup_factor * error_confidence, 0.10, 0.99));
 
     last_ = NeuralPrediction{
         .valid = true,
