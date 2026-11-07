@@ -240,6 +240,16 @@ std::string sanitize_tsv_field(std::string_view input) {
     return out.empty() ? "-" : out;
 }
 
+
+uint64_t tuner_state_checksum(std::string_view data) noexcept {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char byte : data) {
+        hash ^= static_cast<uint64_t>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 void record_ownership_loss(CandidateStats* stats) {
     if (stats == nullptr) return;
 
@@ -649,25 +659,26 @@ std::string AutonomousTuner::compute_fingerprint() const {
 
 void AutonomousTuner::save_persisted_stats() const {
     std::ostringstream out;
-    out << "CFTS5\\t" << compute_fingerprint() << "\\t"
-        << total_trials_ << "\\t" << total_improved_ << "\\t" << total_rolled_back_ << "\\t"
-        << total_reward_samples_ << "\\t" << total_inconclusive_ << "\\t" << total_rejected_ << "\\t" << noise_floor_;
-    for (const double floor : evaluation_noise_floors_) out << "\\t" << floor;
-    out << "\\n";
+    out << "CFTS6\t" << compute_fingerprint() << "\t"
+        << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
+        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
+    for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
+    out << "\n";
     for (const auto& c : candidates_) {
-        out << c.id << "\\t" << c.mean_utility << "\\t" << c.mean_utility_delta << "\\t"
-            << c.trials << "\\t" << c.reward_samples << "\\t" << c.improved_count << "\\t"
-            << c.regressed_count << "\\t" << c.neutral_count << "\\t" << c.aborted_count << "\\t"
-            << c.recovery_required_count << "\\t" << c.cooldown_ticks << "\\t"
-            << c.consecutive_non_improved << "\\t" << c.adaptive_scale << "\\t"
-            << c.inconclusive_count << "\\t" << c.rejected_count << "\\t"
-            << static_cast<uint32_t>(c.last_workload) << "\\t"
-            << static_cast<uint32_t>(c.last_thermal_bucket) << "\\t"
-            << c.ownership_loss_count << "\\t" << c.ownership_quarantine_ticks << "\\t"
-            << sanitize_tsv_field(c.last_rollback_reason) << "\\n";
+        out << c.id << "\t" << c.mean_utility << "\t" << c.mean_utility_delta << "\t"
+            << c.trials << "\t" << c.reward_samples << "\t" << c.improved_count << "\t"
+            << c.regressed_count << "\t" << c.neutral_count << "\t" << c.aborted_count << "\t"
+            << c.recovery_required_count << "\t" << c.cooldown_ticks << "\t"
+            << c.consecutive_non_improved << "\t" << c.adaptive_scale << "\t"
+            << c.inconclusive_count << "\t" << c.rejected_count << "\t"
+            << static_cast<uint32_t>(c.last_workload) << "\t"
+            << static_cast<uint32_t>(c.last_thermal_bucket) << "\t"
+            << c.ownership_loss_count << "\t" << c.ownership_quarantine_ticks << "\t"
+            << sanitize_tsv_field(c.last_rollback_reason) << "\n";
     }
-    const std::string payload = out.str();
-    if (!out.good() || payload.size() > 256U * 1024U) return;
+    std::string payload = out.str();
+    if (!out.good() || payload.size() > 256U * 1024U - 64U) return;
+    payload += "CFTS6_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
 
     UniqueFd dir = open_state_directory(resolve_state_dir(), true);
     if (!dir.valid()) return;
@@ -702,108 +713,168 @@ void AutonomousTuner::save_persisted_stats() const {
 void AutonomousTuner::load_persisted_stats() {
     UniqueFd dir = open_state_directory(resolve_state_dir(), false);
     if (!dir.valid()) return;
-    UniqueFd state_fd(::openat(dir.get(), "tuner_stats.state", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    UniqueFd state_fd(::openat(dir.get(), "tuner_stats.state",
+                               O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!state_fd.valid()) return;
+
     std::string payload;
     if (!read_bounded_regular_file(state_fd.get(), payload, 256U * 1024U)) return;
+
+    bool has_checksum = false;
+    const size_t footer_pos = payload.rfind("CFTS6_END\t");
+    if (footer_pos != std::string::npos) {
+        if (footer_pos > 0 && payload[footer_pos - 1] != '\n') return;
+        const std::string footer = payload.substr(footer_pos);
+        std::istringstream footer_stream(footer);
+        std::string footer_magic, extra;
+        uint64_t stored_checksum = 0;
+        if (!(footer_stream >> footer_magic >> stored_checksum) ||
+            footer_magic != "CFTS6_END" || (footer_stream >> extra)) return;
+        payload.resize(footer_pos);
+        if (tuner_state_checksum(payload) != stored_checksum) return;
+        has_checksum = true;
+    }
+
     std::istringstream in(payload);
     std::string header;
     if (!std::getline(in, header)) return;
     std::istringstream hs(header);
-    std::string magic, fp;
+    std::string magic, fp, extra;
     uint32_t trials = 0, improved = 0, rolled_back = 0;
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
+    if ((magic == "CFTS6" && !has_checksum) || (magic != "CFTS6" && has_checksum)) return;
 
     const std::string current_fp = compute_fingerprint();
-    // Legacy trial counts are attempts; never promote them to reward samples.
     uint32_t persisted_reward_samples = 0;
-    if (magic == "CFTS5" || magic == "CFTS4") {
-        uint32_t inconc = 0, rej = 0; double nf = 0.05;
-        if (fp != current_fp || !(hs >> persisted_reward_samples >> inconc >> rej >> nf) || persisted_reward_samples > trials) return;
-        total_inconclusive_ = inconc; total_rejected_ = rej; noise_floor_ = std::clamp(nf, 0.02, 0.45);
-        if (magic == "CFTS5") {
-            for (auto& floor : evaluation_noise_floors_) {
-                if (!(hs >> floor) || !std::isfinite(floor)) return;
-                floor = std::clamp(floor, 0.02, 0.45);
+    uint32_t loaded_inconclusive = 0;
+    uint32_t loaded_rejected = 0;
+    double loaded_noise_floor = 0.05;
+    std::array<double, 4> loaded_domain_floors{{0.05, 0.05, 0.05, 0.05}};
+
+    if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
+        if (fp != current_fp ||
+            !(hs >> persisted_reward_samples >> loaded_inconclusive >> loaded_rejected >> loaded_noise_floor) ||
+            persisted_reward_samples > trials || improved > persisted_reward_samples ||
+            !std::isfinite(loaded_noise_floor) || loaded_noise_floor < 0.02 || loaded_noise_floor > 0.45) return;
+        if (magic == "CFTS6" || magic == "CFTS5") {
+            for (auto& floor : loaded_domain_floors) {
+                if (!(hs >> floor) || !std::isfinite(floor) || floor < 0.02 || floor > 0.45) return;
             }
-        } else evaluation_noise_floors_.fill(noise_floor_);
+        } else {
+            loaded_domain_floors.fill(loaded_noise_floor);
+        }
+        if (hs >> extra) return;
     } else if (magic == "CFTS3" || magic == "CFTS2") {
         if (fp != current_fp) return;
-        uint32_t inconc = 0, rej = 0;
-        double nf = 0.05;
-        if (hs >> inconc >> rej >> nf) {
-            total_inconclusive_ = inconc;
-            total_rejected_ = rej;
-            noise_floor_ = std::clamp(nf, 0.02, 0.45);
+        double legacy_floor = 0.05;
+        if (hs >> loaded_inconclusive >> loaded_rejected >> legacy_floor) {
+            if (!std::isfinite(legacy_floor) || legacy_floor < 0.02 || legacy_floor > 0.45) return;
+            loaded_noise_floor = legacy_floor;
+            loaded_domain_floors.fill(legacy_floor);
+        } else {
+            hs.clear();
         }
-        evaluation_noise_floors_.fill(noise_floor_);
+        if (hs >> extra) return;
     } else if (magic == "CFTS1") {
         std::string v1_fp = current_fp;
         if (v1_fp.rfind("v2|", 0) == 0) v1_fp.replace(0, 3, "v1|");
-        if (fp != v1_fp) return;
+        if (fp != v1_fp || (hs >> extra)) return;
     } else {
         return;
     }
 
+    struct ParsedCandidate {
+        std::string id;
+        double mean_utility{0.5};
+        double mean_utility_delta{0.0};
+        double adaptive_scale{1.0};
+        uint32_t trials{0}, reward_samples{0}, improved{0}, regressed{0}, neutral{0};
+        uint32_t aborted{0}, recovery_required{0}, cooldown{0}, consecutive_non_improved{0};
+        uint32_t inconclusive{0}, rejected{0}, workload{0}, thermal_bucket{0};
+        uint32_t ownership_losses{0}, quarantine_ticks{0};
+        std::string rollback_reason;
+    };
+    std::vector<ParsedCandidate> parsed;
+    std::unordered_set<std::string> seen_ids;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        if (line.size() > 4096 || parsed.size() >= 256) return;
+        std::istringstream ls(line);
+        ParsedCandidate saved;
+        if (!(ls >> saved.id >> saved.mean_utility >> saved.mean_utility_delta >> saved.trials)) return;
+        if (saved.id.empty() || saved.id.size() > 128 || !seen_ids.insert(saved.id).second ||
+            !std::isfinite(saved.mean_utility) || saved.mean_utility < 0.05 || saved.mean_utility > 2.50 ||
+            !std::isfinite(saved.mean_utility_delta) || std::abs(saved.mean_utility_delta) > 100.0) return;
+
+        const bool current_schema = magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
+        if (current_schema) {
+            if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >>
+                  saved.aborted >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            if (saved.reward_samples > saved.trials ||
+                static_cast<uint64_t>(saved.improved) + saved.regressed + saved.neutral > saved.reward_samples) return;
+        } else {
+            if (!(ls >> saved.improved >> saved.regressed >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            saved.mean_utility_delta = 0.0;
+        }
+
+        if (!(ls >> saved.adaptive_scale >> saved.inconclusive >> saved.rejected >>
+              saved.workload >> saved.thermal_bucket)) return;
+        if (!std::isfinite(saved.adaptive_scale) || saved.adaptive_scale < 0.25 || saved.adaptive_scale > 1.0 ||
+            saved.cooldown > 64 || saved.consecutive_non_improved > 16 ||
+            saved.workload > 10 || saved.thermal_bucket > 4) return;
+
+        if (magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
+            if (!(ls >> saved.ownership_losses >> saved.quarantine_ticks)) return;
+        }
+        if (!std::getline(ls, saved.rollback_reason)) return;
+        if (!saved.rollback_reason.empty() && saved.rollback_reason.front() == '\t')
+            saved.rollback_reason.erase(saved.rollback_reason.begin());
+        if (saved.rollback_reason.empty()) saved.rollback_reason = "-";
+        if (saved.rollback_reason.size() > 512 ||
+            saved.rollback_reason.find_first_of("\t\r\n") != std::string::npos ||
+            saved.ownership_losses > 16 || saved.quarantine_ticks > 64) return;
+        std::string trailing;
+        if (ls >> trailing) return;
+        parsed.push_back(std::move(saved));
+    }
+    if (in.bad()) return;
+
+    // Commit parsed state only after the complete file, checksum, header, and every
+    // candidate record have passed validation. Learning-state corruption must never
+    // partially overwrite in-memory controller state or BaselineStore recovery state.
     total_trials_ = trials;
     total_reward_samples_ = persisted_reward_samples;
     total_improved_ = improved;
     total_rolled_back_ = rolled_back;
+    total_inconclusive_ = loaded_inconclusive;
+    total_rejected_ = loaded_rejected;
+    noise_floor_ = std::clamp(loaded_noise_floor, 0.02, 0.45);
+    evaluation_noise_floors_ = loaded_domain_floors;
 
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty()) continue;
-        std::istringstream ls(line);
-        std::string id;
-        double mean_u = 0.5, mean_du = 0.0;
-        uint32_t c_trials = 0, c_reward = 0, c_imp = 0, c_reg = 0;
-        uint32_t c_neutral = 0, c_aborted = 0, c_recovery = 0, c_cool = 0, c_non_imp = 0;
-        if (magic == "CFTS5" || magic == "CFTS4") {
-            if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_reward >> c_imp >> c_reg >>
-                  c_neutral >> c_aborted >> c_recovery >> c_cool >> c_non_imp) ||
-                c_reward > c_trials || static_cast<uint64_t>(c_imp) + c_reg + c_neutral > c_reward) continue;
-        } else {
-            if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_imp >> c_reg >> c_cool >> c_non_imp)) continue;
-            mean_du = 0.0; // legacy denominator was attempt count, not valid reward count
-        }
-        if (auto* c = find_candidate(id)) {
-            c->mean_utility = std::clamp(mean_u, 0.05, 2.50);
-            c->mean_utility_delta = mean_du;
-            c->trials = c_trials;
-            c->reward_samples = c_reward;
-            c->neutral_count = c_neutral;
-            c->aborted_count = c_aborted;
-            c->recovery_required_count = c_recovery;
-            c->improved_count = c_imp;
-            c->successes = c_imp;
-            c->regressed_count = c_reg;
-            c->rollbacks = c_reg;
-            c->cooldown_ticks = std::min<uint32_t>(c_cool, 64U);
-            c->consecutive_non_improved = std::min<uint32_t>(c_non_imp, 16U);
-
-            double scale = 1.0;
-            uint32_t inconc = 0, rej = 0, wl = 0, tb = 0;
-            uint32_t ownership_losses = 0, quarantine_ticks = 0;
-            std::string reason;
-            bool restored_extended_stats = false;
-            if (magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
-                restored_extended_stats = static_cast<bool>(
-                    ls >> scale >> inconc >> rej >> wl >> tb >>
-                    ownership_losses >> quarantine_ticks >> reason);
-            } else {
-                restored_extended_stats = static_cast<bool>(
-                    ls >> scale >> inconc >> rej >> wl >> tb >> reason);
-            }
-            if (restored_extended_stats) {
-                c->adaptive_scale = std::clamp(scale, 0.25, 1.0);
-                c->inconclusive_count = inconc;
-                c->rejected_count = rej;
-                c->last_workload = static_cast<WorkloadClass>(std::min<uint32_t>(wl, 10U));
-                c->last_thermal_bucket = static_cast<uint8_t>(std::min<uint32_t>(tb, 4U));
-                c->ownership_loss_count = std::min<uint32_t>(ownership_losses, 16U);
-                c->ownership_quarantine_ticks = std::min<uint32_t>(quarantine_ticks, 64U);
-                c->last_rollback_reason = (reason == "-") ? "" : reason;
-            }
+    for (const auto& saved : parsed) {
+        if (auto* candidate = find_candidate(saved.id)) {
+            candidate->mean_utility = saved.mean_utility;
+            candidate->mean_utility_delta = saved.mean_utility_delta;
+            candidate->adaptive_scale = saved.adaptive_scale;
+            candidate->trials = saved.trials;
+            candidate->reward_samples = saved.reward_samples;
+            candidate->improved_count = saved.improved;
+            candidate->successes = saved.improved;
+            candidate->regressed_count = saved.regressed;
+            candidate->rollbacks = saved.regressed;
+            candidate->neutral_count = saved.neutral;
+            candidate->aborted_count = saved.aborted;
+            candidate->recovery_required_count = saved.recovery_required;
+            candidate->cooldown_ticks = saved.cooldown;
+            candidate->consecutive_non_improved = saved.consecutive_non_improved;
+            candidate->inconclusive_count = saved.inconclusive;
+            candidate->rejected_count = saved.rejected;
+            candidate->last_workload = static_cast<WorkloadClass>(saved.workload);
+            candidate->last_thermal_bucket = static_cast<uint8_t>(saved.thermal_bucket);
+            candidate->ownership_loss_count = saved.ownership_losses;
+            candidate->ownership_quarantine_ticks = saved.quarantine_ticks;
+            candidate->last_rollback_reason = saved.rollback_reason == "-" ? "" : saved.rollback_reason;
         }
     }
     update_ucb_scores();
