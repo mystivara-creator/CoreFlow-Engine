@@ -1007,6 +1007,43 @@ int main(int argc, char* argv[]) {
         auto thermal = ThermalMonitor::instance().assess();
         const auto profile = ThermalMonitor::instance().multi_sensor_profile();
         const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
+        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
+        const auto io_psi = read_psi_avg10("/proc/pressure/io");
+
+        const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
+                                           std::optional<double> confidence = std::nullopt) {
+            if (!dvs_recorder.active()) return;
+            const auto tuner_state = AutonomousTuner::instance().snapshot();
+            const bool clear = journal_clear();
+            DeviceValidationSample sample;
+            sample.cpu_psi = cpu_psi;
+            sample.memory_psi = memory_psi;
+            sample.io_psi = io_psi;
+            if (thermal.available) sample.thermal_pressure = thermal.pressure;
+            if (temp >= 0.0f && std::isfinite(temp)) sample.temperature_celsius = temp;
+            if (thermal.headroom_valid && std::isfinite(thermal.headroom_value)) {
+                sample.thermal_headroom = static_cast<double>(thermal.headroom_value);
+            }
+            sample.ai_prediction_10s = prediction;
+            sample.ai_confidence = confidence;
+            sample.thermal_source = thermal.available ? thermal.source : "unavailable";
+            sample.workload = state_name(current);
+            sample.tuner_stage = std::string(AutonomousTuner::stage_name(tuner_state.stage));
+            sample.tuner_verdict = std::string(AutonomousTuner::verdict_name(tuner_state.verdict));
+            sample.candidate = tuner_state.active_candidate_id;
+            sample.capacity_scale = last_capacity_scale;
+            sample.valid_thermal_sensors = static_cast<uint32_t>(std::min<size_t>(
+                profile.total_valid_sensors, std::numeric_limits<uint32_t>::max()));
+            sample.recovery_pending = !clear;
+            sample.journal_clear = clear;
+            sample.rollback_verified = clear && !baseline.has_active_mutations();
+            if (!dvs_recorder.record_sample(sample)) {
+                std::string bundle, error;
+                (void)dvs_recorder.stop(&bundle, &error);
+                emit_log(true, "[CoreFlow][CF-DVS] Capture stopped safely after a recorder limit or I/O failure: " + error);
+            }
+        };
 
         if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
             const double recover_deg = static_cast<double>(config.thermal_recover_celsius);
@@ -1032,6 +1069,7 @@ int main(int argc, char* argv[]) {
             thermal_ready = false;
             cooling_feedback.reset();
             temp_tracker.reset();
+            record_dvs_sample();
             if (applied) {
                 (void)baseline.rollback_all();
                 applied = false;
@@ -1055,12 +1093,10 @@ int main(int argc, char* argv[]) {
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
             (void)baseline.rollback_all();
             applied = false;
+            record_dvs_sample();
             return;
         }
 
-        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
-        const auto io_psi = read_psi_avg10("/proc/pressure/io");
         const PressureSnapshot pressure{
             .cpu = cpu_psi.value_or(0.0),
             .memory = memory_psi.value_or(0.0),
@@ -1109,6 +1145,8 @@ int main(int argc, char* argv[]) {
             config.enable_pid_equilibrium});
         if (!decision.valid) {
             controller->reset();
+            record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
+                              ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt);
             return;
         }
 
@@ -1228,6 +1266,8 @@ int main(int argc, char* argv[]) {
                 emit_log(true, line.str());
             }
         }
+        record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
+                          ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt);
     });
     if (timer_fd < 0) {
         clear_pid(pid_lock);
