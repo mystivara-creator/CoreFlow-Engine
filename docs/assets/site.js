@@ -1,42 +1,29 @@
 (() => {
-  const menuButton = document.querySelector(".menu-toggle");
-  const navigation = document.querySelector(".primary-nav");
+  "use strict";
 
-  if (menuButton && navigation) {
-    menuButton.addEventListener("click", () => {
-      const expanded = menuButton.getAttribute("aria-expanded") === "true";
-      menuButton.setAttribute("aria-expanded", String(!expanded));
-      menuButton.setAttribute("aria-label", expanded ? "Buka menu" : "Tutup menu");
-      navigation.classList.toggle("open", !expanded);
+  const toggle = document.querySelector(".menu-toggle");
+  const nav = document.querySelector(".site-nav");
+
+  if (toggle && nav) {
+    const closeMenu = () => {
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-label", "Buka navigasi");
+      nav.classList.remove("open");
+    };
+
+    toggle.addEventListener("click", () => {
+      const isOpen = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!isOpen));
+      toggle.setAttribute("aria-label", isOpen ? "Buka navigasi" : "Tutup navigasi");
+      nav.classList.toggle("open", !isOpen);
     });
 
-    navigation.querySelectorAll("a").forEach((link) => {
-      link.addEventListener("click", () => {
-        menuButton.setAttribute("aria-expanded", "false");
-        menuButton.setAttribute("aria-label", "Buka menu");
-        navigation.classList.remove("open");
-      });
+    nav.querySelectorAll("a").forEach((link) => link.addEventListener("click", closeMenu));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeMenu();
     });
   }
 
   const year = document.getElementById("year");
   if (year) year.textContent = String(new Date().getFullYear());
-
-  const revealItems = document.querySelectorAll(".reveal");
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  if ("IntersectionObserver" in window && !reduceMotion) {
-    const observer = new IntersectionObserver((entries, instance) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("is-visible");
-          instance.unobserve(entry.target);
-        }
-      });
-    }, { threshold: 0.12 });
-
-    revealItems.forEach((item) => observer.observe(item));
-  } else {
-    revealItems.forEach((item) => item.classList.add("is-visible"));
-  }
 })();
