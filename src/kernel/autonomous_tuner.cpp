@@ -1468,13 +1468,14 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 
     auto* stats = find_candidate(current_candidate_id_);
 
-    double target_spread = 0.0, target_baseline = 0.0;
+    double target_spread = 0.0, target_baseline = 0.0, target_after = 0.0;
+    std::string_view target_metric = "unavailable";
     size_t noise_index = 0;
     switch (current_evaluation_domain_) {
-        case EvaluationDomain::Io: target_spread=max_after_io_psi_-min_after_io_psi_; target_baseline=before_io_psi_; noise_index=0; break;
-        case EvaluationDomain::Memory: target_spread=max_after_mem_psi_-min_after_mem_psi_; target_baseline=before_mem_psi_; noise_index=1; break;
-        case EvaluationDomain::Cpu: target_spread=max_after_cpu_psi_-min_after_cpu_psi_; target_baseline=before_cpu_psi_; noise_index=2; break;
-        case EvaluationDomain::Thermal: target_spread=max_after_thermal_-min_after_thermal_; target_baseline=before_thermal_; noise_index=3; break;
+        case EvaluationDomain::Io: target_spread=max_after_io_psi_-min_after_io_psi_; target_baseline=before_io_psi_; target_after=after_io; target_metric="io_psi"; noise_index=0; break;
+        case EvaluationDomain::Memory: target_spread=max_after_mem_psi_-min_after_mem_psi_; target_baseline=before_mem_psi_; target_after=after_mem; target_metric="memory_psi"; noise_index=1; break;
+        case EvaluationDomain::Cpu: target_spread=max_after_cpu_psi_-min_after_cpu_psi_; target_baseline=before_cpu_psi_; target_after=after_cpu; target_metric="cpu_psi"; noise_index=2; break;
+        case EvaluationDomain::Thermal: target_spread=max_after_thermal_-min_after_thermal_; target_baseline=before_thermal_; target_after=after_therm; target_metric="thermal_pressure"; noise_index=3; break;
         default: break;
     }
     const double domain_weight = current_evaluation_domain_ == EvaluationDomain::Io ? 0.07 : current_evaluation_domain_ == EvaluationDomain::Memory ? 0.08 : current_evaluation_domain_ == EvaluationDomain::Cpu ? 0.075 : 0.0225;
@@ -1530,8 +1531,8 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         }
         current_rationale_ += " [Verified IMPROVED: ΔU=+" +
                               std::to_string(utility_delta).substr(0, 4) +
-                              ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
-                              "% -> " + std::to_string(after_io).substr(0, 4) + "% -> RETAINED]";
+                              ", " + std::string(target_metric) + " " + std::to_string(target_baseline).substr(0, 5) +
+                              " -> " + std::to_string(target_after).substr(0, 5) + "% -> RETAINED]";
         update_ucb_scores();
     } else if (utility_delta < regressed_threshold) {
         // REGRESSED: Stalls or thermals worsened -> Rollback, step down adaptive scale & apply context-aware cooldown!
@@ -1551,8 +1552,8 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         const std::string msg =
             "Trial " + current_candidate_id_ + " regressed (ΔU=" +
             std::to_string(utility_delta).substr(0, 5) +
-            ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
-            "% -> " + std::to_string(after_io).substr(0, 4) +
+            ", " + std::string(target_metric) + " " + std::to_string(target_baseline).substr(0, 5) +
+            " -> " + std::to_string(target_after).substr(0, 5) +
             "%); rolled back to OEM baseline.";
         (void)rollback_active(msg);
     } else {
