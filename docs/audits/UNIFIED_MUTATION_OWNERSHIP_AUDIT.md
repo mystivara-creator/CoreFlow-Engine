@@ -616,7 +616,7 @@ The source review separated kernel-control mutations from daemon lifecycle/state
 | Daemon cgroup / OOM lifecycle | `write_sys_node_verified()` | Exact target allowlist, `O_NOFOLLOW`, complete write, reopen/readback; intentionally separate from adaptive mutation domains |
 | Daemon PID and Vulkan layer state | Direct file writes | State/coordination files, not kernel tuning controls; PID file uses exclusive flock and fsync; Vulkan state uses a temporary file and rename |
 | Reactor shutdown signal | `write(eventfd)` | Event notification only, not a system policy mutation |
-| Xiaomi boot properties | `resetprop -n` in `post-fs-data.sh` | Xiaomi/Redmi/POCO brand gate, explicit mode validation, property readback against requested value, failure logged and ignored rather than reported as success |
+| Vendor-specific boot properties | No mutation path | CoreFlow intentionally leaves OEM boot properties untouched; no Xiaomi/Redmi/POCO memory-tier property override is installed or maintained |
 | Rust bridge / Vulkan layer / power bridge / telemetry helpers | No direct mutation primitive found in the reviewed files | Operate as bridge, rendering, or telemetry surface; adaptive node writes remain routed through the C++ controller/BaselineStore layer |
 
 The shell install/service scripts also write boot tokens, attempt counters, safety markers, module files, and logs. These are installer/boot-state operations, not adaptive kernel tunables. Their state-directory and file replacement paths are subject to the script's symlink checks and temporary-file/rename pattern; they still require target-firmware installation testing.
