@@ -242,6 +242,9 @@ struct CandidateStats {
     uint32_t rejected_count{0};
     uint32_t cooldown_ticks{0};
     uint32_t consecutive_non_improved{0};
+    // Ownership-loss quarantine is persisted and cannot be bypassed by context changes.
+    uint32_t ownership_loss_count{0};
+    uint32_t ownership_quarantine_ticks{0};
     WorkloadClass last_workload{WorkloadClass::Idle};
     uint8_t last_thermal_bucket{0};
     std::string last_before_summary;
