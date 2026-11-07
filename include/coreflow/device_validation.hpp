@@ -13,6 +13,7 @@ struct DeviceValidationSample {
     std::optional<double> io_psi;
     std::optional<double> thermal_pressure;
     std::optional<double> temperature_celsius;
+    std::optional<double> temperature_velocity_celsius_per_sec;
     std::optional<double> thermal_headroom;
     std::optional<double> ai_prediction_10s;
     std::optional<double> ai_confidence;
