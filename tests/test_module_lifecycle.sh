@@ -9,39 +9,17 @@ MOD_DIR="$TMP_ROOT/mod"
 LIVE_MOD="$TMP_ROOT/live_mod"
 mkdir -p "$MOD_DIR/system/bin" "$MOD_DIR/system/etc/coreflow" "$MOD_DIR/webroot"
 
-# Mock Xiaomi property tools so the memory-tier policy can be tested on host.
+# Property mutation is intentionally absent from the boot lifecycle.
 MOCK_BIN="$TMP_ROOT/mock-bin"
 mkdir -p "$MOCK_BIN"
-cat <<'EOF' > "$MOCK_BIN/getprop"
-#!/bin/sh
-case "${1:-}" in
-  ro.product.brand) echo "${COREFLOW_TEST_BRAND:-Xiaomi}" ;;
-  ro.product.manufacturer) echo "${COREFLOW_TEST_MANUFACTURER:-Xiaomi}" ;;
-  *)
-    [ -f "$COREFLOW_PROP_STATE" ] || exit 0
-    awk -F= -v key="${1:-}" '$1 == key { value=substr($0, index($0, "=")+1) } END { if (value != "") print value }' "$COREFLOW_PROP_STATE"
-    ;;
-esac
-EOF
 cat <<'EOF' > "$MOCK_BIN/resetprop"
 #!/bin/sh
 printf '%s\n' "$*" >> "$COREFLOW_PROP_LOG"
-[ "${1:-}" = "-n" ] || exit 2
-PROP="${2:-}"
-VALUE="${3:-}"
-[ -n "$PROP" ] || exit 2
-[ "${COREFLOW_RESETPROP_FAIL:-}" = "$PROP" ] && exit 7
-TMP="${COREFLOW_PROP_STATE}.tmp.$"
-awk -F= -v key="$PROP" '$1 != key { print }' "$COREFLOW_PROP_STATE" 2>/dev/null > "$TMP" || :
-printf '%s=%s\n' "$PROP" "$VALUE" >> "$TMP"
-mv -f "$TMP" "$COREFLOW_PROP_STATE"
 EOF
-chmod +x "$MOCK_BIN/getprop" "$MOCK_BIN/resetprop"
+chmod +x "$MOCK_BIN/resetprop"
 export PATH="$MOCK_BIN:$PATH"
 export COREFLOW_PROP_LOG="$TMP_ROOT/resetprop.log"
-export COREFLOW_PROP_STATE="$TMP_ROOT/property-state"
-: > "$COREFLOW_PROP_STATE"
-export COREFLOW_MEMINFO_PATH="$TMP_ROOT/meminfo"
+: > "$COREFLOW_PROP_LOG"
 
 cp "$(dirname "$0")/../module/post-fs-data.sh" "$MOD_DIR/post-fs-data.sh"
 cp "$(dirname "$0")/../module/service.sh" "$MOD_DIR/service.sh"
@@ -86,98 +64,9 @@ EPOCH_1="$(cat "$STATE_DIR/boot_epoch")"
 [ -n "$EPOCH_1" ] || { echo "FAIL: boot_epoch is empty"; exit 1; }
 [ "$(cat "$STATE_DIR/boot_attempts")" = "1" ] || { echo "FAIL: boot_attempts != 1"; exit 1; }
 [ -f "$STATE_DIR/coreflow.conf" ] || { echo "FAIL: default.conf not copied"; exit 1; }
-grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: Xiaomi low_ram policy not applied"; exit 1; }
-if grep -Fq -- 'ro.config.low_ram.middle.threshold_gb' "$COREFLOW_PROP_LOG"; then
-  echo "FAIL: unreadable RAM must preserve the OEM threshold"
-  exit 1
-fi
+[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: boot lifecycle must not mutate vendor properties"; exit 1; }
 
-# Verify dynamic RAM tiers: 6 GiB -> 5, 8 GiB -> 7.
-printf 'MemTotal:       6291456 kB\n' > "$COREFLOW_MEMINFO_PATH"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: 6 GiB threshold should be 5"; exit 1; }
-printf 'MemTotal:       7864320 kB\n' > "$COREFLOW_MEMINFO_PATH"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 7' "$COREFLOW_PROP_LOG" || { echo "FAIL: 8 GiB threshold should be 7"; exit 1; }
-
-# Verify that the two Xiaomi properties can be isolated independently.
-printf 'MemTotal:       6291456 kB\n' > "$COREFLOW_MEMINFO_PATH"
-
-printf 'low_ram_only\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: low_ram_only did not set low_ram"; exit 1; }
-if grep -Fq -- 'ro.config.low_ram.middle.threshold_gb' "$COREFLOW_PROP_LOG"; then
-  echo "FAIL: low_ram_only unexpectedly changed the threshold"
-  exit 1
-fi
-
-printf 'threshold_only\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: threshold_only did not set dynamic threshold"; exit 1; }
-if grep -Fq -- 'ro.config.low_ram false' "$COREFLOW_PROP_LOG"; then
-  echo "FAIL: threshold_only unexpectedly changed low_ram"
-  exit 1
-fi
-
-printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-grep -Fq -- '-n ro.config.low_ram false' "$COREFLOW_PROP_LOG" || { echo "FAIL: both mode did not set low_ram"; exit 1; }
-grep -Fq -- '-n ro.config.low_ram.middle.threshold_gb 5' "$COREFLOW_PROP_LOG" || { echo "FAIL: both mode did not set threshold"; exit 1; }
-
-printf 'disabled\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: disabled mode changed Xiaomi properties"; exit 1; }
-
-# A symlinked mode file must fail closed; it must not fall back to the enabling default.
-printf 'both\n' > "$TMP_ROOT/xiaomi_ui_mode_target"
-ln -sf "$TMP_ROOT/xiaomi_ui_mode_target" "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-: > "$STATE_DIR/logs/xiaomi_ui_policy.log"
-sh "$MOD_DIR/post-fs-data.sh"
-[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: symlinked Xiaomi mode must not mutate properties"; exit 1; }
-grep -q 'Symlinked Xiaomi UI mode rejected' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { echo "FAIL: symlinked Xiaomi mode was not reported"; exit 1; }
-rm -f "$STATE_DIR/xiaomi_ui_mode" "$TMP_ROOT/xiaomi_ui_mode_target"
-
-# Invalid modes must fail closed instead of silently applying a partial policy.
-printf 'unknown_mode\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: invalid Xiaomi mode must not mutate properties"; exit 1; }
-grep -q 'Invalid Xiaomi UI mode' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { echo "FAIL: invalid Xiaomi mode was not reported"; exit 1; }
-
-# A resetprop failure must be visible and must not be reported as applied.
-printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-: > "$STATE_DIR/logs/xiaomi_ui_policy.log"
-COREFLOW_RESETPROP_FAIL="ro.config.low_ram" sh "$MOD_DIR/post-fs-data.sh"
-grep -q 'resetprop failed: ro.config.low_ram=false' "$STATE_DIR/logs/xiaomi_ui_policy.log" || { echo "FAIL: resetprop failure was not reported"; exit 1; }
-if grep -q 'applied and verified: ro.config.low_ram=false' "$STATE_DIR/logs/xiaomi_ui_policy.log"; then
-  echo "FAIL: failed resetprop was incorrectly reported as applied"
-  exit 1
-fi
-unset COREFLOW_RESETPROP_FAIL
-
-# Non-Xiaomi devices must never receive either Xiaomi-specific property.
-printf 'both\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_PROP_LOG"
-COREFLOW_TEST_BRAND="Google" COREFLOW_TEST_MANUFACTURER="Google" sh "$MOD_DIR/post-fs-data.sh"
-[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: Xiaomi properties leaked to a non-Xiaomi device"; exit 1; }
-
-# If physical RAM cannot be detected, do not write an unverified threshold.
-printf 'threshold_only\n' > "$STATE_DIR/xiaomi_ui_mode"
-: > "$COREFLOW_MEMINFO_PATH"
-: > "$COREFLOW_PROP_LOG"
-sh "$MOD_DIR/post-fs-data.sh"
-[ ! -s "$COREFLOW_PROP_LOG" ] || { echo "FAIL: missing MemTotal should not mutate properties"; exit 1; }
-
-# 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger. Reset the
-# counter because the preceding policy cases intentionally ran extra boots.
+# 2. Simulate 5 unconfirmed boots -> SAFE_MODE must trigger.
 printf '1\n' > "$STATE_DIR/boot_attempts"
 for i in 2 3 4 5; do
   sh "$MOD_DIR/post-fs-data.sh"
