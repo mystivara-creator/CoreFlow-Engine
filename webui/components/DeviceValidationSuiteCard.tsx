@@ -136,12 +136,12 @@ function createStoredZip(files: Payload[]): Blob {
   u32(endView, 12, centralSize);
   u32(endView, 16, offset);
   u16(endView, 20, 0);
-  return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+  return new Blob([...localParts, ...centralParts, end].map((part) => part.slice().buffer as ArrayBuffer), { type: 'application/zip' });
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   if (!window.crypto?.subtle) throw new Error('Secure SHA-256 verification is unavailable in this WebView');
-  const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes.slice().buffer as ArrayBuffer);
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
