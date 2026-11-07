@@ -153,6 +153,7 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
   const [error, setError] = useState<string | null>(null);
   const [bundleSummary, setBundleSummary] = useState<string | null>(null);
   const [bundleVerdict, setBundleVerdict] = useState<string | null>(null);
+  const [checkResults, setCheckResults] = useState<{ id: string; status: string; detail: string }[]>([]);
   const bridgeAvailable = nativeMode && hasNativeKernelSuBridge();
 
   const runDaemon = useCallback(async (args: string, timeout = 10000) => {
@@ -258,10 +259,18 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     const reportFile = files.find((file) => file.name === 'report.json');
     const summaryFile = files.find((file) => file.name === 'summary.txt');
     if (!reportFile || !summaryFile) throw new Error('Required report files are missing');
-    const report = JSON.parse(new TextDecoder().decode(reportFile.bytes)) as { verdict?: string };
+    const report = JSON.parse(new TextDecoder().decode(reportFile.bytes)) as {
+      verdict?: string;
+      checks?: { id?: string; status?: string; detail?: string }[];
+    };
     const summary = new TextDecoder().decode(summaryFile.bytes);
     const verdict = typeof report.verdict === 'string' ? report.verdict : 'UNKNOWN';
     setBundleVerdict(verdict);
+    setCheckResults(Array.isArray(report.checks) ? report.checks.map((check) => ({
+      id: typeof check.id === 'string' ? check.id : 'unknown',
+      status: typeof check.status === 'string' ? check.status : 'inconclusive',
+      detail: typeof check.detail === 'string' ? check.detail : 'No detail supplied',
+    })) : []);
     setBundleSummary(summary);
 
     const zip = createStoredZip(files);
@@ -395,6 +404,12 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
             The WebUI verifies each payload size and SHA-256 against the native manifest before building a ZIP archive. A mismatch blocks export.
           </p>
           {bundleVerdict && <div className="text-xs font-semibold">Captured verdict: {bundleVerdict}</div>}
+          {checkResults.length > 0 && <ul className="space-y-2 text-xs">{checkResults.map((check) => (
+            <li key={check.id} className="flex items-start justify-between gap-3">
+              <span className="min-w-0"><span className="font-medium">{check.id}</span><span className="block text-slate-500 dark:text-slate-400">{check.detail}</span></span>
+              <span className="shrink-0 font-semibold uppercase">{check.status}</span>
+            </li>
+          ))}</ul>}
           {bundleSummary && <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-900/[0.04] dark:bg-white/[0.04] p-3 text-[11px]">{bundleSummary}</pre>}
           {bundleSummary && <div className="text-[11px] text-slate-500 flex items-center gap-2"><Archive className="w-3.5 h-3.5" /> ZIP assembled locally; no automatic sharing occurred.</div>}
           {!bundleSummary && <p className="text-xs text-slate-500">No bundle exported in this WebUI session.</p>}
