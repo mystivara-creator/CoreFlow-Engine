@@ -1013,7 +1013,8 @@ int main(int argc, char* argv[]) {
         const auto io_psi = read_psi_avg10("/proc/pressure/io");
 
         const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
-                                           std::optional<double> confidence = std::nullopt) {
+                                           std::optional<double> confidence = std::nullopt,
+                                           std::optional<double> temperature_velocity = std::nullopt) {
             if (!dvs_recorder.active()) return;
             const auto tuner_state = AutonomousTuner::instance().snapshot();
             const bool clear = journal_clear();
@@ -1023,6 +1024,7 @@ int main(int argc, char* argv[]) {
             sample.io_psi = io_psi;
             if (thermal.available) sample.thermal_pressure = thermal.pressure;
             if (temp >= 0.0f && std::isfinite(temp)) sample.temperature_celsius = temp;
+            sample.temperature_velocity_celsius_per_sec = temperature_velocity;
             if (thermal.headroom_valid && std::isfinite(thermal.headroom_value)) {
                 sample.thermal_headroom = static_cast<double>(thermal.headroom_value);
             }
@@ -1147,7 +1149,8 @@ int main(int argc, char* argv[]) {
         if (!decision.valid) {
             controller->reset();
             record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
-                              ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt);
+                              ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
+                              temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
             return;
         }
 
@@ -1268,7 +1271,8 @@ int main(int argc, char* argv[]) {
             }
         }
         record_dvs_sample(ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
-                          ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt);
+                          ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
+                          temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
     });
     if (timer_fd < 0) {
         clear_pid(pid_lock);
