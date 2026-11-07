@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <cstdlib>
 #include <fcntl.h>
 #include <limits>
 #include <sys/stat.h>
@@ -356,6 +357,8 @@ bool DeviceValidationRecorder::start(std::string_view profile, std::string* erro
     active_ = true;
     failed_ = false;
     sequence_ = 0;
+    started_ns_ = monotonic_ns();
+    started_at_ = utc_now();
     event_bytes_ = 0;
     samples_ = 0;
     latest_ = {};
@@ -396,9 +399,7 @@ bool DeviceValidationRecorder::append_event(std::string_view type,
 bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sample) noexcept {
     if (!active_) return false;
     const uint64_t elapsed = monotonic_ns();
-    static uint64_t started_ns = 0;
-    if (started_ns == 0 || samples_ == 0) started_ns = elapsed;
-    if (elapsed < started_ns || elapsed - started_ns > kMaxSessionNs ||
+    if (started_ns_ == 0 || elapsed < started_ns_ || elapsed - started_ns_ > kMaxSessionNs ||
         sequence_ >= kMaxEvents - 1) {
         failed_ = true;
         return false;
@@ -476,7 +477,7 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
     const std::string model = read_property("ro.product.model", "unknown");
     const std::string api = read_property("ro.build.version.sdk", "0");
     const int api_level = std::max(0, std::atoi(api.c_str()));
-    const std::string started_at = ended_at; // Exact start timestamp is carried by session.started event.
+    const std::string started_at = started_at_;
     const std::string recovery_status = recovery_pending ? "inconclusive" :
         (rollback_verified ? "pass" : "inconclusive");
     const std::string collector_status = capture_ok ? "pass" : "inconclusive";
