@@ -349,6 +349,8 @@ void AutonomousTuner::reset() {
     thermal_recovery_ticks_ = 0;
     has_prev_thermal_ = false;
     noise_floor_ = 0.05;
+    evaluation_noise_floors_.fill(0.05);
+    current_evaluation_domain_ = EvaluationDomain::Unavailable;
     settling_ticks_remaining_ = 0;
     applied_steps_.clear();
     total_trials_ = 0;
@@ -583,9 +585,11 @@ void AutonomousTuner::save_persisted_stats() const {
     const fs::path final_path = state_dir / "tuner_stats.state";
     std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return;
-    out << "CFTS4\t" << compute_fingerprint() << "\t"
+    out << "CFTS5\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
-        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_ << "\n";
+        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
+    for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
+    out << "\n";
     for (const auto& c : candidates_) {
         out << c.id << "\t"
             << c.mean_utility << "\t"
@@ -627,14 +631,16 @@ void AutonomousTuner::load_persisted_stats() {
     const std::string current_fp = compute_fingerprint();
     // Legacy trial counts are attempts; never promote them to reward samples.
     uint32_t persisted_reward_samples = 0;
-    if (magic == "CFTS4") {
-        uint32_t inconc = 0, rej = 0;
-        double nf = 0.05;
-        if (fp != current_fp || !(hs >> persisted_reward_samples >> inconc >> rej >> nf) ||
-            persisted_reward_samples > trials) return;
-        total_inconclusive_ = inconc;
-        total_rejected_ = rej;
-        noise_floor_ = std::clamp(nf, 0.02, 0.45);
+    if (magic == "CFTS5" || magic == "CFTS4") {
+        uint32_t inconc = 0, rej = 0; double nf = 0.05;
+        if (fp != current_fp || !(hs >> persisted_reward_samples >> inconc >> rej >> nf) || persisted_reward_samples > trials) return;
+        total_inconclusive_ = inconc; total_rejected_ = rej; noise_floor_ = std::clamp(nf, 0.02, 0.45);
+        if (magic == "CFTS5") {
+            for (auto& floor : evaluation_noise_floors_) {
+                if (!(hs >> floor) || !std::isfinite(floor)) return;
+                floor = std::clamp(floor, 0.02, 0.45);
+            }
+        } else evaluation_noise_floors_.fill(noise_floor_);
     } else if (magic == "CFTS3" || magic == "CFTS2") {
         if (fp != current_fp) return;
         uint32_t inconc = 0, rej = 0;
@@ -665,7 +671,7 @@ void AutonomousTuner::load_persisted_stats() {
         double mean_u = 0.5, mean_du = 0.0;
         uint32_t c_trials = 0, c_reward = 0, c_imp = 0, c_reg = 0;
         uint32_t c_neutral = 0, c_aborted = 0, c_recovery = 0, c_cool = 0, c_non_imp = 0;
-        if (magic == "CFTS4") {
+        if (magic == "CFTS5" || magic == "CFTS4") {
             if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_reward >> c_imp >> c_reg >>
                   c_neutral >> c_aborted >> c_recovery >> c_cool >> c_non_imp) ||
                 c_reward > c_trials || static_cast<uint64_t>(c_imp) + c_reg + c_neutral > c_reward) continue;
@@ -693,7 +699,7 @@ void AutonomousTuner::load_persisted_stats() {
             uint32_t ownership_losses = 0, quarantine_ticks = 0;
             std::string reason;
             bool restored_extended_stats = false;
-            if (magic == "CFTS4" || magic == "CFTS3") {
+            if (magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
                 restored_extended_stats = static_cast<bool>(
                     ls >> scale >> inconc >> rej >> wl >> tb >>
                     ownership_losses >> quarantine_ticks >> reason);
@@ -1161,6 +1167,18 @@ bool AutonomousTuner::apply_transaction(
     const TunerTelemetryInput& telemetry) {
     if (steps.empty() || recovery_required_) return false;
 
+    EvaluationDomain evaluation_domain = EvaluationDomain::Unavailable;
+    if (intent == "IoLatencyRelief") evaluation_domain = EvaluationDomain::Io;
+    else if (intent == "MemoryStallRelief") evaluation_domain = EvaluationDomain::Memory;
+    else if (intent == "InteractiveCpuPacing") evaluation_domain = EvaluationDomain::Cpu;
+    else if (intent == "ThermalStabilization") evaluation_domain = EvaluationDomain::Thermal;
+    const bool target_baseline_valid =
+        (evaluation_domain == EvaluationDomain::Io && telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Memory && telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Cpu && telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0);
+    if (!target_baseline_valid) return false;
+
     // First unwind any previous transaction cleanly
     if (!applied_steps_.empty()) {
         if (!rollback_active("Switching coordinated candidate")) {
@@ -1282,6 +1300,8 @@ bool AutonomousTuner::apply_transaction(
     observing_ = true;
     obs_ticks_ = 0;
     thermal_stabilization_active_ = (intent == "ThermalStabilization");
+    current_evaluation_domain_ = evaluation_domain;
+    noise_floor_ = evaluation_noise_floors_[static_cast<size_t>(current_evaluation_domain_)];
     current_candidate_id_ = std::string(candidate_id);
     current_candidate_label_ = std::string(candidate_label);
     current_intent_ = std::string(intent);
@@ -1293,10 +1313,14 @@ bool AutonomousTuner::apply_transaction(
     last_verdict_enum_ = TunerVerdict::Pending;
     last_utility_delta_ = 0.0;
 
-    before_io_psi_ = telemetry.io_psi;
-    before_mem_psi_ = telemetry.memory_psi;
-    before_cpu_psi_ = telemetry.cpu_psi;
-    before_thermal_ = telemetry.thermal_pressure;
+    before_io_valid_ = telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0;
+    before_mem_valid_ = telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0;
+    before_cpu_valid_ = telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0;
+    before_thermal_valid_ = telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0;
+    before_io_psi_ = before_io_valid_ ? telemetry.io_psi : 0.0;
+    before_mem_psi_ = before_mem_valid_ ? telemetry.memory_psi : 0.0;
+    before_cpu_psi_ = before_cpu_valid_ ? telemetry.cpu_psi : 0.0;
+    before_thermal_ = before_thermal_valid_ ? telemetry.thermal_pressure : 0.0;
     before_temperature_celsius_ = telemetry.current_temperature_celsius;
 
     sum_after_io_psi_ = 0.0;
@@ -1305,8 +1329,10 @@ bool AutonomousTuner::apply_transaction(
     sum_after_thermal_ = 0.0;
     sum_after_temp_vel_ = 0.0;
     valid_thermal_samples_in_window_ = 0;
-    min_after_io_psi_ = 1e9;
-    max_after_io_psi_ = 0.0;
+    valid_io_samples_in_window_ = valid_mem_samples_in_window_ = 0;
+    valid_cpu_samples_in_window_ = valid_pressure_samples_in_window_ = 0;
+    min_after_io_psi_ = min_after_mem_psi_ = min_after_cpu_psi_ = min_after_thermal_ = 1e9;
+    max_after_io_psi_ = max_after_mem_psi_ = max_after_cpu_psi_ = max_after_thermal_ = -1e9;
     ++total_trials_;
 
     if (auto* stats = find_candidate(candidate_id)) {
@@ -1327,11 +1353,11 @@ bool AutonomousTuner::apply_transaction(
 void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& latest_telemetry) {
     if (!observing_ || obs_ticks_ == 0) return;
 
-    const double n = static_cast<double>(obs_ticks_);
-    const double after_io = sum_after_io_psi_ / n;
-    const double after_mem = sum_after_mem_psi_ / n;
-    const double after_cpu = sum_after_cpu_psi_ / n;
-    const double after_therm = sum_after_thermal_ / n;
+    const auto mean = [](double sum, uint32_t count) noexcept { return count ? sum / static_cast<double>(count) : 0.0; };
+    const double after_io = mean(sum_after_io_psi_, valid_io_samples_in_window_);
+    const double after_mem = mean(sum_after_mem_psi_, valid_mem_samples_in_window_);
+    const double after_cpu = mean(sum_after_cpu_psi_, valid_cpu_samples_in_window_);
+    const double after_therm = mean(sum_after_thermal_, valid_pressure_samples_in_window_);
 
     // Verify both readback value and inode ownership across all applied nodes
     if (!verify_active_ownership()) {
@@ -1344,21 +1370,31 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         return;
     }
 
-    // Calculate domain-weighted empirical utility delta:
-    // Positive delta means system pressure/stalls/thermal load decreased without regression.
-    const double io_gain = before_io_psi_ - after_io;
-    const double mem_gain = before_mem_psi_ - after_mem;
-    const double cpu_gain = before_cpu_psi_ - after_cpu;
-    const double therm_gain = before_thermal_ - after_therm;
-    const double therm_penalty = std::max(0.0, after_therm - before_thermal_ - 2.0);
+    const uint32_t target_samples = current_evaluation_domain_ == EvaluationDomain::Io ? valid_io_samples_in_window_ :
+        current_evaluation_domain_ == EvaluationDomain::Memory ? valid_mem_samples_in_window_ :
+        current_evaluation_domain_ == EvaluationDomain::Cpu ? valid_cpu_samples_in_window_ : valid_pressure_samples_in_window_;
+    if (target_samples < 2) {
+        last_verdict_ = "INCONCLUSIVE"; last_verdict_enum_ = TunerVerdict::Inconclusive; last_utility_delta_ = 0.0;
+        observing_ = false; settling_ticks_remaining_ = 0; ++total_rolled_back_; ++total_inconclusive_;
+        if (auto* stats = find_candidate(current_candidate_id_)) { ++stats->inconclusive_count; ++stats->consecutive_non_improved; stats->last_rollback_reason = "Insufficient valid target-domain samples"; }
+        (void)rollback_active("Target-domain evidence incomplete; reverted to OEM baseline.");
+        update_ucb_scores(); save_persisted_stats(); return;
+    }
+    const bool io_valid = before_io_valid_ && valid_io_samples_in_window_ >= 2;
+    const bool mem_valid = before_mem_valid_ && valid_mem_samples_in_window_ >= 2;
+    const bool cpu_valid = before_cpu_valid_ && valid_cpu_samples_in_window_ >= 2;
+    const bool thermal_valid = before_thermal_valid_ && valid_pressure_samples_in_window_ >= 2;
+    const double io_gain = io_valid ? before_io_psi_ - after_io : 0.0;
+    const double mem_gain = mem_valid ? before_mem_psi_ - after_mem : 0.0;
+    const double cpu_gain = cpu_valid ? before_cpu_psi_ - after_cpu : 0.0;
+    const double therm_gain = thermal_valid ? before_thermal_ - after_therm : 0.0;
+    const double therm_penalty = thermal_valid ? std::max(0.0, after_therm - before_thermal_ - 2.0) : 0.0;
 
     double utility_delta = 0.0;
     if (current_intent_ == "ThermalStabilization") {
         // Requirements 6 & 7: Check if physical thermal evidence is available and adequate.
         // A candidate under ThermalStabilization can ONLY be retained if valid physical sensor telemetry is available.
-        const bool has_thermal_evidence =
-            (valid_thermal_samples_in_window_ > 0) ||
-            (latest_telemetry.temperature_velocity_valid && latest_telemetry.temperature_samples_count >= 2);
+        const bool has_thermal_evidence = valid_thermal_samples_in_window_ >= 2 && valid_pressure_samples_in_window_ >= 2;
 
         if (!has_thermal_evidence || (latest_telemetry.current_temperature_celsius < 0.0 && !latest_telemetry.temperature_velocity_valid)) {
             // Sensor unavailable or insufficient samples -> INCONCLUSIVE per Requirement 6 & 7
@@ -1413,20 +1449,18 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         }
 
         // Requirement 9: Thermal pressure reduction must not mask workload or stability regression.
-        if (io_gain < -1.5 || cpu_gain < -3.0 || mem_gain < -1.5) {
+        if ((io_valid && io_gain < -1.5) || (cpu_valid && cpu_gain < -3.0) || (mem_valid && mem_gain < -1.5)) {
             if (utility_delta >= 0.25) {
                 utility_delta = -0.25; // Force regressed verdict
             }
         }
     } else if (current_intent_ == "IoLatencyRelief") {
-        utility_delta = 1.40 * io_gain + 0.35 * cpu_gain - 0.60 * therm_penalty;
+        utility_delta = 1.40 * io_gain + (cpu_valid ? 0.35 * cpu_gain : 0.0) - 0.60 * therm_penalty;
     } else if (current_intent_ == "MemoryStallRelief") {
-        utility_delta = 1.60 * mem_gain + 0.45 * io_gain - 0.60 * therm_penalty;
+        utility_delta = 1.60 * mem_gain + (io_valid ? 0.45 * io_gain : 0.0) - 0.60 * therm_penalty;
     } else if (current_intent_ == "InteractiveCpuPacing") {
-        utility_delta = 1.50 * cpu_gain + 0.35 * io_gain - 0.65 * therm_penalty;
-    } else {
-        utility_delta = 1.10 * io_gain + 1.10 * mem_gain + 0.50 * cpu_gain - 0.60 * therm_penalty;
-    }
+        utility_delta = 1.50 * cpu_gain + (io_valid ? 0.35 * io_gain : 0.0) - 0.65 * therm_penalty;
+    } else utility_delta = 0.0;
 
     last_utility_delta_ = utility_delta;
     observing_ = false;
@@ -1434,12 +1468,22 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 
     auto* stats = find_candidate(current_candidate_id_);
 
-    // Update running noise floor estimate from sample spread
-    const double io_spread = (max_after_io_psi_ >= min_after_io_psi_) ? (max_after_io_psi_ - min_after_io_psi_) : 0.0;
-    noise_floor_ = std::clamp(0.85 * noise_floor_ + 0.15 * std::min(0.35, io_spread * 0.05), 0.03, 0.35);
-
-    const bool high_variance_inconclusive =
-        (io_spread > std::max(6.0, before_io_psi_ * 1.2) && std::abs(utility_delta) < 0.50);
+    double target_spread = 0.0, target_baseline = 0.0;
+    size_t noise_index = 0;
+    switch (current_evaluation_domain_) {
+        case EvaluationDomain::Io: target_spread=max_after_io_psi_-min_after_io_psi_; target_baseline=before_io_psi_; noise_index=0; break;
+        case EvaluationDomain::Memory: target_spread=max_after_mem_psi_-min_after_mem_psi_; target_baseline=before_mem_psi_; noise_index=1; break;
+        case EvaluationDomain::Cpu: target_spread=max_after_cpu_psi_-min_after_cpu_psi_; target_baseline=before_cpu_psi_; noise_index=2; break;
+        case EvaluationDomain::Thermal: target_spread=max_after_thermal_-min_after_thermal_; target_baseline=before_thermal_; noise_index=3; break;
+        default: break;
+    }
+    const double domain_weight = current_evaluation_domain_ == EvaluationDomain::Io ? 0.07 : current_evaluation_domain_ == EvaluationDomain::Memory ? 0.08 : current_evaluation_domain_ == EvaluationDomain::Cpu ? 0.075 : 0.0225;
+    const double measured_noise = std::clamp(target_spread * domain_weight, 0.02, 0.45);
+    evaluation_noise_floors_[noise_index] = std::clamp(0.85 * evaluation_noise_floors_[noise_index] + 0.15 * measured_noise, 0.02, 0.45);
+    noise_floor_ = evaluation_noise_floors_[noise_index];
+    const double improved_threshold = std::max(0.25, 2.0 * noise_floor_);
+    const double regressed_threshold = -(0.20 + noise_floor_);
+    const bool high_variance_inconclusive = target_spread > std::max(6.0, std::abs(target_baseline) * 1.2) && std::abs(utility_delta) < 0.50;
 
     if (high_variance_inconclusive) {
         last_verdict_ = "INCONCLUSIVE";
@@ -1469,7 +1513,7 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
                                     static_cast<double>(stats->reward_samples);
     }
 
-    if (utility_delta >= 0.25) {
+    if (utility_delta >= improved_threshold) {
         // IMPROVED: Measurable benefit verified above noise floor -> Retain configuration!
         last_verdict_ = "IMPROVED";
         last_verdict_enum_ = TunerVerdict::Improved;
@@ -1489,7 +1533,7 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
                               ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
                               "% -> " + std::to_string(after_io).substr(0, 4) + "% -> RETAINED]";
         update_ucb_scores();
-    } else if (utility_delta < -0.20) {
+    } else if (utility_delta < regressed_threshold) {
         // REGRESSED: Stalls or thermals worsened -> Rollback, step down adaptive scale & apply context-aware cooldown!
         last_verdict_ = "REGRESSED";
         last_verdict_enum_ = TunerVerdict::Regressed;
@@ -1764,16 +1808,25 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         if (settling_ticks_remaining_ > 0) {
             --settling_ticks_remaining_;
         }
-        sum_after_io_psi_ += telemetry.io_psi;
-        sum_after_mem_psi_ += telemetry.memory_psi;
-        sum_after_cpu_psi_ += telemetry.cpu_psi;
-        sum_after_thermal_ += telemetry.thermal_pressure;
-        if (telemetry.temperature_velocity_valid) {
-            sum_after_temp_vel_ += telemetry.temperature_velocity_celsius_per_sec;
-            ++valid_thermal_samples_in_window_;
+        if (telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0) {
+            sum_after_io_psi_ += telemetry.io_psi; min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
+            max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi); ++valid_io_samples_in_window_;
         }
-        min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
-        max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi);
+        if (telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0) {
+            sum_after_mem_psi_ += telemetry.memory_psi; min_after_mem_psi_ = std::min(min_after_mem_psi_, telemetry.memory_psi);
+            max_after_mem_psi_ = std::max(max_after_mem_psi_, telemetry.memory_psi); ++valid_mem_samples_in_window_;
+        }
+        if (telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0) {
+            sum_after_cpu_psi_ += telemetry.cpu_psi; min_after_cpu_psi_ = std::min(min_after_cpu_psi_, telemetry.cpu_psi);
+            max_after_cpu_psi_ = std::max(max_after_cpu_psi_, telemetry.cpu_psi); ++valid_cpu_samples_in_window_;
+        }
+        if (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0) {
+            sum_after_thermal_ += telemetry.thermal_pressure; min_after_thermal_ = std::min(min_after_thermal_, telemetry.thermal_pressure);
+            max_after_thermal_ = std::max(max_after_thermal_, telemetry.thermal_pressure); ++valid_pressure_samples_in_window_;
+        }
+        if (telemetry.temperature_velocity_valid && std::isfinite(telemetry.temperature_velocity_celsius_per_sec) && telemetry.temperature_samples_count >= 2) {
+            sum_after_temp_vel_ += telemetry.temperature_velocity_celsius_per_sec; ++valid_thermal_samples_in_window_;
+        }
         ++obs_ticks_;
         if (obs_ticks_ >= obs_window_) {
             evaluate_observation_window(telemetry);
@@ -2082,11 +2135,11 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.utility_delta = last_utility_delta_;
     out.noise_floor = noise_floor_;
     out.before_io_psi = before_io_psi_;
-    out.after_io_psi = obs_ticks_ > 0 ? (sum_after_io_psi_ / static_cast<double>(obs_ticks_)) : before_io_psi_;
+    out.after_io_psi = valid_io_samples_in_window_ > 0 ? (sum_after_io_psi_ / static_cast<double>(valid_io_samples_in_window_)) : before_io_psi_;
     out.before_mem_psi = before_mem_psi_;
-    out.after_mem_psi = obs_ticks_ > 0 ? (sum_after_mem_psi_ / static_cast<double>(obs_ticks_)) : before_mem_psi_;
+    out.after_mem_psi = valid_mem_samples_in_window_ > 0 ? (sum_after_mem_psi_ / static_cast<double>(valid_mem_samples_in_window_)) : before_mem_psi_;
     out.before_cpu_psi = before_cpu_psi_;
-    out.after_cpu_psi = obs_ticks_ > 0 ? (sum_after_cpu_psi_ / static_cast<double>(obs_ticks_)) : before_cpu_psi_;
+    out.after_cpu_psi = valid_cpu_samples_in_window_ > 0 ? (sum_after_cpu_psi_ / static_cast<double>(valid_cpu_samples_in_window_)) : before_cpu_psi_;
     out.settling_ticks_remaining = settling_ticks_remaining_;
     out.observation_tick = obs_ticks_;
     out.observation_window = obs_window_;

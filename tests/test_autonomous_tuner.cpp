@@ -482,7 +482,7 @@ int main() {
     const auto therm_stab = tuner.step({
         .cpu_psi = 11.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .thermal_guard_active = true,
         .thermal_emergency = false,
@@ -638,12 +638,14 @@ int main() {
     });
     assert(t1_start.thermal_stabilization_active);
     assert(t1_start.stage == "OBSERVING");
-    // Feed 3 observation ticks with constant pressure (68.0) and zero temp trend
+    // Keep thermal evidence constant while I/O PSI oscillates; I/O noise must not
+    // make a thermal-domain evaluation inconclusive.
+    const double io_jitter[] = {0.0, 10.0, 5.0};
     for (int i = 0; i < 3; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = io_jitter[i],
             .thermal_pressure = 68.0,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = 0.0,

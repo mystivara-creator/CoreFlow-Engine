@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <atomic>
 #include <functional>
 #include <condition_variable>
@@ -93,14 +94,10 @@ enum class OptimizationObjective : uint8_t {
 };
 
 enum class MutationDomain : uint8_t {
-    CpuPolicy = 0,
-    BlockIo = 1,
-    VmMemory = 2,
-    UclampCgroup = 3,
-    GpuDevfreq = 4,
-    PowerLongevity = 5,
-    ThermalCore = 6,
+    CpuPolicy = 0, BlockIo = 1, VmMemory = 2, UclampCgroup = 3,
+    GpuDevfreq = 4, PowerLongevity = 5, ThermalCore = 6,
 };
+enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Unavailable = 255 };
 
 enum class ControllerPriority : uint8_t {
     BackgroundEfficiency = 20,
@@ -316,6 +313,7 @@ struct TunerTelemetryInput {
     bool cpu_psi_valid{true};
     bool memory_psi_valid{true};
     bool io_psi_valid{true};
+    bool thermal_pressure_valid{true};
 
     // Explicitly Separated Thermal Telemetry Domains:
     // 1. Thermal Pressure (dimensionless policy-relative index [0.0 .. 130.0])
@@ -490,6 +488,8 @@ private:
     double prev_thermal_pressure_{45.0};
     bool has_prev_thermal_{false};
     double noise_floor_{0.05};
+    std::array<double, 4> evaluation_noise_floors_{{0.05, 0.05, 0.05, 0.05}};
+    EvaluationDomain current_evaluation_domain_{EvaluationDomain::Unavailable};
     uint32_t settling_ticks_remaining_{0};
 
     WorkloadClass current_workload_{WorkloadClass::Idle};
@@ -509,12 +509,18 @@ private:
     double before_cpu_psi_{0.0};
     double before_thermal_{0.0};
     double before_temperature_celsius_{-1.0};
+    bool before_io_valid_{false}, before_mem_valid_{false}, before_cpu_valid_{false}, before_thermal_valid_{false};
     double sum_after_io_psi_{0.0};
     double sum_after_mem_psi_{0.0};
     double sum_after_cpu_psi_{0.0};
     double sum_after_thermal_{0.0};
     double sum_after_temp_vel_{0.0};
     uint32_t valid_thermal_samples_in_window_{0};
+    uint32_t valid_io_samples_in_window_{0}, valid_mem_samples_in_window_{0};
+    uint32_t valid_cpu_samples_in_window_{0}, valid_pressure_samples_in_window_{0};
+    double min_after_mem_psi_{0.0}, max_after_mem_psi_{0.0};
+    double min_after_cpu_psi_{0.0}, max_after_cpu_psi_{0.0};
+    double min_after_thermal_{0.0}, max_after_thermal_{0.0};
     double latest_temperature_velocity_{0.0};
     bool latest_temperature_velocity_valid_{false};
     double latest_current_temperature_{-1.0};
