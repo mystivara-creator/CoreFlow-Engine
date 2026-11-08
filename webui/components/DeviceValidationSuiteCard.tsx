@@ -154,6 +154,8 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
   const [bundleSummary, setBundleSummary] = useState<string | null>(null);
   const [bundleVerdict, setBundleVerdict] = useState<string | null>(null);
   const [bundleMetadata, setBundleMetadata] = useState<string | null>(null);
+  const [bundleSavedPath, setBundleSavedPath] = useState<string | null>(null);
+  const [pendingZip, setPendingZip] = useState<{ id: string; blob: Blob } | null>(null);
   const [checkResults, setCheckResults] = useState<{ id: string; status: string; detail: string }[]>([]);
   const bridgeAvailable = nativeMode && hasNativeKernelSuBridge();
 
@@ -220,6 +222,94 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     const result = await execNativeKsuShell(command, 30000);
     if (result.errno !== 0) throw new Error(result.stderr || `Unable to read ${name}`);
     return { name, bytes: decodeBase64(result.stdout) };
+  };
+
+  const saveZipToDownloads = async (id: string, zip: Blob): Promise<string> => {
+    const bytes = new Uint8Array(await zip.arrayBuffer());
+    const expectedHash = await sha256(bytes);
+    const expectedSize = bytes.length;
+    const directory = '/sdcard/Download';
+    const temporaryPath = `${directory}/.cf-dvs-${id}.zip.partial`;
+    const finalPath = `${directory}/cf-dvs-${id}.zip`;
+
+    const begin = await execNativeKsuShell(
+      'umask 077; D="/sdcard/Download"; mkdir -p "$D" || exit 1; ' +
+      '[ -d "$D" ] && [ ! -L "$D" ] || exit 1; ' +
+      `T="${temporaryPath}"; F="${finalPath}"; ` +
+      '[ ! -e "$T" ] && [ ! -L "$T" ] && [ ! -e "$F" ] && [ ! -L "$F" ] || exit 1; ' +
+      ': > "$T" && chmod 600 "$T" || exit 1; printf "READY\\n"',
+      15000,
+    );
+    if (begin.errno !== 0 || begin.stdout.trim() !== 'READY') {
+      throw new Error(begin.stderr || begin.stdout || 'Cannot create a private temporary file in Downloads');
+    }
+
+    const cleanup = async () => {
+      await execNativeKsuShell(
+        `T="${temporaryPath}"; [ -f "$T" ] && [ ! -L "$T" ] && rm -f "$T"`,
+        10000,
+      );
+    };
+
+    try {
+      const rawChunkSize = 96 * 1024; // divisible by three, so Base64 chunks concatenate safely
+      for (let offset = 0; offset < bytes.length; offset += rawChunkSize) {
+        const slice = bytes.subarray(offset, Math.min(offset + rawChunkSize, bytes.length));
+        let binary = '';
+        for (let cursor = 0; cursor < slice.length; cursor += 0x6000) {
+          binary += String.fromCharCode(...slice.subarray(cursor, Math.min(cursor + 0x6000, slice.length)));
+        }
+        const encoded = window.btoa(binary);
+        const append = await execNativeKsuShell(
+          'D="/sdcard/Download"; ' +
+          `T="${temporaryPath}"; ` +
+          '[ -d "$D" ] && [ ! -L "$D" ] && [ -f "$T" ] && [ ! -L "$T" ] || exit 1; ' +
+          `printf '%s' '${encoded}' | base64 -d >> "$T" || exit 1; printf "OK\\n"`,
+          30000,
+        );
+        if (append.errno !== 0 || append.stdout.trim() !== 'OK') {
+          throw new Error(append.stderr || append.stdout || `ZIP transfer failed at byte ${offset}`);
+        }
+        setMessage(`Saving ZIP to Downloads · ${Math.min(offset + slice.length, bytes.length)} / ${bytes.length} bytes`);
+      }
+
+      const finalize = await execNativeKsuShell(
+        'D="/sdcard/Download"; ' +
+        `T="${temporaryPath}"; F="${finalPath}"; ` +
+        '[ -d "$D" ] && [ ! -L "$D" ] && [ -f "$T" ] && [ ! -L "$T" ] || exit 1; ' +
+        'SIZE=$(wc -c < "$T" | tr -d "[:space:]"); ' +
+        `[ "$SIZE" = "${expectedSize}" ] || exit 1; ` +
+        'HASH=$(sha256sum "$T" 2>/dev/null | awk \'{print $1}\'); ' +
+        `[ "$HASH" = "${expectedHash}" ] || exit 1; ` +
+        '[ ! -e "$F" ] && [ ! -L "$F" ] || exit 1; ' +
+        'chmod 644 "$T" && mv "$T" "$F" || exit 1; ' +
+        '[ -f "$F" ] && [ ! -L "$F" ] || exit 1; printf "SAVED\\n"',
+        30000,
+      );
+      if (finalize.errno !== 0 || finalize.stdout.trim() !== 'SAVED') {
+        throw new Error(finalize.stderr || finalize.stdout || 'ZIP size/hash verification or final save failed');
+      }
+      return finalPath;
+    } catch (reason) {
+      await cleanup();
+      throw reason;
+    }
+  };
+
+  const retrySaveZip = async () => {
+    if (!pendingZip) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const path = await saveZipToDownloads(pendingZip.id, pendingZip.blob);
+      setBundleSavedPath(path);
+      setPendingZip(null);
+      setMessage(`ZIP saved and verified · ${path}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const exportBundle = async (id: string) => {
@@ -299,32 +389,31 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
     setBundleSummary(summary);
 
     const zip = createStoredZip(files);
-    const url = URL.createObjectURL(zip);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `cf-dvs-${id}.zip`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-    setMessage(`Verified local bundle ready · ${(totalBytes / 1024).toFixed(1)} KiB`);
+    setPendingZip({ id, blob: zip });
+    setBundleSavedPath(null);
+    const savedPath = await saveZipToDownloads(id, zip);
+    setBundleSavedPath(savedPath);
+    setPendingZip(null);
+    setMessage(`ZIP saved and verified · ${savedPath} · ${(totalBytes / 1024).toFixed(1)} KiB`);
   };
 
   const stopAndExport = async () => {
     if (!sessionId) return;
     setBusy(true);
     setError(null);
+    let stopped = false;
     try {
       const response = await runDaemon('--dvs-stop', 15000);
       const match = response.match(/^OK STOPPED \/data\/adb\/coreflow\/cf-dvs\/([0-9a-f-]{36})$/i);
       if (!match || !UUID_PATTERN.test(match[1]) || match[1] !== sessionId) {
         throw new Error(response || 'Session finalization was not acknowledged');
       }
+      stopped = true;
       setSessionId(null);
       await exportBundle(match[1]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      await refresh();
+      if (!stopped) await refresh();
     } finally {
       setBusy(false);
     }
@@ -437,7 +526,8 @@ export const DeviceValidationSuiteCard: React.FC<{ nativeMode: boolean }> = ({ n
             </li>
           ))}</ul>}
           {bundleSummary && <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-900/[0.04] dark:bg-white/[0.04] p-3 text-[11px]">{bundleSummary}</pre>}
-          {bundleSummary && <div className="text-[11px] text-slate-500 flex items-center gap-2"><Archive className="w-3.5 h-3.5" /> ZIP assembled locally; no automatic sharing occurred.</div>}
+          {bundleSavedPath && <div className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-2"><Archive className="w-3.5 h-3.5" /> ZIP saved and SHA-256 verified: {bundleSavedPath}</div>}
+          {pendingZip && <div className="space-y-2"><p className="text-xs text-amber-600 dark:text-amber-400">ZIP verified in memory but not yet saved to shared storage.</p><button type="button" onClick={() => void retrySaveZip()} disabled={busy || !bridgeAvailable} className="px-4 py-2 rounded-full bg-[#0b57d0] text-white text-xs font-semibold disabled:opacity-40"><Archive className="w-3.5 h-3.5 inline mr-2" />Save ZIP to Downloads</button></div>}
           {!bundleSummary && <p className="text-xs text-slate-500">No bundle exported in this WebUI session.</p>}
         </div>
       </div>
