@@ -546,3 +546,45 @@ h1 {
   .safety-panel { padding: 19px; }
   .safety-panel .inline-link { white-space: normal; }
 }
+
+
+/* Fusion-galaxy pipeline: one luminous core, intersecting atomic orbits and plasma trails. */
+.hero-art { overflow:hidden; isolation:isolate; background:radial-gradient(ellipse at 50% 42%,rgba(48,111,151,.17),transparent 58%),linear-gradient(145deg,rgba(30,46,62,.98),rgba(15,23,33,.98)); }
+.art-center { isolation:isolate; overflow:hidden; height:292px; }
+.art-cosmos { position:absolute; z-index:0; inset:0; width:100%; height:100%; overflow:visible; pointer-events:none; }
+.galaxy-swirl { transform-box:view-box; transform-origin:210px 150px; animation:galaxy-precession 52s linear infinite; }
+.orbit-plane { transform-box:view-box; transform-origin:210px 150px; will-change:transform; }
+.orbit-plane-a { animation:fusion-orbit-a 34s linear infinite; }
+.orbit-plane-b { animation:fusion-orbit-b 27s linear infinite reverse; }
+.orbit-plane-c { animation:fusion-orbit-c 43s linear infinite; }
+.cosmos-stars circle { opacity:.55; animation:star-glint 3.8s ease-in-out infinite alternate; }
+.cosmos-stars circle:nth-child(2n) { animation-delay:-1.7s; }
+.core-aura { transform-origin:210px 150px; animation:core-pulse 4.2s ease-in-out infinite; }
+.art-logo { position:relative; z-index:2; width:86px; height:86px; border:1px solid rgba(176,239,255,.5); border-radius:50%; color:#d8f5ff; background:radial-gradient(circle at 42% 34%,#286b91 0,#17496c 52%,#102c46 100%); box-shadow:0 0 0 8px rgba(89,183,225,.07),0 0 22px rgba(89,201,240,.42),0 0 65px rgba(63,155,222,.36),inset 0 0 22px rgba(174,235,255,.17); }
+.art-logo svg { width:63px; height:63px; filter:drop-shadow(0 0 7px rgba(170,238,255,.5)); }
+.art-node { z-index:3; width:38px; height:38px; border-color:rgba(151,213,246,.6); color:#e4f6ff; background:radial-gradient(circle at 35% 30%,rgba(72,116,148,.96),rgba(25,48,67,.98) 72%); box-shadow:0 0 15px rgba(97,185,231,.18),inset 0 0 12px rgba(174,229,255,.08); backdrop-filter:blur(6px); }
+.art-node.is-active { border-color:#b7f2ff; color:#f2fdff; background:radial-gradient(circle at 35% 30%,#4289b1,#173c58 78%); box-shadow:0 0 0 4px rgba(119,218,247,.1),0 0 25px rgba(105,218,255,.55),inset 0 0 14px rgba(211,248,255,.18); text-shadow:0 0 10px rgba(197,247,255,.7); }
+.node-one { top:17px; left:calc(50% - 19px); }
+.node-two { right:calc(50% - 149px); }
+.node-three { bottom:17px; left:calc(50% - 19px); }
+.node-four { left:calc(50% - 149px); }
+@keyframes fusion-orbit-a { to { transform:rotate(360deg); } }
+@keyframes fusion-orbit-b { to { transform:rotate(360deg); } }
+@keyframes fusion-orbit-c { to { transform:rotate(360deg); } }
+@keyframes galaxy-precession { to { transform:rotate(-360deg); } }
+@keyframes core-pulse { 0%,100% { opacity:.72; transform:scale(.92); } 50% { opacity:1; transform:scale(1.08); } }
+@keyframes star-glint { from { opacity:.25; } to { opacity:.95; } }
+@media (max-width:700px) {
+  .art-center { height:235px; }
+  .art-node { width:35px; height:35px; }
+  .node-one { top:8px; left:calc(50% - 17.5px); }
+  .node-three { bottom:8px; left:calc(50% - 17.5px); }
+  .node-two { right:calc(50% - 116px); }
+  .node-four { left:calc(50% - 116px); }
+  .art-logo { width:74px; height:74px; }
+  .art-logo svg { width:55px; height:55px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .galaxy-swirl,.orbit-plane-a,.orbit-plane-b,.orbit-plane-c,.cosmos-stars circle,.core-aura { animation:none !important; }
+  .art-node,.art-logo { transition:none !important; }
+}

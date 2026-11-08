@@ -11,8 +11,8 @@
   <meta property="og:image" content="https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/main/docs/assets/coreflow-banner.svg">
   <title>CoreFlow — CFAE System Framework</title>
   <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./assets/site.css?v=20261108-technical1">
-  <script src="./assets/site.js?v=20261108-technical1" defer></script>
+  <link rel="stylesheet" href="./assets/site.css?v=20261108-fusion1">
+  <script src="./assets/site.js?v=20261108-fusion1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Lewati ke konten</a>
@@ -66,15 +66,32 @@
         <div class="hero-art" aria-label="Ilustrasi alur optimasi CoreFlow">
           <div class="art-topline"><span>COREFLOW ENGINE</span><span class="art-live"><i></i> CONTROL PIPELINE</span></div>
           <div class="art-center">
-            <div class="art-orbit orbit-outer"></div>
-            <div class="art-orbit orbit-inner"></div>
-            <div class="art-logo">
-              <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
-                <path d="M34.5 11.5a17 17 0 1 0 0 25" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
-                <path d="M7 24h9l5-10 6 20 5-10h9" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </div>
-            <span class="art-node node-one">01</span><span class="art-node node-two">02</span><span class="art-node node-three">03</span><span class="art-node node-four">04</span>
+            <svg class="art-cosmos" viewBox="0 0 420 300" aria-hidden="true">
+              <defs>
+                <radialGradient id="cosmos-nebula"><stop offset="0" stop-color="#75d8ec" stop-opacity=".30"/><stop offset=".42" stop-color="#398fc8" stop-opacity=".15"/><stop offset="1" stop-color="#17283b" stop-opacity="0"/></radialGradient>
+                <radialGradient id="cosmos-core"><stop offset="0" stop-color="#e8ffff"/><stop offset=".23" stop-color="#83edff"/><stop offset=".62" stop-color="#368ed0" stop-opacity=".52"/><stop offset="1" stop-color="#368ed0" stop-opacity="0"/></radialGradient>
+                <linearGradient id="orbit-cyan" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9bf4ff" stop-opacity=".95"/><stop offset=".48" stop-color="#65bde9" stop-opacity=".28"/><stop offset="1" stop-color="#b5ccff" stop-opacity=".8"/></linearGradient>
+                <linearGradient id="orbit-violet" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#9eafff" stop-opacity=".12"/><stop offset=".5" stop-color="#8bdfff" stop-opacity=".9"/><stop offset="1" stop-color="#8b9cff" stop-opacity=".2"/></linearGradient>
+                <filter id="cosmos-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="cosmos-soft" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="15"/></filter>
+              </defs>
+              <circle cx="210" cy="150" r="138" fill="url(#cosmos-nebula)"/>
+              <g class="galaxy-swirl" fill="none" stroke-linecap="round">
+                <path d="M210 150 C255 93 327 111 319 166 C312 220 234 236 182 198 C127 158 150 91 209 70" stroke="url(#orbit-cyan)" stroke-width="2.2" opacity=".48"/>
+                <path d="M210 150 C175 105 117 119 112 165 C106 214 174 247 235 218 C294 189 285 122 238 92" stroke="url(#orbit-violet)" stroke-width="1.6" opacity=".48"/>
+                <path d="M210 150 C238 130 271 139 268 161 C264 184 226 192 194 177 C166 164 170 129 197 113" stroke="#a9eaff" stroke-width="1" opacity=".5"/>
+              </g>
+              <g class="orbit-plane orbit-plane-a"><ellipse cx="210" cy="150" rx="143" ry="94" fill="none" stroke="url(#orbit-cyan)" stroke-width="1.5"/><path d="M67 150 A143 94 0 0 1 353 150" fill="none" stroke="#c2f7ff" stroke-width="3" stroke-dasharray="22 220" opacity=".78"/><circle cx="353" cy="150" r="4.5" fill="#b8f8ff" filter="url(#cosmos-glow)"/></g>
+              <g class="orbit-plane orbit-plane-b"><ellipse cx="210" cy="150" rx="143" ry="49" transform="rotate(57 210 150)" fill="none" stroke="url(#orbit-violet)" stroke-width="1.7"/><path d="M210 1 A143 49 57 0 1 210 299" fill="none" stroke="#a6d6ff" stroke-width="2" stroke-dasharray="18 240" opacity=".72"/><circle cx="210" cy="49" r="3.8" fill="#d2caff" filter="url(#cosmos-glow)"/></g>
+              <g class="orbit-plane orbit-plane-c"><ellipse cx="210" cy="150" rx="143" ry="49" transform="rotate(-57 210 150)" fill="none" stroke="url(#orbit-cyan)" stroke-width="1.25" opacity=".74"/><path d="M210 1 A143 49 -57 0 0 210 299" fill="none" stroke="#8eeaff" stroke-width="2" stroke-dasharray="15 250" opacity=".68"/><circle cx="210" cy="251" r="3.8" fill="#8eeaff" filter="url(#cosmos-glow)"/></g>
+              <g class="cosmos-stars" fill="#d4f7ff"><circle cx="83" cy="77" r="1.8"/><circle cx="333" cy="88" r="1.5"/><circle cx="90" cy="221" r="1.4"/><circle cx="324" cy="224" r="2"/><circle cx="156" cy="42" r="1.2"/><circle cx="279" cy="261" r="1.3"/><circle cx="374" cy="174" r="1.2"/><circle cx="49" cy="165" r="1.1"/></g>
+              <circle class="core-aura" cx="210" cy="150" r="67" fill="url(#cosmos-core)" filter="url(#cosmos-soft)"/>
+              <circle cx="210" cy="150" r="55" fill="none" stroke="#8deaff" stroke-opacity=".35" stroke-width="1" stroke-dasharray="2 7"/>
+              <circle cx="210" cy="150" r="43" fill="none" stroke="#a8e9ff" stroke-opacity=".35" stroke-width="1.3"/>
+              <circle cx="210" cy="150" r="31" fill="url(#cosmos-core)" filter="url(#cosmos-glow)"/>
+            </svg>
+            <div class="art-logo"><svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M34.5 11.5a17 17 0 1 0 0 25" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M7 24h9l5-10 6 20 5-10h9" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <span class="art-node node-one is-active" data-step="0">01</span><span class="art-node node-two" data-step="1">02</span><span class="art-node node-three" data-step="2">03</span><span class="art-node node-four" data-step="3">04</span>
           </div>
           <div class="art-flow" role="group" aria-label="Pilih tahap pipeline CoreFlow">
             <button class="flow-step is-active" type="button" data-step="0" aria-pressed="true"><b>01</b><span>DISCOVER</span></button><i></i>

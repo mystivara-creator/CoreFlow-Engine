@@ -45,6 +45,9 @@
       });
       if (stepTitle) stepTitle.textContent = pipelineCopy[index][0];
       if (stepDescription) stepDescription.textContent = pipelineCopy[index][1];
+      document.querySelectorAll(".art-node").forEach((node) => {
+        node.classList.toggle("is-active", Number(node.dataset.step) === index);
+      });
     });
   });
 
