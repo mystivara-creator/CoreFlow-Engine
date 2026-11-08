@@ -588,3 +588,10 @@ h1 {
   .galaxy-swirl,.orbit-plane-a,.orbit-plane-b,.orbit-plane-c,.cosmos-stars circle,.core-aura { animation:none !important; }
   .art-node,.art-logo { transition:none !important; }
 }
+
+/* Site-wide ambient illumination */
+body{position:relative;isolation:isolate}
+body::before{content:"";position:fixed;z-index:-1;inset:-18%;pointer-events:none;background:radial-gradient(ellipse 38% 30% at 12% 12%,rgba(38,139,190,.16),transparent 72%),radial-gradient(ellipse 34% 34% at 88% 24%,rgba(75,104,190,.13),transparent 72%),radial-gradient(ellipse 42% 30% at 52% 88%,rgba(36,151,167,.105),transparent 74%),radial-gradient(ellipse 24% 24% at 76% 70%,rgba(120,94,190,.075),transparent 76%);animation:ambient-drift 32s ease-in-out infinite alternate;opacity:.95}
+@keyframes ambient-drift{0%{transform:translate3d(-1.2%,-1%,0) scale(1)}50%{transform:translate3d(1%,.8%,0) scale(1.035)}100%{transform:translate3d(-.4%,1.2%,0) scale(1.015)}}
+@media(max-width:700px){body::before{inset:-10%;background:radial-gradient(ellipse 55% 24% at 5% 10%,rgba(38,139,190,.19),transparent 75%),radial-gradient(ellipse 52% 28% at 100% 34%,rgba(75,104,190,.14),transparent 76%),radial-gradient(ellipse 60% 25% at 48% 90%,rgba(36,151,167,.12),transparent 78%)}}
+@media(prefers-reduced-motion:reduce){body::before{animation:none}}
