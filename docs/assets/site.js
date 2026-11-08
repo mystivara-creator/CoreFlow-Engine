@@ -118,35 +118,6 @@
     }
   }
 
-  // Subtle card tilt + magnetic CTAs only on fine pointers.
-  const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
-  if (finePointer && !reduceMotion.matches) {
-    document.querySelectorAll(".feature-card").forEach((card) => {
-      card.addEventListener("pointermove", (event) => {
-        const rect = card.getBoundingClientRect();
-        const x = (event.clientX - rect.left) / rect.width;
-        const y = (event.clientY - rect.top) / rect.height;
-        card.style.setProperty("--pointer-x", `${(x * 100).toFixed(1)}%`);
-        card.style.setProperty("--pointer-y", `${(y * 100).toFixed(1)}%`);
-        card.style.setProperty("--tilt-x", `${((x - .5) * 3.2).toFixed(2)}deg`);
-        card.style.setProperty("--tilt-y", `${((.5 - y) * 3.2).toFixed(2)}deg`);
-      });
-      card.addEventListener("pointerleave", () => {
-        card.style.setProperty("--tilt-x", "0deg");
-        card.style.setProperty("--tilt-y", "0deg");
-      });
-    });
-
-    document.querySelectorAll(".hero-actions .button, .download-actions .button").forEach((button) => {
-      button.addEventListener("pointermove", (event) => {
-        const rect = button.getBoundingClientRect();
-        const x = (event.clientX - rect.left - rect.width / 2) / rect.width;
-        const y = (event.clientY - rect.top - rect.height / 2) / rect.height;
-        button.style.setProperty("--mag-x", `${(x * 5).toFixed(1)}px`);
-        button.style.setProperty("--mag-y", `${(y * 4).toFixed(1)}px`);
-        button.style.transform = `translate3d(${(x * 5).toFixed(1)}px, ${(y * 4).toFixed(1)}px, 0) translateY(-2px)`;
-      });
-      button.addEventListener("pointerleave", () => { button.style.transform = ""; });
-    });
-  }
+  // Pointer-driven tilt and magnetic transforms are intentionally omitted
+  // to keep scrolling and interaction smooth on mid-range mobile devices.
 })();

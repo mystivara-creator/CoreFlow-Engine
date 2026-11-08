@@ -709,3 +709,24 @@ h1{font-size:clamp(48px,5.7vw,76px);font-weight:650;letter-spacing:-.075em;line-
  .site-nav{background:rgba(7,13,21,.98);border:1px solid rgba(130,188,220,.2);box-shadow:0 24px 60px rgba(0,0,0,.45)}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+
+/* Soft, low-power presentation pass */
+body::before{animation:none!important;transform:none!important;inset:0!important;opacity:.78}
+body::after{opacity:.075;background-size:88px 88px}
+.hero-art,.feature-card,.stack-card,.transaction-row,.domain-grid>*,.evidence-grid>*,.safety-panel,.faq-list details,.compat-list,.download-panel,.sidebar,.card,.pipe,.ref{border-radius:18px!important}
+.brand-icon,.feature-icon,.compat-badge,.button,.site-nav .nav-download,.flow-step,.art-node{border-radius:14px!important}
+.hero-art{border-color:rgba(143,190,213,.24);background:linear-gradient(145deg,rgba(24,43,59,.86),rgba(13,25,38,.92));box-shadow:0 18px 48px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.045)}
+.feature-card,.stack-card,.transaction-row,.domain-grid>*,.evidence-grid>*,.safety-panel,.faq-list details{border-color:rgba(137,181,205,.16)!important;box-shadow:0 10px 28px rgba(0,0,0,.12),inset 0 1px rgba(255,255,255,.035)!important}
+.art-center{contain:layout paint;isolation:isolate}
+.art-cosmos{overflow:hidden}
+.galaxy-swirl,.orbit-plane,.orbit-plane-a,.orbit-plane-b,.orbit-plane-c,.core-aura,.cosmos-stars circle,.art-logo,.art-live i{animation:none!important;will-change:auto!important}
+.art-cosmos [filter],.art-cosmos filter{filter:none!important}
+.art-logo{box-shadow:0 8px 26px rgba(34,133,174,.16),inset 0 1px rgba(255,255,255,.12)!important}
+.art-node,.art-node.is-active{backdrop-filter:none!important;box-shadow:0 5px 16px rgba(0,0,0,.16),inset 0 1px rgba(255,255,255,.08)!important;text-shadow:none!important}
+.art-node{transition:background-color .18s ease,border-color .18s ease!important}
+.art-node.is-active{border-color:rgba(170,232,244,.7);background:#28536b}
+.hero-art:hover{transform:none!important;box-shadow:0 18px 48px rgba(0,0,0,.2)!important}
+.hero-art:hover .node-one,.hero-art:hover .node-two,.hero-art:hover .node-three,.hero-art:hover .node-four{transform:none!important}
+.feature-card:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(0,0,0,.16)!important}
+@media(max-width:700px){.hero-art,.feature-card,.stack-card,.transaction-row,.domain-grid>*,.evidence-grid>*,.safety-panel,.faq-list details,.compat-list,.download-panel{border-radius:15px!important}.art-center{contain:layout paint}}
+@media(prefers-reduced-motion:reduce){.art-cosmos *,.art-logo,.art-live i{animation:none!important;transition:none!important}}
