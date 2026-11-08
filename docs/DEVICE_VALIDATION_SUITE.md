@@ -129,7 +129,7 @@ A profile defines checks with `required: true|false` and `status: pass|fail|warn
 3. Start the session, perform the described workload, then stop the session.
 4. The UI reads only the five allowlisted files, verifies manifest byte lengths and SHA-256 digests, and blocks ZIP creation on any mismatch.
 5. Review the displayed report verdict, acceptance checks, and summary. The current report includes manufacturer/model and Android API metadata; review these fields before sharing.
-6. Download the ZIP locally. Attach it to the engineering conversation only when explicitly chosen.
+6. The native KernelSU shell bridge writes the verified ZIP to `/sdcard/Download/cf-dvs-<session-id>.zip`; confirm the saved path in the UI, then attach it to the engineering conversation only when explicitly chosen.
 
 If collection fails, preserve the partial report with `INCONCLUSIVE` or `RECOVERY_REQUIRED`; never report success because the collector exited cleanly.
 
@@ -164,7 +164,7 @@ The validator uses only Python's standard library. Exit codes: `0` valid bundle,
 
 The WebUI uses the existing KernelSU shell bridge and the daemon's `--dvs-start`, `--dvs-status`, and `--dvs-stop` commands. It does not access the control socket directly. The export path is accepted only when it matches `/data/adb/coreflow/cf-dvs/<UUID>` and the UUID matches the active session. Payload access is limited to `events.jsonl`, `metrics.csv`, `report.json`, `summary.txt`, and `manifest.json`; symlinks and non-regular files are rejected by shell checks.
 
-The browser-side ZIP writer uses ZIP Store (no compression) to avoid an additional runtime dependency. ZIP entries are created only after validating the native SHA-256 manifest and file sizes. Export has a bounded total-size guard. A WebView without Web Crypto SHA-256 support fails closed and does not create an archive. The WebUI never uploads, posts, or automatically shares the bundle.
+The WebUI ZIP writer uses ZIP Store (no compression) to avoid an additional runtime dependency. ZIP entries are created only after validating the native SHA-256 manifest and file sizes. Export has a bounded total-size guard. A WebView without Web Crypto SHA-256 support fails closed and does not create an archive. The WebUI does not rely on an HTML anchor or WebView download listener: it transfers the ZIP to `/sdcard/Download` through the existing root KernelSU shell bridge in bounded Base64 chunks. The temporary file is private (`0600`), and the final file is promoted atomically only after byte-count and SHA-256 verification; the final archive is mode `0644`. Failed transfers remove the partial file and retain the verified in-memory archive for an explicit retry. The WebUI never uploads, posts, or automatically shares the bundle.
 
 The report's current metadata includes manufacturer, model, Android API level, and build commit; it does not include a serial number, Android ID, account identifier, SSID, or precise location. Operators must review the report before sharing.
 
