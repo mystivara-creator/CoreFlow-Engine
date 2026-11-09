@@ -59,6 +59,16 @@ namespace {
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
 
+// Diagnostic one-shot commands intentionally bypass C++ static destruction.
+// They may have initialized process-wide singletons whose teardown order is not
+// owned by the CLI path (and may race late singleton callbacks). Flush output,
+// then let the kernel reclaim process resources without running global destructors.
+[[noreturn]] void finish_cli_process(int status) noexcept {
+    std::cout.flush();
+    std::cerr.flush();
+    ::_exit(status);
+}
+
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) {
         std::cerr << message << "\n";
@@ -871,10 +881,10 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2) {
         const std::string_view command(argv[1]);
-        if (command == "--capabilities") { print_capabilities(); return 0; }
+        if (command == "--capabilities") { print_capabilities(); finish_cli_process(0); }
         if (command == "--status") {
             print_status();
-            return 0;
+            finish_cli_process(0);
         }
         if (command == "--stop" || command == "--rollback-baseline") {
             return stop_daemon();

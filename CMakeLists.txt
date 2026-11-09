@@ -253,6 +253,11 @@ if(CORE_FLOW_BUILD_TESTS)
         endif()
 
         add_test(
+            NAME CliOneShotLifecycleContractTest
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cli_lifecycle.py
+        )
+
+        add_test(
             NAME ModuleLifecycleTest
             COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/tests/test_module_lifecycle.sh
         )
