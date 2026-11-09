@@ -179,7 +179,7 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         other.coordinator_.unregister_preemption_handler(other_handler_name);
     }
     if (register_this_handler) {
-        (void)coordinator.register_preemption_handler(
+        (void)coordinator_.register_preemption_handler(
             controller_name_,
             [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
                 return handle_preemption(domain, transaction_id);
