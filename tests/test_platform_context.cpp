@@ -1,4 +1,5 @@
 #include "coreflow/platform_context.hpp"
+#include "coreflow/workload_intelligence.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -30,6 +31,16 @@ int main() {
         {"ro.build.fingerprint", "Xiaomi/kunzite_global/kunzite:15/UP1A:user/release-keys"}
     };
     const auto tier1 = PlatformContextDetector(xiaomi).detect(7);
+    FakeProperties hyperos3 = xiaomi;
+    hyperos3.values["ro.mi.os.version.name"] = "3.0.1";
+    const auto tier1_generation3 = PlatformContextDetector(hyperos3).detect();
+    assert(tier1_generation3.tier1_eligible);
+    FakeProperties hyperos4 = xiaomi;
+    hyperos4.values["ro.mi.os.version.name"] = "4.0.0";
+    const auto hyperos4_result = PlatformContextDetector(hyperos4).detect();
+    assert(hyperos4_result.identity.os_family == OsFamily::HyperOS);
+    assert(!hyperos4_result.tier1_eligible);
+    assert(hyperos4_result.execution_tier == ExecutionTier::UniversalFallback);
     assert(tier1.generation == 7);
     assert(tier1.identity.vendor == PlatformVendor::Xiaomi);
     assert(tier1.identity.os_family == OsFamily::HyperOS);
