@@ -42,3 +42,7 @@ A raw-syscall loader creates a bounded BPF ring-buffer map, loads two GPL raw-tr
 ## Replay and host validation
 
 tests/test_platform_context.cpp exercises synthetic procfs/PSI and deterministic replay windows: PSI parsing, diskstats delta units, invalid-feature preservation, source-agnostic classification, stale/future/duplicate rejection, exact freshness boundary, jank threshold boundary, two-window confirmation, transient candidate reset, dwell-gated workload transition and safe BPF prerequisite failure/stop. These are host fixtures, not physical-device telemetry or KPI results.
+
+## Physical-device diagnostic entry point
+
+The Android daemon binary exposes `coreflowd --workload-probe` as an explicit, read-only two-window diagnostic. It attempts the capability-gated BPF source, falls back to procfs/PSI when any prerequisite or load step is rejected, samples two one-second windows, runs the deterministic classifier, emits JSON feature validity/backend/permission/classification fields, and detaches all BPF resources before exit. This command is not run automatically at daemon startup and does not apply tuning mutations. A device batch test can therefore verify the actual kernel's syscall/SELinux/verifier/attachment behavior without enabling the workload pipeline as a daemon policy actuator.

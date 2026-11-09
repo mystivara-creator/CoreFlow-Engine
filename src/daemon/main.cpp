@@ -17,6 +17,7 @@
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/vulkan_controller.hpp"
+#include "coreflow/workload_intelligence.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -653,6 +654,80 @@ int send_dvs_command(std::string_view command) {
     return std::string_view(response).rfind("OK ", 0) == 0 ? 0 : 1;
 }
 
+int run_workload_probe() {
+    WorkloadTelemetryPipeline pipeline;
+    if (!pipeline.start()) {
+        const auto caps = pipeline.bpf_capabilities();
+        pipeline.stop();
+        std::cout << "{\"available\":false,\"backend\":\"unavailable\",\"bpfSyscall\":"
+                  << static_cast<unsigned>(caps.syscall)
+                  << ",\"ringBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
+                  << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
+                  << ",\"loaderVerified\":false}\n";
+        return 1;
+    }
+    const auto monotonic_ns = []() noexcept -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    WorkloadClassifier classifier;
+    WorkloadClassification classification{};
+    WorkloadFeatureSnapshot features{};
+    for (unsigned window = 0; window < 2; ++window) {
+        const uint64_t start_ns = monotonic_ns();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        const uint64_t end_ns = monotonic_ns();
+        features = pipeline.sample(start_ns, end_ns);
+        classification = classifier.classify(features, classification, end_ns);
+    }
+    const TelemetryBackend backend = pipeline.backend();
+    const BpfCapabilitySnapshot caps = pipeline.bpf_capabilities();
+    const bool bpf_ready = caps.event_pipeline_ready();
+    pipeline.stop();
+    const char* backend_name = backend == TelemetryBackend::Ebpf ? "ebpf" :
+        (backend == TelemetryBackend::SysfsProcfs ? "sysfs-procfs" : "unavailable");
+    const auto workload_name = [](WorkloadClass value) noexcept -> const char* {
+        switch (value) {
+            case WorkloadClass::Gaming: return "gaming";
+            case WorkloadClass::IoHeavy: return "io-heavy";
+            case WorkloadClass::JankSensitive: return "jank-sensitive";
+            case WorkloadClass::CpuBound: return "cpu-bound";
+            case WorkloadClass::GpuBound: return "gpu-bound";
+            case WorkloadClass::MemoryPressure: return "memory-pressure";
+            case WorkloadClass::Mixed: return "mixed";
+            default: return "unknown";
+        }
+    };
+    const auto metric = [&](uint32_t bit, double value) {
+        return (features.valid_features & bit) ? std::to_string(value) : std::string("null");
+    };
+    std::ostringstream out;
+    out << "{\"available\":true"
+        << ",\"backend\":\"" << backend_name << "\""
+        << ",\"workload\":\"" << workload_name(classification.workload) << "\""
+        << ",\"pendingWorkload\":\"" << workload_name(classification.pending_workload) << "\""
+        << ",\"confidence\":" << classification.confidence
+        << ",\"stable\":" << (classification.stable ? "true" : "false")
+        << ",\"evidenceMask\":" << classification.evidence_mask
+        << ",\"validFeatures\":" << features.valid_features
+        << ",\"sampleCount\":" << features.sample_count
+        << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
+        << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
+        << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
+        << ",\"ioBytes\":" << metric(FeatureIoBytes, static_cast<double>(features.io_bytes))
+        << ",\"wakeupCount\":" << metric(FeatureWakeupRate, static_cast<double>(features.wakeup_count))
+        << ",\"wakeupRatePerSec\":" << metric(FeatureWakeupRate, features.wakeup_rate_per_sec)
+        << ",\"frameDeadlineMissPct\":" << metric(FeatureFrameDeadline, features.frame_deadline_miss_pct)
+        << ",\"gpuBusyPct\":" << metric(FeatureGpuBusy, features.gpu_busy_pct)
+        << ",\"bpfSyscall\":" << static_cast<unsigned>(caps.syscall)
+        << ",\"bpfRingBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
+        << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
+        << ",\"loaderVerified\":" << (bpf_ready ? "true" : "false")
+        << "}\n";
+    std::cout << out.str() << std::flush;
+    return 0;
+}
+
 bool ensure_secure_state_dir() {
     if (::mkdir(kStateDir, 0700) != 0 && errno != EEXIST) return false;
     struct stat st{};
@@ -878,6 +953,10 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2) {
         const std::string_view command(argv[1]);
+        if (command == "--workload-probe") {
+            if (argc != 2) return 2;
+            return run_workload_probe();
+        }
         if (command == "--capabilities") {
             CoreFlowContext context;
             if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
@@ -898,7 +977,7 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {

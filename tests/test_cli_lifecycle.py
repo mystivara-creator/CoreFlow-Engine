@@ -40,3 +40,14 @@ assert "CoreFlowContext::~CoreFlowContext()" in context
 assert "coordinated_rollback(" in context
 assert "destroy_runtime_services();" in context
 assert "coordinator_" in context
+
+# Explicit workload probe is read-only and bounded to two one-second feature windows.
+assert 'if (command == "--workload-probe")' in source
+assert "return run_workload_probe();" in source
+probe_start = source.index("int run_workload_probe()")
+probe_end = source.index("bool ensure_secure_state_dir()", probe_start)
+probe = source[probe_start:probe_end]
+assert "WorkloadTelemetryPipeline pipeline;" in probe
+assert "std::chrono::seconds(1)" in probe
+assert "pipeline.stop();" in probe
+assert "MutationCoordinator" not in probe
