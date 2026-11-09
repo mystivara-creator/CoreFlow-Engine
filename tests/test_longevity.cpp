@@ -15,12 +15,12 @@ int main() {
     const char* dir = ::mkdtemp(name); assert(dir);
     fs::path root(dir); ::setenv("COREFLOW_TEST_STATE_DIR", dir, 1);
     auto& baseline = coreflow::BaselineStore::instance(); assert(baseline.recover_pending());
-    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coreflow::CentralMutationCoordinator coordinator;
     coordinator.reset();
     const auto battery = root / "class/power_supply/battery";
     const auto node = battery / "constant_charge_current_max";
     put(node, "900000"); put(battery / "temp", "420"); put(battery / "status", "Charging");
-    coreflow::HardwareLongevityManager guard(root.string());
+    coreflow::HardwareLongevityManager guard(coordinator, root.string());
     coreflow::LongevityConfig config; guard.initialize(config);
     assert(!guard.monitor_battery_thermals(44)); assert(get(node) == "900000");
 
@@ -36,7 +36,7 @@ int main() {
     const auto other = root / "other";
     const auto other_node = other / "class/power_supply/battery/constant_charge_current_max";
     put(other_node, "2000000"); put(other_node.parent_path() / "temp", "420"); put(other_node.parent_path() / "status", "Charging");
-    coreflow::HardwareLongevityManager stepped(other.string()); stepped.initialize(config);
+    coreflow::HardwareLongevityManager stepped(coordinator, other.string()); stepped.initialize(config);
     put(other_node.parent_path() / "temp", "350");
     assert(!stepped.monitor_battery_thermals(95)); // CPU junction heat is not battery temperature.
     assert(get(other_node) == "2000000");
@@ -81,3 +81,4 @@ int main() {
     assert(!baseline.has_active_mutations());
     fs::remove_all(root);
 }
+

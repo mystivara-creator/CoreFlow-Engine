@@ -18,7 +18,7 @@ int main() {
     const fs::path root(dir);
     ::setenv("COREFLOW_TEST_STATE_DIR", dir, 1);
     auto& baseline = coreflow::BaselineStore::instance(); assert(baseline.recover_pending());
-    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coreflow::CentralMutationCoordinator coordinator;
     coordinator.reset();
     const auto cpu = root / "devices/system/cpu/cpufreq/policy0";
     put(cpu / "scaling_max_freq", "2000000"); put(cpu / "scaling_min_freq", "500000");
@@ -39,9 +39,9 @@ int main() {
     put(second_gpu / "min_freq", "100000000");
     put(second_gpu / "available_frequencies", "100000000 300000000 500000000 700000000");
 
-    coreflow::FrequencyController controller(root.string());
+    coreflow::FrequencyController controller(coordinator, root.string());
     controller.discover(true, true);
-    coreflow::FrequencyController second_controller(second_root.string());
+    coreflow::FrequencyController second_controller(coordinator, second_root.string());
     second_controller.discover(true, true);
     assert(controller.cpu_count() == 1 && controller.gpu_count() == 1);
     assert(second_controller.cpu_count() == 1 && second_controller.gpu_count() == 1);

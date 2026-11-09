@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
-"""Guard one-shot diagnostic CLI paths against static-destruction regressions."""
+"""Guard read-only CLI and deterministic composition-root lifecycle contracts."""
 from pathlib import Path
 
 source = (Path(__file__).resolve().parents[1] / "src/daemon/main.cpp").read_text()
-required = (
-    "[[noreturn]] void finish_cli_process(int status) noexcept",
-    "std::cout.flush();",
-    "std::cerr.flush();",
-)
-assert required[0] in source
-assert required[1] in source
-assert required[2] in source
-assert "::_exit(status);" in source
+context = (Path(__file__).resolve().parents[1] / "src/kernel/coreflow_context.cpp").read_text()
 
-status = source.index('if (command == "--status")')
-capabilities = source.index('if (command == "--capabilities")')
-assert source.index("print_status();", status) < source.index("finish_cli_process(0);", status)
-assert source.index("print_capabilities();", capabilities) < source.index("finish_cli_process(0);", capabilities)
+assert "finish_cli_process" not in source
+assert "::_exit(status);" not in source
+assert "CoreFlowContext context;" in source
+assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 2
+
+for command, printer in (
+    ('if (command == "--status")', "print_status(context);"),
+    ('if (command == "--capabilities")', "print_capabilities(context);"),
+):
+    start = source.index(command)
+    stop = source.index("return 0;", start)
+    block = source[start:stop]
+    assert "CoreFlowContext::Mode::ReadOnly" in block
+    assert printer in block
+
+status_start = source.index("void print_status(CoreFlowContext& context)")
+status_end = source.index("void print_capabilities(CoreFlowContext& context)", status_start)
+status = source[status_start:status_end]
+assert "infer_and_learn(" not in status
+assert "UclampGovernor " not in status
+assert "VulkanController::instance" not in status
+assert "AutonomousTuner::instance" not in status
+
+assert "CoreFlowContext::~CoreFlowContext()" in context
+assert "coordinated_rollback(" in context
+assert "destroy_runtime_services();" in context
+assert "coordinator_" in context

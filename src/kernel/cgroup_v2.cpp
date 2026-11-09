@@ -20,12 +20,12 @@
 namespace coreflow {
 namespace fs = std::filesystem;
 
-CgroupV2Controller::CgroupV2Controller(std::string_view root_path)
-    : root_path_(root_path),
+CgroupV2Controller::CgroupV2Controller(CentralMutationCoordinator& coordinator, std::string_view root_path)
+    : coordinator_(coordinator), root_path_(root_path),
       controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")) {
     const std::string controllers_file = root_path_ + "/cgroup.controllers";
     supported_ = fs::exists(controllers_file);
-    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+    (void)coordinator_.register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
             return handle_preemption(domain, transaction_id);
@@ -46,7 +46,7 @@ CgroupV2Controller::~CgroupV2Controller() {
         if (!transaction_id_.empty()) (void)rollback_transaction_locked();
     }
     // unregister waits for any callback that was already dispatched.
-    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+    coordinator_.unregister_preemption_handler(controller_name_);
 }
 
 bool CgroupV2Controller::is_supported() const noexcept {
@@ -90,12 +90,12 @@ bool CgroupV2Controller::unlock_vendor_restrictions() {
 
 bool CgroupV2Controller::acquire_lease_locked() {
     if (!transaction_id_.empty()) {
-        return CentralMutationCoordinator::instance().acquire_lease(
+        return coordinator_.acquire_lease(
             MutationDomain::CpuPolicy, controller_name_, transaction_id_,
             ControllerPriority::WorkloadOptimization);
     }
     transaction_id_ = "cgroup-cpu-" + std::to_string(++transaction_generation_);
-    if (!CentralMutationCoordinator::instance().acquire_lease(
+    if (!coordinator_.acquire_lease(
             MutationDomain::CpuPolicy, controller_name_, transaction_id_,
             ControllerPriority::WorkloadOptimization)) {
         transaction_id_.clear();
@@ -106,7 +106,7 @@ bool CgroupV2Controller::acquire_lease_locked() {
 
 void CgroupV2Controller::release_lease_locked() noexcept {
     if (transaction_id_.empty()) return;
-    CentralMutationCoordinator::instance().release_lease(
+    coordinator_.release_lease(
         MutationDomain::CpuPolicy, controller_name_, transaction_id_);
     transaction_id_.clear();
 }
@@ -227,3 +227,4 @@ std::string CgroupV2Controller::read_node(const std::string& path) const {
 }
 
 } // namespace coreflow
+

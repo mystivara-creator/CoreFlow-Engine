@@ -13,11 +13,6 @@
 
 namespace coreflow {
 
-CentralMutationCoordinator& CentralMutationCoordinator::instance() {
-    static CentralMutationCoordinator coordinator;
-    return coordinator;
-}
-
 std::string CentralMutationCoordinator::make_controller_identity(
     std::string_view controller_type) {
     if (controller_type.empty()) return {};

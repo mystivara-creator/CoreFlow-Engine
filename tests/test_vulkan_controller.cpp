@@ -570,7 +570,7 @@ int main() {
 
     auto& baseline = BaselineStore::instance();
     assert(baseline.recover_pending());
-    auto& coordinator = CentralMutationCoordinator::instance();
+    CentralMutationCoordinator coordinator;
     coordinator.reset();
 
     // 1. Setup synthetic Qualcomm Adreno KGSL sysfs surface
@@ -582,7 +582,7 @@ int main() {
     write_file(kgsl / "bus_split", "1\n");
     write_file(kgsl / "throttling", "1\n");
 
-    auto& vk = VulkanController::instance();
+    VulkanController vk(coordinator);
     vk.initialize(
         VulkanConfig{
             .mode = VulkanLayerMode::SafeHardware,

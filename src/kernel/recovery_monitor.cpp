@@ -21,9 +21,9 @@ const char* recovery_status_name(RecoveryStatus status) noexcept {
 }
 
 RecoveryResult coordinated_rollback(
+    CentralMutationCoordinator& coordinator,
     BaselineStore& baseline,
     std::string_view reason) {
-    auto& coordinator = CentralMutationCoordinator::instance();
 
     // Close admission before taking the lease snapshot. Existing owners may
     // finish the current operation, but must acknowledge exact rollback before
@@ -69,7 +69,7 @@ RecoveryResult coordinated_rollback(
 }
 
 RecoveryResult MutationRecoveryMonitor::on_timer_tick(std::string_view reason) {
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
     const auto leases = coordinator.active_leases();
     const bool detached_owner_present = std::any_of(
         leases.begin(), leases.end(),
@@ -102,7 +102,7 @@ RecoveryResult MutationRecoveryMonitor::on_timer_tick(std::string_view reason) {
         };
     }
 
-    return coordinated_rollback(baseline_, reason);
+    return coordinated_rollback(coordinator_, baseline_, reason);
 }
 
 } // namespace coreflow

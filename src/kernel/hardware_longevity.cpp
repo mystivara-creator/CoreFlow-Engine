@@ -32,10 +32,10 @@ const NodeSnapshot* find_snapshot(const std::vector<NodeSnapshot>& audit,
 }
 } // namespace
 
-HardwareLongevityManager::HardwareLongevityManager(std::string sys_root)
-    : root_(std::move(sys_root)),
+HardwareLongevityManager::HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root)
+    : coordinator_(coordinator), root_(std::move(sys_root)),
       controller_name_(CentralMutationCoordinator::make_controller_identity("HardwareLongevityManager")) {
-    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+    (void)coordinator_.register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
             return handle_preemption(domain, transaction_id);
@@ -49,18 +49,14 @@ HardwareLongevityManager::~HardwareLongevityManager() {
         if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
     }
     // unregister waits for any callback that was already dispatched.
-    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+    coordinator_.unregister_preemption_handler(controller_name_);
 }
 
-HardwareLongevityManager& HardwareLongevityManager::instance() {
-    static HardwareLongevityManager manager;
-    return manager;
-}
 
 bool HardwareLongevityManager::acquire_lease_locked(
     MutationDomain domain, ControllerPriority priority,
     std::string& transaction_id, std::string_view prefix) {
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
     if (!transaction_id.empty()) {
         return coordinator.acquire_lease(domain, controller_name_, transaction_id, priority);
     }
@@ -75,7 +71,7 @@ bool HardwareLongevityManager::acquire_lease_locked(
 void HardwareLongevityManager::release_lease_locked(
     MutationDomain domain, std::string& transaction_id) noexcept {
     if (transaction_id.empty()) return;
-    CentralMutationCoordinator::instance().release_lease(domain, controller_name_, transaction_id);
+    coordinator_.release_lease(domain, controller_name_, transaction_id);
     transaction_id.clear();
 }
 

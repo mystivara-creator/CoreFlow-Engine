@@ -102,11 +102,12 @@ std::string read_token(const fs::path& path) {
 
 } // namespace
 
-UclampGovernor::UclampGovernor(std::string_view explicit_root) {
+UclampGovernor::UclampGovernor(CentralMutationCoordinator& coordinator, std::string_view explicit_root)
+    : coordinator_(coordinator) {
     discover(explicit_root);
     if (supported_) {
         controller_name_ = CentralMutationCoordinator::make_controller_identity("UclampGovernor");
-        (void)CentralMutationCoordinator::instance().register_preemption_handler(
+        (void)coordinator_.register_preemption_handler(
             controller_name_,
             [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
                 return handle_preemption(domain, transaction_id);
@@ -123,7 +124,7 @@ UclampGovernor::~UclampGovernor() {
         if (!transaction_id_.empty()) (void)rollback_transaction_locked();
     }
     if (!controller_name_.empty()) {
-        CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+        coordinator_.unregister_preemption_handler(controller_name_);
     }
 }
 UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
@@ -171,7 +172,7 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         other.mutation_active_ = false;
     }
 
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
     if (!other_handler_name.empty()) {
         coordinator.unregister_preemption_handler(other_handler_name);
     }
@@ -187,11 +188,11 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
 
 bool UclampGovernor::acquire_mutation_lease_locked(ControllerPriority priority) {
     if (!transaction_id_.empty()) {
-        return CentralMutationCoordinator::instance().acquire_lease(
+        return coordinator_.acquire_lease(
             MutationDomain::UclampCgroup, controller_name_, transaction_id_, priority);
     }
     transaction_id_ = "uclamp-" + std::to_string(++transaction_generation_);
-    if (!CentralMutationCoordinator::instance().acquire_lease(
+    if (!coordinator_.acquire_lease(
             MutationDomain::UclampCgroup, controller_name_, transaction_id_,
             priority)) {
         transaction_id_.clear();
@@ -201,7 +202,7 @@ bool UclampGovernor::acquire_mutation_lease_locked(ControllerPriority priority) 
 }
 void UclampGovernor::release_mutation_lease_locked() noexcept {
     if (transaction_id_.empty()) return;
-    CentralMutationCoordinator::instance().release_lease(
+    coordinator_.release_lease(
         MutationDomain::UclampCgroup, controller_name_, transaction_id_);
     transaction_id_.clear();
 }

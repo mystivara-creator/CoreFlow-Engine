@@ -48,7 +48,7 @@ int main() {
 
     auto& baseline = BaselineStore::instance();
     assert(baseline.recover_pending());
-    auto& coordinator = CentralMutationCoordinator::instance();
+    CentralMutationCoordinator coordinator;
     coordinator.reset();
 
     // Retry admission is scoped to the exact lease and hard-capped at three.
@@ -135,7 +135,7 @@ int main() {
     assert(coordinator.is_preemption_requested(
         MutationDomain::GpuDevfreq, pending_owner, "pending-gpu-tx"));
 
-    MutationRecoveryMonitor pending_monitor(baseline);
+    MutationRecoveryMonitor pending_monitor(baseline, coordinator);
     const RecoveryResult pending_retry =
         pending_monitor.on_timer_tick("retry pending multi-domain preemption");
     assert(pending_retry.status == RecoveryStatus::NoRecoveryRequired);
@@ -266,7 +266,7 @@ int main() {
         assert(coordinator.is_emergency_recovery_active());
         assert(baseline.has_active_mutations());
 
-        MutationRecoveryMonitor monitor(baseline);
+        MutationRecoveryMonitor monitor(baseline, coordinator);
         EpollReactor reactor;
         std::mutex tick_mutex;
         std::condition_variable tick_cv;

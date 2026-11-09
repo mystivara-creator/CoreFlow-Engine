@@ -93,7 +93,6 @@ struct MultiSensorProfile {
 
 class ThermalMonitor {
 public:
-    static ThermalMonitor& instance();
     explicit ThermalMonitor(std::string_view sysfs_root = "/sys/class/thermal");
     [[nodiscard]] float hottest_celsius() const;
     [[nodiscard]] float composite_celsius() const;

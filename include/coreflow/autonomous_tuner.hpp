@@ -142,7 +142,6 @@ public:
     using PreemptionHandler = std::function<bool(
         MutationDomain, std::string_view, std::string_view)>;
 
-    static CentralMutationCoordinator& instance();
     // Process-lifetime unique identity; unlike object addresses, IDs are not reused
     // when an allocator recycles storage after controller destruction.
     [[nodiscard]] static std::string make_controller_identity(std::string_view controller_type);
@@ -191,8 +190,11 @@ public:
     }
     void reset() noexcept;
 
-private:
+public:
     CentralMutationCoordinator() = default;
+    CentralMutationCoordinator(const CentralMutationCoordinator&) = delete;
+    CentralMutationCoordinator& operator=(const CentralMutationCoordinator&) = delete;
+private:
     bool dispatch_preemption(
         MutationDomain domain,
         std::string_view controller_name,
@@ -354,10 +356,10 @@ struct TunerTelemetryInput {
 
 class AutonomousTuner {
 public:
-    static AutonomousTuner& instance();
-    static AutonomousTuner& instance(DeviceProfileHandle profile);
-
-    explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc", DeviceProfileHandle profile = {});
+    explicit AutonomousTuner(CentralMutationCoordinator& coordinator,
+                             std::string sys_root = "/sys",
+                             std::string proc_root = "/proc",
+                             DeviceProfileHandle profile = {});
     ~AutonomousTuner();
     AutonomousTuner(const AutonomousTuner&) = delete;
     AutonomousTuner& operator=(const AutonomousTuner&) = delete;
@@ -481,6 +483,7 @@ public:
     }
 
 private:
+    CentralMutationCoordinator& coordinator_;
     struct MutationStep {
         std::string path;
         std::string target_value;

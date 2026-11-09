@@ -47,6 +47,7 @@ endif()
 
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
+    src/kernel/coreflow_context.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
@@ -165,6 +166,13 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
+    add_executable(test_coreflow_context tests/test_coreflow_context.cpp ${COREFLOW_KERNEL_SOURCES})
+    target_link_libraries(test_coreflow_context PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
+    if(NOT ANDROID)
+        target_link_libraries(test_coreflow_context PRIVATE pthread)
+    endif()
+    add_test(NAME CoreFlowContextLifecycleTest COMMAND test_coreflow_context)
+
     add_executable(test_rust_bridge tests/test_rust_bridge.cpp)
     target_link_libraries(test_rust_bridge PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
     if(NOT ANDROID)
@@ -250,12 +258,13 @@ if(CORE_FLOW_BUILD_TESTS)
                     ${CMAKE_SOURCE_DIR}/tests/test_cf_dvs_runtime_bundle.py
                     $<TARGET_FILE:test_device_validation>
             )
+
+            add_test(
+                NAME CliOneShotLifecycleContractTest
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cli_lifecycle.py
+            )
         endif()
 
-        add_test(
-            NAME CliOneShotLifecycleContractTest
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_cli_lifecycle.py
-        )
 
         add_test(
             NAME ModuleLifecycleTest

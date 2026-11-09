@@ -13,6 +13,7 @@
 #include <utility>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 enum class ControllerPriority : uint8_t;
 
@@ -20,7 +21,7 @@ class UclampGovernor {
 public:
     // Empty root means runtime discovery from mounted cgroup filesystems.
     // An explicit root exists only for deterministic tests or controlled bring-up.
-    explicit UclampGovernor(std::string_view explicit_root = {});
+    explicit UclampGovernor(CentralMutationCoordinator& coordinator, std::string_view explicit_root = {});
     ~UclampGovernor();
     UclampGovernor(const UclampGovernor&) = delete;
     UclampGovernor& operator=(const UclampGovernor&) = delete;
@@ -46,6 +47,7 @@ private:
     enum class Encoding : uint8_t { Unknown, Percentage, Capacity1024 };
     enum class MountKind : uint8_t { Auto, CgroupV1, CgroupV2 };
 
+    CentralMutationCoordinator& coordinator_;
     std::string target_path_;
     std::string controller_name_;
     std::string transaction_id_;

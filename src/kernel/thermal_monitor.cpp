@@ -106,10 +106,6 @@ bool parse_celsius(std::string_view text, float& celsius) noexcept {
 ThermalMonitor::ThermalMonitor(std::string_view sysfs_root)
     : sysfs_root_(sysfs_root.empty() ? "/sys/class/thermal" : std::string(sysfs_root)) {}
 
-ThermalMonitor& ThermalMonitor::instance() {
-    static ThermalMonitor monitor;
-    return monitor;
-}
 
 int classify_thermal_type(std::string_view type) {
     std::string lower(type);
