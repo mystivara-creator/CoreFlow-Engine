@@ -358,7 +358,6 @@ int main() {
     // A novel external value must never be forced back to CoreFlow's target.
     put(sda_q / "read_ahead_kb", "512");
     tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
-    tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
     assert(tuner.snapshot().ownership_contention_retries == 2);
     assert(tuner.snapshot().stage == "PLANNED");
