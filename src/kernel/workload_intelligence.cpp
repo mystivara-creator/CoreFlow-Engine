@@ -4,6 +4,11 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <algorithm>
 #include <array>
