@@ -28,17 +28,17 @@ bool disk_sectors(const std::string& p,uint64_t& out) noexcept {
  std::fclose(f); if(!any)return false; out=total; return true;
 }
 bool window_ok(const WorkloadFeatureSnapshot& f) noexcept{return f.window_start_ns!=0&&f.window_end_ns>f.window_start_ns;}
-struct Candidate{WorkloadClass type{WorkloadClass::Unknown};float confidence{0};uint32_t mask{FeatureNone};};
+struct Candidate{DetectedWorkloadClass type{DetectedWorkloadClass::Unknown};float confidence{0};uint32_t mask{FeatureNone};};
 Candidate decide(const WorkloadFeatureSnapshot& f) noexcept {
  auto has=[&](uint32_t bit){return (f.valid_features&bit)!=0;};
  if(has(FeatureFrameDeadline)&&f.frame_deadline_count>0&&f.frame_deadline_miss_pct>=0.08&&
    ((has(FeatureCpuPressure)&&f.cpu_pressure_some_pct>=5)||(has(FeatureIoPressure)&&f.io_pressure_some_pct>=3)||(has(FeatureGpuBusy)&&f.gpu_busy_pct>=65))){
-  uint32_t m=FeatureFrameDeadline; if(has(FeatureCpuPressure)&&f.cpu_pressure_some_pct>=5)m|=FeatureCpuPressure; if(has(FeatureIoPressure)&&f.io_pressure_some_pct>=3)m|=FeatureIoPressure; if(has(FeatureGpuBusy)&&f.gpu_busy_pct>=65)m|=FeatureGpuBusy; return {WorkloadClass::JankSensitive,0.82F,m};}
- if(has(FeatureMemoryPressure)&&f.memory_pressure_some_pct>=10)return {WorkloadClass::MemoryPressure,0.86F,FeatureMemoryPressure};
- if(has(FeatureIoBytes)&&has(FeatureIoPressure)&&f.io_pressure_some_pct>=8&&f.io_bytes>0)return {WorkloadClass::IoHeavy,0.80F,FeatureIoBytes|FeatureIoPressure};
- if(has(FeatureGpuBusy)&&has(FeatureCpuPressure)&&f.gpu_busy_pct>=75&&f.cpu_pressure_some_pct<12)return {WorkloadClass::GpuBound,0.76F,FeatureGpuBusy|FeatureCpuPressure};
- if(has(FeatureCpuPressure)&&f.cpu_pressure_some_pct>=15&&(!has(FeatureCpuRunQueue)||f.cpu_run_queue_wait_ns>0))return {WorkloadClass::CpuBound,0.74F,FeatureCpuPressure|(has(FeatureCpuRunQueue)?FeatureCpuRunQueue:FeatureNone)};
- if(has(FeatureGpuBusy)&&has(FeatureFrameDeadline)&&f.gpu_busy_pct>=55&&f.frame_deadline_miss_pct<0.08)return {WorkloadClass::Gaming,0.70F,FeatureGpuBusy|FeatureFrameDeadline};
+  uint32_t m=FeatureFrameDeadline; if(has(FeatureCpuPressure)&&f.cpu_pressure_some_pct>=5)m|=FeatureCpuPressure; if(has(FeatureIoPressure)&&f.io_pressure_some_pct>=3)m|=FeatureIoPressure; if(has(FeatureGpuBusy)&&f.gpu_busy_pct>=65)m|=FeatureGpuBusy; return {DetectedWorkloadClass::JankSensitive,0.82F,m};}
+ if(has(FeatureMemoryPressure)&&f.memory_pressure_some_pct>=10)return {DetectedWorkloadClass::MemoryPressure,0.86F,FeatureMemoryPressure};
+ if(has(FeatureIoBytes)&&has(FeatureIoPressure)&&f.io_pressure_some_pct>=8&&f.io_bytes>0)return {DetectedWorkloadClass::IoHeavy,0.80F,FeatureIoBytes|FeatureIoPressure};
+ if(has(FeatureGpuBusy)&&has(FeatureCpuPressure)&&f.gpu_busy_pct>=75&&f.cpu_pressure_some_pct<12)return {DetectedWorkloadClass::GpuBound,0.76F,FeatureGpuBusy|FeatureCpuPressure};
+ if(has(FeatureCpuPressure)&&f.cpu_pressure_some_pct>=15&&(!has(FeatureCpuRunQueue)||f.cpu_run_queue_wait_ns>0))return {DetectedWorkloadClass::CpuBound,0.74F,FeatureCpuPressure|(has(FeatureCpuRunQueue)?FeatureCpuRunQueue:FeatureNone)};
+ if(has(FeatureGpuBusy)&&has(FeatureFrameDeadline)&&f.gpu_busy_pct>=55&&f.frame_deadline_miss_pct<0.08)return {DetectedWorkloadClass::Gaming,0.70F,FeatureGpuBusy|FeatureFrameDeadline};
  return {};
 }
 int bpf_call(enum bpf_cmd cmd,union bpf_attr& attr) noexcept {
@@ -226,11 +226,11 @@ WorkloadClassification WorkloadClassifier::classify(const WorkloadFeatureSnapsho
  WorkloadClassification r=prev;
  if(!window_ok(f)||f.window_end_ns>now||now-f.window_end_ns>3'000'000'000ULL||(prev.classified_at_ns&&f.window_end_ns<=prev.classified_at_ns)){r.stable=false;return r;}
  Candidate c=decide(f);r.confidence=c.confidence;r.evidence_mask=c.mask;r.classified_at_ns=f.window_end_ns;
- if(c.type==WorkloadClass::Unknown||c.confidence<0.65F){r.pending_workload=WorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=0;r.stable=false;return r;}
- if(c.type==prev.workload){r.pending_workload=WorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=prev.consecutive_windows+1;r.stable=true;return r;}
+ if(c.type==DetectedWorkloadClass::Unknown||c.confidence<0.65F){r.pending_workload=DetectedWorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=0;r.stable=false;return r;}
+ if(c.type==prev.workload){r.pending_workload=DetectedWorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=prev.consecutive_windows+1;r.stable=true;return r;}
  r.pending_windows=c.type==prev.pending_workload?prev.pending_windows+1:1;r.pending_workload=c.type;r.consecutive_windows=r.pending_windows;
- bool initial=prev.workload==WorkloadClass::Unknown;bool dwell=initial||prev.last_transition_ns==0||(now>=prev.last_transition_ns&&now-prev.last_transition_ns>=3'000'000'000ULL);
- if(r.pending_windows>=2&&dwell){r.workload=c.type;r.last_transition_ns=now;r.pending_workload=WorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=2;r.stable=true;}else r.stable=prev.workload!=WorkloadClass::Unknown;
+ bool initial=prev.workload==DetectedWorkloadClass::Unknown;bool dwell=initial||prev.last_transition_ns==0||(now>=prev.last_transition_ns&&now-prev.last_transition_ns>=3'000'000'000ULL);
+ if(r.pending_windows>=2&&dwell){r.workload=c.type;r.last_transition_ns=now;r.pending_workload=DetectedWorkloadClass::Unknown;r.pending_windows=0;r.consecutive_windows=2;r.stable=true;}else r.stable=prev.workload!=DetectedWorkloadClass::Unknown;
  return r;
 }
 } // namespace coreflow

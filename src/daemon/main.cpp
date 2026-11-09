@@ -686,15 +686,15 @@ int run_workload_probe() {
     pipeline.stop();
     const char* backend_name = backend == TelemetryBackend::Ebpf ? "ebpf" :
         (backend == TelemetryBackend::SysfsProcfs ? "sysfs-procfs" : "unavailable");
-    const auto workload_name = [](WorkloadClass value) noexcept -> const char* {
+    const auto workload_name = [](DetectedWorkloadClass value) noexcept -> const char* {
         switch (value) {
-            case WorkloadClass::Gaming: return "gaming";
-            case WorkloadClass::IoHeavy: return "io-heavy";
-            case WorkloadClass::JankSensitive: return "jank-sensitive";
-            case WorkloadClass::CpuBound: return "cpu-bound";
-            case WorkloadClass::GpuBound: return "gpu-bound";
-            case WorkloadClass::MemoryPressure: return "memory-pressure";
-            case WorkloadClass::Mixed: return "mixed";
+            case DetectedWorkloadClass::Gaming: return "gaming";
+            case DetectedWorkloadClass::IoHeavy: return "io-heavy";
+            case DetectedWorkloadClass::JankSensitive: return "jank-sensitive";
+            case DetectedWorkloadClass::CpuBound: return "cpu-bound";
+            case DetectedWorkloadClass::GpuBound: return "gpu-bound";
+            case DetectedWorkloadClass::MemoryPressure: return "memory-pressure";
+            case DetectedWorkloadClass::Mixed: return "mixed";
             default: return "unknown";
         }
     };

@@ -6,7 +6,7 @@
 #include <string_view>
 namespace coreflow {
 enum class TelemetryBackend : uint8_t { Unavailable, SysfsProcfs, Ebpf };
-enum class WorkloadClass : uint8_t { Unknown, Gaming, IoHeavy, JankSensitive, CpuBound, GpuBound, MemoryPressure, Mixed };
+enum class DetectedWorkloadClass : uint8_t { Unknown, Gaming, IoHeavy, JankSensitive, CpuBound, GpuBound, MemoryPressure, Mixed };
 enum class WorkloadEventType : uint16_t { Unknown, SchedSwitch, SchedWakeup, BlockRequestIssue, BlockRequestComplete, CpuFrequency, PsiSample, FrameDeadlineMiss };
 enum class CapabilityState : uint8_t { Unknown, Unavailable, Restricted, Available };
 enum WorkloadFeatureValidity : uint32_t {
@@ -50,12 +50,12 @@ struct WorkloadFeatureSnapshot final {
  TelemetryBackend source{TelemetryBackend::Unavailable};
 };
 struct WorkloadClassification final {
- WorkloadClass workload{WorkloadClass::Unknown};
+ DetectedWorkloadClass workload{DetectedWorkloadClass::Unknown};
  float confidence{0.0F};
  uint32_t evidence_mask{FeatureNone}, consecutive_windows{0};
  uint64_t classified_at_ns{0};
  bool stable{false};
- WorkloadClass pending_workload{WorkloadClass::Unknown};
+ DetectedWorkloadClass pending_workload{DetectedWorkloadClass::Unknown};
  uint32_t pending_windows{0};
  uint64_t last_transition_ns{0};
 };
