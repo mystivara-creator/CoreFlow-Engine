@@ -1,4 +1,5 @@
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/baseline_store.hpp"
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/autonomous_tuner.hpp"
 #include "cddp_fixture_factory.hpp"
@@ -49,6 +50,10 @@ int main() {
 
     const std::string state_dir = (a.root / "state").string();
     (void)::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
+    auto& baseline_store = BaselineStore::instance();
+    const bool baseline_recovered = baseline_store.recover_pending();
+    assert(baseline_recovered);
+    (void)baseline_recovered;
     {
         FrequencyController controller(a.sys.string(), profile_a);
         controller.discover(true, false);
