@@ -362,7 +362,7 @@ int main() {
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
     assert(tuner.snapshot().ownership_contention_retries == 2);
     assert(tuner.snapshot().stage == "PLANNED");
-    auto& ownership_baseline = BaselineStore::instance();
+    auto& ownership_baseline = coreflow::BaselineStore::instance();
     assert(!ownership_baseline.has_active_mutations());
     assert(ownership_baseline.verify_and_persist_clear_state());
     const auto ownership_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
