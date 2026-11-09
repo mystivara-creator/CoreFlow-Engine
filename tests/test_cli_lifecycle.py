@@ -32,6 +32,9 @@ assert '.backend = "not_started"' in status
 assert "tuner.last_verdict" in status
 assert "tunerRuntimeStarted" in status
 assert "vulkanProbeSkipped" in status
+assert "platformVendor" in status
+assert "executionTier" in status
+assert "tier1Eligible" in status
 
 assert "CoreFlowContext::~CoreFlowContext()" in context
 assert "coordinated_rollback(" in context

@@ -16,7 +16,7 @@ Tier 1 is deliberately gated on all of the following:
 
 MIUI-only devices, ambiguous Xiaomi identity, HyperOS versions outside the supported 2/3 set, and all non-Xiaomi platforms use `UniversalFallback`. Vendor identity is descriptive; it is not mutation authority. Every controller still requires CDDP capability evidence, ownership, baseline, constraints, and verified readback.
 
-`CoreFlowContext` owns the immutable `PlatformContextSnapshot` for its lifecycle generation. This is the future policy selector boundary for Tier 1 vs Tier 2. It must not be used to bypass OEM service ownership or capability discovery.
+`CoreFlowContext` owns the immutable `PlatformContextSnapshot` for its lifecycle generation. The read-only `--status` JSON exposes vendor, OS family, OS major, execution tier, policy family, confidence, and Tier 1 eligibility. This is the policy selector boundary for Tier 1 vs Tier 2. It must not be used to bypass OEM service ownership or capability discovery.
 
 ## P2-C — Event-driven telemetry contract
 
