@@ -102,12 +102,12 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
+    neural_predictor_.reset();
     hardware_longevity_.reset();
     autonomous_tuner_.reset();
     frequency_controller_.reset();
     uclamp_governor_.reset();
     recovery_monitor_.reset();
-    neural_predictor_.reset();
     thermal_monitor_.reset();
 }
 
