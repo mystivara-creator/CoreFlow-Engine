@@ -89,6 +89,7 @@ int main(int argc, char* argv[]) {
     sample.candidate = "cpufreq.schedutil_interactive_response";
     sample.capacity_scale = 0.91;
     sample.valid_thermal_sensors = 12;
+    sample.ownership_contention_retries = 2;
     sample.recovery_pending = false;
     sample.journal_clear = false;
     sample.active_mutations = true;
@@ -127,6 +128,16 @@ int main(int argc, char* argv[]) {
     assert(first_event.find("\"event_type\":\"session.started\"") != std::string::npos);
     assert(first_event.find("\"device_profile_generation\":7") != std::string::npos);
     assert(first_event.find("0123456789abcdef") != std::string::npos);
+    std::string sample_event;
+    while (std::getline(events_in, sample_event)) {
+        if (sample_event.find("\"event_type\":\"telemetry.sample\"") != std::string::npos) break;
+    }
+    assert(sample_event.find("\"ownership_contention_retries\":2") != std::string::npos);
+    std::ifstream metrics_in(std::filesystem::path(bundle) / "metrics.csv");
+    std::stringstream metrics_buf;
+    metrics_buf << metrics_in.rdbuf();
+    assert(metrics_buf.str().find("ownership_contention_retries") != std::string::npos);
+    assert(metrics_buf.str().find(",2\n") != std::string::npos);
 
     struct stat st{};
     assert(::stat(bundle.c_str(), &st) == 0);
