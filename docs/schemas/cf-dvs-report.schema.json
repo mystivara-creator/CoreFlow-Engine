@@ -1,0 +1,618 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coreflow.invalid/schemas/cf-dvs-report.schema.json",
+  "title": "CoreFlow Device Validation Suite Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session",
+    "profile",
+    "build",
+    "metrics",
+    "checks",
+    "recovery",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "1.0",
+        "1.1"
+      ]
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "started_at",
+        "ended_at",
+        "device"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "device": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manufacturer",
+            "model",
+            "android_api"
+          ],
+          "properties": {
+            "manufacturer": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 96
+            },
+            "android_api": {
+              "type": "integer",
+              "minimum": 29
+            },
+            "build_fingerprint_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "profile": {
+      "enum": [
+        "BOOT_STABILITY",
+        "IDLE_EQUILIBRIUM",
+        "INTERACTIVE_CPU",
+        "GAMING_LOAD",
+        "MULTITASKING",
+        "THERMAL_RECOVERY",
+        "OWNERSHIP_CONFLICT",
+        "ROLLBACK_RECOVERY"
+      ]
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "commit"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^(?:[a-f0-9]{7,40}|unknown)$"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/metric"
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pending",
+        "journal_clear",
+        "rollback_verified"
+      ],
+      "properties": {
+        "pending": {
+          "type": "boolean"
+        },
+        "journal_clear": {
+          "type": "boolean"
+        },
+        "rollback_verified": {
+          "type": "boolean"
+        },
+        "active_mutations": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verdict": {
+      "enum": [
+        "PASS",
+        "PASS_WITH_WARNINGS",
+        "INCONCLUSIVE",
+        "FAIL",
+        "RECOVERY_REQUIRED"
+      ]
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "device_profile": {
+      "$ref": "#/$defs/device_profile"
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "unit",
+        "validity",
+        "source",
+        "observed_at"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "number",
+            "string",
+            "boolean",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 24
+        },
+        "validity": {
+          "enum": [
+            "valid",
+            "unavailable",
+            "unsupported",
+            "permission_denied",
+            "stale",
+            "invalid"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 240
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "required",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{1,63}$"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "warning",
+            "inconclusive",
+            "not_applicable"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "u32_array": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4095
+      }
+    },
+    "u64_array": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "device_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "fingerprint",
+        "captured_monotonic_ns",
+        "kernel_release",
+        "android_release",
+        "android_api_level",
+        "device_model",
+        "soc_model",
+        "hardware_platform",
+        "cpu_topology",
+        "cpu_policies",
+        "gpu_domains",
+        "thermal_sensors",
+        "capabilities",
+        "memory_telemetry_available",
+        "cgroup_v2_available",
+        "uclamp_interface_available"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{16,64}$"
+        },
+        "captured_monotonic_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kernel_release": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "android_release": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "android_api_level": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "device_model": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "soc_model": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "hardware_platform": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "cpu_topology": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "valid",
+            "possible",
+            "present",
+            "online"
+          ],
+          "properties": {
+            "valid": {
+              "type": "boolean"
+            },
+            "possible": {
+              "$ref": "#/$defs/u32_array"
+            },
+            "present": {
+              "$ref": "#/$defs/u32_array"
+            },
+            "online": {
+              "$ref": "#/$defs/u32_array"
+            }
+          }
+        },
+        "cpu_policies": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "related_cpus",
+              "frequency_table_khz",
+              "cpuinfo_min_freq_khz",
+              "cpuinfo_max_freq_khz",
+              "scaling_min_freq_khz",
+              "scaling_max_freq_khz",
+              "scaling_cur_freq_khz",
+              "governor",
+              "related_cpus_valid",
+              "frequency_table_valid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "related_cpus": {
+                "$ref": "#/$defs/u32_array"
+              },
+              "frequency_table_khz": {
+                "$ref": "#/$defs/u64_array"
+              },
+              "cpuinfo_min_freq_khz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cpuinfo_max_freq_khz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "scaling_min_freq_khz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "scaling_max_freq_khz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "scaling_cur_freq_khz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "governor": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "related_cpus_valid": {
+                "type": "boolean"
+              },
+              "frequency_table_valid": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "gpu_domains": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "driver",
+              "governor",
+              "frequency_table_hz",
+              "min_freq_hz",
+              "max_freq_hz",
+              "cur_freq_hz",
+              "frequency_table_valid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "driver": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "governor": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "frequency_table_hz": {
+                "$ref": "#/$defs/u64_array"
+              },
+              "min_freq_hz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_freq_hz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cur_freq_hz": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "frequency_table_valid": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "thermal_sensors": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "type",
+              "temperature_millicelsius",
+              "temperature_valid"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "type": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "temperature_millicelsius": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "temperature_valid": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "domain",
+              "source",
+              "state",
+              "semantic_id",
+              "unit",
+              "current_value",
+              "accepted_values",
+              "constraints",
+              "evidence",
+              "rejection_reason"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "domain": {
+                "enum": [
+                  "cpu",
+                  "gpu",
+                  "thermal",
+                  "memory",
+                  "storage",
+                  "cgroup",
+                  "android_runtime",
+                  "graphics",
+                  "power",
+                  "unknown"
+                ]
+              },
+              "source": {
+                "enum": [
+                  "sysfs",
+                  "procfs",
+                  "device_tree",
+                  "android_property",
+                  "kernel_api",
+                  "unknown"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "AVAILABLE",
+                  "READABLE",
+                  "WRITABLE",
+                  "SEMANTICS_VERIFIED",
+                  "CONSTRAINTS_VERIFIED",
+                  "MUTATION_ELIGIBLE",
+                  "UNKNOWN"
+                ]
+              },
+              "semantic_id": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "unit": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "current_value": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "accepted_values": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "constraints": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "evidence": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "rejection_reason": {
+                "type": "string",
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "memory_telemetry_available": {
+          "type": "boolean"
+        },
+        "cgroup_v2_available": {
+          "type": "boolean"
+        },
+        "uclamp_interface_available": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "1.1"
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
+      },
+      "then": {
+        "required": [
+          "device_profile"
+        ]
+      }
+    }
+  ]
+}
