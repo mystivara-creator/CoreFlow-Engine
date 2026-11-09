@@ -153,15 +153,15 @@ export const AutonomousStateHero: React.FC<Props> = ({
           <div className="grid grid-cols-3 gap-2 font-mono tabular-nums text-xs text-slate-800 dark:text-slate-200 my-1">
             <div>
               <div className="text-[11px] text-slate-400">CPU</div>
-              <div className="font-semibold">{`${telemetry.cpuPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{telemetry.cpuPressureValid === false ? 'N/A' : `${telemetry.cpuPressurePct.toFixed(1)}%`}</div>
             </div>
             <div>
               <div className="text-[11px] text-slate-400">MEM</div>
-              <div className="font-semibold">{`${telemetry.memoryPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{telemetry.memoryPressureValid === false ? 'N/A' : `${telemetry.memoryPressurePct.toFixed(1)}%`}</div>
             </div>
             <div>
               <div className="text-[11px] text-slate-400">I/O</div>
-              <div className="font-semibold">{`${telemetry.ioPressurePct.toFixed(1)}%`}</div>
+              <div className="font-semibold">{telemetry.ioPressureValid === false ? 'N/A' : `${telemetry.ioPressurePct.toFixed(1)}%`}</div>
             </div>
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-normal">

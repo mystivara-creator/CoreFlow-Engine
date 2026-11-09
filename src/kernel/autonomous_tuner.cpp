@@ -9,6 +9,7 @@
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <fcntl.h>
@@ -109,6 +110,75 @@ std::string resolve_state_dir() {
     return (test && *test) ? std::string(test) : "/data/adb/coreflow";
 }
 
+// Open every directory component relative to the already verified parent. This
+// rejects symlinked ancestors as well as a symlink at the final state directory.
+UniqueFd open_state_directory(std::string_view path, bool create) noexcept {
+    if (path.empty() || path.front() != '/') return {};
+    UniqueFd current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!current.valid()) return {};
+    size_t pos = 1;
+    while (pos < path.size()) {
+        while (pos < path.size() && path[pos] == '/') ++pos;
+        if (pos >= path.size()) break;
+        const size_t end = path.find('/', pos);
+        const size_t count = (end == std::string_view::npos ? path.size() : end) - pos;
+        const std::string component(path.substr(pos, count));
+        pos = (end == std::string_view::npos) ? path.size() : end + 1;
+        if (component.empty() || component == ".") continue;
+        if (component == "..") return {};
+        int next = ::openat(current.get(), component.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (next < 0 && errno == ENOENT && create) {
+            if (::mkdirat(current.get(), component.c_str(), 0700) != 0 && errno != EEXIST) return {};
+            next = ::openat(current.get(), component.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        }
+        if (next < 0) return {};
+        struct stat st{};
+        if (::fstat(next, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            (void)::close(next);
+            return {};
+        }
+        current.reset(next);
+    }
+    return current;
+}
+
+bool write_all(int fd, std::string_view data) noexcept {
+    size_t offset = 0;
+    while (offset < data.size()) {
+        const ssize_t written = ::write(fd, data.data() + offset, data.size() - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return false;
+        offset += static_cast<size_t>(written);
+    }
+    return true;
+}
+
+bool read_bounded_regular_file(int fd, std::string& output, size_t max_bytes) {
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        static_cast<uint64_t>(st.st_size) > max_bytes) return false;
+    output.clear();
+    output.reserve(static_cast<size_t>(st.st_size));
+    char buffer[4096];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof(buffer));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return false;
+        if (n == 0) return true;
+        const size_t count = static_cast<size_t>(n);
+        if (output.size() > max_bytes - count) return false;
+        output.append(buffer, count);
+    }
+}
+
+void remove_persisted_tuner_state() noexcept {
+    UniqueFd dir = open_state_directory(resolve_state_dir(), false);
+    if (!dir.valid()) return;
+    if (::unlinkat(dir.get(), "tuner_stats.state", 0) == 0) (void)::fsync(dir.get());
+}
+
 bool check_zram_swap_active(const std::string& proc_root, const std::string& sys_root) {
     const fs::path swaps_path = fs::path(proc_root) / "swaps";
     std::error_code ec;
@@ -170,108 +240,36 @@ std::string sanitize_tsv_field(std::string_view input) {
     return out.empty() ? "-" : out;
 }
 
+
+uint64_t tuner_state_checksum(std::string_view data) noexcept {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char byte : data) {
+        hash ^= static_cast<uint64_t>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void record_ownership_loss(CandidateStats* stats) {
+    if (stats == nullptr) return;
+
+    // Escalate quarantine after repeated OEM/external takeovers: 8, 16, 32, then
+    // 64 monitor ticks (bounded to avoid permanent suppression from stale state).
+    stats->ownership_loss_count = std::min<uint32_t>(stats->ownership_loss_count, 15U) + 1U;
+    const uint32_t exponent = std::min<uint32_t>(stats->ownership_loss_count - 1U, 3U);
+    const uint32_t backoff_ticks = std::min<uint32_t>(64U, 8U << exponent);
+    stats->ownership_quarantine_ticks = std::max(stats->ownership_quarantine_ticks, backoff_ticks);
+    stats->cooldown_ticks = std::max(stats->cooldown_ticks, backoff_ticks);
+    stats->last_rollback_reason =
+        "External ownership lost; candidate quarantined for " + std::to_string(backoff_ticks) + " ticks";
+}
+
 } // namespace
 
 // ============================================================================
 // CentralMutationCoordinator Implementation
 // ============================================================================
 
-CentralMutationCoordinator& CentralMutationCoordinator::instance() {
-    static CentralMutationCoordinator coordinator;
-    return coordinator;
-}
-
-bool CentralMutationCoordinator::acquire_lease(
-    MutationDomain domain,
-    std::string_view controller_name,
-    std::string_view transaction_id,
-    ControllerPriority priority,
-    std::string* conflict_reason) {
-    for (auto& lease : leases_) {
-        if (lease.domain == domain && lease.active) {
-            if (lease.owner_controller == controller_name) {
-                lease.transaction_id = std::string(transaction_id);
-                lease.priority = priority;
-                return true;
-            }
-            if (static_cast<uint8_t>(priority) > static_cast<uint8_t>(lease.priority)) {
-                // Higher priority controller (e.g. ThermalStabilization or EmergencySafety) preempts lower priority
-                lease.owner_controller = std::string(controller_name);
-                lease.transaction_id = std::string(transaction_id);
-                lease.priority = priority;
-                return true;
-            }
-            ++conflict_rejections_;
-            if (conflict_reason != nullptr) {
-                *conflict_reason = "Domain locked by higher/equal priority controller '" +
-                                   lease.owner_controller + "' (tx: " + lease.transaction_id + ")";
-            }
-            return false;
-        }
-    }
-    leases_.push_back(DomainLease{
-        .domain = domain,
-        .owner_controller = std::string(controller_name),
-        .transaction_id = std::string(transaction_id),
-        .priority = priority,
-        .active = true,
-    });
-    return true;
-}
-
-void CentralMutationCoordinator::release_lease(MutationDomain domain, std::string_view controller_name) noexcept {
-    for (auto& lease : leases_) {
-        if (lease.domain == domain && lease.active && lease.owner_controller == controller_name) {
-            lease.active = false;
-            lease.transaction_id.clear();
-        }
-    }
-}
-
-void CentralMutationCoordinator::release_all_for_controller(std::string_view controller_name) noexcept {
-    for (auto& lease : leases_) {
-        if (lease.active && lease.owner_controller == controller_name) {
-            lease.active = false;
-            lease.transaction_id.clear();
-        }
-    }
-}
-
-void CentralMutationCoordinator::emergency_preempt_all(std::string_view reason) noexcept {
-    for (auto& lease : leases_) {
-        lease.active = false;
-        lease.transaction_id = std::string(reason);
-    }
-}
-
-bool CentralMutationCoordinator::is_domain_locked_by_other(
-    MutationDomain domain,
-    std::string_view controller_name,
-    ControllerPriority requester_priority) const noexcept {
-    for (const auto& lease : leases_) {
-        if (lease.domain == domain && lease.active && lease.owner_controller != controller_name) {
-            if (static_cast<uint8_t>(requester_priority) <= static_cast<uint8_t>(lease.priority)) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-std::vector<DomainLease> CentralMutationCoordinator::active_leases() const {
-    std::vector<DomainLease> out;
-    for (const auto& lease : leases_) {
-        if (lease.active) out.push_back(lease);
-    }
-    return out;
-}
-
-void CentralMutationCoordinator::reset() noexcept {
-    leases_.clear();
-    conflict_rejections_ = 0;
-}
-
-// ============================================================================
 // AutonomousTuner Implementation
 // ============================================================================
 
@@ -281,9 +279,52 @@ AutonomousTuner& AutonomousTuner::instance() {
 }
 
 AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root)
-    : sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
+    : controller_name_(CentralMutationCoordinator::make_controller_identity("AutonomousTuner")),
+      sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
+    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+        controller_name_,
+        [this](MutationDomain domain, std::string_view transaction_id,
+               std::string_view reason) noexcept {
+            return handle_preemption(domain, transaction_id, reason);
+        });
     init_candidates();
     discover(sys_root_, proc_root_);
+}
+
+AutonomousTuner::~AutonomousTuner() {
+    {
+        std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+        if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
+    }
+    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+}
+
+bool AutonomousTuner::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id, std::string_view reason) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    // A failed apply may leave a journaled partial transaction before the
+    // normal OBSERVING state is entered. The candidate identity and applied
+    // steps are installed immediately after lease acquisition, so preemption
+    // can still retry that exact rollback even when transaction_active_ is false.
+    if (current_candidate_id_ != transaction_id ||
+        domain_for_candidate(current_candidate_id_) != domain) {
+        return false;
+    }
+
+    // A request can arrive at a safe point before the first write. rollback_active()
+    // also acknowledges this no-write case and retires only this exact lease.
+    const bool had_applied_steps = !applied_steps_.empty();
+    last_verdict_ = "ABORTED";
+    last_verdict_enum_ = TunerVerdict::Aborted;
+    if (auto* stats = find_candidate(current_candidate_id_)) ++stats->preempted_count;
+    if (had_applied_steps) ++total_rolled_back_;
+    const bool restored = rollback_active(reason);
+    if (!restored) {
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+    }
+    save_persisted_stats();
+    return restored;
 }
 
 void AutonomousTuner::init_candidates() {
@@ -373,28 +414,34 @@ void AutonomousTuner::init_candidates() {
 }
 
 void AutonomousTuner::update_ucb_scores() {
-    const double total_n = std::max(1.0, static_cast<double>(total_trials_));
+    const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
     for (auto& c : candidates_) {
         c.successes = c.improved_count;
         c.rollbacks = c.regressed_count;
-        const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(c.trials + 1));
+        const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(c.reward_samples + 1));
         c.ucb_score = c.mean_utility + explore;
     }
 }
 
 void AutonomousTuner::reset() {
-    (void)rollback_active("Autonomous tuner reset to verified OEM baseline.");
-    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
-    recovery_required_ = false;
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    // rollback_active releases the lease only after verified recovery. Do not
+    // clear ownership here when rollback failed; recovery must remain fail-closed.
+    if (!rollback_active("Autonomous tuner reset to verified OEM baseline.")) {
+        return; // Preserve failed steps, recovery state, and the owning lease.
+    }
     thermal_stabilization_active_ = false;
     thermal_recovery_ticks_ = 0;
     has_prev_thermal_ = false;
     noise_floor_ = 0.05;
+    evaluation_noise_floors_.fill(0.05);
+    current_evaluation_domain_ = EvaluationDomain::Unavailable;
     settling_ticks_remaining_ = 0;
     applied_steps_.clear();
-    init_candidates();
     total_trials_ = 0;
+    total_reward_samples_ = 0;
     total_improved_ = 0;
+    init_candidates();
     total_rolled_back_ = 0;
     total_inconclusive_ = 0;
     total_rejected_ = 0;
@@ -402,8 +449,7 @@ void AutonomousTuner::reset() {
     last_verdict_enum_ = TunerVerdict::Hold;
     last_utility_delta_ = 0.0;
     idle_streak_ = 0;
-    std::error_code ec;
-    fs::remove(fs::path(resolve_state_dir()) / "tuner_stats.state", ec);
+    remove_persisted_tuner_state();
 }
 
 CandidateStats* AutonomousTuner::find_candidate(std::string_view id) {
@@ -444,8 +490,9 @@ ControllerPriority AutonomousTuner::priority_for_candidate(std::string_view cand
 }
 
 bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
-    if (c == nullptr || c->cooldown_ticks > 0) return false;
+    if (c == nullptr || c->ownership_quarantine_ticks > 0 || c->cooldown_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
@@ -456,7 +503,7 @@ bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept 
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, "AutonomousTuner", prio)) {
+    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     return true;
@@ -466,8 +513,9 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     std::string_view id,
     WorkloadClass workload,
     uint8_t thermal_bucket) const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
-    if (c == nullptr) return false;
+    if (c == nullptr || c->ownership_quarantine_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
@@ -478,7 +526,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, "AutonomousTuner", prio)) {
+    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     if (c->cooldown_ticks > 0) {
@@ -494,8 +542,9 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
 }
 
 uint8_t AutonomousTuner::compute_thermal_bucket(const TunerTelemetryInput& telemetry) noexcept {
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) return 4;
-    if (telemetry.thermal_guard_active || telemetry.thermal_pressure >= 65.0) return 3;
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) return 4;
+    if (telemetry.thermal_guard_active || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 65.0)) return 3;
+    if (!telemetry.thermal_pressure_valid) return 0;
     if (telemetry.thermal_pressure >= 52.0) return 2;
     if (telemetry.thermal_pressure >= 42.0) return 1;
     return 0;
@@ -505,36 +554,37 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
     const bool rapid_temp_rise =
         (telemetry.temperature_velocity_valid && telemetry.temperature_velocity_celsius_per_sec >= 0.8) ||
         (telemetry.thermal_trend_celsius >= 0.8);
-    if (telemetry.thermal_emergency || telemetry.thermal_guard_active || telemetry.thermal_pressure >= 65.0 ||
+    if (telemetry.thermal_emergency || telemetry.thermal_guard_active ||
+        (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 65.0) ||
         (telemetry.thermal_headroom >= 0.0 && telemetry.thermal_headroom <= 0.20) ||
-        (telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
+        (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
         return WorkloadClass::ThermalConstrained;
     }
-    if (telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
+    if (telemetry.memory_psi_valid && telemetry.io_psi_valid && telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
         return WorkloadClass::HeavyMultitasking;
     }
-    if (telemetry.memory_psi >= 2.0) {
+    if (telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0) {
         return WorkloadClass::MemoryPressure;
     }
-    if (telemetry.io_psi >= 5.0 && telemetry.cpu_psi >= 10.0) {
+    if (telemetry.io_psi_valid && telemetry.cpu_psi_valid && telemetry.io_psi >= 5.0 && telemetry.cpu_psi >= 10.0) {
         return WorkloadClass::HeavyMultitasking;
     }
-    if (telemetry.io_psi >= 2.2) {
+    if (telemetry.io_psi_valid && telemetry.io_psi >= 2.2) {
         return WorkloadClass::StorageIoPressure;
     }
-    if (telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure >= 50.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 16.0 && telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 50.0) {
         return WorkloadClass::Gaming;
     }
-    if (telemetry.cpu_psi >= 10.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 10.0) {
         return WorkloadClass::CpuBound;
     }
-    if (telemetry.cpu_psi >= 6.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 6.0) {
         return WorkloadClass::ScrollingAndAnimation;
     }
-    if (telemetry.cpu_psi >= 2.5 || telemetry.io_psi >= 1.0) {
+    if ((telemetry.cpu_psi_valid && telemetry.cpu_psi >= 2.5) || (telemetry.io_psi_valid && telemetry.io_psi >= 1.0)) {
         return WorkloadClass::GeneralInteraction;
     }
-    if (telemetry.cpu_psi >= 1.2) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 1.2) {
         return WorkloadClass::BackgroundWorkload;
     }
     return WorkloadClass::Idle;
@@ -543,22 +593,22 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
 BottleneckKind AutonomousTuner::diagnose_bottleneck(
     const TunerTelemetryInput& telemetry,
     WorkloadClass workload) noexcept {
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) {
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) {
         return BottleneckKind::ThermalEmergency;
     }
     if (workload == WorkloadClass::ThermalConstrained) {
         return BottleneckKind::ThermalHeadroomDepletion;
     }
-    if (telemetry.io_psi >= 4.5 && telemetry.cpu_psi >= 9.0) {
+    if (telemetry.io_psi_valid && telemetry.cpu_psi_valid && telemetry.io_psi >= 4.5 && telemetry.cpu_psi >= 9.0) {
         return BottleneckKind::ConcurrentCpuIoContention;
     }
-    if (telemetry.io_psi >= 2.2) {
+    if (telemetry.io_psi_valid && telemetry.io_psi >= 2.2) {
         return BottleneckKind::IoQueueContention;
     }
-    if (telemetry.memory_psi >= 2.0) {
+    if (telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0) {
         return BottleneckKind::MemorySwapThrashing;
     }
-    if (telemetry.cpu_psi >= 8.0) {
+    if (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0) {
         return BottleneckKind::CpuSchedulingLatency;
     }
     return BottleneckKind::None;
@@ -613,104 +663,247 @@ std::string AutonomousTuner::compute_fingerprint() const {
 }
 
 void AutonomousTuner::save_persisted_stats() const {
-    const fs::path state_dir = resolve_state_dir();
-    std::error_code ec;
-    fs::create_directories(state_dir, ec);
-    if (ec) return;
-    const fs::path tmp_path = state_dir / "tuner_stats.state.tmp";
-    const fs::path final_path = state_dir / "tuner_stats.state";
-    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) return;
-    out << "CFTS2\t" << compute_fingerprint() << "\t"
+    std::ostringstream out;
+    out << "CFTS7\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
-        << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_ << "\n";
+        << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
+    for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
+    out << "\n";
     for (const auto& c : candidates_) {
-        out << c.id << "\t"
-            << c.mean_utility << "\t"
-            << c.mean_utility_delta << "\t"
-            << c.trials << "\t"
-            << c.improved_count << "\t"
-            << c.regressed_count << "\t"
-            << c.cooldown_ticks << "\t"
-            << c.consecutive_non_improved << "\t"
-            << c.adaptive_scale << "\t"
-            << c.inconclusive_count << "\t"
-            << c.rejected_count << "\t"
+        out << c.id << "\t" << c.mean_utility << "\t" << c.mean_utility_delta << "\t"
+            << c.trials << "\t" << c.reward_samples << "\t" << c.improved_count << "\t"
+            << c.regressed_count << "\t" << c.neutral_count << "\t" << c.aborted_count << "\t"
+            << c.preempted_count << "\t" << c.recovery_required_count << "\t" << c.cooldown_ticks << "\t"
+            << c.consecutive_non_improved << "\t" << c.adaptive_scale << "\t"
+            << c.inconclusive_count << "\t" << c.rejected_count << "\t"
             << static_cast<uint32_t>(c.last_workload) << "\t"
             << static_cast<uint32_t>(c.last_thermal_bucket) << "\t"
+            << c.ownership_loss_count << "\t" << c.ownership_quarantine_ticks << "\t"
             << sanitize_tsv_field(c.last_rollback_reason) << "\n";
     }
-    out.flush();
-    out.close();
-    fs::rename(tmp_path, final_path, ec);
+    std::string payload = out.str();
+    if (!out.good() || payload.size() > 256U * 1024U - 64U) return;
+    payload += "CFTS7_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
+
+    UniqueFd dir = open_state_directory(resolve_state_dir(), true);
+    if (!dir.valid()) return;
+
+    static std::atomic<uint64_t> temp_nonce{0};
+    std::string temp_name;
+    UniqueFd temp_fd;
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        temp_name = "tuner_stats.state.tmp." + std::to_string(::getpid()) + "." +
+                    std::to_string(temp_nonce.fetch_add(1, std::memory_order_relaxed));
+        const int fd = ::openat(dir.get(), temp_name.c_str(),
+                                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) { temp_fd.reset(fd); break; }
+        if (errno != EEXIST) return;
+    }
+    if (!temp_fd.valid()) return;
+
+    struct stat temp_stat{};
+    if (::fstat(temp_fd.get(), &temp_stat) != 0 || !S_ISREG(temp_stat.st_mode) ||
+        ::fchmod(temp_fd.get(), 0600) != 0 || !write_all(temp_fd.get(), payload) ||
+        ::fsync(temp_fd.get()) != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return;
+    }
+    if (::renameat(dir.get(), temp_name.c_str(), dir.get(), "tuner_stats.state") != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return;
+    }
+    (void)::fsync(dir.get());
 }
 
 void AutonomousTuner::load_persisted_stats() {
-    const fs::path final_path = fs::path(resolve_state_dir()) / "tuner_stats.state";
-    std::ifstream in(final_path);
-    if (!in.is_open()) return;
+    UniqueFd dir = open_state_directory(resolve_state_dir(), false);
+    if (!dir.valid()) return;
+    UniqueFd state_fd(::openat(dir.get(), "tuner_stats.state",
+                               O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!state_fd.valid()) return;
+
+    std::string payload;
+    if (!read_bounded_regular_file(state_fd.get(), payload, 256U * 1024U)) return;
+
+    bool has_checksum = false;
+    std::string checksum_footer_magic;
+    const size_t footer_pos7 = payload.rfind("CFTS7_END\t");
+    const size_t footer_pos6 = payload.rfind("CFTS6_END\t");
+    if (footer_pos7 != std::string::npos && footer_pos6 != std::string::npos) return;
+    const size_t footer_pos = footer_pos7 != std::string::npos ? footer_pos7 : footer_pos6;
+    if (footer_pos != std::string::npos) {
+        if (footer_pos > 0 && payload[footer_pos - 1] != '\n') return;
+        const std::string footer = payload.substr(footer_pos);
+        std::istringstream footer_stream(footer);
+        std::string extra;
+        uint64_t stored_checksum = 0;
+        if (!(footer_stream >> checksum_footer_magic >> stored_checksum) ||
+            (checksum_footer_magic != "CFTS7_END" && checksum_footer_magic != "CFTS6_END") ||
+            (footer_stream >> extra)) return;
+        payload.resize(footer_pos);
+        if (tuner_state_checksum(payload) != stored_checksum) return;
+        has_checksum = true;
+    }
+
+    std::istringstream in(payload);
     std::string header;
     if (!std::getline(in, header)) return;
     std::istringstream hs(header);
-    std::string magic, fp;
+    std::string magic, fp, extra;
     uint32_t trials = 0, improved = 0, rolled_back = 0;
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
+    if ((magic == "CFTS7" && (!has_checksum || checksum_footer_magic != "CFTS7_END")) ||
+        (magic == "CFTS6" && (!has_checksum || checksum_footer_magic != "CFTS6_END")) ||
+        (magic != "CFTS7" && magic != "CFTS6" && has_checksum)) return;
 
     const std::string current_fp = compute_fingerprint();
-    // Accept CFTS2 with matching v2 fingerprint, or legacy CFTS1 if base topology matches
-    if (magic == "CFTS2") {
-        if (fp != current_fp) return;
-        uint32_t inconc = 0, rej = 0;
-        double nf = 0.05;
-        if (hs >> inconc >> rej >> nf) {
-            total_inconclusive_ = inconc;
-            total_rejected_ = rej;
-            noise_floor_ = std::clamp(nf, 0.02, 0.45);
+    uint32_t persisted_reward_samples = 0;
+    uint32_t loaded_inconclusive = 0;
+    uint32_t loaded_rejected = 0;
+    double loaded_noise_floor = 0.05;
+    std::array<double, 4> loaded_domain_floors{{0.05, 0.05, 0.05, 0.05}};
+
+    if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
+        if (fp != current_fp ||
+            !(hs >> persisted_reward_samples >> loaded_inconclusive >> loaded_rejected >> loaded_noise_floor) ||
+            persisted_reward_samples > trials ||
+            !std::isfinite(loaded_noise_floor) || loaded_noise_floor < 0.02 || loaded_noise_floor > 0.45) return;
+        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5") {
+            for (auto& floor : loaded_domain_floors) {
+                if (!(hs >> floor) || !std::isfinite(floor) || floor < 0.02 || floor > 0.45) return;
+            }
+        } else {
+            loaded_domain_floors.fill(loaded_noise_floor);
         }
+        if (hs >> extra) return;
+    } else if (magic == "CFTS3" || magic == "CFTS2") {
+        if (fp != current_fp) return;
+        double legacy_floor = 0.05;
+        if (hs >> loaded_inconclusive >> loaded_rejected >> legacy_floor) {
+            if (!std::isfinite(legacy_floor) || legacy_floor < 0.02 || legacy_floor > 0.45) return;
+            loaded_noise_floor = legacy_floor;
+            loaded_domain_floors.fill(legacy_floor);
+        } else {
+            hs.clear();
+        }
+        if (hs >> extra) return;
     } else if (magic == "CFTS1") {
         std::string v1_fp = current_fp;
         if (v1_fp.rfind("v2|", 0) == 0) v1_fp.replace(0, 3, "v1|");
-        if (fp != v1_fp) return;
+        if (fp != v1_fp || (hs >> extra)) return;
     } else {
         return;
     }
 
-    total_trials_ = trials;
-    total_improved_ = improved;
-    total_rolled_back_ = rolled_back;
-
+    struct ParsedCandidate {
+        std::string id;
+        double mean_utility{0.5};
+        double mean_utility_delta{0.0};
+        double adaptive_scale{1.0};
+        uint32_t trials{0}, reward_samples{0}, improved{0}, regressed{0}, neutral{0};
+        uint32_t aborted{0}, preempted{0}, recovery_required{0}, cooldown{0}, consecutive_non_improved{0};
+        uint32_t inconclusive{0}, rejected{0}, workload{0}, thermal_bucket{0};
+        uint32_t ownership_losses{0}, quarantine_ticks{0};
+        std::string rollback_reason;
+    };
+    std::vector<ParsedCandidate> parsed;
+    std::unordered_set<std::string> seen_ids;
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty()) continue;
+        if (line.size() > 4096 || parsed.size() >= 256) return;
         std::istringstream ls(line);
-        std::string id;
-        double mean_u = 0.5, mean_du = 0.0;
-        uint32_t c_trials = 0, c_imp = 0, c_reg = 0, c_cool = 0, c_non_imp = 0;
-        if (!(ls >> id >> mean_u >> mean_du >> c_trials >> c_imp >> c_reg >> c_cool >> c_non_imp)) {
-            continue;
-        }
-        if (auto* c = find_candidate(id)) {
-            c->mean_utility = std::clamp(mean_u, 0.05, 2.50);
-            c->mean_utility_delta = mean_du;
-            c->trials = c_trials;
-            c->improved_count = c_imp;
-            c->successes = c_imp;
-            c->regressed_count = c_reg;
-            c->rollbacks = c_reg;
-            c->cooldown_ticks = std::min<uint32_t>(c_cool, 64U);
-            c->consecutive_non_improved = std::min<uint32_t>(c_non_imp, 16U);
+        ParsedCandidate saved;
+        if (!(ls >> saved.id >> saved.mean_utility >> saved.mean_utility_delta >> saved.trials)) return;
+        if (saved.id.empty() || saved.id.size() > 128 || !seen_ids.insert(saved.id).second ||
+            !std::isfinite(saved.mean_utility) || saved.mean_utility < 0.05 || saved.mean_utility > 2.50 ||
+            !std::isfinite(saved.mean_utility_delta)) return;
 
-            double scale = 1.0;
-            uint32_t inconc = 0, rej = 0, wl = 0, tb = 0;
-            std::string reason;
-            if (ls >> scale >> inconc >> rej >> wl >> tb >> reason) {
-                c->adaptive_scale = std::clamp(scale, 0.25, 1.0);
-                c->inconclusive_count = inconc;
-                c->rejected_count = rej;
-                c->last_workload = static_cast<WorkloadClass>(std::min<uint32_t>(wl, 10U));
-                c->last_thermal_bucket = static_cast<uint8_t>(std::min<uint32_t>(tb, 4U));
-                c->last_rollback_reason = (reason == "-") ? "" : reason;
-            }
+        const bool current_schema = magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
+        if (current_schema) {
+            if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >> saved.aborted)) return;
+            if (magic == "CFTS7" && !(ls >> saved.preempted)) return;
+            if (!(ls >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            // Legacy CFTS3 counters were retained during the R1 migration while
+            // reward_samples intentionally started at zero. Do not reinterpret those
+            // historical outcome totals as eligible modern reward observations.
+            if (saved.reward_samples > saved.trials) return;
+        } else {
+            if (!(ls >> saved.improved >> saved.regressed >> saved.cooldown >> saved.consecutive_non_improved)) return;
+            // Pre-R1 trial totals mixed attempts with outcomes, so their historical
+            // utility estimate has no defensible sample denominator. Preserve the
+            // counters for diagnostics, but restart learning from an uninformative
+            // prior until new ownership-verified reward samples are collected.
+            saved.mean_utility = 0.5;
+            saved.mean_utility_delta = 0.0;
+            saved.reward_samples = 0;
+            saved.neutral = 0;
+            saved.aborted = 0;
+            saved.recovery_required = 0;
+        }
+
+        if (!(ls >> saved.adaptive_scale >> saved.inconclusive >> saved.rejected >>
+              saved.workload >> saved.thermal_bucket)) return;
+        if (!std::isfinite(saved.adaptive_scale)) return;
+        saved.adaptive_scale = std::clamp(saved.adaptive_scale, 0.25, 1.0);
+        saved.cooldown = std::min<uint32_t>(saved.cooldown, 64U);
+        saved.consecutive_non_improved = std::min<uint32_t>(saved.consecutive_non_improved, 16U);
+        saved.workload = std::min<uint32_t>(saved.workload, 10U);
+        saved.thermal_bucket = std::min<uint32_t>(saved.thermal_bucket, 4U);
+
+        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
+            if (!(ls >> saved.ownership_losses >> saved.quarantine_ticks)) return;
+        }
+        if (!std::getline(ls, saved.rollback_reason)) return;
+        if (!saved.rollback_reason.empty() && saved.rollback_reason.front() == '\t')
+            saved.rollback_reason.erase(saved.rollback_reason.begin());
+        if (saved.rollback_reason.empty()) saved.rollback_reason = "-";
+        if (saved.rollback_reason.size() > 512 ||
+            saved.rollback_reason.find_first_of("\t\r\n") != std::string::npos) return;
+        saved.ownership_losses = std::min<uint32_t>(saved.ownership_losses, 16U);
+        saved.quarantine_ticks = std::min<uint32_t>(saved.quarantine_ticks, 64U);
+        std::string trailing;
+        if (ls >> trailing) return;
+        parsed.push_back(std::move(saved));
+    }
+    if (in.bad()) return;
+
+    // Commit parsed state only after the complete file, checksum, header, and every
+    // candidate record have passed validation. Learning-state corruption must never
+    // partially overwrite in-memory controller state or BaselineStore recovery state.
+    total_trials_ = trials;
+    total_reward_samples_ = persisted_reward_samples;
+    total_improved_ = improved;
+    total_rolled_back_ = rolled_back;
+    total_inconclusive_ = loaded_inconclusive;
+    total_rejected_ = loaded_rejected;
+    noise_floor_ = std::clamp(loaded_noise_floor, 0.02, 0.45);
+    evaluation_noise_floors_ = loaded_domain_floors;
+
+    for (const auto& saved : parsed) {
+        if (auto* candidate = find_candidate(saved.id)) {
+            candidate->mean_utility = saved.mean_utility;
+            candidate->mean_utility_delta = saved.mean_utility_delta;
+            candidate->adaptive_scale = saved.adaptive_scale;
+            candidate->trials = saved.trials;
+            candidate->reward_samples = saved.reward_samples;
+            candidate->improved_count = saved.improved;
+            candidate->successes = saved.improved;
+            candidate->regressed_count = saved.regressed;
+            candidate->rollbacks = saved.regressed;
+            candidate->neutral_count = saved.neutral;
+            candidate->aborted_count = saved.aborted;
+            candidate->preempted_count = saved.preempted;
+            candidate->recovery_required_count = saved.recovery_required;
+            candidate->cooldown_ticks = saved.cooldown;
+            candidate->consecutive_non_improved = saved.consecutive_non_improved;
+            candidate->inconclusive_count = saved.inconclusive;
+            candidate->rejected_count = saved.rejected;
+            candidate->last_workload = static_cast<WorkloadClass>(saved.workload);
+            candidate->last_thermal_bucket = static_cast<uint8_t>(saved.thermal_bucket);
+            candidate->ownership_loss_count = saved.ownership_losses;
+            candidate->ownership_quarantine_ticks = saved.quarantine_ticks;
+            candidate->last_rollback_reason = saved.rollback_reason == "-" ? "" : saved.rollback_reason;
         }
     }
     update_ucb_scores();
@@ -878,6 +1071,7 @@ void AutonomousTuner::classify_discovered_resources() {
 }
 
 void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_root) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     sys_root_ = std::string(sys_root);
     proc_root_ = std::string(proc_root);
     block_queues_.clear();
@@ -1042,6 +1236,7 @@ bool AutonomousTuner::verify_active_ownership() const {
 }
 
 bool AutonomousTuner::rollback_active(std::string_view reason) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     auto& store = BaselineStore::instance();
     std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
@@ -1053,12 +1248,13 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
     observing_ = false;
     obs_ticks_ = 0;
     settling_ticks_remaining_ = 0;
-    CentralMutationCoordinator::instance().release_all_for_controller("AutonomousTuner");
-
     if (!failed_steps.empty()) {
         std::reverse(failed_steps.begin(), failed_steps.end());
         applied_steps_ = std::move(failed_steps);
         transaction_active_ = false;
+        if (!recovery_required_) {
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->recovery_required_count;
+        }
         recovery_required_ = true;
         last_verdict_ = "RECOVERY_REQUIRED";
         last_verdict_enum_ = TunerVerdict::RecoveryRequired;
@@ -1067,6 +1263,14 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
         return false;
     }
 
+    // Release only the candidate's exact domain/transaction lease after every
+    // tracked path has passed BaselineStore rollback and readback verification.
+    // AutonomousTuner owns one candidate transaction at a time; never bulk-release
+    // any unexpected lease that may belong to a separate recovery path.
+    if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
+        CentralMutationCoordinator::instance().release_lease(
+            domain_for_candidate(current_candidate_id_), controller_name_, current_candidate_id_);
+    }
     applied_steps_.clear();
     transaction_active_ = false;
     recovery_required_ = false;
@@ -1079,6 +1283,68 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
     return true;
 }
 
+bool AutonomousTuner::emergency_rollback(std::string_view reason) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& store = BaselineStore::instance();
+    const bool had_active_transaction = transaction_active_;
+    current_objective_ = OptimizationObjective::EmergencyMitigation;
+    if (had_active_transaction) {
+        last_verdict_ = "ABORTED";
+        last_verdict_enum_ = TunerVerdict::Aborted;
+    }
+
+    // This public entry point must provide the same admission guarantee as the
+    // daemon's coordinated recovery path. Closing admission first prevents a
+    // new controller from acquiring a domain between owner rollback and the
+    // global recovery decision.
+    coordinator.begin_emergency_recovery();
+    coordinator.emergency_preempt_all(reason);
+    const auto remaining = coordinator.active_leases();
+    const bool live_owner_pending = std::any_of(
+        remaining.begin(), remaining.end(),
+        [](const DomainLease& lease) { return !lease.owner_detached; });
+    if (live_owner_pending) {
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) +
+            " [LIVE OWNER PREEMPTION ACKNOWLEDGEMENT PENDING]";
+        save_persisted_stats();
+        return false;
+    }
+
+    if (store.has_active_mutations()) (void)store.rollback_all();
+    if (store.has_active_mutations() || !store.verify_and_persist_clear_state() ||
+        (!remaining.empty() &&
+         !coordinator.release_orphaned_leases_after_verified_recovery(store))) {
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) +
+            " [ORPHANED OWNER RECOVERY INCOMPLETE; MUTATION ADMISSION REMAINS CLOSED]";
+        save_persisted_stats();
+        return false;
+    }
+
+    const bool restored = rollback_active(reason);
+    if (!restored || store.has_active_mutations() ||
+        !coordinator.complete_emergency_recovery()) {
+        recovery_required_ = true;
+        last_verdict_ = "RECOVERY_REQUIRED";
+        last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+        current_rationale_ = std::string(reason) +
+            " [GLOBAL RECOVERY INCOMPLETE; MUTATION ADMISSION REMAINS CLOSED]";
+        save_persisted_stats();
+        return false;
+    }
+
+    if (had_active_transaction) ++total_rolled_back_;
+    current_intent_ = "ThermalHoldAndProtect";
+    save_persisted_stats();
+    return true;
+}
+
 bool AutonomousTuner::apply_transaction(
     std::string_view candidate_id,
     std::string_view candidate_label,
@@ -1087,6 +1353,18 @@ bool AutonomousTuner::apply_transaction(
     const std::vector<MutationStep>& steps,
     const TunerTelemetryInput& telemetry) {
     if (steps.empty() || recovery_required_) return false;
+
+    EvaluationDomain evaluation_domain = EvaluationDomain::Unavailable;
+    if (intent == "IoLatencyRelief") evaluation_domain = EvaluationDomain::Io;
+    else if (intent == "MemoryStallRelief") evaluation_domain = EvaluationDomain::Memory;
+    else if (intent == "InteractiveCpuPacing") evaluation_domain = EvaluationDomain::Cpu;
+    else if (intent == "ThermalStabilization") evaluation_domain = EvaluationDomain::Thermal;
+    const bool target_baseline_valid =
+        (evaluation_domain == EvaluationDomain::Io && telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Memory && telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Cpu && telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0) ||
+        (evaluation_domain == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0);
+    if (!target_baseline_valid) return false;
 
     // First unwind any previous transaction cleanly
     if (!applied_steps_.empty()) {
@@ -1103,7 +1381,7 @@ bool AutonomousTuner::apply_transaction(
     const ControllerPriority prio = priority_for_candidate(candidate_id);
     std::string conflict_reason;
     if (!CentralMutationCoordinator::instance().acquire_lease(
-            dom, "AutonomousTuner", candidate_id, prio, &conflict_reason)) {
+            dom, controller_name_, candidate_id, prio, &conflict_reason)) {
         last_verdict_ = "REJECTED";
         last_verdict_enum_ = TunerVerdict::Rejected;
         ++total_rejected_;
@@ -1116,6 +1394,40 @@ bool AutonomousTuner::apply_transaction(
         return false;
     }
 
+    // Publish the exact lease identity before preflight. rollback_active() and
+    // the preemption callback must be able to resolve failures that occur before
+    // the transaction reaches OBSERVING.
+    current_candidate_id_ = std::string(candidate_id);
+    auto& coordinator = CentralMutationCoordinator::instance();
+
+    const auto reject_preflight = [&](std::string_view reason) {
+        coordinator.release_lease(dom, controller_name_, candidate_id);
+        current_candidate_id_ = "baseline";
+        current_candidate_label_ = "OEM Verified Baseline";
+        current_intent_ = "HoldEquilibrium";
+        last_verdict_ = "REJECTED";
+        last_verdict_enum_ = TunerVerdict::Rejected;
+        ++total_rejected_;
+        if (auto* stats = find_candidate(candidate_id)) {
+            ++stats->rejected_count;
+            stats->last_rollback_reason = std::string(reason);
+        }
+        current_rationale_ = "Candidate " + std::string(candidate_id) +
+            " rejected during preflight: " + std::string(reason);
+        save_persisted_stats();
+    };
+
+    const auto record_apply_abort = [&](std::string_view reason) {
+        last_verdict_ = "ABORTED";
+        last_verdict_enum_ = TunerVerdict::Aborted;
+        ++total_rolled_back_;
+        if (auto* stats = find_candidate(candidate_id)) {
+            ++stats->aborted_count;
+            stats->last_rollback_reason = std::string(reason);
+        }
+        current_rationale_ = std::string(reason);
+    };
+
     // Phase 1: Full Preflight (All-or-Nothing for RequiredAnchor & RequiredDependent steps)
     std::vector<MutationStep> planned;
     planned.reserve(steps.size());
@@ -1125,11 +1437,21 @@ bool AutonomousTuner::apply_transaction(
     for (const auto& step : steps) {
         const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                   step.relation == StepRelation::RequiredDependent);
-        const bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
-                                store.capture(step.path);
+        bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
+                          store.capture(step.path);
+        if (accessible) {
+            const auto audit = store.get_audit_trail();
+            const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == step.path;
+            });
+            // apply_transaction has already resolved this tuner's previous trial.
+            // Any remaining journaled mutation belongs to another or unresolved owner.
+            if (snapshot == audit.end() || snapshot->is_modified) accessible = false;
+        }
         if (is_required && !accessible) {
-            // Abort entire transaction before any write occurs
-            CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+            // No write has started. Classify this as REJECTED, never as an
+            // empirical trial or an aborted mutation transaction.
+            reject_preflight("Required resource unavailable, unsafe, or no longer writable: " + step.path);
             return false;
         }
         if (accessible) {
@@ -1143,7 +1465,12 @@ bool AutonomousTuner::apply_transaction(
     }
 
     if (!has_anchor || planned.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+        reject_preflight("No valid required anchor or mutation steps were available");
+        return false;
+    }
+    // Preflight is read-only. If a preemption arrived during discovery, do not
+    // start the first mutation; leave this exact lease for callback acknowledgement.
+    if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
         return false;
     }
 
@@ -1153,15 +1480,52 @@ bool AutonomousTuner::apply_transaction(
     std::string after_summary;
 
     for (const auto& step : planned) {
+        // Never start a subsequent write after a priority/emergency request.
+        // The registered callback rolls back the committed prefix at this safe point.
+        if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
+            applied_steps_ = std::move(committed);
+            observing_ = false;
+            transaction_active_ = false;
+            return false;
+        }
         if (!store.apply_mutation(step.path, step.target_value)) {
             const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                       step.relation == StepRelation::RequiredDependent);
+            const auto audit = store.get_audit_trail();
+            const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == step.path;
+            });
+            const bool unresolved_path_mutation =
+                snapshot != audit.end() && snapshot->is_modified;
+
             if (!is_required) {
+                // BaselineStore now performs path-scoped failure recovery. If the
+                // optional write remains journaled as active, explicitly restore
+                // that path before continuing with the independent candidate steps.
+                if (unresolved_path_mutation && !store.rollback(step.path)) {
+                    committed.push_back(step);
+                    applied_steps_ = std::move(committed);
+                    const std::string reason =
+                        "Optional step failed and its path-scoped rollback is unresolved.";
+                    record_apply_abort(reason);
+                    (void)rollback_active(reason);
+                    save_persisted_stats();
+                    return false;
+                }
                 continue;
             }
-            // Dependency or readback failure on required step: unwind committed steps in reverse order
+
+            // Include a partially committed required path in reverse-order unwind.
+            // rollback(path) is safe for a path already restored by BaselineStore.
+            if (unresolved_path_mutation) committed.push_back(step);
             applied_steps_ = std::move(committed);
-            (void)rollback_active("Transaction aborted on failed required step; rolled back to baseline.");
+            const std::string reason =
+                "Transaction aborted on failed required step; rollback attempted.";
+            record_apply_abort(reason);
+            (void)rollback_active(reason);
+            // rollback_active can upgrade the verdict to RECOVERY_REQUIRED and
+            // increment recovery_required_count when a path remains unresolved.
+            save_persisted_stats();
             return false;
         }
         if (!after_summary.empty()) after_summary += ",";
@@ -1169,8 +1533,17 @@ bool AutonomousTuner::apply_transaction(
         committed.push_back(step);
     }
 
+    // Check after the final in-flight write too; there may be no following loop
+    // iteration in which to observe a request that arrived during that write.
+    if (coordinator.is_preemption_requested(dom, controller_name_, candidate_id)) {
+        applied_steps_ = std::move(committed);
+        observing_ = false;
+        transaction_active_ = false;
+        return false;
+    }
+
     if (committed.empty()) {
-        CentralMutationCoordinator::instance().release_lease(dom, "AutonomousTuner");
+        reject_preflight("No mutation step was committed");
         return false;
     }
 
@@ -1179,15 +1552,27 @@ bool AutonomousTuner::apply_transaction(
     observing_ = true;
     obs_ticks_ = 0;
     thermal_stabilization_active_ = (intent == "ThermalStabilization");
+    current_evaluation_domain_ = evaluation_domain;
+    noise_floor_ = evaluation_noise_floors_[static_cast<size_t>(current_evaluation_domain_)];
     current_candidate_id_ = std::string(candidate_id);
     current_candidate_label_ = std::string(candidate_label);
     current_intent_ = std::string(intent);
     current_rationale_ = std::string(rationale);
 
-    before_io_psi_ = telemetry.io_psi;
-    before_mem_psi_ = telemetry.memory_psi;
-    before_cpu_psi_ = telemetry.cpu_psi;
-    before_thermal_ = telemetry.thermal_pressure;
+    // The verdict and utility shown while OBSERVING belong to this new trial.
+    // Never carry the previous candidate's verdict/delta onto a different candidate.
+    last_verdict_ = "PENDING";
+    last_verdict_enum_ = TunerVerdict::Pending;
+    last_utility_delta_ = 0.0;
+
+    before_io_valid_ = telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0;
+    before_mem_valid_ = telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0;
+    before_cpu_valid_ = telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0;
+    before_thermal_valid_ = telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0;
+    before_io_psi_ = before_io_valid_ ? telemetry.io_psi : 0.0;
+    before_mem_psi_ = before_mem_valid_ ? telemetry.memory_psi : 0.0;
+    before_cpu_psi_ = before_cpu_valid_ ? telemetry.cpu_psi : 0.0;
+    before_thermal_ = before_thermal_valid_ ? telemetry.thermal_pressure : 0.0;
     before_temperature_celsius_ = telemetry.current_temperature_celsius;
 
     sum_after_io_psi_ = 0.0;
@@ -1196,8 +1581,10 @@ bool AutonomousTuner::apply_transaction(
     sum_after_thermal_ = 0.0;
     sum_after_temp_vel_ = 0.0;
     valid_thermal_samples_in_window_ = 0;
-    min_after_io_psi_ = 1e9;
-    max_after_io_psi_ = 0.0;
+    valid_io_samples_in_window_ = valid_mem_samples_in_window_ = 0;
+    valid_cpu_samples_in_window_ = valid_pressure_samples_in_window_ = 0;
+    min_after_io_psi_ = min_after_mem_psi_ = min_after_cpu_psi_ = min_after_thermal_ = 1e9;
+    max_after_io_psi_ = max_after_mem_psi_ = max_after_cpu_psi_ = max_after_thermal_ = -1e9;
     ++total_trials_;
 
     if (auto* stats = find_candidate(candidate_id)) {
@@ -1218,40 +1605,48 @@ bool AutonomousTuner::apply_transaction(
 void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& latest_telemetry) {
     if (!observing_ || obs_ticks_ == 0) return;
 
-    const double n = static_cast<double>(obs_ticks_);
-    const double after_io = sum_after_io_psi_ / n;
-    const double after_mem = sum_after_mem_psi_ / n;
-    const double after_cpu = sum_after_cpu_psi_ / n;
-    const double after_therm = sum_after_thermal_ / n;
+    const auto mean = [](double sum, uint32_t count) noexcept { return count ? sum / static_cast<double>(count) : 0.0; };
+    const double after_io = mean(sum_after_io_psi_, valid_io_samples_in_window_);
+    const double after_mem = mean(sum_after_mem_psi_, valid_mem_samples_in_window_);
+    const double after_cpu = mean(sum_after_cpu_psi_, valid_cpu_samples_in_window_);
+    const double after_therm = mean(sum_after_thermal_, valid_pressure_samples_in_window_);
 
     // Verify both readback value and inode ownership across all applied nodes
     if (!verify_active_ownership()) {
         last_verdict_ = "OWNERSHIP_LOST";
         last_verdict_enum_ = TunerVerdict::OwnershipLost;
         ++total_rolled_back_;
-        if (auto* stats = find_candidate(current_candidate_id_)) {
-            stats->last_rollback_reason = "External ownership lost during observation";
-        }
+        record_ownership_loss(find_candidate(current_candidate_id_));
         (void)rollback_active("External node ownership lost during observation window.");
         save_persisted_stats();
         return;
     }
 
-    // Calculate domain-weighted empirical utility delta:
-    // Positive delta means system pressure/stalls/thermal load decreased without regression.
-    const double io_gain = before_io_psi_ - after_io;
-    const double mem_gain = before_mem_psi_ - after_mem;
-    const double cpu_gain = before_cpu_psi_ - after_cpu;
-    const double therm_gain = before_thermal_ - after_therm;
-    const double therm_penalty = std::max(0.0, after_therm - before_thermal_ - 2.0);
+    const uint32_t target_samples = current_evaluation_domain_ == EvaluationDomain::Io ? valid_io_samples_in_window_ :
+        current_evaluation_domain_ == EvaluationDomain::Memory ? valid_mem_samples_in_window_ :
+        current_evaluation_domain_ == EvaluationDomain::Cpu ? valid_cpu_samples_in_window_ : valid_pressure_samples_in_window_;
+    if (target_samples < 2) {
+        last_verdict_ = "INCONCLUSIVE"; last_verdict_enum_ = TunerVerdict::Inconclusive; last_utility_delta_ = 0.0;
+        observing_ = false; settling_ticks_remaining_ = 0; ++total_rolled_back_; ++total_inconclusive_;
+        if (auto* stats = find_candidate(current_candidate_id_)) { ++stats->inconclusive_count; ++stats->consecutive_non_improved; stats->last_rollback_reason = "Insufficient valid target-domain samples"; }
+        (void)rollback_active("Target-domain evidence incomplete; reverted to OEM baseline.");
+        update_ucb_scores(); save_persisted_stats(); return;
+    }
+    const bool io_valid = before_io_valid_ && valid_io_samples_in_window_ >= 2;
+    const bool mem_valid = before_mem_valid_ && valid_mem_samples_in_window_ >= 2;
+    const bool cpu_valid = before_cpu_valid_ && valid_cpu_samples_in_window_ >= 2;
+    const bool thermal_valid = before_thermal_valid_ && valid_pressure_samples_in_window_ >= 2;
+    const double io_gain = io_valid ? before_io_psi_ - after_io : 0.0;
+    const double mem_gain = mem_valid ? before_mem_psi_ - after_mem : 0.0;
+    const double cpu_gain = cpu_valid ? before_cpu_psi_ - after_cpu : 0.0;
+    const double therm_gain = thermal_valid ? before_thermal_ - after_therm : 0.0;
+    const double therm_penalty = thermal_valid ? std::max(0.0, after_therm - before_thermal_ - 2.0) : 0.0;
 
     double utility_delta = 0.0;
     if (current_intent_ == "ThermalStabilization") {
         // Requirements 6 & 7: Check if physical thermal evidence is available and adequate.
         // A candidate under ThermalStabilization can ONLY be retained if valid physical sensor telemetry is available.
-        const bool has_thermal_evidence =
-            (valid_thermal_samples_in_window_ > 0) ||
-            (latest_telemetry.temperature_velocity_valid && latest_telemetry.temperature_samples_count >= 2);
+        const bool has_thermal_evidence = valid_thermal_samples_in_window_ >= 2 && valid_pressure_samples_in_window_ >= 2;
 
         if (!has_thermal_evidence || (latest_telemetry.current_temperature_celsius < 0.0 && !latest_telemetry.temperature_velocity_valid)) {
             // Sensor unavailable or insufficient samples -> INCONCLUSIVE per Requirement 6 & 7
@@ -1306,38 +1701,42 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         }
 
         // Requirement 9: Thermal pressure reduction must not mask workload or stability regression.
-        if (io_gain < -1.5 || cpu_gain < -3.0 || mem_gain < -1.5) {
+        if ((io_valid && io_gain < -1.5) || (cpu_valid && cpu_gain < -3.0) || (mem_valid && mem_gain < -1.5)) {
             if (utility_delta >= 0.25) {
                 utility_delta = -0.25; // Force regressed verdict
             }
         }
     } else if (current_intent_ == "IoLatencyRelief") {
-        utility_delta = 1.40 * io_gain + 0.35 * cpu_gain - 0.60 * therm_penalty;
+        utility_delta = 1.40 * io_gain + (cpu_valid ? 0.35 * cpu_gain : 0.0) - 0.60 * therm_penalty;
     } else if (current_intent_ == "MemoryStallRelief") {
-        utility_delta = 1.60 * mem_gain + 0.45 * io_gain - 0.60 * therm_penalty;
+        utility_delta = 1.60 * mem_gain + (io_valid ? 0.45 * io_gain : 0.0) - 0.60 * therm_penalty;
     } else if (current_intent_ == "InteractiveCpuPacing") {
-        utility_delta = 1.50 * cpu_gain + 0.35 * io_gain - 0.65 * therm_penalty;
-    } else {
-        utility_delta = 1.10 * io_gain + 1.10 * mem_gain + 0.50 * cpu_gain - 0.60 * therm_penalty;
-    }
+        utility_delta = 1.50 * cpu_gain + (io_valid ? 0.35 * io_gain : 0.0) - 0.65 * therm_penalty;
+    } else utility_delta = 0.0;
 
     last_utility_delta_ = utility_delta;
     observing_ = false;
     settling_ticks_remaining_ = 0;
 
     auto* stats = find_candidate(current_candidate_id_);
-    if (stats != nullptr) {
-        const double prev_trials = static_cast<double>(std::max(1u, stats->trials) - 1u);
-        stats->mean_utility_delta =
-            (stats->mean_utility_delta * prev_trials + utility_delta) / static_cast<double>(std::max(1u, stats->trials));
+
+    double target_spread = 0.0, target_baseline = 0.0, target_after = 0.0;
+    std::string_view target_metric = "unavailable";
+    size_t noise_index = 0;
+    switch (current_evaluation_domain_) {
+        case EvaluationDomain::Io: target_spread=max_after_io_psi_-min_after_io_psi_; target_baseline=before_io_psi_; target_after=after_io; target_metric="io_psi"; noise_index=0; break;
+        case EvaluationDomain::Memory: target_spread=max_after_mem_psi_-min_after_mem_psi_; target_baseline=before_mem_psi_; target_after=after_mem; target_metric="memory_psi"; noise_index=1; break;
+        case EvaluationDomain::Cpu: target_spread=max_after_cpu_psi_-min_after_cpu_psi_; target_baseline=before_cpu_psi_; target_after=after_cpu; target_metric="cpu_psi"; noise_index=2; break;
+        case EvaluationDomain::Thermal: target_spread=max_after_thermal_-min_after_thermal_; target_baseline=before_thermal_; target_after=after_therm; target_metric="thermal_pressure"; noise_index=3; break;
+        default: break;
     }
-
-    // Update running noise floor estimate from sample spread
-    const double io_spread = (max_after_io_psi_ >= min_after_io_psi_) ? (max_after_io_psi_ - min_after_io_psi_) : 0.0;
-    noise_floor_ = std::clamp(0.85 * noise_floor_ + 0.15 * std::min(0.35, io_spread * 0.05), 0.03, 0.35);
-
-    const bool high_variance_inconclusive =
-        (io_spread > std::max(6.0, before_io_psi_ * 1.2) && std::abs(utility_delta) < 0.50);
+    const double domain_weight = current_evaluation_domain_ == EvaluationDomain::Io ? 0.07 : current_evaluation_domain_ == EvaluationDomain::Memory ? 0.08 : current_evaluation_domain_ == EvaluationDomain::Cpu ? 0.075 : 0.0225;
+    const double measured_noise = std::clamp(target_spread * domain_weight, 0.02, 0.45);
+    evaluation_noise_floors_[noise_index] = std::clamp(0.85 * evaluation_noise_floors_[noise_index] + 0.15 * measured_noise, 0.02, 0.45);
+    noise_floor_ = evaluation_noise_floors_[noise_index];
+    const double improved_threshold = std::max(0.25, 2.0 * noise_floor_);
+    const double regressed_threshold = -(0.20 + noise_floor_);
+    const bool high_variance_inconclusive = target_spread > std::max(6.0, std::abs(target_baseline) * 1.2) && std::abs(utility_delta) < 0.50;
 
     if (high_variance_inconclusive) {
         last_verdict_ = "INCONCLUSIVE";
@@ -1358,7 +1757,16 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         return;
     }
 
-    if (utility_delta >= 0.25) {
+    // Only an ownership-verified, complete, low-variance window is eligible reward.
+    ++total_reward_samples_;
+    if (stats != nullptr) {
+        const double previous = static_cast<double>(stats->reward_samples);
+        ++stats->reward_samples;
+        stats->mean_utility_delta = (stats->mean_utility_delta * previous + utility_delta) /
+                                    static_cast<double>(stats->reward_samples);
+    }
+
+    if (utility_delta >= improved_threshold) {
         // IMPROVED: Measurable benefit verified above noise floor -> Retain configuration!
         last_verdict_ = "IMPROVED";
         last_verdict_enum_ = TunerVerdict::Improved;
@@ -1375,10 +1783,10 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         }
         current_rationale_ += " [Verified IMPROVED: ΔU=+" +
                               std::to_string(utility_delta).substr(0, 4) +
-                              ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
-                              "% -> " + std::to_string(after_io).substr(0, 4) + "% -> RETAINED]";
+                              ", " + std::string(target_metric) + " " + std::to_string(target_baseline).substr(0, 5) +
+                              " -> " + std::to_string(target_after).substr(0, 5) + "% -> RETAINED]";
         update_ucb_scores();
-    } else if (utility_delta < -0.20) {
+    } else if (utility_delta < regressed_threshold) {
         // REGRESSED: Stalls or thermals worsened -> Rollback, step down adaptive scale & apply context-aware cooldown!
         last_verdict_ = "REGRESSED";
         last_verdict_enum_ = TunerVerdict::Regressed;
@@ -1396,8 +1804,8 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         const std::string msg =
             "Trial " + current_candidate_id_ + " regressed (ΔU=" +
             std::to_string(utility_delta).substr(0, 5) +
-            ", io_psi " + std::to_string(before_io_psi_).substr(0, 4) +
-            "% -> " + std::to_string(after_io).substr(0, 4) +
+            ", " + std::string(target_metric) + " " + std::to_string(target_baseline).substr(0, 5) +
+            " -> " + std::to_string(target_after).substr(0, 5) +
             "%); rolled back to OEM baseline.";
         (void)rollback_active(msg);
     } else {
@@ -1405,11 +1813,11 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_ = "NEUTRAL";
         last_verdict_enum_ = TunerVerdict::Neutral;
         ++total_rolled_back_;
-        ++total_inconclusive_;
         if (stats != nullptr) {
-            ++stats->inconclusive_count;
+            ++stats->neutral_count;
             ++stats->consecutive_non_improved;
             stats->adaptive_scale = std::max(0.50, stats->adaptive_scale * 0.90);
+            stats->mean_utility = std::clamp(stats->mean_utility + 0.30 * (0.50 - stats->mean_utility), 0.05, 2.50);
             stats->last_rollback_reason = "Within noise floor; reverted per Invariant 8";
             const uint32_t shift = std::min<uint32_t>(3U, stats->consecutive_non_improved - 1U);
             stats->cooldown_ticks = std::min<uint32_t>(32U, 4U * (1U << shift));
@@ -1420,10 +1828,12 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
             "); reverted to OEM baseline per Invariant 8 (no unverified retention).";
         (void)rollback_active(msg);
     }
+    update_ucb_scores();
     save_persisted_stats();
 }
 
 AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_telemetry) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     TunerTelemetryInput telemetry = raw_telemetry;
     latest_current_temperature_ = telemetry.current_temperature_celsius;
     latest_temperature_velocity_ = telemetry.temperature_velocity_celsius_per_sec;
@@ -1440,13 +1850,27 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         latest_temperature_velocity_valid_ = true;
     }
 
-    // Keep pressure velocity updated from pressure difference if not provided by neural predictor
-    if (has_prev_thermal_ && std::abs(telemetry.thermal_pressure_velocity) < 1e-6) {
-        telemetry.thermal_pressure_velocity = telemetry.thermal_pressure - prev_thermal_pressure_;
-        latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
+    // Pressure deltas are meaningful only across valid thermal-pressure samples.
+    if (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure)) {
+        if (has_prev_thermal_ && std::abs(telemetry.thermal_pressure_velocity) < 1e-6) {
+            telemetry.thermal_pressure_velocity = telemetry.thermal_pressure - prev_thermal_pressure_;
+            latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
+        }
+        prev_thermal_pressure_ = telemetry.thermal_pressure;
+        has_prev_thermal_ = true;
+    } else {
+        telemetry.thermal_pressure_velocity = 0.0;
+        latest_pressure_velocity_ = 0.0;
     }
-    prev_thermal_pressure_ = telemetry.thermal_pressure;
-    has_prev_thermal_ = true;
+
+    // Emergency arbitration must run before recovery retries: a failed rollback can
+    // return early, but it must never suppress the emergency preemption request.
+    const bool emergency_boundary =
+        telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0);
+    if (emergency_boundary) {
+        current_objective_ = OptimizationObjective::EmergencyMitigation;
+        CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
+    }
 
     if (recovery_required_) {
         // Attempt recovery again; do not allow new mutations while recovery_required_ is true
@@ -1462,6 +1886,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             --c.cooldown_ticks;
             cooldown_changed = true;
         }
+        if (c.ownership_quarantine_ticks > 0) {
+            --c.ownership_quarantine_ticks;
+            cooldown_changed = true;
+        }
     }
     if (cooldown_changed) {
         save_persisted_stats();
@@ -1474,12 +1902,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     // Emergency Safety Gate: Catastrophic thermal emergency (>= 88.0 pressure or emergency flag)
     // immediately rolls back all mutations and preempts domain leases.
-    if (telemetry.thermal_emergency || telemetry.thermal_pressure >= 88.0) {
+    if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
-        CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
         if (transaction_active_) {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
             ++total_rolled_back_;
             (void)rollback_active("Thermal emergency gate active; restored OEM baseline.");
             save_persisted_stats();
@@ -1504,6 +1932,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         if (transaction_active_ && current_intent_ != "ThermalStabilization") {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
+            if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
             ++total_rolled_back_;
             (void)rollback_active("Preempting performance mutation for active ThermalStabilization.");
             save_persisted_stats();
@@ -1546,7 +1975,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 }
             }
 
-            if (telemetry.io_psi >= 1.5 && !block_queues_.empty() &&
+            if (telemetry.io_psi_valid && telemetry.io_psi >= 1.5 && !block_queues_.empty() &&
                 is_candidate_eligible_for_context("thermal.io_burst_pacing", current_workload_, thermal_bucket)) {
                 const auto* stats = find_candidate("thermal.io_burst_pacing");
                 const double scale = stats ? stats->adaptive_scale : 1.0;
@@ -1573,10 +2002,50 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
             return snapshot();
         }
-    } else if (thermal_stabilization_active_) {
-        // Exiting ThermalStabilization -> release thermal damping mutation and enter hysteresis recovery
+    } else if (thermal_stabilization_active_ && telemetry.thermal_pressure_valid && !telemetry.thermal_guard_active) {
+        // Exit thermal stabilization only with valid pressure evidence that the guard subsided.
         (void)rollback_active("Thermal pressure subsided below hysteresis threshold; entering ThermalRecovery.");
         thermal_recovery_ticks_ = 2;
+    }
+
+    // Workload optimization currently evaluates a three-domain before/after utility vector.
+    // If any PSI source is unavailable, do not treat its placeholder as zero or mutate based on
+    // incomplete evidence. Thermal stabilization above remains independently actionable.
+    const bool psi_evidence_complete =
+        telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
+    const bool active_domain_evidence_complete =
+        (current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
+        (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid);
+    const bool required_evidence_complete = (observing_ || transaction_active_)
+        ? active_domain_evidence_complete : psi_evidence_complete;
+    if (!required_evidence_complete) {
+        if (observing_ || transaction_active_) {
+            last_verdict_ = "INCONCLUSIVE";
+            last_verdict_enum_ = TunerVerdict::Inconclusive;
+            ++total_inconclusive_;
+            ++total_rolled_back_;
+            if (auto* stats = find_candidate(current_candidate_id_)) {
+                ++stats->inconclusive_count;
+                ++stats->consecutive_non_improved;
+                stats->last_rollback_reason = "Incomplete PSI evidence during observation/retention";
+            }
+            const bool restored = rollback_active(
+                "Incomplete PSI evidence; releasing candidate and restoring OEM baseline.");
+            if (!restored) {
+                last_verdict_ = "RECOVERY_REQUIRED";
+                last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            }
+            save_persisted_stats();
+        } else {
+            current_objective_ = OptimizationObjective::HoldBaseline;
+            current_intent_ = "HoldEquilibrium";
+            current_rationale_ = "PSI evidence incomplete; workload mutation withheld while thermal policy remains active.";
+            last_verdict_ = "INCONCLUSIVE";
+            last_verdict_enum_ = TunerVerdict::Inconclusive;
+        }
+        return snapshot();
     }
 
     const bool in_thermal_recovery = (thermal_recovery_ticks_ > 0);
@@ -1584,7 +2053,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         const bool temp_stable_or_falling =
             (!telemetry.temperature_velocity_valid) ||
             (telemetry.temperature_velocity_celsius_per_sec <= 0.05);
-        if (telemetry.thermal_pressure <= 46.0 && temp_stable_or_falling) {
+        if (telemetry.thermal_pressure_valid && telemetry.thermal_pressure <= 46.0 && temp_stable_or_falling) {
             thermal_recovery_ticks_ = 0;
         } else {
             --thermal_recovery_ticks_;
@@ -1598,9 +2067,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
-            if (auto* stats = find_candidate(current_candidate_id_)) {
-                stats->last_rollback_reason = "External ownership lost during observation";
-            }
+            record_ownership_loss(find_candidate(current_candidate_id_));
             (void)rollback_active("External node ownership lost during observation window.");
             save_persisted_stats();
             return snapshot();
@@ -1608,16 +2075,25 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         if (settling_ticks_remaining_ > 0) {
             --settling_ticks_remaining_;
         }
-        sum_after_io_psi_ += telemetry.io_psi;
-        sum_after_mem_psi_ += telemetry.memory_psi;
-        sum_after_cpu_psi_ += telemetry.cpu_psi;
-        sum_after_thermal_ += telemetry.thermal_pressure;
-        if (telemetry.temperature_velocity_valid) {
-            sum_after_temp_vel_ += telemetry.temperature_velocity_celsius_per_sec;
-            ++valid_thermal_samples_in_window_;
+        if (telemetry.io_psi_valid && std::isfinite(telemetry.io_psi) && telemetry.io_psi >= 0.0) {
+            sum_after_io_psi_ += telemetry.io_psi; min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
+            max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi); ++valid_io_samples_in_window_;
         }
-        min_after_io_psi_ = std::min(min_after_io_psi_, telemetry.io_psi);
-        max_after_io_psi_ = std::max(max_after_io_psi_, telemetry.io_psi);
+        if (telemetry.memory_psi_valid && std::isfinite(telemetry.memory_psi) && telemetry.memory_psi >= 0.0) {
+            sum_after_mem_psi_ += telemetry.memory_psi; min_after_mem_psi_ = std::min(min_after_mem_psi_, telemetry.memory_psi);
+            max_after_mem_psi_ = std::max(max_after_mem_psi_, telemetry.memory_psi); ++valid_mem_samples_in_window_;
+        }
+        if (telemetry.cpu_psi_valid && std::isfinite(telemetry.cpu_psi) && telemetry.cpu_psi >= 0.0) {
+            sum_after_cpu_psi_ += telemetry.cpu_psi; min_after_cpu_psi_ = std::min(min_after_cpu_psi_, telemetry.cpu_psi);
+            max_after_cpu_psi_ = std::max(max_after_cpu_psi_, telemetry.cpu_psi); ++valid_cpu_samples_in_window_;
+        }
+        if (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0) {
+            sum_after_thermal_ += telemetry.thermal_pressure; min_after_thermal_ = std::min(min_after_thermal_, telemetry.thermal_pressure);
+            max_after_thermal_ = std::max(max_after_thermal_, telemetry.thermal_pressure); ++valid_pressure_samples_in_window_;
+        }
+        if (telemetry.temperature_velocity_valid && std::isfinite(telemetry.temperature_velocity_celsius_per_sec) && telemetry.temperature_samples_count >= 2) {
+            sum_after_temp_vel_ += telemetry.temperature_velocity_celsius_per_sec; ++valid_thermal_samples_in_window_;
+        }
         ++obs_ticks_;
         if (obs_ticks_ >= obs_window_) {
             evaluate_observation_window(telemetry);
@@ -1626,12 +2102,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         return snapshot();
     }
 
-    const bool io_bottleneck = telemetry.io_psi >= 2.2;
-    const bool mem_bottleneck = telemetry.memory_psi >= 2.0;
+    const bool io_bottleneck = telemetry.io_psi_valid && telemetry.io_psi >= 2.2;
+    const bool mem_bottleneck = telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0;
     // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery
     const bool cpu_bottleneck =
-        !in_thermal_recovery && telemetry.cpu_psi >= 8.0 &&
-        telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
+        !in_thermal_recovery && telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
+        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
 
     // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
@@ -1639,11 +2115,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
+            record_ownership_loss(find_candidate(current_candidate_id_));
             (void)rollback_active("External node ownership lost while transaction was retained.");
             save_persisted_stats();
             return snapshot();
         }
-        if (!io_bottleneck && !mem_bottleneck && telemetry.cpu_psi < 4.0 && !needs_thermal_stabilization) {
+        if (!io_bottleneck && !mem_bottleneck && telemetry.cpu_psi_valid && telemetry.cpu_psi < 4.0 && !needs_thermal_stabilization) {
             if (++idle_streak_ >= 6) {
                 idle_streak_ = 0;
                 last_verdict_ = "HOLD";
@@ -1652,12 +2129,27 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             }
         } else {
             idle_streak_ = 0;
-            // Monitor domain-specific target and guard metrics while retained
-            const bool domain_regressed =
-                (telemetry.io_psi > before_io_psi_ + 4.0) ||
-                (current_intent_ == "MemoryStallRelief" && telemetry.memory_psi > before_mem_psi_ + 3.5) ||
-                (current_intent_ == "InteractiveCpuPacing" &&
-                 (telemetry.cpu_psi > before_cpu_psi_ + 6.0 || telemetry.thermal_pressure > before_thermal_ + 8.0));
+            // Retained-state checks follow the same evaluation domain as trial scoring.
+            bool domain_regressed = false;
+            switch (current_evaluation_domain_) {
+                case EvaluationDomain::Io:
+                    domain_regressed = telemetry.io_psi_valid && before_io_valid_ && telemetry.io_psi > before_io_psi_ + 4.0;
+                    break;
+                case EvaluationDomain::Memory:
+                    domain_regressed = telemetry.memory_psi_valid && before_mem_valid_ && telemetry.memory_psi > before_mem_psi_ + 3.5;
+                    break;
+                case EvaluationDomain::Cpu:
+                    domain_regressed = telemetry.cpu_psi_valid && before_cpu_valid_ && telemetry.cpu_psi > before_cpu_psi_ + 6.0;
+                    if (!domain_regressed && telemetry.thermal_pressure_valid && before_thermal_valid_)
+                        domain_regressed = telemetry.thermal_pressure > before_thermal_ + 8.0;
+                    break;
+                case EvaluationDomain::Thermal:
+                    domain_regressed = telemetry.thermal_pressure_valid && before_thermal_valid_ && telemetry.thermal_pressure > before_thermal_ + 8.0;
+                    if (!domain_regressed && telemetry.temperature_velocity_valid)
+                        domain_regressed = telemetry.temperature_velocity_celsius_per_sec > 0.05;
+                    break;
+                default: break;
+            }
             if (domain_regressed) {
                 if (auto* stats = find_candidate(current_candidate_id_)) {
                     stats->cooldown_ticks = 6;
@@ -1684,14 +2176,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // Priority A: I/O Latency & Queue Bottleneck -> Select highest-UCB1 eligible I/O candidate
     if (io_bottleneck && !block_queues_.empty()) {
         const auto& primary_q = block_queues_.front();
-        const double total_n = std::max(1.0, static_cast<double>(total_trials_));
+        const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
 
         auto score_candidate = [&](std::string_view id, double domain_bonus = 0.0) -> double {
             // Strict admission gate BEFORE any UCB1 or domain bonus calculation
             if (!is_candidate_eligible_for_context(id, current_workload_, thermal_bucket)) return -1.0;
             const auto* s = find_candidate(id);
             if (s == nullptr) return -1.0;
-            const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->trials + 1));
+            const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->reward_samples + 1));
             return s->mean_utility + explore + domain_bonus;
         };
 
@@ -1895,6 +2387,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 }
 
 AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     AutonomousDecisionSnapshot out{};
     if (recovery_required_) {
         out.stage = "RECOVERY_REQUIRED";
@@ -1924,11 +2417,11 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.utility_delta = last_utility_delta_;
     out.noise_floor = noise_floor_;
     out.before_io_psi = before_io_psi_;
-    out.after_io_psi = obs_ticks_ > 0 ? (sum_after_io_psi_ / static_cast<double>(obs_ticks_)) : before_io_psi_;
+    out.after_io_psi = valid_io_samples_in_window_ > 0 ? (sum_after_io_psi_ / static_cast<double>(valid_io_samples_in_window_)) : before_io_psi_;
     out.before_mem_psi = before_mem_psi_;
-    out.after_mem_psi = obs_ticks_ > 0 ? (sum_after_mem_psi_ / static_cast<double>(obs_ticks_)) : before_mem_psi_;
+    out.after_mem_psi = valid_mem_samples_in_window_ > 0 ? (sum_after_mem_psi_ / static_cast<double>(valid_mem_samples_in_window_)) : before_mem_psi_;
     out.before_cpu_psi = before_cpu_psi_;
-    out.after_cpu_psi = obs_ticks_ > 0 ? (sum_after_cpu_psi_ / static_cast<double>(obs_ticks_)) : before_cpu_psi_;
+    out.after_cpu_psi = valid_cpu_samples_in_window_ > 0 ? (sum_after_cpu_psi_ / static_cast<double>(valid_cpu_samples_in_window_)) : before_cpu_psi_;
     out.settling_ticks_remaining = settling_ticks_remaining_;
     out.observation_tick = obs_ticks_;
     out.observation_window = obs_window_;

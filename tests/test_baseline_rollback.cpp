@@ -41,10 +41,29 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
-    // Capture failure must rollback existing mutations, too.
+    // A failed operation is path-scoped: it must not roll back another
+    // controller's still-active mutation on an unrelated node.
     assert(store.apply_mutation(a, "700"));
     assert(!store.apply_mutation(std::string(state_dir) + "/missing", "999"));
+    assert(read_value(a) == "700");
+    assert(store.has_active_mutations());
+    assert(store.rollback(a));
     assert(read_value(a) == "0");
+    assert(!store.has_active_mutations());
+
+    // A rejected operation on one path must not silently reset other
+    // active paths. Their owners remain responsible for explicit rollback.
+    assert(store.capture(a));
+    assert(store.capture(b));
+    assert(store.apply_mutation(a, "610"));
+    assert(store.apply_mutation(b, "210"));
+    assert(!store.apply_mutation(std::string(state_dir) + "/missing-again", "999"));
+    assert(read_value(a) == "610");
+    assert(read_value(b) == "210");
+    assert(store.rollback(a));
+    assert(store.rollback(b));
+    assert(read_value(a) == "0");
+    assert(read_value(b) == "100");
     assert(!store.has_active_mutations());
 
     // Simulate fatal process death after a verified mutation, without shutdown (writes CFJ4).
@@ -208,7 +227,41 @@ int main(int argc, char* argv[]) {
     assert(!store.apply_mutation(a, "99"));
     assert(read_value(a) == "888");
 
+    // A symlinked state directory must fail closed before creating or renaming
+    // a journal in the symlink target.
+    const std::string safe_state = std::string(state_dir) + "/safe-state";
+    const std::string external_state = std::string(state_dir) + "/external-state";
+    const std::string explicit_boot_id = std::string(state_dir) + "/explicit-boot-id";
+    std::filesystem::create_directory(safe_state);
+    std::filesystem::create_directory(external_state);
+    { std::ofstream out(explicit_boot_id); out << "explicit-boot-identity-0001\n"; }
+    assert(::setenv("COREFLOW_TEST_STATE_DIR", safe_state.c_str(), 1) == 0);
+    assert(::setenv("COREFLOW_TEST_BOOT_ID_PATH", explicit_boot_id.c_str(), 1) == 0);
+    store.reinitialize();
+    assert(store.recover_pending());
+    { std::ofstream out(a); out << "42"; }
+    assert(store.capture(a));
+    assert(std::filesystem::remove(safe_state));
+    assert(::symlink(external_state.c_str(), safe_state.c_str()) == 0);
+    assert(!store.apply_mutation(a, "84"));
+    assert(read_value(a) == "42");
+    assert(!std::filesystem::exists(external_state + "/baseline.journal"));
+    assert(!std::filesystem::exists(external_state + "/baseline.journal.tmp"));
+
+    // A clear in-memory state is not enough: the empty journal must also be
+    // written durably before an orphaned coordinator lease can be retired.
+    assert(!store.has_active_mutations());
+    assert(!store.verify_and_persist_clear_state()); // Symlinked state path must fail closed.
+    assert(!std::filesystem::exists(external_state + "/baseline.journal"));
+    assert(std::filesystem::remove(safe_state)); // Remove the symlink, not its target.
+    std::filesystem::create_directory(safe_state);
+    store.reinitialize();
+    assert(store.recover_pending());
+    assert(!store.has_active_mutations());
+    assert(store.verify_and_persist_clear_state());
+    assert(std::filesystem::file_size(safe_state + "/baseline.journal") > 0);
+
     std::filesystem::remove_all(state_dir);
-    std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode invariants PASS\n";
+    std::cout << "[CoreFlow] Baseline + crash-recovery + boot_epoch + inode + state-path symlink invariants PASS\n";
     return 0;
 }

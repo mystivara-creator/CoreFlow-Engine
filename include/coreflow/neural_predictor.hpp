@@ -28,6 +28,9 @@ struct NeuralInput {
     double cpu_psi{0.0};            // [0.0 .. 100.0]
     double memory_psi{0.0};         // [0.0 .. 100.0]
     double io_psi{0.0};             // [0.0 .. 100.0]
+    bool cpu_psi_valid{true};
+    bool memory_psi_valid{true};
+    bool io_psi_valid{true};
     double current_scale{1.0};      // [0.4 .. 1.0]
     double elapsed_seconds{1.0};    // [0.001 .. 60.0]
 };

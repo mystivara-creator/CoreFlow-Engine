@@ -51,6 +51,10 @@ public:
     /// Query if any system node currently differs from factory baseline
     [[nodiscard]] bool has_active_mutations() const;
 
+    /// Verify no node remains modified and atomically persist an empty journal.
+    /// Used before recovering detached controller leases.
+    [[nodiscard]] bool verify_and_persist_clear_state();
+
     /// Check whether a captured node still matches its expected value and inode/device identity
     [[nodiscard]] bool owns_expected_state(const std::string& path, const std::string& expected_value) const;
 
@@ -80,23 +84,13 @@ private:
 
     void init_paths_and_boot_id_locked();
     bool persist_locked();
+    // Transaction/runtime rollback for one path; rollback_locked remains reserved
+    // for crash recovery and an explicit global safety sweep.
+    bool rollback_path_locked(const std::string& path);
     size_t rollback_locked();
 
     std::string read_raw_node(const std::string& path, uint64_t* out_dev = nullptr, uint64_t* out_ino = nullptr) const;
     bool write_raw_node(const std::string& path, const std::string& value, uint64_t expected_dev = 0, uint64_t expected_ino = 0);
-};
-
-// RAII Scope Guard for temporary performance boosts
-class ScopedBaselineLock {
-public:
-    explicit ScopedBaselineLock(std::vector<std::pair<std::string, std::string>> mutations);
-    ~ScopedBaselineLock();
-
-    ScopedBaselineLock(const ScopedBaselineLock&) = delete;
-    ScopedBaselineLock& operator=(const ScopedBaselineLock&) = delete;
-
-private:
-    std::vector<std::string> modified_paths_;
 };
 
 } // namespace coreflow

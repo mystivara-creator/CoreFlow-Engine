@@ -160,6 +160,8 @@ void ThermalMonitor::discover_sensors() const {
     if (!sensors_.empty() && now - discovery_at_ < std::chrono::seconds(30)) return;
     discovery_at_ = now;
     sensors_.clear();
+    // Sensor topology may have changed; never carry a trend across a rediscovery boundary.
+    sensor_trend_trackers_.clear();
     size_t visited = 0;
     std::error_code ec;
     namespace fs = std::filesystem;
@@ -169,6 +171,8 @@ void ThermalMonitor::discover_sensors() const {
         if (it->path().filename().string().rfind("thermal_zone", 0) != 0) continue;
         std::string type;
         if (!read_sysfs_line(it->path().string() + "/type", type)) continue;
+        // BCL/IBAT and similar PMIC indicator zones are not physical temperature sensors.
+        if (is_excluded_non_thermal_peripheral(type)) continue;
         const int category = classify_thermal_type(type);
         if (category > 0) {
             sensors_.push_back({
@@ -459,6 +463,9 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
 #endif
     discover_sensors();
     ThermalAssessment result;
+    const uint64_t sample_timestamp_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     for (const auto& sensor : sensors_) {
         std::string raw; float temp;
         const bool valid_temperature = read_sysfs_line(sensor.temp_path, raw) && parse_celsius(raw, temp);
@@ -487,6 +494,22 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             valid_temperature ? temp : -1, valid_temperature, passive > 0 || hot > 0 || critical > 0, 0};
         result.readings.push_back(reading);
         auto& observed = result.readings.back();
+        if (sensor.category > 0) {
+            auto tracker = sensor_trend_trackers_.find(sensor.temp_path);
+            if (!valid_temperature) {
+                if (tracker != sensor_trend_trackers_.end()) tracker->second.reset();
+            } else {
+                if (tracker == sensor_trend_trackers_.end()) {
+                    tracker = sensor_trend_trackers_.try_emplace(sensor.temp_path, 8).first;
+                }
+                tracker->second.record_sample(temp, sample_timestamp_ns);
+                const auto velocity = tracker->second.evaluate_velocity();
+                observed.velocity_celsius_per_sec = velocity.velocity_celsius_per_sec;
+                observed.velocity_valid = velocity.valid;
+                observed.velocity_samples_count = velocity.valid_samples_count;
+                observed.velocity_sample_duration_sec = velocity.sample_duration_sec;
+            }
+        }
         if (!valid_temperature) {
             if (observed.policy_available) {
                 result.incomplete = true;

@@ -27,6 +27,21 @@ int main() {
     });
     assert(!bad.valid);
 
+    // Missing PSI must remain explicit and must not train with synthetic zero features.
+    const auto partial = predictor.infer_and_learn({
+        .thermal_pressure = 43.0,
+        .cpu_psi = 0.0,
+        .memory_psi = 0.0,
+        .io_psi = 0.0,
+        .cpu_psi_valid = false,
+        .memory_psi_valid = true,
+        .io_psi_valid = false,
+        .current_scale = 1.0,
+        .elapsed_seconds = 1.0,
+    });
+    assert(partial.valid);
+    assert(partial.confidence <= 0.35);
+
     // 2. Cold/nominal workload yields high recommended capacity ceiling
     const auto nominal = predictor.infer_and_learn({
         .thermal_pressure = 42.0,
@@ -54,7 +69,7 @@ int main() {
         });
         assert(hot.valid);
     }
-    assert(hot.samples_observed == 6);
+    assert(hot.samples_observed == 7); // Includes one valid thermal inference with incomplete PSI features.
     assert(hot.predicted_pressure_10s > 85.0);
     assert(hot.recommended_scale < nominal.recommended_scale);
     assert(hot.confidence >= 0.35 && hot.confidence <= 0.99);

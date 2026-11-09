@@ -1,11 +1,13 @@
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <string_view>
 #include <unistd.h>
 
 namespace coreflow {
@@ -19,7 +21,83 @@ bool number(const std::string& path, uint64_t& value) {
     return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value > 0;
 }
 }
-FrequencyController::FrequencyController(std::string root) : root_(std::move(root)) {}
+FrequencyController::FrequencyController(std::string root)
+    : root_(std::move(root)),
+      controller_name_(CentralMutationCoordinator::make_controller_identity("FrequencyController")) {
+    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+        controller_name_,
+        [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
+            return handle_preemption(domain, transaction_id);
+        });
+}
+FrequencyController::~FrequencyController() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!cpu_transaction_id_.empty()) (void)rollback_domain(false);
+        if (!gpu_transaction_id_.empty()) (void)rollback_domain(true);
+    }
+    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+}
+bool FrequencyController::acquire_domain_lease(bool gpu) {
+    auto& transaction_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
+    const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
+    if (!transaction_id.empty()) {
+        return CentralMutationCoordinator::instance().acquire_lease(
+            domain, controller_name_, transaction_id,
+            ControllerPriority::WorkloadOptimization);
+    }
+    transaction_id = "frequency-" + std::string(gpu ? "gpu-" : "cpu-") +
+                     std::to_string(++lease_generation_);
+    if (!CentralMutationCoordinator::instance().acquire_lease(
+            domain, controller_name_, transaction_id,
+            ControllerPriority::WorkloadOptimization)) {
+        transaction_id.clear();
+        return false;
+    }
+    return true;
+}
+void FrequencyController::release_domain_lease(bool gpu) noexcept {
+    auto& transaction_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
+    if (transaction_id.empty()) return;
+    const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
+    CentralMutationCoordinator::instance().release_lease(
+        domain, controller_name_, transaction_id);
+    transaction_id.clear();
+}
+bool FrequencyController::rollback_domain(bool gpu) {
+    auto& store = BaselineStore::instance();
+    for (auto& item : domains_) {
+        if (item.gpu != gpu || !item.mutation_active) continue;
+        if (!store.rollback(item.maximum)) return false;
+        uint64_t actual = 0;
+        if (!number(item.maximum, actual)) return false;
+        const auto audit = store.get_audit_trail();
+        const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.maximum;
+        });
+        if (snapshot == audit.end() || snapshot->is_modified ||
+            snapshot->factory_value != std::to_string(actual)) return false;
+        if (actual != item.baseline) {
+            // OEM/kernel ownership changed while the lease was active. Preserve the
+            // adopted external value and retire this discovered domain until rescan.
+            item.baseline = actual;
+            item.retired = true;
+        }
+        item.last = actual;
+        item.mutation_active = false;
+    }
+    release_domain_lease(gpu);
+    return true;
+}
+bool FrequencyController::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id) noexcept {
+    const bool gpu = domain == MutationDomain::GpuDevfreq;
+    if (domain != MutationDomain::CpuPolicy && !gpu) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& active_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
+    if (active_id.empty() || active_id != transaction_id) return false;
+    return rollback_domain(gpu);
+}
 void FrequencyController::add(const std::string& dir, bool gpu) {
     const auto max = dir + (gpu ? "/max_freq" : "/scaling_max_freq");
     const auto min = dir + (gpu ? "/min_freq" : "/scaling_min_freq");
@@ -35,10 +113,21 @@ void FrequencyController::add(const std::string& dir, bool gpu) {
     if (!table.eof() || values.empty()) return;
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
-    if (!BaselineStore::instance().capture(max)) return;
+    auto& store = BaselineStore::instance();
+    if (!store.capture(max)) return;
+    const auto audit = store.get_audit_trail();
+    const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == max;
+    });
+    // A pre-existing journaled mutation has no ownership relationship to this
+    // newly discovered controller instance. Do not adopt it as an OEM baseline.
+    if (snapshot == audit.end() || snapshot->is_modified) return;
     domains_.push_back({max, min, ceiling, ceiling, std::move(values), gpu});
 }
 void FrequencyController::discover(bool cpu, bool gpu) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Never discard in-memory ownership metadata while a mutation is still active.
+    if (std::any_of(domains_.begin(), domains_.end(), [](const Domain& d) { return d.mutation_active; })) return;
     domains_.clear();
     auto scan = [&](const std::string& root, bool is_gpu) {
         std::error_code ec;
@@ -64,25 +153,62 @@ void FrequencyController::discover(bool cpu, bool gpu) {
 }
 bool FrequencyController::apply(double scale) {
     if (!std::isfinite(scale) || scale < 0.4 || scale > 1.0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
     auto& store = BaselineStore::instance();
+    bool ok = true;
+    const auto restore_owned_domain = [&](Domain& domain) {
+        if (!store.rollback(domain.maximum)) return false;
+        uint64_t restored = 0;
+        if (!number(domain.maximum, restored) || restored != domain.baseline) return false;
+        domain.last = domain.baseline;
+        domain.mutation_active = false;
+        return true;
+    };
+    bool cpu_needs_lease = false;
+    bool gpu_needs_lease = false;
+
+    // First determine whether each domain actually needs a write, then acquire the
+    // corresponding exclusive lease before the first mutation in that domain.
     for (auto& domain : domains_) {
         if (domain.retired) continue;
         uint64_t actual = 0, floor = 0;
-        if (!number(domain.maximum, actual) || !number(domain.minimum, floor) || actual != domain.last) {
-            // OEM ownership changes retire this domain for the process lifetime.
+        if (!number(domain.maximum, actual) || !number(domain.minimum, floor)) {
             domain.retired = true;
-            if (!store.rollback(domain.maximum)) return false;
+            ok = false;
+            continue;
+        }
+        const auto ownership_audit = store.get_audit_trail();
+        const auto ownership_snapshot = std::find_if(
+            ownership_audit.begin(), ownership_audit.end(), [&](const NodeSnapshot& node) {
+                return node.path == domain.maximum;
+            });
+        if (ownership_snapshot == ownership_audit.end() ||
+            (ownership_snapshot->is_modified && !domain.mutation_active)) {
+            // A journaled mutation appeared after discovery but is not owned by
+            // this controller instance. Retire instead of adopting its active value.
+            domain.retired = true;
+            ok = false;
+            continue;
+        }
+        if (actual != domain.last) {
+            // An external owner changed the node. Do not overwrite its value.
+            domain.retired = true;
+            if (domain.mutation_active) {
+                // BaselineStore's ownership check prevents rollback from clobbering
+                // an external value; retain the lease if safe restoration is unproven.
+                if (!store.rollback(domain.maximum)) ok = false;
+                else domain.mutation_active = false;
+            }
             continue;
         }
         const auto requested = static_cast<uint64_t>(static_cast<double>(domain.baseline) * scale);
         auto upper = std::upper_bound(domain.frequencies.begin(), domain.frequencies.end(), requested);
         uint64_t target = upper == domain.frequencies.begin() ? *upper : *std::prev(upper);
-        // Respect a live OEM minimum, even when it moves while we own the maximum.
         if (target < floor) {
             const auto next = std::lower_bound(domain.frequencies.begin(), domain.frequencies.end(), floor);
             if (next == domain.frequencies.end()) {
                 domain.retired = true;
-                if (!store.rollback(domain.maximum)) return false;
+                if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
                 continue;
             }
             target = *next;
@@ -90,18 +216,128 @@ bool FrequencyController::apply(double scale) {
         if (scale == 1.0) target = domain.baseline;
         if (target < floor || target > domain.baseline) {
             domain.retired = true;
-            (void)store.rollback(domain.maximum);
+            if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
             continue;
         }
         if (target == actual) continue;
-        if (!store.apply_mutation(domain.maximum, std::to_string(target))) {
+        if (domain.gpu) gpu_needs_lease = true;
+        else cpu_needs_lease = true;
+    }
+
+    if (cpu_needs_lease && !acquire_domain_lease(false)) return false;
+    if (gpu_needs_lease && !acquire_domain_lease(true)) {
+        if (!cpu_transaction_id_.empty()) {
+            const bool cpu_active = std::any_of(domains_.begin(), domains_.end(),
+                [](const Domain& d) { return !d.gpu && d.mutation_active; });
+            if (!cpu_active) release_domain_lease(false);
+        }
+        return false;
+    }
+
+    for (auto& domain : domains_) {
+        if (domain.retired) continue;
+        uint64_t actual = 0, floor = 0;
+        if (!number(domain.maximum, actual) || !number(domain.minimum, floor) || actual != domain.last) {
             domain.retired = true;
-            (void)store.rollback(domain.maximum);
+            ok = false;
             continue;
         }
+        const auto requested = static_cast<uint64_t>(static_cast<double>(domain.baseline) * scale);
+        auto upper = std::upper_bound(domain.frequencies.begin(), domain.frequencies.end(), requested);
+        uint64_t target = upper == domain.frequencies.begin() ? *upper : *std::prev(upper);
+        if (target < floor) {
+            const auto next = std::lower_bound(domain.frequencies.begin(), domain.frequencies.end(), floor);
+            if (next == domain.frequencies.end()) {
+                domain.retired = true;
+                if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
+                continue;
+            }
+            target = *next;
+        }
+        if (scale == 1.0) target = domain.baseline;
+        if (target < floor || target > domain.baseline) {
+            domain.retired = true;
+            if (domain.mutation_active && !restore_owned_domain(domain)) ok = false;
+            continue;
+        }
+        if (target == actual) continue;
+
+        if (target == domain.baseline) {
+            if (!store.rollback(domain.maximum)) {
+                ok = false;
+                continue;
+            }
+            uint64_t restored = 0;
+            if (!number(domain.maximum, restored) || restored != domain.baseline) {
+                ok = false;
+                continue;
+            }
+            domain.last = domain.baseline;
+            domain.mutation_active = false;
+            continue;
+        }
+
+        const bool applied = store.apply_mutation(domain.maximum, std::to_string(target));
+        uint64_t readback = 0;
+        const bool readback_valid = number(domain.maximum, readback);
+        const auto audit = store.get_audit_trail();
+        const auto snapshot = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == domain.maximum;
+        });
+        const bool store_still_owns_node =
+            snapshot != audit.end() && snapshot->is_modified &&
+            store.owns_expected_state(domain.maximum, snapshot->active_value);
+
+        if (!applied || !readback_valid || readback != target) {
+            ok = false;
+            if (!readback_valid) {
+                // The node became unreadable after a write attempt. Retain the lease
+                // and recovery metadata regardless of the journal's last visible state.
+                domain.mutation_active = true;
+                continue;
+            }
+
+            if (store_still_owns_node) {
+                // A failed apply can leave either the prior CoreFlow value or a
+                // partially committed target. Restore this controller's path before
+                // considering its lease releasable.
+                domain.mutation_active = true;
+                domain.last = readback;
+                if (!restore_owned_domain(domain)) {
+                    const auto after_audit = store.get_audit_trail();
+                    const auto after_snapshot = std::find_if(
+                        after_audit.begin(), after_audit.end(), [&](const NodeSnapshot& node) {
+                            return node.path == domain.maximum;
+                        });
+                    if (after_snapshot == after_audit.end() || !after_snapshot->is_modified) {
+                        // BaselineStore adopted an OEM/external value during rollback.
+                        // Relinquish and retire instead of reasserting on a later tick.
+                        domain.mutation_active = false;
+                        domain.retired = true;
+                        domain.last = readback;
+                    }
+                    continue;
+                }
+            } else {
+                // BaselineStore no longer recognizes this as our mutation. Preserve
+                // an OEM/external value and retire the path instead of reasserting.
+                domain.mutation_active = false;
+                domain.last = readback;
+                if (readback != domain.baseline) domain.retired = true;
+            }
+            continue;
+        }
+
+        domain.mutation_active = true;
         domain.last = target;
     }
-    return true;
+
+    for (const bool gpu : {false, true}) {
+        const bool active = std::any_of(domains_.begin(), domains_.end(),
+            [gpu](const Domain& d) { return d.gpu == gpu && d.mutation_active; });
+        if (!active) release_domain_lease(gpu);
+    }
+    return ok;
 }
 size_t FrequencyController::cpu_count() const noexcept {
     return std::count_if(domains_.begin(), domains_.end(), [](const auto& d) { return !d.gpu && !d.retired; });

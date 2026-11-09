@@ -1,9 +1,14 @@
 name: CoreFlow Release Publisher
 
 on:
-  workflow_run:
-    workflows: ["CoreFlow Engine CI"]
-    types: [completed]
+  # Publishing is an explicit maintainer action; a successful CI run alone
+  # must never create or overwrite a public release.
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing validated semantic-version tag to publish"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,43 +19,54 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish validated version tag
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v') &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+    name: Publish explicitly approved version tag
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       actions: read
       contents: write
     steps:
-      - name: Validate source run and semantic version tag
+      - name: Validate tag and locate successful CI run for exact tag commit
         id: source
         shell: bash
         env:
-          TAG: ${{ github.event.workflow_run.head_branch }}
-          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
-          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TAG: ${{ inputs.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE_WORKFLOW" == "CoreFlow Engine CI" ]]
-          [[ "$SOURCE_CONCLUSION" == "success" ]]
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::Refusing to publish non-semver version tag: $TAG"
+            echo "::error::Refusing non-semver version tag: $TAG"
+            exit 1
+          }
+          git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null
+          TAG_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+          TAG_TYPE="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')"
+          if [[ "$TAG_TYPE" == "tag" ]]; then
+            TAG_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.object.sha')"
+          fi
+          [[ "$TAG_TYPE" == "commit" || "$TAG_TYPE" == "tag" ]] || {
+            echo "::error::Tag does not resolve to a commit."
+            exit 1
+          }
+          RUN_JSON="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "CoreFlow Engine CI" --branch "$TAG" --status success --limit 20 --json databaseId,headSha,conclusion,event)"
+          RUN_ID="$(jq -r --arg sha "$TAG_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success" and .event == "push")] | first | .databaseId // empty' <<< "$RUN_JSON")"
+          [[ -n "$RUN_ID" ]] || {
+            echo "::error::No successful push-triggered CoreFlow Engine CI run exists for exact tag commit $TAG_SHA."
             exit 1
           }
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Checkout exact validated source commit
+          echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact validated tag commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Download package from successful CI run
+          ref: ${{ steps.source.outputs.sha }}
+      - name: Download package from exact successful CI run
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.source.outputs.run_id }}
           pattern: CFAE-System-Framework-*-package
           path: release-artifacts
           merge-multiple: true
@@ -93,12 +109,9 @@ jobs:
             exit 1
           fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "CFAE System Framework $TAG" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
-            gh release upload "$TAG" "$PACKAGE" --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" "$PACKAGE" --repo "$GITHUB_REPOSITORY" \
-              --title "CFAE System Framework $TAG" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
+            echo "::error::Release $TAG already exists; refusing to overwrite or replace a published release."
+            exit 1
           fi
+          gh release create "$TAG" "$PACKAGE" --repo "$GITHUB_REPOSITORY" \
+            --title "CFAE System Framework $TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
