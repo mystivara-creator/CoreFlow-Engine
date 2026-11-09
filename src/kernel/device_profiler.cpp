@@ -200,34 +200,47 @@ bool DeviceProfiler::parse_cpu_list(std::string_view text, std::vector<uint32_t>
     cpus.clear();
     if (text.empty() || text.size() > 16384U) return false;
 
-    size_t begin = 0;
-    while (begin < text.size()) {
-        const size_t comma = text.find(',', begin);
-        const size_t end = comma == std::string_view::npos ? text.size() : comma;
-        std::string_view item = text.substr(begin, end - begin);
-        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.front())) != 0) item.remove_prefix(1);
-        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.back())) != 0) item.remove_suffix(1);
-        if (item.empty()) return false;
+    // Linux cpulist attributes commonly use comma-separated ranges (possible/present),
+    // while cpufreq related_cpus/affected_cpus commonly use whitespace-separated IDs.
+    // Accept either delimiter, including mixed forms, but reject empty comma fields.
+    size_t pos = 0;
+    bool comma_requires_token = false;
+    while (pos < text.size()) {
+        while (pos < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[pos])) != 0) ++pos;
+        if (pos == text.size()) break;
+        if (text[pos] == ',') {
+            if (cpus.empty() || comma_requires_token) { cpus.clear(); return false; }
+            comma_requires_token = true;
+            ++pos;
+            continue;
+        }
+
+        const size_t begin = pos;
+        while (pos < text.size() && text[pos] != ',' &&
+               std::isspace(static_cast<unsigned char>(text[pos])) == 0) ++pos;
+        const std::string_view item = text.substr(begin, pos - begin);
+        if (item.empty()) { cpus.clear(); return false; }
 
         const size_t dash = item.find('-');
         uint64_t first = 0, last = 0;
         if (dash == std::string_view::npos) {
-            if (!parse_u64(item, first)) return false;
+            if (!parse_u64(item, first)) { cpus.clear(); return false; }
             last = first;
         } else {
             if (item.find('-', dash + 1U) != std::string_view::npos ||
                 !parse_u64(item.substr(0, dash), first) ||
-                !parse_u64(item.substr(dash + 1U), last) || first > last) return false;
+                !parse_u64(item.substr(dash + 1U), last) || first > last) {
+                cpus.clear(); return false;
+            }
         }
 
         if (last > kMaxCpuId || (last - first) > kMaxCpuId ||
-            cpus.size() + (last - first + 1U) > 4096U) return false;
+            cpus.size() + (last - first + 1U) > 4096U) { cpus.clear(); return false; }
         for (uint64_t cpu = first; cpu <= last; ++cpu) cpus.push_back(static_cast<uint32_t>(cpu));
-
-        if (comma == std::string_view::npos) break;
-        begin = comma + 1U;
-        if (begin == text.size()) return false;
+        comma_requires_token = false;
     }
+    if (comma_requires_token) { cpus.clear(); return false; }
 
     std::sort(cpus.begin(), cpus.end());
     if (cpus.empty() || std::adjacent_find(cpus.begin(), cpus.end()) != cpus.end()) {
