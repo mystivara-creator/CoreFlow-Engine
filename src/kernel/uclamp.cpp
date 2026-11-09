@@ -172,9 +172,11 @@ UclampGovernor& UclampGovernor::operator=(UclampGovernor&& other) noexcept {
         other.mutation_active_ = false;
     }
 
-    auto& coordinator = coordinator_;
+    // The source callback was registered with the source object's
+    // coordinator, which may differ from this object's coordinator after
+    // move-assignment. Unregister there so it also drains in-flight callbacks.
     if (!other_handler_name.empty()) {
-        coordinator.unregister_preemption_handler(other_handler_name);
+        other.coordinator_.unregister_preemption_handler(other_handler_name);
     }
     if (register_this_handler) {
         (void)coordinator.register_preemption_handler(
