@@ -36,6 +36,7 @@ int main() {
     assert(DeviceProfiler::parse_cpu_list("0-1, 3 5-6\t7", cpus));
     assert((cpus == std::vector<uint32_t>{0,1,3,5,6,7}));
     assert(!DeviceProfiler::parse_cpu_list("0-3,,5", cpus));
+    assert(!DeviceProfiler::parse_cpu_list("0, ,1", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0-3,  \n", cpus));
     assert(!DeviceProfiler::parse_cpu_list("3-1", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0,0", cpus));
