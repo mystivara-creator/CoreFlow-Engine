@@ -278,9 +278,10 @@ AutonomousTuner& AutonomousTuner::instance() {
     return tuner;
 }
 
-AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root)
+AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root, DeviceProfileHandle profile)
     : controller_name_(CentralMutationCoordinator::make_controller_identity("AutonomousTuner")),
-      sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)) {
+      sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)),
+      device_profile_(std::move(profile)) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id,
@@ -297,6 +298,13 @@ AutonomousTuner::~AutonomousTuner() {
         if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
     }
     CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+}
+
+void AutonomousTuner::set_device_profile(DeviceProfileHandle profile) {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (!applied_steps_.empty() || recovery_required_) return;
+    device_profile_ = std::move(profile);
+    discover(sys_root_, proc_root_);
 }
 
 bool AutonomousTuner::handle_preemption(
@@ -650,6 +658,7 @@ OptimizationObjective AutonomousTuner::select_objective(
 
 std::string AutonomousTuner::compute_fingerprint() const {
     std::string fp = "v2|zram=" + std::string(zram_active_ ? "1" : "0");
+    if (device_profile_) fp += "|cddp=" + device_profile_->fingerprint;
     for (const auto& q : block_queues_) {
         fp += "|dev=" + q.device_name + ":";
         for (const auto& s : q.available_schedulers) {
@@ -991,7 +1000,30 @@ void AutonomousTuner::classify_discovered_resources() {
         }
     }
 
-    // 2. Classify CPUFreq policy & governor nodes
+    // 2. Classify CPUFreq policy & governor nodes.
+    if (device_profile_) {
+        for (const auto& cap : device_profile_->node_capabilities) {
+            if (cap.domain != HardwareDomain::Cpu ||
+                cap.semantic_id != "cpufreq.governor_tunable.unverified") continue;
+            ResourcePermissionClass permission = ResourcePermissionClass::IncompleteMetadata;
+            if (cap.state == NodeCapabilityState::MutationEligible) {
+                permission = ResourcePermissionClass::VerifiedConstraints;
+            } else if (cap.state == NodeCapabilityState::Writable) {
+                permission = ResourcePermissionClass::WritableButUnsafe;
+            } else if (cap.state == NodeCapabilityState::Readable) {
+                permission = ResourcePermissionClass::ReadOnly;
+            }
+            discovered_resources_.push_back(DiscoveredResourceMetadata{
+                .path = cap.path,
+                .domain = MutationDomain::CpuPolicy,
+                .permission_class = permission,
+                .unit = cap.unit,
+                .range_provenance = cap.constraints,
+                .baseline_value = cap.current_value,
+                .reason = cap.rejection_reason.empty() ? cap.evidence : cap.rejection_reason,
+            });
+        }
+    } else {
     const fs::path cpufreq_root = fs::path(sys_root_) / "devices/system/cpu/cpufreq";
     std::error_code cpu_ec;
     for (fs::directory_iterator it(cpufreq_root, fs::directory_options::skip_permission_denied, cpu_ec), end;
@@ -1035,6 +1067,7 @@ void AutonomousTuner::classify_discovered_resources() {
         }
     }
 
+    }
     // 3. Classify VM nodes
     for (const auto& [leaf, unit_str, range_str] : {
              std::tuple{"page-cluster", "log2_pages", "[0..3] requires active zram"},
@@ -1149,7 +1182,29 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
         return a.device_name < b.device_name;
     });
 
-    // Discover CPUFreq governor interactive rate-limit directories (schedutil / walt)
+    // Discover CPUFreq governor rate-limit pairs only from the injected profile.
+    // No profile means legacy compatibility; an injected profile suppresses all
+    // independent CPUFreq enumeration, even when it rejects every candidate.
+    if (device_profile_) {
+        const auto eligible_capability = [&](const std::string& path) {
+            return std::any_of(device_profile_->node_capabilities.begin(),
+                device_profile_->node_capabilities.end(), [&](const NodeCapability& cap) {
+                    return cap.path == path && cap.mutation_eligible();
+                });
+        };
+        for (const auto& policy : device_profile_->cpu_policies) {
+            const fs::path policy_path(policy.policy_path);
+            const fs::path governor_dir = policy_path / policy.governor;
+            const std::string up = (governor_dir / "up_rate_limit_us").string();
+            const std::string down = (governor_dir / "down_rate_limit_us").string();
+            if (!policy.governor.empty() && eligible_capability(up) && eligible_capability(down)) {
+                (void)store.capture(up);
+                (void)store.capture(down);
+                cpufreq_governor_dirs_.push_back(governor_dir.string());
+            }
+        }
+    } else {
+    // Legacy compatibility discovery for non-CDDP callers.
     // Verify policyX/scaling_governor matches the governor directory if scaling_governor exists.
     auto& store = BaselineStore::instance();
     const fs::path cpufreq_root = fs::path(sys_root_) / "devices/system/cpu/cpufreq";
@@ -1179,6 +1234,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
             }
         }
     }
+    std::sort(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end());    }
     std::sort(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end());
 
     // Capture VM baseline nodes if accessible

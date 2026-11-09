@@ -1,38 +1,35 @@
 /**
  * @file device_profiler.hpp
- * @brief Dynamic SoC Topology and Capability Discovery
- * @author mystivara-creator
+ * @brief Root-injectable CoreFlow Dynamic Device Profiling (CDDP).
  * @license Apache-2.0
  */
-
 #pragma once
-
-#include "types.hpp"
+#include "coreflow/device_profile.hpp"
+#include "coreflow/types.hpp"
+#include <cstdint>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
-
 namespace coreflow {
-
 class DeviceProfiler {
 public:
+    explicit DeviceProfiler(std::string sys_root = "/sys", std::string proc_root = "/proc");
     static DeviceProfiler& instance();
-
-    /// Detect active device topology and cluster layout
-    DeviceTopology probe();
-
-    /// Get current thermal zone temperature in Celsius
-    float get_soc_temperature() const;
-
-    /// Read active CPU frequencies for all clusters
-    std::vector<uint32_t> get_cluster_frequencies() const;
-
+    [[nodiscard]] DeviceProfileHandle profile();
+    [[nodiscard]] DeviceProfileHandle refresh();
+    [[nodiscard]] static bool parse_cpu_list(std::string_view text, std::vector<uint32_t>& cpus) noexcept;
+    // Compatibility projection only; runtime controllers consume DeviceProfileHandle.
+    [[nodiscard]] DeviceTopology probe();
+    [[nodiscard]] float get_soc_temperature() const;
+    [[nodiscard]] std::vector<uint32_t> get_cluster_frequencies() const;
 private:
-    DeviceProfiler() = default;
-    DeviceTopology cached_topology_;
-    bool probed_{false};
-
-    void discover_clusters(DeviceTopology& topo);
-    void detect_soc_name(DeviceTopology& topo);
+    [[nodiscard]] DeviceProfileHandle build_profile(uint64_t generation) const;
+    std::string sys_root_;
+    std::string proc_root_;
+    mutable std::mutex mutex_;
+    DeviceProfileHandle current_;
+    uint64_t generation_{0};
+    DeviceTopology cached_topology_{};
 };
-
 } // namespace coreflow

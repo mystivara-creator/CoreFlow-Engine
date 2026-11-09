@@ -331,7 +331,7 @@ void print_status() {
         .current_scale = 1.0,
         .elapsed_seconds = 1.0,
     });
-    AutonomousTuner::instance().discover();
+    AutonomousTuner::instance().set_device_profile(device_profile);
     const auto tuner = AutonomousTuner::instance().snapshot();
     VulkanController::instance().initialize({
         .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
@@ -860,8 +860,13 @@ int main(int argc, char* argv[]) {
     MutationRecoveryMonitor recovery_monitor(baseline);
 
     DaemonConfig config = DaemonConfig::load_best_available();
+    const DeviceProfileHandle device_profile = DeviceProfiler::instance().refresh();
+    emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
+        " fingerprint=" + device_profile->fingerprint +
+        " CPU policies=" + std::to_string(device_profile->cpu_policies.size()) +
+        " GPU domains=" + std::to_string(device_profile->gpu_domains.size()));
     UclampGovernor governor;
-    FrequencyController frequencies;
+    FrequencyController frequencies("/sys", device_profile);
     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
     auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
     HardwareLongevityManager::instance().initialize({

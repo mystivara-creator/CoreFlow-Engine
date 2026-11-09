@@ -1,4 +1,5 @@
 #pragma once
+#include "coreflow/device_profile.hpp"
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -10,7 +11,7 @@ enum class MutationDomain : uint8_t;
 // Only kernel-exposed frequency tables are accepted; never invent an operating point.
 class FrequencyController {
 public:
-    explicit FrequencyController(std::string sys_root = "/sys");
+    explicit FrequencyController(std::string sys_root = "/sys", DeviceProfileHandle profile = {});
     ~FrequencyController();
     void discover(bool cpu, bool gpu);
     bool apply(double capacity_scale);
@@ -24,6 +25,7 @@ private:
         bool gpu, retired{false}, mutation_active{false};
     };
     std::string root_;
+    DeviceProfileHandle profile_;
     std::string controller_name_;
     mutable std::mutex mutex_;
     std::vector<Domain> domains_;
