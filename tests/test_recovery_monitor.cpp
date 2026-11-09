@@ -51,6 +51,23 @@ int main() {
     auto& coordinator = CentralMutationCoordinator::instance();
     coordinator.reset();
 
+    // Retry admission is scoped to the exact lease and hard-capped at three.
+    const std::string retry_owner = "ContentionBudgetTest";
+    assert(coordinator.acquire_lease(
+        MutationDomain::CpuPolicy, retry_owner, "retry-tx",
+        ControllerPriority::WorkloadOptimization));
+    uint32_t retry_attempt = 0;
+    for (uint32_t expected = 1; expected <= 3; ++expected) {
+        assert(coordinator.reserve_contention_retry(
+            MutationDomain::CpuPolicy, retry_owner, "retry-tx", 9, &retry_attempt));
+        assert(retry_attempt == expected);
+    }
+    assert(!coordinator.reserve_contention_retry(
+        MutationDomain::CpuPolicy, retry_owner, "retry-tx", 9, &retry_attempt));
+    const auto retry_leases = coordinator.active_leases();
+    assert(retry_leases.size() == 1 && retry_leases.front().contention_retries == 3);
+    coordinator.release_lease(MutationDomain::CpuPolicy, retry_owner, "retry-tx");
+
     // A higher-priority request can arrive for a second domain while the same
     // controller callback is still resolving its first domain. The second lease
     // must remain pending and the timer-driven monitor must retry it later.
