@@ -678,6 +678,7 @@ int run_workload_probe() {
             ? std::numeric_limits<uint64_t>::max() : total + value;
     };
     for (unsigned window = 0; window < 2; ++window) {
+        if (window == 1) (void)pipeline.begin_frame_timeline_capture(1000);
         const uint64_t start_ns = monotonic_ns();
         const uint64_t deadline_ns = start_ns + 1'000'000'000ULL;
         WorkloadFeatureSnapshot aggregate{};
@@ -688,6 +689,8 @@ int run_workload_probe() {
         uint64_t total_io_bytes = 0;
         uint64_t total_events = 0;
         uint64_t total_samples = 0;
+        uint64_t gpu_busy_samples = 0;
+        double gpu_busy_sum = 0.0;
         while (poll_start_ns < deadline_ns) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             const uint64_t observed_ns = monotonic_ns();
@@ -704,6 +707,10 @@ int run_workload_probe() {
                 aggregate.memory_pressure_some_pct = part.memory_pressure_some_pct;
             if (part.valid_features & FeatureIoPressure)
                 aggregate.io_pressure_some_pct = part.io_pressure_some_pct;
+            if (part.valid_features & FeatureGpuBusy) {
+                gpu_busy_sum += part.gpu_busy_pct;
+                ++gpu_busy_samples;
+            }
             if (part.valid_features & FeatureIoBytes)
                 add_saturated(total_io_bytes, part.io_bytes);
             if (part.valid_features & FeatureWakeupRate)
@@ -714,6 +721,13 @@ int run_workload_probe() {
                 aggregate.event_drain_saturated || part.event_drain_saturated;
             poll_start_ns = poll_end_ns;
         }
+        if (gpu_busy_samples > 0) {
+            aggregate.gpu_busy_pct = gpu_busy_sum / static_cast<double>(gpu_busy_samples);
+            aggregate.gpu_busy_sample_count = static_cast<uint32_t>(std::min<uint64_t>(
+                gpu_busy_samples, std::numeric_limits<uint32_t>::max()));
+            aggregate.valid_features |= FeatureGpuBusy;
+        }
+        if (window == 1) (void)pipeline.finish_frame_timeline_capture(aggregate);
         aggregate.window_end_ns = monotonic_ns();
         aggregate.io_bytes = total_io_bytes;
         aggregate.wakeup_count = total_wakeups;
@@ -730,6 +744,7 @@ int run_workload_probe() {
     }
     const TelemetryBackend backend = pipeline.backend();
     const BpfCapabilitySnapshot caps = pipeline.bpf_capabilities();
+    const std::string gpu_source_name(pipeline.gpu_source_name());
     const bool bpf_ready = caps.event_pipeline_ready();
     pipeline.stop();
     const char* backend_name = backend == TelemetryBackend::Ebpf ? "ebpf" :
@@ -761,6 +776,12 @@ int run_workload_probe() {
         << ",\"sampleCount\":" << features.sample_count
         << ",\"eventCount\":" << features.event_count
         << ",\"eventDrainSaturated\":" << (features.event_drain_saturated ? "true" : "false")
+        << ",\"gpuSource\":\"" << gpu_source_name << "\""
+        << ",\"gpuBusySamples\":" << features.gpu_busy_sample_count
+        << ",\"frameTimelineCaptured\":" << ((features.valid_features & FeatureFrameDeadline) ? "true" : "false")
+        << ",\"frameDeadlineCount\":" << features.frame_deadline_count
+        << ",\"frameDeadlineMissCount\":" << features.frame_deadline_misses
+        << ",\"frameTimelineSource\":\"" << ((features.valid_features & FeatureFrameDeadline) ? "perfetto-surfaceflinger" : "unavailable") << "\""
         << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
         << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
         << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)

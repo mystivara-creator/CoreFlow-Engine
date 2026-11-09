@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 #include <unistd.h>
 using namespace coreflow;
 class FakeProperties final:public AndroidPropertySource{
@@ -30,6 +31,33 @@ int main(){
  auto proc=root/"proc";write(proc/"pressure/cpu","some avg10=12.50 avg60=2 total=10\n");write(proc/"pressure/memory","some avg10=3.25 avg60=2 total=10\n");write(proc/"pressure/io","some avg10=8.75 avg60=2 total=10\n");write(proc/"diskstats","8 0 sda 10 0 100 0 20 0 200 0 0 0 0\n");
  SysfsProcfsWorkloadSource sampler(proc.string(),root.string());assert(sampler.start());auto s1=sampler.sample(1'000'000'000ULL,2'000'000'000ULL);assert(s1.source==TelemetryBackend::SysfsProcfs);assert((s1.valid_features&FeatureCpuPressure)&&(s1.valid_features&FeatureMemoryPressure)&&(s1.valid_features&FeatureIoPressure));assert(!(s1.valid_features&FeatureIoBytes));
  write(proc/"diskstats","8 0 sda 20 0 150 0 40 0 250 0 0 0 0\n");auto s2=sampler.sample(2'000'000'000ULL,3'000'000'000ULL);assert((s2.valid_features&FeatureIoBytes)&&s2.io_bytes==51'200);assert(!(s2.valid_features&FeatureGpuBusy));
+
+ // Perfetto FrameTimeline parser: one on-time display frame and one dropped frame.
+ auto varint=[](std::vector<uint8_t>& out,uint64_t value){
+  while(value>=0x80U){out.push_back(static_cast<uint8_t>((value&0x7fU)|0x80U));value>>=7U;}
+  out.push_back(static_cast<uint8_t>(value));
+ };
+ auto field_bytes=[&](std::vector<uint8_t>& out,uint32_t id,const std::vector<uint8_t>& payload){
+  varint(out,(static_cast<uint64_t>(id)<<3U)|2U);varint(out,payload.size());out.insert(out.end(),payload.begin(),payload.end());
+ };
+ auto field_varint=[&](std::vector<uint8_t>& out,uint32_t id,uint64_t value){
+  varint(out,static_cast<uint64_t>(id)<<3U);varint(out,value);
+ };
+ std::vector<uint8_t> on_time;field_varint(on_time,4,1);field_varint(on_time,5,1);
+ std::vector<uint8_t> dropped;field_varint(dropped,4,4);field_varint(dropped,5,0);field_varint(dropped,7,1024);
+ std::vector<uint8_t> event_a;field_bytes(event_a,2,on_time);
+ std::vector<uint8_t> event_b;field_bytes(event_b,2,dropped);
+ std::vector<uint8_t> packet_a;field_bytes(packet_a,76,event_a);
+ std::vector<uint8_t> packet_b;field_bytes(packet_b,76,event_b);
+ std::vector<uint8_t> trace;field_bytes(trace,1,packet_a);field_bytes(trace,1,packet_b);
+ WorkloadFeatureSnapshot frame_stats{};
+ assert(parse_frame_timeline_trace(trace,frame_stats));
+ assert((frame_stats.valid_features&FeatureFrameDeadline)&&frame_stats.frame_deadline_count==2);
+ assert(frame_stats.frame_deadline_misses==1&&frame_stats.frame_deadline_miss_pct==50.0);
+ std::vector<uint8_t> malformed{0x0a,0x05,0x82};
+ WorkloadFeatureSnapshot invalid_frame{};
+ assert(!parse_frame_timeline_trace(malformed,invalid_frame));
+
  WorkloadClassifier classifier;WorkloadClassification state{};state=classifier.classify(gaming(4'000'000'000ULL),state,4'100'000'000ULL);assert(state.workload==DetectedWorkloadClass::Unknown&&state.pending_windows==1);state=classifier.classify(gaming(5'000'000'000ULL),state,5'100'000'000ULL);assert(state.workload==DetectedWorkloadClass::Gaming&&state.stable&&state.confidence>=.65F);
  auto f1=gaming(6'000'000'000ULL);f1.source=TelemetryBackend::SysfsProcfs;auto a=classifier.classify(f1,state,6'100'000'000ULL);auto f2=gaming(6'000'000'000ULL);auto z=classifier.classify(f2,state,6'100'000'000ULL);assert(a.workload==z.workload&&a.confidence==z.confidence);
  auto stale=classifier.classify(gaming(1'000'000'000ULL),state,8'000'000'000ULL);assert(stale.workload==state.workload&&!stale.stable);auto future=classifier.classify(gaming(9'000'000'000ULL),state,8'000'000'000ULL);assert(future.workload==state.workload);auto once=classifier.classify(f2,state,6'100'000'000ULL);
@@ -39,6 +67,7 @@ int main(){
 
  // BPF loader must fail closed on missing prerequisites and remain safely stoppable.
  char no_btf[]="/tmp/coreflow-bpf-gate-XXXXXX";assert(::mkdtemp(no_btf));
+ write(std::filesystem::path(no_btf)/"class/kgsl/kgsl-3d0/gpu_busy_percentage","64\n");
  EbpfWorkloadSource gated(no_btf);assert(!gated.start());assert(!gated.active());
  assert(select_telemetry_backend(gated.capabilities(),true)==TelemetryBackend::SysfsProcfs);
  gated.stop();gated.stop();
@@ -46,6 +75,10 @@ int main(){
  assert(pipeline.active()&&pipeline.backend()==TelemetryBackend::SysfsProcfs);
  auto unified=pipeline.sample(3'000'000'000ULL,4'000'000'000ULL);
  assert(unified.source==TelemetryBackend::SysfsProcfs&&(unified.valid_features&FeatureCpuPressure));
+ assert((unified.valid_features&FeatureGpuBusy)&&unified.gpu_busy_pct==64.0&&unified.gpu_busy_sample_count==1);
+ write(std::filesystem::path(no_btf)/"class/kgsl/kgsl-3d0/gpu_busy_percentage","101\n");
+ auto invalid_gpu=pipeline.sample(4'200'000'000ULL,4'300'000'000ULL);
+ assert((invalid_gpu.valid_features&FeatureGpuBusy)==0);
  pipeline.stop();pipeline.stop();std::filesystem::remove_all(no_btf);
  // Decision thresholds are inclusive only where explicitly specified.
  WorkloadFeatureSnapshot below_jank{};below_jank.window_start_ns=9'000'000'000ULL;below_jank.window_end_ns=9'500'000'000ULL;

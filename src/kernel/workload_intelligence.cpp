@@ -7,12 +7,19 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
+#include <cctype>
+#include <thread>
+#include <vector>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <utility>
+extern char **environ;
+
 namespace coreflow {
 static_assert(sizeof(WorkloadEvent)==40);
 namespace {
@@ -28,6 +35,105 @@ bool disk_sectors(const std::string& p,uint64_t& out) noexcept {
  std::fclose(f); if(!any)return false; out=total; return true;
 }
 bool window_ok(const WorkloadFeatureSnapshot& f) noexcept{return f.window_start_ns!=0&&f.window_end_ns>f.window_start_ns;}
+
+bool read_text(const std::string& path,char* buffer,size_t capacity) noexcept {
+ if(!capacity)return false;FILE* file=std::fopen(path.c_str(),"r");if(!file)return false;
+ const bool ok=std::fgets(buffer,static_cast<int>(capacity),file)!=nullptr;std::fclose(file);return ok;
+}
+bool parse_scalar_percent(const std::string& path,double& value) noexcept {
+ char text[128]{};if(!read_text(path,text,sizeof(text)))return false;
+ char* end=nullptr;const double parsed=std::strtod(text,&end);
+ if(end==text||!std::isfinite(parsed)||parsed<0.0||parsed>100.0)return false;
+ while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
+ if(*end=='%'){++end;while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;}
+ if(*end!='\0')return false;value=parsed;return true;
+}
+bool parse_u64_file(const std::string& path,uint64_t& value) noexcept {
+ char text[96]{};if(!read_text(path,text,sizeof(text)))return false;
+ char* end=nullptr;errno=0;const unsigned long long parsed=std::strtoull(text,&end,10);
+ if(errno||end==text)return false;
+ while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
+ if(*end!='\0')return false;value=static_cast<uint64_t>(parsed);return true;
+}
+bool parse_pair(const std::string& path,uint64_t& first,uint64_t& second) noexcept {
+ char text[160]{};if(!read_text(path,text,sizeof(text)))return false;
+ char* end=nullptr;errno=0;const unsigned long long a=std::strtoull(text,&end,10);if(errno||end==text)return false;
+ while(*end==' '||*end=='\t')++end;
+ errno=0;char* second_end=nullptr;const unsigned long long b=std::strtoull(end,&second_end,10);
+ if(errno||second_end==end)return false;
+ while(*second_end==' '||*second_end=='\t'||*second_end=='\r'||*second_end=='\n')++second_end;
+ if(*second_end!='\0')return false;
+ first=static_cast<uint64_t>(a);second=static_cast<uint64_t>(b);return true;
+}
+bool contains_gpu_token(std::string value) {
+ std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+ return value.find("gpu")!=std::string::npos||value.find("mali")!=std::string::npos||
+        value.find("kgsl")!=std::string::npos||value.find("3d")!=std::string::npos;
+}
+bool read_name_matches_gpu(const std::string& path) noexcept {
+ char text[128]{};return read_text(path,text,sizeof(text))&&contains_gpu_token(text);
+}
+bool read_varint(std::span<const uint8_t> bytes,size_t& offset,uint64_t& value) noexcept {
+ value=0;unsigned shift=0;
+ while(offset<bytes.size()&&shift<70){
+  const uint8_t byte=bytes[offset++];
+  if(shift==63&&(byte&0xfeU)!=0)return false;
+  value|=static_cast<uint64_t>(byte&0x7fU)<<shift;
+  if((byte&0x80U)==0)return true;shift+=7;
+ }
+ return false;
+}
+struct ProtoField final {uint32_t number{0};uint8_t wire{0};uint64_t integer{0};std::span<const uint8_t> data{};};
+bool next_proto_field(std::span<const uint8_t> bytes,size_t& offset,ProtoField& field) noexcept {
+ if(offset>=bytes.size())return false;uint64_t tag=0;
+ if(!read_varint(bytes,offset,tag)||tag==0)return false;
+ field={};field.number=static_cast<uint32_t>(tag>>3U);field.wire=static_cast<uint8_t>(tag&7U);
+ if(field.number==0)return false;
+ switch(field.wire){
+  case 0:return read_varint(bytes,offset,field.integer);
+  case 1:if(bytes.size()-offset<8)return false;offset+=8;return true;
+  case 2:{
+   uint64_t length=0;if(!read_varint(bytes,offset,length)||length>bytes.size()-offset)return false;
+   field.data=bytes.subspan(offset,static_cast<size_t>(length));offset+=static_cast<size_t>(length);return true;
+  }
+  case 5:if(bytes.size()-offset<4)return false;offset+=4;return true;
+  default:return false;
+ }
+}
+bool parse_actual_display_frame(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
+ size_t offset=0;uint64_t present=0,jank=0;bool has_present=false,has_on_time=false,on_time=true;
+ ProtoField field{};
+ while(offset<bytes.size()){
+  if(!next_proto_field(bytes,offset,field))return false;
+  if(field.wire!=0)continue;
+  if(field.number==4){present=field.integer;has_present=true;}
+  else if(field.number==5){on_time=field.integer!=0;has_on_time=true;}
+  else if(field.number==7)jank=field.integer;
+ }
+ if(!has_present||present<1||present>5)return true;
+ if(frames==UINT64_MAX)return false;++frames;
+ constexpr uint64_t kSfCpuDeadline=16ULL,kSfGpuDeadline=32ULL,kDropped=1024ULL;
+ if(present==2||present==4||(has_on_time&&!on_time)||(jank&(kSfCpuDeadline|kSfGpuDeadline|kDropped))){
+  if(misses==UINT64_MAX)return false;++misses;
+ }
+ return true;
+}
+bool parse_frame_timeline_event(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
+ size_t offset=0;ProtoField field{};
+ while(offset<bytes.size()){
+  if(!next_proto_field(bytes,offset,field))return false;
+  if(field.number==2&&field.wire==2)if(!parse_actual_display_frame(field.data,frames,misses))return false;
+ }
+ return true;
+}
+bool parse_trace_packet(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
+ size_t offset=0;ProtoField field{};
+ while(offset<bytes.size()){
+  if(!next_proto_field(bytes,offset,field))return false;
+  if(field.number==76&&field.wire==2)if(!parse_frame_timeline_event(field.data,frames,misses))return false;
+ }
+ return true;
+}
 struct Candidate{DetectedWorkloadClass type{DetectedWorkloadClass::Unknown};float confidence{0};uint32_t mask{FeatureNone};};
 Candidate decide(const WorkloadFeatureSnapshot& f) noexcept {
  auto has=[&](uint32_t bit){return (f.valid_features&bit)!=0;};
@@ -188,8 +294,180 @@ WorkloadFeatureSnapshot SysfsProcfsWorkloadSource::sample(uint64_t start,uint64_
  uint64_t sectors=0;if(disk_sectors(proc_root_+"/diskstats",sectors)){if(previous_sample_ns_&&end>previous_sample_ns_&&sectors>=previous_io_sectors_){uint64_t delta=sectors-previous_io_sectors_;if(delta<=UINT64_MAX/512){r.io_bytes=delta*512;r.valid_features|=FeatureIoBytes;}}previous_io_sectors_=sectors;previous_sample_ns_=end;}
  r.sample_count=1;return r;
 }
-WorkloadTelemetryPipeline::WorkloadTelemetryPipeline(std::string proc,std::string sys) noexcept
- :ebpf_(sys),fallback_(std::move(proc),std::move(sys)){}
+GpuUtilizationSampler::GpuUtilizationSampler(std::string root) noexcept:sys_root_(std::move(root)){}
+bool GpuUtilizationSampler::start() noexcept {
+ stop();
+ struct CandidatePath{const char* suffix;Format format;const char* label;};
+ static constexpr CandidatePath candidates[]{
+  {"class/kgsl/kgsl-3d0/gpu_busy_percentage",Format::Percent,"kgsl/gpu_busy_percentage"},
+  {"class/kgsl/kgsl-3d0/gpu_busy_percent",Format::Percent,"kgsl/gpu_busy_percent"},
+  {"class/kgsl/kgsl-3d0/devfreq/gpu_load",Format::Percent,"kgsl/devfreq/gpu_load"},
+  {"class/kgsl/kgsl-3d0/gpubusy",Format::BusyTotalRatio,"kgsl/gpubusy"},
+  {"class/devfreq/gpu/load",Format::Percent,"devfreq/gpu/load"},
+  {"class/drm/card0/device/gpu_busy_percent",Format::Percent,"drm/gpu_busy_percent"},
+  {"class/misc/mali0/device/utilization",Format::Percent,"mali/utilization"},
+  {"class/misc/mali0/device/utilisation",Format::Percent,"mali/utilisation"},
+  {"devices/platform/mali/utilization",Format::Percent,"platform/mali/utilization"},
+  {"devices/platform/mali.0/utilization",Format::Percent,"platform/mali.0/utilization"},
+  {"kernel/gpu/gpu_busy",Format::Percent,"kernel/gpu_busy"},
+  {"devices/platform/gpusysfs/gpu_busy",Format::Percent,"platform/gpusysfs/gpu_busy"}
+ };
+ for(const auto& candidate:candidates){
+  const std::string path=sys_root_+"/"+candidate.suffix;struct stat st{};
+  if(::stat(path.c_str(),&st)!=0||!S_ISREG(st.st_mode)||::access(path.c_str(),R_OK)!=0)continue;
+  double percent=0;uint64_t a=0,b=0;
+  const bool valid=candidate.format==Format::Percent?parse_scalar_percent(path,percent):parse_pair(path,a,b);
+  if(!valid)continue;
+  if(candidate.format==Format::BusyTotalRatio&&(b==0||a>b))continue;
+  path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
+ }
+ if(!active_){
+  const std::string directory=sys_root_+"/class/devfreq";DIR* dir=::opendir(directory.c_str());
+  if(dir){
+   while(const dirent* entry=::readdir(dir)){
+    if(entry->d_name[0]=='.')continue;
+    const std::string node=directory+"/"+entry->d_name;
+    if(!read_name_matches_gpu(node+"/name"))continue;
+    double percent=0;const std::string load=node+"/load";
+    if(parse_scalar_percent(load,percent)){
+     path_=load;source_name_="devfreq/named-device/load";format_=Format::Percent;active_=true;break;
+    }
+    const std::string busy_path=node+"/busy_time",total_path=node+"/total_time";
+    uint64_t busy=0,total=0;
+    if(parse_u64_file(busy_path,busy)&&parse_u64_file(total_path,total)&&total>0&&busy<=total){
+     path_=busy_path;source_name_="devfreq/named-device/busy_time-total_time";
+     format_=Format::CounterPair;active_=true;previous_busy_=busy;previous_total_=total;previous_valid_=true;break;
+    }
+   }
+   ::closedir(dir);
+  }
+ }
+ last_sample_ns_=0;return active_;
+}
+void GpuUtilizationSampler::stop() noexcept {
+ path_.clear();source_name_.clear();format_=Format::Unavailable;
+ previous_busy_=previous_total_=last_sample_ns_=0;previous_valid_=false;active_=false;
+}
+bool GpuUtilizationSampler::sample(uint64_t now,double& output) noexcept {
+ if(!active_||now==0||(last_sample_ns_&&(now<=last_sample_ns_||now-last_sample_ns_<100'000'000ULL)))return false;
+ last_sample_ns_=now;
+ if(format_==Format::Percent)return parse_scalar_percent(path_,output);
+ uint64_t busy=0,total=0;
+ if(format_==Format::BusyTotalRatio){
+  if(!parse_pair(path_,busy,total)||total==0||busy>total)return false;
+  output=100.0*static_cast<double>(busy)/static_cast<double>(total);return true;
+ }
+ if(format_==Format::CounterPair){
+  const std::string total_path=path_.substr(0,path_.rfind('/')+1)+"total_time";
+  if(!parse_u64_file(path_,busy)||!parse_u64_file(total_path,total))return false;
+  if(!previous_valid_){previous_busy_=busy;previous_total_=total;previous_valid_=true;return false;}
+  if(busy<previous_busy_||total<previous_total_){previous_busy_=busy;previous_total_=total;return false;}
+  const uint64_t busy_delta=busy-previous_busy_,total_delta=total-previous_total_;
+  previous_busy_=busy;previous_total_=total;
+  if(total_delta==0||busy_delta>total_delta)return false;
+  output=100.0*static_cast<double>(busy_delta)/static_cast<double>(total_delta);return true;
+ }
+ return false;
+}
+std::string_view GpuUtilizationSampler::source_name() const noexcept {
+ return active_?std::string_view(source_name_):std::string_view("unavailable");
+}
+FrameTimelineSampler::~FrameTimelineSampler() noexcept {stop();}
+bool FrameTimelineSampler::start(uint32_t duration_ms) noexcept {
+ stop();if(duration_ms<250||duration_ms>3000)return false;
+ constexpr const char* binary="/system/bin/perfetto";
+ constexpr const char* output_dir="/data/misc/perfetto-traces";
+ if(::access(binary,X_OK)!=0||::access(output_dir,W_OK|X_OK)!=0)return false;
+ const auto stamp=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+  std::chrono::steady_clock::now().time_since_epoch()).count());
+ trace_path_=std::string(output_dir)+"/coreflow-frame-"+std::to_string(::getpid())+"-"+
+  std::to_string(stamp)+".pftrace";
+ int input[2]{-1,-1};if(::pipe(input)!=0){trace_path_.clear();return false;}
+ posix_spawn_file_actions_t actions;
+ if(::posix_spawn_file_actions_init(&actions)!=0){::close(input[0]);::close(input[1]);trace_path_.clear();return false;}
+ int action_status=::posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
+ if(action_status==0)action_status=::posix_spawn_file_actions_addclose(&actions,input[0]);
+ if(action_status==0)action_status=::posix_spawn_file_actions_addclose(&actions,input[1]);
+ if(action_status==0)action_status=::posix_spawn_file_actions_addopen(&actions,STDOUT_FILENO,"/dev/null",O_WRONLY,0);
+ if(action_status==0)action_status=::posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+ if(action_status!=0){::posix_spawn_file_actions_destroy(&actions);::close(input[0]);::close(input[1]);trace_path_.clear();return false;}
+ const std::string output=trace_path_;
+ char* const argv[]{const_cast<char*>(binary),const_cast<char*>("--txt"),const_cast<char*>("-c"),
+  const_cast<char*>("-"),const_cast<char*>("-o"),const_cast<char*>(output.c_str()),nullptr};
+ pid_t child=-1;const int spawn_status=::posix_spawn(&child,binary,&actions,nullptr,argv,environ);
+ ::posix_spawn_file_actions_destroy(&actions);::close(input[0]);
+ if(spawn_status!=0){::close(input[1]);trace_path_.clear();return false;}
+ child_pid_=static_cast<int>(child);
+ const std::string config="duration_ms: "+std::to_string(duration_ms)+
+  "\nbuffers { size_kb: 2048 fill_policy: DISCARD }\n"
+  "data_sources { config { name: \"android.surfaceflinger.frametimeline\" } }\n";
+ struct sigaction ignore{},previous{};ignore.sa_handler=SIG_IGN;::sigemptyset(&ignore.sa_mask);
+ (void)::sigaction(SIGPIPE,&ignore,&previous);
+ size_t written=0;bool ok=true;
+ while(written<config.size()){
+  const ssize_t count=::write(input[1],config.data()+written,config.size()-written);
+  if(count<0&&errno==EINTR)continue;
+  if(count<=0){ok=false;break;}written+=static_cast<size_t>(count);
+ }
+ ::close(input[1]);(void)::sigaction(SIGPIPE,&previous,nullptr);
+ if(!ok){stop();return false;}return true;
+}
+bool FrameTimelineSampler::finish(WorkloadFeatureSnapshot& features) noexcept {
+ if(child_pid_<=0||trace_path_.empty())return false;
+ int status=0;pid_t waited=0;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+ do{
+  waited=::waitpid(static_cast<pid_t>(child_pid_),&status,WNOHANG);
+  if(waited<0&&errno==EINTR)continue;
+  if(waited!=0)break;
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+ }while(std::chrono::steady_clock::now()<deadline);
+ if(waited==0){
+  (void)::kill(static_cast<pid_t>(child_pid_),SIGTERM);
+  do{waited=::waitpid(static_cast<pid_t>(child_pid_),&status,0);}while(waited<0&&errno==EINTR);
+  child_pid_=-1;(void)::unlink(trace_path_.c_str());trace_path_.clear();return false;
+ }
+ child_pid_=-1;bool ok=waited>0&&WIFEXITED(status)&&WEXITSTATUS(status)==0;
+ if(ok){
+  const int fd=::open(trace_path_.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+  if(fd<0)ok=false;
+  else{
+   struct stat st{};if(::fstat(fd,&st)!=0||!S_ISREG(st.st_mode)||st.st_size<=0||st.st_size>(16LL<<20))ok=false;
+   if(ok){
+    std::vector<uint8_t> bytes(static_cast<size_t>(st.st_size));size_t read_bytes=0;
+    while(read_bytes<bytes.size()){
+     const ssize_t count=::read(fd,bytes.data()+read_bytes,bytes.size()-read_bytes);
+     if(count<0&&errno==EINTR)continue;
+     if(count<=0){ok=false;break;}read_bytes+=static_cast<size_t>(count);
+    }
+    if(ok)ok=parse_frame_timeline_trace(bytes,features);
+   }
+   ::close(fd);
+  }
+ }
+ (void)::unlink(trace_path_.c_str());trace_path_.clear();return ok;
+}
+void FrameTimelineSampler::stop() noexcept {
+ if(child_pid_>0){
+  (void)::kill(static_cast<pid_t>(child_pid_),SIGTERM);int status=0;
+  while(::waitpid(static_cast<pid_t>(child_pid_),&status,0)<0&&errno==EINTR){}
+  child_pid_=-1;
+ }
+ if(!trace_path_.empty())(void)::unlink(trace_path_.c_str());
+ trace_path_.clear();
+}
+bool parse_frame_timeline_trace(std::span<const uint8_t> trace,WorkloadFeatureSnapshot& features) noexcept {
+ uint64_t frames=0,misses=0;size_t offset=0;ProtoField field{};
+ while(offset<trace.size()){
+  if(!next_proto_field(trace,offset,field))return false;
+  if(field.number==1&&field.wire==2)if(!parse_trace_packet(field.data,frames,misses))return false;
+ }
+ if(frames==0||misses>frames)return false;
+ features.frame_deadline_count=frames;features.frame_deadline_misses=misses;
+ features.frame_deadline_miss_pct=100.0*static_cast<double>(misses)/static_cast<double>(frames);
+ features.valid_features|=FeatureFrameDeadline;return true;
+}
+
+
 bool WorkloadTelemetryPipeline::start() noexcept {
  stop();fallback_active_=fallback_.start();
  const bool bpf_active=ebpf_.start();
@@ -205,6 +483,9 @@ WorkloadFeatureSnapshot WorkloadTelemetryPipeline::sample(uint64_t start,uint64_
  if(!active_||end<=start)return result;
  if(fallback_active_)result=fallback_.sample(start,end);
  result.window_start_ns=start;result.window_end_ns=end;
+ if(gpu_active_){double gpu_busy=0.0;if(gpu_.sample(end,gpu_busy)){
+  result.gpu_busy_pct=gpu_busy;result.valid_features|=FeatureGpuBusy;result.gpu_busy_sample_count=1;
+ }}
  if(ebpf_.active()){
   result.source=TelemetryBackend::Ebpf;
   WorkloadEvent events[512]{};const size_t count=ebpf_.drain(events);

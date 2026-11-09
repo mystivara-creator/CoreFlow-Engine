@@ -52,5 +52,9 @@ assert "std::chrono::milliseconds(10)" in probe
 assert "aggregate.event_drain_saturated" in probe
 assert "eventCount" in probe
 assert "eventDrainSaturated" in probe
+assert "begin_frame_timeline_capture(1000)" in probe
+assert "finish_frame_timeline_capture(aggregate)" in probe
+assert "gpu_busy_sum" in probe
+assert "frameDeadlineMissCount" in probe
 assert "pipeline.stop();" in probe
 assert "MutationCoordinator" not in probe

@@ -46,7 +46,7 @@ struct WorkloadFeatureSnapshot final {
   frame_deadline_count{0};
  double frame_deadline_miss_pct{0.0}, wakeup_rate_per_sec{0.0}, cpu_pressure_some_pct{0.0},
   memory_pressure_some_pct{0.0}, io_pressure_some_pct{0.0}, gpu_busy_pct{0.0};
- uint32_t valid_features{FeatureNone}, sample_count{0}, event_count{0};
+ uint32_t valid_features{FeatureNone}, sample_count{0}, event_count{0}, gpu_busy_sample_count{0};
  bool event_drain_saturated{false};
  TelemetryBackend source{TelemetryBackend::Unavailable};
 };
@@ -105,6 +105,38 @@ private:
  uint64_t previous_io_sectors_{0},previous_sample_ns_{0};
  bool started_{false};
 };
+
+class GpuUtilizationSampler final {
+public:
+ explicit GpuUtilizationSampler(std::string sys_root="/sys") noexcept;
+ [[nodiscard]] bool start() noexcept;
+ void stop() noexcept;
+ [[nodiscard]] bool sample(uint64_t now_ns,double& busy_pct) noexcept;
+ [[nodiscard]] std::string_view source_name() const noexcept;
+private:
+ enum class Format : uint8_t { Unavailable, Percent, BusyTotalRatio, CounterPair };
+ std::string sys_root_,path_,source_name_;
+ Format format_{Format::Unavailable};
+ uint64_t previous_busy_{0},previous_total_{0},last_sample_ns_{0};
+ bool previous_valid_{false},active_{false};
+};
+class FrameTimelineSampler final {
+public:
+ FrameTimelineSampler() noexcept=default;
+ ~FrameTimelineSampler() noexcept;
+ FrameTimelineSampler(const FrameTimelineSampler&)=delete;
+ FrameTimelineSampler& operator=(const FrameTimelineSampler&)=delete;
+ [[nodiscard]] bool start(uint32_t duration_ms=1000) noexcept;
+ [[nodiscard]] bool finish(WorkloadFeatureSnapshot& features) noexcept;
+ void stop() noexcept;
+ [[nodiscard]] bool active() const noexcept{return child_pid_>0;}
+private:
+ int child_pid_{-1};
+ std::string trace_path_;
+};
+[[nodiscard]] bool parse_frame_timeline_trace(std::span<const uint8_t> trace,
+                                               WorkloadFeatureSnapshot& features) noexcept;
+
 class WorkloadTelemetryPipeline final {
 public:
  explicit WorkloadTelemetryPipeline(std::string proc_root="/proc",std::string sys_root="/sys") noexcept;
@@ -114,10 +146,15 @@ public:
  [[nodiscard]] TelemetryBackend backend() const noexcept{return ebpf_.active()?TelemetryBackend::Ebpf:(fallback_active_?TelemetryBackend::SysfsProcfs:TelemetryBackend::Unavailable);}
  [[nodiscard]] WorkloadFeatureSnapshot sample(uint64_t window_start_ns,uint64_t window_end_ns) noexcept;
  [[nodiscard]] const BpfCapabilitySnapshot& bpf_capabilities() const noexcept{return ebpf_.capabilities();}
+ [[nodiscard]] bool begin_frame_timeline_capture(uint32_t duration_ms=1000) noexcept{return frame_timeline_.start(duration_ms);}
+ [[nodiscard]] bool finish_frame_timeline_capture(WorkloadFeatureSnapshot& features) noexcept{return frame_timeline_.finish(features);}
+ [[nodiscard]] std::string_view gpu_source_name() const noexcept{return gpu_.source_name();}
 private:
  EbpfWorkloadSource ebpf_;
  SysfsProcfsWorkloadSource fallback_;
- bool active_{false},fallback_active_{false};
+ GpuUtilizationSampler gpu_;
+ FrameTimelineSampler frame_timeline_;
+ bool active_{false},fallback_active_{false},gpu_active_{false};
 };
 class WorkloadClassifier final {
 public:
