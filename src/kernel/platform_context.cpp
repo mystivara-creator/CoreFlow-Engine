@@ -101,6 +101,57 @@ uint32_t parse_major(std::string_view value) noexcept {
 
 } // namespace
 
+std::string_view platform_vendor_name(PlatformVendor value) noexcept {
+    switch (value) {
+        case PlatformVendor::Xiaomi: return "xiaomi";
+        case PlatformVendor::Samsung: return "samsung";
+        case PlatformVendor::Google: return "google";
+        case PlatformVendor::Vivo: return "vivo";
+        case PlatformVendor::Oppo: return "oppo";
+        case PlatformVendor::OnePlus: return "oneplus";
+        case PlatformVendor::Motorola: return "motorola";
+        case PlatformVendor::Sony: return "sony";
+        case PlatformVendor::Asus: return "asus";
+        case PlatformVendor::Other: return "other";
+        case PlatformVendor::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+std::string_view os_family_name(OsFamily value) noexcept {
+    switch (value) {
+        case OsFamily::AospLike: return "aosp_like";
+        case OsFamily::HyperOS: return "hyperos";
+        case OsFamily::MIUI: return "miui";
+        case OsFamily::OneUI: return "oneui";
+        case OsFamily::PixelOS: return "pixel_os";
+        case OsFamily::OriginOS: return "originos";
+        case OsFamily::ColorOS: return "coloros";
+        case OsFamily::OxygenOS: return "oxygenos";
+        case OsFamily::FuntouchOS: return "funtouchos";
+        case OsFamily::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+std::string_view execution_tier_name(ExecutionTier value) noexcept {
+    return value == ExecutionTier::XiaomiHyperOS ? "xiaomi_hyperos" : "universal_fallback";
+}
+
+std::string_view policy_family_name(PolicyFamily value) noexcept {
+    return value == PolicyFamily::HyperOS4Inspired ? "hyperos4_inspired" : "coreflow_base";
+}
+
+std::string_view identity_confidence_name(IdentityConfidence value) noexcept {
+    switch (value) {
+        case IdentityConfidence::None: return "none";
+        case IdentityConfidence::Low: return "low";
+        case IdentityConfidence::Corroborated: return "corroborated";
+        case IdentityConfidence::High: return "high";
+    }
+    return "none";
+}
+
 bool NativeAndroidPropertySource::read(std::string_view key, std::string& value) const noexcept {
     value.clear();
 #if defined(__ANDROID__)
