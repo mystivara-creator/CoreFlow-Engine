@@ -217,7 +217,7 @@ WorkloadFeatureSnapshot WorkloadTelemetryPipeline::sample(uint64_t start,uint64_
   result.wakeup_rate_per_sec=static_cast<double>(wakeups)*1'000'000'000.0/static_cast<double>(end-start);
   result.valid_features|=FeatureWakeupRate;
   result.event_count=static_cast<uint32_t>(count);
-  result.event_drain_saturated=count==events.size();
+  result.event_drain_saturated=count==512U;
   result.sample_count+=static_cast<uint32_t>(count);
  }else if(fallback_active_){
   result.source=TelemetryBackend::SysfsProcfs;
