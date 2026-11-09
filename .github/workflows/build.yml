@@ -42,7 +42,7 @@ jobs:
           cache-dependency-path: package.json
       - name: Install WebUI dependencies
         id: install
-        run: npm install --no-package-lock --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000 --prefer-online --fetch-retries=3 --fetch-timeout=120000
+        run: npm install --no-package-lock --no-audit --no-fund --prefer-online --fetch-retries=3 --fetch-timeout=120000
       - name: Run Node.js TypeScript tests
         if: always() && steps.install.outcome == 'success'
         run: node --experimental-strip-types --test webui/engine/__tests__/autonomousEngine.test.ts
