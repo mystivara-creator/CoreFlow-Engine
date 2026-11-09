@@ -48,7 +48,7 @@ BpfCapabilitySnapshot BpfCapabilityProbe::probe() const noexcept {
  return r;
 }
 SysfsProcfsWorkloadSource::SysfsProcfsWorkloadSource(std::string p,std::string s) noexcept:proc_root_(std::move(p)),sys_root_(std::move(s)){}
-bool SysfsProcfsWorkloadSource::start() noexcept {double v=0;started_=psi(proc_root_+"/pressure/cpu",v)||psi(proc_root_+"/pressure/memory",v)||psi(proc_root_+"/pressure/io",v);return started_;}
+bool SysfsProcfsWorkloadSource::start() noexcept {double v=0;uint64_t sectors=0;started_=psi(proc_root_+"/pressure/cpu",v)||psi(proc_root_+"/pressure/memory",v)||psi(proc_root_+"/pressure/io",v)||disk_sectors(proc_root_+"/diskstats",sectors);return started_;}
 void SysfsProcfsWorkloadSource::stop() noexcept {started_=false;previous_io_sectors_=0;previous_sample_ns_=0;}
 size_t SysfsProcfsWorkloadSource::drain(std::span<WorkloadEvent> out) noexcept {(void)out;return 0;}
 WorkloadFeatureSnapshot SysfsProcfsWorkloadSource::sample(uint64_t start,uint64_t end) noexcept {
