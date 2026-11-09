@@ -62,18 +62,20 @@ public:
     [[nodiscard]] VulkanController& vulkan_controller() noexcept;
 
 private:
-    // Declared first so it outlives every controller callback registration.
+    // Declaration order mirrors startup: reverse member destruction is a
+    // safe fallback even when coordinated Stop() cannot complete recovery.
+    // The coordinator outlives every callback owner; profile outlives controllers.
     CentralMutationCoordinator coordinator_;
-    std::unique_ptr<DeviceProfiler> profiler_;
     std::unique_ptr<ThermalMonitor> thermal_monitor_;
-    std::unique_ptr<NeuralPredictor> neural_predictor_;
+    std::unique_ptr<DeviceProfiler> profiler_;
+    DeviceProfileHandle profile_{};
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
     std::unique_ptr<FrequencyController> frequency_controller_;
     std::unique_ptr<AutonomousTuner> autonomous_tuner_;
     std::unique_ptr<HardwareLongevityManager> hardware_longevity_;
+    std::unique_ptr<NeuralPredictor> neural_predictor_;
     std::unique_ptr<VulkanController> vulkan_controller_;
-    DeviceProfileHandle profile_{};
     Mode mode_{Mode::ReadOnly};
     State state_{State::Constructed};
 
