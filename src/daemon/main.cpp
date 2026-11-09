@@ -279,6 +279,7 @@ size_t count_journal_entries() noexcept {
 
 int stop_daemon() {
     const pid_t pid = daemon_pid();
+    const auto& platform = context.platform_context();
     if (pid > 0) {
         if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) return 1;
         for (int attempt = 0; attempt < 80; ++attempt) {
@@ -356,6 +357,13 @@ void print_status(CoreFlowContext& context) {
         << ",\"uclampProbeSkipped\":true"
         << ",\"inspectionMode\":\"read-only\""
         << ",\"mutationRuntimeStarted\":false"
+        << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
+        << ",\"osFamily\":\"" << os_family_name(platform.identity.os_family) << "\""
+        << ",\"osMajor\":" << platform.identity.os_major
+        << ",\"executionTier\":\"" << execution_tier_name(platform.execution_tier) << "\""
+        << ",\"policyFamily\":\"" << policy_family_name(platform.policy_family) << "\""
+        << ",\"identityConfidence\":\"" << identity_confidence_name(platform.identity.confidence) << "\""
+        << ",\"tier1Eligible\":" << (platform.tier1_eligible ? "true" : "false")
         << ",\"aiRuntimeStarted\":false"
         << ",\"tunerRuntimeStarted\":false"
         << ",\"vulkanProbeSkipped\":true"

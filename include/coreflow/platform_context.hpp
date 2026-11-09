@@ -89,6 +89,12 @@ struct PlatformContextSnapshot final {
     }
 };
 
+[[nodiscard]] std::string_view platform_vendor_name(PlatformVendor value) noexcept;
+[[nodiscard]] std::string_view os_family_name(OsFamily value) noexcept;
+[[nodiscard]] std::string_view execution_tier_name(ExecutionTier value) noexcept;
+[[nodiscard]] std::string_view policy_family_name(PolicyFamily value) noexcept;
+[[nodiscard]] std::string_view identity_confidence_name(IdentityConfidence value) noexcept;
+
 class PlatformContextDetector final {
 public:
     explicit PlatformContextDetector(const AndroidPropertySource& properties) noexcept

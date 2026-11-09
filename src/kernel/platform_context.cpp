@@ -11,6 +11,7 @@
 #include <cctype>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
@@ -50,10 +51,18 @@ PlatformVendor detect_vendor(std::string_view manufacturer, std::string_view bra
     const auto b = lower_ascii(std::string(brand));
     const auto vm = lower_ascii(std::string(vendor_manufacturer));
 
-    if (m == "xiaomi" || vm == "xiaomi" || is_xiaomi_family(b)) {
-        const bool manufacturer_match = m == "xiaomi" || vm == "xiaomi";
-        const bool brand_match = is_xiaomi_family(b);
-        confidence = manufacturer_match && brand_match
+    const bool xiaomi_manufacturer = m == "xiaomi" || vm == "xiaomi";
+    const bool xiaomi_brand = is_xiaomi_family(b);
+    if (xiaomi_manufacturer || xiaomi_brand) {
+        const bool conflicting_manufacturer =
+            (!m.empty() && m != "xiaomi") || (!vm.empty() && vm != "xiaomi");
+        const bool conflicting_brand = !b.empty() && !xiaomi_brand;
+        if ((xiaomi_manufacturer && conflicting_brand) ||
+            (xiaomi_brand && conflicting_manufacturer)) {
+            confidence = IdentityConfidence::Low;
+            return PlatformVendor::Unknown;
+        }
+        confidence = xiaomi_manufacturer && xiaomi_brand
             ? IdentityConfidence::High : IdentityConfidence::Corroborated;
         return PlatformVendor::Xiaomi;
     }

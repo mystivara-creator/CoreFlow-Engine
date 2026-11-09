@@ -72,6 +72,17 @@ int main() {
     assert(samsung_result.execution_tier == ExecutionTier::UniversalFallback);
     assert(samsung_result.policy_family == PolicyFamily::CoreFlowBase);
 
+    FakeProperties conflicting_identity;
+    conflicting_identity.values = {
+        {"ro.product.manufacturer", "Samsung"},
+        {"ro.product.brand", "Redmi"},
+        {"ro.mi.os.version.name", "3.0"}
+    };
+    const auto conflict_result = PlatformContextDetector(conflicting_identity).detect();
+    assert(conflict_result.identity.vendor == PlatformVendor::Unknown);
+    assert(!conflict_result.tier1_eligible);
+    assert(conflict_result.execution_tier == ExecutionTier::UniversalFallback);
+
     FakeProperties weak_xiaomi;
     weak_xiaomi.values = {
         {"ro.product.manufacturer", "Xiaomi"},
