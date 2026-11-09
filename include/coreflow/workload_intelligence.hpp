@@ -44,7 +44,7 @@ struct WorkloadFeatureSnapshot final {
  uint64_t window_start_ns{0}, window_end_ns{0}, cpu_run_queue_wait_ns{0},
   wakeup_count{0}, io_bytes{0}, io_latency_ns_p95{0}, frame_deadline_misses{0},
   frame_deadline_count{0};
- double frame_deadline_miss_pct{0.0}, cpu_pressure_some_pct{0.0},
+ double frame_deadline_miss_pct{0.0}, wakeup_rate_per_sec{0.0}, cpu_pressure_some_pct{0.0},
   memory_pressure_some_pct{0.0}, io_pressure_some_pct{0.0}, gpu_busy_pct{0.0};
  uint32_t valid_features{FeatureNone}, sample_count{0};
  TelemetryBackend source{TelemetryBackend::Unavailable};
@@ -68,7 +68,28 @@ public:
  [[nodiscard]] virtual size_t drain(std::span<WorkloadEvent> out) noexcept=0;
 };
 class EbpfWorkloadSource:public WorkloadTelemetrySource {
-public: [[nodiscard]] TelemetryBackend backend() const noexcept final{return TelemetryBackend::Ebpf;}
+public:
+ explicit EbpfWorkloadSource(std::string sys_root="/sys",uint32_t ring_bytes=1U<<18U) noexcept;
+ ~EbpfWorkloadSource() noexcept override;
+ EbpfWorkloadSource(const EbpfWorkloadSource&)=delete;
+ EbpfWorkloadSource& operator=(const EbpfWorkloadSource&)=delete;
+ [[nodiscard]] TelemetryBackend backend() const noexcept final{return TelemetryBackend::Ebpf;}
+ [[nodiscard]] bool start() noexcept override;
+ void stop() noexcept override;
+ [[nodiscard]] size_t drain(std::span<WorkloadEvent> out) noexcept override;
+ [[nodiscard]] const BpfCapabilitySnapshot& capabilities() const noexcept{return capabilities_;}
+ [[nodiscard]] bool active() const noexcept{return active_;}
+private:
+ void release_resources() noexcept;
+ std::string sys_root_;
+ uint32_t ring_bytes_{0};
+ int map_fd_{-1},program_fd_{-1},wakeup_program_fd_{-1},switch_link_fd_{-1},wakeup_link_fd_{-1};
+ void* consumer_mapping_{nullptr};
+ void* producer_mapping_{nullptr};
+ size_t page_size_{0};
+ uint64_t ring_mask_{0};
+ BpfCapabilitySnapshot capabilities_{};
+ bool active_{false};
 };
 class SysfsProcfsWorkloadSource final:public WorkloadTelemetrySource {
 public:
@@ -82,6 +103,20 @@ private:
  std::string proc_root_,sys_root_;
  uint64_t previous_io_sectors_{0},previous_sample_ns_{0};
  bool started_{false};
+};
+class WorkloadTelemetryPipeline final {
+public:
+ explicit WorkloadTelemetryPipeline(std::string proc_root="/proc",std::string sys_root="/sys") noexcept;
+ [[nodiscard]] bool start() noexcept;
+ void stop() noexcept;
+ [[nodiscard]] bool active() const noexcept{return active_;}
+ [[nodiscard]] TelemetryBackend backend() const noexcept{return ebpf_.active()?TelemetryBackend::Ebpf:(fallback_active_?TelemetryBackend::SysfsProcfs:TelemetryBackend::Unavailable);}
+ [[nodiscard]] WorkloadFeatureSnapshot sample(uint64_t window_start_ns,uint64_t window_end_ns) noexcept;
+ [[nodiscard]] const BpfCapabilitySnapshot& bpf_capabilities() const noexcept{return ebpf_.capabilities();}
+private:
+ EbpfWorkloadSource ebpf_;
+ SysfsProcfsWorkloadSource fallback_;
+ bool active_{false},fallback_active_{false};
 };
 class WorkloadClassifier final {
 public:
