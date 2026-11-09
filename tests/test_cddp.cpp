@@ -28,6 +28,13 @@ int main() {
     assert((cpus == std::vector<uint32_t>{0,1,2,3,6,8,9}));
     assert(DeviceProfiler::parse_cpu_list("0,2-3,5\n", cpus));
     assert((cpus == std::vector<uint32_t>{0,2,3,5}));
+    // cpufreq related_cpus/affected_cpus are commonly whitespace-delimited.
+    assert(DeviceProfiler::parse_cpu_list("0 1 2 3\n", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,2,3}));
+    assert(DeviceProfiler::parse_cpu_list("0-3 6 8-9\r\n", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,2,3,6,8,9}));
+    assert(DeviceProfiler::parse_cpu_list("0-1, 3 5-6\t7", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,3,5,6,7}));
     assert(!DeviceProfiler::parse_cpu_list("0-3,,5", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0-3,  \n", cpus));
     assert(!DeviceProfiler::parse_cpu_list("3-1", cpus));
