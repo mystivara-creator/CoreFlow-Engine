@@ -473,14 +473,24 @@ bool parse_frame_timeline_trace(std::span<const uint8_t> trace,WorkloadFeatureSn
 }
 
 
+WorkloadTelemetryPipeline::WorkloadTelemetryPipeline(std::string proc,std::string sys) noexcept
+ :ebpf_(sys),fallback_(std::move(proc),sys),gpu_(std::move(sys)){}
 bool WorkloadTelemetryPipeline::start() noexcept {
- stop();fallback_active_=fallback_.start();
+ stop();
+ fallback_active_=fallback_.start();
+ gpu_active_=gpu_.start();
  const bool bpf_active=ebpf_.start();
  active_=fallback_active_||bpf_active;
  return active_;
 }
 void WorkloadTelemetryPipeline::stop() noexcept {
- ebpf_.stop();fallback_.stop();active_=false;fallback_active_=false;
+ frame_timeline_.stop();
+ ebpf_.stop();
+ fallback_.stop();
+ gpu_.stop();
+ active_=false;
+ fallback_active_=false;
+ gpu_active_=false;
 }
 WorkloadFeatureSnapshot WorkloadTelemetryPipeline::sample(uint64_t start,uint64_t end) noexcept {
  WorkloadFeatureSnapshot result{};
