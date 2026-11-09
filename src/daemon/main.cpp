@@ -299,7 +299,7 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
 }
 
 void print_status(CoreFlowContext& context) {
-    // 1. Run all hardware, kernel, AI, tuner, and Vulkan probes FIRST before writing any JSON
+    // 1. Perform passive hardware/kernel inspection before writing the JSON payload
     const pid_t pid = daemon_pid();
     const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     const auto profile = context.thermal_monitor().multi_sensor_profile();
@@ -340,6 +340,7 @@ void print_status(CoreFlowContext& context) {
         << ",\"uclampMin\":0"
         << ",\"uclampMax\":0"
         << ",\"uclampSupported\":false"
+        << ",\"uclampProbeSkipped\":true"
         << ",\"inspectionMode\":\"read-only\""
         << ",\"mutationRuntimeStarted\":false"
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
@@ -1445,6 +1446,5 @@ int main(int argc, char* argv[]) {
     const bool stopped = context.Stop("Daemon shutdown");
     const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
-    return restored ? 0 : 1;
     return restored ? 0 : 1;
 }
