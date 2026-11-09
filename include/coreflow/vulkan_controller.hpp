@@ -17,6 +17,7 @@
 #include <vector>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 enum class ControllerPriority : uint8_t;
 
@@ -165,7 +166,10 @@ public:
  static constexpr FeatureStatus kRenderingOptimizationStatus=coreflow::kVulkanRenderingOptimizationStatus;
  static constexpr FeatureStatus kQualcommKgslFeatureStatus=coreflow::kQualcommKgslStatus;
  static constexpr FeatureStatus kArmMaliPolicyFeatureStatus=coreflow::kArmMaliPolicyStatus;
-    static VulkanController& instance();
+    explicit VulkanController(CentralMutationCoordinator& coordinator);
+    ~VulkanController();
+    VulkanController(const VulkanController&) = delete;
+    VulkanController& operator=(const VulkanController&) = delete;
 
     /// Discover native Vulkan ICD via dlopen("libvulkan.so") and probe GPU sysfs surfaces
     void initialize(const VulkanConfig& config = {},
@@ -186,11 +190,8 @@ public:
     static const char* vendor_name(GpuVendor vendor) noexcept;
 
 private:
-    VulkanController();
-    ~VulkanController();
-    VulkanController(const VulkanController&) = delete;
-    VulkanController& operator=(const VulkanController&) = delete;
-
+    CentralMutationCoordinator& coordinator_;
+    std::string controller_name_;
     void probe_native_vulkan_icd() noexcept;
     void discover_gpu_kernel_surface(const std::string& root_override) noexcept;
     void recompute_effective_capabilities() noexcept;

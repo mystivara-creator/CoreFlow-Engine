@@ -29,7 +29,7 @@ int main() {
     assert(::setenv("COREFLOW_TEST_STATE_DIR", state_dir, 1) == 0);
     const std::string root(state_dir);
     assert(BaselineStore::instance().recover_pending());
-    auto& coordinator = CentralMutationCoordinator::instance();
+    CentralMutationCoordinator coordinator;
     coordinator.reset();
 
     // cgroup v2-style percentage interface.
@@ -39,7 +39,7 @@ int main() {
     write_token(percent_top + "/cpu.uclamp.min", "0.00");
     write_token(percent_top + "/cpu.uclamp.max", "max");
 
-    UclampGovernor percentage(percent_root);
+    UclampGovernor percentage(coordinator, percent_root);
     assert(percentage.is_supported());
     assert(percentage.encoding_name() == "percentage");
     assert(percentage.target_path() == percent_top);
@@ -71,7 +71,7 @@ int main() {
     assert(read_token(percent_top + "/cpu.uclamp.max") == "max");
     assert(coordinator.active_leases().empty());
     // SIGHUP-style replacement must retain the destination object's callback identity.
-    percentage = UclampGovernor(percent_root);
+    percentage = UclampGovernor(coordinator, percent_root);
     assert(percentage.is_supported());
     assert(percentage.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(coordinator.active_leases().size() == 1);
@@ -90,7 +90,7 @@ int main() {
     write_token(capacity_top + "/cpu.uclamp.min", "0");
     write_token(capacity_top + "/cpu.uclamp.max", "1024");
 
-    UclampGovernor capacity(capacity_root);
+    UclampGovernor capacity(coordinator, capacity_root);
     assert(capacity.is_supported());
     assert(capacity.encoding_name() == "capacity1024");
     assert(capacity.target_path() == capacity_top);
@@ -112,7 +112,7 @@ int main() {
     write_token(throttled_top + "/cpu.uclamp.min", "0");
     write_token(throttled_top + "/cpu.uclamp.max", "100");
 
-    UclampGovernor throttled(throttled_root);
+    UclampGovernor throttled(coordinator, throttled_root);
     assert(throttled.is_supported());
     assert(throttled.encoding_name() == "capacity1024");
     assert(throttled.apply_state(WorkloadState::Balanced, 320, 1024));
@@ -132,7 +132,7 @@ int main() {
     write_token(capped_root + "/cgroup.controllers", "cpu");
     write_token(capped_top + "/cpu.uclamp.min", "0.00");
     write_token(capped_top + "/cpu.uclamp.max", "50.00");
-    UclampGovernor capped(capped_root);
+    UclampGovernor capped(coordinator, capped_root);
     assert(capped.is_supported());
     assert(capped.apply_state(WorkloadState::Balanced, 320, 1024));
     assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
@@ -150,7 +150,7 @@ int main() {
     write_token(v2_ctrl_top + "/cpu.uclamp.min", "0");
     write_token(v2_ctrl_top + "/cpu.uclamp.max", "100");
 
-    UclampGovernor v2_ctrl(v2_ctrl_root);
+    UclampGovernor v2_ctrl(coordinator, v2_ctrl_root);
     assert(v2_ctrl.is_supported());
     assert(v2_ctrl.encoding_name() == "percentage");
 

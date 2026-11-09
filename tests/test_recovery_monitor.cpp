@@ -48,7 +48,7 @@ int main() {
 
     auto& baseline = BaselineStore::instance();
     assert(baseline.recover_pending());
-    auto& coordinator = CentralMutationCoordinator::instance();
+    CentralMutationCoordinator coordinator;
     coordinator.reset();
 
     // Retry admission is scoped to the exact lease and hard-capped at three.
@@ -135,7 +135,7 @@ int main() {
     assert(coordinator.is_preemption_requested(
         MutationDomain::GpuDevfreq, pending_owner, "pending-gpu-tx"));
 
-    MutationRecoveryMonitor pending_monitor(baseline);
+    MutationRecoveryMonitor pending_monitor(baseline, coordinator);
     const RecoveryResult pending_retry =
         pending_monitor.on_timer_tick("retry pending multi-domain preemption");
     assert(pending_retry.status == RecoveryStatus::NoRecoveryRequired);
@@ -172,7 +172,7 @@ int main() {
         put(battery_dir / "temp", "420");
         put(battery_dir / "status", "Charging");
 
-        auto tuner = std::make_unique<AutonomousTuner>(tuner_sys.string(), (round_root / "proc").string());
+        auto tuner = std::make_unique<AutonomousTuner>(coordinator, tuner_sys.string(), (round_root / "proc").string());
         const auto tuner_state = tuner->step({
             .cpu_psi = 6.0,
             .memory_psi = 0.5,
@@ -183,7 +183,7 @@ int main() {
         assert(tuner_state.active_candidate_id.rfind("io.", 0) == 0);
 
         LongevityConfig longevity_config{};
-        auto longevity = std::make_unique<HardwareLongevityManager>(longevity_sys.string());
+        auto longevity = std::make_unique<HardwareLongevityManager>(coordinator, longevity_sys.string());
         longevity->initialize(longevity_config);
         assert(longevity->battery_node_path() == battery_node.string());
         assert(longevity->monitor_battery_thermals(44.0f));
@@ -266,7 +266,7 @@ int main() {
         assert(coordinator.is_emergency_recovery_active());
         assert(baseline.has_active_mutations());
 
-        MutationRecoveryMonitor monitor(baseline);
+        MutationRecoveryMonitor monitor(baseline, coordinator);
         EpollReactor reactor;
         std::mutex tick_mutex;
         std::condition_variable tick_cv;

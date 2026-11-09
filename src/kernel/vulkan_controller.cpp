@@ -378,18 +378,11 @@ GpuVendor classify_vendor_id(uint32_t vendor_id, std::string_view device_name) n
 
 } // namespace
 
-VulkanController& VulkanController::instance() {
-    static VulkanController inst;
-    return inst;
-}
-
-namespace {
-constexpr std::string_view kVulkanControllerName = "VulkanController";
-}
-
-VulkanController::VulkanController() {
-    (void)CentralMutationCoordinator::instance().register_preemption_handler(
-        kVulkanControllerName,
+VulkanController::VulkanController(CentralMutationCoordinator& coordinator)
+    : coordinator_(coordinator),
+      controller_name_(CentralMutationCoordinator::make_controller_identity("VulkanController")) {
+    (void)coordinator_.register_preemption_handler(
+        controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
             return handle_preemption(domain, transaction_id);
         });
@@ -400,17 +393,17 @@ VulkanController::~VulkanController() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!transaction_id_.empty()) (void)rollback_gpu_transaction_locked();
     }
-    CentralMutationCoordinator::instance().unregister_preemption_handler(kVulkanControllerName);
+    coordinator_.unregister_preemption_handler(controller_name_);
 }
 
 bool VulkanController::acquire_gpu_lease_locked(ControllerPriority priority) {
     if (!transaction_id_.empty()) {
-        return CentralMutationCoordinator::instance().acquire_lease(
-            MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_, priority);
+        return coordinator_.acquire_lease(
+            MutationDomain::GpuDevfreq, controller_name_, transaction_id_, priority);
     }
     transaction_id_ = "vulkan-gpu-" + std::to_string(++transaction_generation_);
-    if (!CentralMutationCoordinator::instance().acquire_lease(
-            MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_, priority)) {
+    if (!coordinator_.acquire_lease(
+            MutationDomain::GpuDevfreq, controller_name_, transaction_id_, priority)) {
         transaction_id_.clear();
         return false;
     }
@@ -419,8 +412,8 @@ bool VulkanController::acquire_gpu_lease_locked(ControllerPriority priority) {
 
 void VulkanController::release_gpu_lease_locked() noexcept {
     if (transaction_id_.empty()) return;
-    CentralMutationCoordinator::instance().release_lease(
-        MutationDomain::GpuDevfreq, kVulkanControllerName, transaction_id_);
+    coordinator_.release_lease(
+        MutationDomain::GpuDevfreq, controller_name_, transaction_id_);
     transaction_id_.clear();
 }
 

@@ -275,33 +275,15 @@ void record_ownership_loss(CandidateStats* stats) {
 // AutonomousTuner Implementation
 // ============================================================================
 
-namespace {
-AutonomousTuner& shared_autonomous_tuner(DeviceProfileHandle profile) {
-    static std::mutex singleton_mutex;
-    static std::unique_ptr<AutonomousTuner> tuner;
-    std::lock_guard<std::mutex> lock(singleton_mutex);
-    if (!tuner) {
-        tuner = std::make_unique<AutonomousTuner>("/sys", "/proc", std::move(profile));
-    } else if (profile) {
-        tuner->set_device_profile(std::move(profile));
-    }
-    return *tuner;
-}
-} // namespace
-
-AutonomousTuner& AutonomousTuner::instance() {
-    return shared_autonomous_tuner({});
-}
-
-AutonomousTuner& AutonomousTuner::instance(DeviceProfileHandle profile) {
-    return shared_autonomous_tuner(std::move(profile));
-}
-
-AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root, DeviceProfileHandle profile)
-    : controller_name_(CentralMutationCoordinator::make_controller_identity("AutonomousTuner")),
+AutonomousTuner::AutonomousTuner(CentralMutationCoordinator& coordinator,
+                                 std::string sys_root,
+                                 std::string proc_root,
+                                 DeviceProfileHandle profile)
+    : coordinator_(coordinator),
+      controller_name_(CentralMutationCoordinator::make_controller_identity("AutonomousTuner")),
       sys_root_(std::move(sys_root)), proc_root_(std::move(proc_root)),
       device_profile_(std::move(profile)) {
-    (void)CentralMutationCoordinator::instance().register_preemption_handler(
+    (void)coordinator_.register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id,
                std::string_view reason) noexcept {
@@ -316,7 +298,7 @@ AutonomousTuner::~AutonomousTuner() {
         std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
         if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
     }
-    CentralMutationCoordinator::instance().unregister_preemption_handler(controller_name_);
+    coordinator_.unregister_preemption_handler(controller_name_);
 }
 
 void AutonomousTuner::set_device_profile(DeviceProfileHandle profile) {
@@ -532,7 +514,7 @@ bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept 
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
+    if (coordinator_.is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     return true;
@@ -555,7 +537,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     }
     const MutationDomain dom = domain_for_candidate(id);
     const ControllerPriority prio = priority_for_candidate(id);
-    if (CentralMutationCoordinator::instance().is_domain_locked_by_other(dom, controller_name_, prio)) {
+    if (coordinator_.is_domain_locked_by_other(dom, controller_name_, prio)) {
         return false;
     }
     if (c->cooldown_ticks > 0) {
@@ -1315,7 +1297,7 @@ bool AutonomousTuner::verify_active_ownership() const {
 bool AutonomousTuner::retry_contended_ownership() {
     if (applied_steps_.empty() || current_candidate_id_.empty() ||
         current_candidate_id_ == "baseline" || recovery_required_) return false;
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
     uint32_t attempt = 0;
     constexpr uint32_t kMaximumContentionRetries = 3;
     if (!coordinator.reserve_contention_retry(
@@ -1382,7 +1364,7 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
     // AutonomousTuner owns one candidate transaction at a time; never bulk-release
     // any unexpected lease that may belong to a separate recovery path.
     if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
-        CentralMutationCoordinator::instance().release_lease(
+        coordinator_.release_lease(
             domain_for_candidate(current_candidate_id_), controller_name_, current_candidate_id_);
     }
     applied_steps_.clear();
@@ -1399,7 +1381,7 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 
 bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
     auto& store = BaselineStore::instance();
     const bool had_active_transaction = transaction_active_;
     current_objective_ = OptimizationObjective::EmergencyMitigation;
@@ -1494,7 +1476,7 @@ bool AutonomousTuner::apply_transaction(
     const MutationDomain dom = domain_for_candidate(candidate_id);
     const ControllerPriority prio = priority_for_candidate(candidate_id);
     std::string conflict_reason;
-    if (!CentralMutationCoordinator::instance().acquire_lease(
+    if (!coordinator_.acquire_lease(
             dom, controller_name_, candidate_id, prio, &conflict_reason)) {
         last_verdict_ = "REJECTED";
         last_verdict_enum_ = TunerVerdict::Rejected;
@@ -1513,7 +1495,7 @@ bool AutonomousTuner::apply_transaction(
     // the transaction reaches OBSERVING.
     current_candidate_id_ = std::string(candidate_id);
     contention_backoff_ticks_ = 0;
-    auto& coordinator = CentralMutationCoordinator::instance();
+    auto& coordinator = coordinator_;
 
     const auto reject_preflight = [&](std::string_view reason) {
         coordinator.release_lease(dom, controller_name_, candidate_id);
@@ -1988,7 +1970,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0);
     if (emergency_boundary) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
-        CentralMutationCoordinator::instance().emergency_preempt_all("ThermalEmergency");
+        coordinator_.emergency_preempt_all("ThermalEmergency");
     }
 
     if (recovery_required_) {

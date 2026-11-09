@@ -49,7 +49,6 @@ struct NeuralPrediction {
 
 class NeuralPredictor {
 public:
-    static NeuralPredictor& instance();
 
     explicit NeuralPredictor(std::string model_dir = "/data/adb/coreflow/models");
     ~NeuralPredictor();

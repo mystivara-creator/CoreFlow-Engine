@@ -15,7 +15,6 @@ namespace coreflow {
 class DeviceProfiler {
 public:
     explicit DeviceProfiler(std::string sys_root = "/sys", std::string proc_root = "/proc");
-    static DeviceProfiler& instance();
     [[nodiscard]] DeviceProfileHandle profile();
     [[nodiscard]] DeviceProfileHandle refresh();
     [[nodiscard]] static bool parse_cpu_list(std::string_view text, std::vector<uint32_t>& cpus) noexcept;

@@ -38,6 +38,7 @@ int main() {
     ::setenv("COREFLOW_TEST_STATE_DIR", dir, 1);
 
     auto& baseline = coreflow::BaselineStore::instance();
+    coreflow::CentralMutationCoordinator coordinator;
     assert(baseline.recover_pending());
 
     const fs::path sys_root = root / "sys";
@@ -59,7 +60,7 @@ int main() {
     put(proc_root / "sys/vm/page-cluster", "3");
     put(proc_root / "sys/vm/vfs_cache_pressure", "100");
 
-    coreflow::AutonomousTuner tuner(sys_root.string(), proc_root.string());
+    coreflow::AutonomousTuner tuner(coordinator, sys_root.string(), proc_root.string());
     const auto initial = tuner.snapshot();
     assert(initial.block_queues.size() == 1);
     for (const auto& candidate : initial.candidates) {
@@ -75,7 +76,6 @@ int main() {
     assert(initial.block_queues[0].rq_affinity == 1);
 
     // Concurrent requests for one domain must have a single lease winner.
-    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
     coordinator.reset();
     const auto first_frequency_identity =
         coreflow::CentralMutationCoordinator::make_controller_identity("FrequencyController");
@@ -364,7 +364,7 @@ int main() {
     auto& ownership_baseline = coreflow::BaselineStore::instance();
     assert(!ownership_baseline.has_active_mutations());
     assert(ownership_baseline.verify_and_persist_clear_state());
-    const auto ownership_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
+    const auto ownership_leases = coordinator.active_leases();
     assert(std::none_of(ownership_leases.begin(), ownership_leases.end(), [](const auto& lease) {
         return lease.transaction_id == "io.bfq_interactive_fairness";
     }));
@@ -384,7 +384,7 @@ int main() {
     // the same state directory and capability fingerprint (not merely rereading
     // into already-populated in-memory CandidateStats).
     {
-        coreflow::AutonomousTuner reloaded_tuner(sys_root.string(), proc_root.string());
+        coreflow::AutonomousTuner reloaded_tuner(coordinator, sys_root.string(), proc_root.string());
         const auto reloaded = reloaded_tuner.snapshot();
         const auto persisted_bfq = std::find_if(
             reloaded.candidates.begin(), reloaded.candidates.end(),
@@ -525,7 +525,7 @@ int main() {
 
     // Emergency thermal spike must request preemption from every live domain owner
     // before the tuner attempts to roll back its own transaction.
-    auto& emergency_coord = coreflow::CentralMutationCoordinator::instance();
+    auto& emergency_coord = coordinator;
     assert(emergency_coord.acquire_lease(
         coreflow::MutationDomain::UclampCgroup,
         "ExternalUclampController",
@@ -566,13 +566,13 @@ int main() {
     tuner.reset(); // rollback of the missing node must fail closed
     const auto recovery_snapshot = tuner.snapshot();
     assert(recovery_snapshot.recovery_required);
-    const auto recovery_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
+    const auto recovery_leases = coordinator.active_leases();
     assert(recovery_leases.size() == 1);
     assert(recovery_leases[0].owner_controller.rfind("AutonomousTuner@", 0) == 0);
     assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
 
     // Emergency must still preempt other owners even when the recovery retry fails early.
-    auto& recovery_coord = coreflow::CentralMutationCoordinator::instance();
+    auto& recovery_coord = coordinator;
     assert(recovery_coord.acquire_lease(
         coreflow::MutationDomain::GpuDevfreq,
         "ExternalGpuController",
@@ -599,12 +599,12 @@ int main() {
     put(up_rate_path, "2000");
     tuner.reset();
     assert(!tuner.snapshot().recovery_required);
-    assert(coreflow::CentralMutationCoordinator::instance().active_leases().empty());
+    assert(coordinator.active_leases().empty());
     assert(get(up_rate_path) == "2000");
 
     // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
     tuner.reset();
-    auto& coord = coreflow::CentralMutationCoordinator::instance();
+    auto& coord = coordinator;
     coord.reset();
     std::string conflict_msg;
     assert(coord.acquire_lease(
@@ -940,7 +940,7 @@ int main() {
     // its registered callback and restores the active candidate before releasing.
     {
         put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
-        coreflow::AutonomousTuner preemption_tuner(sys_root.string(), proc_root.string());
+        coreflow::AutonomousTuner preemption_tuner(coordinator, sys_root.string(), proc_root.string());
         preemption_tuner.reset();
         const auto active = preemption_tuner.step({
             .cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
@@ -1378,7 +1378,7 @@ int main() {
     std::string disappeared_factory_value;
     std::string temporarily_hidden_path;
     {
-        coreflow::AutonomousTuner doomed(teardown_sys.string(), teardown_proc.string());
+        coreflow::AutonomousTuner doomed(coordinator, teardown_sys.string(), teardown_proc.string());
         const auto applied = doomed.step({
             .cpu_psi = 6.0,
             .memory_psi = 0.5,
@@ -1461,7 +1461,7 @@ int main() {
     }
 
     {
-        coreflow::AutonomousTuner persistence_reader(teardown_sys.string(), teardown_proc.string());
+        coreflow::AutonomousTuner persistence_reader(coordinator, teardown_sys.string(), teardown_proc.string());
         const auto restored = persistence_reader.snapshot();
         assert(restored.total_trials > 0);
     }
@@ -1475,7 +1475,7 @@ int main() {
     put(corrupt_dir / "tuner_stats.state", corrupt_payload);
     ::setenv("COREFLOW_TEST_STATE_DIR", corrupt_dir.c_str(), 1);
     {
-        coreflow::AutonomousTuner corrupt_reader(teardown_sys.string(), teardown_proc.string());
+        coreflow::AutonomousTuner corrupt_reader(coordinator, teardown_sys.string(), teardown_proc.string());
         const auto rejected = corrupt_reader.snapshot();
         assert(rejected.total_trials == 0);
         for (const auto& candidate : rejected.candidates) assert(candidate.trials == 0);
@@ -1489,7 +1489,7 @@ int main() {
     fs::create_symlink(external_state, symlink_state_file);
     ::setenv("COREFLOW_TEST_STATE_DIR", symlink_file_dir.c_str(), 1);
     {
-        coreflow::AutonomousTuner symlink_file_reader(teardown_sys.string(), teardown_proc.string());
+        coreflow::AutonomousTuner symlink_file_reader(coordinator, teardown_sys.string(), teardown_proc.string());
         assert(symlink_file_reader.snapshot().total_trials == 0);
         symlink_file_reader.reset(); // unlink the link itself, never its target
     }
@@ -1504,7 +1504,7 @@ int main() {
     fs::create_directory_symlink(real_parent, linked_parent);
     ::setenv("COREFLOW_TEST_STATE_DIR", (linked_parent / "nested").c_str(), 1);
     {
-        coreflow::AutonomousTuner symlink_ancestor_reader(teardown_sys.string(), teardown_proc.string());
+        coreflow::AutonomousTuner symlink_ancestor_reader(coordinator, teardown_sys.string(), teardown_proc.string());
         assert(symlink_ancestor_reader.snapshot().total_trials == 0);
     }
     ::setenv("COREFLOW_TEST_STATE_DIR", root.c_str(), 1);
@@ -1533,7 +1533,7 @@ int main() {
     put(preflight_proc / "sys/vm/vfs_cache_pressure", "100");
 
     {
-        coreflow::AutonomousTuner preflight_tuner(preflight_sys.string(), preflight_proc.string());
+        coreflow::AutonomousTuner preflight_tuner(coordinator, preflight_sys.string(), preflight_proc.string());
         assert(preflight_tuner.snapshot().block_queues.size() == 1);
         const fs::path scheduler = preflight_queue / "scheduler";
         const fs::path scheduler_backup = preflight_queue / "scheduler.backup";

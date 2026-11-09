@@ -15,6 +15,7 @@
 #include <string_view>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 enum class ControllerPriority : uint8_t;
 
@@ -29,11 +30,10 @@ struct LongevityConfig {
 
 class HardwareLongevityManager {
 public:
-    explicit HardwareLongevityManager(std::string sys_root = "/sys");
+    explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys");
     ~HardwareLongevityManager();
     HardwareLongevityManager(const HardwareLongevityManager&) = delete;
     HardwareLongevityManager& operator=(const HardwareLongevityManager&) = delete;
-    static HardwareLongevityManager& instance();
 
     /// Dynamically discover battery and storage control nodes
     void initialize(const LongevityConfig& config);
@@ -52,6 +52,7 @@ public:
     [[nodiscard]] std::string battery_node_path() const;
 
 private:
+    CentralMutationCoordinator& coordinator_;
     std::string root_;
     std::string controller_name_;
     mutable std::mutex mutex_;

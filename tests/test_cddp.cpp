@@ -59,11 +59,12 @@ int main() {
     const std::string state_dir = (a.root / "state").string();
     (void)::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
     auto& baseline_store = BaselineStore::instance();
+    CentralMutationCoordinator coordinator;
     const bool baseline_recovered = baseline_store.recover_pending();
     assert(baseline_recovered);
     (void)baseline_recovered;
     {
-        FrequencyController controller(a.sys.string(), profile_a);
+        FrequencyController controller(coordinator, a.sys.string(), profile_a);
         controller.discover(true, false);
         assert(controller.cpu_count() == 1 && controller.gpu_count() == 0);
         assert(controller.apply(0.75));
@@ -72,7 +73,7 @@ int main() {
         assert(read_value(a.sys / "devices/system/cpu/cpufreq/policy0/scaling_max_freq") == "2000000");
     }
     {
-        AutonomousTuner tuner(a.sys.string(), a.proc.string(), profile_a);
+        AutonomousTuner tuner(coordinator, a.sys.string(), a.proc.string(), profile_a);
         assert(!tuner.is_candidate_eligible("cpufreq.schedutil_interactive_response"));
         assert(tuner.snapshot().capability_fingerprint.find(profile_a->fingerprint) != std::string::npos);
         const auto invalid_evidence = tuner.step({

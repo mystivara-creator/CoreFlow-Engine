@@ -10,6 +10,7 @@
 #include <string_view>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 
 class BaselineStore;
 
@@ -39,13 +40,14 @@ struct RecoveryResult {
 // journal, retires only verified detached-owner leases, and reopens admission
 // only after every lease and callback has drained.
 [[nodiscard]] RecoveryResult coordinated_rollback(
+    CentralMutationCoordinator& coordinator,
     BaselineStore& baseline,
     std::string_view reason);
 
 class MutationRecoveryMonitor {
 public:
-    explicit MutationRecoveryMonitor(BaselineStore& baseline) noexcept
-        : baseline_(baseline) {}
+    MutationRecoveryMonitor(BaselineStore& baseline, CentralMutationCoordinator& coordinator) noexcept
+        : baseline_(baseline), coordinator_(coordinator) {}
 
     // Called by the daemon timerfd safety callback. Idle ticks do not initiate a
     // global rollback; pending emergency recovery is retried on every later tick.
@@ -54,6 +56,7 @@ public:
 
 private:
     BaselineStore& baseline_;
+    CentralMutationCoordinator& coordinator_;
 };
 
 } // namespace coreflow

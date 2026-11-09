@@ -36,10 +36,6 @@ bool regular_file_exists(const std::string& path) noexcept {
 
 } // namespace
 
-NeuralPredictor& NeuralPredictor::instance() {
-    static NeuralPredictor predictor;
-    return predictor;
-}
 
 NeuralPredictor::NeuralPredictor(std::string model_dir) : model_dir_(std::move(model_dir)) {
     initialize(model_dir_);

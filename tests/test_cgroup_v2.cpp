@@ -40,11 +40,11 @@ int main() {
 
     auto& baseline = coreflow::BaselineStore::instance();
     assert(baseline.recover_pending());
-    auto& coordinator = coreflow::CentralMutationCoordinator::instance();
+    coreflow::CentralMutationCoordinator coordinator;
     coordinator.reset();
 
     {
-        coreflow::CgroupV2Controller controller(root.string());
+        coreflow::CgroupV2Controller controller(coordinator, root.string());
         assert(controller.is_supported());
 
         // FrequencyController and CgroupV2Controller share the conservative
@@ -59,7 +59,7 @@ int main() {
         put(gpu_policy / "max_freq", "800000000");
         put(gpu_policy / "min_freq", "200000000");
         put(gpu_policy / "available_frequencies", "200000000 400000000 600000000 800000000");
-        coreflow::FrequencyController frequencies(root.string());
+        coreflow::FrequencyController frequencies(coordinator, root.string());
         frequencies.discover(true, true);
         assert(frequencies.apply(0.75));
         assert(get(cpu_policy / "scaling_max_freq") == "1500000");
@@ -152,7 +152,7 @@ int main() {
         "partial-acquisition-gpu-reservation",
         coreflow::ControllerPriority::WorkloadOptimization));
     {
-        coreflow::FrequencyController combined(root.string());
+        coreflow::FrequencyController combined(coordinator, root.string());
         combined.discover(true, true);
         assert(combined.cpu_count() == 1);
         assert(combined.gpu_count() == 1);

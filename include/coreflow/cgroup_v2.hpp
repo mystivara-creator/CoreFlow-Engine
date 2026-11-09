@@ -15,12 +15,14 @@
 #include <string_view>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 enum class ControllerPriority : uint8_t;
 
 class CgroupV2Controller {
 public:
-    explicit CgroupV2Controller(std::string_view root_path = "/sys/fs/cgroup");
+    explicit CgroupV2Controller(CentralMutationCoordinator& coordinator,
+                                std::string_view root_path = "/sys/fs/cgroup");
     ~CgroupV2Controller();
     CgroupV2Controller(const CgroupV2Controller&) = delete;
     CgroupV2Controller& operator=(const CgroupV2Controller&) = delete;
@@ -34,6 +36,7 @@ public:
     bool unlock_vendor_restrictions();
 
 private:
+    CentralMutationCoordinator& coordinator_;
     std::string root_path_;
     std::string controller_name_;
     mutable std::mutex mutex_;

@@ -7,11 +7,14 @@
 #include <vector>
 
 namespace coreflow {
+class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 // Only kernel-exposed frequency tables are accepted; never invent an operating point.
 class FrequencyController {
 public:
-    explicit FrequencyController(std::string sys_root = "/sys", DeviceProfileHandle profile = {});
+    explicit FrequencyController(CentralMutationCoordinator& coordinator,
+                                 std::string sys_root = "/sys",
+                                 DeviceProfileHandle profile = {});
     ~FrequencyController();
     void discover(bool cpu, bool gpu);
     bool apply(double capacity_scale);
@@ -24,6 +27,7 @@ private:
         std::vector<uint64_t> frequencies;
         bool gpu, retired{false}, mutation_active{false};
     };
+    CentralMutationCoordinator& coordinator_;
     std::string root_;
     DeviceProfileHandle profile_;
     std::string controller_name_;

@@ -192,10 +192,6 @@ DeviceProfiler::DeviceProfiler(std::string sys_root, std::string proc_root)
     if (sys_root_.empty()) sys_root_ = "/sys";
     if (proc_root_.empty()) proc_root_ = "/proc";
 }
-DeviceProfiler& DeviceProfiler::instance() {
-    static DeviceProfiler profiler;
-    return profiler;
-}
 bool DeviceProfiler::parse_cpu_list(std::string_view text, std::vector<uint32_t>& cpus) noexcept {
     cpus.clear();
     if (text.empty() || text.size() > 16384U) return false;
@@ -520,7 +516,7 @@ DeviceTopology DeviceProfiler::probe() {
     { std::lock_guard<std::mutex> lock(mutex_); cached_topology_ = topo; }
     return topo;
 }
-float DeviceProfiler::get_soc_temperature() const { return ThermalMonitor::instance().hottest_celsius(); }
+float DeviceProfiler::get_soc_temperature() const { return ThermalMonitor{}.hottest_celsius(); }
 std::vector<uint32_t> DeviceProfiler::get_cluster_frequencies() const {
     const auto current = const_cast<DeviceProfiler*>(this)->profile();
     std::vector<uint32_t> frequencies;

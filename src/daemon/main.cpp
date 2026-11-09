@@ -1,4 +1,5 @@
 #include "coreflow/types.hpp"
+#include "coreflow/coreflow_context.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
@@ -58,16 +59,6 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-
-// Diagnostic one-shot commands intentionally bypass C++ static destruction.
-// They may have initialized process-wide singletons whose teardown order is not
-// owned by the CLI path (and may race late singleton callbacks). Flush output,
-// then let the kernel reclaim process resources without running global destructors.
-[[noreturn]] void finish_cli_process(int status) noexcept {
-    std::cout.flush();
-    std::cerr.flush();
-    ::_exit(status);
-}
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) {
@@ -307,13 +298,13 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
     return std::isfinite(v) ? v : fallback;
 }
 
-void print_status() {
-    // 1. Run all hardware, kernel, AI, tuner, and Vulkan probes FIRST before writing any JSON
+void print_status(CoreFlowContext& context) {
+    // 1. Perform passive hardware/kernel inspection before writing the JSON payload
     const pid_t pid = daemon_pid();
     const DaemonConfig cfg_status = DaemonConfig::load_best_available();
-    const auto profile = ThermalMonitor::instance().multi_sensor_profile();
-    const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
-    auto thermal = ThermalMonitor::instance().assess(false);
+    const auto profile = context.thermal_monitor().multi_sensor_profile();
+    const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
+    auto thermal = context.thermal_monitor().assess(false);
     if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
         thermal.available = true;
         thermal.fallback_active = true;
@@ -330,31 +321,28 @@ void print_status() {
     const bool thermal_guard_active = !thermal.fallback_active
         ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0)
         : (thermal.emergency || temp >= cfg_status.thermal_trip_celsius);
-    UclampGovernor governor;
-    const auto battery = ThermalMonitor::instance().battery_celsius();
-    const auto skin = ThermalMonitor::instance().skin_celsius();
+    const auto battery = context.thermal_monitor().battery_celsius();
+    const auto skin = context.thermal_monitor().skin_celsius();
     const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
     const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
     const auto io_psi = read_psi_avg10("/proc/pressure/io");
-    const auto ai = NeuralPredictor::instance().infer_and_learn({
-        .thermal_pressure = std::clamp(safe_json_double(thermal.pressure), 0.0, 130.0),
-        .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
-        .memory_psi = std::clamp(mem_psi.value_or(0.0), 0.0, 100.0),
-        .io_psi = std::clamp(io_psi.value_or(0.0), 0.0, 100.0),
-        .cpu_psi_valid = cpu_psi.has_value(),
-        .memory_psi_valid = mem_psi.has_value(),
-        .io_psi_valid = io_psi.has_value(),
-        .current_scale = 1.0,
-        .elapsed_seconds = 1.0,
-    });
-    const auto tuner = AutonomousTuner::instance().snapshot();
-    VulkanController::instance().initialize({
-        .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
-        .enable_skiavk_threaded = cfg_status.enable_skiavk_threaded,
-        .enable_adaptive_vrs = cfg_status.enable_adaptive_vrs,
-        .enable_pipeline_cache_prewarm = cfg_status.enable_pipeline_cache_prewarm,
-    });
-    const auto vk = VulkanController::instance().snapshot();
+    // Read-only status does not train models or create mutation-capable owners.
+    const NeuralPrediction ai{.backend = "not_started"};
+    const AutonomousDecisionSnapshot tuner{
+        .stage = "READ_ONLY",
+        .active_intent = "ReadOnlyInspection",
+        .intent = "ReadOnlyInspection",
+        .workload_name = "Unknown",
+        .bottleneck_name = "Unknown",
+        .objective_name = "NotEvaluated",
+        .active_candidate_id = "none",
+        .active_candidate_label = "Mutation runtime not started",
+        .decision_rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
+        .rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
+        .last_verdict = "NOT_STARTED",
+        .verdict = TunerVerdict::Hold,
+    };
+    const VulkanCapabilitiesSnapshot vk{};
     const bool recovery_pending = !journal_clear();
     const size_t journal_nodes = count_journal_entries();
 
@@ -362,9 +350,15 @@ void print_status() {
     std::ostringstream out;
     out << "{\"running\":" << (pid ? "true" : "false")
         << ",\"pid\":" << pid
-        << ",\"uclampMin\":" << governor.get_top_app_min()
-        << ",\"uclampMax\":" << governor.get_top_app_max()
-        << ",\"uclampSupported\":" << (governor.is_supported() ? "true" : "false")
+        << ",\"uclampMin\":0"
+        << ",\"uclampMax\":0"
+        << ",\"uclampSupported\":false"
+        << ",\"uclampProbeSkipped\":true"
+        << ",\"inspectionMode\":\"read-only\""
+        << ",\"mutationRuntimeStarted\":false"
+        << ",\"aiRuntimeStarted\":false"
+        << ",\"tunerRuntimeStarted\":false"
+        << ",\"vulkanProbeSkipped\":true"
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
         << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
         << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
@@ -435,7 +429,7 @@ void print_status() {
         << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
         << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
         << ",\"tunerRationale\":" << json_string(tuner.rationale)
-        << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
+        << ",\"tunerVerdict\":" << json_string(tuner.last_verdict)
         << ",\"tunerUtilityDelta\":" << safe_json_double(tuner.utility_delta)
         << ",\"tunerNoiseFloor\":" << safe_json_double(tuner.noise_floor, 0.05)
         << ",\"tunerTrials\":" << tuner.total_trials
@@ -494,6 +488,7 @@ void print_status() {
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
         << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"probeSkipped\":true"
         << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
@@ -576,19 +571,12 @@ std::string json_string(std::string_view text) {
     return out + "\"";
 }
 
-void print_capabilities() {
-    const auto topology = DeviceProfiler::instance().probe();
+void print_capabilities(CoreFlowContext& context) {
+    const auto topology = context.device_profiler().probe();
     const auto power = PowerBridge{}.probe();
-    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
-    const auto ai = NeuralPredictor::instance().last_prediction();
-    const DaemonConfig cfg_cap = DaemonConfig::load_best_available();
-    VulkanController::instance().initialize({
-        .mode = VulkanController::parse_mode(cfg_cap.vulkan_layer_mode),
-        .enable_skiavk_threaded = cfg_cap.enable_skiavk_threaded,
-        .enable_adaptive_vrs = cfg_cap.enable_adaptive_vrs,
-        .enable_pipeline_cache_prewarm = cfg_cap.enable_pipeline_cache_prewarm,
-    });
-    const auto vk = VulkanController::instance().snapshot();
+    // Capabilities is a passive probe: no online learning, layer setup, or actuators.
+    const NeuralPrediction ai{.backend = "not_started"};
+    const VulkanCapabilitiesSnapshot vk{};
     std::ostringstream out;
     out << "{\"socModel\":" << json_string(topology.soc_name)
         << ",\"kernelVersion\":" << json_string(topology.kernel_version)
@@ -598,6 +586,7 @@ void print_capabilities() {
         << ",\"aiBackend\":" << json_string(ai.backend)
         << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
         << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true"
         << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
         << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
     std::cout << "\n" << out.str() << "\n" << std::flush;
@@ -881,10 +870,19 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2) {
         const std::string_view command(argv[1]);
-        if (command == "--capabilities") { print_capabilities(); finish_cli_process(0); }
+        if (command == "--capabilities") {
+            CoreFlowContext context;
+            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
+            print_capabilities(context);
+            (void)context.Stop("Read-only capabilities inspection complete");
+            return 0;
+        }
         if (command == "--status") {
-            print_status();
-            finish_cli_process(0);
+            CoreFlowContext context;
+            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
+            print_status(context);
+            (void)context.Stop("Read-only status inspection complete");
+            return 0;
         }
         if (command == "--stop" || command == "--rollback-baseline") {
             return stop_daemon();
@@ -933,26 +931,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    auto& baseline = BaselineStore::instance();
-    if (!baseline.recover_pending()) {
-        emit_log(true, "[CoreFlow] Incomplete crash recovery. Refusing new mutations.");
+    CoreFlowContext context;
+    if (!context.Start(CoreFlowContext::Mode::Daemon)) {
+        emit_log(true, "[CoreFlow] Context startup or durable recovery failed; refusing new mutations.");
         clear_pid(pid_lock);
         return 1;
     }
-    MutationRecoveryMonitor recovery_monitor(baseline);
+    auto& baseline = context.baseline_store();
+    auto& recovery_monitor = context.recovery_monitor();
 
     DaemonConfig config = DaemonConfig::load_best_available();
-    const DeviceProfileHandle device_profile = DeviceProfiler::instance().refresh();
+    const DeviceProfileHandle device_profile = context.device_profile();
     emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
         " fingerprint=" + device_profile->fingerprint +
         " CPU policies=" + std::to_string(device_profile->cpu_policies.size()) +
         " GPU domains=" + std::to_string(device_profile->gpu_domains.size()));
-    UclampGovernor governor;
-    FrequencyController frequencies("/sys", device_profile);
+    auto& governor = context.uclamp_governor();
+    auto& frequencies = context.frequency_controller();
     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
-    auto& autonomous_tuner = AutonomousTuner::instance(device_profile);
+    auto& autonomous_tuner = context.autonomous_tuner();
     auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
-    HardwareLongevityManager::instance().initialize({
+    context.hardware_longevity().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
         config.top_app_io_weight, config.background_io_weight});
@@ -1031,8 +1030,8 @@ int main(int argc, char* argv[]) {
     double last_capacity_scale = 1.0;
     std::string last_tuner_candidate = "oem_baseline";
     TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
-    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
-    VulkanController::instance().initialize({
+    context.neural_predictor().initialize("/data/adb/coreflow/models");
+    context.vulkan_controller().initialize({
         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
         .enable_skiavk_threaded = config.enable_skiavk_threaded,
         .enable_adaptive_vrs = config.enable_adaptive_vrs,
@@ -1046,7 +1045,7 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    const auto recovery = coordinated_rollback(baseline, "Configuration reload on SIGHUP");
+                    const auto recovery = coordinated_rollback(context.mutation_coordinator(), baseline, "Configuration reload on SIGHUP");
                     if (!recovery.recovered()) {
                         emit_log(true, "[CoreFlow] SIGHUP reload deferred; recovery status=" +
                                  std::string(recovery_status_name(recovery.status)));
@@ -1058,13 +1057,13 @@ int main(int argc, char* argv[]) {
                     }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
                     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
-                    HardwareLongevityManager::instance().initialize({
+                    context.hardware_longevity().initialize({
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
                         config.top_app_io_weight, config.background_io_weight});
-                    NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
-                    AutonomousTuner::instance().discover();
-                    VulkanController::instance().configure({
+                    context.neural_predictor().initialize("/data/adb/coreflow/models");
+                    context.autonomous_tuner().discover();
+                    context.vulkan_controller().configure({
                         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
                         .enable_skiavk_threaded = config.enable_skiavk_threaded,
                         .enable_adaptive_vrs = config.enable_adaptive_vrs,
@@ -1131,9 +1130,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto thermal = ThermalMonitor::instance().assess();
-        const auto profile = ThermalMonitor::instance().multi_sensor_profile();
-        const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : ThermalMonitor::instance().hottest_celsius();
+        auto thermal = context.thermal_monitor().assess();
+        const auto profile = context.thermal_monitor().multi_sensor_profile();
+        const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
         const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
         const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
         const auto io_psi = read_psi_avg10("/proc/pressure/io");
@@ -1205,7 +1204,7 @@ int main(int argc, char* argv[]) {
             // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
             // do not rely on the unrelated PID applied flag to decide whether it rolls back.
             const auto recovery = coordinated_rollback(
-                baseline, "Thermal telemetry unavailable; restore OEM baseline.");
+                context.mutation_coordinator(), baseline, "Thermal telemetry unavailable; restore OEM baseline.");
             if (!recovery.recovered()) {
                 emit_log(true, "[CoreFlow][Safety] Thermal rollback pending; status=" +
                          std::string(recovery_status_name(recovery.status)));
@@ -1228,13 +1227,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
-        const float batt = ThermalMonitor::instance().battery_celsius();
+        const float batt = context.thermal_monitor().battery_celsius();
         if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
                      "°C). Rolling back mutations to hardware fail-safe baseline.");
             const auto recovery = coordinated_rollback(
-                baseline, "Extreme physical thermal threshold reached.");
+                context.mutation_coordinator(), baseline, "Extreme physical thermal threshold reached.");
             if (!recovery.recovered()) {
                 emit_log(true, "[CoreFlow][Safety] Extreme thermal rollback pending; status=" +
                          std::string(recovery_status_name(recovery.status)));
@@ -1280,7 +1279,7 @@ int main(int argc, char* argv[]) {
         last_tick = now_tick;
 
         // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
-        const auto ai_pred = NeuralPredictor::instance().infer_and_learn({
+        const auto ai_pred = context.neural_predictor().infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
@@ -1363,9 +1362,9 @@ int main(int argc, char* argv[]) {
         if (!frequencies.apply(active_capacity_scale)) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
-        (void)HardwareLongevityManager::instance().apply_storage_pacing();
-        HardwareLongevityManager::instance().monitor_battery_thermals(temp);
-        (void)VulkanController::instance().apply_workload_policy(
+        (void)context.hardware_longevity().apply_storage_pacing();
+        context.hardware_longevity().monitor_battery_thermals(temp);
+        (void)context.vulkan_controller().apply_workload_policy(
             desired, active_capacity_scale, thermal_limit_hit);
 
         // Multi-domain autonomous scheduler, VM & active thermal stabilization evaluation
@@ -1462,9 +1461,8 @@ int main(int argc, char* argv[]) {
     }
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
-    const auto shutdown_recovery = coordinated_rollback(baseline, "Daemon shutdown");
-    const bool restored = shutdown_recovery.recovered() &&
-                          !baseline.has_active_mutations() && journal_clear();
+    const bool stopped = context.Stop("Daemon shutdown");
+    const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
 }
