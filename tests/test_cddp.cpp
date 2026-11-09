@@ -143,6 +143,22 @@ int main() {
     for (const auto& cap : profile_i->node_capabilities)
         if (cap.semantic_id == "kgsl.vendor_control.unverified") assert(!cap.mutation_eligible());
 
+    // K: whitespace-separated CPU policy membership is parsed.
+    auto k = cddp_fixture::create("K");
+    DeviceProfiler pk(k.sys.string(), k.proc.string());
+    const auto profile_k = pk.refresh();
+    assert(profile_k->cpu_policies.size() == 1);
+    assert(profile_k->cpu_policies.front().related_cpus_valid);
+    assert((profile_k->cpu_policies.front().related_cpus == std::vector<uint32_t>{0,1,2,3}));
+
+    // L: malformed related_cpus falls back to valid affected_cpus.
+    auto l = cddp_fixture::create("L");
+    DeviceProfiler pl(l.sys.string(), l.proc.string());
+    const auto profile_l = pl.refresh();
+    assert(profile_l->cpu_policies.size() == 1);
+    assert(profile_l->cpu_policies.front().related_cpus_valid);
+    assert((profile_l->cpu_policies.front().related_cpus == std::vector<uint32_t>{0,1,2,3}));
+
     // J: absent subsystems stay absent; no synthesized defaults.
     auto j = cddp_fixture::create("J");
     DeviceProfiler pj(j.sys.string(), j.proc.string());
