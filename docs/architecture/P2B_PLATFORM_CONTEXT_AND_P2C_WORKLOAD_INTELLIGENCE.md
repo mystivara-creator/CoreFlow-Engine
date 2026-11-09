@@ -1,55 +1,44 @@
 # P2-B Platform Context & P2-C Workload Intelligence
 
-## Scope
+## Implemented P2-C scope
 
-This branch establishes the platform identity contract, execution-tier policy selection, and event-driven workload telemetry interfaces. It does not yet load an eBPF program, attach tracepoints, mutate kernel controls, or claim HyperOS 4 KPI attainment.
+This revision adds a read-only procfs/PSI fallback sampler and a deterministic, backend-neutral workload decision tree. It does not claim a production eBPF program is loaded or attached. The passive BPF probe leaves syscall permission, ring-buffer map creation, SELinux load authorization and verifier/attachment status unknown. Until a verified BPF object and tracepoint attachment lifecycle exist, backend selection remains on sysfs/procfs.
 
-## P2-B — Platform & Capability Context
+## Unified feature contract
 
-`PlatformContextDetector` reads Android system properties through an injectable `AndroidPropertySource`. Production Android builds use the native system-property API; host tests use an in-memory fake. No shelling out to `getprop`, parsing arbitrary property files, or writing properties is involved.
+WorkloadFeatureSnapshot is the sole classifier input. Backend provenance is metadata only; the classifier does not branch on source. Every feature is guarded by valid_features. Missing GPU busy, frame timeline, wakeup, run-queue and latency metrics remain invalid rather than being synthesized as zero.
 
-Tier 1 is deliberately gated on all of the following:
-- Manufacturer/vendor evidence identifies Xiaomi.
-- Product brand independently corroborates Xiaomi, Redmi, or POCO.
-- The explicit `ro.mi.os.version.name` marker identifies HyperOS.
-- The build fingerprint independently matches a Xiaomi/Redmi/POCO product namespace.
-- Parsed HyperOS major generation is exactly 2 or 3.
+The fallback samples:
+- PSI some avg10 for CPU, memory and I/O pressure.
+- /proc/diskstats sector counters, converted to bytes using Linux 512-byte sectors. The first sample establishes a baseline; only subsequent monotonic deltas are valid.
+- It does not fabricate GPU busy, frame deadlines, run-queue wait, wakeup rate or I/O latency where no reliable portable source exists.
 
-MIUI-only devices, ambiguous Xiaomi identity, HyperOS versions outside the supported 2/3 set, and all non-Xiaomi platforms use `UniversalFallback`. Vendor identity is descriptive; it is not mutation authority. Every controller still requires CDDP capability evidence, ownership, baseline, constraints, and verified readback.
+Counter reset, missing files and malformed windows leave affected features invalid. Fallback emits feature windows directly; it does not invent synthetic scheduler events.
 
-`CoreFlowContext` owns the immutable `PlatformContextSnapshot` for its lifecycle generation. The read-only `--status` JSON exposes vendor, OS family, OS major, execution tier, policy family, confidence, and Tier 1 eligibility. This is the policy selector boundary for Tier 1 vs Tier 2. It must not be used to bypass OEM service ownership or capability discovery.
+## Classifier and temporal controls
 
-## P2-C — Event-driven telemetry contract
+The decision tree is deterministic and package-name agnostic:
+- Jank-sensitive requires explicit frame-deadline miss percentage plus an independent CPU, I/O or GPU contention signal.
+- Memory pressure requires valid memory PSI.
+- I/O-heavy requires valid I/O byte delta and I/O PSI.
+- GPU-bound requires GPU busy plus CPU context.
+- CPU-bound requires CPU PSI and, when available, run-queue evidence.
+- Gaming requires GPU busy plus explicit frame-deadline telemetry; package identity is never a classifier feature.
 
-The workload header defines bounded fixed-width event records, a source interface, feature validity bits, and a classifier output. The classifier is telemetry-only: it has no coordinator, sysfs write, actuator, or mutation API.
+The classifier rejects malformed, future, older-than-three-second, duplicate and out-of-order windows. A candidate must persist for two windows. Non-initial transitions require a three-second dwell from the last committed transition. Confidence and evidence masks accompany classifications. The classifier has no actuator or MutationCoordinator dependency.
 
-Preferred data path:
+## HyperOS 4-inspired KPI and P2-D contract
 
-`BPF capability discovery -> BPF tracepoints/ring buffer -> event aggregation -> feature windows -> confidence + hysteresis -> WorkloadClassification -> policy evaluation -> MutationCoordinator`
+The feature schema carries frame deadline count, miss count and miss percentage, GPU busy, CPU/memory/I/O PSI, I/O byte deltas and I/O latency p95. The fallback currently supplies PSI and I/O byte deltas only. FrameTimeline/GPU telemetry requires a separately validated platform source. The 0.08% frame-drop target cannot be inferred from PSI or scheduler events.
 
-Fallback path:
+Memory PSI is evidence for P2-D, not a reclaim command. Proactive cleanup must additionally consume reclaimable-memory estimates, foreground/working-set protection, pressure duration, reclaim cost and post-action verification. No reclaim or other kernel mutation is performed here.
 
-`PSI + sysfs/procfs counters -> same feature windows -> same classifier -> policy evaluation`
+## eBPF load gate and remaining acceptance
 
-The fallback does not fabricate unavailable signals as zero. Each feature carries a validity bit and source identity. Workload class names (Gaming, I/O-heavy, Jank-sensitive, CPU-bound, GPU-bound) are labels, not conclusions from package names alone. Classification requires multiple independent signals, minimum valid-feature coverage, confidence thresholds, dwell/hysteresis, and stale-event rejection.
+A readable BTF/tracefs path or bpffs mount is not proof that BPF_PROG_LOAD, tracepoint attachment or ring-buffer delivery is permitted. event_pipeline_ready remains false until syscall, ring-buffer, SELinux, loader verification and required tracepoints are positively established. The current code intentionally does not attempt to load an unverified object; fallback remains selected.
 
-The initial read-only BPF probe inventories BTF, tracefs, scheduler/block tracepoint IDs, and verifies the bpffs filesystem magic rather than treating a directory as a mount. It deliberately leaves syscall permission, ring-buffer map support, SELinux load permission, and loader verification unknown until the dedicated loader stage establishes them. The eBPF source is not selected unless all required capabilities are verified; this foundation therefore defaults to sysfs/procfs fallback.
+A production loader still requires a verifier-tested BPF object, bounded map/ring-buffer budgets, required tracepoint attachment, event-loss accounting and complete detach/close behavior for every failure and stop path. This is an explicit remaining acceptance gate, not represented by a stub as complete.
 
-## HyperOS 4-inspired KPI contract
+## Replay and host validation
 
-These are target benchmarks, not guaranteed outcomes or pass/fail thresholds until their measurement methodology and device comparability are independently validated:
-- Frame pacing: 0.08% normal average dropped frames; 0.15% after 9 hours.
-- Camera cold launch: 808.8 ms.
-- Thirty-app hot-launch aggregate: approximately 36.8 s, representing an 8.7% reduction.
-- Memory preloading/cleanup: workload-triggered policy, only after pressure evidence and reclaim safety are established.
-
-Tier 1 may evaluate the HyperOS 4-inspired policy family on supported HyperOS 2/3 devices. Tier 2 uses CoreFlow Base Engine. Neither tier is allowed to bypass capability checks, emergency arbitration, OEM ownership, settling windows, or rollback.
-
-## Next P2-C implementation gates
-
-1. Implement read-only BPF capability probe and tracepoint inventory.
-2. Add a loader abstraction with bounded map/ring-buffer memory budgets and explicit SELinux/permission outcomes.
-3. Add a no-BPF sysfs/PSI sampler with identical feature schema.
-4. Add event loss, timestamp monotonicity, stale-window, and source-switch tests.
-5. Implement workload features and classifier with replay fixtures, confidence/hysteresis and overhead budgets.
-6. Integrate classifications as policy evidence only; mutation remains exclusively through the existing coordinator and transaction pipeline.
+tests/test_platform_context.cpp now exercises synthetic procfs/PSI and deterministic workload windows: PSI parsing, diskstats delta units, invalid-feature preservation, source-agnostic classification, stale/future/duplicate rejection, two-window confirmation, jank evidence requirements and memory-pressure evidence. These are host fixtures, not physical-device telemetry or KPI results.
