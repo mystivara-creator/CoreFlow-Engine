@@ -43,7 +43,8 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     }
 
     thermal_monitor_ = std::make_unique<ThermalMonitor>();
-    profile_ = profiler_.refresh();
+    profiler_ = std::make_unique<DeviceProfiler>();
+    profile_ = profiler_->refresh();
     if (!profile_) {
         destroy_runtime_services();
         state_ = State::Failed;
@@ -108,10 +109,11 @@ void CoreFlowContext::destroy_runtime_services() noexcept {
     frequency_controller_.reset();
     uclamp_governor_.reset();
     recovery_monitor_.reset();
+    profiler_.reset();
     thermal_monitor_.reset();
 }
 
-DeviceProfiler& CoreFlowContext::device_profiler() noexcept { return profiler_; }
+DeviceProfiler& CoreFlowContext::device_profiler() noexcept { return *profiler_; }
 ThermalMonitor& CoreFlowContext::thermal_monitor() noexcept { return *thermal_monitor_; }
 NeuralPredictor& CoreFlowContext::neural_predictor() noexcept { return *neural_predictor_; }
 BaselineStore& CoreFlowContext::baseline_store() noexcept { return BaselineStore::instance(); }

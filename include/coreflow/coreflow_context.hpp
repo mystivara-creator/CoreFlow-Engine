@@ -7,7 +7,6 @@
 
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/device_profile.hpp"
-#include "coreflow/device_profiler.hpp"
 
 #include <memory>
 #include <string_view>
@@ -15,6 +14,7 @@
 namespace coreflow {
 
 class BaselineStore;
+class DeviceProfiler;
 class ThermalMonitor;
 class NeuralPredictor;
 class MutationRecoveryMonitor;
@@ -64,7 +64,7 @@ public:
 private:
     // Declared first so it outlives every controller callback registration.
     CentralMutationCoordinator coordinator_;
-    DeviceProfiler profiler_;
+    std::unique_ptr<DeviceProfiler> profiler_;
     std::unique_ptr<ThermalMonitor> thermal_monitor_;
     std::unique_ptr<NeuralPredictor> neural_predictor_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
