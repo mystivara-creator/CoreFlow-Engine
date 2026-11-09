@@ -172,7 +172,7 @@ int main() {
         put(battery_dir / "temp", "420");
         put(battery_dir / "status", "Charging");
 
-        auto tuner = std::make_unique<AutonomousTuner>(tuner_sys.string(), (round_root / "proc").string());
+        auto tuner = std::make_unique<AutonomousTuner>(coordinator, tuner_sys.string(), (round_root / "proc").string());
         const auto tuner_state = tuner->step({
             .cpu_psi = 6.0,
             .memory_psi = 0.5,
@@ -183,7 +183,7 @@ int main() {
         assert(tuner_state.active_candidate_id.rfind("io.", 0) == 0);
 
         LongevityConfig longevity_config{};
-        auto longevity = std::make_unique<HardwareLongevityManager>(longevity_sys.string());
+        auto longevity = std::make_unique<HardwareLongevityManager>(coordinator, longevity_sys.string());
         longevity->initialize(longevity_config);
         assert(longevity->battery_node_path() == battery_node.string());
         assert(longevity->monitor_battery_thermals(44.0f));

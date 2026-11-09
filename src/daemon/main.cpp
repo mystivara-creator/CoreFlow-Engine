@@ -488,7 +488,7 @@ void print_status(CoreFlowContext& context) {
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
         << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"probeSkipped\":true
+        << ",\"probeSkipped\":true"
         << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
@@ -586,7 +586,7 @@ void print_capabilities(CoreFlowContext& context) {
         << ",\"aiBackend\":" << json_string(ai.backend)
         << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
         << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true
+        << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true"
         << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
         << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
     std::cout << "\n" << out.str() << "\n" << std::flush;
