@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <sys/stat.h>
@@ -463,6 +464,8 @@ void AutonomousTuner::reset() {
     evaluation_noise_floors_.fill(0.05);
     current_evaluation_domain_ = EvaluationDomain::Unavailable;
     settling_ticks_remaining_ = 0;
+    contention_backoff_ticks_ = 0;
+    total_contention_retries_ = 0;
     applied_steps_.clear();
     total_trials_ = 0;
     total_reward_samples_ = 0;
@@ -1309,8 +1312,45 @@ bool AutonomousTuner::verify_active_ownership() const {
     return true;
 }
 
+bool AutonomousTuner::retry_contended_ownership() {
+    if (applied_steps_.empty() || current_candidate_id_.empty() ||
+        current_candidate_id_ == "baseline" || recovery_required_) return false;
+    auto& coordinator = CentralMutationCoordinator::instance();
+    uint32_t attempt = 0;
+    constexpr uint32_t kMaximumContentionRetries = 3;
+    if (!coordinator.reserve_contention_retry(
+            domain_for_candidate(current_candidate_id_), controller_name_,
+            current_candidate_id_, kMaximumContentionRetries, &attempt)) return false;
+    if (total_contention_retries_ < std::numeric_limits<uint32_t>::max()) ++total_contention_retries_;
+
+    auto& store = BaselineStore::instance();
+    for (const auto& step : applied_steps_) {
+        if (!store.reassert_mutation_from_oem_baseline(step.path, step.target_value)) return false;
+    }
+    contention_backoff_ticks_ = 1U << (attempt - 1U);
+    obs_ticks_ = 0;
+    sum_after_io_psi_ = sum_after_mem_psi_ = sum_after_cpu_psi_ = sum_after_thermal_ = 0.0;
+    sum_after_temp_vel_ = 0.0;
+    valid_thermal_samples_in_window_ = 0;
+    valid_io_samples_in_window_ = valid_mem_samples_in_window_ = 0;
+    valid_cpu_samples_in_window_ = valid_pressure_samples_in_window_ = 0;
+    min_after_io_psi_ = min_after_mem_psi_ = min_after_cpu_psi_ = min_after_thermal_ = 1e9;
+    max_after_io_psi_ = max_after_mem_psi_ = max_after_cpu_psi_ = max_after_thermal_ = -1e9;
+    if (const auto* stats = find_candidate(current_candidate_id_)) {
+        settling_ticks_remaining_ = stats->settling_ticks;
+    }
+    last_verdict_ = "PENDING";
+    last_verdict_enum_ = TunerVerdict::Pending;
+    last_utility_delta_ = 0.0;
+    current_rationale_ = "OEM contention detected; exact captured OEM baseline reasserted " +
+        std::to_string(attempt) + "/3; observation restarted after bounded tick backoff.";
+    refresh_surface_readings();
+    return true;
+}
+
 bool AutonomousTuner::rollback_active(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    contention_backoff_ticks_ = 0;
     auto& store = BaselineStore::instance();
     std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
@@ -1472,6 +1512,7 @@ bool AutonomousTuner::apply_transaction(
     // the preemption callback must be able to resolve failures that occur before
     // the transaction reaches OBSERVING.
     current_candidate_id_ = std::string(candidate_id);
+    contention_backoff_ticks_ = 0;
     auto& coordinator = CentralMutationCoordinator::instance();
 
     const auto reject_preflight = [&](std::string_view reason) {
@@ -1687,6 +1728,10 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
 
     // Verify both readback value and inode ownership across all applied nodes
     if (!verify_active_ownership()) {
+        if (retry_contended_ownership()) {
+            save_persisted_stats();
+            return;
+        }
         last_verdict_ = "OWNERSHIP_LOST";
         last_verdict_enum_ = TunerVerdict::OwnershipLost;
         ++total_rolled_back_;
@@ -2135,9 +2180,19 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     }
     current_objective_ = select_objective(telemetry, current_workload_, current_bottleneck_, in_thermal_recovery);
 
+    // Backoff is timer-tick based; emergency, thermal, and evidence gates have already run.
+    if (contention_backoff_ticks_ > 0) {
+        --contention_backoff_ticks_;
+        return snapshot();
+    }
+
     // Stage 1: If currently observing an applied transaction, collect After-Window samples
     if (observing_) {
         if (!verify_active_ownership()) {
+            if (retry_contended_ownership()) {
+                save_persisted_stats();
+                return snapshot();
+            }
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
@@ -2186,6 +2241,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
         if (!verify_active_ownership()) {
+            if (retry_contended_ownership()) {
+                save_persisted_stats();
+                return snapshot();
+            }
             last_verdict_ = "OWNERSHIP_LOST";
             last_verdict_enum_ = TunerVerdict::OwnershipLost;
             ++total_rolled_back_;
@@ -2506,6 +2565,7 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.rolled_back_count = total_rolled_back_;
     out.total_inconclusive = total_inconclusive_;
     out.total_rejected = total_rejected_;
+    out.ownership_contention_retries = total_contention_retries_;
     out.recovery_required = recovery_required_;
     out.thermal_stabilization_active = thermal_stabilization_active_;
     out.thermal_recovery_active = (thermal_recovery_ticks_ > 0);
