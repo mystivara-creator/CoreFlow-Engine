@@ -57,6 +57,8 @@ public:
 
     /// Check whether a captured node still matches its expected value and inode/device identity
     [[nodiscard]] bool owns_expected_state(const std::string& path, const std::string& expected_value) const;
+    [[nodiscard]] bool reassert_mutation_from_oem_baseline(
+        const std::string& path, const std::string& expected_value);
 
     /// Returns true if neither kernel boot_id nor per-boot boot_epoch could be validated
     [[nodiscard]] bool identity_unavailable() const noexcept;
