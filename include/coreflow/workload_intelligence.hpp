@@ -40,6 +40,7 @@ struct WorkloadEvent final {
  WorkloadEventType type{WorkloadEventType::Unknown};
  uint16_t flags{0};
 };
+inline constexpr std::size_t kWorkloadEventDrainBatchSize = 2048U;
 struct WorkloadFeatureSnapshot final {
  uint64_t window_start_ns{0}, window_end_ns{0}, cpu_run_queue_wait_ns{0},
   wakeup_count{0}, io_bytes{0}, io_latency_ns_p95{0}, frame_deadline_misses{0},
@@ -114,7 +115,7 @@ public:
  [[nodiscard]] bool sample(uint64_t now_ns,double& busy_pct) noexcept;
  [[nodiscard]] std::string_view source_name() const noexcept;
 private:
- enum class Format : uint8_t { Unavailable, Percent, BusyTotalRatio, CounterPair };
+ enum class Format : uint8_t { Unavailable, Percent, BusyTotalDelta, CounterPair };
  std::string sys_root_,path_,source_name_;
  Format format_{Format::Unavailable};
  uint64_t previous_busy_{0},previous_total_{0},last_sample_ns_{0};

@@ -303,11 +303,11 @@ GpuUtilizationSampler::GpuUtilizationSampler(std::string root) noexcept:sys_root
 bool GpuUtilizationSampler::start() noexcept {
  stop();
  struct CandidatePath{const char* suffix;Format format;const char* label;};
+ // Prefer interval-capable KGSL counters over static compatibility percentages.
  static constexpr CandidatePath candidates[]{
-  {"class/kgsl/kgsl-3d0/gpu_busy_percentage",Format::Percent,"kgsl/gpu_busy_percentage"},
+  {"class/kgsl/kgsl-3d0/gpubusy",Format::BusyTotalDelta,"kgsl/gpubusy"},
   {"class/kgsl/kgsl-3d0/gpu_busy_percent",Format::Percent,"kgsl/gpu_busy_percent"},
   {"class/kgsl/kgsl-3d0/devfreq/gpu_load",Format::Percent,"kgsl/devfreq/gpu_load"},
-  {"class/kgsl/kgsl-3d0/gpubusy",Format::BusyTotalRatio,"kgsl/gpubusy"},
   {"class/devfreq/gpu/load",Format::Percent,"devfreq/gpu/load"},
   {"class/drm/card0/device/gpu_busy_percent",Format::Percent,"drm/gpu_busy_percent"},
   {"class/misc/mali0/device/utilization",Format::Percent,"mali/utilization"},
@@ -323,7 +323,10 @@ bool GpuUtilizationSampler::start() noexcept {
   double percent=0;uint64_t a=0,b=0;
   const bool valid=candidate.format==Format::Percent?parse_scalar_percent(path,percent):parse_pair(path,a,b);
   if(!valid)continue;
-  if(candidate.format==Format::BusyTotalRatio&&(b==0||a>b))continue;
+  if(candidate.format==Format::BusyTotalDelta){
+   if(b==0||a>b)continue;
+   previous_busy_=a;previous_total_=b;previous_valid_=true;
+  }
   path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
  }
  if(!active_){
@@ -347,6 +350,18 @@ bool GpuUtilizationSampler::start() noexcept {
    ::closedir(dir);
   }
  }
+ // gpu_busy_percentage is deliberately the final KGSL fallback. Some OEM
+ // kernels expose a readable but permanently-zero compatibility value.
+ if(!active_){
+  const std::string path=sys_root_+"/class/kgsl/kgsl-3d0/gpu_busy_percentage";
+  struct stat st{};
+  if(::stat(path.c_str(),&st)==0&&S_ISREG(st.st_mode)&&::access(path.c_str(),R_OK)==0){
+   double percent=0;
+   if(parse_scalar_percent(path,percent)){
+    path_=path;source_name_="kgsl/gpu_busy_percentage";format_=Format::Percent;active_=true;
+   }
+  }
+ }
  last_sample_ns_=0;return active_;
 }
 void GpuUtilizationSampler::stop() noexcept {
@@ -358,9 +373,17 @@ bool GpuUtilizationSampler::sample(uint64_t now,double& output) noexcept {
  last_sample_ns_=now;
  if(format_==Format::Percent)return parse_scalar_percent(path_,output);
  uint64_t busy=0,total=0;
- if(format_==Format::BusyTotalRatio){
-  if(!parse_pair(path_,busy,total)||total==0||busy>total)return false;
-  output=100.0*static_cast<double>(busy)/static_cast<double>(total);return true;
+ if(format_==Format::BusyTotalDelta){
+  if(!parse_pair(path_,busy,total))return false;
+  if(!previous_valid_){previous_busy_=busy;previous_total_=total;previous_valid_=true;return false;}
+  if(busy<previous_busy_||total<previous_total_){
+   previous_busy_=busy;previous_total_=total;return false;
+  }
+  const uint64_t busy_delta=busy-previous_busy_,total_delta=total-previous_total_;
+  previous_busy_=busy;previous_total_=total;
+  if(total_delta==0||busy_delta>total_delta)return false;
+  output=100.0*static_cast<double>(busy_delta)/static_cast<double>(total_delta);
+  return std::isfinite(output)&&output>=0.0&&output<=100.0;
  }
  if(format_==Format::CounterPair){
   const std::string total_path=path_.substr(0,path_.rfind('/')+1)+"total_time";
@@ -503,7 +526,8 @@ WorkloadFeatureSnapshot WorkloadTelemetryPipeline::sample(uint64_t start,uint64_
  }}
  if(ebpf_.active()){
   result.source=TelemetryBackend::Ebpf;
-  WorkloadEvent events[512]{};const size_t count=ebpf_.drain(events);
+  std::array<WorkloadEvent,kWorkloadEventDrainBatchSize> events{};
+  const size_t count=ebpf_.drain(events);
   uint64_t wakeups=0;
   for(size_t i=0;i<count;++i){
    if(events[i].monotonic_timestamp_ns<start||events[i].monotonic_timestamp_ns>end)continue;
@@ -513,7 +537,7 @@ WorkloadFeatureSnapshot WorkloadTelemetryPipeline::sample(uint64_t start,uint64_
   result.wakeup_rate_per_sec=static_cast<double>(wakeups)*1'000'000'000.0/static_cast<double>(end-start);
   result.valid_features|=FeatureWakeupRate;
   result.event_count=static_cast<uint32_t>(count);
-  result.event_drain_saturated=count==512U;
+  result.event_drain_saturated=count==events.size();
   result.sample_count+=static_cast<uint32_t>(count);
  }else if(fallback_active_){
   result.source=TelemetryBackend::SysfsProcfs;

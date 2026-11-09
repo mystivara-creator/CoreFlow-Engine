@@ -1,6 +1,7 @@
 #include "coreflow/platform_context.hpp"
 #include "coreflow/workload_intelligence.hpp"
 #include <cassert>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -10,6 +11,7 @@
 #include <vector>
 #include <unistd.h>
 using namespace coreflow;
+static_assert(kWorkloadEventDrainBatchSize==2048U);
 class FakeProperties final:public AndroidPropertySource{
 public:std::unordered_map<std::string,std::string> values;
  bool read(std::string_view k,std::string& v)const noexcept override{auto i=values.find(std::string(k));if(i==values.end())return false;v=i->second;return true;}
@@ -31,6 +33,37 @@ int main(){
  auto proc=root/"proc";write(proc/"pressure/cpu","some avg10=12.50 avg60=2 total=10\n");write(proc/"pressure/memory","some avg10=3.25 avg60=2 total=10\n");write(proc/"pressure/io","some avg10=8.75 avg60=2 total=10\n");write(proc/"diskstats","8 0 sda 10 0 100 0 20 0 200 0 0 0 0\n");
  SysfsProcfsWorkloadSource sampler(proc.string(),root.string());assert(sampler.start());auto s1=sampler.sample(1'000'000'000ULL,2'000'000'000ULL);assert(s1.source==TelemetryBackend::SysfsProcfs);assert((s1.valid_features&FeatureCpuPressure)&&(s1.valid_features&FeatureMemoryPressure)&&(s1.valid_features&FeatureIoPressure));assert(!(s1.valid_features&FeatureIoBytes));
  write(proc/"diskstats","8 0 sda 20 0 150 0 40 0 250 0 0 0 0\n");auto s2=sampler.sample(2'000'000'000ULL,3'000'000'000ULL);assert((s2.valid_features&FeatureIoBytes)&&s2.io_bytes==51'200);assert(!(s2.valid_features&FeatureGpuBusy));
+
+ // KGSL gpubusy is a cumulative busy/total counter pair. Prefer its deltas
+ // over the OEM compatibility percentage node, which may remain frozen at 0.
+ char gpu_root_template[]="/tmp/coreflow-gpu-counter-XXXXXX";assert(::mkdtemp(gpu_root_template));
+ std::filesystem::path gpu_root(gpu_root_template);
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","100 200\n");
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpu_busy_percentage","0\n");
+ GpuUtilizationSampler gpu_sampler(gpu_root.string());assert(gpu_sampler.start());
+ assert(gpu_sampler.source_name()=="kgsl/gpubusy");
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","160 300\n");
+ double gpu_pct=-1.0;assert(gpu_sampler.sample(1'000'000'000ULL,gpu_pct));
+ assert(std::abs(gpu_pct-60.0)<0.001);
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","260 500\n");
+ assert(gpu_sampler.sample(1'200'000'000ULL,gpu_pct));assert(std::abs(gpu_pct-50.0)<0.001);
+ // A counter reset re-establishes the baseline instead of emitting a spike.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","20 40\n");
+ assert(!gpu_sampler.sample(1'400'000'000ULL,gpu_pct));
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","45 90\n");
+ assert(gpu_sampler.sample(1'600'000'000ULL,gpu_pct));assert(std::abs(gpu_pct-50.0)<0.001);
+ gpu_sampler.stop();std::filesystem::remove_all(gpu_root);
+
+ // If gpubusy is malformed, gpu_busy_percentage remains the final fallback.
+ char gpu_fallback_template[]="/tmp/coreflow-gpu-fallback-XXXXXX";assert(::mkdtemp(gpu_fallback_template));
+ std::filesystem::path gpu_fallback(gpu_fallback_template);
+ write(gpu_fallback/"class/kgsl/kgsl-3d0/gpubusy","frozen or malformed\n");
+ write(gpu_fallback/"class/kgsl/kgsl-3d0/gpu_busy_percentage","37\n");
+ GpuUtilizationSampler fallback_gpu(gpu_fallback.string());assert(fallback_gpu.start());
+ assert(fallback_gpu.source_name()=="kgsl/gpu_busy_percentage");
+ assert(fallback_gpu.sample(2'000'000'000ULL,gpu_pct));assert(std::abs(gpu_pct-37.0)<0.001);
+ fallback_gpu.stop();std::filesystem::remove_all(gpu_fallback);
+
 
  // Perfetto FrameTimeline parser: one on-time display frame and one dropped frame.
  auto varint=[](std::vector<uint8_t>& out,uint64_t value){
