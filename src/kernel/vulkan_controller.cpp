@@ -933,11 +933,11 @@ void VulkanController::recompute_effective_capabilities() noexcept {
             : config_.mode;
     snap_.active_mode = mode;
     snap_.layer_active = (mode != VulkanLayerMode::Disabled) && snap_.layer_installed;
-    snap_.skiavk_active = config_.enable_skiavk_threaded && (mode != VulkanLayerMode::Disabled);
-    snap_.adaptive_vrs_active =
-        config_.enable_adaptive_vrs && (mode != VulkanLayerMode::Disabled) && snap_.hw_variable_rate_shading;
-    snap_.pipeline_cache_prewarm_active =
-        config_.enable_pipeline_cache_prewarm && (mode != VulkanLayerMode::Disabled);
+    // Config placeholders are not actuators; no HWUI/Skia, VRS submission,
+    // or pipeline-cache prewarm backend exists in this build.
+    snap_.skiavk_active = false;
+    snap_.adaptive_vrs_active = false;
+    snap_.pipeline_cache_prewarm_active = false;
 
     missing_safe_exts_ = 0;
     missing_override_exts_ = 0;

@@ -9,14 +9,16 @@
 #include "coreflow/baseline_store.hpp"
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 namespace coreflow {
 
 RenderBooster::RenderBooster() {
-    metrics_.target_fps = 120;
-    metrics_.average_frame_time_ms = 8.33;
+    // No SurfaceFlinger/frame-timeline source is connected; never synthesize 120 FPS.
+    metrics_.target_fps = 0;
+    metrics_.average_frame_time_ms = 0.0;
     metrics_.dropped_frames = 0;
-    metrics_.is_vsync_aligned = true;
+    metrics_.is_vsync_aligned = false;
 }
 
 void RenderBooster::on_touch_down() {
@@ -29,6 +31,7 @@ void RenderBooster::on_touch_up() {
 }
 
 void RenderBooster::on_frame_presented(double frame_time_ms) {
+    if (metrics_.target_fps == 0 || !std::isfinite(frame_time_ms) || frame_time_ms <= 0.0) return;
     double frame_budget = 1000.0 / metrics_.target_fps;
 
     if (frame_time_ms > frame_budget * 1.25) {

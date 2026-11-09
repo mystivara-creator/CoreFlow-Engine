@@ -1,3 +1,5 @@
+> **P1 feature-accountability correction (2026-11-09):** Historical v3.0.x entries are release-history records, not proof of current functionality. SurfaceFlinger control, SkiaVK renderer engagement, DEX2OAT tuning, generalized GPU capability unlocking, and Power HAL actuation claims are superseded where not backed by current source. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`.
+
 # CFAE System Framework Release History
 
 ## v3.1.0 — Smart Multi-Domain Scheduler Tuning, Predictive AI Backend & Full-Tree Hardening
