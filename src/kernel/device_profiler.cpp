@@ -84,7 +84,7 @@ bool read_u64(const fs::path& path, uint64_t& value) {
     std::string raw;
     return read_attribute(path, raw, 256U) && parse_u64(raw, value);
 }
-bool exists(const fs::path& path) noexcept {
+bool cddp_path_exists(const fs::path& path) noexcept {
     struct stat st{};
     return ::stat(path.c_str(), &st) == 0;
 }
@@ -151,7 +151,7 @@ NodeCapability observe_capability(
     cap.unit = std::move(unit);
     cap.constraints = std::move(constraints);
     cap.evidence = std::move(evidence);
-    if (!exists(path)) { cap.rejection_reason = "node absent"; return cap; }
+    if (!cddp_path_exists(path)) { cap.rejection_reason = "node absent"; return cap; }
     cap.state = NodeCapabilityState::Available;
     std::string raw;
     if (!read_attribute(path, raw, 1024U)) {
@@ -338,7 +338,7 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
                 governor_cap.semantic_id = "cpufreq.governor_tunable.unverified";
                 governor_cap.unit = "us";
                 governor_cap.evidence = "Governor tunable observed; vendor ABI and accepted range not verified";
-                if (exists(path)) {
+                if (cddp_path_exists(path)) {
                     governor_cap.state = NodeCapabilityState::Available;
                     if (read_attribute(path, raw, 256U)) {
                         governor_cap.current_value = trim(raw);
@@ -401,14 +401,14 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
 
     // KGSL remains visible but observation-only until its vendor ABI is proven.
     const fs::path kgsl = sys / "class/kgsl/kgsl-3d0";
-    if (exists(kgsl)) {
+    if (cddp_path_exists(kgsl)) {
         GpuDomainProfile gpu{};
         gpu.device_path = kgsl.string();
         gpu.driver = "kgsl-observation-only";
         snapshot->gpu_domains.push_back(std::move(gpu));
         for (const char* attr : {"gpuclk", "max_gpuclk", "min_gpuclk", "max_gpu_freq", "min_gpu_freq"}) {
             const fs::path path = kgsl / attr;
-            if (!exists(path)) continue;
+            if (!cddp_path_exists(path)) continue;
             NodeCapability cap{};
             cap.path = path.string();
             cap.domain = HardwareDomain::Gpu;
@@ -460,11 +460,11 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
     }
     std::string mountinfo;
     const bool mountinfo_read = read_attribute(proc / "self/mountinfo", mountinfo);
-    snapshot->cgroup_v2_available = exists(sys / "fs/cgroup/cgroup.controllers") ||
+    snapshot->cgroup_v2_available = cddp_path_exists(sys / "fs/cgroup/cgroup.controllers") ||
         (mountinfo_read && mountinfo.find(" - cgroup2 ") != std::string::npos);
-    snapshot->uclamp_interface_available = exists(sys / "fs/cgroup/cpu.uclamp.min") ||
-        exists(sys / "fs/cgroup/top-app/cpu.uclamp.min") ||
-        exists(sys / "fs/cgroup/top-app/cpu.uclamp.max");
+    snapshot->uclamp_interface_available = cddp_path_exists(sys / "fs/cgroup/cpu.uclamp.min") ||
+        cddp_path_exists(sys / "fs/cgroup/top-app/cpu.uclamp.min") ||
+        cddp_path_exists(sys / "fs/cgroup/top-app/cpu.uclamp.max");
     snapshot->fingerprint = make_fingerprint(*snapshot);
     return snapshot;
 }
