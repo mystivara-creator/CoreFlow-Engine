@@ -345,10 +345,30 @@ int main() {
 
     // 6c. TUNER-01 External Value Modification during observation -> OWNERSHIP_LOST
     // While bfq is being observed (read_ahead_kb set to 256), an external writer sets read_ahead_kb to 512.
+    // OEM resetting the node to the exact captured baseline permits a bounded reassertion.
+    put(sda_q / "read_ahead_kb", "128");
+    const auto contention_retry = tuner.step({
+        .cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
+    assert(contention_retry.stage == "OBSERVING");
+    assert(contention_retry.last_verdict == "PENDING");
+    assert(contention_retry.ownership_contention_retries == 1);
+    assert(get(sda_q / "read_ahead_kb") == "256");
+    (void)tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
+
+    // A novel external value must never be forced back to CoreFlow's target.
     put(sda_q / "read_ahead_kb", "512");
     tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
+    tuner.step({.cpu_psi = 4.0, .memory_psi = 0.2, .io_psi = 2.0, .thermal_pressure = 45.0});
     assert(tuner.snapshot().verdict == coreflow::TunerVerdict::OwnershipLost);
+    assert(tuner.snapshot().ownership_contention_retries == 2);
     assert(tuner.snapshot().stage == "PLANNED");
+    auto& ownership_baseline = BaselineStore::instance();
+    assert(!ownership_baseline.has_active_mutations());
+    assert(ownership_baseline.verify_and_persist_clear_state());
+    const auto ownership_leases = coreflow::CentralMutationCoordinator::instance().active_leases();
+    assert(std::none_of(ownership_leases.begin(), ownership_leases.end(), [](const auto& lease) {
+        return lease.transaction_id == "io.bfq_interactive_fairness";
+    }));
     const auto ownership_lost_snapshot = tuner.snapshot();
     const auto quarantined_bfq = std::find_if(
         ownership_lost_snapshot.candidates.begin(), ownership_lost_snapshot.candidates.end(),
