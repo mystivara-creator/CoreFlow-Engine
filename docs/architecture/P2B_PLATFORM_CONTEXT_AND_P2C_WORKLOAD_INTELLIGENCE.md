@@ -32,7 +32,7 @@ Fallback path:
 
 The fallback does not fabricate unavailable signals as zero. Each feature carries a validity bit and source identity. Workload class names (Gaming, I/O-heavy, Jank-sensitive, CPU-bound, GPU-bound) are labels, not conclusions from package names alone. Classification requires multiple independent signals, minimum valid-feature coverage, confidence thresholds, dwell/hysteresis, and stale-event rejection.
 
-The initial read-only BPF probe inventories BTF, tracefs, scheduler/block tracepoint IDs, and bpffs. It deliberately leaves syscall permission, ring-buffer map support, SELinux load permission, and loader verification unknown until the dedicated loader stage establishes them. The eBPF source is not selected unless all required capabilities are verified; this foundation therefore defaults to sysfs/procfs fallback.
+The initial read-only BPF probe inventories BTF, tracefs, scheduler/block tracepoint IDs, and verifies the bpffs filesystem magic rather than treating a directory as a mount. It deliberately leaves syscall permission, ring-buffer map support, SELinux load permission, and loader verification unknown until the dedicated loader stage establishes them. The eBPF source is not selected unless all required capabilities are verified; this foundation therefore defaults to sysfs/procfs fallback.
 
 ## HyperOS 4-inspired KPI contract
 

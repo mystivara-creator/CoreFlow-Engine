@@ -116,7 +116,7 @@ int main() {
     assert(probed.sched_switch == CapabilityState::Available);
     assert(probed.sched_wakeup == CapabilityState::Available);
     assert(probed.block_request == CapabilityState::Available);
-    assert(probed.bpf_filesystem == CapabilityState::Available);
+    assert(probed.bpf_filesystem == CapabilityState::Unavailable); // directory is not proof of a bpffs mount
     assert(probed.syscall == CapabilityState::Unknown);
     assert(probed.ring_buffer == CapabilityState::Unknown);
     assert(!probed.event_pipeline_ready());

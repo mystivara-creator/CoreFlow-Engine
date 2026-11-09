@@ -6,6 +6,7 @@
 #include "coreflow/workload_intelligence.hpp"
 
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 #include <string>
@@ -23,6 +24,13 @@ bool readable_directory(const std::string& path) noexcept {
     struct stat st{};
     return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode) &&
            ::access(path.c_str(), R_OK | X_OK) == 0;
+}
+
+bool bpffs_mounted(const std::string& path) noexcept {
+    struct statfs filesystem{};
+    constexpr unsigned long kBpfFsMagic = 0xcafe4a11UL;
+    return ::statfs(path.c_str(), &filesystem) == 0 &&
+           static_cast<unsigned long>(filesystem.f_type) == kBpfFsMagic;
 }
 
 CapabilityState file_state(const std::string& path) noexcept {
@@ -62,7 +70,7 @@ BpfCapabilitySnapshot BpfCapabilityProbe::probe() const noexcept {
         result.block_request = CapabilityState::Unavailable;
     }
 
-    result.bpf_filesystem = readable_directory(sys_root_ + "/fs/bpf")
+    result.bpf_filesystem = bpffs_mounted(sys_root_ + "/fs/bpf")
         ? CapabilityState::Available : CapabilityState::Unavailable;
 
     // The probe is intentionally passive. BPF syscall permission, ring-buffer
