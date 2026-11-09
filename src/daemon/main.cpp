@@ -327,8 +327,21 @@ void print_status(CoreFlowContext& context) {
     const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
     const auto io_psi = read_psi_avg10("/proc/pressure/io");
     // Read-only status does not train models or create mutation-capable owners.
-    const NeuralPrediction ai{};
-    const AutonomousDecisionSnapshot tuner{};
+    const NeuralPrediction ai{.backend = "not_started"};
+    const AutonomousDecisionSnapshot tuner{
+        .stage = "READ_ONLY",
+        .active_intent = "ReadOnlyInspection",
+        .intent = "ReadOnlyInspection",
+        .workload_name = "Unknown",
+        .bottleneck_name = "Unknown",
+        .objective_name = "NotEvaluated",
+        .active_candidate_id = "none",
+        .active_candidate_label = "Mutation runtime not started",
+        .decision_rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
+        .rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
+        .last_verdict = "NOT_STARTED",
+        .verdict = TunerVerdict::Hold,
+    };
     const VulkanCapabilitiesSnapshot vk{};
     const bool recovery_pending = !journal_clear();
     const size_t journal_nodes = count_journal_entries();
@@ -343,6 +356,9 @@ void print_status(CoreFlowContext& context) {
         << ",\"uclampProbeSkipped\":true"
         << ",\"inspectionMode\":\"read-only\""
         << ",\"mutationRuntimeStarted\":false"
+        << ",\"aiRuntimeStarted\":false"
+        << ",\"tunerRuntimeStarted\":false"
+        << ",\"vulkanProbeSkipped\":true"
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
         << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
         << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
@@ -413,7 +429,7 @@ void print_status(CoreFlowContext& context) {
         << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
         << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
         << ",\"tunerRationale\":" << json_string(tuner.rationale)
-        << ",\"tunerVerdict\":" << json_string(AutonomousTuner::verdict_name(tuner.verdict))
+        << ",\"tunerVerdict\":" << json_string(tuner.last_verdict)
         << ",\"tunerUtilityDelta\":" << safe_json_double(tuner.utility_delta)
         << ",\"tunerNoiseFloor\":" << safe_json_double(tuner.noise_floor, 0.05)
         << ",\"tunerTrials\":" << tuner.total_trials
@@ -472,6 +488,7 @@ void print_status(CoreFlowContext& context) {
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
         << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"probeSkipped\":true
         << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
@@ -558,7 +575,7 @@ void print_capabilities(CoreFlowContext& context) {
     const auto topology = context.device_profiler().probe();
     const auto power = PowerBridge{}.probe();
     // Capabilities is a passive probe: no online learning, layer setup, or actuators.
-    const NeuralPrediction ai{};
+    const NeuralPrediction ai{.backend = "not_started"};
     const VulkanCapabilitiesSnapshot vk{};
     std::ostringstream out;
     out << "{\"socModel\":" << json_string(topology.soc_name)
@@ -569,6 +586,7 @@ void print_capabilities(CoreFlowContext& context) {
         << ",\"aiBackend\":" << json_string(ai.backend)
         << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
         << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
+        << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true
         << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
         << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
     std::cout << "\n" << out.str() << "\n" << std::flush;

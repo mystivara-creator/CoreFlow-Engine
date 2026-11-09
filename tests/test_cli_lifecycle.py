@@ -27,6 +27,11 @@ assert "infer_and_learn(" not in status
 assert "UclampGovernor " not in status
 assert "VulkanController::instance" not in status
 assert "AutonomousTuner::instance" not in status
+assert '.last_verdict = "NOT_STARTED"' in status
+assert '.backend = "not_started"' in status
+assert "tuner.last_verdict" in status
+assert "tunerRuntimeStarted" in status
+assert "vulkanProbeSkipped" in status
 
 assert "CoreFlowContext::~CoreFlowContext()" in context
 assert "coordinated_rollback(" in context
