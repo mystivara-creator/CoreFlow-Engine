@@ -302,11 +302,15 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
     for (const auto& dir : directory_entries(cpu_root, "policy")) {
         CpuPolicyProfile policy{};
         policy.policy_path = dir.string();
-        if (read_attribute(dir / "related_cpus", raw, 16384U) ||
-            read_attribute(dir / "affected_cpus", raw, 16384U)) {
-            policy.related_cpus_valid = parse_cpu_list(raw, policy.related_cpus) &&
-                (!snapshot->cpu_topology_valid || valid_subset(policy.related_cpus, snapshot->present_cpus));
+        bool membership_parsed = false;
+        if (read_attribute(dir / "related_cpus", raw, 16384U)) {
+            membership_parsed = parse_cpu_list(raw, policy.related_cpus);
         }
+        if (!membership_parsed && read_attribute(dir / "affected_cpus", raw, 16384U)) {
+            membership_parsed = parse_cpu_list(raw, policy.related_cpus);
+        }
+        policy.related_cpus_valid = membership_parsed &&
+            (!snapshot->cpu_topology_valid || valid_subset(policy.related_cpus, snapshot->present_cpus));
         (void)read_u64(dir / "cpuinfo_min_freq", policy.cpuinfo_min_freq_khz);
         (void)read_u64(dir / "cpuinfo_max_freq", policy.cpuinfo_max_freq_khz);
         (void)read_u64(dir / "scaling_min_freq", policy.scaling_min_freq_khz);
