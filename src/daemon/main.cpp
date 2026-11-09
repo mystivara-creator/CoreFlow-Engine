@@ -279,7 +279,6 @@ size_t count_journal_entries() noexcept {
 
 int stop_daemon() {
     const pid_t pid = daemon_pid();
-    const auto& platform = context.platform_context();
     if (pid > 0) {
         if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) return 1;
         for (int attempt = 0; attempt < 80; ++attempt) {
@@ -302,6 +301,7 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
 void print_status(CoreFlowContext& context) {
     // 1. Perform passive hardware/kernel inspection before writing the JSON payload
     const pid_t pid = daemon_pid();
+    const auto& platform = context.platform_context();
     const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     const auto profile = context.thermal_monitor().multi_sensor_profile();
     const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
