@@ -97,6 +97,11 @@ inline Fixture create(const std::string& id) {
     } else if (id == "L") {
         put(f.sys / "devices/system/cpu/cpufreq/policy0/related_cpus", "0,,3\n");
         put(f.sys / "devices/system/cpu/cpufreq/policy0/affected_cpus", "0-3\n");
+    } else if (id == "K") {
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/related_cpus", "0 1 2 3\n");
+    } else if (id == "L") {
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/related_cpus", "0,,3\n");
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/affected_cpus", "0-3\n");
     }
     return f;
 }
