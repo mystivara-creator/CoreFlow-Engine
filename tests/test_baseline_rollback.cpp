@@ -27,8 +27,10 @@ int main(int argc, char* argv[]) {
 
     const std::string a = std::string(state_dir) + "/mock_a";
     const std::string b = std::string(state_dir) + "/mock_b";
+    const std::string c = std::string(state_dir) + "/mock_c";
     { std::ofstream out(a); out << "0"; }
     { std::ofstream out(b); out << "100"; }
+    { std::ofstream out(c); out << "0"; }
     auto& store = BaselineStore::instance();
     assert(store.recover_pending());
     assert(!store.identity_unavailable());
@@ -40,6 +42,21 @@ int main(int argc, char* argv[]) {
     assert(store.rollback_all() == 1);
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
+
+    // Reassert only after the same node returns exactly to its captured OEM baseline.
+    assert(store.capture(c));
+    assert(store.apply_mutation(c, "512"));
+    { std::ofstream out(c); out << "0"; }
+    assert(store.reassert_mutation_from_oem_baseline(c, "512"));
+    assert(read_value(c) == "512");
+    assert(store.owns_expected_state(c, "512"));
+    assert(store.has_active_mutations());
+    { std::ofstream out(c); out << "777"; }
+    assert(!store.reassert_mutation_from_oem_baseline(c, "512"));
+    assert(store.rollback(c));
+    assert(read_value(c) == "777");
+    assert(!store.has_active_mutations());
+    assert(store.verify_and_persist_clear_state());
 
     // A failed operation is path-scoped: it must not roll back another
     // controller's still-active mutation on an unrelated node.

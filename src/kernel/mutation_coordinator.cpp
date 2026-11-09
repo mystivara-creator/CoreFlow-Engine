@@ -118,6 +118,33 @@ bool CentralMutationCoordinator::acquire_lease(
     return false;
 }
 
+bool CentralMutationCoordinator::reserve_contention_retry(
+    MutationDomain domain,
+    std::string_view controller_name,
+    std::string_view transaction_id,
+    uint32_t max_retries,
+    uint32_t* attempt_number) noexcept {
+    constexpr uint32_t kHardRetryLimit = 3;
+    if (attempt_number != nullptr) *attempt_number = 0;
+    if (controller_name.empty() || transaction_id.empty() || max_retries == 0) return false;
+    const uint32_t retry_limit = std::min(max_retries, kHardRetryLimit);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (emergency_recovery_active_) return false;
+    const auto it = std::find_if(leases_.begin(), leases_.end(),
+        [&](const DomainLease& lease) {
+            return lease.domain == domain && lease.active &&
+                   lease.owner_controller == controller_name &&
+                   lease.transaction_id == transaction_id;
+        });
+    if (it == leases_.end() || it->preemption_requested ||
+        it->preemption_dispatch_in_flight || it->owner_detached ||
+        it->contention_retries >= retry_limit) return false;
+    ++it->contention_retries;
+    if (attempt_number != nullptr) *attempt_number = it->contention_retries;
+    return true;
+}
+
 void CentralMutationCoordinator::release_lease(
     MutationDomain domain,
     std::string_view controller_name,

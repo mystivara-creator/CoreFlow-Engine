@@ -491,7 +491,7 @@ bool DeviceValidationRecorder::start(std::string_view profile, DeviceProfileHand
         close_files();
         return false;
     }
-    const std::string csv = "sequence,observed_at,cpu_psi_pct,memory_psi_pct,io_psi_pct,thermal_pressure,temp_c,headroom,ai_prediction_10s,ai_confidence\n";
+    const std::string csv = "sequence,observed_at,cpu_psi_pct,memory_psi_pct,io_psi_pct,thermal_pressure,temp_c,headroom,ai_prediction_10s,ai_confidence,ownership_contention_retries\n";
     if (!write_all(metrics_fd_, csv)) {
         if (error) *error = "unable to initialize CF-DVS metrics file";
         close_files();
@@ -638,6 +638,7 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         "\",\"capacity_scale\":" + (std::isfinite(sample.capacity_scale) && sample.capacity_scale >= 0.0
             ? number_or_null(sample.capacity_scale) : "null") +
         ",\"valid_thermal_sensors\":" + std::to_string(sample.valid_thermal_sensors) +
+        ",\"ownership_contention_retries\":" + std::to_string(sample.ownership_contention_retries) +
         ",\"recovery_pending\":" + (sample.recovery_pending ? "true" : "false") +
         ",\"journal_clear\":" + (sample.journal_clear ? "true" : "false") +
         ",\"rollback_verified\":" + (sample.rollback_verified ? "true" : "false") + "}";
@@ -645,7 +646,8 @@ bool DeviceValidationRecorder::record_sample(const DeviceValidationSample& sampl
         number_or_null(sample.cpu_psi) + "," + number_or_null(sample.memory_psi) + "," +
         number_or_null(sample.io_psi) + "," + number_or_null(sample.thermal_pressure) + "," +
         number_or_null(sample.temperature_celsius) + "," + number_or_null(sample.thermal_headroom) + "," +
-        number_or_null(sample.ai_prediction_10s) + "," + number_or_null(sample.ai_confidence) + "\n";
+        number_or_null(sample.ai_prediction_10s) + "," + number_or_null(sample.ai_confidence) + "," +
+        std::to_string(sample.ownership_contention_retries) + "\n";
     if (!append_event("telemetry.sample", sample.candidate, data, csv)) return false;
     ++samples_;
     return true;

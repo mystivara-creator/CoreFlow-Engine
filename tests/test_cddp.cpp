@@ -28,7 +28,15 @@ int main() {
     assert((cpus == std::vector<uint32_t>{0,1,2,3,6,8,9}));
     assert(DeviceProfiler::parse_cpu_list("0,2-3,5\n", cpus));
     assert((cpus == std::vector<uint32_t>{0,2,3,5}));
+    // cpufreq related_cpus/affected_cpus are commonly whitespace-delimited.
+    assert(DeviceProfiler::parse_cpu_list("0 1 2 3\n", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,2,3}));
+    assert(DeviceProfiler::parse_cpu_list("0-3 6 8-9\r\n", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,2,3,6,8,9}));
+    assert(DeviceProfiler::parse_cpu_list("0-1, 3 5-6\t7", cpus));
+    assert((cpus == std::vector<uint32_t>{0,1,3,5,6,7}));
     assert(!DeviceProfiler::parse_cpu_list("0-3,,5", cpus));
+    assert(!DeviceProfiler::parse_cpu_list("0, ,1", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0-3,  \n", cpus));
     assert(!DeviceProfiler::parse_cpu_list("3-1", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0,0", cpus));
@@ -134,6 +142,22 @@ int main() {
     assert(!profile_i->gpu_domains.empty());
     for (const auto& cap : profile_i->node_capabilities)
         if (cap.semantic_id == "kgsl.vendor_control.unverified") assert(!cap.mutation_eligible());
+
+    // K: whitespace-separated CPU policy membership is parsed.
+    auto k = cddp_fixture::create("K");
+    DeviceProfiler pk(k.sys.string(), k.proc.string());
+    const auto profile_k = pk.refresh();
+    assert(profile_k->cpu_policies.size() == 1);
+    assert(profile_k->cpu_policies.front().related_cpus_valid);
+    assert((profile_k->cpu_policies.front().related_cpus == std::vector<uint32_t>{0,1,2,3}));
+
+    // L: malformed related_cpus falls back to valid affected_cpus.
+    auto l = cddp_fixture::create("L");
+    DeviceProfiler pl(l.sys.string(), l.proc.string());
+    const auto profile_l = pl.refresh();
+    assert(profile_l->cpu_policies.size() == 1);
+    assert(profile_l->cpu_policies.front().related_cpus_valid);
+    assert((profile_l->cpu_policies.front().related_cpus == std::vector<uint32_t>{0,1,2,3}));
 
     // J: absent subsystems stay absent; no synthesized defaults.
     auto j = cddp_fixture::create("J");

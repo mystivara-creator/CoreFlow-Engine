@@ -748,6 +748,36 @@ bool BaselineStore::owns_expected_state(const std::string& path, const std::stri
     return readback_matches(path, expected_value, actual);
 }
 
+bool BaselineStore::reassert_mutation_from_oem_baseline(
+    const std::string& path,
+    const std::string& expected_value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path) ||
+        expected_value.empty()) return false;
+    const auto it = store_.find(path);
+    if (it == store_.end() || !it->second.is_modified ||
+        it->second.active_value != expected_value || it->second.ino == 0) return false;
+
+    auto& snapshot = it->second;
+    uint64_t current_dev = 0;
+    uint64_t current_ino = 0;
+    const std::string actual = read_raw_node(path, &current_dev, &current_ino);
+    if (actual.empty() || current_dev != snapshot.dev || current_ino != snapshot.ino) return false;
+    if (readback_matches(path, expected_value, actual)) return true;
+    // Do not overwrite a value that is neither the target nor captured OEM baseline.
+    if (!readback_matches(path, snapshot.factory_value, actual)) return false;
+
+    // Keep the write-ahead journal durable before reasserting the candidate value.
+    if (!persist_locked() ||
+        !write_raw_node(path, expected_value, snapshot.dev, snapshot.ino)) return false;
+
+    uint64_t after_dev = 0;
+    uint64_t after_ino = 0;
+    const std::string after = read_raw_node(path, &after_dev, &after_ino);
+    return after_dev == current_dev && after_ino == current_ino &&
+           readback_matches(path, expected_value, after);
+}
+
 std::vector<NodeSnapshot> BaselineStore::get_audit_trail() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<NodeSnapshot> trail;

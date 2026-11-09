@@ -92,6 +92,11 @@ inline Fixture create(const std::string& id) {
         const fs::path kgsl = f.sys / "class/kgsl/kgsl-3d0";
         put(kgsl / "gpuclk", "300000000\n"); put(kgsl / "max_gpuclk", "800000000\n");
         put(kgsl / "min_gpuclk", "200000000\n");
+    } else if (id == "K") {
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/related_cpus", "0 1 2 3\n");
+    } else if (id == "L") {
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/related_cpus", "0,,3\n");
+        put(f.sys / "devices/system/cpu/cpufreq/policy0/affected_cpus", "0-3\n");
     }
     return f;
 }

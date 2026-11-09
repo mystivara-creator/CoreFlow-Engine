@@ -134,6 +134,7 @@ struct DomainLease {
     // controller can no longer acknowledge rollback. The lease remains active
     // until a verified global recovery explicitly retires it.
     bool owner_detached{false};
+    uint32_t contention_retries{0};
 };
 
 class CentralMutationCoordinator {
@@ -156,6 +157,12 @@ public:
         MutationDomain domain,
         std::string_view controller_name,
         std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool reserve_contention_retry(
+        MutationDomain domain,
+        std::string_view controller_name,
+        std::string_view transaction_id,
+        uint32_t max_retries,
+        uint32_t* attempt_number = nullptr) noexcept;
     [[nodiscard]] bool is_preemption_requested(
         MutationDomain domain,
         std::string_view controller_name,
@@ -297,6 +304,7 @@ struct AutonomousDecisionSnapshot {
     uint32_t rolled_back_count{0};
     uint32_t total_inconclusive{0};
     uint32_t total_rejected{0};
+    uint32_t ownership_contention_retries{0};
     bool recovery_required{false};
     bool thermal_stabilization_active{false};
     bool thermal_recovery_active{false};
@@ -494,6 +502,8 @@ private:
     bool transaction_active_{false};
     bool observing_{false};
     bool recovery_required_{false};
+    uint32_t contention_backoff_ticks_{0};
+    uint32_t total_contention_retries_{0};
     bool thermal_stabilization_active_{false};
     uint32_t thermal_recovery_ticks_{0};
     double prev_thermal_pressure_{45.0};
@@ -561,6 +571,7 @@ private:
     void save_persisted_stats() const;
     void load_persisted_stats();
     bool verify_active_ownership() const;
+    bool retry_contended_ownership();
     MutationDomain domain_for_candidate(std::string_view candidate_id) const noexcept;
     ControllerPriority priority_for_candidate(std::string_view candidate_id) const noexcept;
     bool apply_transaction(
