@@ -48,6 +48,9 @@ probe_start = source.index("int run_workload_probe()")
 probe_end = source.index("bool ensure_secure_state_dir()", probe_start)
 probe = source[probe_start:probe_end]
 assert "WorkloadTelemetryPipeline pipeline;" in probe
-assert "std::chrono::seconds(1)" in probe
+assert "std::chrono::milliseconds(10)" in probe
+assert "aggregate.event_drain_saturated" in probe
+assert "eventCount" in probe
+assert "eventDrainSaturated" in probe
 assert "pipeline.stop();" in probe
 assert "MutationCoordinator" not in probe

@@ -46,7 +46,8 @@ struct WorkloadFeatureSnapshot final {
   frame_deadline_count{0};
  double frame_deadline_miss_pct{0.0}, wakeup_rate_per_sec{0.0}, cpu_pressure_some_pct{0.0},
   memory_pressure_some_pct{0.0}, io_pressure_some_pct{0.0}, gpu_busy_pct{0.0};
- uint32_t valid_features{FeatureNone}, sample_count{0};
+ uint32_t valid_features{FeatureNone}, sample_count{0}, event_count{0};
+ bool event_drain_saturated{false};
  TelemetryBackend source{TelemetryBackend::Unavailable};
 };
 struct WorkloadClassification final {

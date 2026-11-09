@@ -673,12 +673,60 @@ int run_workload_probe() {
     WorkloadClassifier classifier;
     WorkloadClassification classification{};
     WorkloadFeatureSnapshot features{};
+    const auto add_saturated = [](uint64_t& total, uint64_t value) noexcept {
+        total = value > std::numeric_limits<uint64_t>::max() - total
+            ? std::numeric_limits<uint64_t>::max() : total + value;
+    };
     for (unsigned window = 0; window < 2; ++window) {
         const uint64_t start_ns = monotonic_ns();
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        const uint64_t end_ns = monotonic_ns();
-        features = pipeline.sample(start_ns, end_ns);
-        classification = classifier.classify(features, classification, end_ns);
+        const uint64_t deadline_ns = start_ns + 1'000'000'000ULL;
+        WorkloadFeatureSnapshot aggregate{};
+        aggregate.window_start_ns = start_ns;
+        aggregate.source = pipeline.backend();
+        uint64_t poll_start_ns = start_ns;
+        uint64_t total_wakeups = 0;
+        uint64_t total_io_bytes = 0;
+        uint64_t total_events = 0;
+        uint64_t total_samples = 0;
+        while (poll_start_ns < deadline_ns) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const uint64_t observed_ns = monotonic_ns();
+            const uint64_t poll_end_ns = std::min(observed_ns, deadline_ns);
+            if (poll_end_ns <= poll_start_ns) continue;
+
+            // Keep the full one-second window start so delayed ring records are
+            // still accepted when they are drained by a later 10 ms poll.
+            const WorkloadFeatureSnapshot part = pipeline.sample(start_ns, poll_end_ns);
+            aggregate.valid_features |= part.valid_features;
+            if (part.valid_features & FeatureCpuPressure)
+                aggregate.cpu_pressure_some_pct = part.cpu_pressure_some_pct;
+            if (part.valid_features & FeatureMemoryPressure)
+                aggregate.memory_pressure_some_pct = part.memory_pressure_some_pct;
+            if (part.valid_features & FeatureIoPressure)
+                aggregate.io_pressure_some_pct = part.io_pressure_some_pct;
+            if (part.valid_features & FeatureIoBytes)
+                add_saturated(total_io_bytes, part.io_bytes);
+            if (part.valid_features & FeatureWakeupRate)
+                add_saturated(total_wakeups, part.wakeup_count);
+            add_saturated(total_events, part.event_count);
+            add_saturated(total_samples, part.sample_count);
+            aggregate.event_drain_saturated =
+                aggregate.event_drain_saturated || part.event_drain_saturated;
+            poll_start_ns = poll_end_ns;
+        }
+        aggregate.window_end_ns = monotonic_ns();
+        aggregate.io_bytes = total_io_bytes;
+        aggregate.wakeup_count = total_wakeups;
+        aggregate.event_count = static_cast<uint32_t>(std::min<uint64_t>(
+            total_events, std::numeric_limits<uint32_t>::max()));
+        aggregate.sample_count = static_cast<uint32_t>(std::min<uint64_t>(
+            total_samples, std::numeric_limits<uint32_t>::max()));
+        if (aggregate.window_end_ns > start_ns) {
+            aggregate.wakeup_rate_per_sec = static_cast<double>(total_wakeups) *
+                1'000'000'000.0 / static_cast<double>(aggregate.window_end_ns - start_ns);
+        }
+        features = aggregate;
+        classification = classifier.classify(features, classification, features.window_end_ns);
     }
     const TelemetryBackend backend = pipeline.backend();
     const BpfCapabilitySnapshot caps = pipeline.bpf_capabilities();
@@ -711,6 +759,8 @@ int run_workload_probe() {
         << ",\"evidenceMask\":" << classification.evidence_mask
         << ",\"validFeatures\":" << features.valid_features
         << ",\"sampleCount\":" << features.sample_count
+        << ",\"eventCount\":" << features.event_count
+        << ",\"eventDrainSaturated\":" << (features.event_drain_saturated ? "true" : "false")
         << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
         << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
         << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
