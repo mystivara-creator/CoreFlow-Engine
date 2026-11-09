@@ -48,6 +48,7 @@ int main() {
     assert(tier1.identity.vendor == PlatformVendor::Xiaomi);
     assert(tier1.identity.os_family == OsFamily::HyperOS);
     assert(tier1.identity.os_major == 2);
+    assert(tier1.identity.fingerprint_vendor_match);
     assert(tier1.tier1_eligible);
     assert(tier1.execution_tier == ExecutionTier::XiaomiHyperOS);
     assert(tier1.policy_family == PolicyFamily::HyperOS4Inspired);
@@ -93,6 +94,12 @@ int main() {
     };
     const auto weak_result = PlatformContextDetector(weak_xiaomi).detect();
     assert(!weak_result.tier1_eligible);
+    FakeProperties custom_rom_xiaomi = xiaomi;
+    custom_rom_xiaomi.values["ro.build.fingerprint"] = "lineage/kunzite/kunzite:15/userdebug";
+    const auto custom_rom_result = PlatformContextDetector(custom_rom_xiaomi).detect();
+    assert(custom_rom_result.identity.vendor == PlatformVendor::Xiaomi);
+    assert(!custom_rom_result.identity.fingerprint_vendor_match);
+    assert(!custom_rom_result.tier1_eligible);
     assert(weak_result.execution_tier == ExecutionTier::UniversalFallback);
 
     char bpf_root_buffer[] = "/tmp/coreflow-bpf-probe-XXXXXX";

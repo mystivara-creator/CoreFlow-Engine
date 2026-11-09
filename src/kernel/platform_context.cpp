@@ -143,6 +143,17 @@ PlatformContextSnapshot PlatformContextDetector::detect(uint64_t generation) con
                                         EvidenceMiuiVersion, identity.evidence_mask);
     identity.vendor = detect_vendor(identity.manufacturer, identity.brand,
                                      identity.vendor_manufacturer, identity.confidence);
+    const auto fingerprint_lower = lower_ascii(identity.build_fingerprint);
+    identity.fingerprint_vendor_match =
+        starts_with(fingerprint_lower, "xiaomi/") ||
+        starts_with(fingerprint_lower, "redmi/") ||
+        starts_with(fingerprint_lower, "poco/");
+    if (identity.vendor == PlatformVendor::Xiaomi && !identity.fingerprint_vendor_match &&
+        identity.confidence == IdentityConfidence::High) {
+        // Custom ROM or missing vendor fingerprint is not proof of a different
+        // device, but it is insufficient evidence for Xiaomi-exclusive policy.
+        identity.confidence = IdentityConfidence::Corroborated;
+    }
 
     if (!identity.os_version.empty()) {
         identity.os_family = OsFamily::HyperOS;
@@ -170,7 +181,7 @@ PlatformContextSnapshot PlatformContextDetector::detect(uint64_t generation) con
     snapshot.tier1_eligible =
         identity.vendor == PlatformVendor::Xiaomi &&
         identity.confidence == IdentityConfidence::High &&
-        supported_hyperos_generation;
+        identity.fingerprint_vendor_match && supported_hyperos_generation;
 
     if (snapshot.tier1_eligible) {
         snapshot.execution_tier = ExecutionTier::XiaomiHyperOS;

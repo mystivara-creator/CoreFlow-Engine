@@ -65,6 +65,7 @@ struct PlatformIdentity final {
     IdentityConfidence confidence{IdentityConfidence::None};
     uint32_t evidence_mask{EvidenceNone};
     uint32_t os_major{0};
+    bool fingerprint_vendor_match{false};
     std::string manufacturer;
     std::string brand;
     std::string vendor_manufacturer;

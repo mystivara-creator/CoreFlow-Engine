@@ -12,6 +12,7 @@ Tier 1 is deliberately gated on all of the following:
 - Manufacturer/vendor evidence identifies Xiaomi.
 - Product brand independently corroborates Xiaomi, Redmi, or POCO.
 - The explicit `ro.mi.os.version.name` marker identifies HyperOS.
+- The build fingerprint independently matches a Xiaomi/Redmi/POCO product namespace.
 - Parsed HyperOS major generation is exactly 2 or 3.
 
 MIUI-only devices, ambiguous Xiaomi identity, HyperOS versions outside the supported 2/3 set, and all non-Xiaomi platforms use `UniversalFallback`. Vendor identity is descriptive; it is not mutation authority. Every controller still requires CDDP capability evidence, ownership, baseline, constraints, and verified readback.
