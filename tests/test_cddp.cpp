@@ -28,6 +28,7 @@ int main() {
     assert(DeviceProfiler::parse_cpu_list("0,2-3,5\n", cpus));
     assert((cpus == std::vector<uint32_t>{0,2,3,5}));
     assert(!DeviceProfiler::parse_cpu_list("0-3,,5", cpus));
+    assert(!DeviceProfiler::parse_cpu_list("0-3,  \n", cpus));
     assert(!DeviceProfiler::parse_cpu_list("3-1", cpus));
     assert(!DeviceProfiler::parse_cpu_list("0,0", cpus));
 
@@ -61,6 +62,14 @@ int main() {
         AutonomousTuner tuner(a.sys.string(), a.proc.string(), profile_a);
         assert(!tuner.is_candidate_eligible("cpufreq.schedutil_interactive_response"));
         assert(tuner.snapshot().capability_fingerprint.find(profile_a->fingerprint) != std::string::npos);
+        const auto invalid_evidence = tuner.step({
+            .cpu_psi = 0.0, .memory_psi = 0.0, .io_psi = 0.0,
+            .cpu_psi_valid = false, .memory_psi_valid = false, .io_psi_valid = false,
+            .thermal_pressure_valid = false,
+        });
+        assert(invalid_evidence.verdict == TunerVerdict::Inconclusive);
+        assert(invalid_evidence.last_verdict == "INCONCLUSIVE");
+        assert(read_value(a.sys / "devices/system/cpu/cpufreq/policy0/scaling_max_freq") == "2000000");
     }
 
     // B: exact non-contiguous CPU membership.

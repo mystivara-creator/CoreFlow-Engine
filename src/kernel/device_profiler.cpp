@@ -17,7 +17,6 @@
 #include <sstream>
 #include <string_view>
 #include <sys/stat.h>
-#include <sys/utsname.h>
 #include <unistd.h>
 
 namespace coreflow {
@@ -200,15 +199,16 @@ DeviceProfiler& DeviceProfiler::instance() {
 bool DeviceProfiler::parse_cpu_list(std::string_view text, std::vector<uint32_t>& cpus) noexcept {
     cpus.clear();
     if (text.empty() || text.size() > 16384U) return false;
-    size_t pos = 0;
-    while (pos < text.size()) {
-        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) ++pos;
-        if (pos == text.size()) break;
-        const size_t comma = text.find(',', pos);
+
+    size_t begin = 0;
+    while (begin < text.size()) {
+        const size_t comma = text.find(',', begin);
         const size_t end = comma == std::string_view::npos ? text.size() : comma;
-        std::string_view item = text.substr(pos, end - pos);
+        std::string_view item = text.substr(begin, end - begin);
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.front())) != 0) item.remove_prefix(1);
         while (!item.empty() && std::isspace(static_cast<unsigned char>(item.back())) != 0) item.remove_suffix(1);
         if (item.empty()) return false;
+
         const size_t dash = item.find('-');
         uint64_t first = 0, last = 0;
         if (dash == std::string_view::npos) {
@@ -219,16 +219,20 @@ bool DeviceProfiler::parse_cpu_list(std::string_view text, std::vector<uint32_t>
                 !parse_u64(item.substr(0, dash), first) ||
                 !parse_u64(item.substr(dash + 1U), last) || first > last) return false;
         }
+
         if (last > kMaxCpuId || (last - first) > kMaxCpuId ||
             cpus.size() + (last - first + 1U) > 4096U) return false;
         for (uint64_t cpu = first; cpu <= last; ++cpu) cpus.push_back(static_cast<uint32_t>(cpu));
+
         if (comma == std::string_view::npos) break;
-        pos = comma + 1U;
-        if (pos == text.size()) return false;
+        begin = comma + 1U;
+        if (begin == text.size()) return false;
     }
+
     std::sort(cpus.begin(), cpus.end());
     if (cpus.empty() || std::adjacent_find(cpus.begin(), cpus.end()) != cpus.end()) {
-        cpus.clear(); return false;
+        cpus.clear();
+        return false;
     }
     return true;
 }
@@ -255,8 +259,11 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
     const fs::path sys(sys_root_);
     const fs::path proc(proc_root_);
 
-    if (read_attribute(proc / "sys/kernel/osrelease", raw, 256U)) snapshot->kernel_release = trim(raw);
-    else { struct utsname uts{}; if (::uname(&uts) == 0) snapshot->kernel_release = uts.release; }
+    // Root injection is hermetic: never substitute the host kernel identity
+    // when the injected procfs tree does not expose a release value.
+    if (read_attribute(proc / "sys/kernel/osrelease", raw, 256U)) {
+        snapshot->kernel_release = trim(raw);
+    }
 
     if (read_attribute(sys / "firmware/devicetree/base/model", raw) ||
         read_attribute(proc / "device-tree/model", raw)) {
