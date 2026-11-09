@@ -6,6 +6,7 @@
 #include "coreflow/coreflow_context.hpp"
 
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/device_profiler.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/recovery_monitor.hpp"
