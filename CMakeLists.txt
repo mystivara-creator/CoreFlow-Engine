@@ -49,6 +49,7 @@ endif()
 set(COREFLOW_KERNEL_SOURCES
     src/kernel/coreflow_context.cpp
     src/kernel/platform_context.cpp
+    src/kernel/workload_intelligence.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
@@ -117,6 +118,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_platform_context
         tests/test_platform_context.cpp
         src/kernel/platform_context.cpp
+        src/kernel/workload_intelligence.cpp
     )
     target_include_directories(test_platform_context PRIVATE include)
     add_test(NAME PlatformContextTierDetectionTest COMMAND test_platform_context)

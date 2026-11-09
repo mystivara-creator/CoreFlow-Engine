@@ -3,6 +3,9 @@
 
 #include <cassert>
 #include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -91,6 +94,34 @@ int main() {
     const auto weak_result = PlatformContextDetector(weak_xiaomi).detect();
     assert(!weak_result.tier1_eligible);
     assert(weak_result.execution_tier == ExecutionTier::UniversalFallback);
+
+    char bpf_root_buffer[] = "/tmp/coreflow-bpf-probe-XXXXXX";
+    assert(::mkdtemp(bpf_root_buffer) != nullptr);
+    const std::filesystem::path bpf_root(bpf_root_buffer);
+    const auto write_fixture = [&](const std::filesystem::path& path, const char* value) {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path);
+        output << value;
+        assert(output.good());
+    };
+    write_fixture(bpf_root / "kernel/btf/vmlinux", "btf");
+    write_fixture(bpf_root / "kernel/tracing/events/sched/sched_switch/id", "1");
+    write_fixture(bpf_root / "kernel/tracing/events/sched/sched_wakeup/id", "2");
+    write_fixture(bpf_root / "kernel/tracing/events/block/block_rq_issue/id", "3");
+    write_fixture(bpf_root / "kernel/tracing/events/block/block_rq_complete/id", "4");
+    std::filesystem::create_directories(bpf_root / "fs/bpf");
+    const auto probed = BpfCapabilityProbe(bpf_root.string()).probe();
+    assert(probed.btf == CapabilityState::Available);
+    assert(probed.tracefs == CapabilityState::Available);
+    assert(probed.sched_switch == CapabilityState::Available);
+    assert(probed.sched_wakeup == CapabilityState::Available);
+    assert(probed.block_request == CapabilityState::Available);
+    assert(probed.bpf_filesystem == CapabilityState::Available);
+    assert(probed.syscall == CapabilityState::Unknown);
+    assert(probed.ring_buffer == CapabilityState::Unknown);
+    assert(!probed.event_pipeline_ready());
+    assert(select_telemetry_backend(probed, true) == TelemetryBackend::SysfsProcfs);
+    std::filesystem::remove_all(bpf_root);
 
     BpfCapabilitySnapshot unavailable{};
     assert(select_telemetry_backend(unavailable, true) == TelemetryBackend::SysfsProcfs);

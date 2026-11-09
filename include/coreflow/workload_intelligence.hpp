@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <string_view>
 #include <string_view>
 
 namespace coreflow {
@@ -47,6 +49,7 @@ struct BpfCapabilitySnapshot final {
     CapabilityState sched_switch{CapabilityState::Unknown};
     CapabilityState sched_wakeup{CapabilityState::Unknown};
     CapabilityState block_request{CapabilityState::Unknown};
+    CapabilityState bpf_filesystem{CapabilityState::Unknown};
     bool selinux_allows_load{false};
     bool loader_verified{false};
 
@@ -59,6 +62,15 @@ struct BpfCapabilitySnapshot final {
                sched_wakeup == CapabilityState::Available &&
                selinux_allows_load && loader_verified;
     }
+};
+
+class BpfCapabilityProbe final {
+public:
+    explicit BpfCapabilityProbe(std::string_view sys_root = "/sys") : sys_root_(sys_root) {}
+    [[nodiscard]] BpfCapabilitySnapshot probe() const noexcept;
+
+private:
+    std::string sys_root_;
 };
 
 struct WorkloadEvent final {
