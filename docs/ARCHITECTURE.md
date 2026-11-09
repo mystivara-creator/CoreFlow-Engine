@@ -34,7 +34,9 @@ Device Discovery
 5. **Transaction Executor & `CFJ4` Journal (`BaselineStore`)**: Captures immutable OEM baselines with device/inode identity (`O_NOFOLLOW` + `fstat`), commits the write-ahead journal (`CFJ4`) with per-boot `boot_id` / `boot_epoch` validation prior to any write, applies steps in strict `RequiredAnchor -> RequiredDependent` order, and verifies every write via immediate readback.
 6. **Noise-Floor Evaluator & Persistent Learning (`CFTS2`)**: Applies domain-specific settling ticks, evaluates post-settling utility delta ($\Delta U$) against the running noise floor, steps down `adaptive_scale` (`0.25..1.0`) on rollback, enforces context-aware anti-repeat cooldowns keyed by workload class and thermal bucket, and persists learning atomically in `CFTS2` format guarded by a topology/capability fingerprint.
 
-## 3. Active Production Core (C++23 + Rust 2024 + Kotlin 2.1)
+## 3. Implemented Production Core (C++23 + Rust 2024 + Kotlin 2.1)
+
+Component presence is not feature completion. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`. ART/DEX2OAT/JIT/AOT, SurfaceFlinger control, ANGLE, OpenGL tuning, and Vulkan rendering acceleration are not implemented. Vulkan ICD probing and pass-through are observation/compatibility plumbing. GPU kernel mutation is narrowly limited to Mali `power_policy`; Qualcomm KGSL remains observation-only. Power HAL detection does not intercept or issue hints.
 
 - `src/daemon/main.cpp`: Daemon lifecycle, singleton PID lock, signal hardening, PSI reads, and coordinated state application.
 - `src/daemon/reactor.cpp`: Zero-polling Linux `epoll` + `timerfd` + `signalfd` event loop.
@@ -45,10 +47,10 @@ Device Discovery
 - `rust/src/bridge.rs`: Typed `cxx` FFI bridge between C++23 and Rust 2024.
 - `src/kernel/frequency_controller.cpp`: CPUFreq and GPU devfreq ceiling actuation with OEM ownership verification.
 - `src/kernel/autonomous_tuner.cpp`: Universal resource classifier, `CentralMutationCoordinator`, workload/bottleneck/objective reasoning engine, relative baseline scaling (`compute_relative_u64` with `adaptive_scale`), active `ThermalStabilization` & `ThermalRecovery`, settling + noise-floor outcome evaluator, and `CFTS2` persistent learning.
-- `src/kernel/vulkan_controller.cpp` & `src/layer/vk_layer_coreflow.cpp`: Truthful Hardware Pass-Through Vulkan implicit layer (never fabricates API versions, extension counts, or unsupported hardware features).
+- `src/kernel/vulkan_controller.cpp` & `src/layer/vk_layer_coreflow.cpp`: Vulkan ICD probing and transparent pass-through dispatch only (`OBSERVATION_ONLY`); no SkiaVK, VRS, pipeline-cache, or rendering optimizer. Mali `power_policy` is a separate limited GPU sysfs mutation.
 - `src/kernel/neural_predictor.cpp`: Hybrid ONNX Runtime C-API (`dlopen`) + Online Recursive Least Squares & 6×8×2 Micro-MLP 10-second horizon thermal/pressure predictor.
 - `src/kernel/hardware_longevity.cpp`: Bounded battery step-charging ceiling reduction and cgroup v2 relative I/O weights.
-- `src/kernel/power_bridge.cpp`: Nonblocking AIDL Power HAL capability discovery.
+- `src/kernel/power_bridge.cpp`: AIDL Power HAL presence discovery only (`OBSERVATION_ONLY`); Binder interception and hint submission are `NOT_IMPLEMENTED`.
 - `android/src/main/kotlin/io/coreflow/`: Kotlin 2.1 Android Quick Settings TileService and thermal broadcast integration.
 
 ## 4. Twelve Non-Negotiable Safety Invariants

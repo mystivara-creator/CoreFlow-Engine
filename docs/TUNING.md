@@ -38,6 +38,8 @@ PSI Stability Gates (`[stability]`):
 
 Component health, OEM thermal ceilings, and system-wide contention always outrank raw performance boosting.
 
+**Feature boundary:** ART/DEX2OAT/JIT/AOT, SurfaceFlinger display/frame control, ANGLE/OpenGL tuning, SkiaVK threading, Adaptive VRS, and Vulkan pipeline-cache prewarming are not implemented. Power HAL is probe-only; no Binder interception or hint submission occurs. The Vulkan layer is pass-through/observation only. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`.
+
 ## Runtime Control & Recovery
 
 ```bash

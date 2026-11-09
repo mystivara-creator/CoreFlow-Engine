@@ -10,6 +10,7 @@
 #include <chrono>
 #include <atomic>
 #include <string>
+#include "coreflow/feature_accountability.hpp"
 
 namespace coreflow {
 
@@ -22,6 +23,7 @@ struct FrameMetrics {
 
 class RenderBooster {
 public:
+ static constexpr FeatureStatus kStatus=kRenderBoosterStatus;
     RenderBooster();
     ~RenderBooster() = default;
 

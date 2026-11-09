@@ -9,6 +9,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "feature_accountability.hpp"
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -159,6 +160,11 @@ struct VulkanCapabilitiesSnapshot {
 
 class VulkanController {
 public:
+ static constexpr FeatureStatus kLayerStatus=coreflow::kVulkanLayerStatus;
+ static constexpr FeatureStatus kHardwareProbeStatus=coreflow::kVulkanHardwareProbeStatus;
+ static constexpr FeatureStatus kRenderingOptimizationStatus=coreflow::kVulkanRenderingOptimizationStatus;
+ static constexpr FeatureStatus kQualcommKgslFeatureStatus=coreflow::kQualcommKgslStatus;
+ static constexpr FeatureStatus kArmMaliPolicyFeatureStatus=coreflow::kArmMaliPolicyStatus;
     static VulkanController& instance();
 
     /// Discover native Vulkan ICD via dlopen("libvulkan.so") and probe GPU sysfs surfaces

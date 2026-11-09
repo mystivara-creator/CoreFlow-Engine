@@ -1,6 +1,7 @@
 #pragma once
 #include <expected>
 #include <string_view>
+#include "coreflow/feature_accountability.hpp"
 
 namespace coreflow {
 struct PowerCapabilities {
@@ -12,6 +13,8 @@ struct PowerCapabilities {
 // Introspection only. Opening Binder cannot interpose another process's transactions.
 class PowerBridge {
 public:
+ static constexpr FeatureStatus kDiscoveryStatus=kPowerHalDiscoveryStatus;
+ static constexpr FeatureStatus kInterceptionStatus=kPowerHalInterceptionStatus;
     PowerCapabilities probe() const;
     [[nodiscard]] std::expected<void, std::string_view> enable_interception() const;
 };

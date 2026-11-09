@@ -103,6 +103,10 @@ if(CORE_FLOW_BUILD_TESTS)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
 
+    add_executable(test_feature_accountability tests/test_feature_accountability.cpp)
+    target_include_directories(test_feature_accountability PRIVATE include)
+    add_test(NAME FeatureAccountabilityTest COMMAND test_feature_accountability)
+
     add_executable(test_vulkan_controller tests/test_vulkan_controller.cpp src/kernel/vulkan_controller.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_vulkan_controller PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     add_test(NAME VulkanControllerTest COMMAND test_vulkan_controller)

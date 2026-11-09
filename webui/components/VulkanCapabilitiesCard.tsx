@@ -189,13 +189,16 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
           </div>
         </div>
 
-        {/* Runtime Pipeline & Multi-Vendor GPU Surface Controls */}
+        {/* Optimization controls stay disabled until OS-facing actuators exist. */}
         <div className="pt-4 border-t border-slate-900/[0.06] dark:border-white/[0.06] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-4 text-xs">
+          <div className="flex flex-col gap-2 text-xs">
+<p className="text-amber-700 dark:text-amber-300">Rendering optimizers: NOT_IMPLEMENTED. Vulkan probing and pass-through do not change application rendering.</p>
+<div className="flex flex-wrap items-center gap-4 text-xs">
             <label className="inline-flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={vulkanConfig.enableSkiavkThreaded}
+                disabled={true}
                 onChange={() => handleToggleOption('enableSkiavkThreaded')}
                 className="rounded border-slate-300 dark:border-slate-700"
               />
@@ -208,6 +211,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <input
                 type="checkbox"
                 checked={vulkanConfig.enableAdaptiveVrs}
+                disabled={true}
                 onChange={() => handleToggleOption('enableAdaptiveVrs')}
                 className="rounded border-slate-300 dark:border-slate-700"
               />
@@ -220,6 +224,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               <input
                 type="checkbox"
                 checked={vulkanConfig.enablePipelineCachePrewarm}
+                disabled={true}
                 onChange={() => handleToggleOption('enablePipelineCachePrewarm')}
                 className="rounded border-slate-300 dark:border-slate-700"
               />
@@ -227,6 +232,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
                 Pipeline Cache Pre-Warming
               </span>
             </label>
+            </div>
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
