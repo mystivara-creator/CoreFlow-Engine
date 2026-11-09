@@ -41,6 +41,20 @@ int main(int argc, char* argv[]) {
     assert(read_value(a) == "0");
     assert(!store.has_active_mutations());
 
+    // Reassert only after the same node returns exactly to its captured OEM baseline.
+    assert(store.apply_mutation(a, "512"));
+    { std::ofstream out(a); out << "0"; }
+    assert(store.reassert_mutation_from_oem_baseline(a, "512"));
+    assert(read_value(a) == "512");
+    assert(store.owns_expected_state(a, "512"));
+    assert(store.has_active_mutations());
+    { std::ofstream out(a); out << "777"; }
+    assert(!store.reassert_mutation_from_oem_baseline(a, "512"));
+    assert(store.rollback(a));
+    assert(read_value(a) == "777");
+    assert(!store.has_active_mutations());
+    assert(store.verify_and_persist_clear_state());
+
     // A failed operation is path-scoped: it must not roll back another
     // controller's still-active mutation on an unrelated node.
     assert(store.apply_mutation(a, "700"));
