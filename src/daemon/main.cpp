@@ -1161,6 +1161,7 @@ int main(int argc, char* argv[]) {
             sample.tuner_stage = std::string(AutonomousTuner::stage_name(tuner_state.stage));
             sample.tuner_verdict = std::string(AutonomousTuner::verdict_name(tuner_state.verdict));
             sample.candidate = tuner_state.active_candidate_id;
+            sample.ownership_contention_retries = tuner_state.ownership_contention_retries;
             sample.capacity_scale = last_capacity_scale;
             sample.valid_thermal_sensors = static_cast<uint32_t>(std::min<size_t>(
                 profile.total_valid_sensors, std::numeric_limits<uint32_t>::max()));
