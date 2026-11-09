@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -273,9 +274,26 @@ void record_ownership_loss(CandidateStats* stats) {
 // AutonomousTuner Implementation
 // ============================================================================
 
+namespace {
+AutonomousTuner& shared_autonomous_tuner(DeviceProfileHandle profile) {
+    static std::mutex singleton_mutex;
+    static std::unique_ptr<AutonomousTuner> tuner;
+    std::lock_guard<std::mutex> lock(singleton_mutex);
+    if (!tuner) {
+        tuner = std::make_unique<AutonomousTuner>("/sys", "/proc", std::move(profile));
+    } else if (profile) {
+        tuner->set_device_profile(std::move(profile));
+    }
+    return *tuner;
+}
+} // namespace
+
 AutonomousTuner& AutonomousTuner::instance() {
-    static AutonomousTuner tuner;
-    return tuner;
+    return shared_autonomous_tuner({});
+}
+
+AutonomousTuner& AutonomousTuner::instance(DeviceProfileHandle profile) {
+    return shared_autonomous_tuner(std::move(profile));
 }
 
 AutonomousTuner::AutonomousTuner(std::string sys_root, std::string proc_root, DeviceProfileHandle profile)
@@ -1182,6 +1200,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
         return a.device_name < b.device_name;
     });
 
+    auto& store = BaselineStore::instance();
     // Discover CPUFreq governor rate-limit pairs only from the injected profile.
     // No profile means legacy compatibility; an injected profile suppresses all
     // independent CPUFreq enumeration, even when it rejects every candidate.
@@ -1206,7 +1225,6 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     } else {
     // Legacy compatibility discovery for non-CDDP callers.
     // Verify policyX/scaling_governor matches the governor directory if scaling_governor exists.
-    auto& store = BaselineStore::instance();
     const fs::path cpufreq_root = fs::path(sys_root_) / "devices/system/cpu/cpufreq";
     std::error_code cpu_ec;
     for (fs::directory_iterator it(cpufreq_root, fs::directory_options::skip_permission_denied, cpu_ec), end;
@@ -1234,7 +1252,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
             }
         }
     }
-    std::sort(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end());    }
+    }
     std::sort(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end());
 
     // Capture VM baseline nodes if accessible

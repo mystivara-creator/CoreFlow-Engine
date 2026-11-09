@@ -347,6 +347,7 @@ struct TunerTelemetryInput {
 class AutonomousTuner {
 public:
     static AutonomousTuner& instance();
+    static AutonomousTuner& instance(DeviceProfileHandle profile);
 
     explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc", DeviceProfileHandle profile = {});
     ~AutonomousTuner();
