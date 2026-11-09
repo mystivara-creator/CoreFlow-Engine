@@ -11,6 +11,7 @@
  *   4. Active Thermal Stabilization & Hysteresis Recovery (damped governor & I/O burst pacing)
  */
 #pragma once
+#include "coreflow/device_profile.hpp"
 
 #include <cstdint>
 #include <array>
@@ -346,13 +347,16 @@ struct TunerTelemetryInput {
 class AutonomousTuner {
 public:
     static AutonomousTuner& instance();
+    static AutonomousTuner& instance(DeviceProfileHandle profile);
 
-    explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc");
+    explicit AutonomousTuner(std::string sys_root = "/sys", std::string proc_root = "/proc", DeviceProfileHandle profile = {});
     ~AutonomousTuner();
     AutonomousTuner(const AutonomousTuner&) = delete;
     AutonomousTuner& operator=(const AutonomousTuner&) = delete;
 
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
+    // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
+    void set_device_profile(DeviceProfileHandle profile);
 
     // Advances the autonomous reasoning, transaction coordinator, and before/after outcome evaluator.
     AutonomousDecisionSnapshot step(const TunerTelemetryInput& telemetry);
@@ -480,6 +484,7 @@ private:
     std::string controller_name_;
     std::string sys_root_;
     std::string proc_root_;
+    DeviceProfileHandle device_profile_;
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
     std::vector<CandidateStats> candidates_;

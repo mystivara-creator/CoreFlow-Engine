@@ -331,7 +331,6 @@ void print_status() {
         .current_scale = 1.0,
         .elapsed_seconds = 1.0,
     });
-    AutonomousTuner::instance().discover();
     const auto tuner = AutonomousTuner::instance().snapshot();
     VulkanController::instance().initialize({
         .mode = VulkanController::parse_mode(cfg_status.vulkan_layer_mode),
@@ -860,9 +859,15 @@ int main(int argc, char* argv[]) {
     MutationRecoveryMonitor recovery_monitor(baseline);
 
     DaemonConfig config = DaemonConfig::load_best_available();
+    const DeviceProfileHandle device_profile = DeviceProfiler::instance().refresh();
+    emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
+        " fingerprint=" + device_profile->fingerprint +
+        " CPU policies=" + std::to_string(device_profile->cpu_policies.size()) +
+        " GPU domains=" + std::to_string(device_profile->gpu_domains.size()));
     UclampGovernor governor;
-    FrequencyController frequencies;
+    FrequencyController frequencies("/sys", device_profile);
     frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+    auto& autonomous_tuner = AutonomousTuner::instance(device_profile);
     auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
     HardwareLongevityManager::instance().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
@@ -898,7 +903,6 @@ int main(int argc, char* argv[]) {
     std::string last_tuner_candidate = "oem_baseline";
     TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
     NeuralPredictor::instance().initialize("/data/adb/coreflow/models");
-    AutonomousTuner::instance().discover();
     VulkanController::instance().initialize({
         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
         .enable_skiavk_threaded = config.enable_skiavk_threaded,
@@ -1191,7 +1195,7 @@ int main(int argc, char* argv[]) {
         const double remaining_headroom = thermal.headroom_valid
             ? std::max(0.0, 1.0 - static_cast<double>(thermal.headroom_value))
             : -1.0;
-        const auto tuner_snap = AutonomousTuner::instance().step({
+        const auto tuner_snap = autonomous_tuner.step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),

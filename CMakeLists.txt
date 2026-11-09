@@ -81,6 +81,24 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    add_executable(test_cddp
+        tests/test_cddp.cpp
+        src/kernel/device_profiler.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/autonomous_tuner.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_cddp PRIVATE include tests)
+    target_link_libraries(test_cddp PRIVATE m)
+    if(ANDROID)
+        target_link_libraries(test_cddp PRIVATE log)
+    else()
+        target_link_libraries(test_cddp PRIVATE pthread)
+    endif()
+    add_test(NAME CoreFlowDynamicDeviceProfilingTest COMMAND test_cddp)
+
     add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)

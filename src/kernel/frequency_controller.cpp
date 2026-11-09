@@ -21,8 +21,8 @@ bool number(const std::string& path, uint64_t& value) {
     return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value > 0;
 }
 }
-FrequencyController::FrequencyController(std::string root)
-    : root_(std::move(root)),
+FrequencyController::FrequencyController(std::string root, DeviceProfileHandle profile)
+    : root_(std::move(root)), profile_(std::move(profile)),
       controller_name_(CentralMutationCoordinator::make_controller_identity("FrequencyController")) {
     (void)CentralMutationCoordinator::instance().register_preemption_handler(
         controller_name_,
@@ -126,9 +126,35 @@ void FrequencyController::add(const std::string& dir, bool gpu) {
 }
 void FrequencyController::discover(bool cpu, bool gpu) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // Never discard in-memory ownership metadata while a mutation is still active.
+    // Never discard in-memory ownership metadata while a mutation is active.
     if (std::any_of(domains_.begin(), domains_.end(), [](const Domain& d) { return d.mutation_active; })) return;
     domains_.clear();
+
+    if (profile_) {
+        const auto eligible = [&](const std::string& path, std::string_view semantic) {
+            return std::any_of(profile_->node_capabilities.begin(), profile_->node_capabilities.end(),
+                [&](const NodeCapability& cap) {
+                    return cap.path == path && cap.semantic_id == semantic && cap.mutation_eligible();
+                });
+        };
+        if (cpu) {
+            for (const auto& policy : profile_->cpu_policies) {
+                const std::string max_path = policy.policy_path + "/scaling_max_freq";
+                if (eligible(max_path, "cpufreq.scaling_max_freq")) add(policy.policy_path, false);
+            }
+        }
+        if (gpu) {
+            for (const auto& domain : profile_->gpu_domains) {
+                const std::string max_path = domain.device_path + "/max_freq";
+                if (eligible(max_path, "devfreq.max_freq")) add(domain.device_path, true);
+            }
+        }
+        // An injected profile is authoritative for CPU/GPU actuator admission.
+        // Do not run a second independent scan when a subsystem was not admitted.
+        return;
+    }
+
+    // Legacy compatibility path for tests/callers that have not yet injected CDDP.
     auto scan = [&](const std::string& root, bool is_gpu) {
         std::error_code ec;
         std::set<std::string> seen;
