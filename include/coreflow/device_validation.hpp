@@ -30,6 +30,7 @@ struct DeviceValidationSample {
     std::string candidate{"unknown"};
     double capacity_scale{-1.0};
     uint32_t valid_thermal_sensors{0};
+    uint32_t ownership_contention_retries{0};
     bool recovery_pending{false};
     bool journal_clear{false};
     bool active_mutations{false};
