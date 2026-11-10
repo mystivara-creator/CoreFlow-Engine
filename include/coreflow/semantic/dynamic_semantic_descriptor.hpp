@@ -109,7 +109,9 @@ public:
             return false;
         if (!capability_.isValid() || !semantic_.role.isValid() || !semantic_.domain.isValid() ||
             !semantic_.vocabulary.isValid() || !provenance_.id.isValid() ||
-            !provenance_.provider.isValid() || !value_.numeric.isValid()) return false;
+            !provenance_.provider.isValid() || !risk_.risk_class.isValid() ||
+            value_.kind == ValueKind::Unknown || !value_.numeric.isValid() ||
+            (mutation_.requires_readback && !value_.supports_readback)) return false;
         for (const auto& item : evidence_) {
             if (item.generation == generation_ && item.provenance == provenance_.id &&
                 item.strength != EvidenceStrength::None && item.strength != EvidenceStrength::Weak)
