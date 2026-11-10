@@ -52,6 +52,33 @@ public:
         std::string_view policy_path, uint64_t now_ns) const noexcept = 0;
 };
 
+// Generic Linux fallback. This provider exposes only the kernel-reported static
+// hardware maximum; thermal admission remains a separate mandatory authority.
+// Qualcomm's qcom-cpufreq-hw is deliberately excluded because its dynamic LMh
+// ceiling cannot be reconstructed from generic trip points or cpuinfo_max_freq.
+class GenericLinuxFrequencyCeilingProvider final : public IndependentFrequencyCeilingProvider {
+public:
+    explicit GenericLinuxFrequencyCeilingProvider(
+        std::string sys_root = "/sys", uint64_t validity_ns = 250'000'000ULL) noexcept;
+    [[nodiscard]] std::optional<IndependentFrequencyCeiling> current(
+        std::string_view policy_path, uint64_t now_ns) const noexcept override;
+private:
+    std::string sys_root_;
+    uint64_t validity_ns_{0};
+};
+
+class FallbackFrequencyCeilingProvider final : public IndependentFrequencyCeilingProvider {
+public:
+    FallbackFrequencyCeilingProvider(
+        const IndependentFrequencyCeilingProvider& primary,
+        const IndependentFrequencyCeilingProvider& fallback) noexcept;
+    [[nodiscard]] std::optional<IndependentFrequencyCeiling> current(
+        std::string_view policy_path, uint64_t now_ns) const noexcept override;
+private:
+    const IndependentFrequencyCeilingProvider& primary_;
+    const IndependentFrequencyCeilingProvider& fallback_;
+};
+
 // Qualcomm LMh ceiling discovery. The provider accepts only a versioned, explicit
 // qcom_lmh_max_freq kernel ABI from a qcom-cpufreq-hw policy and requires a
 // cpufreq cooling device bound to that policy. Generic cooling states are
