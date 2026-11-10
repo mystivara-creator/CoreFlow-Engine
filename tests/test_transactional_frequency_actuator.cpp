@@ -162,9 +162,19 @@ int main() {
 
     assert(evaluator.begin(baseline));
     sample = baseline;
-    sample.timestamp_ns += 3'100'000'000ULL;
-    sample.cpu_psi_some_pct = 6.0;
+    sample.timestamp_ns += 1'000'000'000ULL;
+    sample.cpu_psi_some_pct = 9.0;
+    sample.ebpf_wakeup_rate_per_sec = 105.0;
+    outcome = evaluator.observe(sample);
+    assert(outcome.verdict == OutcomeVerdict::Pending);
+    sample.timestamp_ns += 1'000'000'000ULL;
+    sample.cpu_psi_some_pct = 8.0;
     sample.ebpf_wakeup_rate_per_sec = 110.0;
+    outcome = evaluator.observe(sample);
+    assert(outcome.verdict == OutcomeVerdict::Pending);
+    sample.timestamp_ns += 1'100'000'000ULL;
+    sample.cpu_psi_some_pct = 6.0;
+    sample.ebpf_wakeup_rate_per_sec = 120.0;
     outcome = evaluator.observe(sample);
     assert(outcome.verdict == OutcomeVerdict::Improved);
 
