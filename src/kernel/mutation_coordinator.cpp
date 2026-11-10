@@ -56,13 +56,15 @@ bool CentralMutationCoordinator::acquire_lease(
         for (auto& lease : leases_) {
             if (lease.domain != domain || !lease.active) continue;
             if (lease.owner_controller == controller_name) {
-                if (lease.preemption_requested || lease.transaction_id != transaction_id) {
+                if (lease.preemption_requested || lease.external_ownership_lost || lease.transaction_id != transaction_id) {
                     conflict = true;
                     ++conflict_rejections_;
                     if (conflict_reason != nullptr) {
-                        *conflict_reason = lease.preemption_requested
-                            ? "Controller transaction has a pending preemption request"
-                            : "Controller must release its current transaction before acquiring a new one";
+                        *conflict_reason = lease.external_ownership_lost
+                            ? "External writer changed a leased node; transaction is quarantined"
+                            : (lease.preemption_requested
+                                ? "Controller transaction has a pending preemption request"
+                                : "Controller must release its current transaction before acquiring a new one");
                     }
                     break;
                 }
@@ -132,7 +134,7 @@ bool CentralMutationCoordinator::reserve_contention_retry(
                    lease.owner_controller == controller_name &&
                    lease.transaction_id == transaction_id;
         });
-    if (it == leases_.end() || it->preemption_requested ||
+    if (it == leases_.end() || it->preemption_requested || it->external_ownership_lost ||
         it->preemption_dispatch_in_flight || it->owner_detached ||
         it->contention_retries >= retry_limit) return false;
     ++it->contention_retries;
@@ -151,11 +153,54 @@ void CentralMutationCoordinator::release_lease(
             lease.transaction_id == transaction_id) {
             lease.active = false;
             lease.transaction_id.clear();
+            if (lease.external_ownership_lost) continue;
             lease.preemption_requested = false;
             lease.preemption_dispatch_in_flight = false;
             lease.owner_detached = false;
         }
     }
+}
+
+bool CentralMutationCoordinator::mark_external_ownership_lost(
+    MutationDomain domain, std::string_view controller_name,
+    std::string_view transaction_id) noexcept {
+    if (controller_name.empty() || transaction_id.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& lease : leases_) {
+        if (lease.domain == domain && lease.active &&
+            lease.owner_controller == controller_name && lease.transaction_id == transaction_id) {
+            lease.external_ownership_lost = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CentralMutationCoordinator::clear_external_ownership_lost_after_verified_recovery(
+    MutationDomain domain, std::string_view controller_name,
+    std::string_view transaction_id) noexcept {
+    if (controller_name.empty() || transaction_id.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& lease : leases_) {
+        if (lease.domain == domain && lease.active &&
+            lease.owner_controller == controller_name && lease.transaction_id == transaction_id) {
+            lease.external_ownership_lost = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CentralMutationCoordinator::lease_is_live(
+    MutationDomain domain, std::string_view controller_name,
+    std::string_view transaction_id) const noexcept {
+    if (controller_name.empty() || transaction_id.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::any_of(leases_.begin(), leases_.end(), [&](const DomainLease& lease) {
+        return lease.domain == domain && lease.active && !lease.preemption_requested &&
+               !lease.external_ownership_lost && lease.owner_controller == controller_name &&
+               lease.transaction_id == transaction_id;
+    });
 }
 
 bool CentralMutationCoordinator::is_preemption_requested(
@@ -302,7 +347,7 @@ bool CentralMutationCoordinator::dispatch_preemption(
                 lease.transaction_id != transaction_id) {
                 continue;
             }
-            if (acknowledged) {
+            if (acknowledged && !lease.external_ownership_lost) {
                 lease.active = false;
                 lease.transaction_id.clear();
                 lease.preemption_requested = false;
