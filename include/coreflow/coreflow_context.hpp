@@ -21,6 +21,8 @@ class BaselineStore;
 class DeviceProfiler;
 class ThermalMonitor;
 class ThermalSafetyAuthority;
+class QualcommLmhFrequencyCeilingProvider;
+class TransactionalFrequencyActuator;
 class NeuralPredictor;
 class MutationRecoveryMonitor;
 class UclampGovernor;
@@ -70,6 +72,7 @@ public:
     [[nodiscard]] TieredPolicyRouter& tiered_policy_router() noexcept { return policy_router_; }
     [[nodiscard]] FrequencyOppDiscovery& frequency_opp_discovery() noexcept { return frequency_discovery_; }
     [[nodiscard]] FrequencyTargetPlanner& frequency_target_planner() noexcept { return frequency_planner_; }
+    [[nodiscard]] TransactionalFrequencyActuator* transactional_frequency_actuator() noexcept { return transactional_frequency_actuator_.get(); }
     [[nodiscard]] MemoryWarmupController* memory_warmup_controller() noexcept { return memory_warmup_controller_.get(); }
 
 private:
@@ -87,6 +90,8 @@ private:
     TieredPolicyRouter policy_router_;
     FrequencyOppDiscovery frequency_discovery_{"/sys"};
     FrequencyTargetPlanner frequency_planner_{};
+    std::unique_ptr<QualcommLmhFrequencyCeilingProvider> qcom_lmh_ceiling_provider_;
+    std::unique_ptr<TransactionalFrequencyActuator> transactional_frequency_actuator_;
     std::unique_ptr<MemoryWarmupController> memory_warmup_controller_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
