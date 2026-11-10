@@ -423,14 +423,17 @@ OutcomeResult FrequencyOutcomeEvaluator::observe(const OutcomeSample& sample) no
 
     ++samples_;
     const uint64_t elapsed = sample.timestamp_ns - started_at_ns_;
+    // Absolute pressure thresholds are meaningful only when pressure rises
+    // from a materially lower baseline; Tier-2 intentionally starts under high
+    // CPU pressure and must not self-trigger an immediate false regression.
     const bool cpu_spike = sample.cpu_psi_valid &&
-        (sample.cpu_psi_some_pct >= 35.0 ||
+        ((sample.cpu_psi_some_pct >= 35.0 && baseline_.cpu_psi_some_pct < 25.0) ||
          (baseline_.cpu_psi_valid && sample.cpu_psi_some_pct - baseline_.cpu_psi_some_pct >= 10.0));
     const bool memory_spike = sample.memory_psi_valid &&
-        (sample.memory_psi_some_pct >= 35.0 ||
+        ((sample.memory_psi_some_pct >= 35.0 && baseline_.memory_psi_some_pct < 25.0) ||
          (baseline_.memory_psi_valid && sample.memory_psi_some_pct - baseline_.memory_psi_some_pct >= 10.0));
     const bool io_spike = sample.io_psi_valid &&
-        (sample.io_psi_some_pct >= 35.0 ||
+        ((sample.io_psi_some_pct >= 35.0 && baseline_.io_psi_some_pct < 25.0) ||
          (baseline_.io_psi_valid && sample.io_psi_some_pct - baseline_.io_psi_some_pct >= 10.0));
     const bool wakeup_collapse = baseline_.ebpf_wakeup_valid && sample.ebpf_wakeup_valid &&
         baseline_.workload_stable && sample.workload_stable &&
@@ -686,13 +689,24 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
     const auto ceiling = policy_path.empty()
         ? std::optional<IndependentFrequencyCeiling>{}
         : ceiling_provider_.current(policy_path, now);
+    const auto audit = baseline_store_.get_audit_trail();
+    const auto owned_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == target_path_;
+    });
+    uint64_t actual_target_khz = 0U;
+    const bool ownership_live =
+        read_frequency_khz(target_path_, actual_target_khz) &&
+        target_hz_ % 1000ULL == 0ULL &&
+        actual_target_khz == target_hz_ / 1000ULL &&
+        owned_node != audit.end() && owned_node->is_modified &&
+        owned_node->factory_value == baseline_value_;
     const bool admission_live =
         thermal.granted && thermal.observed_at_ns != 0U &&
         thermal.observed_at_ns <= now && now - thermal.observed_at_ns <= 250'000'000ULL &&
         ceiling.has_value() && ceiling->signature_or_kernel_contract_verified &&
         ceiling->valid_until_ns >= now &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
-        ceiling->max_hz >= target_hz_;
+        ceiling->max_hz >= target_hz_ && ownership_live;
     if (!admission_live) {
         recovery_required_ = true;
         OutcomeResult denied{OutcomeVerdict::Inconclusive, 0,
