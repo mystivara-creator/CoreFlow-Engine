@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
