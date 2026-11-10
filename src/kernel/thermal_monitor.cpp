@@ -19,14 +19,24 @@
 namespace coreflow {
 namespace {
 
-bool read_sysfs_line(const std::string& path, std::string& out) {
+bool read_sysfs_line(const std::string& path, std::string& out,
+                     uint64_t* source_mtime_ns = nullptr) {
     out.clear();
+    if (source_mtime_ns != nullptr) *source_mtime_ns = 0;
     if (path.empty() || path.find('\0') != std::string::npos) return false;
     UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
 
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (source_mtime_ns != nullptr && st.st_mtim.tv_sec >= 0 && st.st_mtim.tv_nsec >= 0) {
+        constexpr uint64_t kNanosPerSecond = 1'000'000'000ULL;
+        const uint64_t seconds = static_cast<uint64_t>(st.st_mtim.tv_sec);
+        if (seconds <= (UINT64_MAX - static_cast<uint64_t>(st.st_mtim.tv_nsec)) / kNanosPerSecond) {
+            *source_mtime_ns = seconds * kNanosPerSecond +
+                               static_cast<uint64_t>(st.st_mtim.tv_nsec);
+        }
+    }
 
     char buf[128];
     ssize_t n = 0;
@@ -106,6 +116,84 @@ bool parse_celsius(std::string_view text, float& celsius) noexcept {
 ThermalMonitor::ThermalMonitor(std::string_view sysfs_root)
     : sysfs_root_(sysfs_root.empty() ? "/sys/class/thermal" : std::string(sysfs_root)) {}
 
+void ThermalSensorFreshnessTracker::record_sample(
+    float celsius, uint64_t source_mtime_ns, uint64_t timestamp_ns) noexcept {
+    if (!std::isfinite(celsius) || celsius < 0.0F || celsius > 130.0F || timestamp_ns == 0) {
+        reset();
+        return;
+    }
+
+    if (last_sample_ns_ != 0 &&
+        (timestamp_ns <= last_sample_ns_ ||
+         timestamp_ns - last_sample_ns_ > 5'000'000'000ULL)) {
+        reset();
+    }
+
+    const int64_t milli_celsius = static_cast<int64_t>(std::llround(
+        static_cast<double>(celsius) * 1000.0));
+    if (samples_ == 0) {
+        first_sample_ns_ = timestamp_ns;
+        last_sample_ns_ = timestamp_ns;
+        last_milli_celsius_ = milli_celsius;
+        last_source_mtime_ns_ = source_mtime_ns;
+        samples_ = 1;
+        return;
+    }
+
+    const bool value_progress = milli_celsius != last_milli_celsius_;
+    const bool metadata_progress = source_mtime_ns != 0 &&
+        last_source_mtime_ns_ != 0 && source_mtime_ns != last_source_mtime_ns_;
+    if (value_progress || metadata_progress) {
+        progress_seen_ = true;
+        last_progress_ns_ = timestamp_ns;
+        unchanged_samples_ = 0;
+        stale_ = false;
+    } else {
+        if (unchanged_samples_ < UINT32_MAX) ++unchanged_samples_;
+        const uint64_t span = timestamp_ns - first_sample_ns_;
+        if (unchanged_samples_ >= 8U && span >= 2'000'000'000ULL) {
+            stale_ = true;
+        }
+    }
+
+    if (samples_ < UINT32_MAX) ++samples_;
+    last_sample_ns_ = timestamp_ns;
+    last_milli_celsius_ = milli_celsius;
+    last_source_mtime_ns_ = source_mtime_ns;
+}
+
+ThermalSensorFreshness ThermalSensorFreshnessTracker::evaluate(
+    uint64_t now_ns) const noexcept {
+    ThermalSensorFreshness result{};
+    result.samples = samples_;
+    result.last_sample_ns = last_sample_ns_;
+    if (first_sample_ns_ != 0 && last_sample_ns_ >= first_sample_ns_) {
+        result.sample_span_ns = last_sample_ns_ - first_sample_ns_;
+    }
+
+    result.stale = stale_ ||
+        (unchanged_samples_ >= 8U && result.sample_span_ns >= 2'000'000'000ULL);
+    const bool sample_recent = now_ns >= last_sample_ns_ &&
+        now_ns - last_sample_ns_ <= 1'000'000'000ULL;
+    const bool progress_recent = progress_seen_ && now_ns >= last_progress_ns_ &&
+        now_ns - last_progress_ns_ <= 5'000'000'000ULL;
+    result.valid = samples_ >= 2U &&
+        result.sample_span_ns >= 200'000'000ULL &&
+        sample_recent && progress_recent && !result.stale;
+    return result;
+}
+
+void ThermalSensorFreshnessTracker::reset() noexcept {
+    last_milli_celsius_ = -1;
+    first_sample_ns_ = 0;
+    last_sample_ns_ = 0;
+    last_progress_ns_ = 0;
+    last_source_mtime_ns_ = 0;
+    samples_ = 0;
+    unchanged_samples_ = 0;
+    progress_seen_ = false;
+    stale_ = false;
+}
 
 int classify_thermal_type(std::string_view type) {
     std::string lower(type);
@@ -158,6 +246,7 @@ void ThermalMonitor::discover_sensors() const {
     sensors_.clear();
     // Sensor topology may have changed; never carry a trend across a rediscovery boundary.
     sensor_trend_trackers_.clear();
+    sensor_freshness_trackers_.clear();
     size_t visited = 0;
     std::error_code ec;
     namespace fs = std::filesystem;
@@ -464,7 +553,9 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             std::chrono::steady_clock::now().time_since_epoch()).count());
     for (const auto& sensor : sensors_) {
         std::string raw; float temp;
-        const bool valid_temperature = read_sysfs_line(sensor.temp_path, raw) && parse_celsius(raw, temp);
+        uint64_t source_mtime_ns = 0;
+        const bool valid_temperature =
+            read_sysfs_line(sensor.temp_path, raw, &source_mtime_ns) && parse_celsius(raw, temp);
         float passive = -1, critical = -1, hot = -1, hyst = 0;
         // Never assume a global degree threshold or reinterpret active cooling trips.
         if (!sensor.is_hwmon) {
@@ -490,7 +581,28 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             valid_temperature ? temp : -1, valid_temperature, passive > 0 || hot > 0 || critical > 0, 0};
         result.readings.push_back(reading);
         auto& observed = result.readings.back();
+        observed.sample_timestamp_ns = sample_timestamp_ns;
+        observed.source_mtime_ns = source_mtime_ns;
         if (sensor.category > 0) {
+            auto freshness_tracker = sensor_freshness_trackers_.find(sensor.temp_path);
+            if (!valid_temperature) {
+                if (freshness_tracker != sensor_freshness_trackers_.end()) {
+                    freshness_tracker->second.reset();
+                }
+            } else {
+                if (freshness_tracker == sensor_freshness_trackers_.end()) {
+                    freshness_tracker = sensor_freshness_trackers_.try_emplace(
+                        sensor.temp_path).first;
+                }
+                freshness_tracker->second.record_sample(
+                    temp, source_mtime_ns, sample_timestamp_ns);
+                const auto freshness = freshness_tracker->second.evaluate(sample_timestamp_ns);
+                observed.freshness_valid = freshness.valid;
+                observed.freshness_stale = freshness.stale;
+                observed.freshness_samples_count = freshness.samples;
+                observed.freshness_sample_span_ns = freshness.sample_span_ns;
+            }
+
             auto tracker = sensor_trend_trackers_.find(sensor.temp_path);
             if (!valid_temperature) {
                 if (tracker != sensor_trend_trackers_.end()) tracker->second.reset();
