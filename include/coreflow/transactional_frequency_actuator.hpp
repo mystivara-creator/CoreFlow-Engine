@@ -131,6 +131,15 @@ public:
         const OutcomeSample& baseline_sample,
         uint64_t now_ns) noexcept;
 
+    // Runtime discovery path: independently revalidates thermal admission,
+    // Qualcomm LMh ceiling, OPP table, and current frequency before every trial.
+    [[nodiscard]] bool can_apply_policy(
+        uint32_t policy_index, double requested_capacity_scale,
+        uint64_t now_ns) const noexcept;
+    [[nodiscard]] bool apply_policy(
+        uint32_t policy_index, double requested_capacity_scale,
+        const OutcomeSample& baseline_sample, uint64_t now_ns) noexcept;
+
     [[nodiscard]] OutcomeResult observe(const OutcomeSample& sample) noexcept;
     [[nodiscard]] bool rollback() noexcept;
     [[nodiscard]] bool mutation_active() const noexcept;
@@ -148,10 +157,16 @@ private:
     std::string target_path_;
     std::string baseline_value_;
     uint64_t target_hz_{0};
+    FrequencyCapabilitySnapshot capability_{};
     mutable std::mutex mutex_;
     FrequencyOutcomeEvaluator evaluator_;
+    OutcomeResult last_outcome_{};
+    bool evaluation_complete_{false};
     bool active_{false};
     bool recovery_required_{false};
+
+    [[nodiscard]] std::optional<FrequencyCapabilitySnapshot> discover_capability(
+        uint32_t policy_index, uint64_t now_ns) const noexcept;
 
     [[nodiscard]] bool rollback_locked() noexcept;
     [[nodiscard]] bool handle_preemption(
