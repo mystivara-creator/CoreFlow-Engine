@@ -13,6 +13,7 @@ FunctionalDomainAssessment DomainEvidenceAggregator::aggregate(
 
     FunctionalDomain selected = FunctionalDomain::Unresolved;
     Identifier128 selected_relationship{};
+    CapabilityId selected_capability{};
     ProvenanceId subsystem_provenance{}, driver_provenance{}, psi_provenance{};
     EvidenceId subsystem_evidence{}, driver_evidence{}, psi_evidence{};
     bool seen_subsystem = false;
@@ -21,14 +22,17 @@ FunctionalDomainAssessment DomainEvidenceAggregator::aggregate(
     for (const auto& item : evidence) {
         if (!item.positive || item.domain == FunctionalDomain::Unresolved ||
             !item.evidence.isValid() || !item.provenance.isValid() ||
-            !item.relationship.isValid() || item.generation != active_generation ||
-            item.observed_at_ns > now_ns || now_ns - item.observed_at_ns > maximum_age_ns) {
+            !item.relationship.isValid() || !item.capability.isValid() ||
+            item.generation != active_generation || item.observed_at_ns > now_ns ||
+            now_ns - item.observed_at_ns > maximum_age_ns) {
             return result;
         }
         if (selected == FunctionalDomain::Unresolved) {
             selected = item.domain;
             selected_relationship = item.relationship;
-        } else if (selected != item.domain || selected_relationship != item.relationship) {
+            selected_capability = item.capability;
+        } else if (selected != item.domain || selected_relationship != item.relationship ||
+                   selected_capability != item.capability) {
             return result;
         }
 
