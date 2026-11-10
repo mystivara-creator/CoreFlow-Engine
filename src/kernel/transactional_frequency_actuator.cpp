@@ -518,13 +518,14 @@ TransactionalFrequencyActuator::discover_capability(
         admission_now - now_ns > 250'000'000ULL) return std::nullopt;
 
     const auto thermal = thermal_.evaluate(admission_now);
+    const uint64_t thermal_checked_at = monotonic_now_ns();
     if (!thermal.granted || thermal.observed_at_ns == 0U ||
-        thermal.observed_at_ns > admission_now ||
-        admission_now - thermal.observed_at_ns > 250'000'000ULL) return std::nullopt;
+        thermal_checked_at == 0U || thermal.observed_at_ns > thermal_checked_at ||
+        thermal_checked_at - thermal.observed_at_ns > 250'000'000ULL) return std::nullopt;
 
     const std::string policy_path = sys_root_ +
         "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
-    const auto ceiling = ceiling_provider_.current(policy_path, admission_now);
+    const auto ceiling = ceiling_provider_.current(policy_path, thermal_checked_at);
     if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
         ceiling->max_hz == 0U || ceiling->valid_until_ns < admission_now ||
         ceiling->capability_fingerprint.empty()) return std::nullopt;
@@ -604,12 +605,13 @@ bool TransactionalFrequencyActuator::apply(
     if (baseline_sample.timestamp_ns == 0 || baseline_sample.timestamp_ns > admission_now ||
         admission_now - baseline_sample.timestamp_ns > 1'000'000'000ULL) return false;
     const auto thermal = thermal_.evaluate(admission_now);
+    const uint64_t thermal_checked_at = monotonic_now_ns();
     if (!thermal.granted || thermal.observed_at_ns == 0U ||
-        thermal.observed_at_ns > admission_now ||
-        admission_now - thermal.observed_at_ns > 250'000'000ULL ||
+        thermal_checked_at == 0U || thermal.observed_at_ns > thermal_checked_at ||
+        thermal_checked_at - thermal.observed_at_ns > 250'000'000ULL ||
         admission_now - now_ns > 250'000'000ULL) return false;
 
-    const auto ceiling = ceiling_provider_.current(policy_path, admission_now);
+    const auto ceiling = ceiling_provider_.current(policy_path, thermal_checked_at);
     if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
         ceiling->max_hz == 0 || ceiling->valid_until_ns < admission_now ||
         ceiling->capability_fingerprint.empty() ||
@@ -691,12 +693,13 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
 
     const uint64_t now = monotonic_now_ns();
     const auto thermal = thermal_.evaluate(now);
+    const uint64_t checked_at = monotonic_now_ns();
     const std::size_t separator = target_path_.rfind('/');
     const std::string policy_path = separator == std::string::npos
         ? std::string{} : target_path_.substr(0U, separator);
     const auto ceiling = policy_path.empty()
         ? std::optional<IndependentFrequencyCeiling>{}
-        : ceiling_provider_.current(policy_path, now);
+        : ceiling_provider_.current(policy_path, checked_at);
     const auto audit = baseline_store_.get_audit_trail();
     const auto owned_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
         return node.path == target_path_;
@@ -710,7 +713,8 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         owned_node->factory_value == baseline_value_;
     const bool admission_live =
         thermal.granted && thermal.observed_at_ns != 0U &&
-        thermal.observed_at_ns <= now && now - thermal.observed_at_ns <= 250'000'000ULL &&
+        checked_at != 0U && thermal.observed_at_ns <= checked_at &&
+        checked_at - thermal.observed_at_ns <= 250'000'000ULL &&
         ceiling.has_value() && ceiling->signature_or_kernel_contract_verified &&
         ceiling->valid_until_ns >= now &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
