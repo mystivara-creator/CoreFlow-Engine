@@ -506,6 +506,79 @@ TransactionalFrequencyActuator::~TransactionalFrequencyActuator() {
     coordinator_.unregister_preemption_handler(controller_id_);
 }
 
+std::optional<FrequencyCapabilitySnapshot>
+TransactionalFrequencyActuator::discover_capability(
+    uint32_t policy_index, uint64_t now_ns) const noexcept {
+    if (policy_index > 255U || sys_root_.empty()) return std::nullopt;
+    const uint64_t admission_now = monotonic_now_ns();
+    if (admission_now == 0U || now_ns == 0U || admission_now < now_ns ||
+        admission_now - now_ns > 250'000'000ULL) return std::nullopt;
+
+    const auto thermal = thermal_.evaluate(admission_now);
+    if (!thermal.granted || thermal.observed_at_ns == 0U ||
+        thermal.observed_at_ns > admission_now ||
+        admission_now - thermal.observed_at_ns > 250'000'000ULL) return std::nullopt;
+
+    const std::string policy_path = sys_root_ +
+        "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
+    const auto ceiling = ceiling_provider_.current(policy_path, admission_now);
+    if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
+        ceiling->max_hz == 0U || ceiling->valid_until_ns < admission_now ||
+        ceiling->capability_fingerprint.empty()) return std::nullopt;
+
+    uint64_t hardware_min_khz = 0U;
+    if (!read_frequency_khz(policy_path + "/cpuinfo_min_freq", hardware_min_khz) ||
+        hardware_min_khz > std::numeric_limits<uint64_t>::max() / 1000ULL) {
+        return std::nullopt;
+    }
+    FrequencyDiscoveryRequest request{};
+    request.policy_index = policy_index;
+    request.active_constraint_min_hz = hardware_min_khz * 1000ULL;
+    request.active_constraint_max_hz = ceiling->max_hz;
+    request.active_constraints_valid = true;
+    request.thermal_admission_valid = true;
+    request.thermal_admission_granted = true;
+    request.capability_fingerprint_valid = true;
+    request.capability_fingerprint = ceiling->capability_fingerprint;
+
+    FrequencyOppDiscovery discovery(sys_root_);
+    auto capability = discovery.discover_cpu_policy(request);
+    if (!capability.has_value() || !FrequencyTargetPlanner::validate(*capability) ||
+        ceiling->max_hz > capability->hardware_max_hz) return std::nullopt;
+    return capability;
+}
+
+bool TransactionalFrequencyActuator::can_apply_policy(
+    uint32_t policy_index, double requested_capacity_scale,
+    uint64_t now_ns) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_ || recovery_required_) return false;
+    const auto capability = discover_capability(policy_index, now_ns);
+    if (!capability.has_value()) return false;
+    const std::string policy_path = sys_root_ +
+        "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
+    uint64_t current_khz = 0U;
+    if (!read_frequency_khz(policy_path + "/scaling_cur_freq", current_khz) ||
+        current_khz > std::numeric_limits<uint64_t>::max() / 1000ULL) return false;
+    const auto target = planner_.select_target(
+        *capability, current_khz * 1000ULL, requested_capacity_scale);
+    return target.has_value() && *target > capability->observed_policy_max_hz;
+}
+
+bool TransactionalFrequencyActuator::apply_policy(
+    uint32_t policy_index, double requested_capacity_scale,
+    const OutcomeSample& baseline_sample, uint64_t now_ns) noexcept {
+    const auto capability = discover_capability(policy_index, now_ns);
+    if (!capability.has_value()) return false;
+    const std::string policy_path = sys_root_ +
+        "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
+    uint64_t current_khz = 0U;
+    if (!read_frequency_khz(policy_path + "/scaling_cur_freq", current_khz) ||
+        current_khz > std::numeric_limits<uint64_t>::max() / 1000ULL) return false;
+    return apply(policy_path, *capability, current_khz * 1000ULL,
+                 requested_capacity_scale, baseline_sample, now_ns);
+}
+
 bool TransactionalFrequencyActuator::apply(
     const std::string& policy_path,
     const FrequencyCapabilitySnapshot& capability,
@@ -530,8 +603,9 @@ bool TransactionalFrequencyActuator::apply(
     if (baseline_sample.timestamp_ns == 0 || baseline_sample.timestamp_ns > admission_now ||
         admission_now - baseline_sample.timestamp_ns > 1'000'000'000ULL) return false;
     const auto thermal = thermal_.evaluate(admission_now);
-    if (!thermal.granted || thermal.observed_at_ns < admission_now ||
-        thermal.observed_at_ns - admission_now > 250'000'000ULL ||
+    if (!thermal.granted || thermal.observed_at_ns == 0U ||
+        thermal.observed_at_ns > admission_now ||
+        admission_now - thermal.observed_at_ns > 250'000'000ULL ||
         admission_now - now_ns > 250'000'000ULL) return false;
 
     const auto ceiling = ceiling_provider_.current(policy_path, admission_now);
@@ -592,6 +666,9 @@ bool TransactionalFrequencyActuator::apply(
         return false;
     }
 
+    capability_ = capability;
+    evaluation_complete_ = false;
+    last_outcome_ = {};
     active_ = true;
     if (!evaluator_.begin(baseline_sample)) {
         recovery_required_ = true;
@@ -603,13 +680,45 @@ bool TransactionalFrequencyActuator::apply(
 
 OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sample) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!active_ || recovery_required_) return {OutcomeVerdict::Inconclusive, 0, "no active verified transaction"};
+    if (!active_ || recovery_required_) {
+        return {OutcomeVerdict::Inconclusive, 0, "no active verified transaction"};
+    }
+
+    const uint64_t now = monotonic_now_ns();
+    const auto thermal = thermal_.evaluate(now);
+    const std::size_t separator = target_path_.rfind('/');
+    const std::string policy_path = separator == std::string::npos
+        ? std::string{} : target_path_.substr(0U, separator);
+    const auto ceiling = policy_path.empty()
+        ? std::optional<IndependentFrequencyCeiling>{}
+        : ceiling_provider_.current(policy_path, now);
+    const bool admission_live =
+        thermal.granted && thermal.observed_at_ns != 0U &&
+        thermal.observed_at_ns <= now && now - thermal.observed_at_ns <= 250'000'000ULL &&
+        ceiling.has_value() && ceiling->signature_or_kernel_contract_verified &&
+        ceiling->valid_until_ns >= now &&
+        ceiling->capability_fingerprint == capability_.capability_fingerprint &&
+        ceiling->max_hz >= target_hz_;
+    if (!admission_live) {
+        recovery_required_ = true;
+        OutcomeResult denied{OutcomeVerdict::Inconclusive, 0,
+            "thermal or independent LMh admission expired during active transaction"};
+        if (!rollback_locked()) denied.reason += "; rollback verification failed, lease retained";
+        else denied.reason += "; OEM baseline restored and verified";
+        return denied;
+    }
+
+    if (evaluation_complete_) return last_outcome_;
     OutcomeResult result = evaluator_.observe(sample);
     if (result.verdict == OutcomeVerdict::Regressed ||
-        result.verdict == OutcomeVerdict::Inconclusive) {
+        result.verdict == OutcomeVerdict::Inconclusive ||
+        result.verdict == OutcomeVerdict::Neutral) {
         recovery_required_ = true;
         if (!rollback_locked()) result.reason += "; rollback verification failed, lease retained";
         else result.reason += "; OEM baseline restored and verified";
+    } else if (result.verdict == OutcomeVerdict::Improved) {
+        evaluation_complete_ = true;
+        last_outcome_ = result;
     }
     return result;
 }
@@ -657,6 +766,9 @@ bool TransactionalFrequencyActuator::rollback_locked() noexcept {
     target_path_.clear();
     baseline_value_.clear();
     target_hz_ = 0;
+    capability_ = {};
+    evaluation_complete_ = false;
+    last_outcome_ = {};
     active_ = false;
     recovery_required_ = false;
     evaluator_.reset();
