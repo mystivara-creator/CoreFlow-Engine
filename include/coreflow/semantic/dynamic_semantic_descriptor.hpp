@@ -118,6 +118,12 @@ public:
         return false;
     }
 
+    [[nodiscard]] bool isMutationCapable(std::uint64_t active_generation,
+                                         std::uint64_t now_ns) const noexcept {
+        return generation_ == active_generation && provenance_.expires_at_ns > now_ns &&
+               isMutationCapable();
+    }
+
 private:
     friend class DescriptorFactory;
     DynamicSemanticDescriptor(DescriptorDraft&& draft, DescriptorState state) noexcept
