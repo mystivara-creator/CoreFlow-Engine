@@ -170,6 +170,9 @@ int main() {
 
     // The tuner-facing API performs thermal + independent-ceiling + OPP discovery
     // itself; it does not require callers to fabricate a capability snapshot.
+    // Reject an OPP whose discrete quantization overshoots the requested
+    // Tier-1 capacity step by more than the 10% safety tolerance.
+    assert(!actuator.can_apply_policy(0U, 1.03, now_ns()));
     assert(actuator.can_apply_policy(0U, 1.25, now_ns()));
     baseline.timestamp_ns = now_ns();
     assert(actuator.apply_policy(0U, 1.25, baseline, now_ns()));
