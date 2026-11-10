@@ -136,8 +136,10 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     if (!format_valid) constraints = {};
 
     const bool type_verified = stable && parsed.valid && parsed.kind != ValueKind::Unknown;
-    const bool corroborated = type_verified && format_valid;
-    const DescriptorState state = corroborated ? DescriptorState::Validated : DescriptorState::Candidate;
+    // A scalar type fingerprint and numeric format do not establish CPU/GPU/VM identity.
+    // Until independent runtime relationships are supplied, keep every endpoint non-mutable.
+    const bool corroborated = false;
+    const DescriptorState state = DescriptorState::Candidate;
 
     ValueModel value{};
     value.kind = type_verified ? parsed.kind : ValueKind::Unknown;
@@ -174,13 +176,13 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
         mix(static_cast<std::uint64_t>(constraints.resolution) + 0x20003ULL) ^
         (value.supports_enumeration ? 0x808ULL : 0ULL);
     const auto role_id = makeId(mix(fingerprint ^ 0x524f4c45ULL), mix(fingerprint));
-    const auto domain_id = makeId(mix(fingerprint ^ 0x444f4d41494eULL), mix(fingerprint + 1U));
+    const Identifier128 domain_id{};
     const auto vocabulary_id = makeId(mix(static_cast<std::uint64_t>(value.kind) + 0x564f434142ULL),
                                       mix(fingerprint + 2U));
 
     SemanticBinding semantic{
         SemanticRoleId{role_id}, SemanticDomainId{domain_id}, VocabularyId{vocabulary_id},
-        corroborated ? 0.90F : (type_verified ? 0.45F : 0.10F)};
+        type_verified ? 0.45F : 0.10F, FunctionalDomain::Unresolved, false};
 
     const auto provider = makeId(fold(endpoint.probe_id), mix(endpoint.observed_generation));
     const auto provenance_id = ProvenanceId{makeId(mix(fold(endpoint.probe_id) ^ now_ns),

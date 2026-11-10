@@ -271,11 +271,13 @@ void BaselineStore::init_paths_and_boot_id_locked() {
         boot_id_.clear();
         identity_unavailable_ = true;
     }
+    if (!identity_unavailable_) load_performance_locked();
 }
 
 void BaselineStore::reinitialize() {
     std::lock_guard<std::mutex> lock(mutex_);
     store_.clear();
+    performance_store_.clear();
     recovery_checked_ = false;
     init_paths_and_boot_id_locked();
 }
@@ -337,6 +339,119 @@ bool BaselineStore::write_raw_node(
         return false;
     }
     return readback_matches(path, value, readback);
+}
+
+
+void BaselineStore::load_performance_locked() {
+    UniqueFd directory_fd = open_directory_chain_nofollow(state_dir_, false);
+    if (!directory_fd.valid()) return;
+    UniqueFd fd(::openat(directory_fd.get(), "performance-baseline.journal",
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size < 0 || st.st_size > 65536) return;
+    std::string raw;
+    raw.reserve(static_cast<std::size_t>(st.st_size));
+    char buffer[4096];
+    while (raw.size() <= 65536U) {
+        const ssize_t n = ::read(fd.get(), buffer, sizeof(buffer));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if (n == 0) break;
+        raw.append(buffer, static_cast<std::size_t>(n));
+    }
+    if (raw.size() > 65536U) return;
+    const auto newline = raw.find('\n');
+    if (newline == std::string::npos) return;
+    const std::string_view header(raw.data(), newline);
+    constexpr std::string_view prefix = "CFPB1\t";
+    if (header.substr(0, prefix.size()) != prefix ||
+        header.substr(prefix.size()) != boot_id_) return;
+    std::unordered_map<std::string, RetainedPerformanceBaseline> loaded;
+    std::size_t cursor = newline + 1U;
+    while (cursor < raw.size()) {
+        const auto end = raw.find('\n', cursor);
+        const auto line_end = end == std::string::npos ? raw.size() : end;
+        const std::string_view line(raw.data() + cursor, line_end - cursor);
+        cursor = end == std::string::npos ? raw.size() : end + 1U;
+        if (line.empty()) continue;
+        const auto first = line.find('\t');
+        const auto second = first == std::string_view::npos
+            ? std::string_view::npos : line.find('\t', first + 1U);
+        if (first == std::string_view::npos || second == std::string_view::npos ||
+            line.find('\t', second + 1U) != std::string_view::npos) return;
+        std::string tx, endpoint, value;
+        if (!hex_decode(line.substr(0, first), tx) ||
+            !hex_decode(line.substr(first + 1U, second - first - 1U), endpoint) ||
+            !hex_decode(line.substr(second + 1U), value) ||
+            tx.size() > 256U || endpoint.size() > 512U || value.size() > 4096U) return;
+        if (!loaded.emplace(tx, RetainedPerformanceBaseline{tx, endpoint, value}).second ||
+            loaded.size() > 256U) return;
+    }
+    performance_store_ = std::move(loaded);
+}
+
+bool BaselineStore::retain_performance_baseline(
+    const std::string& transaction_id, const std::string& endpoint,
+    const std::string& verified_value) {
+    if (transaction_id.empty() || transaction_id.size() > 256U ||
+        endpoint.empty() || endpoint.size() > 512U ||
+        verified_value.empty() || verified_value.size() > 4096U ||
+        transaction_id.find_first_of("\r\n\t") != std::string::npos ||
+        endpoint.find_first_of("\r\n\t") != std::string::npos) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (identity_unavailable_ || !recovery_checked_) return false;
+    const auto existing = performance_store_.find(transaction_id);
+    if (existing != performance_store_.end()) {
+        return existing->second.endpoint == endpoint &&
+               existing->second.verified_value == verified_value;
+    }
+    const auto snapshot = store_.find(endpoint);
+    if (snapshot == store_.end() || !snapshot->second.is_modified ||
+        snapshot->second.active_value != verified_value) return false;
+    performance_store_.emplace(transaction_id,
+        RetainedPerformanceBaseline{transaction_id, endpoint, verified_value});
+    if (persist_performance_locked()) return true;
+    performance_store_.erase(transaction_id);
+    return false;
+}
+
+std::vector<RetainedPerformanceBaseline> BaselineStore::performance_baselines() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<RetainedPerformanceBaseline> records;
+    records.reserve(performance_store_.size());
+    for (const auto& [_, record] : performance_store_) records.push_back(record);
+    return records;
+}
+
+bool BaselineStore::persist_performance_locked() {
+    if (identity_unavailable_ || !valid_boot_token(boot_id_)) return false;
+    UniqueFd directory_fd = open_directory_chain_nofollow(state_dir_, true);
+    if (!directory_fd.valid() || ::fchmod(directory_fd.get(), 0700) != 0) return false;
+    std::string payload = "CFPB1\t" + boot_id_ + "\n";
+    for (const auto& [_, record] : performance_store_) {
+        payload += hex_encode(record.transaction_id) + "\t" +
+                   hex_encode(record.endpoint) + "\t" +
+                   hex_encode(record.verified_value) + "\n";
+    }
+    constexpr const char* journal_name = "performance-baseline.journal";
+    constexpr const char* temp_name = "performance-baseline.journal.tmp";
+    (void)::unlinkat(directory_fd.get(), temp_name, 0);
+    UniqueFd fd(::openat(directory_fd.get(), temp_name,
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!fd.valid() || !write_all(fd.get(), payload) || ::fsync(fd.get()) != 0) {
+        (void)::unlinkat(directory_fd.get(), temp_name, 0);
+        return false;
+    }
+    fd.reset();
+    if (::renameat(directory_fd.get(), temp_name, directory_fd.get(), journal_name) != 0) {
+        (void)::unlinkat(directory_fd.get(), temp_name, 0);
+        return false;
+    }
+    return ::fsync(directory_fd.get()) == 0;
 }
 
 bool BaselineStore::persist_locked() {

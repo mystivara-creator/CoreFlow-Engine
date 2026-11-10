@@ -79,7 +79,7 @@ int main() {
     no_bounds_adapter.format = {};
     auto no_bounds = resolver.resolveOne(endpoint(24), no_bounds_adapter, 7, 200);
     assert(no_bounds.has_value());
-    assert(no_bounds->state() == DescriptorState::Validated);
+    assert(no_bounds->state() == DescriptorState::Candidate);
     assert(no_bounds->mutation().mode == MutationMode::None);
     assert(!no_bounds->isMutationCapable());
 
@@ -88,9 +88,9 @@ int main() {
     boolean_adapter.format = {};
     auto boolean_value = resolver.resolveOne(endpoint(25), boolean_adapter, 7, 200);
     assert(boolean_value.has_value());
-    assert(boolean_value->state() == DescriptorState::Validated);
+    assert(boolean_value->state() == DescriptorState::Candidate);
     assert(boolean_value->value().kind == ValueKind::Boolean);
-    assert(boolean_value->mutation().mode == MutationMode::EnumeratedValue);
+    assert(boolean_value->mutation().mode == MutationMode::None);
 
     FakeAdapter stale_adapter{};
     stale_adapter.reads = {"1", "1"};

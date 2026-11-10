@@ -43,6 +43,7 @@ using UnitId = TypedId<UnitTag>;
 using RiskClassId = TypedId<RiskClassTag>;
 using DependencyId = TypedId<DependencyTag>;
 
+enum class FunctionalDomain : std::uint8_t { Unresolved, Cpu, Gpu, Vm };
 enum class ValueKind : std::uint8_t { Unknown, SignedInteger, UnsignedInteger, FloatingPoint, Boolean, Enumeration, Opaque };
 enum class AccessCapability : std::uint8_t { None = 0, Read = 1, Write = 2, Subscribe = 4 };
 enum class MutationMode : std::uint8_t { None, DirectValue, BoundedValue, EnumeratedValue, Transactional };

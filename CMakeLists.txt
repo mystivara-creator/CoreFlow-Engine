@@ -62,6 +62,8 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
     src/kernel/intent_actuator.cpp
+    src/mutation/intent_actuator.cpp
+    src/semantic/domain_evidence_aggregator.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
@@ -131,6 +133,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_p3_intent_actuator.cpp
         src/kernel/device_profiler.cpp
         src/kernel/intent_actuator.cpp
+        src/mutation/intent_actuator.cpp
         src/kernel/thermal_monitor.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
@@ -155,6 +158,13 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_capability_resolver PRIVATE pthread)
     endif()
     add_test(NAME P3CapabilityResolverTest COMMAND test_capability_resolver)
+
+    add_executable(test_domain_evidence_aggregator
+        tests/semantic/test_domain_evidence_aggregator.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+    )
+    target_include_directories(test_domain_evidence_aggregator PRIVATE include)
+    add_test(NAME P3FunctionalDomainEvidenceTest COMMAND test_domain_evidence_aggregator)
 
     add_executable(test_platform_context
         tests/test_platform_context.cpp

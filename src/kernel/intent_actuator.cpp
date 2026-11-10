@@ -1,4 +1,5 @@
 #include "coreflow/intent_actuator.hpp"
+#include "coreflow/mutation/intent_actuator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -51,8 +52,9 @@ IntentActuator::IntentActuator(CentralMutationCoordinator& coordinator,
 
 IntentActuator::~IntentActuator() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.state == IntentActuatorState::Observing ||
-        state_.state == IntentActuatorState::Retained) {
+    // Retained is terminal: destructor must never roll back a committed result.
+    // Only an actively observed transaction is eligible for destructor rollback.
+    if (state_.state == IntentActuatorState::Observing) {
         (void)finish_rollback_locked("IntentActuator teardown");
     }
     coordinator_.unregister_preemption_handler(controller_id_);
@@ -71,10 +73,18 @@ bool IntentActuator::begin(DeviceProfileHandle profile, std::string_view semanti
                             std::string_view target_value,
                             const InfrastructurePsiSample& admission) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!profile || (state_.state == IntentActuatorState::Observing ||
-                     state_.state == IntentActuatorState::Retained ||
-                     state_.state == IntentActuatorState::OwnershipQuarantined ||
-                     state_.state == IntentActuatorState::RecoveryRequired)) return false;
+    if (!profile || state_.state == IntentActuatorState::Observing ||
+        state_.state == IntentActuatorState::OwnershipQuarantined ||
+        state_.state == IntentActuatorState::RecoveryRequired) return false;
+
+    // A retained/rolled-back/rejected transaction is complete. Reuse this same
+    // actuator instance by clearing only transaction-local state before admission.
+    state_ = {};
+    baseline_value_.clear();
+    target_value_.clear();
+    observations_.clear();
+    started_ns_ = 0U;
+    before_psi_ = 0.0;
     const uint64_t now = monotonic_now_ns();
     if (profile->captured_monotonic_ns == 0U || now < profile->captured_monotonic_ns ||
         now - profile->captured_monotonic_ns > 5'000'000'000ULL ||
@@ -201,8 +211,18 @@ IntentActuatorSnapshot IntentActuator::observe(const InfrastructurePsiSample& sa
     state_.after_psi = average;
     const double required_gain = std::max(0.25, before_psi_ * 0.05);
     if (average <= before_psi_ - required_gain) {
+        const auto retained = mutation::RetainedLifecycle::commit(
+            baseline_store_, coordinator_, domain_, controller_id_,
+            state_.transaction_id, state_.path, target_value_);
+        if (retained != mutation::RetentionResult::Retained) {
+            state_.state = IntentActuatorState::RecoveryRequired;
+            state_.reason = retained == mutation::RetentionResult::PersistenceFailed
+                ? "performance baseline persistence failed; lease retained for fail-safe recovery"
+                : "retained record persisted but lease release requires recovery";
+            return state_;
+        }
         state_.state = IntentActuatorState::Retained;
-        state_.reason = "PSI improved beyond noise floor; mutation retained under live lease";
+        state_.reason = "verified performance baseline persisted; transaction lease released";
         return state_;
     }
     (void)finish_rollback_locked("PSI did not improve or regressed; rollback-by-default");
@@ -232,8 +252,7 @@ bool IntentActuator::finish_rollback_locked(std::string_view reason) {
 
 bool IntentActuator::rollback(std::string_view reason) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.state != IntentActuatorState::Observing &&
-        state_.state != IntentActuatorState::Retained) return false;
+    if (state_.state != IntentActuatorState::Observing) return false;
     return finish_rollback_locked(reason);
 }
 

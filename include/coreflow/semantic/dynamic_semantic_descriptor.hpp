@@ -32,6 +32,8 @@ struct SemanticBinding final {
     SemanticDomainId domain{};
     VocabularyId vocabulary{};
     float confidence{0.0F};
+    FunctionalDomain functional_domain{FunctionalDomain::Unresolved};
+    bool domain_verified{false};
 };
 
 struct NumericConstraints final {
@@ -101,6 +103,7 @@ public:
             mutation_.mode == MutationMode::None) return false;
         if (!capability_.isValid() || !semantic_.role.isValid() ||
             !semantic_.domain.isValid() || !semantic_.vocabulary.isValid() ||
+            !semantic_.domain_verified || semantic_.functional_domain == FunctionalDomain::Unresolved ||
             !provenance_.id.isValid() || !provenance_.provider.isValid() ||
             !risk_.risk_class.isValid() || value_.kind == ValueKind::Unknown ||
             !value_.numeric.isValid() || (mutation_.requires_readback && !value_.supports_readback))
