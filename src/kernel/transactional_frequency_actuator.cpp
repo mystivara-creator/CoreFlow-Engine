@@ -91,8 +91,8 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
         admission.reason = "thermal assessment unavailable, incomplete, degraded, or emergency";
         return admission;
     }
-    if (assessment.severity >= 5) {
-        admission.reason = "OEM Android thermal severity at emergency threshold";
+    if (assessment.severity >= 4 || assessment.pressure >= 110.0) {
+        admission.reason = "OEM severe/hot/critical thermal trip reached";
         return admission;
     }
 
