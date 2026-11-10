@@ -88,7 +88,11 @@ int main() {
     put(cdev / "cur_state", "0");
     put(cdev / "max_state", "8");
 
-    QualcommLmhFrequencyCeilingProvider qcom_ceiling((root / "sys").string());
+    // Give the fixture enough time for sanitizer-instrumented filesystem calls;
+    // production retains the provider's stricter 250 ms default.
+    QualcommLmhFrequencyCeilingProvider qcom_ceiling(
+        (root / "sys").string(), 5'000'000'000ULL);
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns()));
     auto lmh = qcom_ceiling.current(policy.string(), now_ns());
     assert(lmh.has_value());
     assert(lmh->max_hz == 2'500'000'000ULL);
@@ -105,7 +109,7 @@ int main() {
     fs::remove(policy / "qcom_lmh_max_freq");
     assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value());
     put(policy / "qcom_lmh_max_freq", "2500000");
-    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns() - 1'000'000'000ULL));
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns() - 6'000'000'000ULL));
     assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value()); // frozen/stale firmware sample
     put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns()));
     put(policy / "scaling_driver", "schedutil");
