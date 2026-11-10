@@ -436,6 +436,7 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
         return admission;
     }
 
+    bool generic_sensor_quorum_required = false;
     for (const auto& token : required_sensor_tokens_) {
         bool found = false;
         for (const auto& reading : assessment.readings) {
@@ -454,7 +455,27 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
             break;
         }
         if (!found) {
-            admission.reason = "required thermal sensor missing: " + token;
+            // Non-Qualcomm platforms may not expose the Qualcomm-specific sensor
+            // names. They must instead provide a quorum of independent, fresh,
+            // trip-backed compute/board sensors; one arbitrary sensor is not enough.
+            generic_sensor_quorum_required = true;
+            break;
+        }
+    }
+    if (generic_sensor_quorum_required) {
+        size_t fresh_compute = 0U;
+        size_t fresh_secondary = 0U;
+        for (const auto& reading : assessment.readings) {
+            if (!reading.valid || !reading.freshness_valid || !reading.policy_available ||
+                reading.category <= 0 || !std::isfinite(reading.celsius) ||
+                reading.celsius < 0.0F || reading.sample_timestamp_ns == 0 ||
+                reading.sample_timestamp_ns > sampled_at ||
+                sampled_at - reading.sample_timestamp_ns > max_age_ns_) continue;
+            if (reading.category == 1) ++fresh_compute;
+            if (reading.category == 1 || reading.category == 4) ++fresh_secondary;
+        }
+        if (fresh_compute == 0U || fresh_secondary < 2U) {
+            admission.reason = "generic thermal admission requires at least two fresh trip-backed compute/board sensors";
             return admission;
         }
     }
