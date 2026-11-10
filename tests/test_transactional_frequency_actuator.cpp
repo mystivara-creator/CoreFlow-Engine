@@ -74,6 +74,7 @@ int main() {
     put(policy / "scaling_driver", "qcom-cpufreq-hw");
     put(policy / "qcom_lmh_abi_version", "1");
     put(policy / "qcom_lmh_max_freq", "2500000");
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns()));
     put(policy / "qcom_lmh_capability_fingerprint", "test-kernel-contract");
 
     // Bind a CPU cooling device to one CPU in this cpufreq policy. Cooling state
@@ -96,6 +97,7 @@ int main() {
 
     // Changing scaling_max_freq must not change the independent LMh ceiling.
     put(policy / "scaling_max_freq", "1900000");
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns()));
     lmh = qcom_ceiling.current(policy.string(), now_ns());
     assert(lmh.has_value() && lmh->max_hz == 2'500'000'000ULL);
     put(policy / "scaling_max_freq", "2000000");
@@ -103,6 +105,9 @@ int main() {
     fs::remove(policy / "qcom_lmh_max_freq");
     assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value());
     put(policy / "qcom_lmh_max_freq", "2500000");
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns() - 1'000'000'000ULL));
+    assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value()); // frozen/stale firmware sample
+    put(policy / "qcom_lmh_sample_timestamp_ns", std::to_string(now_ns()));
     put(policy / "scaling_driver", "schedutil");
     assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value());
     put(policy / "scaling_driver", "qcom-cpufreq-hw");
