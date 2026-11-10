@@ -38,6 +38,8 @@ int main() {
         assert(daemon.started());
         assert(daemon.mutation_runtime_started());
         assert(daemon.transactional_frequency_actuator() != nullptr);
+        assert(daemon.autonomous_tuner().frequency_actuator_configured());
+        assert(!daemon.autonomous_tuner().frequency_mutation_active());
         assert(daemon.device_profile());
         assert(daemon.mutation_coordinator().active_leases().empty());
         assert(daemon.Stop("deterministic lifecycle test shutdown"));
