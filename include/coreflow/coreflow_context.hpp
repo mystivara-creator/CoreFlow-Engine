@@ -20,6 +20,7 @@ namespace coreflow {
 class BaselineStore;
 class DeviceProfiler;
 class ThermalMonitor;
+class ThermalSafetyAuthority;
 class NeuralPredictor;
 class MutationRecoveryMonitor;
 class UclampGovernor;
@@ -56,6 +57,7 @@ public:
     [[nodiscard]] const PlatformContextSnapshot& platform_context() const noexcept { return platform_context_; }
     [[nodiscard]] DeviceProfiler& device_profiler() noexcept;
     [[nodiscard]] ThermalMonitor& thermal_monitor() noexcept;
+    [[nodiscard]] ThermalSafetyAuthority& thermal_safety_authority() noexcept;
     [[nodiscard]] NeuralPredictor& neural_predictor() noexcept;
     [[nodiscard]] CentralMutationCoordinator& mutation_coordinator() noexcept { return coordinator_; }
     [[nodiscard]] BaselineStore& baseline_store() noexcept;
@@ -76,6 +78,7 @@ private:
     // The coordinator outlives every callback owner; profile outlives controllers.
     CentralMutationCoordinator coordinator_;
     std::unique_ptr<ThermalMonitor> thermal_monitor_;
+    std::unique_ptr<ThermalSafetyAuthority> thermal_safety_authority_;
     std::unique_ptr<DeviceProfiler> profiler_;
     DeviceProfileHandle profile_{};
     PlatformContextSnapshot platform_context_{};
