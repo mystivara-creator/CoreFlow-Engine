@@ -2717,9 +2717,12 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     AutonomousDecisionSnapshot out{};
     if (recovery_required_) {
         out.stage = "RECOVERY_REQUIRED";
-    } else if (observing_) {
+    } else if (observing_ ||
+               (frequency_mutation_active_ && last_verdict_ == "PENDING")) {
         out.stage = "OBSERVING";
-    } else if (transaction_active_) {
+    } else if (transaction_active_ ||
+               (frequency_mutation_active_ && frequency_actuator_ &&
+                frequency_actuator_->mutation_active())) {
         out.stage = "RETAINED";
     } else {
         out.stage = "PLANNED";
@@ -2735,6 +2738,13 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.capability_fingerprint = compute_fingerprint();
     out.active_candidate_id = current_candidate_id_;
     out.active_candidate_label = current_candidate_label_;
+    if (frequency_mutation_active_ && frequency_actuator_ &&
+        frequency_actuator_->mutation_active()) {
+        out.active_candidate_id = "cpu.frequency.tiered";
+        out.active_candidate_label = "Tiered CPU Frequency OPP";
+        out.active_intent = "TieredCpuFrequency";
+        out.intent = "TieredCpuFrequency";
+    }
     out.decision_rationale = current_rationale_;
     out.rationale = current_rationale_;
     out.last_verdict = last_verdict_;
