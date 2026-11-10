@@ -125,6 +125,9 @@ bool IntentActuator::begin(DeviceProfileHandle profile, std::string_view semanti
                   .reason="mutation domain lease unavailable"};
         return false;
     }
+    state_.path = it->path;
+    state_.semantic_id = std::string(semantic_id);
+    state_.transaction_id = tx;
     if (!baseline_store_.capture(it->path) ||
         !baseline_store_.apply_mutation(it->path, std::string(target_value))) {
         const bool restored = baseline_store_.rollback(it->path);
