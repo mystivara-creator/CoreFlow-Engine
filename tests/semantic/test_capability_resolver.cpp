@@ -46,25 +46,28 @@ int main() {
     auto raw = endpoint(21);
     adapter.reads = {"42", "42"};
 
-    auto validated = resolver.resolveOne(raw, adapter, 7, 200);
-    assert(validated.has_value());
-    assert(validated->state() == DescriptorState::Validated);
-    assert(validated->value().kind == ValueKind::UnsignedInteger);
-    assert(validated->evidence().size() == 1);
-    assert(validated->evidence()[0].strength == EvidenceStrength::Corroborated);
-    assert(validated->mutation().mode == MutationMode::BoundedValue);
-    assert(validated->isMutationCapable(7, 201));
-    assert(resolver.resolveLocator(validated->capabilityId(), 7).has_value());
-    assert(!resolver.resolveLocator(validated->capabilityId(), 8).has_value());
+    // Stable passive reads establish a value fingerprint, not a CPU/GPU/VM
+    // functional-domain relationship. The descriptor must remain non-mutable.
+    auto candidate = resolver.resolveOne(raw, adapter, 7, 200);
+    assert(candidate.has_value());
+    assert(candidate->state() == DescriptorState::Candidate);
+    assert(candidate->value().kind == ValueKind::UnsignedInteger);
+    assert(candidate->evidence().size() == 1);
+    assert(candidate->evidence()[0].strength == EvidenceStrength::Weak);
+    assert(candidate->semantic().functional_domain == FunctionalDomain::Unresolved);
+    assert(!candidate->semantic().domain_verified);
+    assert(candidate->mutation().mode == MutationMode::None);
+    assert(!candidate->isMutationCapable(7, 201));
+    assert(!resolver.resolveLocator(candidate->capabilityId(), 7).has_value());
 
     FakeAdapter unstable_adapter{};
     unstable_adapter.reads = {"42", "43"};
     auto unstable = resolver.resolveOne(endpoint(22), unstable_adapter, 7, 200);
     assert(unstable.has_value());
     assert(unstable->state() == DescriptorState::Candidate);
+    assert(unstable->value().kind == ValueKind::Unknown);
     assert(unstable->mutation().mode == MutationMode::None);
     assert(!unstable->isMutationCapable());
-    assert(!resolver.resolveLocator(unstable->capabilityId(), 7).has_value());
 
     FakeAdapter ambiguous_adapter{};
     ambiguous_adapter.reads = {"not a value!", "not a value!"};
@@ -101,10 +104,15 @@ int main() {
     batch_adapter.reads = {"0", "0", "schedutil", "schedutil"};
     const auto batch = resolver.resolveAll(batch_adapter, 7, 300);
     assert(batch.size() == 2);
-    assert(batch[0].state() == DescriptorState::Validated);
-    assert(batch[1].state() == DescriptorState::Validated);
+    for (const auto& descriptor : batch) {
+        assert(descriptor.state() == DescriptorState::Candidate);
+        assert(descriptor.semantic().functional_domain == FunctionalDomain::Unresolved);
+        assert(!descriptor.semantic().domain_verified);
+        assert(descriptor.mutation().mode == MutationMode::None);
+        assert(!descriptor.isMutationCapable());
+    }
     assert(batch[1].value().kind == ValueKind::Enumeration);
 
-    std::cout << "P3-A2 capability resolver: PASS\n";
+    std::cout << "P3 capability resolver fail-closed behavior: PASS\n";
     return 0;
 }
