@@ -47,6 +47,7 @@ void MemoryWarmupController::cancel() noexcept {
 MemoryWarmupResult MemoryWarmupController::warmup(
     const std::vector<WarmupFileRange>& ranges,
     const MemoryWarmupAdmission& admission) noexcept {
+    std::lock_guard<std::mutex> lock(warmup_mutex_);
     MemoryWarmupResult result{};
     for (const auto& range : ranges) {
         if (range.length <= std::numeric_limits<uint64_t>::max() - result.requested_bytes) {
