@@ -70,17 +70,7 @@ struct CapabilityRisk final {
     float confidence{0.0F};
 };
 
-struct DescriptorDraft final {
-    CapabilityId capability{};
-    SemanticBinding semantic{};
-    ValueModel value{};
-    MutationSemantics mutation{};
-    AccessCapability access{AccessCapability::None};
-    CapabilityRisk risk{};
-    CapabilityProvenance provenance{};
-    std::vector<CapabilityEvidence> evidence{};
-    std::uint64_t generation{0};
-};
+class CapabilityResolver;
 
 class DynamicSemanticDescriptor final {
 public:
@@ -100,26 +90,27 @@ public:
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
     [[nodiscard]] DescriptorState state() const noexcept { return state_; }
 
-    [[nodiscard]] bool hasWriteAccess() const noexcept { return hasAccess(access_, AccessCapability::Write); }
+    [[nodiscard]] bool hasWriteAccess() const noexcept {
+        return hasAccess(access_, AccessCapability::Write);
+    }
     [[nodiscard]] bool isResolved() const noexcept {
         return state_ == DescriptorState::Resolved || state_ == DescriptorState::Validated;
     }
     [[nodiscard]] bool isMutationCapable() const noexcept {
-        if (state_ != DescriptorState::Validated || !hasWriteAccess() || mutation_.mode == MutationMode::None)
+        if (state_ != DescriptorState::Validated || !hasWriteAccess() ||
+            mutation_.mode == MutationMode::None) return false;
+        if (!capability_.isValid() || !semantic_.role.isValid() ||
+            !semantic_.domain.isValid() || !semantic_.vocabulary.isValid() ||
+            !provenance_.id.isValid() || !provenance_.provider.isValid() ||
+            !risk_.risk_class.isValid() || value_.kind == ValueKind::Unknown ||
+            !value_.numeric.isValid() || (mutation_.requires_readback && !value_.supports_readback))
             return false;
-        if (!capability_.isValid() || !semantic_.role.isValid() || !semantic_.domain.isValid() ||
-            !semantic_.vocabulary.isValid() || !provenance_.id.isValid() ||
-            !provenance_.provider.isValid() || !risk_.risk_class.isValid() ||
-            value_.kind == ValueKind::Unknown || !value_.numeric.isValid() ||
-            (mutation_.requires_readback && !value_.supports_readback)) return false;
         for (const auto& item : evidence_) {
             if (item.generation == generation_ && item.provenance == provenance_.id &&
-                item.strength != EvidenceStrength::None && item.strength != EvidenceStrength::Weak)
-                return true;
+                item.strength >= EvidenceStrength::Corroborated) return true;
         }
         return false;
     }
-
     [[nodiscard]] bool isMutationCapable(std::uint64_t active_generation,
                                          std::uint64_t now_ns) const noexcept {
         return generation_ == active_generation && provenance_.expires_at_ns > now_ns &&
@@ -127,12 +118,14 @@ public:
     }
 
 private:
-    friend class DescriptorFactory;
-    DynamicSemanticDescriptor(DescriptorDraft&& draft, DescriptorState state) noexcept
-        : capability_(draft.capability), semantic_(draft.semantic), value_(draft.value),
-          mutation_(draft.mutation), access_(draft.access), risk_(draft.risk),
-          provenance_(draft.provenance), evidence_(std::move(draft.evidence)),
-          generation_(draft.generation), state_(state) {}
+    friend class CapabilityResolver;
+    DynamicSemanticDescriptor(CapabilityId capability, SemanticBinding semantic, ValueModel value,
+                              MutationSemantics mutation, AccessCapability access, CapabilityRisk risk,
+                              CapabilityProvenance provenance, std::vector<CapabilityEvidence>&& evidence,
+                              std::uint64_t generation, DescriptorState state) noexcept
+        : capability_(capability), semantic_(semantic), value_(value), mutation_(mutation),
+          access_(access), risk_(risk), provenance_(provenance), evidence_(std::move(evidence)),
+          generation_(generation), state_(state) {}
 
     const CapabilityId capability_;
     const SemanticBinding semantic_;

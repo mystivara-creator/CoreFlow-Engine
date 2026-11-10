@@ -145,11 +145,13 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME P3DynamicInfrastructureActuatorTest COMMAND test_p3_intent_actuator)
 
-    add_executable(test_semantic_foundation
-        tests/semantic/test_semantic_foundation.cpp
+    add_executable(test_capability_resolver
+        tests/semantic/test_capability_resolver.cpp
+        src/semantic/capability_resolver.cpp
     )
-    target_include_directories(test_semantic_foundation PRIVATE include)
-    add_test(NAME P3SemanticFoundationTest COMMAND test_semantic_foundation)
+    target_include_directories(test_capability_resolver PRIVATE include)
+    target_link_libraries(test_capability_resolver PRIVATE pthread)
+    add_test(NAME P3CapabilityResolverTest COMMAND test_capability_resolver)
 
     add_executable(test_platform_context
         tests/test_platform_context.cpp
