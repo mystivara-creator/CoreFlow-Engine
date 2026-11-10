@@ -15,10 +15,12 @@
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/vulkan_controller.hpp"
+#include "coreflow/memory_warmup_controller.hpp"
 
 namespace coreflow {
 
-CoreFlowContext::CoreFlowContext() = default;
+CoreFlowContext::CoreFlowContext()
+    : policy_router_(base_policy_, hyperos_policy_) {}
 
 CoreFlowContext::~CoreFlowContext() {
     (void)Stop("CoreFlowContext destructor");
@@ -63,6 +65,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
         return true;
     }
 
+    memory_warmup_controller_ = std::make_unique<MemoryWarmupController>();
     recovery_monitor_ = std::make_unique<MutationRecoveryMonitor>(baseline_store(), coordinator_);
     uclamp_governor_ = std::make_unique<UclampGovernor>(coordinator_);
     frequency_controller_ = std::make_unique<FrequencyController>(coordinator_, "/sys", profile_);
@@ -110,6 +113,8 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
+    if (memory_warmup_controller_) memory_warmup_controller_->cancel();
+    memory_warmup_controller_.reset();
     neural_predictor_.reset();
     hardware_longevity_.reset();
     autonomous_tuner_.reset();
