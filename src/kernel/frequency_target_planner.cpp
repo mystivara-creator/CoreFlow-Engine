@@ -78,6 +78,30 @@ bool read_sysfs_text(const std::string& path, TextBuffer& output) noexcept {
     return output.size != 0U;
 }
 
+bool parse_u64_allow_zero(std::string_view token, uint64_t& value) noexcept {
+    while (!token.empty() &&
+           (token.front() == ' ' || token.front() == '\\t' ||
+            token.front() == '\\r' || token.front() == '\\n')) {
+        token.remove_prefix(1U);
+    }
+    while (!token.empty() &&
+           (token.back() == ' ' || token.back() == '\\t' ||
+            token.back() == '\\r' || token.back() == '\\n')) {
+        token.remove_suffix(1U);
+    }
+    if (token.empty()) {
+        return false;
+    }
+    uint64_t parsed = 0U;
+    const auto result = std::from_chars(
+        token.data(), token.data() + token.size(), parsed, 10);
+    if (result.ec != std::errc{} || result.ptr != token.data() + token.size()) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
 bool parse_u64(std::string_view token, uint64_t& value) noexcept {
     while (!token.empty() &&
            (token.front() == ' ' || token.front() == '\t' ||
@@ -197,7 +221,7 @@ bool parse_time_in_state(
 
         uint64_t time_in_state = 0U;
         if (!append_khz(line.substr(0U, separator), output) ||
-            !parse_u64(line.substr(separator + 1U), time_in_state)) {
+            !parse_u64_allow_zero(line.substr(separator + 1U), time_in_state)) {
             output.clear();
             return false;
         }
