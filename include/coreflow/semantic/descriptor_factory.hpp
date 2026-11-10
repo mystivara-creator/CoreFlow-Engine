@@ -18,14 +18,16 @@ private:
             !draft.semantic.role.isValid() || !draft.semantic.domain.isValid() ||
             !draft.semantic.vocabulary.isValid() || !draft.provenance.id.isValid() ||
             !draft.provenance.provider.isValid() || draft.provenance.generation != active_generation ||
-            draft.provenance.expires_at_ns <= now_ns || !draft.value.numeric.isValid() ||
+            draft.provenance.observed_at_ns > now_ns || draft.provenance.expires_at_ns <= now_ns ||
+            !draft.risk.risk_class.isValid() || !draft.value.numeric.isValid() ||
             draft.semantic.confidence < 0.0F || draft.semantic.confidence > 1.0F ||
             draft.risk.estimated_risk < 0.0F || draft.risk.estimated_risk > 1.0F)
             return std::nullopt;
 
         for (const auto& item : draft.evidence) {
-            if (!item.id.isValid() || item.generation != active_generation ||
-                item.provenance != draft.provenance.id || item.observed_at_ns > now_ns)
+            if (!item.id.isValid() || !item.evidence_kind.isValid() || !item.observation.isValid() ||
+                item.generation != active_generation || item.provenance != draft.provenance.id ||
+                item.observed_at_ns > now_ns)
                 return std::nullopt;
         }
         return DynamicSemanticDescriptor(std::move(draft), DescriptorState::Validated);
