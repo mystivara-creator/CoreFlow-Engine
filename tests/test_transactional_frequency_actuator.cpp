@@ -128,6 +128,14 @@ int main() {
     std::ifstream(policy / "scaling_max_freq") >> restored;
     assert(restored == "2000000");
 
+    // OEM hot trip is a hard denial before the critical trip is reached.
+    put(thermal_root / "thermal_zone0/trip_point_2_type", "hot");
+    put(thermal_root / "thermal_zone0/trip_point_2_temp", "98000");
+    put(thermal_root / "thermal_zone0/temp", "99000");
+    assert(!actuator.apply(policy.string(), capability, 2'000'000'000ULL, 1.25,
+                           baseline, now_ns()));
+    assert(coordinator.active_leases().empty());
+
     // Emergency OEM critical trip must fail closed before a lease or write.
     put(thermal_root / "thermal_zone0/temp", "101000");
     assert(!actuator.apply(policy.string(), capability, 2'000'000'000ULL, 1.25,
