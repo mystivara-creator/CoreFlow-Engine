@@ -298,7 +298,10 @@ AutonomousTuner::AutonomousTuner(CentralMutationCoordinator& coordinator,
 AutonomousTuner::~AutonomousTuner() {
     {
         std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
-        if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
+        if (!applied_steps_.empty() ||
+            (frequency_actuator_ && frequency_actuator_->mutation_active())) {
+            (void)rollback_active("Autonomous tuner teardown.");
+        }
     }
     coordinator_.unregister_preemption_handler(controller_name_);
 }
@@ -1377,6 +1380,25 @@ bool AutonomousTuner::retry_contended_ownership() {
 bool AutonomousTuner::rollback_active(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     contention_backoff_ticks_ = 0;
+
+    // Frequency mutations have their own CpuPolicy lease and BaselineStore
+    // transaction. The tuner coordinates lifecycle, but never duplicates the
+    // actuator's rollback or releases its lease independently.
+    if (frequency_actuator_ &&
+        (frequency_mutation_active_ || frequency_actuator_->mutation_active() ||
+         frequency_actuator_->recovery_required())) {
+        if (!frequency_actuator_->rollback()) {
+            frequency_mutation_active_ = true;
+            recovery_required_ = true;
+            last_verdict_ = "RECOVERY_REQUIRED";
+            last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            current_rationale_ = std::string(reason) +
+                " [frequency actuator rollback unresolved; CpuPolicy lease retained]";
+            return false;
+        }
+        frequency_mutation_active_ = false;
+    }
+
     auto& store = BaselineStore::instance();
     std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
@@ -1440,6 +1462,11 @@ bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     // global recovery decision.
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all(reason);
+    if (frequency_actuator_ &&
+        !frequency_actuator_->mutation_active() &&
+        !frequency_actuator_->recovery_required()) {
+        frequency_mutation_active_ = false;
+    }
     const auto remaining = coordinator.active_leases();
     const bool live_owner_pending = std::any_of(
         remaining.begin(), remaining.end(),
