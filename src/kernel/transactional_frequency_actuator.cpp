@@ -805,7 +805,8 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         return node.path == target_path_;
     });
     uint64_t actual_target_khz = 0U;
-    const bool ownership_live =
+    const bool ownership_live = coordinator_.lease_is_live(
+        MutationDomain::CpuPolicy, controller_id_, transaction_id_) &&
         read_frequency_khz(target_path_, actual_target_khz) &&
         target_hz_ % 1000ULL == 0ULL &&
         actual_target_khz == target_hz_ / 1000ULL &&
@@ -819,6 +820,10 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         ceiling->valid_until_ns >= checked_at &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
         ceiling->max_hz >= target_hz_ && ownership_live;
+    if (!ownership_live) {
+        (void)coordinator_.mark_external_ownership_lost(
+            MutationDomain::CpuPolicy, controller_id_, transaction_id_);
+    }
     if (!admission_live) {
         recovery_required_ = true;
         OutcomeResult denied{OutcomeVerdict::Inconclusive, 0,
@@ -881,6 +886,8 @@ bool TransactionalFrequencyActuator::rollback_locked() noexcept {
         return false;
     }
 
+    (void)coordinator_.clear_external_ownership_lost_after_verified_recovery(
+        MutationDomain::CpuPolicy, controller_id_, transaction_id_);
     coordinator_.release_lease(MutationDomain::CpuPolicy, controller_id_, transaction_id_);
     transaction_id_.clear();
     target_path_.clear();
