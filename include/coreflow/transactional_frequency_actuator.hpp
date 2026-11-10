@@ -52,6 +52,24 @@ public:
         std::string_view policy_path, uint64_t now_ns) const noexcept = 0;
 };
 
+// Qualcomm LMh ceiling discovery. The provider accepts only a versioned, explicit
+// qcom_lmh_max_freq kernel ABI from a qcom-cpufreq-hw policy and requires a
+// cpufreq cooling device bound to that policy. Generic cooling states are
+// corroborating topology only; they are never translated into MHz.
+class QualcommLmhFrequencyCeilingProvider final : public IndependentFrequencyCeilingProvider {
+public:
+    explicit QualcommLmhFrequencyCeilingProvider(
+        std::string sys_root = "/sys",
+        uint64_t max_sample_age_ns = 250'000'000ULL) noexcept;
+
+    [[nodiscard]] std::optional<IndependentFrequencyCeiling> current(
+        std::string_view policy_path, uint64_t now_ns) const noexcept override;
+
+private:
+    std::string sys_root_;
+    uint64_t max_sample_age_ns_{0};
+};
+
 struct OutcomeSample final {
     uint64_t timestamp_ns{0};
     double cpu_psi_some_pct{0.0};
