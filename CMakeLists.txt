@@ -151,7 +151,9 @@ if(CORE_FLOW_BUILD_TESTS)
         src/platform/discovery_adapter.cpp
     )
     target_include_directories(test_capability_resolver PRIVATE include)
-    target_link_libraries(test_capability_resolver PRIVATE pthread)
+    if(NOT ANDROID)
+        target_link_libraries(test_capability_resolver PRIVATE pthread)
+    endif()
     add_test(NAME P3CapabilityResolverTest COMMAND test_capability_resolver)
 
     add_executable(test_platform_context
