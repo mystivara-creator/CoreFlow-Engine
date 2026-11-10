@@ -459,7 +459,7 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
             // names. They must instead provide a quorum of independent, fresh,
             // trip-backed compute/board sensors; one arbitrary sensor is not enough.
             generic_sensor_quorum_required = true;
-            break;
+            continue;
         }
     }
     if (generic_sensor_quorum_required) {
