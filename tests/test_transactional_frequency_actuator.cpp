@@ -68,6 +68,7 @@ int main() {
     const fs::path policy = root / "sys/devices/system/cpu/cpufreq/policy0";
     put(policy / "scaling_max_freq", "2000000");
     put(policy / "scaling_min_freq", "500000");
+    put(policy / "scaling_available_frequencies", "500000 1000000 1500000 2000000 2500000");
     put(policy / "cpuinfo_min_freq", "500000");
     put(policy / "cpuinfo_max_freq", "2800000");
     put(policy / "related_cpus", "0 1");
@@ -165,6 +166,15 @@ int main() {
     std::string restored;
     std::ifstream(policy / "scaling_max_freq") >> restored;
     assert(restored == "2000000");
+    assert(coordinator.active_leases().empty());
+
+    // The tuner-facing API performs thermal + independent-ceiling + OPP discovery
+    // itself; it does not require callers to fabricate a capability snapshot.
+    assert(actuator.can_apply_policy(0U, 1.25, now_ns()));
+    baseline.timestamp_ns = now_ns();
+    assert(actuator.apply_policy(0U, 1.25, baseline, now_ns()));
+    assert(actuator.mutation_active());
+    assert(actuator.rollback());
     assert(coordinator.active_leases().empty());
 
     // Outcome regression is wired to automatic rollback, not just evaluator reporting.
