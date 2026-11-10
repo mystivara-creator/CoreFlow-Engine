@@ -31,17 +31,18 @@ struct ParsedValue final {
     if (value == "0" || value == "1") return {ValueKind::Boolean, true, true};
     if (value.empty()) return {};
 
-    std::int64_t signed_value = 0;
-    const auto signed_result = std::from_chars(value.data(), value.data() + value.size(), signed_value);
-    if (signed_result.ec == std::errc{} && signed_result.ptr == value.data() + value.size())
-        return {ValueKind::SignedInteger, true, false};
-
+    // Non-negative integral streams are classified as unsigned; negative streams as signed.
     if (value.front() != '-') {
         std::uint64_t unsigned_value = 0;
         const auto unsigned_result = std::from_chars(value.data(), value.data() + value.size(), unsigned_value);
         if (unsigned_result.ec == std::errc{} && unsigned_result.ptr == value.data() + value.size())
             return {ValueKind::UnsignedInteger, true, false};
     }
+
+    std::int64_t signed_value = 0;
+    const auto signed_result = std::from_chars(value.data(), value.data() + value.size(), signed_value);
+    if (signed_result.ec == std::errc{} && signed_result.ptr == value.data() + value.size())
+        return {ValueKind::SignedInteger, true, false};
 
     double floating_value = 0.0;
     const auto float_result = std::from_chars(value.data(), value.data() + value.size(),
