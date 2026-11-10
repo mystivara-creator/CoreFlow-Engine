@@ -52,6 +52,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/workload_intelligence.cpp
     src/kernel/tiered_policy.cpp
     src/kernel/frequency_target_planner.cpp
+    src/kernel/memory_warmup_controller.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
@@ -133,6 +134,13 @@ if(CORE_FLOW_BUILD_TESTS)
     target_include_directories(test_p2d_policy PRIVATE include)
     target_link_libraries(test_p2d_policy PRIVATE m)
     add_test(NAME P2DTieredPolicyAndFrequencyPlannerTest COMMAND test_p2d_policy)
+
+    add_executable(test_memory_warmup
+        tests/test_memory_warmup.cpp
+        src/kernel/memory_warmup_controller.cpp
+    )
+    target_include_directories(test_memory_warmup PRIVATE include)
+    add_test(NAME P2DMemoryWarmupControllerTest COMMAND test_memory_warmup)
 
     add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
