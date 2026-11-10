@@ -20,7 +20,7 @@ The empty ABI search is scoped evidence, not proof that every possible vendor in
 - It rejects `qcom-cpufreq-hw` unconditionally. A generic provider must not bypass an unavailable Qualcomm LMh contract.
 - It requires readable `cpuinfo_min_freq`, `cpuinfo_max_freq`, `related_cpus`, and at least one readable generic thermal zone with a standard `passive`, `hot`, or `critical` trip point.
 - Its ceiling is the kernel-reported static hardware maximum. It is not represented as a dynamic thermal/LMh cap.
-- Thermal admission remains independently mandatory and is re-evaluated by the actuator. Discrete OPP discovery and target validation remain separate.
+- Thermal admission remains independently mandatory and is re-evaluated by the actuator. If Qualcomm-specific sensor names are unavailable on a non-Qualcomm platform, thermal admission requires at least two fresh, trip-backed compute/board sensors; a single generic sensor cannot grant admission. Discrete OPP discovery and target validation remain separate.
 - The capability fingerprint binds driver identity, policy index, related CPUs, and hardware bounds. It does not claim cryptographic authenticity.
 
 Generic trip points are not converted into MHz, and cooling-device `cur_state`/`max_state` are not translated into frequency. Dynamic platform limits require an independent kernel/vendor contract.
