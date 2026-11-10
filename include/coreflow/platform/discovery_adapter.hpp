@@ -1,8 +1,11 @@
 #pragma once
 
+#include "coreflow/semantic/domain_evidence_aggregator.hpp"
 #include "coreflow/semantic/semantic_types.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <optional>
 #include <string>
 #include <vector>
@@ -33,6 +36,17 @@ public:
         const RawDiscoveredEndpoint& endpoint) noexcept = 0;
     [[nodiscard]] virtual NumericFormatStream readNumericFormat(
         const RawDiscoveredEndpoint& endpoint) noexcept = 0;
+
+    // Implementations fill caller-owned storage only. Returning more than
+    // output.size() is treated as malformed and fails closed. The default
+    // deliberately supplies no semantic evidence.
+    [[nodiscard]] virtual std::size_t collectDomainRelationshipEvidence(
+        const RawDiscoveredEndpoint& endpoint,
+        std::span<semantic::DomainRelationshipEvidence> output) noexcept {
+        (void)endpoint;
+        (void)output;
+        return 0U;
+    }
 };
 
 [[nodiscard]] bool isValidRawEndpoint(const RawDiscoveredEndpoint& endpoint,
