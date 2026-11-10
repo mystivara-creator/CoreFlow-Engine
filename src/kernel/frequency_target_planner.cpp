@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cerrno>
 #include <fcntl.h>
 #include <limits>
 #include <string_view>
