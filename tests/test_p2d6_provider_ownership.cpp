@@ -8,6 +8,8 @@
 #include <string>
 #include <unistd.h>
 
+using namespace coreflow;
+
 namespace fs = std::filesystem;
 
 static void put(const fs::path& path, const std::string& value) {
