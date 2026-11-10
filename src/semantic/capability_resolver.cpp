@@ -135,11 +135,42 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     const bool format_valid = constraints.isValid();
     if (!format_valid) constraints = {};
 
+    // Binding evaluation consumes a fixed-size evidence set supplied by the platform
+    // adapter. No path/name heuristics or dynamically allocated evidence containers
+    // participate in this decision.
+    std::array<DomainRelationshipEvidence, 3> domain_evidence{};
+    const auto domain_evidence_count =
+        adapter.collectDomainRelationshipEvidence(endpoint, domain_evidence);
+    bool evidence_scoped_to_endpoint = domain_evidence_count <= domain_evidence.size();
+    if (evidence_scoped_to_endpoint) {
+        const CapabilityId endpoint_capability{endpoint.probe_id};
+        for (std::size_t i = 0; i < domain_evidence_count; ++i) {
+            if (domain_evidence[i].capability != endpoint_capability) {
+                evidence_scoped_to_endpoint = false;
+                break;
+            }
+        }
+    }
+
+    FunctionalDomainAssessment domain_assessment{};
+    if (evidence_scoped_to_endpoint) {
+        constexpr std::uint64_t maximum_domain_evidence_age_ns = 5'000'000'000ULL;
+        const DomainEvidenceAggregator aggregator{};
+        domain_assessment = aggregator.aggregate(
+            std::span<const DomainRelationshipEvidence>{domain_evidence.data(),
+                                                        domain_evidence_count},
+            active_generation, now_ns, maximum_domain_evidence_age_ns);
+    }
+    const bool corroborated =
+        evidence_scoped_to_endpoint &&
+        domain_evidence_count == domain_evidence.size() &&
+        domain_assessment.generation == active_generation &&
+        domain_assessment.mutationEligible();
     const bool type_verified = stable && parsed.valid && parsed.kind != ValueKind::Unknown;
-    // A scalar type fingerprint and numeric format do not establish CPU/GPU/VM identity.
-    // Until independent runtime relationships are supplied, keep every endpoint non-mutable.
-    const bool corroborated = false;
-    const DescriptorState state = DescriptorState::Candidate;
+    const DescriptorState state = corroborated ? DescriptorState::Validated
+                                                : DescriptorState::Candidate;
+    const FunctionalDomain functional_domain =
+        corroborated ? domain_assessment.domain : FunctionalDomain::Unresolved;
 
     ValueModel value{};
     value.kind = type_verified ? parsed.kind : ValueKind::Unknown;
@@ -176,13 +207,17 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
         mix(static_cast<std::uint64_t>(constraints.resolution) + 0x20003ULL) ^
         (value.supports_enumeration ? 0x808ULL : 0ULL);
     const auto role_id = makeId(mix(fingerprint ^ 0x524f4c45ULL), mix(fingerprint));
-    const Identifier128 domain_id{};
+    const Identifier128 domain_id = corroborated
+        ? makeId(fold(endpoint.probe_id),
+                 0x444f4d41494eULL ^ static_cast<std::uint64_t>(functional_domain))
+        : Identifier128{};
     const auto vocabulary_id = makeId(mix(static_cast<std::uint64_t>(value.kind) + 0x564f434142ULL),
                                       mix(fingerprint + 2U));
 
     SemanticBinding semantic{
         SemanticRoleId{role_id}, SemanticDomainId{domain_id}, VocabularyId{vocabulary_id},
-        type_verified ? 0.45F : 0.10F, FunctionalDomain::Unresolved, false};
+        corroborated ? domain_assessment.confidence : (type_verified ? 0.45F : 0.10F),
+        functional_domain, corroborated};
 
     const auto provider = makeId(fold(endpoint.probe_id), mix(endpoint.observed_generation));
     const auto provenance_id = ProvenanceId{makeId(mix(fold(endpoint.probe_id) ^ now_ns),
@@ -190,20 +225,22 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     CapabilityProvenance provenance{provenance_id, provider, active_generation, now_ns,
                                     saturatingAdd(now_ns, 60'000'000'000ULL)};
 
-    std::vector<CapabilityEvidence> evidence{};
-    evidence.reserve(1);
     const auto evidence_strength = corroborated ? EvidenceStrength::Corroborated
                                                 : (type_verified ? EvidenceStrength::Weak
                                                                  : EvidenceStrength::None);
-    evidence.push_back(CapabilityEvidence{
-        EvidenceId{makeId(mix(fold(endpoint.probe_id) ^ now_ns), mix(active_generation + 0x45564944ULL))},
-        provenance_id, vocabulary_id, evidence_strength,
-        ObservationId{makeId(mix(fold(endpoint.probe_id) + 1U), mix(now_ns + 0x4f4253ULL))},
-        active_generation, now_ns});
+    std::array<CapabilityEvidence, 1> evidence{{
+        CapabilityEvidence{
+            EvidenceId{makeId(mix(fold(endpoint.probe_id) ^ now_ns),
+                              mix(active_generation + 0x45564944ULL))},
+            provenance_id, vocabulary_id, evidence_strength,
+            ObservationId{makeId(mix(fold(endpoint.probe_id) + 1U),
+                                  mix(now_ns + 0x4f4253ULL))},
+            active_generation, now_ns}
+    }};
 
     const CapabilityRisk risk{RiskClassId{makeId(0x5249534b434c4153ULL, fingerprint)},
                               mutation.mode == MutationMode::None ? 0.75F : 0.25F,
-                              corroborated ? 0.85F : 0.20F};
+                              corroborated ? domain_assessment.confidence : 0.20F};
 
     DynamicSemanticDescriptor descriptor{
         CapabilityId{endpoint.probe_id}, semantic, value, mutation, endpoint.raw_access, risk,
