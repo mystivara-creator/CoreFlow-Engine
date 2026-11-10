@@ -162,6 +162,7 @@ FrequencyDiscoveryRequest valid_discovery_request() {
     request.thermal_admission_valid = true;
     request.thermal_admission_granted = true;
     request.capability_fingerprint_valid = true;
+    request.capability_fingerprint = "host-test-capability";
     return request;
 }
 
