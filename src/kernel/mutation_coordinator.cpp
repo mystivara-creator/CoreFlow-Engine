@@ -151,9 +151,9 @@ void CentralMutationCoordinator::release_lease(
     for (auto& lease : leases_) {
         if (lease.domain == domain && lease.active && lease.owner_controller == controller_name &&
             lease.transaction_id == transaction_id) {
+            if (lease.external_ownership_lost) continue;
             lease.active = false;
             lease.transaction_id.clear();
-            if (lease.external_ownership_lost) continue;
             lease.preemption_requested = false;
             lease.preemption_dispatch_in_flight = false;
             lease.owner_detached = false;
