@@ -68,7 +68,7 @@ public:
     [[nodiscard]] TieredPolicyRouter& tiered_policy_router() noexcept { return policy_router_; }
     [[nodiscard]] FrequencyOppDiscovery& frequency_opp_discovery() noexcept { return frequency_discovery_; }
     [[nodiscard]] FrequencyTargetPlanner& frequency_target_planner() noexcept { return frequency_planner_; }
-    [[nodiscard]] MemoryWarmupController& memory_warmup_controller() noexcept { return *memory_warmup_controller_; }
+    [[nodiscard]] MemoryWarmupController* memory_warmup_controller() noexcept { return memory_warmup_controller_.get(); }
 
 private:
     // Declaration order mirrors startup: reverse member destruction is a
