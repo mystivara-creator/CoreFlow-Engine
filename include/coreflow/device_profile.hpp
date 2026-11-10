@@ -125,6 +125,12 @@ struct DeviceProfileSnapshot final {
     std::vector<ThermalSensorProfile> thermal_sensors;
     std::vector<NodeCapability> node_capabilities;
 
+    // Generic VM and block-queue controls discovered from procfs/sysfs.
+    // Writable state is evidence only; controllers still require semantic,
+    // range, PSI-admission, lease and rollback validation.
+    uint32_t infrastructure_nodes_scanned{0};
+    uint32_t infrastructure_nodes_writable{0};
+
     bool cpu_topology_valid{false};
     bool memory_telemetry_available{false};
     bool cgroup_v2_available{false};
