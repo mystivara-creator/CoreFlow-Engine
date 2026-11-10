@@ -826,13 +826,15 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         return node.path == target_path_;
     });
     uint64_t actual_target_khz = 0U;
-    const bool ownership_live = coordinator_.lease_is_live(
-        MutationDomain::CpuPolicy, controller_id_, transaction_id_) &&
+    const bool coordinator_lease_live = coordinator_.lease_is_live(
+        MutationDomain::CpuPolicy, controller_id_, transaction_id_);
+    const bool node_ownership_live =
         read_frequency_khz(target_path_, actual_target_khz) &&
         target_hz_ % 1000ULL == 0ULL &&
         actual_target_khz == target_hz_ / 1000ULL &&
         owned_node != audit.end() && owned_node->is_modified &&
         owned_node->factory_value == baseline_value_;
+    const bool ownership_live = coordinator_lease_live && node_ownership_live;
     const bool admission_live =
         thermal.granted && thermal.observed_at_ns != 0U &&
         checked_at != 0U && thermal.observed_at_ns <= checked_at &&
@@ -841,7 +843,7 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         ceiling->valid_until_ns >= checked_at &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
         ceiling->max_hz >= target_hz_ && ownership_live;
-    if (!ownership_live) {
+    if (!node_ownership_live) {
         (void)coordinator_.mark_external_ownership_lost(
             MutationDomain::CpuPolicy, controller_id_, transaction_id_);
     }
