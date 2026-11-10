@@ -2194,15 +2194,18 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // incomplete evidence. Thermal stabilization above remains independently actionable.
     const bool psi_evidence_complete =
         telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
-    const bool active_domain_evidence_complete =
-        (current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid);
-    const bool required_evidence_complete = (observing_ || transaction_active_)
-        ? active_domain_evidence_complete : psi_evidence_complete;
+    const bool active_domain_evidence_complete = frequency_mutation_active_
+        ? (telemetry.cpu_psi_valid && telemetry.memory_psi_valid &&
+           telemetry.io_psi_valid && telemetry.thermal_pressure_valid)
+        : ((current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid));
+    const bool required_evidence_complete =
+        (observing_ || transaction_active_ || frequency_mutation_active_)
+            ? active_domain_evidence_complete : psi_evidence_complete;
     if (!required_evidence_complete) {
-        if (observing_ || transaction_active_) {
+        if (observing_ || transaction_active_ || frequency_mutation_active_) {
             last_verdict_ = "INCONCLUSIVE";
             last_verdict_enum_ = TunerVerdict::Inconclusive;
             ++total_inconclusive_;
