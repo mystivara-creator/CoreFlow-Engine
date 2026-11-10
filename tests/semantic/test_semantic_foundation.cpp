@@ -36,7 +36,6 @@ DescriptorDraft draft(std::uint8_t cap, EvidenceStrength strength = EvidenceStre
 }
 
 int strategy_decision(const DynamicSemanticDescriptor& d) {
-    // Strategy projection excludes endpoint and capability identity.
     const auto role = d.semantic().role.value.bytes[0];
     const auto domain = d.semantic().domain.value.bytes[0];
     return static_cast<int>(role) * 257 + static_cast<int>(domain) * 17 +
@@ -50,6 +49,9 @@ int main() {
     auto first = resolver.validateAndIssue(draft(21), 7, 200);
     auto second = resolver.validateAndIssue(draft(22), 7, 200);
     assert(first && second && first->isMutationCapable() && second->isMutationCapable());
+    assert(first->isMutationCapable(7, 200));
+    assert(!first->isMutationCapable(8, 200));
+    assert(!first->isMutationCapable(7, 10000));
     assert(strategy_decision(*first) == strategy_decision(*second));
 
     auto unsupported = resolver.validateAndIssue(draft(23, EvidenceStrength::None), 7, 200);
