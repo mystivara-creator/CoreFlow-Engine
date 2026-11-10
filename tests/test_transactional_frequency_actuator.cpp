@@ -231,6 +231,27 @@ int main() {
     outcome = evaluator.observe(sample);
     assert(outcome.verdict == OutcomeVerdict::Improved);
 
+    // Tier-2 begins with elevated CPU PSI by definition. A stable high baseline
+    // must not be mistaken for a post-mutation spike.
+    OutcomeSample high_baseline = baseline;
+    high_baseline.timestamp_ns = now_ns();
+    high_baseline.cpu_psi_some_pct = 42.0;
+    high_baseline.ebpf_wakeup_rate_per_sec = 100.0;
+    assert(evaluator.begin(high_baseline));
+    sample = high_baseline;
+    sample.timestamp_ns += 1'000'000'000ULL;
+    sample.cpu_psi_some_pct = 41.0;
+    outcome = evaluator.observe(sample);
+    assert(outcome.verdict == OutcomeVerdict::Pending);
+    sample.timestamp_ns += 1'000'000'000ULL;
+    sample.cpu_psi_some_pct = 40.5;
+    outcome = evaluator.observe(sample);
+    assert(outcome.verdict == OutcomeVerdict::Pending);
+    sample.timestamp_ns += 1'100'000'000ULL;
+    sample.cpu_psi_some_pct = 40.0;
+    outcome = evaluator.observe(sample);
+    assert(outcome.verdict == OutcomeVerdict::Neutral);
+
     fs::remove_all(root);
     return 0;
 }
