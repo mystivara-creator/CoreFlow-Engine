@@ -7,7 +7,6 @@
 
 namespace coreflow::semantic {
 
-enum class FunctionalDomain : std::uint8_t { Unresolved, Cpu, Gpu, Vm };
 enum class DomainEvidenceKind : std::uint8_t {
     SubsystemAssociation, DriverAbi, PsiResponseCorrelation
 };
