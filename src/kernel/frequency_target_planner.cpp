@@ -80,13 +80,13 @@ bool read_sysfs_text(const std::string& path, TextBuffer& output) noexcept {
 
 bool parse_u64_allow_zero(std::string_view token, uint64_t& value) noexcept {
     while (!token.empty() &&
-           (token.front() == ' ' || token.front() == '\\t' ||
-            token.front() == '\\r' || token.front() == '\\n')) {
+           (token.front() == ' ' || token.front() == '\t' ||
+            token.front() == '\r' || token.front() == '\n')) {
         token.remove_prefix(1U);
     }
     while (!token.empty() &&
-           (token.back() == ' ' || token.back() == '\\t' ||
-            token.back() == '\\r' || token.back() == '\\n')) {
+           (token.back() == ' ' || token.back() == '\t' ||
+            token.back() == '\r' || token.back() == '\n')) {
         token.remove_suffix(1U);
     }
     if (token.empty()) {
