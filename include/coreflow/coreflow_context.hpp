@@ -22,6 +22,8 @@ class DeviceProfiler;
 class ThermalMonitor;
 class ThermalSafetyAuthority;
 class QualcommLmhFrequencyCeilingProvider;
+class GenericLinuxFrequencyCeilingProvider;
+class FallbackFrequencyCeilingProvider;
 class TransactionalFrequencyActuator;
 class NeuralPredictor;
 class MutationRecoveryMonitor;
@@ -91,6 +93,8 @@ private:
     FrequencyOppDiscovery frequency_discovery_{"/sys"};
     FrequencyTargetPlanner frequency_planner_{};
     std::unique_ptr<QualcommLmhFrequencyCeilingProvider> qcom_lmh_ceiling_provider_;
+    std::unique_ptr<GenericLinuxFrequencyCeilingProvider> generic_frequency_ceiling_provider_;
+    std::unique_ptr<FallbackFrequencyCeilingProvider> fallback_frequency_ceiling_provider_;
     std::unique_ptr<TransactionalFrequencyActuator> transactional_frequency_actuator_;
     std::unique_ptr<MemoryWarmupController> memory_warmup_controller_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;

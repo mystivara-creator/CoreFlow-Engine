@@ -137,6 +137,9 @@ struct DomainLease {
     // controller can no longer acknowledge rollback. The lease remains active
     // until a verified global recovery explicitly retires it.
     bool owner_detached{false};
+    // Set when an out-of-band writer (e.g. OEM Power HAL) changes a leased node.
+    // The coordinator keeps the lease quarantined until verified baseline recovery.
+    bool external_ownership_lost{false};
     uint32_t contention_retries{0};
 };
 
@@ -159,6 +162,15 @@ public:
         MutationDomain domain,
         std::string_view controller_name,
         std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool mark_external_ownership_lost(
+        MutationDomain domain, std::string_view controller_name,
+        std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool clear_external_ownership_lost_after_verified_recovery(
+        MutationDomain domain, std::string_view controller_name,
+        std::string_view transaction_id) noexcept;
+    [[nodiscard]] bool lease_is_live(
+        MutationDomain domain, std::string_view controller_name,
+        std::string_view transaction_id) const noexcept;
     [[nodiscard]] bool reserve_contention_retry(
         MutationDomain domain,
         std::string_view controller_name,

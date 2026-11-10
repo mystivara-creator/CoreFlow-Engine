@@ -34,6 +34,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     if (state_ == State::Failed || state_ == State::Stopped) {
         if (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
             transactional_frequency_actuator_ || qcom_lmh_ceiling_provider_ ||
+            generic_frequency_ceiling_provider_ || fallback_frequency_ceiling_provider_ ||
             autonomous_tuner_ || hardware_longevity_ || vulkan_controller_) {
             if (!Stop("Unwind incomplete CoreFlowContext startup")) return false;
         }
@@ -71,9 +72,12 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     memory_warmup_controller_ = std::make_unique<MemoryWarmupController>();
     recovery_monitor_ = std::make_unique<MutationRecoveryMonitor>(baseline_store(), coordinator_);
     qcom_lmh_ceiling_provider_ = std::make_unique<QualcommLmhFrequencyCeilingProvider>("/sys");
+    generic_frequency_ceiling_provider_ = std::make_unique<GenericLinuxFrequencyCeilingProvider>("/sys");
+    fallback_frequency_ceiling_provider_ = std::make_unique<FallbackFrequencyCeilingProvider>(
+        *qcom_lmh_ceiling_provider_, *generic_frequency_ceiling_provider_);
     transactional_frequency_actuator_ = std::make_unique<TransactionalFrequencyActuator>(
         coordinator_, baseline_store(), frequency_planner_, *thermal_safety_authority_,
-        *qcom_lmh_ceiling_provider_);
+        *fallback_frequency_ceiling_provider_);
     uclamp_governor_ = std::make_unique<UclampGovernor>(coordinator_);
     frequency_controller_ = std::make_unique<FrequencyController>(coordinator_, "/sys", profile_);
     autonomous_tuner_ = std::make_unique<AutonomousTuner>(coordinator_, "/sys", "/proc", profile_);
@@ -140,6 +144,8 @@ void CoreFlowContext::destroy_runtime_services() noexcept {
     // provider so its final rollback/preemption path remains valid.
     autonomous_tuner_.reset();
     transactional_frequency_actuator_.reset();
+    fallback_frequency_ceiling_provider_.reset();
+    generic_frequency_ceiling_provider_.reset();
     qcom_lmh_ceiling_provider_.reset();
     frequency_controller_.reset();
     uclamp_governor_.reset();

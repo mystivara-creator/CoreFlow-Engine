@@ -168,6 +168,24 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME P2DTransactionalFrequencyActuatorTest COMMAND test_transactional_frequency_actuator)
 
+    add_executable(test_p2d6_provider_ownership
+        tests/test_p2d6_provider_ownership.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_p2d6_provider_ownership PRIVATE include)
+    target_link_libraries(test_p2d6_provider_ownership PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_p2d6_provider_ownership PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_p2d6_provider_ownership PRIVATE log)
+    endif()
+    add_test(NAME P2D6GenericProviderAndOwnershipGuardTest COMMAND test_p2d6_provider_ownership)
+
     add_executable(test_autonomous_tuner
         tests/test_autonomous_tuner.cpp
         src/kernel/autonomous_tuner.cpp

@@ -187,6 +187,48 @@ bool read_lmh_kernel_contract(
     return true;
 }
 
+
+uint64_t fnv1a64(std::string_view value) noexcept {
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char byte : value) {
+        hash ^= static_cast<uint64_t>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+bool has_generic_thermal_trip_policy(const std::string& sys_root) noexcept {
+    namespace fs = std::filesystem;
+    const fs::path root(sys_root + "/class/thermal");
+    std::error_code ec;
+    if (!fs::is_directory(root, ec) || ec) return false;
+    size_t zones = 0;
+    for (fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && zones++ < 256U; it.increment(ec)) {
+        const std::string zone_name = it->path().filename().string();
+        if (zone_name.rfind("thermal_zone", 0) != 0) continue;
+        std::string temperature;
+        if (!read_small_text((it->path() / "temp").string(), temperature)) continue;
+        uint64_t raw_temp = 0;
+        if (!parse_u64_text(temperature, raw_temp, true) || raw_temp == 0U || raw_temp > 200000U) continue;
+        size_t trips = 0;
+        std::error_code zone_ec;
+        for (fs::directory_iterator trip(it->path(), fs::directory_options::skip_permission_denied, zone_ec), zone_end;
+             !zone_ec && trip != zone_end && trips++ < 128U; trip.increment(zone_ec)) {
+            const std::string filename = trip->path().filename().string();
+            if (filename.rfind("trip_point_", 0) != 0 || !filename.ends_with("_type")) continue;
+            std::string type, raw_trip;
+            const std::string prefix = (it->path() / filename.substr(0, filename.size() - 5U)).string();
+            uint64_t trip_temp = 0;
+            if (!read_small_text(prefix + "_type", type) ||
+                !read_small_text(prefix + "_temp", raw_trip) ||
+                !parse_u64_text(raw_trip, trip_temp, false) || trip_temp > 200000U) continue;
+            if (type == "passive" || type == "hot" || type == "critical") return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 QualcommLmhFrequencyCeilingProvider::QualcommLmhFrequencyCeilingProvider(
@@ -303,6 +345,64 @@ QualcommLmhFrequencyCeilingProvider::current(
     };
 }
 
+GenericLinuxFrequencyCeilingProvider::GenericLinuxFrequencyCeilingProvider(
+    std::string sys_root, uint64_t validity_ns) noexcept
+    : sys_root_(std::move(sys_root)), validity_ns_(validity_ns) {}
+
+std::optional<IndependentFrequencyCeiling>
+GenericLinuxFrequencyCeilingProvider::current(
+    std::string_view policy_path_view, uint64_t now_ns) const noexcept {
+    if (sys_root_.empty() || sys_root_.size() > 1024U || validity_ns_ == 0U || now_ns == 0U ||
+        policy_path_view.empty() || policy_path_view.size() > 512U) return std::nullopt;
+    const std::string policy_path(policy_path_view);
+    const std::string prefix = sys_root_ + "/devices/system/cpu/cpufreq/policy";
+    if (policy_path.rfind(prefix, 0) != 0 || policy_path.size() == prefix.size()) return std::nullopt;
+    const std::string index = policy_path.substr(prefix.size());
+    uint64_t policy_index = 0;
+    if (!parse_u64_text(index, policy_index, true) || policy_index > 255U) return std::nullopt;
+
+    std::string driver, related_cpus;
+    if (!read_small_text(policy_path + "/scaling_driver", driver) ||
+        driver == "qcom-cpufreq-hw" ||
+        !(driver == "cpufreq-hw" || driver == "cpufreq-dt" ||
+          driver == "acpi-cpufreq" || driver == "intel_pstate" || driver == "amd-pstate") ||
+        !read_small_text(policy_path + "/related_cpus", related_cpus)) return std::nullopt;
+
+    uint64_t minimum_khz = 0U, maximum_khz = 0U;
+    if (!read_frequency_khz(policy_path + "/cpuinfo_min_freq", minimum_khz) ||
+        !read_frequency_khz(policy_path + "/cpuinfo_max_freq", maximum_khz) ||
+        minimum_khz == 0U || maximum_khz <= minimum_khz ||
+        maximum_khz > std::numeric_limits<uint64_t>::max() / 1000ULL ||
+        !has_generic_thermal_trip_policy(sys_root_) ||
+        now_ns > std::numeric_limits<uint64_t>::max() - validity_ns_) return std::nullopt;
+
+    // Fingerprint only stable, kernel-reported identity/bounds. OPP membership
+    // is independently rediscovered and validated by FrequencyOppDiscovery.
+    const std::string identity = driver + "|" + related_cpus + "|" +
+        std::to_string(minimum_khz) + "|" + std::to_string(maximum_khz) + "|" +
+        std::to_string(policy_index);
+    constexpr char hex[] = "0123456789abcdef";
+    const uint64_t digest = fnv1a64(identity);
+    std::string fingerprint = "generic-cpufreq-v1:";
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        fingerprint.push_back(hex[(digest >> static_cast<unsigned>(shift)) & 0x0fU]);
+    }
+    return IndependentFrequencyCeiling{
+        maximum_khz * 1000ULL, now_ns + validity_ns_, std::move(fingerprint), true};
+}
+
+FallbackFrequencyCeilingProvider::FallbackFrequencyCeilingProvider(
+    const IndependentFrequencyCeilingProvider& primary,
+    const IndependentFrequencyCeilingProvider& fallback) noexcept
+    : primary_(primary), fallback_(fallback) {}
+
+std::optional<IndependentFrequencyCeiling> FallbackFrequencyCeilingProvider::current(
+    std::string_view policy_path, uint64_t now_ns) const noexcept {
+    auto ceiling = primary_.current(policy_path, now_ns);
+    if (ceiling.has_value()) return ceiling;
+    return fallback_.current(policy_path, now_ns);
+}
+
 ThermalSafetyAuthority::ThermalSafetyAuthority(
     const ThermalMonitor& monitor,
     std::vector<std::string> required_sensor_tokens,
@@ -336,6 +436,7 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
         return admission;
     }
 
+    bool generic_sensor_quorum_required = false;
     for (const auto& token : required_sensor_tokens_) {
         bool found = false;
         for (const auto& reading : assessment.readings) {
@@ -354,7 +455,27 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
             break;
         }
         if (!found) {
-            admission.reason = "required thermal sensor missing: " + token;
+            // Non-Qualcomm platforms may not expose the Qualcomm-specific sensor
+            // names. They must instead provide a quorum of independent, fresh,
+            // trip-backed compute/board sensors; one arbitrary sensor is not enough.
+            generic_sensor_quorum_required = true;
+            continue;
+        }
+    }
+    if (generic_sensor_quorum_required) {
+        size_t fresh_compute = 0U;
+        size_t fresh_secondary = 0U;
+        for (const auto& reading : assessment.readings) {
+            if (!reading.valid || !reading.freshness_valid || !reading.policy_available ||
+                reading.category <= 0 || !std::isfinite(reading.celsius) ||
+                reading.celsius < 0.0F || reading.sample_timestamp_ns == 0 ||
+                reading.sample_timestamp_ns > sampled_at ||
+                sampled_at - reading.sample_timestamp_ns > max_age_ns_) continue;
+            if (reading.category == 1) ++fresh_compute;
+            if (reading.category == 1 || reading.category == 4) ++fresh_secondary;
+        }
+        if (fresh_compute == 0U || fresh_secondary < 2U) {
+            admission.reason = "generic thermal admission requires at least two fresh trip-backed compute/board sensors";
             return admission;
         }
     }
@@ -705,12 +826,15 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         return node.path == target_path_;
     });
     uint64_t actual_target_khz = 0U;
-    const bool ownership_live =
+    const bool coordinator_lease_live = coordinator_.lease_is_live(
+        MutationDomain::CpuPolicy, controller_id_, transaction_id_);
+    const bool node_ownership_live =
         read_frequency_khz(target_path_, actual_target_khz) &&
         target_hz_ % 1000ULL == 0ULL &&
         actual_target_khz == target_hz_ / 1000ULL &&
         owned_node != audit.end() && owned_node->is_modified &&
         owned_node->factory_value == baseline_value_;
+    const bool ownership_live = coordinator_lease_live && node_ownership_live;
     const bool admission_live =
         thermal.granted && thermal.observed_at_ns != 0U &&
         checked_at != 0U && thermal.observed_at_ns <= checked_at &&
@@ -719,6 +843,10 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         ceiling->valid_until_ns >= checked_at &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
         ceiling->max_hz >= target_hz_ && ownership_live;
+    if (!node_ownership_live) {
+        (void)coordinator_.mark_external_ownership_lost(
+            MutationDomain::CpuPolicy, controller_id_, transaction_id_);
+    }
     if (!admission_live) {
         recovery_required_ = true;
         OutcomeResult denied{OutcomeVerdict::Inconclusive, 0,
@@ -781,6 +909,8 @@ bool TransactionalFrequencyActuator::rollback_locked() noexcept {
         return false;
     }
 
+    (void)coordinator_.clear_external_ownership_lost_after_verified_recovery(
+        MutationDomain::CpuPolicy, controller_id_, transaction_id_);
     coordinator_.release_lease(MutationDomain::CpuPolicy, controller_id_, transaction_id_);
     transaction_id_.clear();
     target_path_.clear();
