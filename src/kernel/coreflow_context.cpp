@@ -16,6 +16,7 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/memory_warmup_controller.hpp"
+#include "coreflow/transactional_frequency_actuator.hpp"
 
 namespace coreflow {
 
@@ -47,6 +48,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     }
 
     thermal_monitor_ = std::make_unique<ThermalMonitor>();
+    thermal_safety_authority_ = std::make_unique<ThermalSafetyAuthority>(*thermal_monitor_);
     profiler_ = std::make_unique<DeviceProfiler>();
     profile_ = profiler_->refresh();
     const NativeAndroidPropertySource native_properties;
@@ -122,11 +124,13 @@ void CoreFlowContext::destroy_runtime_services() noexcept {
     uclamp_governor_.reset();
     recovery_monitor_.reset();
     profiler_.reset();
+    thermal_safety_authority_.reset();
     thermal_monitor_.reset();
 }
 
 DeviceProfiler& CoreFlowContext::device_profiler() noexcept { return *profiler_; }
 ThermalMonitor& CoreFlowContext::thermal_monitor() noexcept { return *thermal_monitor_; }
+ThermalSafetyAuthority& CoreFlowContext::thermal_safety_authority() noexcept { return *thermal_safety_authority_; }
 NeuralPredictor& CoreFlowContext::neural_predictor() noexcept { return *neural_predictor_; }
 BaselineStore& CoreFlowContext::baseline_store() noexcept { return BaselineStore::instance(); }
 MutationRecoveryMonitor& CoreFlowContext::recovery_monitor() noexcept { return *recovery_monitor_; }
