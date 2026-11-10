@@ -17,11 +17,14 @@ int main() {
     DomainEvidenceAggregator aggregator{};
     const std::array<DomainRelationshipEvidence, 3> cpu{{
         {DomainEvidenceKind::SubsystemAssociation, FunctionalDomain::Cpu,
-         EvidenceId{make_id(1)}, ProvenanceId{make_id(11)}, make_id(21), 9, 100, true},
+         EvidenceId{make_id(1)}, ProvenanceId{make_id(11)}, make_id(21), 9, 100, true,
+         CapabilityId{make_id(31)}},
         {DomainEvidenceKind::DriverAbi, FunctionalDomain::Cpu,
-         EvidenceId{make_id(2)}, ProvenanceId{make_id(12)}, make_id(21), 9, 101, true},
+         EvidenceId{make_id(2)}, ProvenanceId{make_id(12)}, make_id(21), 9, 101, true,
+         CapabilityId{make_id(31)}},
         {DomainEvidenceKind::PsiResponseCorrelation, FunctionalDomain::Cpu,
-         EvidenceId{make_id(3)}, ProvenanceId{make_id(13)}, make_id(21), 9, 102, true}
+         EvidenceId{make_id(3)}, ProvenanceId{make_id(13)}, make_id(21), 9, 102, true,
+         CapabilityId{make_id(31)}}
     }};
     auto verified = aggregator.aggregate(cpu, 9, 110, 1000);
     assert(verified.mutationEligible());
@@ -44,6 +47,13 @@ int main() {
     auto negative = cpu;
     negative[1].positive = false;
     assert(!aggregator.aggregate(negative, 9, 110, 1000).mutationEligible());
+
+    auto cross_node = cpu;
+    cross_node[2].capability = CapabilityId{make_id(32)};
+    auto node_mismatch = aggregator.aggregate(cross_node, 9, 110, 1000);
+    assert(!node_mismatch.mutationEligible());
+    assert(node_mismatch.state == DomainAssessmentState::Unresolved);
+    assert(node_mismatch.domain == FunctionalDomain::Unresolved);
 
     std::cout << "P3 functional domain evidence aggregation: PASS\n";
     return 0;
