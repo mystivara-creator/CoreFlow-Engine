@@ -562,7 +562,11 @@ bool TransactionalFrequencyActuator::can_apply_policy(
     // instantaneous clock (which may be lower due to scheduler demand).
     const auto target = planner_.select_target(
         *capability, capability->observed_policy_max_hz, requested_capacity_scale);
-    return target.has_value() && *target > capability->observed_policy_max_hz;
+    if (!target.has_value() || *target <= capability->observed_policy_max_hz) return false;
+    const long double maximum_quantized_target =
+        static_cast<long double>(capability->observed_policy_max_hz) *
+        static_cast<long double>(requested_capacity_scale) * 1.10L;
+    return static_cast<long double>(*target) <= maximum_quantized_target;
 }
 
 bool TransactionalFrequencyActuator::apply_policy(
@@ -617,8 +621,12 @@ bool TransactionalFrequencyActuator::apply(
         capability.active_constraint_max_hz != ceiling->max_hz) return false;
 
     const auto target = planner_.select_target(capability, current_hz, requested_capacity_scale);
+    const long double maximum_quantized_target =
+        static_cast<long double>(capability.observed_policy_max_hz) *
+        static_cast<long double>(requested_capacity_scale) * 1.10L;
     if (!target.has_value() || *target > ceiling->max_hz ||
-        *target <= capability.observed_policy_max_hz) return false;
+        *target <= capability.observed_policy_max_hz ||
+        static_cast<long double>(*target) > maximum_quantized_target) return false;
 
     const std::string path = policy_path + "/scaling_max_freq";
     uint64_t current_khz = 0;
