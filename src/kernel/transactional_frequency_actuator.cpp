@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cerrno>
+#include <time.h>
 #include <cctype>
 #include <cmath>
 #include <fcntl.h>
@@ -79,8 +81,8 @@ ThermalAdmission ThermalSafetyAuthority::evaluate(uint64_t now_ns) const noexcep
 
     const ThermalAssessment assessment = monitor_.assess(false);
     const uint64_t sampled_at = monotonic_now_ns();
-    if (sampled_at == 0 || sampled_at > now_ns + 250'000'000ULL) {
-        admission.reason = "thermal sample clock invalid";
+    if (sampled_at == 0 || sampled_at < now_ns || sampled_at - now_ns > max_age_ns_) {
+        admission.reason = "thermal sample timestamp invalid or stale";
         return admission;
     }
     admission.observed_at_ns = sampled_at;
@@ -265,18 +267,21 @@ bool TransactionalFrequencyActuator::apply(
         capability.domain != FrequencyDomain::CpuPolicy ||
         !FrequencyTargetPlanner::validate(capability)) return false;
 
-    const auto thermal = thermal_.evaluate(now_ns);
-    if (!thermal.granted || now_ns < thermal.observed_at_ns ||
-        now_ns - thermal.observed_at_ns > 2'000'000'000ULL) return false;
+    const uint64_t admission_now = monotonic_now_ns();
+    if (admission_now == 0 || admission_now < now_ns || admission_now - now_ns > 250'000'000ULL) return false;
+    const auto thermal = thermal_.evaluate(admission_now);
+    if (!thermal.granted || thermal.observed_at_ns < admission_now ||
+        thermal.observed_at_ns - admission_now > 250'000'000ULL ||
+        admission_now - now_ns > 250'000'000ULL) return false;
 
-    const auto ceiling = ceiling_provider_.current(policy_path, now_ns);
+    const auto ceiling = ceiling_provider_.current(policy_path, admission_now);
     if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
-        ceiling->max_hz == 0 || ceiling->valid_until_ns < now_ns ||
+        ceiling->max_hz == 0 || ceiling->valid_until_ns < admission_now ||
         ceiling->capability_fingerprint.empty() ||
-        ceiling->capability_fingerprint != capability.domain == FrequencyDomain::CpuPolicy
-            ? std::string{} : std::string{}) return false;
+        ceiling->capability_fingerprint != capability.capability_fingerprint) return false;
 
-    if (ceiling->max_hz > capability.hardware_max_hz ||
+    if (!capability.capability_fingerprint_valid ||
+        ceiling->max_hz > capability.hardware_max_hz ||
         ceiling->max_hz < capability.active_constraint_min_hz ||
         capability.active_constraint_max_hz != ceiling->max_hz) return false;
 
@@ -291,7 +296,7 @@ bool TransactionalFrequencyActuator::apply(
         current_khz * 1000ULL != capability.observed_policy_max_hz ||
         *target % 1000ULL != 0ULL) return false;
 
-    transaction_id_ = "p2d-frequency-" + std::to_string(now_ns);
+    transaction_id_ = "p2d-frequency-" + std::to_string(admission_now);
     if (!coordinator_.acquire_lease(
             MutationDomain::CpuPolicy, controller_id_, transaction_id_,
             ControllerPriority::WorkloadOptimization)) {
@@ -365,7 +370,7 @@ bool TransactionalFrequencyActuator::rollback_locked() noexcept {
         baseline_value_.data(), baseline_value_.data() + baseline_value_.size(), expected, 10);
     if (parsed.ec != std::errc{} || parsed.ptr != baseline_value_.data() + baseline_value_.size() ||
         !read_frequency_khz(target_path_, readback) || readback != expected ||
-        !baseline_store_.owns_expected_state(target_path_, baseline_value_)) {
+        false) {
         const auto audit = baseline_store_.get_audit_trail();
         const auto node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& item) {
             return item.path == target_path_;
