@@ -7,6 +7,9 @@
 
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/device_profile.hpp"
+#include "coreflow/tiered_policy.hpp"
+#include "coreflow/frequency_target_planner.hpp"
+#include "coreflow/memory_warmup_controller.hpp"
 #include "coreflow/platform_context.hpp"
 
 #include <memory>
@@ -62,6 +65,10 @@ public:
     [[nodiscard]] AutonomousTuner& autonomous_tuner() noexcept;
     [[nodiscard]] HardwareLongevityManager& hardware_longevity() noexcept;
     [[nodiscard]] VulkanController& vulkan_controller() noexcept;
+    [[nodiscard]] TieredPolicyRouter& tiered_policy_router() noexcept { return policy_router_; }
+    [[nodiscard]] FrequencyOppDiscovery& frequency_opp_discovery() noexcept { return frequency_discovery_; }
+    [[nodiscard]] FrequencyTargetPlanner& frequency_target_planner() noexcept { return frequency_planner_; }
+    [[nodiscard]] MemoryWarmupController& memory_warmup_controller() noexcept { return *memory_warmup_controller_; }
 
 private:
     // Declaration order mirrors startup: reverse member destruction is a
@@ -72,6 +79,12 @@ private:
     std::unique_ptr<DeviceProfiler> profiler_;
     DeviceProfileHandle profile_{};
     PlatformContextSnapshot platform_context_{};
+    CoreFlowBase base_policy_{};
+    HyperOS4Inspired hyperos_policy_{};
+    TieredPolicyRouter policy_router_;
+    FrequencyOppDiscovery frequency_discovery_{"/sys"};
+    FrequencyTargetPlanner frequency_planner_{};
+    std::unique_ptr<MemoryWarmupController> memory_warmup_controller_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
     std::unique_ptr<FrequencyController> frequency_controller_;
