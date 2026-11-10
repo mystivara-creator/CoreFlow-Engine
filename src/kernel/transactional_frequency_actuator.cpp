@@ -527,7 +527,7 @@ TransactionalFrequencyActuator::discover_capability(
         "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
     const auto ceiling = ceiling_provider_.current(policy_path, thermal_checked_at);
     if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
-        ceiling->max_hz == 0U || ceiling->valid_until_ns < admission_now ||
+        ceiling->max_hz == 0U || ceiling->valid_until_ns < thermal_checked_at ||
         ceiling->capability_fingerprint.empty()) return std::nullopt;
 
     uint64_t hardware_min_khz = 0U;
@@ -613,7 +613,7 @@ bool TransactionalFrequencyActuator::apply(
 
     const auto ceiling = ceiling_provider_.current(policy_path, thermal_checked_at);
     if (!ceiling.has_value() || !ceiling->signature_or_kernel_contract_verified ||
-        ceiling->max_hz == 0 || ceiling->valid_until_ns < admission_now ||
+        ceiling->max_hz == 0 || ceiling->valid_until_ns < thermal_checked_at ||
         ceiling->capability_fingerprint.empty() ||
         ceiling->capability_fingerprint != capability.capability_fingerprint) return false;
 
@@ -716,7 +716,7 @@ OutcomeResult TransactionalFrequencyActuator::observe(const OutcomeSample& sampl
         checked_at != 0U && thermal.observed_at_ns <= checked_at &&
         checked_at - thermal.observed_at_ns <= 250'000'000ULL &&
         ceiling.has_value() && ceiling->signature_or_kernel_contract_verified &&
-        ceiling->valid_until_ns >= now &&
+        ceiling->valid_until_ns >= checked_at &&
         ceiling->capability_fingerprint == capability_.capability_fingerprint &&
         ceiling->max_hz >= target_hz_ && ownership_live;
     if (!admission_live) {
