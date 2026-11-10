@@ -61,6 +61,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
+    src/kernel/intent_actuator.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
@@ -125,6 +126,24 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_cddp PRIVATE pthread)
     endif()
     add_test(NAME CoreFlowDynamicDeviceProfilingTest COMMAND test_cddp)
+
+    add_executable(test_p3_intent_actuator
+        tests/test_p3_intent_actuator.cpp
+        src/kernel/device_profiler.cpp
+        src/kernel/intent_actuator.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_p3_intent_actuator PRIVATE include)
+    target_link_libraries(test_p3_intent_actuator PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_p3_intent_actuator PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_p3_intent_actuator PRIVATE log)
+    endif()
+    add_test(NAME P3DynamicInfrastructureActuatorTest COMMAND test_p3_intent_actuator)
 
     add_executable(test_platform_context
         tests/test_platform_context.cpp
