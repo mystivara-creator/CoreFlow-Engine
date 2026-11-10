@@ -160,12 +160,18 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
         }
     }
 
-    const std::uint64_t fingerprint = fold(endpoint.probe_id) ^
+    // Semantic identity is derived only from observed behavior and format metadata.
+    // Endpoint identity and opaque locator are deliberately excluded.
+    const std::uint64_t fingerprint =
         (static_cast<std::uint64_t>(value.kind) << 8U) ^
         (static_cast<std::uint64_t>(endpoint.raw_access) << 16U) ^
         (constraints.has_minimum ? 0x101ULL : 0ULL) ^
         (constraints.has_maximum ? 0x202ULL : 0ULL) ^
-        (constraints.has_resolution ? 0x404ULL : 0ULL);
+        (constraints.has_resolution ? 0x404ULL : 0ULL) ^
+        mix(static_cast<std::uint64_t>(constraints.minimum)) ^
+        mix(static_cast<std::uint64_t>(constraints.maximum) + 0x10001ULL) ^
+        mix(static_cast<std::uint64_t>(constraints.resolution) + 0x20003ULL) ^
+        (value.supports_enumeration ? 0x808ULL : 0ULL);
     const auto role_id = makeId(mix(fingerprint ^ 0x524f4c45ULL), mix(fingerprint));
     const auto domain_id = makeId(mix(fingerprint ^ 0x444f4d41494eULL), mix(fingerprint + 1U));
     const auto vocabulary_id = makeId(mix(static_cast<std::uint64_t>(value.kind) + 0x564f434142ULL),

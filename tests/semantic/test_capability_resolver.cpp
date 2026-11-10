@@ -79,8 +79,9 @@ int main() {
     no_bounds_adapter.format = {};
     auto no_bounds = resolver.resolveOne(endpoint(24), no_bounds_adapter, 7, 200);
     assert(no_bounds.has_value());
-    assert(no_bounds->state() == DescriptorState::Candidate);
+    assert(no_bounds->state() == DescriptorState::Validated);
     assert(no_bounds->mutation().mode == MutationMode::None);
+    assert(!no_bounds->isMutationCapable());
 
     FakeAdapter boolean_adapter{};
     boolean_adapter.reads = {"1", "1"};
