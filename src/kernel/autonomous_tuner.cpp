@@ -299,7 +299,8 @@ AutonomousTuner::~AutonomousTuner() {
     {
         std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
         if (!applied_steps_.empty() ||
-            (frequency_actuator_ && frequency_actuator_->mutation_active())) {
+            (frequency_actuator_ &&
+             (frequency_actuator_->mutation_active() || frequency_actuator_->recovery_required()))) {
             (void)rollback_active("Autonomous tuner teardown.");
         }
     }
@@ -329,6 +330,11 @@ bool AutonomousTuner::frequency_mutation_active() const noexcept {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     return frequency_mutation_active_ && frequency_actuator_ != nullptr &&
            frequency_actuator_->mutation_active();
+}
+
+bool AutonomousTuner::frequency_actuator_configured() const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    return frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr;
 }
 
 std::optional<uint32_t> AutonomousTuner::select_frequency_policy_index() const noexcept {
