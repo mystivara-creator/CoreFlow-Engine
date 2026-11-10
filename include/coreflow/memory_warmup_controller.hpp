@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,7 @@ public:
 private:
     uint64_t hard_budget_bytes_{0};
     std::atomic<bool> cancelled_{false};
+    std::mutex warmup_mutex_;
 };
 
 } // namespace coreflow
