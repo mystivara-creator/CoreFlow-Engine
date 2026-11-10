@@ -35,4 +35,7 @@ public:
         const RawDiscoveredEndpoint& endpoint) noexcept = 0;
 };
 
+[[nodiscard]] bool isValidRawEndpoint(const RawDiscoveredEndpoint& endpoint,
+                                      std::uint64_t active_generation) noexcept;
+
 } // namespace coreflow::platform

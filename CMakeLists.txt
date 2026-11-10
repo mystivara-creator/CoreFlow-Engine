@@ -148,6 +148,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_capability_resolver
         tests/semantic/test_capability_resolver.cpp
         src/semantic/capability_resolver.cpp
+        src/platform/discovery_adapter.cpp
     )
     target_include_directories(test_capability_resolver PRIVATE include)
     target_link_libraries(test_capability_resolver PRIVATE pthread)

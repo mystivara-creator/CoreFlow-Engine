@@ -117,8 +117,8 @@ std::optional<platform::EndpointLocator> CapabilityResolver::resolveLocator(
 std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
     std::uint64_t active_generation, std::uint64_t now_ns) noexcept {
-    if (!endpoint.probe_id.isValid() || endpoint.opaque_locator.empty() ||
-        endpoint.observed_generation != active_generation) return std::nullopt;
+    if (!::coreflow::platform::isValidRawEndpoint(endpoint, active_generation))
+        return std::nullopt;
 
     const auto first_read = adapter.readPassive(endpoint);
     const auto second_read = adapter.readPassive(endpoint);
