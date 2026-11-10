@@ -33,6 +33,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
 
     if (state_ == State::Failed || state_ == State::Stopped) {
         if (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
+            transactional_frequency_actuator_ || qcom_lmh_ceiling_provider_ ||
             autonomous_tuner_ || hardware_longevity_ || vulkan_controller_) {
             if (!Stop("Unwind incomplete CoreFlowContext startup")) return false;
         }
@@ -69,6 +70,10 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
 
     memory_warmup_controller_ = std::make_unique<MemoryWarmupController>();
     recovery_monitor_ = std::make_unique<MutationRecoveryMonitor>(baseline_store(), coordinator_);
+    qcom_lmh_ceiling_provider_ = std::make_unique<QualcommLmhFrequencyCeilingProvider>("/sys");
+    transactional_frequency_actuator_ = std::make_unique<TransactionalFrequencyActuator>(
+        coordinator_, baseline_store(), frequency_planner_, *thermal_safety_authority_,
+        *qcom_lmh_ceiling_provider_);
     uclamp_governor_ = std::make_unique<UclampGovernor>(coordinator_);
     frequency_controller_ = std::make_unique<FrequencyController>(coordinator_, "/sys", profile_);
     autonomous_tuner_ = std::make_unique<AutonomousTuner>(coordinator_, "/sys", "/proc", profile_);
@@ -93,7 +98,13 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
     state_ = State::Stopping;
     if (mode_ == Mode::Daemon &&
         (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
-         autonomous_tuner_ || hardware_longevity_ || vulkan_controller_)) {
+         transactional_frequency_actuator_ || autonomous_tuner_ ||
+         hardware_longevity_ || vulkan_controller_)) {
+        if (transactional_frequency_actuator_ &&
+            !transactional_frequency_actuator_->rollback()) {
+            state_ = State::Failed;
+            return false;
+        }
         const RecoveryResult result = coordinated_rollback(
             coordinator_, baseline_store(), reason);
         if (!result.recovered()) {
@@ -115,6 +126,8 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
+    transactional_frequency_actuator_.reset();
+    qcom_lmh_ceiling_provider_.reset();
     if (memory_warmup_controller_) memory_warmup_controller_->cancel();
     memory_warmup_controller_.reset();
     neural_predictor_.reset();
