@@ -4,6 +4,7 @@
  * @license MIT
  */
 #include "coreflow/coreflow_context.hpp"
+#include "coreflow/platform_context.hpp"
 
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/device_profiler.hpp"
@@ -46,6 +47,9 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     thermal_monitor_ = std::make_unique<ThermalMonitor>();
     profiler_ = std::make_unique<DeviceProfiler>();
     profile_ = profiler_->refresh();
+    const NativeAndroidPropertySource native_properties;
+    const PlatformContextDetector platform_detector(native_properties);
+    platform_context_ = platform_detector.detect(profile_->generation);
     if (!profile_) {
         destroy_runtime_services();
         state_ = State::Failed;
@@ -75,6 +79,7 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
     if (state_ == State::Constructed || state_ == State::Stopped) {
         destroy_runtime_services();
         profile_.reset();
+        platform_context_ = {};
         state_ = State::Stopped;
         return true;
     }
@@ -97,6 +102,7 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 
     destroy_runtime_services();
     profile_.reset();
+    platform_context_ = {};
     state_ = State::Stopped;
     return true;
 }

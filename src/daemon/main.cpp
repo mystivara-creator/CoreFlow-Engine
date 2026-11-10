@@ -17,6 +17,7 @@
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/vulkan_controller.hpp"
+#include "coreflow/workload_intelligence.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -301,6 +302,7 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
 void print_status(CoreFlowContext& context) {
     // 1. Perform passive hardware/kernel inspection before writing the JSON payload
     const pid_t pid = daemon_pid();
+    const auto& platform = context.platform_context();
     const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     const auto profile = context.thermal_monitor().multi_sensor_profile();
     const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
@@ -356,6 +358,13 @@ void print_status(CoreFlowContext& context) {
         << ",\"uclampProbeSkipped\":true"
         << ",\"inspectionMode\":\"read-only\""
         << ",\"mutationRuntimeStarted\":false"
+        << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
+        << ",\"osFamily\":\"" << os_family_name(platform.identity.os_family) << "\""
+        << ",\"osMajor\":" << platform.identity.os_major
+        << ",\"executionTier\":\"" << execution_tier_name(platform.execution_tier) << "\""
+        << ",\"policyFamily\":\"" << policy_family_name(platform.policy_family) << "\""
+        << ",\"identityConfidence\":\"" << identity_confidence_name(platform.identity.confidence) << "\""
+        << ",\"tier1Eligible\":" << (platform.tier1_eligible ? "true" : "false")
         << ",\"aiRuntimeStarted\":false"
         << ",\"tunerRuntimeStarted\":false"
         << ",\"vulkanProbeSkipped\":true"
@@ -645,6 +654,151 @@ int send_dvs_command(std::string_view command) {
     return std::string_view(response).rfind("OK ", 0) == 0 ? 0 : 1;
 }
 
+int run_workload_probe() {
+    WorkloadTelemetryPipeline pipeline;
+    if (!pipeline.start()) {
+        const auto caps = pipeline.bpf_capabilities();
+        pipeline.stop();
+        std::cout << "{\"available\":false,\"backend\":\"unavailable\",\"bpfSyscall\":"
+                  << static_cast<unsigned>(caps.syscall)
+                  << ",\"ringBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
+                  << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
+                  << ",\"loaderVerified\":false}\n";
+        return 1;
+    }
+    const auto monotonic_ns = []() noexcept -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    WorkloadClassifier classifier;
+    WorkloadClassification classification{};
+    WorkloadFeatureSnapshot features{};
+    const auto add_saturated = [](uint64_t& total, uint64_t value) noexcept {
+        total = value > std::numeric_limits<uint64_t>::max() - total
+            ? std::numeric_limits<uint64_t>::max() : total + value;
+    };
+    for (unsigned window = 0; window < 2; ++window) {
+        if (window == 1) (void)pipeline.begin_frame_timeline_capture(1000);
+        const uint64_t start_ns = monotonic_ns();
+        const uint64_t deadline_ns = start_ns + 1'000'000'000ULL;
+        WorkloadFeatureSnapshot aggregate{};
+        aggregate.window_start_ns = start_ns;
+        aggregate.source = pipeline.backend();
+        uint64_t poll_start_ns = start_ns;
+        uint64_t total_wakeups = 0;
+        uint64_t total_io_bytes = 0;
+        uint64_t total_events = 0;
+        uint64_t total_samples = 0;
+        uint64_t gpu_busy_samples = 0;
+        double gpu_busy_sum = 0.0;
+        while (poll_start_ns < deadline_ns) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const uint64_t observed_ns = monotonic_ns();
+            const uint64_t poll_end_ns = std::min(observed_ns, deadline_ns);
+            if (poll_end_ns <= poll_start_ns) continue;
+
+            // Keep the full one-second window start so delayed ring records are
+            // still accepted when they are drained by a later 10 ms poll.
+            const WorkloadFeatureSnapshot part = pipeline.sample(start_ns, poll_end_ns);
+            aggregate.valid_features |= part.valid_features;
+            if (part.valid_features & FeatureCpuPressure)
+                aggregate.cpu_pressure_some_pct = part.cpu_pressure_some_pct;
+            if (part.valid_features & FeatureMemoryPressure)
+                aggregate.memory_pressure_some_pct = part.memory_pressure_some_pct;
+            if (part.valid_features & FeatureIoPressure)
+                aggregate.io_pressure_some_pct = part.io_pressure_some_pct;
+            if (part.valid_features & FeatureGpuBusy) {
+                gpu_busy_sum += part.gpu_busy_pct;
+                ++gpu_busy_samples;
+            }
+            if (part.valid_features & FeatureIoBytes)
+                add_saturated(total_io_bytes, part.io_bytes);
+            if (part.valid_features & FeatureWakeupRate)
+                add_saturated(total_wakeups, part.wakeup_count);
+            add_saturated(total_events, part.event_count);
+            add_saturated(total_samples, part.sample_count);
+            aggregate.event_drain_saturated =
+                aggregate.event_drain_saturated || part.event_drain_saturated;
+            poll_start_ns = poll_end_ns;
+        }
+        if (gpu_busy_samples > 0) {
+            aggregate.gpu_busy_pct = gpu_busy_sum / static_cast<double>(gpu_busy_samples);
+            aggregate.gpu_busy_sample_count = static_cast<uint32_t>(std::min<uint64_t>(
+                gpu_busy_samples, std::numeric_limits<uint32_t>::max()));
+            aggregate.valid_features |= FeatureGpuBusy;
+        }
+        if (window == 1) (void)pipeline.finish_frame_timeline_capture(aggregate);
+        aggregate.window_end_ns = monotonic_ns();
+        aggregate.io_bytes = total_io_bytes;
+        aggregate.wakeup_count = total_wakeups;
+        aggregate.event_count = static_cast<uint32_t>(std::min<uint64_t>(
+            total_events, std::numeric_limits<uint32_t>::max()));
+        aggregate.sample_count = static_cast<uint32_t>(std::min<uint64_t>(
+            total_samples, std::numeric_limits<uint32_t>::max()));
+        if (aggregate.window_end_ns > start_ns) {
+            aggregate.wakeup_rate_per_sec = static_cast<double>(total_wakeups) *
+                1'000'000'000.0 / static_cast<double>(aggregate.window_end_ns - start_ns);
+        }
+        features = aggregate;
+        classification = classifier.classify(features, classification, features.window_end_ns);
+    }
+    const TelemetryBackend backend = pipeline.backend();
+    const BpfCapabilitySnapshot caps = pipeline.bpf_capabilities();
+    const std::string gpu_source_name(pipeline.gpu_source_name());
+    const bool bpf_ready = caps.event_pipeline_ready();
+    pipeline.stop();
+    const char* backend_name = backend == TelemetryBackend::Ebpf ? "ebpf" :
+        (backend == TelemetryBackend::SysfsProcfs ? "sysfs-procfs" : "unavailable");
+    const auto workload_name = [](DetectedWorkloadClass value) noexcept -> const char* {
+        switch (value) {
+            case DetectedWorkloadClass::Gaming: return "gaming";
+            case DetectedWorkloadClass::IoHeavy: return "io-heavy";
+            case DetectedWorkloadClass::JankSensitive: return "jank-sensitive";
+            case DetectedWorkloadClass::CpuBound: return "cpu-bound";
+            case DetectedWorkloadClass::GpuBound: return "gpu-bound";
+            case DetectedWorkloadClass::MemoryPressure: return "memory-pressure";
+            case DetectedWorkloadClass::Mixed: return "mixed";
+            default: return "unknown";
+        }
+    };
+    const auto metric = [&](uint32_t bit, double value) {
+        return (features.valid_features & bit) ? std::to_string(value) : std::string("null");
+    };
+    std::ostringstream out;
+    out << "{\"available\":true"
+        << ",\"backend\":\"" << backend_name << "\""
+        << ",\"workload\":\"" << workload_name(classification.workload) << "\""
+        << ",\"pendingWorkload\":\"" << workload_name(classification.pending_workload) << "\""
+        << ",\"confidence\":" << classification.confidence
+        << ",\"stable\":" << (classification.stable ? "true" : "false")
+        << ",\"evidenceMask\":" << classification.evidence_mask
+        << ",\"validFeatures\":" << features.valid_features
+        << ",\"sampleCount\":" << features.sample_count
+        << ",\"eventCount\":" << features.event_count
+        << ",\"eventDrainSaturated\":" << (features.event_drain_saturated ? "true" : "false")
+        << ",\"gpuSource\":\"" << gpu_source_name << "\""
+        << ",\"gpuBusySamples\":" << features.gpu_busy_sample_count
+        << ",\"frameTimelineCaptured\":" << ((features.valid_features & FeatureFrameDeadline) ? "true" : "false")
+        << ",\"frameDeadlineCount\":" << features.frame_deadline_count
+        << ",\"frameDeadlineMissCount\":" << features.frame_deadline_misses
+        << ",\"frameTimelineSource\":\"" << ((features.valid_features & FeatureFrameDeadline) ? "perfetto-surfaceflinger" : "unavailable") << "\""
+        << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
+        << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
+        << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
+        << ",\"ioBytes\":" << metric(FeatureIoBytes, static_cast<double>(features.io_bytes))
+        << ",\"wakeupCount\":" << metric(FeatureWakeupRate, static_cast<double>(features.wakeup_count))
+        << ",\"wakeupRatePerSec\":" << metric(FeatureWakeupRate, features.wakeup_rate_per_sec)
+        << ",\"frameDeadlineMissPct\":" << metric(FeatureFrameDeadline, features.frame_deadline_miss_pct)
+        << ",\"gpuBusyPct\":" << metric(FeatureGpuBusy, features.gpu_busy_pct)
+        << ",\"bpfSyscall\":" << static_cast<unsigned>(caps.syscall)
+        << ",\"bpfRingBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
+        << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
+        << ",\"loaderVerified\":" << (bpf_ready ? "true" : "false")
+        << "}\n";
+    std::cout << out.str() << std::flush;
+    return 0;
+}
+
 bool ensure_secure_state_dir() {
     if (::mkdir(kStateDir, 0700) != 0 && errno != EEXIST) return false;
     struct stat st{};
@@ -870,6 +1024,10 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2) {
         const std::string_view command(argv[1]);
+        if (command == "--workload-probe") {
+            if (argc != 2) return 2;
+            return run_workload_probe();
+        }
         if (command == "--capabilities") {
             CoreFlowContext context;
             if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
@@ -890,7 +1048,7 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {

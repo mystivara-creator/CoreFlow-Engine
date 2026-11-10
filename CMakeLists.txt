@@ -48,6 +48,8 @@ endif()
 # Modern CoreFlow Kernel & System Sources
 set(COREFLOW_KERNEL_SOURCES
     src/kernel/coreflow_context.cpp
+    src/kernel/platform_context.cpp
+    src/kernel/workload_intelligence.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
@@ -112,6 +114,14 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_cddp PRIVATE pthread)
     endif()
     add_test(NAME CoreFlowDynamicDeviceProfilingTest COMMAND test_cddp)
+
+    add_executable(test_platform_context
+        tests/test_platform_context.cpp
+        src/kernel/platform_context.cpp
+        src/kernel/workload_intelligence.cpp
+    )
+    target_include_directories(test_platform_context PRIVATE include)
+    add_test(NAME PlatformContextTierDetectionTest COMMAND test_platform_context)
 
     add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)

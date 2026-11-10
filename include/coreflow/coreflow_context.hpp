@@ -7,6 +7,7 @@
 
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/device_profile.hpp"
+#include "coreflow/platform_context.hpp"
 
 #include <memory>
 #include <string_view>
@@ -49,6 +50,7 @@ public:
     }
 
     [[nodiscard]] const DeviceProfileHandle& device_profile() const noexcept { return profile_; }
+    [[nodiscard]] const PlatformContextSnapshot& platform_context() const noexcept { return platform_context_; }
     [[nodiscard]] DeviceProfiler& device_profiler() noexcept;
     [[nodiscard]] ThermalMonitor& thermal_monitor() noexcept;
     [[nodiscard]] NeuralPredictor& neural_predictor() noexcept;
@@ -69,6 +71,7 @@ private:
     std::unique_ptr<ThermalMonitor> thermal_monitor_;
     std::unique_ptr<DeviceProfiler> profiler_;
     DeviceProfileHandle profile_{};
+    PlatformContextSnapshot platform_context_{};
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
     std::unique_ptr<FrequencyController> frequency_controller_;

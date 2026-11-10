@@ -22,5 +22,8 @@
     "tailwindcss": "4.3.4",
     "typescript": "~5.7.2",
     "vite": "^6.2.0"
+  },
+  "overrides": {
+    "rollup": "4.34.8"
   }
 }

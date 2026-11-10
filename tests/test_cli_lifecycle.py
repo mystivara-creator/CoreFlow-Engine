@@ -32,8 +32,29 @@ assert '.backend = "not_started"' in status
 assert "tuner.last_verdict" in status
 assert "tunerRuntimeStarted" in status
 assert "vulkanProbeSkipped" in status
+assert "platformVendor" in status
+assert "executionTier" in status
+assert "tier1Eligible" in status
 
 assert "CoreFlowContext::~CoreFlowContext()" in context
 assert "coordinated_rollback(" in context
 assert "destroy_runtime_services();" in context
 assert "coordinator_" in context
+
+# Explicit workload probe is read-only and bounded to two one-second feature windows.
+assert 'if (command == "--workload-probe")' in source
+assert "return run_workload_probe();" in source
+probe_start = source.index("int run_workload_probe()")
+probe_end = source.index("bool ensure_secure_state_dir()", probe_start)
+probe = source[probe_start:probe_end]
+assert "WorkloadTelemetryPipeline pipeline;" in probe
+assert "std::chrono::milliseconds(10)" in probe
+assert "aggregate.event_drain_saturated" in probe
+assert "eventCount" in probe
+assert "eventDrainSaturated" in probe
+assert "begin_frame_timeline_capture(1000)" in probe
+assert "finish_frame_timeline_capture(aggregate)" in probe
+assert "gpu_busy_sum" in probe
+assert "frameDeadlineMissCount" in probe
+assert "pipeline.stop();" in probe
+assert "MutationCoordinator" not in probe
