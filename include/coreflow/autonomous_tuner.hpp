@@ -12,6 +12,7 @@
  */
 #pragma once
 #include "coreflow/device_profile.hpp"
+#include "coreflow/tiered_policy.hpp"
 
 #include <cstdint>
 #include <array>
@@ -30,6 +31,7 @@
 namespace coreflow {
 
 class BaselineStore;
+class TransactionalFrequencyActuator;
 
 enum class TunerVerdict : uint8_t {
     Pending = 0,
@@ -352,6 +354,12 @@ struct TunerTelemetryInput {
 
     // Telemetry trend alias (for backwards compatibility)
     double thermal_trend_celsius{0.0};
+
+    // Independent workload classifier evidence. Defaults are deliberately
+    // invalid so callers that do not provide fresh, stable windows cannot
+    // trigger an autonomous frequency transaction.
+    PolicyEvidence frequency_policy_evidence{};
+    bool frequency_policy_evidence_valid{false};
 };
 
 class AutonomousTuner {
@@ -367,6 +375,11 @@ public:
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
     // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
     void set_device_profile(DeviceProfileHandle profile);
+    void configure_frequency_actuator(
+        TransactionalFrequencyActuator* actuator,
+        const TieredPolicyRouter* router,
+        const PlatformContextSnapshot& platform) noexcept;
+    [[nodiscard]] bool frequency_mutation_active() const noexcept;
 
     // Advances the autonomous reasoning, transaction coordinator, and before/after outcome evaluator.
     AutonomousDecisionSnapshot step(const TunerTelemetryInput& telemetry);
@@ -496,6 +509,12 @@ private:
     std::string sys_root_;
     std::string proc_root_;
     DeviceProfileHandle device_profile_;
+    TransactionalFrequencyActuator* frequency_actuator_{nullptr};
+    const TieredPolicyRouter* tiered_policy_router_{nullptr};
+    PlatformContextSnapshot platform_context_{};
+    bool frequency_mutation_active_{false};
+    uint32_t frequency_policy_index_{0};
+    PolicyDecision frequency_policy_decision_{};
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
     std::vector<CandidateStats> candidates_;
@@ -585,6 +604,7 @@ private:
         const std::vector<MutationStep>& steps,
         const TunerTelemetryInput& telemetry);
     void evaluate_observation_window(const TunerTelemetryInput& latest_telemetry);
+    [[nodiscard]] std::optional<uint32_t> select_frequency_policy_index() const noexcept;
     CandidateStats* find_candidate(std::string_view id);
     const CandidateStats* find_candidate(std::string_view id) const;
 };
