@@ -79,9 +79,40 @@ int main() {
             .memory_some_avg10=3.0,.memory_valid=true});
         assert(outcome.state == IntentActuatorState::Retained);
         assert(outcome.observation_samples == 3U);
-        assert(actuator.rollback("test cleanup"));
+        assert(!actuator.rollback("retained is terminal"));
+        assert(coordinator.active_leases().empty());
         { std::ifstream in(cache_pressure); in >> current; }
-        assert(current == "100");
+        assert(current == "120");
+        const auto next_profile = profiler.refresh();
+        const uint64_t next_start = now_ns();
+        InfrastructurePsiSample next_admission{
+            .monotonic_ns=next_start,.memory_some_avg10=8.0,.io_some_avg10=0.0,
+            .memory_valid=true,.io_valid=true
+        };
+        assert(actuator.begin(next_profile, "vm.vfs_cache_pressure", "130", next_admission));
+        auto second_outcome = actuator.observe({.monotonic_ns=next_start+1'000'000'000ULL,
+            .memory_some_avg10=3.0,.memory_valid=true});
+        second_outcome = actuator.observe({.monotonic_ns=next_start+2'000'000'000ULL,
+            .memory_some_avg10=3.0,.memory_valid=true});
+        second_outcome = actuator.observe({.monotonic_ns=next_start+3'100'000'000ULL,
+            .memory_some_avg10=3.0,.memory_valid=true});
+        assert(second_outcome.state == IntentActuatorState::Retained);
+        assert(store.performance_baselines().size() == 2U);
+        assert(store.retain_performance_baseline(
+            outcome.transaction_id, cache_pressure.string(), "120"));
+        assert(!store.retain_performance_baseline(
+            outcome.transaction_id, cache_pressure.string(), "130"));
+    }
+    {
+        std::string retained_value;
+        { std::ifstream in(cache_pressure); in >> retained_value; }
+        assert(retained_value == "130");
+        assert(store.rollback(cache_pressure.string()));
+        { std::ifstream in(cache_pressure); in >> retained_value; }
+        assert(retained_value == "100");
+        store.reinitialize();
+        assert(store.performance_baselines().size() == 2U);
+        assert(store.recover_pending());
     }
     {
         IntentActuator actuator(coordinator, store, proc.string());

@@ -29,6 +29,12 @@ struct NodeSnapshot {
     uint64_t ino{0};
 };
 
+struct RetainedPerformanceBaseline final {
+    std::string transaction_id;
+    std::string endpoint;
+    std::string verified_value;
+};
+
 class BaselineStore {
 public:
     static BaselineStore& instance();
@@ -38,6 +44,13 @@ public:
 
     /// Record a planned mutation; returns false if node wasn't snapshotted or write failed
     bool apply_mutation(const std::string& path, const std::string& new_value);
+
+    /// Persist a verified performance operating point independently of OEM recovery data.
+    /// Idempotent for an identical transaction ID and payload.
+    [[nodiscard]] bool retain_performance_baseline(
+        const std::string& transaction_id, const std::string& endpoint,
+        const std::string& verified_value);
+    [[nodiscard]] std::vector<RetainedPerformanceBaseline> performance_baselines() const;
 
     /// Roll back a specific node to factory value
     bool rollback(const std::string& path);
@@ -78,6 +91,7 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, NodeSnapshot> store_;
+    std::unordered_map<std::string, RetainedPerformanceBaseline> performance_store_;
     std::string state_dir_;
     std::string journal_path_;
     std::string boot_id_;
@@ -86,6 +100,8 @@ private:
 
     void init_paths_and_boot_id_locked();
     bool persist_locked();
+    bool persist_performance_locked();
+    void load_performance_locked();
     // Transaction/runtime rollback for one path; rollback_locked remains reserved
     // for crash recovery and an explicit global safety sweep.
     bool rollback_path_locked(const std::string& path);
