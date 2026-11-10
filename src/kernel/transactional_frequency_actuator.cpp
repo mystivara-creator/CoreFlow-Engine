@@ -260,10 +260,14 @@ bool TransactionalFrequencyActuator::apply(
     const OutcomeSample& baseline_sample,
     uint64_t now_ns) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
+    const std::string policy_prefix = sys_root_ + "/devices/system/cpu/cpufreq/policy";
     if (active_ || recovery_required_ || sys_root_.empty() ||
         policy_path.empty() || policy_path.size() > 512U ||
         policy_path.find("..") != std::string::npos ||
-        policy_path.rfind(sys_root_ + "/devices/system/cpu/cpufreq/policy", 0) != 0 ||
+        policy_path.rfind(policy_prefix, 0) != 0 ||
+        policy_path.size() == policy_prefix.size() ||
+        !std::all_of(policy_path.begin() + static_cast<std::ptrdiff_t>(policy_prefix.size()),
+                     policy_path.end(), [](unsigned char ch) { return ch >= '0' && ch <= '9'; }) ||
         capability.domain != FrequencyDomain::CpuPolicy ||
         !FrequencyTargetPlanner::validate(capability)) return false;
 
@@ -369,8 +373,7 @@ bool TransactionalFrequencyActuator::rollback_locked() noexcept {
     const auto parsed = std::from_chars(
         baseline_value_.data(), baseline_value_.data() + baseline_value_.size(), expected, 10);
     if (parsed.ec != std::errc{} || parsed.ptr != baseline_value_.data() + baseline_value_.size() ||
-        !read_frequency_khz(target_path_, readback) || readback != expected ||
-        false) {
+        !read_frequency_khz(target_path_, readback) || readback != expected) {
         const auto audit = baseline_store_.get_audit_trail();
         const auto node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& item) {
             return item.path == target_path_;
