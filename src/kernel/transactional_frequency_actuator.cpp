@@ -125,9 +125,9 @@ bool FrequencyOutcomeEvaluator::begin(const OutcomeSample& baseline) noexcept {
     if (baseline.timestamp_ns == 0 || !baseline.cpu_psi_valid ||
         !std::isfinite(baseline.cpu_psi_some_pct) ||
         baseline.cpu_psi_some_pct < 0.0 || baseline.cpu_psi_some_pct > 100.0) return false;
-    if (baseline.ebpf_wakeup_valid &&
-        (!std::isfinite(baseline.ebpf_wakeup_rate_per_sec) ||
-         baseline.ebpf_wakeup_rate_per_sec < 0.0)) return false;
+    if ((baseline.memory_psi_valid && (!std::isfinite(baseline.memory_psi_some_pct) || baseline.memory_psi_some_pct < 0.0 || baseline.memory_psi_some_pct > 100.0)) ||
+        (baseline.io_psi_valid && (!std::isfinite(baseline.io_psi_some_pct) || baseline.io_psi_some_pct < 0.0 || baseline.io_psi_some_pct > 100.0)) ||
+        (baseline.ebpf_wakeup_valid && (!std::isfinite(baseline.ebpf_wakeup_rate_per_sec) || baseline.ebpf_wakeup_rate_per_sec < 0.0))) return false;
     baseline_ = baseline;
     started_at_ns_ = baseline.timestamp_ns;
     active_ = true;
@@ -164,6 +164,16 @@ OutcomeResult FrequencyOutcomeEvaluator::observe(const OutcomeSample& sample) no
         (!std::isfinite(sample.ebpf_wakeup_rate_per_sec) ||
          sample.ebpf_wakeup_rate_per_sec < 0.0)) {
         result.reason = "invalid eBPF wakeup sample";
+        return result;
+    }
+
+    if (!sample.cpu_psi_valid ||
+        (baseline_.memory_psi_valid && !sample.memory_psi_valid) ||
+        (baseline_.io_psi_valid && !sample.io_psi_valid) ||
+        (baseline_.ebpf_wakeup_valid && baseline_.workload_stable && !sample.ebpf_wakeup_valid)) {
+        result.verdict = OutcomeVerdict::Inconclusive;
+        result.reason = "required outcome telemetry became unavailable";
+        active_ = false;
         return result;
     }
 
@@ -273,6 +283,8 @@ bool TransactionalFrequencyActuator::apply(
 
     const uint64_t admission_now = monotonic_now_ns();
     if (admission_now == 0 || admission_now < now_ns || admission_now - now_ns > 250'000'000ULL) return false;
+    if (baseline_sample.timestamp_ns == 0 || baseline_sample.timestamp_ns > admission_now ||
+        admission_now - baseline_sample.timestamp_ns > 1'000'000'000ULL) return false;
     const auto thermal = thermal_.evaluate(admission_now);
     if (!thermal.granted || thermal.observed_at_ns < admission_now ||
         thermal.observed_at_ns - admission_now > 250'000'000ULL ||
