@@ -307,6 +307,7 @@ FrequencyOppDiscovery::discover_cpu_policy(
     capability.thermal_admission_valid = request.thermal_admission_valid;
     capability.thermal_admission_granted = request.thermal_admission_granted;
     capability.capability_fingerprint_valid = request.capability_fingerprint_valid;
+    capability.capability_fingerprint = request.capability_fingerprint;
 
     capability.operating_points.reserve(frequencies.size());
     for (const uint64_t hz : frequencies) {
@@ -337,6 +338,7 @@ bool FrequencyTargetPlanner::validate(
         !capability.thermal_admission_valid ||
         !capability.thermal_admission_granted ||
         !capability.capability_fingerprint_valid ||
+        capability.capability_fingerprint.empty() ||
         capability.hardware_min_hz == 0U ||
         capability.hardware_min_hz > capability.hardware_max_hz ||
         capability.active_constraint_min_hz < capability.hardware_min_hz ||
