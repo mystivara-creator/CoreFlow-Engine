@@ -169,12 +169,16 @@ bool is_cpu_cooling_device(std::string_view type) noexcept {
 bool read_lmh_kernel_contract(
     const std::string& directory,
     uint64_t& maximum_khz,
+    uint64_t& sample_timestamp_ns,
     std::string& fingerprint) noexcept {
     std::string version;
     std::string raw_frequency;
+    std::string raw_timestamp;
     if (!read_small_text(directory + "/qcom_lmh_abi_version", version) || version != "1" ||
         !read_small_text(directory + "/qcom_lmh_max_freq", raw_frequency) ||
         !parse_u64_text(raw_frequency, maximum_khz, false) ||
+        !read_small_text(directory + "/qcom_lmh_sample_timestamp_ns", raw_timestamp) ||
+        !parse_u64_text(raw_timestamp, sample_timestamp_ns, false) ||
         !read_small_text(directory + "/qcom_lmh_capability_fingerprint", fingerprint) ||
         fingerprint.size() < 8U || fingerprint.size() > 128U) return false;
     for (const unsigned char ch : fingerprint) {
@@ -229,6 +233,7 @@ QualcommLmhFrequencyCeilingProvider::current(
 
     bool found_contract = false;
     uint64_t selected_max_khz = 0;
+    uint64_t selected_timestamp_ns = 0;
     std::string selected_fingerprint;
     size_t visited = 0;
     for (fs::directory_iterator it(thermal_root, fs::directory_options::skip_permission_denied, ec), end;
@@ -257,19 +262,26 @@ QualcommLmhFrequencyCeilingProvider::current(
         if (!cdev_binds_to_policy(cdev_path, policy_path, related_cpus, policy_index)) continue;
 
         uint64_t candidate_max_khz = 0;
+        uint64_t candidate_timestamp_ns = 0;
         std::string candidate_fingerprint;
-        if (!read_lmh_kernel_contract(policy_path, candidate_max_khz, candidate_fingerprint) &&
-            !read_lmh_kernel_contract(cdev_path.string(), candidate_max_khz, candidate_fingerprint)) {
+        if (!read_lmh_kernel_contract(
+                policy_path, candidate_max_khz, candidate_timestamp_ns, candidate_fingerprint) &&
+            !read_lmh_kernel_contract(
+                cdev_path.string(), candidate_max_khz, candidate_timestamp_ns, candidate_fingerprint)) {
             continue;
         }
         if (candidate_max_khz < hardware_min_khz ||
-            candidate_max_khz > hardware_max_khz) return std::nullopt;
+            candidate_max_khz > hardware_max_khz ||
+            candidate_timestamp_ns > now_ns ||
+            now_ns - candidate_timestamp_ns > max_sample_age_ns_) return std::nullopt;
 
         if (!found_contract) {
             found_contract = true;
             selected_max_khz = candidate_max_khz;
             selected_fingerprint = std::move(candidate_fingerprint);
+            selected_timestamp_ns = candidate_timestamp_ns;
         } else if (candidate_max_khz != selected_max_khz ||
+                   candidate_timestamp_ns != selected_timestamp_ns ||
                    candidate_fingerprint != selected_fingerprint) {
             // Conflicting cooling-device authorities are ambiguous; fail closed.
             return std::nullopt;
@@ -278,11 +290,13 @@ QualcommLmhFrequencyCeilingProvider::current(
 
     if (!found_contract || selected_max_khz == 0 ||
         selected_max_khz > std::numeric_limits<uint64_t>::max() / 1000ULL ||
-        now_ns > std::numeric_limits<uint64_t>::max() - max_sample_age_ns_) return std::nullopt;
+        selected_timestamp_ns > std::numeric_limits<uint64_t>::max() - max_sample_age_ns_) {
+        return std::nullopt;
+    }
 
     return IndependentFrequencyCeiling{
         selected_max_khz * 1000ULL,
-        now_ns + max_sample_age_ns_,
+        selected_timestamp_ns + max_sample_age_ns_,
         selected_fingerprint,
         true
     };
