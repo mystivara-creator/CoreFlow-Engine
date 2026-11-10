@@ -50,6 +50,10 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/coreflow_context.cpp
     src/kernel/platform_context.cpp
     src/kernel/workload_intelligence.cpp
+    src/kernel/tiered_policy.cpp
+    src/kernel/frequency_target_planner.cpp
+    src/kernel/transactional_frequency_actuator.cpp
+    src/kernel/memory_warmup_controller.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
@@ -103,11 +107,18 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/thermal_monitor.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/platform_context.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
     target_include_directories(test_cddp PRIVATE include tests)
     target_link_libraries(test_cddp PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_cddp PRIVATE pthread)
+    endif()
     if(ANDROID)
         target_link_libraries(test_cddp PRIVATE log)
     else()
@@ -123,8 +134,55 @@ if(CORE_FLOW_BUILD_TESTS)
     target_include_directories(test_platform_context PRIVATE include)
     add_test(NAME PlatformContextTierDetectionTest COMMAND test_platform_context)
 
-    add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_p2d_policy
+        tests/test_p2d_policy.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/frequency_target_planner.cpp
+    )
+    target_include_directories(test_p2d_policy PRIVATE include)
+    target_link_libraries(test_p2d_policy PRIVATE m)
+    add_test(NAME P2DTieredPolicyAndFrequencyPlannerTest COMMAND test_p2d_policy)
+
+    add_executable(test_memory_warmup
+        tests/test_memory_warmup.cpp
+        src/kernel/memory_warmup_controller.cpp
+    )
+    target_include_directories(test_memory_warmup PRIVATE include)
+    add_test(NAME P2DMemoryWarmupControllerTest COMMAND test_memory_warmup)
+
+    add_executable(test_transactional_frequency_actuator
+        tests/test_transactional_frequency_actuator.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_transactional_frequency_actuator PRIVATE include)
+    target_link_libraries(test_transactional_frequency_actuator PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_transactional_frequency_actuator PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_transactional_frequency_actuator PRIVATE log)
+    endif()
+    add_test(NAME P2DTransactionalFrequencyActuatorTest COMMAND test_transactional_frequency_actuator)
+
+    add_executable(test_autonomous_tuner
+        tests/test_autonomous_tuner.cpp
+        src/kernel/autonomous_tuner.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/platform_context.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
     target_link_libraries(test_autonomous_tuner PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_autonomous_tuner PRIVATE pthread)
+    endif()
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
 
     add_executable(test_feature_accountability tests/test_feature_accountability.cpp)
@@ -166,6 +224,11 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/platform_context.cpp
         src/kernel/hardware_longevity.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp

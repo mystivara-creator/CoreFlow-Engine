@@ -15,10 +15,13 @@
 #include "coreflow/frequency_controller.hpp"
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/vulkan_controller.hpp"
+#include "coreflow/memory_warmup_controller.hpp"
+#include "coreflow/transactional_frequency_actuator.hpp"
 
 namespace coreflow {
 
-CoreFlowContext::CoreFlowContext() = default;
+CoreFlowContext::CoreFlowContext()
+    : policy_router_(base_policy_, hyperos_policy_) {}
 
 CoreFlowContext::~CoreFlowContext() {
     (void)Stop("CoreFlowContext destructor");
@@ -30,6 +33,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
 
     if (state_ == State::Failed || state_ == State::Stopped) {
         if (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
+            transactional_frequency_actuator_ || qcom_lmh_ceiling_provider_ ||
             autonomous_tuner_ || hardware_longevity_ || vulkan_controller_) {
             if (!Stop("Unwind incomplete CoreFlowContext startup")) return false;
         }
@@ -45,6 +49,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     }
 
     thermal_monitor_ = std::make_unique<ThermalMonitor>();
+    thermal_safety_authority_ = std::make_unique<ThermalSafetyAuthority>(*thermal_monitor_);
     profiler_ = std::make_unique<DeviceProfiler>();
     profile_ = profiler_->refresh();
     const NativeAndroidPropertySource native_properties;
@@ -63,10 +68,17 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
         return true;
     }
 
+    memory_warmup_controller_ = std::make_unique<MemoryWarmupController>();
     recovery_monitor_ = std::make_unique<MutationRecoveryMonitor>(baseline_store(), coordinator_);
+    qcom_lmh_ceiling_provider_ = std::make_unique<QualcommLmhFrequencyCeilingProvider>("/sys");
+    transactional_frequency_actuator_ = std::make_unique<TransactionalFrequencyActuator>(
+        coordinator_, baseline_store(), frequency_planner_, *thermal_safety_authority_,
+        *qcom_lmh_ceiling_provider_);
     uclamp_governor_ = std::make_unique<UclampGovernor>(coordinator_);
     frequency_controller_ = std::make_unique<FrequencyController>(coordinator_, "/sys", profile_);
     autonomous_tuner_ = std::make_unique<AutonomousTuner>(coordinator_, "/sys", "/proc", profile_);
+    autonomous_tuner_->configure_frequency_actuator(
+        transactional_frequency_actuator_.get(), &policy_router_, platform_context_);
     hardware_longevity_ = std::make_unique<HardwareLongevityManager>(coordinator_);
     neural_predictor_ = std::make_unique<NeuralPredictor>();
     vulkan_controller_ = std::make_unique<VulkanController>(coordinator_);
@@ -88,7 +100,17 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
     state_ = State::Stopping;
     if (mode_ == Mode::Daemon &&
         (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
-         autonomous_tuner_ || hardware_longevity_ || vulkan_controller_)) {
+         transactional_frequency_actuator_ || autonomous_tuner_ ||
+         hardware_longevity_ || vulkan_controller_)) {
+        if (autonomous_tuner_ && !autonomous_tuner_->rollback_active(reason)) {
+            state_ = State::Failed;
+            return false;
+        }
+        if (transactional_frequency_actuator_ &&
+            !transactional_frequency_actuator_->rollback()) {
+            state_ = State::Failed;
+            return false;
+        }
         const RecoveryResult result = coordinated_rollback(
             coordinator_, baseline_store(), reason);
         if (!result.recovered()) {
@@ -110,18 +132,26 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
+    if (memory_warmup_controller_) memory_warmup_controller_->cancel();
+    memory_warmup_controller_.reset();
     neural_predictor_.reset();
     hardware_longevity_.reset();
+    // The tuner references the actuator; destroy it before the actuator and
+    // provider so its final rollback/preemption path remains valid.
     autonomous_tuner_.reset();
+    transactional_frequency_actuator_.reset();
+    qcom_lmh_ceiling_provider_.reset();
     frequency_controller_.reset();
     uclamp_governor_.reset();
     recovery_monitor_.reset();
     profiler_.reset();
+    thermal_safety_authority_.reset();
     thermal_monitor_.reset();
 }
 
 DeviceProfiler& CoreFlowContext::device_profiler() noexcept { return *profiler_; }
 ThermalMonitor& CoreFlowContext::thermal_monitor() noexcept { return *thermal_monitor_; }
+ThermalSafetyAuthority& CoreFlowContext::thermal_safety_authority() noexcept { return *thermal_safety_authority_; }
 NeuralPredictor& CoreFlowContext::neural_predictor() noexcept { return *neural_predictor_; }
 BaselineStore& CoreFlowContext::baseline_store() noexcept { return BaselineStore::instance(); }
 MutationRecoveryMonitor& CoreFlowContext::recovery_monitor() noexcept { return *recovery_monitor_; }

@@ -27,6 +27,7 @@ int main() {
         assert(read_only.Start(coreflow::CoreFlowContext::Mode::ReadOnly));
         assert(read_only.started());
         assert(!read_only.mutation_runtime_started());
+        assert(read_only.transactional_frequency_actuator() == nullptr);
         assert(read_only.mutation_coordinator().active_leases().empty());
         assert(read_only.device_profile());
         assert(read_only.Stop("read-only test complete"));
@@ -36,6 +37,9 @@ int main() {
         assert(daemon.Start(coreflow::CoreFlowContext::Mode::Daemon));
         assert(daemon.started());
         assert(daemon.mutation_runtime_started());
+        assert(daemon.transactional_frequency_actuator() != nullptr);
+        assert(daemon.autonomous_tuner().frequency_actuator_configured());
+        assert(!daemon.autonomous_tuner().frequency_mutation_active());
         assert(daemon.device_profile());
         assert(daemon.mutation_coordinator().active_leases().empty());
         assert(daemon.Stop("deterministic lifecycle test shutdown"));

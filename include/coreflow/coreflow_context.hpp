@@ -7,6 +7,9 @@
 
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/device_profile.hpp"
+#include "coreflow/tiered_policy.hpp"
+#include "coreflow/frequency_target_planner.hpp"
+#include "coreflow/memory_warmup_controller.hpp"
 #include "coreflow/platform_context.hpp"
 
 #include <memory>
@@ -17,6 +20,9 @@ namespace coreflow {
 class BaselineStore;
 class DeviceProfiler;
 class ThermalMonitor;
+class ThermalSafetyAuthority;
+class QualcommLmhFrequencyCeilingProvider;
+class TransactionalFrequencyActuator;
 class NeuralPredictor;
 class MutationRecoveryMonitor;
 class UclampGovernor;
@@ -53,6 +59,7 @@ public:
     [[nodiscard]] const PlatformContextSnapshot& platform_context() const noexcept { return platform_context_; }
     [[nodiscard]] DeviceProfiler& device_profiler() noexcept;
     [[nodiscard]] ThermalMonitor& thermal_monitor() noexcept;
+    [[nodiscard]] ThermalSafetyAuthority& thermal_safety_authority() noexcept;
     [[nodiscard]] NeuralPredictor& neural_predictor() noexcept;
     [[nodiscard]] CentralMutationCoordinator& mutation_coordinator() noexcept { return coordinator_; }
     [[nodiscard]] BaselineStore& baseline_store() noexcept;
@@ -62,6 +69,11 @@ public:
     [[nodiscard]] AutonomousTuner& autonomous_tuner() noexcept;
     [[nodiscard]] HardwareLongevityManager& hardware_longevity() noexcept;
     [[nodiscard]] VulkanController& vulkan_controller() noexcept;
+    [[nodiscard]] TieredPolicyRouter& tiered_policy_router() noexcept { return policy_router_; }
+    [[nodiscard]] FrequencyOppDiscovery& frequency_opp_discovery() noexcept { return frequency_discovery_; }
+    [[nodiscard]] FrequencyTargetPlanner& frequency_target_planner() noexcept { return frequency_planner_; }
+    [[nodiscard]] TransactionalFrequencyActuator* transactional_frequency_actuator() noexcept { return transactional_frequency_actuator_.get(); }
+    [[nodiscard]] MemoryWarmupController* memory_warmup_controller() noexcept { return memory_warmup_controller_.get(); }
 
 private:
     // Declaration order mirrors startup: reverse member destruction is a
@@ -69,9 +81,18 @@ private:
     // The coordinator outlives every callback owner; profile outlives controllers.
     CentralMutationCoordinator coordinator_;
     std::unique_ptr<ThermalMonitor> thermal_monitor_;
+    std::unique_ptr<ThermalSafetyAuthority> thermal_safety_authority_;
     std::unique_ptr<DeviceProfiler> profiler_;
     DeviceProfileHandle profile_{};
     PlatformContextSnapshot platform_context_{};
+    CoreFlowBase base_policy_{};
+    HyperOS4Inspired hyperos_policy_{};
+    TieredPolicyRouter policy_router_;
+    FrequencyOppDiscovery frequency_discovery_{"/sys"};
+    FrequencyTargetPlanner frequency_planner_{};
+    std::unique_ptr<QualcommLmhFrequencyCeilingProvider> qcom_lmh_ceiling_provider_;
+    std::unique_ptr<TransactionalFrequencyActuator> transactional_frequency_actuator_;
+    std::unique_ptr<MemoryWarmupController> memory_warmup_controller_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
     std::unique_ptr<FrequencyController> frequency_controller_;

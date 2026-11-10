@@ -271,6 +271,28 @@ int main() {
     tracker.record_sample(std::numeric_limits<float>::quiet_NaN(), 5000000000ULL);
     assert(tracker.sample_count() == 3);
 
+    // P2-D sensor freshness: require warm-up, then detect a frozen physical value
+    // even when sysfs reads continue to succeed synchronously.
+    ThermalSensorFreshnessTracker freshness;
+    freshness.record_sample(45.0F, 100ULL, 1'000'000'000ULL);
+    assert(!freshness.evaluate(1'000'000'000ULL).valid);
+    freshness.record_sample(45.0F, 200ULL, 1'250'000'000ULL); // source mtime advanced
+    auto live = freshness.evaluate(1'250'000'000ULL);
+    assert(live.valid && !live.stale && live.samples == 2U);
+
+    uint64_t frozen_at = 1'250'000'000ULL;
+    for (uint32_t i = 0; i < 8U; ++i) {
+        frozen_at += 300'000'000ULL;
+        freshness.record_sample(45.0F, 200ULL, frozen_at);
+    }
+    const auto frozen = freshness.evaluate(frozen_at);
+    assert(frozen.stale && !frozen.valid && frozen.samples >= 8U);
+
+    frozen_at += 300'000'000ULL;
+    freshness.record_sample(45.1F, 200ULL, frozen_at);
+    const auto recovered = freshness.evaluate(frozen_at);
+    assert(recovered.valid && !recovered.stale);
+
     std::filesystem::remove_all(root);
     std::cout << "ThermalMonitor cluster discovery, fusion, headroom, hwmon, and TemperatureTrendTracker PASS\n";
     return 0;

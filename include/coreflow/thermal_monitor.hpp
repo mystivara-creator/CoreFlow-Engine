@@ -13,6 +13,12 @@ struct ThermalSensorReading {
     int category{0}; // 0 diagnostic/unknown, 1 compute, 2 battery, 3 skin, 4 board/power
     float celsius{-1};
     bool valid{false}, policy_available{false};
+    uint64_t sample_timestamp_ns{0};
+    uint64_t source_mtime_ns{0};
+    uint64_t freshness_sample_span_ns{0};
+    uint32_t freshness_samples_count{0};
+    bool freshness_valid{false};
+    bool freshness_stale{false};
     double pressure{0};
     double velocity_celsius_per_sec{0.0};
     bool velocity_valid{false};
@@ -31,6 +37,33 @@ struct TemperatureVelocityReading {
     double sample_duration_sec{0.0};     // Time delta elapsed across the samples in seconds.
     float current_temperature_celsius{-1.0f}; // Most recent valid temperature in °C.
     uint64_t timestamp_ns{0};            // Monotonic timestamp of the reading in nanoseconds.
+};
+
+struct ThermalSensorFreshness final {
+    bool valid{false};
+    bool stale{false};
+    uint32_t samples{0};
+    uint64_t sample_span_ns{0};
+    uint64_t last_sample_ns{0};
+};
+
+class ThermalSensorFreshnessTracker final {
+public:
+    void record_sample(float celsius, uint64_t source_mtime_ns,
+                       uint64_t timestamp_ns) noexcept;
+    [[nodiscard]] ThermalSensorFreshness evaluate(uint64_t now_ns) const noexcept;
+    void reset() noexcept;
+
+private:
+    int64_t last_milli_celsius_{-1};
+    uint64_t first_sample_ns_{0};
+    uint64_t last_sample_ns_{0};
+    uint64_t last_progress_ns_{0};
+    uint64_t last_source_mtime_ns_{0};
+    uint32_t samples_{0};
+    uint32_t unchanged_samples_{0};
+    bool progress_seen_{false};
+    bool stale_{false};
 };
 
 class TemperatureTrendTracker {
@@ -115,6 +148,7 @@ private:
     mutable std::chrono::steady_clock::time_point discovery_at_{};
     mutable TemperatureTrendTracker trend_tracker_{8};
     mutable std::unordered_map<std::string, TemperatureTrendTracker> sensor_trend_trackers_;
+    mutable std::unordered_map<std::string, ThermalSensorFreshnessTracker> sensor_freshness_trackers_;
     void discover_sensors() const;
     float hottest_category(int category) const;
 };

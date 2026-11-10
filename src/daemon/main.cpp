@@ -1106,18 +1106,31 @@ int main(int argc, char* argv[]) {
         " GPU domains=" + std::to_string(device_profile->gpu_domains.size()));
     auto& governor = context.uclamp_governor();
     auto& frequencies = context.frequency_controller();
-    frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+    // CPU scaling_max_freq ownership is delegated exclusively to the tiered,
+    // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
+    frequencies.discover(false, config.enable_gpu_frequency_control);
     auto& autonomous_tuner = context.autonomous_tuner();
+    WorkloadTelemetryPipeline workload_pipeline;
+    const bool workload_pipeline_ready = workload_pipeline.start();
+    WorkloadClassifier workload_classifier;
+    WorkloadClassification workload_classification{};
+    if (!workload_pipeline_ready) {
+        emit_log(true, "[CoreFlow][Workload] Telemetry pipeline unavailable; autonomous CPU frequency admission remains disabled.");
+    } else {
+        emit_log(false, "[CoreFlow][Workload] Telemetry backend=" +
+            std::string(workload_pipeline.backend() == TelemetryBackend::Ebpf ? "eBPF" : "sysfs/procfs") +
+            "; tiered CPU admission requires fresh stable CPU-bound windows.");
+    }
     auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
     context.hardware_longevity().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
         config.top_app_io_weight, config.background_io_weight});
     const auto power = PowerBridge{}.probe();
-    emit_log(false, "[CoreFlow] CPU policies=" + std::to_string(frequencies.cpu_count()) +
-        " GPU domains=" + std::to_string(frequencies.gpu_count()) +
+    emit_log(false, "[CoreFlow] CPU frequency authority=tiered transactional actuator; GPU domains=" +
+        std::to_string(frequencies.gpu_count()) +
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
-        "; Binder interception and NPU offload unavailable without platform integration.");
+        "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
@@ -1214,7 +1227,8 @@ int main(int argc, char* argv[]) {
                         std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
-                    frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+                    frequencies.discover(false, config.enable_gpu_frequency_control);
+                    workload_classification = {};
                     context.hardware_longevity().initialize({
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
@@ -1506,11 +1520,10 @@ int main(int argc, char* argv[]) {
         last_capacity_scale = active_capacity_scale;
 
         // Periodically re-discover frequency domains if OEM PowerHAL temporarily retired them.
-        if ((config.enable_cpu_frequency_control && frequencies.cpu_count() == 0) ||
-            (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0)) {
+        if (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0) {
             if (++freq_resync_ticks >= 5) {
                 freq_resync_ticks = 0;
-                frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+                frequencies.discover(false, config.enable_gpu_frequency_control);
             }
         } else {
             freq_resync_ticks = 0;
@@ -1524,6 +1537,45 @@ int main(int argc, char* argv[]) {
         context.hardware_longevity().monitor_battery_thermals(temp);
         (void)context.vulkan_controller().apply_workload_policy(
             desired, active_capacity_scale, thermal_limit_hit);
+
+        // Build a fresh sliding workload window for the tiered CPU policy.
+        const uint64_t workload_now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        const uint64_t workload_window_start_ns =
+            workload_now_ns > 1'000'000'000ULL
+                ? workload_now_ns - 1'000'000'000ULL : 1ULL;
+        WorkloadFeatureSnapshot workload_features{};
+        if (workload_pipeline_ready) {
+            workload_features = workload_pipeline.sample(
+                workload_window_start_ns, workload_now_ns);
+            workload_classification = workload_classifier.classify(
+                workload_features, workload_classification, workload_now_ns);
+        }
+        PolicyEvidence frequency_policy_evidence{};
+        frequency_policy_evidence.telemetry = workload_features;
+        frequency_policy_evidence.classification = workload_classification;
+        frequency_policy_evidence.evaluated_at_ns = workload_now_ns;
+        frequency_policy_evidence.max_telemetry_age_ns = 3'000'000'000ULL;
+        frequency_policy_evidence.telemetry_fresh =
+            workload_pipeline_ready && workload_features.window_end_ns != 0U &&
+            workload_features.window_end_ns <= workload_now_ns &&
+            workload_now_ns - workload_features.window_end_ns <= 3'000'000'000ULL &&
+            workload_features.source != TelemetryBackend::Unavailable;
+        frequency_policy_evidence.event_stream_saturated =
+            workload_features.event_drain_saturated;
+        frequency_policy_evidence.thermal_headroom_valid =
+            thermal.available && std::isfinite(temp) && temp >= 0.0f &&
+            std::isfinite(config.thermal_trip_celsius) &&
+            static_cast<double>(config.thermal_trip_celsius) > static_cast<double>(temp);
+        frequency_policy_evidence.thermal_headroom_c =
+            frequency_policy_evidence.thermal_headroom_valid
+                ? static_cast<double>(config.thermal_trip_celsius) - static_cast<double>(temp)
+                : 0.0;
+        frequency_policy_evidence.thermal_recovery_required =
+            thermal_limit_hit || thermal.emergency;
+        frequency_policy_evidence.mutation_runtime_ready =
+            context.mutation_runtime_started();
 
         // Multi-domain autonomous scheduler, VM & active thermal stabilization evaluation
         const double remaining_headroom = thermal.headroom_valid
@@ -1548,6 +1600,9 @@ int main(int argc, char* argv[]) {
             .thermal_emergency = thermal.emergency,
             .thermal_headroom = remaining_headroom,
             .thermal_trend_celsius = temp_vel.valid ? temp_vel.velocity_celsius_per_sec : 0.0,
+            .frequency_policy_evidence = frequency_policy_evidence,
+            .frequency_policy_evidence_valid =
+                config.enable_cpu_frequency_control && workload_pipeline_ready,
         });
         record_dvs_sample(
             ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
@@ -1619,6 +1674,7 @@ int main(int argc, char* argv[]) {
     }
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
+    workload_pipeline.stop();
     const bool stopped = context.Stop("Daemon shutdown");
     const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);

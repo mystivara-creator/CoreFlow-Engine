@@ -7,10 +7,12 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/transactional_frequency_actuator.hpp"
 
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <fcntl.h>
 #include <filesystem>
@@ -296,7 +298,11 @@ AutonomousTuner::AutonomousTuner(CentralMutationCoordinator& coordinator,
 AutonomousTuner::~AutonomousTuner() {
     {
         std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
-        if (!applied_steps_.empty()) (void)rollback_active("Autonomous tuner teardown.");
+        if (!applied_steps_.empty() ||
+            (frequency_actuator_ &&
+             (frequency_actuator_->mutation_active() || frequency_actuator_->recovery_required()))) {
+            (void)rollback_active("Autonomous tuner teardown.");
+        }
     }
     coordinator_.unregister_preemption_handler(controller_name_);
 }
@@ -306,6 +312,53 @@ void AutonomousTuner::set_device_profile(DeviceProfileHandle profile) {
     if (!applied_steps_.empty() || recovery_required_) return;
     device_profile_ = std::move(profile);
     discover(sys_root_, proc_root_);
+}
+
+void AutonomousTuner::configure_frequency_actuator(
+    TransactionalFrequencyActuator* actuator,
+    const TieredPolicyRouter* router,
+    const PlatformContextSnapshot& platform) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (frequency_mutation_active_ ||
+        (frequency_actuator_ != nullptr && frequency_actuator_->mutation_active())) return;
+    frequency_actuator_ = actuator;
+    tiered_policy_router_ = router;
+    platform_context_ = platform;
+}
+
+bool AutonomousTuner::frequency_mutation_active() const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    return frequency_mutation_active_ && frequency_actuator_ != nullptr &&
+           frequency_actuator_->mutation_active();
+}
+
+bool AutonomousTuner::frequency_actuator_configured() const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    return frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr;
+}
+
+std::optional<uint32_t> AutonomousTuner::select_frequency_policy_index() const noexcept {
+    if (!device_profile_ || device_profile_->cpu_policies.empty()) return std::nullopt;
+    uint64_t best_capacity = 0U;
+    std::optional<uint32_t> selected;
+    for (const auto& policy : device_profile_->cpu_policies) {
+        if (policy.policy_path.empty() || !policy.related_cpus_valid ||
+            policy.related_cpus.empty() || !policy.frequency_table_valid ||
+            policy.cpuinfo_max_freq_khz == 0U) continue;
+        const std::string name = fs::path(policy.policy_path).filename().string();
+        if (name.rfind("policy", 0) != 0 || name.size() <= 6U) continue;
+        uint32_t index = 0U;
+        const std::string_view suffix(name.data() + 6U, name.size() - 6U);
+        const auto parsed = std::from_chars(
+            suffix.data(), suffix.data() + suffix.size(), index, 10);
+        if (parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size() ||
+            index > 255U) continue;
+        if (!selected.has_value() || policy.cpuinfo_max_freq_khz > best_capacity) {
+            best_capacity = policy.cpuinfo_max_freq_khz;
+            selected = index;
+        }
+    }
+    return selected;
 }
 
 bool AutonomousTuner::handle_preemption(
@@ -1333,6 +1386,25 @@ bool AutonomousTuner::retry_contended_ownership() {
 bool AutonomousTuner::rollback_active(std::string_view reason) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     contention_backoff_ticks_ = 0;
+
+    // Frequency mutations have their own CpuPolicy lease and BaselineStore
+    // transaction. The tuner coordinates lifecycle, but never duplicates the
+    // actuator's rollback or releases its lease independently.
+    if (frequency_actuator_ &&
+        (frequency_mutation_active_ || frequency_actuator_->mutation_active() ||
+         frequency_actuator_->recovery_required())) {
+        if (!frequency_actuator_->rollback()) {
+            frequency_mutation_active_ = true;
+            recovery_required_ = true;
+            last_verdict_ = "RECOVERY_REQUIRED";
+            last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            current_rationale_ = std::string(reason) +
+                " [frequency actuator rollback unresolved; CpuPolicy lease retained]";
+            return false;
+        }
+        frequency_mutation_active_ = false;
+    }
+
     auto& store = BaselineStore::instance();
     std::vector<MutationStep> failed_steps;
     // Unwind in reverse dependency order: Coupled-with dependents first, then Anchor!
@@ -1396,6 +1468,11 @@ bool AutonomousTuner::emergency_rollback(std::string_view reason) {
     // global recovery decision.
     coordinator.begin_emergency_recovery();
     coordinator.emergency_preempt_all(reason);
+    if (frequency_actuator_ &&
+        !frequency_actuator_->mutation_active() &&
+        !frequency_actuator_->recovery_required()) {
+        frequency_mutation_active_ = false;
+    }
     const auto remaining = coordinator.active_leases();
     const bool live_owner_pending = std::any_of(
         remaining.begin(), remaining.end(),
@@ -2005,7 +2082,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // immediately rolls back all mutations and preempts domain leases.
     if (telemetry.thermal_emergency || (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 88.0)) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
-        if (transaction_active_) {
+        if (transaction_active_ || frequency_mutation_active_ ||
+            (frequency_actuator_ && frequency_actuator_->mutation_active())) {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
             if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
@@ -2030,7 +2108,9 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
         thermal_recovery_ticks_ = 2; // Arm hysteresis recovery window for when thermal load subsides
 
         // If a non-thermal performance transaction is currently active, unwind it first
-        if (transaction_active_ && current_intent_ != "ThermalStabilization") {
+        if ((transaction_active_ || frequency_mutation_active_ ||
+             (frequency_actuator_ && frequency_actuator_->mutation_active())) &&
+            current_intent_ != "ThermalStabilization") {
             last_verdict_ = "ABORTED";
             last_verdict_enum_ = TunerVerdict::Aborted;
             if (auto* stats = find_candidate(current_candidate_id_)) ++stats->aborted_count;
@@ -2114,15 +2194,18 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // incomplete evidence. Thermal stabilization above remains independently actionable.
     const bool psi_evidence_complete =
         telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
-    const bool active_domain_evidence_complete =
-        (current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
-        (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid);
-    const bool required_evidence_complete = (observing_ || transaction_active_)
-        ? active_domain_evidence_complete : psi_evidence_complete;
+    const bool active_domain_evidence_complete = frequency_mutation_active_
+        ? (telemetry.cpu_psi_valid && telemetry.memory_psi_valid &&
+           telemetry.io_psi_valid && telemetry.thermal_pressure_valid)
+        : ((current_evaluation_domain_ == EvaluationDomain::Io && telemetry.io_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
+           (current_evaluation_domain_ == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid));
+    const bool required_evidence_complete =
+        (observing_ || transaction_active_ || frequency_mutation_active_)
+            ? active_domain_evidence_complete : psi_evidence_complete;
     if (!required_evidence_complete) {
-        if (observing_ || transaction_active_) {
+        if (observing_ || transaction_active_ || frequency_mutation_active_) {
             last_verdict_ = "INCONCLUSIVE";
             last_verdict_enum_ = TunerVerdict::Inconclusive;
             ++total_inconclusive_;
@@ -2215,10 +2298,20 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     const bool io_bottleneck = telemetry.io_psi_valid && telemetry.io_psi >= 2.2;
     const bool mem_bottleneck = telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0;
-    // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery
+    // Once the tiered runtime identifies a CPU-bound workload, it owns the
+    // decision for CPU frequency behavior. Do not fall back to legacy schedutil
+    // pacing when Tier 1/Tier 2 or LMh admission is denied; I/O and memory
+    // optimizations remain independently eligible.
+    const bool tiered_cpu_policy_owned =
+        frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr &&
+        telemetry.frequency_policy_evidence_valid &&
+        telemetry.frequency_policy_evidence.classification.workload == DetectedWorkloadClass::CpuBound;
+    // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery.
     const bool cpu_bottleneck =
-        !in_thermal_recovery && telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
-        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
+        !tiered_cpu_policy_owned && !in_thermal_recovery &&
+        telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
+        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 &&
+        !cpufreq_governor_dirs_.empty();
 
     // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
@@ -2273,6 +2366,143 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 }
                 (void)rollback_active("Workload regime shifted; releasing retained candidate to re-plan.");
             }
+        }
+        refresh_surface_readings();
+        return snapshot();
+    }
+
+    // Tiered CPU frequency policy is evaluated only after generic transactions
+    // have completed. The actuator owns its own CpuPolicy lease and rollback journal.
+    const uint64_t policy_now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    const auto policy_index = select_frequency_policy_index();
+    bool frequency_policy_evidence_ready = false;
+    PolicyDecision frequency_decision{};
+    if (frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr &&
+        telemetry.frequency_policy_evidence_valid && policy_index.has_value() &&
+        policy_now_ns != 0U && !recovery_required_ &&
+        !coordinator_.is_emergency_recovery_active()) {
+        PolicyEvidence evidence = telemetry.frequency_policy_evidence;
+        evidence.evaluated_at_ns = policy_now_ns;
+        evidence.mutation_runtime_ready = true;
+        evidence.cpu_frequency_capability_valid =
+            frequency_mutation_active_ ||
+            frequency_actuator_->can_apply_policy(*policy_index, 1.02, policy_now_ns);
+        frequency_decision = tiered_policy_router_->evaluate(platform_context_, evidence);
+        frequency_policy_evidence_ready = true;
+    }
+    frequency_policy_decision_ = frequency_decision;
+
+    const bool frequency_step_requested =
+        frequency_policy_evidence_ready &&
+        frequency_decision.action == PolicyAction::CpuFrequencyStep &&
+        frequency_decision.requires_mutation_admission &&
+        (frequency_decision.tier == OptimizationTier::Tier1InteractiveResponse ||
+         frequency_decision.tier == OptimizationTier::Tier2SustainedOptimization);
+
+    if (frequency_mutation_active_ || (frequency_actuator_ && frequency_actuator_->mutation_active())) {
+        if (!frequency_step_requested || !policy_index.has_value() ||
+            *policy_index != frequency_policy_index_) {
+            if (!rollback_active("Tiered CPU-bound evidence or independent admission no longer qualifies.")) {
+                return snapshot();
+            }
+            last_verdict_ = "HOLD";
+            last_verdict_enum_ = TunerVerdict::Hold;
+            current_intent_ = "HoldEquilibrium";
+            current_rationale_ = "CPU frequency step released because Tier 1/Tier 2 evidence or admission expired.";
+            return snapshot();
+        }
+
+        OutcomeSample sample{};
+        sample.timestamp_ns = policy_now_ns;
+        sample.cpu_psi_some_pct = telemetry.cpu_psi;
+        sample.memory_psi_some_pct = telemetry.memory_psi;
+        sample.io_psi_some_pct = telemetry.io_psi;
+        sample.cpu_psi_valid = telemetry.cpu_psi_valid;
+        sample.memory_psi_valid = telemetry.memory_psi_valid;
+        sample.io_psi_valid = telemetry.io_psi_valid;
+        const auto& features = telemetry.frequency_policy_evidence.telemetry;
+        sample.ebpf_wakeup_rate_per_sec = features.wakeup_rate_per_sec;
+        sample.ebpf_wakeup_valid = (features.valid_features & FeatureWakeupRate) != 0U;
+        sample.workload_stable =
+            telemetry.frequency_policy_evidence.classification.stable &&
+            telemetry.frequency_policy_evidence.classification.workload == DetectedWorkloadClass::CpuBound;
+
+        const OutcomeResult outcome = frequency_actuator_->observe(sample);
+        frequency_mutation_active_ = frequency_actuator_->mutation_active();
+        if (outcome.verdict == OutcomeVerdict::Pending) {
+            last_verdict_ = "PENDING";
+            last_verdict_enum_ = TunerVerdict::Pending;
+            current_intent_ = "TieredCpuFrequency";
+            current_rationale_ = std::string(frequency_decision.rationale);
+        } else if (outcome.verdict == OutcomeVerdict::Improved && frequency_mutation_active_) {
+            if (last_verdict_ != "IMPROVED") {
+                ++total_reward_samples_;
+                ++total_improved_;
+            }
+            last_verdict_ = "IMPROVED";
+            last_verdict_enum_ = TunerVerdict::Improved;
+            current_intent_ = "TieredCpuFrequency";
+            current_rationale_ = std::string(outcome.reason);
+        } else {
+            if (outcome.verdict == OutcomeVerdict::Regressed) {
+                last_verdict_ = "REGRESSED";
+                last_verdict_enum_ = TunerVerdict::Regressed;
+            } else if (outcome.verdict == OutcomeVerdict::Neutral) {
+                last_verdict_ = "NEUTRAL";
+                last_verdict_enum_ = TunerVerdict::Neutral;
+            } else {
+                last_verdict_ = "INCONCLUSIVE";
+                last_verdict_enum_ = TunerVerdict::Inconclusive;
+                ++total_inconclusive_;
+            }
+            if (!frequency_mutation_active_) ++total_rolled_back_;
+            current_intent_ = "HoldEquilibrium";
+            current_rationale_ = outcome.reason;
+            if (frequency_actuator_->recovery_required()) {
+                recovery_required_ = true;
+                last_verdict_ = "RECOVERY_REQUIRED";
+                last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            }
+        }
+        refresh_surface_readings();
+        return snapshot();
+    }
+
+    if (frequency_step_requested && !transaction_active_ && !observing_ &&
+        frequency_actuator_ != nullptr && policy_index.has_value()) {
+        OutcomeSample baseline_sample{};
+        baseline_sample.timestamp_ns = policy_now_ns;
+        baseline_sample.cpu_psi_some_pct = telemetry.cpu_psi;
+        baseline_sample.memory_psi_some_pct = telemetry.memory_psi;
+        baseline_sample.io_psi_some_pct = telemetry.io_psi;
+        baseline_sample.cpu_psi_valid = telemetry.cpu_psi_valid;
+        baseline_sample.memory_psi_valid = telemetry.memory_psi_valid;
+        baseline_sample.io_psi_valid = telemetry.io_psi_valid;
+        const auto& features = telemetry.frequency_policy_evidence.telemetry;
+        baseline_sample.ebpf_wakeup_rate_per_sec = features.wakeup_rate_per_sec;
+        baseline_sample.ebpf_wakeup_valid = (features.valid_features & FeatureWakeupRate) != 0U;
+        baseline_sample.workload_stable =
+            telemetry.frequency_policy_evidence.classification.stable &&
+            telemetry.frequency_policy_evidence.classification.workload == DetectedWorkloadClass::CpuBound;
+
+        ++total_trials_;
+        if (frequency_actuator_->apply_policy(
+                *policy_index, frequency_decision.requested_capacity_scale,
+                baseline_sample, policy_now_ns)) {
+            frequency_mutation_active_ = true;
+            frequency_policy_index_ = *policy_index;
+            current_intent_ = "TieredCpuFrequency";
+            current_rationale_ = std::string(frequency_decision.rationale);
+            last_verdict_ = "PENDING";
+            last_verdict_enum_ = TunerVerdict::Pending;
+        } else {
+            ++total_rejected_;
+            last_verdict_ = "REJECTED";
+            last_verdict_enum_ = TunerVerdict::Rejected;
+            current_intent_ = "HoldEquilibrium";
+            current_rationale_ = "Tiered CPU frequency request denied by live thermal, LMh, OPP, or ownership admission.";
         }
         refresh_surface_readings();
         return snapshot();
@@ -2506,9 +2736,12 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     AutonomousDecisionSnapshot out{};
     if (recovery_required_) {
         out.stage = "RECOVERY_REQUIRED";
-    } else if (observing_) {
+    } else if (observing_ ||
+               (frequency_mutation_active_ && last_verdict_ == "PENDING")) {
         out.stage = "OBSERVING";
-    } else if (transaction_active_) {
+    } else if (transaction_active_ ||
+               (frequency_mutation_active_ && frequency_actuator_ &&
+                frequency_actuator_->mutation_active())) {
         out.stage = "RETAINED";
     } else {
         out.stage = "PLANNED";
@@ -2524,6 +2757,13 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.capability_fingerprint = compute_fingerprint();
     out.active_candidate_id = current_candidate_id_;
     out.active_candidate_label = current_candidate_label_;
+    if (frequency_mutation_active_ && frequency_actuator_ &&
+        frequency_actuator_->mutation_active()) {
+        out.active_candidate_id = "cpu.frequency.tiered";
+        out.active_candidate_label = "Tiered CPU Frequency OPP";
+        out.active_intent = "TieredCpuFrequency";
+        out.intent = "TieredCpuFrequency";
+    }
     out.decision_rationale = current_rationale_;
     out.rationale = current_rationale_;
     out.last_verdict = last_verdict_;
