@@ -32,6 +32,7 @@ struct FrequencyCapabilitySnapshot final {
     bool thermal_admission_valid{false};
     bool thermal_admission_granted{false};
     bool capability_fingerprint_valid{false};
+    std::string capability_fingerprint;
 };
 
 // These two values must come from an independent, current safety authority
@@ -46,6 +47,7 @@ struct FrequencyDiscoveryRequest final {
     bool thermal_admission_valid{false};
     bool thermal_admission_granted{false};
     bool capability_fingerprint_valid{false};
+    std::string capability_fingerprint;
 };
 
 class FrequencyOppDiscovery final {
