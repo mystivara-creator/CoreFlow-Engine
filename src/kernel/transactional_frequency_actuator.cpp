@@ -555,13 +555,10 @@ bool TransactionalFrequencyActuator::can_apply_policy(
     if (active_ || recovery_required_) return false;
     const auto capability = discover_capability(policy_index, now_ns);
     if (!capability.has_value()) return false;
-    const std::string policy_path = sys_root_ +
-        "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
-    uint64_t current_khz = 0U;
-    if (!read_frequency_khz(policy_path + "/scaling_cur_freq", current_khz) ||
-        current_khz > std::numeric_limits<uint64_t>::max() / 1000ULL) return false;
+    // The planner scales from the current OEM policy ceiling, not the
+    // instantaneous clock (which may be lower due to scheduler demand).
     const auto target = planner_.select_target(
-        *capability, current_khz * 1000ULL, requested_capacity_scale);
+        *capability, capability->observed_policy_max_hz, requested_capacity_scale);
     return target.has_value() && *target > capability->observed_policy_max_hz;
 }
 
@@ -572,10 +569,7 @@ bool TransactionalFrequencyActuator::apply_policy(
     if (!capability.has_value()) return false;
     const std::string policy_path = sys_root_ +
         "/devices/system/cpu/cpufreq/policy" + std::to_string(policy_index);
-    uint64_t current_khz = 0U;
-    if (!read_frequency_khz(policy_path + "/scaling_cur_freq", current_khz) ||
-        current_khz > std::numeric_limits<uint64_t>::max() / 1000ULL) return false;
-    return apply(policy_path, *capability, current_khz * 1000ULL,
+    return apply(policy_path, *capability, capability->observed_policy_max_hz,
                  requested_capacity_scale, baseline_sample, now_ns);
 }
 
