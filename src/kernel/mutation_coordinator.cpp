@@ -170,6 +170,7 @@ bool CentralMutationCoordinator::mark_external_ownership_lost(
         if (lease.domain == domain && lease.active &&
             lease.owner_controller == controller_name && lease.transaction_id == transaction_id) {
             lease.external_ownership_lost = true;
+            lease.preemption_requested = true;
             return true;
         }
     }
