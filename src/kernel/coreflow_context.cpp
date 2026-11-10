@@ -77,6 +77,8 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     uclamp_governor_ = std::make_unique<UclampGovernor>(coordinator_);
     frequency_controller_ = std::make_unique<FrequencyController>(coordinator_, "/sys", profile_);
     autonomous_tuner_ = std::make_unique<AutonomousTuner>(coordinator_, "/sys", "/proc", profile_);
+    autonomous_tuner_->configure_frequency_actuator(
+        transactional_frequency_actuator_.get(), &policy_router_, platform_context_);
     hardware_longevity_ = std::make_unique<HardwareLongevityManager>(coordinator_);
     neural_predictor_ = std::make_unique<NeuralPredictor>();
     vulkan_controller_ = std::make_unique<VulkanController>(coordinator_);
@@ -100,6 +102,10 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
         (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
          transactional_frequency_actuator_ || autonomous_tuner_ ||
          hardware_longevity_ || vulkan_controller_)) {
+        if (autonomous_tuner_ && !autonomous_tuner_->rollback_active(reason)) {
+            state_ = State::Failed;
+            return false;
+        }
         if (transactional_frequency_actuator_ &&
             !transactional_frequency_actuator_->rollback()) {
             state_ = State::Failed;
@@ -126,13 +132,15 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
-    transactional_frequency_actuator_.reset();
-    qcom_lmh_ceiling_provider_.reset();
     if (memory_warmup_controller_) memory_warmup_controller_->cancel();
     memory_warmup_controller_.reset();
     neural_predictor_.reset();
     hardware_longevity_.reset();
+    // The tuner references the actuator; destroy it before the actuator and
+    // provider so its final rollback/preemption path remains valid.
     autonomous_tuner_.reset();
+    transactional_frequency_actuator_.reset();
+    qcom_lmh_ceiling_provider_.reset();
     frequency_controller_.reset();
     uclamp_governor_.reset();
     recovery_monitor_.reset();
