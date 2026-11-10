@@ -216,11 +216,12 @@ QualcommLmhFrequencyCeilingProvider::current(
     if (!read_small_text(policy_path + "/scaling_driver", scaling_driver) ||
         scaling_driver != "qcom-cpufreq-hw") return std::nullopt;
 
-    uint64_t hardware_min_hz = 0;
-    uint64_t hardware_max_hz = 0;
-    if (!read_frequency_khz(policy_path + "/cpuinfo_min_freq", hardware_min_hz) ||
-        !read_frequency_khz(policy_path + "/cpuinfo_max_freq", hardware_max_hz) ||
-        hardware_min_hz > hardware_max_hz) return std::nullopt;
+    // read_frequency_khz returns the raw cpufreq ABI value in kHz.
+    uint64_t hardware_min_khz = 0;
+    uint64_t hardware_max_khz = 0;
+    if (!read_frequency_khz(policy_path + "/cpuinfo_min_freq", hardware_min_khz) ||
+        !read_frequency_khz(policy_path + "/cpuinfo_max_freq", hardware_max_khz) ||
+        hardware_min_khz > hardware_max_khz) return std::nullopt;
 
     std::string cpu_list_text;
     std::vector<uint64_t> related_cpus;
@@ -270,9 +271,8 @@ QualcommLmhFrequencyCeilingProvider::current(
                 cdev_path.string(), candidate_max_khz, candidate_timestamp_ns, candidate_fingerprint)) {
             continue;
         }
-        if (candidate_max_khz > std::numeric_limits<uint64_t>::max() / 1000ULL ||
-            candidate_max_khz * 1000ULL < hardware_min_hz ||
-            candidate_max_khz * 1000ULL > hardware_max_hz ||
+        if (candidate_max_khz < hardware_min_khz ||
+            candidate_max_khz > hardware_max_khz ||
             candidate_timestamp_ns > now_ns ||
             now_ns - candidate_timestamp_ns > max_sample_age_ns_) return std::nullopt;
 
