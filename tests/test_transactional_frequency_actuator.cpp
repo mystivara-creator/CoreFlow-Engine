@@ -114,6 +114,20 @@ int main() {
     assert(restored == "2000000");
     assert(coordinator.active_leases().empty());
 
+    // Outcome regression is wired to automatic rollback, not just evaluator reporting.
+    baseline.timestamp_ns = now_ns();
+    assert(actuator.apply(policy.string(), capability, 2'000'000'000ULL, 1.25,
+                          baseline, now_ns()));
+    OutcomeSample regressed = baseline;
+    regressed.timestamp_ns += 3'100'000'000ULL;
+    regressed.cpu_psi_some_pct = 25.0;
+    const auto rollback_result = actuator.observe(regressed);
+    assert(rollback_result.verdict == OutcomeVerdict::Regressed);
+    assert(!actuator.mutation_active() && !actuator.recovery_required());
+    assert(coordinator.active_leases().empty());
+    std::ifstream(policy / "scaling_max_freq") >> restored;
+    assert(restored == "2000000");
+
     // Emergency OEM critical trip must fail closed before a lease or write.
     put(thermal_root / "thermal_zone0/temp", "101000");
     assert(!actuator.apply(policy.string(), capability, 2'000'000'000ULL, 1.25,
@@ -121,6 +135,7 @@ int main() {
     assert(coordinator.active_leases().empty());
 
     // Missing required quiet_therm sensor is also a hard denial.
+    put(thermal_root / "thermal_zone0/temp", "50000");
     fs::remove_all(thermal_root / "thermal_zone1");
     ThermalMonitor missing_monitor(thermal_root.string());
     ThermalSafetyAuthority missing_thermal(missing_monitor);
