@@ -21,6 +21,8 @@ struct DomainRelationshipEvidence final {
     std::uint64_t generation{0};
     std::uint64_t observed_at_ns{0};
     bool positive{false};
+    // Binds this relation set to the exact discovered capability node.
+    CapabilityId capability{};
 };
 
 struct FunctionalDomainAssessment final {
