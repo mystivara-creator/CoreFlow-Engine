@@ -381,6 +381,7 @@ public:
         const TieredPolicyRouter* router,
         const PlatformContextSnapshot& platform) noexcept;
     [[nodiscard]] bool frequency_mutation_active() const noexcept;
+    [[nodiscard]] bool frequency_actuator_configured() const noexcept;
 
     // Advances the autonomous reasoning, transaction coordinator, and before/after outcome evaluator.
     AutonomousDecisionSnapshot step(const TunerTelemetryInput& telemetry);
