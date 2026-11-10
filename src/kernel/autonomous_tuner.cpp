@@ -2298,10 +2298,20 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     const bool io_bottleneck = telemetry.io_psi_valid && telemetry.io_psi >= 2.2;
     const bool mem_bottleneck = telemetry.memory_psi_valid && telemetry.memory_psi >= 2.0;
-    // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery
+    // Once the tiered runtime identifies a CPU-bound workload, it owns the
+    // decision for CPU frequency behavior. Do not fall back to legacy schedutil
+    // pacing when Tier 1/Tier 2 or LMh admission is denied; I/O and memory
+    // optimizations remain independently eligible.
+    const bool tiered_cpu_policy_owned =
+        frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr &&
+        telemetry.frequency_policy_evidence_valid &&
+        telemetry.frequency_policy_evidence.classification.workload == DetectedWorkloadClass::CpuBound;
+    // Gate aggressive CPU interactive boost during post-thermal hysteresis recovery.
     const bool cpu_bottleneck =
-        !in_thermal_recovery && telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
-        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 && !cpufreq_governor_dirs_.empty();
+        !tiered_cpu_policy_owned && !in_thermal_recovery &&
+        telemetry.cpu_psi_valid && telemetry.cpu_psi >= 8.0 &&
+        telemetry.thermal_pressure_valid && telemetry.thermal_pressure < 72.0 &&
+        !cpufreq_governor_dirs_.empty();
 
     // Stage 2: If a transaction is currently RETAINED, verify ownership and cross-domain guards
     if (transaction_active_) {
