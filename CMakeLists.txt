@@ -52,6 +52,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/workload_intelligence.cpp
     src/kernel/tiered_policy.cpp
     src/kernel/frequency_target_planner.cpp
+    src/kernel/transactional_frequency_actuator.cpp
     src/kernel/memory_warmup_controller.cpp
     src/kernel/cgroup_v2.cpp
     src/kernel/uclamp.cpp
@@ -141,6 +142,24 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_memory_warmup PRIVATE include)
     add_test(NAME P2DMemoryWarmupControllerTest COMMAND test_memory_warmup)
+
+    add_executable(test_transactional_frequency_actuator
+        tests/test_transactional_frequency_actuator.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_transactional_frequency_actuator PRIVATE include)
+    target_link_libraries(test_transactional_frequency_actuator PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_transactional_frequency_actuator PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_transactional_frequency_actuator PRIVATE log)
+    endif()
+    add_test(NAME P2DTransactionalFrequencyActuatorTest COMMAND test_transactional_frequency_actuator)
 
     add_executable(test_autonomous_tuner tests/test_autonomous_tuner.cpp src/kernel/autonomous_tuner.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_autonomous_tuner PRIVATE m)
