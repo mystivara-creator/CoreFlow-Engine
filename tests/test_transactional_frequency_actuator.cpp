@@ -55,6 +55,12 @@ int main() {
     create_zone(1, "quiet_therm", "35000", "50000", "60000");
     ThermalMonitor monitor(thermal_root.string());
     ThermalSafetyAuthority thermal(monitor);
+    const uint64_t cold_start = now_ns();
+    // A single synchronous sysfs read is not evidence of a live sensor source.
+    assert(!thermal.evaluate(cold_start).granted);
+    ::usleep(250'000);
+    put(thermal_root / "thermal_zone0/temp", "50100");
+    put(thermal_root / "thermal_zone1/temp", "35100");
     const uint64_t now = now_ns();
     const auto admission = thermal.evaluate(now);
     assert(admission.granted);
@@ -62,6 +68,44 @@ int main() {
     const fs::path policy = root / "sys/devices/system/cpu/cpufreq/policy0";
     put(policy / "scaling_max_freq", "2000000");
     put(policy / "scaling_min_freq", "500000");
+    put(policy / "cpuinfo_min_freq", "500000");
+    put(policy / "cpuinfo_max_freq", "2800000");
+    put(policy / "related_cpus", "0 1");
+    put(policy / "scaling_driver", "qcom-cpufreq-hw");
+    put(policy / "qcom_lmh_abi_version", "1");
+    put(policy / "qcom_lmh_max_freq", "2500000");
+    put(policy / "qcom_lmh_capability_fingerprint", "test-kernel-contract");
+
+    // Bind a CPU cooling device to one CPU in this cpufreq policy. Cooling state
+    // is topology evidence only; the LMh ceiling comes from the explicit driver ABI.
+    const fs::path cpu0 = root / "sys/devices/system/cpu/cpu0";
+    const fs::path cdev = root / "sys/class/thermal/cooling_device0";
+    fs::create_directories(cpu0);
+    fs::create_directories(cdev);
+    fs::create_directory_symlink(cpu0, cdev / "device");
+    put(cdev / "type", "Processor");
+    put(cdev / "cur_state", "0");
+    put(cdev / "max_state", "8");
+
+    QualcommLmhFrequencyCeilingProvider qcom_ceiling((root / "sys").string());
+    auto lmh = qcom_ceiling.current(policy.string(), now_ns());
+    assert(lmh.has_value());
+    assert(lmh->max_hz == 2'500'000'000ULL);
+    assert(lmh->capability_fingerprint == "test-kernel-contract");
+    assert(lmh->signature_or_kernel_contract_verified);
+
+    // Changing scaling_max_freq must not change the independent LMh ceiling.
+    put(policy / "scaling_max_freq", "1900000");
+    lmh = qcom_ceiling.current(policy.string(), now_ns());
+    assert(lmh.has_value() && lmh->max_hz == 2'500'000'000ULL);
+    put(policy / "scaling_max_freq", "2000000");
+
+    fs::remove(policy / "qcom_lmh_max_freq");
+    assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value());
+    put(policy / "qcom_lmh_max_freq", "2500000");
+    put(policy / "scaling_driver", "schedutil");
+    assert(!qcom_ceiling.current(policy.string(), now_ns()).has_value());
+    put(policy / "scaling_driver", "qcom-cpufreq-hw");
 
     FrequencyCapabilitySnapshot capability{};
     capability.domain = FrequencyDomain::CpuPolicy;
