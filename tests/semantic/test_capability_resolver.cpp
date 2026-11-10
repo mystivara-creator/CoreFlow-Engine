@@ -17,24 +17,24 @@ Identifier128 id(std::uint8_t seed) {
     return value;
 }
 
-class FakeAdapter final : public platform::DiscoveryAdapter {
+class FakeAdapter final : public ::coreflow::platform::DiscoveryAdapter {
 public:
-    std::vector<platform::RawDiscoveredEndpoint> endpoints{};
+    std::vector<::coreflow::platform::RawDiscoveredEndpoint> endpoints{};
     std::vector<std::string> reads{};
     std::size_t read_index{0};
-    platform::NumericFormatStream format{true, true, true, 0, 100, 1};
+    coreflow::platform::NumericFormatStream format{true, true, true, 0, 100, 1};
 
-    std::vector<platform::RawDiscoveredEndpoint> discover() noexcept override { return endpoints; }
+    std::vector<::coreflow::platform::RawDiscoveredEndpoint> discover() noexcept override { return endpoints; }
     std::optional<std::string> readPassive(
-        const platform::RawDiscoveredEndpoint&) noexcept override {
+        const ::coreflow::platform::RawDiscoveredEndpoint&) noexcept override {
         if (read_index >= reads.size()) return std::nullopt;
         return reads[read_index++];
     }
-    platform::NumericFormatStream readNumericFormat(
-        const platform::RawDiscoveredEndpoint&) noexcept override { return format; }
+    coreflow::platform::NumericFormatStream readNumericFormat(
+        const ::coreflow::platform::RawDiscoveredEndpoint&) noexcept override { return format; }
 };
 
-platform::RawDiscoveredEndpoint endpoint(std::uint8_t seed, std::uint64_t generation = 7) {
+::coreflow::platform::RawDiscoveredEndpoint endpoint(std::uint8_t seed, std::uint64_t generation = 7) {
     return {id(seed), "opaque-token-" + std::to_string(seed),
             AccessCapability::Read | AccessCapability::Write, generation};
 }

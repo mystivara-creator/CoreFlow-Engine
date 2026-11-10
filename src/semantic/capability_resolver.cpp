@@ -90,7 +90,7 @@ struct ParsedValue final {
 } // namespace
 
 std::vector<DynamicSemanticDescriptor> CapabilityResolver::resolveAll(
-    platform::DiscoveryAdapter& adapter, std::uint64_t active_generation,
+    ::coreflow::platform::DiscoveryAdapter& adapter, std::uint64_t active_generation,
     std::uint64_t now_ns) noexcept {
     std::vector<DynamicSemanticDescriptor> descriptors{};
     const auto endpoints = adapter.discover();
@@ -103,7 +103,7 @@ std::vector<DynamicSemanticDescriptor> CapabilityResolver::resolveAll(
 }
 
 std::optional<DynamicSemanticDescriptor> CapabilityResolver::resolveOne(
-    const platform::RawDiscoveredEndpoint& endpoint, platform::DiscoveryAdapter& adapter,
+    const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
     std::uint64_t active_generation, std::uint64_t now_ns) noexcept {
     return buildDescriptor(endpoint, adapter, active_generation, now_ns);
 }
@@ -114,7 +114,7 @@ std::optional<platform::EndpointLocator> CapabilityResolver::resolveLocator(
 }
 
 std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
-    const platform::RawDiscoveredEndpoint& endpoint, platform::DiscoveryAdapter& adapter,
+    const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
     std::uint64_t active_generation, std::uint64_t now_ns) noexcept {
     if (!endpoint.probe_id.isValid() || endpoint.opaque_locator.empty() ||
         endpoint.observed_generation != active_generation) return std::nullopt;

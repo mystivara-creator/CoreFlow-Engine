@@ -13,11 +13,11 @@ namespace coreflow::semantic {
 class CapabilityResolver final {
 public:
     [[nodiscard]] std::vector<DynamicSemanticDescriptor> resolveAll(
-        platform::DiscoveryAdapter& adapter, std::uint64_t active_generation,
+        ::coreflow::platform::DiscoveryAdapter& adapter, std::uint64_t active_generation,
         std::uint64_t now_ns) noexcept;
 
     [[nodiscard]] std::optional<DynamicSemanticDescriptor> resolveOne(
-        const platform::RawDiscoveredEndpoint& endpoint, platform::DiscoveryAdapter& adapter,
+        const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
         std::uint64_t active_generation, std::uint64_t now_ns) noexcept;
 
     [[nodiscard]] std::optional<platform::EndpointLocator> resolveLocator(
@@ -25,7 +25,7 @@ public:
 
 private:
     [[nodiscard]] std::optional<DynamicSemanticDescriptor> buildDescriptor(
-        const platform::RawDiscoveredEndpoint& endpoint, platform::DiscoveryAdapter& adapter,
+        const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
         std::uint64_t active_generation, std::uint64_t now_ns) noexcept;
 
     platform::EndpointRegistry endpoint_registry_{};
