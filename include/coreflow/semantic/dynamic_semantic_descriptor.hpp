@@ -2,10 +2,10 @@
 
 #include "coreflow/semantic/semantic_types.hpp"
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <utility>
-#include <vector>
 
 namespace coreflow::semantic {
 
@@ -88,7 +88,9 @@ public:
     [[nodiscard]] AccessCapability access() const noexcept { return access_; }
     [[nodiscard]] const CapabilityRisk& risk() const noexcept { return risk_; }
     [[nodiscard]] const CapabilityProvenance& provenance() const noexcept { return provenance_; }
-    [[nodiscard]] std::span<const CapabilityEvidence> evidence() const noexcept { return evidence_; }
+    [[nodiscard]] std::span<const CapabilityEvidence> evidence() const noexcept {
+        return {evidence_.data(), evidence_.size()};
+    }
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
     [[nodiscard]] DescriptorState state() const noexcept { return state_; }
 
@@ -124,7 +126,8 @@ private:
     friend class CapabilityResolver;
     DynamicSemanticDescriptor(CapabilityId capability, SemanticBinding semantic, ValueModel value,
                               MutationSemantics mutation, AccessCapability access, CapabilityRisk risk,
-                              CapabilityProvenance provenance, std::vector<CapabilityEvidence>&& evidence,
+                              CapabilityProvenance provenance,
+                              std::array<CapabilityEvidence, 1> evidence,
                               std::uint64_t generation, DescriptorState state) noexcept
         : capability_(capability), semantic_(semantic), value_(value), mutation_(mutation),
           access_(access), risk_(risk), provenance_(provenance), evidence_(std::move(evidence)),
@@ -137,7 +140,7 @@ private:
     const AccessCapability access_;
     const CapabilityRisk risk_;
     const CapabilityProvenance provenance_;
-    const std::vector<CapabilityEvidence> evidence_;
+    const std::array<CapabilityEvidence, 1> evidence_;
     const std::uint64_t generation_;
     const DescriptorState state_;
 };
