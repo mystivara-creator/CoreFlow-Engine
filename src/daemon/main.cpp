@@ -1520,8 +1520,7 @@ int main(int argc, char* argv[]) {
         last_capacity_scale = active_capacity_scale;
 
         // Periodically re-discover frequency domains if OEM PowerHAL temporarily retired them.
-        if ((config.enable_cpu_frequency_control && frequencies.cpu_count() == 0) ||
-            (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0)) {
+        if (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0) {
             if (++freq_resync_ticks >= 5) {
                 freq_resync_ticks = 0;
                 frequencies.discover(false, config.enable_gpu_frequency_control);
