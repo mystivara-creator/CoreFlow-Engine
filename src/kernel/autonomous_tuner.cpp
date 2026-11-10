@@ -7,10 +7,12 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/transactional_frequency_actuator.hpp"
 
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <fcntl.h>
 #include <filesystem>
@@ -306,6 +308,48 @@ void AutonomousTuner::set_device_profile(DeviceProfileHandle profile) {
     if (!applied_steps_.empty() || recovery_required_) return;
     device_profile_ = std::move(profile);
     discover(sys_root_, proc_root_);
+}
+
+void AutonomousTuner::configure_frequency_actuator(
+    TransactionalFrequencyActuator* actuator,
+    const TieredPolicyRouter* router,
+    const PlatformContextSnapshot& platform) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (frequency_mutation_active_ ||
+        (frequency_actuator_ != nullptr && frequency_actuator_->mutation_active())) return;
+    frequency_actuator_ = actuator;
+    tiered_policy_router_ = router;
+    platform_context_ = platform;
+}
+
+bool AutonomousTuner::frequency_mutation_active() const noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    return frequency_mutation_active_ && frequency_actuator_ != nullptr &&
+           frequency_actuator_->mutation_active();
+}
+
+std::optional<uint32_t> AutonomousTuner::select_frequency_policy_index() const noexcept {
+    if (!device_profile_ || device_profile_->cpu_policies.empty()) return std::nullopt;
+    uint64_t best_capacity = 0U;
+    std::optional<uint32_t> selected;
+    for (const auto& policy : device_profile_->cpu_policies) {
+        if (policy.policy_path.empty() || !policy.related_cpus_valid ||
+            policy.related_cpus.empty() || !policy.frequency_table_valid ||
+            policy.cpuinfo_max_freq_khz == 0U) continue;
+        const std::string name = fs::path(policy.policy_path).filename().string();
+        if (name.rfind("policy", 0) != 0 || name.size() <= 6U) continue;
+        uint32_t index = 0U;
+        const std::string_view suffix(name.data() + 6U, name.size() - 6U);
+        const auto parsed = std::from_chars(
+            suffix.data(), suffix.data() + suffix.size(), index, 10);
+        if (parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size() ||
+            index > 255U) continue;
+        if (!selected.has_value() || policy.cpuinfo_max_freq_khz > best_capacity) {
+            best_capacity = policy.cpuinfo_max_freq_khz;
+            selected = index;
+        }
+    }
+    return selected;
 }
 
 bool AutonomousTuner::handle_preemption(
