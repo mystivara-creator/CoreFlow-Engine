@@ -58,7 +58,7 @@ public:
 private:
     [[nodiscard]] static uint64_t monotonic_now_ns() noexcept;
     [[nodiscard]] bool finish_rollback_locked(std::string_view reason);
-    [[nodiscard]] bool read_value_locked(std::string& value) const;
+    [[nodiscard]] bool read_value_locked(std::string& value) const noexcept;
     [[nodiscard]] double selected_psi(const InfrastructurePsiSample& sample) const noexcept;
 
     CentralMutationCoordinator& coordinator_;
