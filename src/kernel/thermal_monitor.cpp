@@ -150,8 +150,10 @@ void ThermalSensorFreshnessTracker::record_sample(
         stale_ = false;
     } else {
         if (unchanged_samples_ < UINT32_MAX) ++unchanged_samples_;
-        const uint64_t span = timestamp_ns - first_sample_ns_;
-        if (unchanged_samples_ >= 8U && span >= 2'000'000'000ULL) {
+        const uint64_t unchanged_span =
+            last_progress_ns_ != 0 && timestamp_ns >= last_progress_ns_
+                ? timestamp_ns - last_progress_ns_ : 0U;
+        if (unchanged_samples_ >= 8U && unchanged_span >= 2'000'000'000ULL) {
             stale_ = true;
         }
     }
@@ -171,8 +173,11 @@ ThermalSensorFreshness ThermalSensorFreshnessTracker::evaluate(
         result.sample_span_ns = last_sample_ns_ - first_sample_ns_;
     }
 
+    const uint64_t unchanged_span_ns =
+        last_progress_ns_ != 0 && now_ns >= last_progress_ns_
+            ? now_ns - last_progress_ns_ : 0U;
     result.stale = stale_ ||
-        (unchanged_samples_ >= 8U && result.sample_span_ns >= 2'000'000'000ULL);
+        (unchanged_samples_ >= 8U && unchanged_span_ns >= 2'000'000'000ULL);
     const bool sample_recent = now_ns >= last_sample_ns_ &&
         now_ns - last_sample_ns_ <= 1'000'000'000ULL;
     const bool progress_recent = progress_seen_ && now_ns >= last_progress_ns_ &&
