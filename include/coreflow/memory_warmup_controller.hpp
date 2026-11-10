@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -55,7 +56,7 @@ public:
 
 private:
     uint64_t hard_budget_bytes_{0};
-    bool cancelled_{false};
+    std::atomic<bool> cancelled_{false};
 };
 
 } // namespace coreflow
