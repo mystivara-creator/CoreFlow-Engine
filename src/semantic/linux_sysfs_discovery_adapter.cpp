@@ -225,19 +225,70 @@ LinuxSysfsDiscoveryAdapter::LinuxSysfsDiscoveryAdapter(
 }
 
 std::vector<RawDiscoveredEndpoint> LinuxSysfsDiscoveryAdapter::discover() noexcept {
-    return {};
+    std::vector<RawDiscoveredEndpoint> endpoints{};
+    if (!roots_valid_) return endpoints;
+    char path[kPathCapacity]{}, driver[kFileCapacity]{}, current[128]{};
+    std::size_t driver_length = 0, current_length = 0;
+    if (!makePath(path, sizeof(path), sysfs_root_.data(), "devices/system/cpu/cpufreq/policy0/scaling_driver") ||
+        !readFile(path, driver, sizeof(driver), driver_length) ||
+        trimAscii(std::string_view(driver, driver_length)).empty() ||
+        !makePath(path, sizeof(path), sysfs_root_.data(), "devices/system/cpu/cpufreq/policy0/scaling_cur_freq") ||
+        !readFile(path, current, sizeof(current), current_length)) return endpoints;
+    std::uint64_t current_khz = 0;
+    if (!parsePositive(std::string_view(current, current_length), current_khz)) return endpoints;
+    const auto generation = monotonicNowNs();
+    if (generation == 0) return endpoints;
+    constexpr std::string_view locator = "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
+    const auto first = hashBytes(0xcbf29ce484222325ULL, locator);
+    const auto second = hashBytes(first, trimAscii(std::string_view(driver, driver_length)));
+    RawDiscoveredEndpoint endpoint{};
+    endpoint.probe_id = makeId(first, second);
+    endpoint.opaque_locator.assign(locator.data(), locator.size());
+    endpoint.raw_access = semantic::AccessCapability::Read;
+    endpoint.observed_generation = generation;
+    endpoints.push_back(std::move(endpoint));
+    return endpoints;
 }
 
 std::optional<std::string> LinuxSysfsDiscoveryAdapter::readPassive(
-    const RawDiscoveredEndpoint&) noexcept {
-    return std::nullopt;
+    const RawDiscoveredEndpoint& endpoint) noexcept {
+    constexpr std::string_view expected = "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
+    if (!roots_valid_ || !endpoint.probe_id.isValid() || endpoint.observed_generation == 0 ||
+        endpoint.opaque_locator != expected ||
+        !semantic::hasAccess(endpoint.raw_access, semantic::AccessCapability::Read)) return std::nullopt;
+    char path[kPathCapacity]{}, value[128]{};
+    std::size_t length = 0;
+    if (!makePath(path, sizeof(path), sysfs_root_.data(), "devices/system/cpu/cpufreq/policy0/scaling_cur_freq") ||
+        !readFile(path, value, sizeof(value), length)) return std::nullopt;
+    const auto normalized = trimAscii(std::string_view(value, length));
+    std::uint64_t parsed = 0;
+    if (!parsePositive(normalized, parsed)) return std::nullopt;
+    // Frequency scalars fit std::string small-string storage; parsing is stack-only.
+    return std::string(normalized);
 }
 
 NumericFormatStream LinuxSysfsDiscoveryAdapter::readNumericFormat(
-    const RawDiscoveredEndpoint&) noexcept {
-    return {};
+    const RawDiscoveredEndpoint& endpoint) noexcept {
+    constexpr std::string_view expected = "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
+    if (!roots_valid_ || !endpoint.probe_id.isValid() || endpoint.observed_generation == 0 ||
+        endpoint.opaque_locator != expected ||
+        !semantic::hasAccess(endpoint.raw_access, semantic::AccessCapability::Read)) return {};
+    char path[kPathCapacity]{}, minimum[128]{}, maximum[128]{};
+    std::size_t min_length = 0, max_length = 0;
+    if (!makePath(path, sizeof(path), sysfs_root_.data(), "devices/system/cpu/cpufreq/policy0/cpuinfo_min_freq") ||
+        !readFile(path, minimum, sizeof(minimum), min_length) ||
+        !makePath(path, sizeof(path), sysfs_root_.data(), "devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq") ||
+        !readFile(path, maximum, sizeof(maximum), max_length)) return {};
+    std::uint64_t min_value = 0, max_value = 0;
+    if (!parsePositive(std::string_view(minimum, min_length), min_value) ||
+        !parsePositive(std::string_view(maximum, max_length), max_value) || min_value >= max_value ||
+        max_value > static_cast<std::uint64_t>(INT64_MAX)) return {};
+    NumericFormatStream result{};
+    result.has_minimum = true; result.has_maximum = true;
+    result.minimum = static_cast<std::int64_t>(min_value);
+    result.maximum = static_cast<std::int64_t>(max_value);
+    return result;
 }
-
 std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     const RawDiscoveredEndpoint& endpoint,
     std::span<semantic::DomainRelationshipEvidence> output) noexcept {

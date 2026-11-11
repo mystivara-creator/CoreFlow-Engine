@@ -38,6 +38,7 @@ struct Fixture {
         fs::create_directories(sys);
         fs::create_directories(proc / "self");
         write(sys, "devices/system/cpu/cpufreq/policy0/scaling_driver", "schedutil\n");
+        write(sys, "devices/system/cpu/cpufreq/policy0/scaling_cur_freq", "600000\n");
         write(sys, "devices/system/cpu/cpufreq/policy0/scaling_available_frequencies",
               "300000 600000 1200000\n");
         write(sys, "devices/system/cpu/cpufreq/policy0/cpuinfo_min_freq", "300000\n");
@@ -67,6 +68,17 @@ int main() {
     std::array<DomainRelationshipEvidence, 3> evidence{};
     {
         Fixture fixture;
+        coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(fixture.sys.string(), fixture.proc.string());
+        const auto endpoints = adapter.discover();
+        assert(endpoints.size() == 1);
+        assert(endpoints[0].observed_generation != 0);
+        const auto first_read = adapter.readPassive(endpoints[0]);
+        const auto second_read = adapter.readPassive(endpoints[0]);
+        assert(first_read.has_value() && second_read.has_value() && *first_read == *second_read);
+        assert(*first_read == "600000");
+        const auto numeric = adapter.readNumericFormat(endpoints[0]);
+        assert(numeric.has_minimum && numeric.has_maximum);
+        assert(numeric.minimum == 300000 && numeric.maximum == 1200000);
         assert(fixture.collect(evidence) == 3);
         assert(evidence[0].kind == DomainEvidenceKind::SubsystemAssociation);
         assert(evidence[1].kind == DomainEvidenceKind::DriverAbi);
