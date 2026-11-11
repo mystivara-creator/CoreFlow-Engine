@@ -2,6 +2,7 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
+#include "coreflow/frame_bridge.hpp"
 #include "coreflow/uclamp.hpp"
 
 #include <cassert>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 using namespace coreflow;
 namespace fs = std::filesystem;
@@ -54,6 +56,55 @@ int main() {
     EpollReactor reactor;
     {
         RenderBooster booster(governor, reactor);
+        AndroidFrameEventBridge frame_bridge;
+        assert(booster.connect_frame_source(frame_bridge));
+        const FrameEvent touch_event{
+            .kind = FrameEventKind::TouchBurst,
+            .vsync_timestamp_ns = 1000000ULL,
+        };
+        assert(frame_bridge.submit(touch_event));
+
+        // Producer callbacks and metrics snapshots may execute concurrently.
+        // Both paths must use the same metrics synchronization boundary.
+        std::thread producer([&] {
+            for (uint64_t i = 1; i <= 2000; ++i) {
+                const FrameEvent frame_event{
+                    .kind = FrameEventKind::FramePresented,
+                    .vsync_timestamp_ns = i,
+                    .frame_duration_ns = 8'000'000ULL,
+                    .jank_threshold_ns = 16'000'000ULL,
+                };
+                assert(frame_bridge.submit(frame_event));
+            }
+        });
+        std::thread reader([&] {
+            for (int i = 0; i < 2000; ++i) {
+                (void)booster.get_metrics();
+            }
+        });
+        producer.join();
+        reader.join();
+
+        booster.disconnect_frame_source();
+        assert(!frame_bridge.submit(touch_event));
+
+        // Verify listener callbacks may re-enter the bridge without deadlock.
+        AndroidFrameEventBridge reentrant_bridge;
+        int callback_count = 0;
+        bool nested_submit_succeeded = false;
+        assert(reentrant_bridge.start([&](const FrameEvent& event) {
+            ++callback_count;
+            if (callback_count == 1) {
+                nested_submit_succeeded = reentrant_bridge.submit(event);
+            } else {
+                reentrant_bridge.stop();
+            }
+        }));
+        assert(reentrant_bridge.submit(touch_event));
+        assert(nested_submit_succeeded);
+        assert(callback_count == 2);
+        assert(!reentrant_bridge.submit(touch_event));
+
         // Drive the exact reactor callbacks synchronously. This validates
         // mutation and expiry/restore semantics without scheduler timing,
         // sleeps, or dependence on CI runner CPU availability.

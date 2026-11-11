@@ -9,8 +9,10 @@
 
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include <string>
 #include "coreflow/feature_accountability.hpp"
+#include "coreflow/frame_bridge.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/uclamp.hpp"
 
@@ -35,14 +37,18 @@ public:
     void on_touch_down();
     void on_touch_up();
     void on_frame_presented(double frame_time_ms);
+    [[nodiscard]] bool connect_frame_source(FrameEventSource& source) noexcept;
+    void disconnect_frame_source() noexcept;
 
     bool unlock_display_refresh_limits();
     [[nodiscard]] FrameMetrics get_metrics() const;
 
 private:
+    mutable std::mutex metrics_mutex_;
     FrameMetrics metrics_;
     std::atomic<bool> in_touch_gesture_{false};
     std::atomic<uint32_t> consecutive_hitches_{0};
+    FrameEventSource* frame_source_{nullptr};
     UclampGovernor& governor_;
     EpollReactor& reactor_;
     UniqueFd request_fd_;
@@ -53,6 +59,7 @@ private:
     uint32_t baseline_min_{0};
     uint32_t baseline_max_{1024};
 
+    void on_frame_event(const FrameEvent& event) noexcept;
     void trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration) noexcept;
     void handle_request(uint32_t events) noexcept;
     void handle_expiry(uint32_t events) noexcept;
