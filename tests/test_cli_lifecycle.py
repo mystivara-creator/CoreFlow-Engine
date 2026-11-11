@@ -40,6 +40,10 @@ assert "tunerRuntimeStage" in status
 assert "context.autonomous_tuner().snapshot()" in status
 assert "context.neural_predictor().last_prediction()" in status
 assert "context.vulkan_controller().snapshot()" in status
+assert "cached->profile" in status
+assert "cached->thermal" in status
+assert "get_top_app_min()" in status
+assert "get_top_app_max()" in status
 assert "write_status_snapshot" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "print_live_status_snapshot(live_pid)" in source
@@ -47,6 +51,13 @@ assert "std::chrono::milliseconds(500)" in source
 assert "kStartupGrace = std::chrono::seconds(12)" in source
 assert "STAGE_OBSERVING -> STAGE_ACTIVE_TUNING" in source
 assert "set_operational(false)" in source
+assert "thermal.pressure <= 65.0" in source
+admission_start = source.index("if (!lifecycle_promoted)")
+admission_end = source.index("// Real-time Hybrid ONNX", admission_start)
+assert "return;" not in source[admission_start:admission_end]
+status_timer_start = source.index("const int status_timer_fd")
+status_timer_end = source.index('emit_log(false, "[CoreFlow] C++23', status_timer_start)
+assert "build_status_json" not in source[status_timer_start:status_timer_end]
 assert "bool inspection_mode{false};" in config
 assert "bool enable_tuner{true};" in config
 assert "vulkanProbeSkipped" in status

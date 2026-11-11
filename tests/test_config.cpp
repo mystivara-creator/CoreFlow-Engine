@@ -46,6 +46,7 @@ int main() {
     {
         std::ofstream f(path);
         f << "[general]\n"
+             "enable_tuner = false\n"
              "thermal_trip_celsius = 55.0\n"
              "top_app_interactive_min = 600\n"
              "[stability]\n"
@@ -54,6 +55,8 @@ int main() {
              "vulkan_layer_mode = full_capability_override\n";
     }
     auto c2 = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(!c2.enable_tuner); // explicit tuner opt-out is honored in [general]
+    assert(coreflow::DaemonConfig::canonical_section_for_key("enable_tuner") == "general");
     assert(c2.thermal_trip_celsius == 44.0f); // ignored under [general]
     assert(c2.top_app_interactive_min == 320u); // ignored under [general]
     assert(c2.cpu_pressure_boost_pct == 12.5f); // accepted under [stability] alias
