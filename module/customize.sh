@@ -60,7 +60,7 @@ stage_and_replace() {
     rm -f "$TMP_DST"
     if cp -f "$SRC" "$TMP_DST" &&
        chmod "$MODE" "$TMP_DST" &&
-       chown 0:0 "$TMP_DST" 2>/dev/null &&
+       { chown 0:0 "$TMP_DST" 2>/dev/null || true; } &&
        mv -f "$TMP_DST" "$DST"; then
         return 0
     fi
@@ -370,16 +370,17 @@ else
     report "INFO: native capability probe could not complete in installer context; service will rediscover after boot"
 fi
 
+report "Installer policy: no sysfs, procfs, cgroup, boot property, thermal, or SELinux mutation is performed by customize.sh"
+
 # Persist only the read-only preflight report; never rewrite an existing safety marker.
 PREFLIGHT_LOG="$STATE_DIR/install-preflight.log"
 if [ ! -L "$PREFLIGHT_LOG" ]; then
-    PREFLIGHT_TMP="$PREFLIGHT_LOG.tmp.$$"
+    PREFLIGHT_TMP="$PREFLIGHT_LOG.tmp.$"
+    rm -f "$PREFLIGHT_TMP"
     printf '%s\n' "$PREFLIGHT_REPORT" > "$PREFLIGHT_TMP" &&
         chmod 0600 "$PREFLIGHT_TMP" &&
         mv -f "$PREFLIGHT_TMP" "$PREFLIGHT_LOG"
 fi
-
-report "Installer policy: no sysfs, procfs, cgroup, boot property, thermal, or SELinux mutation is performed by customize.sh"
 
 # Keep legacy module removal manager-controlled; do not recursively delete an old installation.
 if [ -d /data/adb/modules/coreflow_engine ] &&
