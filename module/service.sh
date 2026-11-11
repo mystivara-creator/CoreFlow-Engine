@@ -33,16 +33,16 @@ SERVICE_LOCK="$STATE/service.lock"
 SERVICE_LOCK_OWNER="$SERVICE_LOCK/owner.pid"
 release_service_lock() {
   if [ -f "$SERVICE_LOCK_OWNER" ] && [ ! -L "$SERVICE_LOCK_OWNER" ] &&
-     [ "$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)" = "$" ]; then
+     [ "$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)" = "$$" ]; then
     rm -f "$SERVICE_LOCK_OWNER"
     rmdir "$SERVICE_LOCK" 2>/dev/null || true
   fi
 }
 acquire_service_lock() {
   if mkdir "$SERVICE_LOCK" 2>/dev/null; then
-    printf '%s\n' "$" > "$SERVICE_LOCK_OWNER.tmp.$" &&
-      chmod 600 "$SERVICE_LOCK_OWNER.tmp.$" &&
-      mv -f "$SERVICE_LOCK_OWNER.tmp.$" "$SERVICE_LOCK_OWNER" || return 1
+    printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" &&
+      chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" &&
+      mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER" || return 1
     return 0
   fi
   [ -L "$SERVICE_LOCK" ] && return 1
@@ -62,9 +62,9 @@ acquire_service_lock() {
   rm -f "$SERVICE_LOCK_OWNER" 2>/dev/null
   rmdir "$SERVICE_LOCK" 2>/dev/null || return 2
   mkdir "$SERVICE_LOCK" 2>/dev/null || return 2
-  printf '%s\n' "$" > "$SERVICE_LOCK_OWNER.tmp.$" &&
-    chmod 600 "$SERVICE_LOCK_OWNER.tmp.$" &&
-    mv -f "$SERVICE_LOCK_OWNER.tmp.$" "$SERVICE_LOCK_OWNER" || return 1
+  printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" &&
+    chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" &&
+    mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER" || return 1
   return 0
 }
 acquire_service_lock
