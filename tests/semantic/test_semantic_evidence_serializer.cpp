@@ -133,7 +133,6 @@ int main() {
     assert(stale.find("\"ageMs\":5000.000001") != std::string::npos);
     assert(stale.find("\"freshness\":\"stale\"") != std::string::npos);
 
-    std::cout << "P3 native semantic evidence serialization contract: PASS
-";
+    std::cout << "P3 native semantic evidence serialization contract: PASS" << std::endl;
     return 0;
 }
