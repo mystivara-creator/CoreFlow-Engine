@@ -67,6 +67,17 @@ int main(){
  assert(!gpu_sampler.sample(2'400'000'000ULL,gpu_pct));
  gpu_sampler.stop();std::filesystem::remove_all(gpu_root);
 
+ // A cold-start power-collapse snapshot must be emitted once, not consumed by start().
+ char gpu_cold_template[]="/tmp/coreflow-gpu-cold-XXXXXX";assert(::mkdtemp(gpu_cold_template));
+ std::filesystem::path gpu_cold_root(gpu_cold_template);
+ write(gpu_cold_root/"class/kgsl/kgsl-3d0/gpubusy","0 0\n");
+ GpuUtilizationSampler cold_gpu(gpu_cold_root.string());assert(cold_gpu.start());
+ assert(cold_gpu.source_name()=="kgsl/gpubusy");
+ gpu_pct=-1.0;
+ assert(cold_gpu.sample(2'600'000'000ULL,gpu_pct)&&gpu_pct==0.0);
+ assert(!cold_gpu.sample(2'800'000'000ULL,gpu_pct));
+ cold_gpu.stop();std::filesystem::remove_all(gpu_cold_root);
+
  // Generic devfreq busy_time/total_time remains monotonic cumulative delta telemetry.
  char devfreq_template[]="/tmp/coreflow-devfreq-counter-XXXXXX";assert(::mkdtemp(devfreq_template));
  std::filesystem::path devfreq_root(devfreq_template);
