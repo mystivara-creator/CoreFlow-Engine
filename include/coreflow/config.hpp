@@ -24,6 +24,9 @@ struct DaemonConfig {
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
     bool enable_uclamp{true};
+    // Normal daemon operation is autonomous; read-only inspection is an explicit CLI mode.
+    bool inspection_mode{false};
+    bool enable_tuner{true};
 
     // [device_adaptation]
     std::string tier_override{"auto"};
