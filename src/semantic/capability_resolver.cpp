@@ -249,15 +249,16 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     const auto evidence_strength = corroborated ? EvidenceStrength::Corroborated
                                                 : (type_verified ? EvidenceStrength::Weak
                                                                  : EvidenceStrength::None);
-    std::array<CapabilityEvidence, 1> evidence{{
-        CapabilityEvidence{
-            EvidenceId{makeId(mix(fold(endpoint.probe_id) ^ now_ns),
-                              mix(active_generation + 0x45564944ULL))},
-            provenance_id, vocabulary_id, evidence_strength,
-            ObservationId{makeId(mix(fold(endpoint.probe_id) + 1U),
-                                  mix(now_ns + 0x4f4253ULL))},
-            active_generation, now_ns}
-    }};
+    std::array<CapabilityEvidence, 1> evidence{};
+    evidence[0].id.value = makeId(mix(fold(endpoint.probe_id) ^ now_ns),
+                                  mix(active_generation + 0x45564944ULL));
+    evidence[0].provenance = provenance_id;
+    evidence[0].evidence_kind = vocabulary_id;
+    evidence[0].strength = evidence_strength;
+    evidence[0].observation.value = makeId(mix(fold(endpoint.probe_id) + 1U),
+                                           mix(now_ns + 0x4f4253ULL));
+    evidence[0].generation = active_generation;
+    evidence[0].observed_at_ns = now_ns;
 
     const CapabilityRisk risk{RiskClassId{makeId(0x5249534b434c4153ULL, fingerprint)},
                               mutation.mode == MutationMode::None ? 0.75F : 0.25F,

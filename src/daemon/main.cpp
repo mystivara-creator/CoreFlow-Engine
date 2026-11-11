@@ -375,6 +375,11 @@ void print_status(CoreFlowContext& context) {
         .rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
         .last_verdict = "NOT_STARTED",
         .verdict = TunerVerdict::Hold,
+        .block_queues = {},
+        .candidates = {},
+        .discovered_resources = {},
+        .vm_page_cluster = {},
+        .vm_vfs_cache_pressure = {},
     };
     const VulkanCapabilitiesSnapshot vk{};
     const bool recovery_pending = !journal_clear();
