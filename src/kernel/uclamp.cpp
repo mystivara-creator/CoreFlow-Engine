@@ -507,13 +507,20 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val, Controlle
     if (read_uclamp_node(max_path) == max_val && current_min == min_val) return true;
     if (!acquire_mutation_lease_locked(priority)) return false;
 
+    // Reuse the exact captured OEM representation when restoring a factory
+    // value. Semantic aliases ("max" and "100.00") must not leave the journal dirty.
+    const std::string encoded_min = min_val == oem_min_
+        ? oem_min_raw_ : encode(min_val, false);
+    const std::string encoded_max = max_val == oem_max_
+        ? oem_max_raw_ : encode(max_val, true);
+
     bool success = false;
     if (max_val < current_min) {
-        success = baseline.apply_mutation(min_path, encode(min_val, false)) &&
-                  baseline.apply_mutation(max_path, encode(max_val, true));
+        success = baseline.apply_mutation(min_path, encoded_min) &&
+                  baseline.apply_mutation(max_path, encoded_max);
     } else {
-        success = baseline.apply_mutation(max_path, encode(max_val, true)) &&
-                  baseline.apply_mutation(min_path, encode(min_val, false));
+        success = baseline.apply_mutation(max_path, encoded_max) &&
+                  baseline.apply_mutation(min_path, encoded_min);
     }
     if (!success) {
         mutation_active_ = true; // A paired write may have partially committed.

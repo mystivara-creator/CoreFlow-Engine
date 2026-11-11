@@ -325,7 +325,11 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
-    add_executable(test_coreflow_context tests/test_coreflow_context.cpp ${COREFLOW_KERNEL_SOURCES})
+    add_executable(test_coreflow_context
+        tests/test_coreflow_context.cpp
+        src/daemon/reactor.cpp
+        ${COREFLOW_KERNEL_SOURCES}
+    )
     target_link_libraries(test_coreflow_context PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     if(NOT ANDROID)
         target_link_libraries(test_coreflow_context PRIVATE pthread)
@@ -403,6 +407,24 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_uclamp PRIVATE log)
     endif()
     add_test(NAME UclampTest COMMAND test_uclamp)
+
+    add_executable(test_render_booster
+        tests/test_render_booster.cpp
+        src/kernel/render_booster.cpp
+        src/daemon/reactor.cpp
+        src/kernel/uclamp.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_render_booster PRIVATE include)
+    target_link_libraries(test_render_booster PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_render_booster PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_render_booster PRIVATE log)
+    endif()
+    add_test(NAME RenderBoosterOwnershipAndExpiryTest COMMAND test_render_booster)
 
     if(NOT ANDROID)
         find_package(Python3 COMPONENTS Interpreter QUIET)

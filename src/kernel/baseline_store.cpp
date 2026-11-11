@@ -130,6 +130,21 @@ bool parse_u64_strict(std::string_view text, uint64_t& out) noexcept {
     return true;
 }
 
+bool is_thread_cgroup_snapshot_path(std::string_view path) noexcept {
+    constexpr std::string_view prefix{"/proc/"};
+    constexpr std::string_view task{"/task/"};
+    constexpr std::string_view suffix{"/cgroup"};
+    if (path.rfind(prefix, 0) != 0) return false;
+    size_t pos = prefix.size();
+    const size_t tgid_begin = pos;
+    while (pos < path.size() && path[pos] >= '0' && path[pos] <= '9') ++pos;
+    if (pos == tgid_begin || path.substr(pos, task.size()) != task) return false;
+    pos += task.size();
+    const size_t tid_begin = pos;
+    while (pos < path.size() && path[pos] >= '0' && path[pos] <= '9') ++pos;
+    return pos > tid_begin && path.substr(pos) == suffix;
+}
+
 bool path_safe(const std::string& path) {
     if (path.empty() || path.size() > 512 || path.front() != '/' || path.back() == '/') return false;
     if (path.find('\0') != std::string::npos ||
@@ -138,7 +153,8 @@ bool path_safe(const std::string& path) {
         path.find("//") != std::string::npos) {
         return false;
     }
-    if (path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0) return true;
+    if (path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0 ||
+        is_thread_cgroup_snapshot_path(path)) return true;
 
     // Android can mount the CPU controller under /dev (for example /dev/cpuctl).
     // Authorize only the semantic top-app UClamp leaf discovered by the engine,
