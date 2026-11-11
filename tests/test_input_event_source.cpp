@@ -237,6 +237,8 @@ static void run_fd_leak_regression() {
 
     assert(::setenv("COREFLOW_TEST_STATE_DIR", (root / "state").c_str(), 1) == 0);
     assert(BaselineStore::instance().recover_pending());
+    // The controller probes cgroup.controllers in its constructor.
+    prepare_foreground_fixture(cgroup, proc);
     CentralMutationCoordinator coordinator;
     coordinator.reset();
     EpollReactor reactor;
