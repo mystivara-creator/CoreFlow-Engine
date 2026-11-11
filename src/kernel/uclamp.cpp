@@ -542,6 +542,15 @@ bool UclampGovernor::owned_values_intact() {
     return owned_values_intact_locked();
 }
 
+bool UclampGovernor::restore_owned_baseline() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!supported_ || !owned_values_intact_locked()) return false;
+    if (transaction_id_.empty()) return !mutation_active_;
+    // Restore through BaselineStore so raw OEM encodings (e.g. 100.00 vs max)
+    // and the durable mutation journal are both returned to their exact baseline.
+    return rollback_transaction_locked();
+}
+
 bool UclampGovernor::resync() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (target_path_.empty()) {

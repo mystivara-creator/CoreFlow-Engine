@@ -110,10 +110,6 @@ void RenderBooster::handle_request(uint32_t) noexcept {
         return;
     }
 
-    if (!burst_active_) {
-        baseline_min_ = governor_.get_top_app_min();
-        baseline_max_ = governor_.get_top_app_max();
-    }
     if (!governor_.apply_state(WorkloadState::Balanced, requested_min,
                                governor_.get_top_app_max())) {
         if (burst_active_) revert_burst();
@@ -147,10 +143,9 @@ void RenderBooster::restore_burst() noexcept {
 void RenderBooster::revert_burst() noexcept {
     if (!burst_active_) return;
     // OWNERSHIP_LOST is a handoff: do not overwrite the value that replaced ours.
-    if (governor_.owned_values_intact()) {
-        (void)governor_.apply_state(
-            WorkloadState::Balanced, baseline_min_, baseline_max_);
-    }
+    // Restore through the governor's owned transaction, not a second semantic
+    // write. This preserves exact OEM raw values and clears BaselineStore journal state.
+    (void)governor_.restore_owned_baseline();
     burst_active_ = false;
 }
 
