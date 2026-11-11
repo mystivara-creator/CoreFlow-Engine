@@ -1238,6 +1238,9 @@ int main(int argc, char* argv[]) {
     // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
     frequencies.discover(false, config.enable_gpu_frequency_control);
     auto& autonomous_tuner = context.autonomous_tuner();
+    autonomous_tuner.set_operational(false);
+    const auto daemon_started_at = std::chrono::steady_clock::now();
+    bool lifecycle_promoted = false;
     WorkloadTelemetryPipeline workload_pipeline;
     const bool workload_pipeline_ready = workload_pipeline.start();
     WorkloadClassifier workload_classifier;
@@ -1332,12 +1335,7 @@ int main(int argc, char* argv[]) {
     std::string last_tuner_candidate = "oem_baseline";
     TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
     context.neural_predictor().initialize("/data/adb/coreflow/models");
-    context.vulkan_controller().initialize({
-        .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-        .enable_skiavk_threaded = config.enable_skiavk_threaded,
-        .enable_adaptive_vrs = config.enable_adaptive_vrs,
-        .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-    });
+    // Vulkan activation is deferred until the OEM baseline grace period is accepted.
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
@@ -1580,6 +1578,37 @@ int main(int argc, char* argv[]) {
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
 
+        if (config.inspection_mode) {
+            autonomous_tuner.set_operational(false);
+            record_dvs_sample();
+            return;
+        }
+        if (!lifecycle_promoted) {
+            constexpr auto kStartupGrace = std::chrono::seconds(12);
+            const auto observed_for = now_tick - daemon_started_at;
+            const bool psi_stable =
+                cpu_psi.has_value() && memory_psi.has_value() && io_psi.has_value() &&
+                *cpu_psi <= 25.0 && *memory_psi <= 20.0 && *io_psi <= 20.0;
+            const bool thermal_stable =
+                thermal.available && !thermal.emergency && thermal.pressure < 65.0 &&
+                temp_vel.valid && std::abs(temp_vel.velocity_celsius_per_sec) <= 0.5;
+            if (observed_for < kStartupGrace || !psi_stable || !thermal_stable) {
+                autonomous_tuner.set_operational(false);
+                record_dvs_sample();
+                return;
+            }
+            lifecycle_promoted = true;
+            autonomous_tuner.set_operational(config.enable_tuner);
+            context.vulkan_controller().initialize({
+                .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+                .enable_skiavk_threaded = config.enable_skiavk_threaded,
+                .enable_adaptive_vrs = config.enable_adaptive_vrs,
+                .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+            });
+            emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING -> STAGE_ACTIVE_TUNING; " +
+                std::to_string(profile.total_valid_sensors) + " thermal sensors valid; thermal/PSI stability verified.");
+        }
+
         // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
         const auto ai_pred = context.neural_predictor().infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
@@ -1711,7 +1740,7 @@ int main(int argc, char* argv[]) {
         const double remaining_headroom = thermal.headroom_valid
             ? std::max(0.0, 1.0 - static_cast<double>(thermal.headroom_value))
             : -1.0;
-        const auto tuner_snap = autonomous_tuner.step({
+        const auto tuner_snap = config.enable_tuner ? autonomous_tuner.step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
@@ -1733,7 +1762,7 @@ int main(int argc, char* argv[]) {
             .frequency_policy_evidence = frequency_policy_evidence,
             .frequency_policy_evidence_valid =
                 config.enable_cpu_frequency_control && workload_pipeline_ready,
-        });
+        }) : autonomous_tuner.snapshot();
         record_dvs_sample(
             ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
             ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
@@ -1791,6 +1820,19 @@ int main(int argc, char* argv[]) {
         clear_pid(pid_lock);
         return 1;
     }
+    const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
+        const auto snapshot = build_status_json(context, true);
+        if (!write_status_snapshot(snapshot)) {
+            static auto last_status_write_warning = std::chrono::steady_clock::time_point::min();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_status_write_warning > std::chrono::seconds(30)) {
+                emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
+                last_status_write_warning = now;
+            }
+        }
+    });
+    (void)status_timer_fd;
+    (void)write_status_snapshot(build_status_json(context, true));
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
@@ -1805,6 +1847,7 @@ int main(int argc, char* argv[]) {
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
     workload_pipeline.stop();
+    (void)write_status_snapshot(build_status_json(context, true, false));
     const bool stopped = context.Stop("Daemon shutdown");
     const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
