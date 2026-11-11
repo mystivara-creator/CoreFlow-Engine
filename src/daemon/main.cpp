@@ -1256,7 +1256,7 @@ int main(int argc, char* argv[]) {
     frequencies.discover(false, config.enable_gpu_frequency_control);
     auto& autonomous_tuner = context.autonomous_tuner();
     autonomous_tuner.set_operational(false);
-    emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, frequency, and cgroup baselines; grace=12s.");
+    emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, CPU/GPU frequency, and PSI baselines; grace=12s.");
     const auto daemon_started_at = std::chrono::steady_clock::now();
     bool lifecycle_promoted = false;
     WorkloadTelemetryPipeline workload_pipeline;
