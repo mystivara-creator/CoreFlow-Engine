@@ -244,7 +244,7 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
             const auto comma = option_text.find(',', token);
             const auto item = option_text.substr(token,
                 comma == std::string_view::npos ? option_text.size() - token : comma - token);
-            if (item == "cpu" || item == "cpuacct" || item == "cpuctl") {
+            if (item == "cpu" || item == "cpuctl") {
                 cpu_controller = true;
                 break;
             }

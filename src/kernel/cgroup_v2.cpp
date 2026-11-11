@@ -154,7 +154,7 @@ bool parse_proc_cgroup_relative(const std::string& proc_root, pid_t tgid, pid_t 
                     const size_t comma = controllers.find(',', token);
                     const auto name = controllers.substr(token,
                         comma == std::string_view::npos ? controllers.size() - token : comma - token);
-                    if (name == "cpu" || name == "cpuacct" || name == "cpuctl") {
+                    if (name == "cpu" || name == "cpuctl") {
                         value = line.substr(second + 1);
                         matched = true;
                         break;
