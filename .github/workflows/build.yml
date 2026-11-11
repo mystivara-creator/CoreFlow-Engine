@@ -1,11 +1,11 @@
 name: CoreFlow Engine CI
 
 on:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main, feat/p3-dynamic-infrastructure]
+    branches: [main, 'feat/*', 'hardening/*']
     tags: ['v*']
+  pull_request:
+    branches: [main, feat/p3-dynamic-infrastructure]
   workflow_dispatch:
     inputs:
       android_min_api:
