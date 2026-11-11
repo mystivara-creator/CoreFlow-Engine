@@ -39,7 +39,7 @@ if [ ! -f "$BOOT_EPOCH" ] && [ ! -L "$BOOT_EPOCH" ]; then
   else
     EPOCH_TOKEN="epoch-$(date +%s 2>/dev/null || echo 0)-$$"
   fi
-  TMP_EPOCH="${BOOT_EPOCH}.tmp.$$$"
+  TMP_EPOCH="${BOOT_EPOCH}.tmp.$$"
   printf '%s\n' "$EPOCH_TOKEN" > "$TMP_EPOCH" && chmod 600 "$TMP_EPOCH" && mv -f "$TMP_EPOCH" "$BOOT_EPOCH"
 fi
 
@@ -149,7 +149,7 @@ CONFIRM_DELAY="${COREFLOW_CONFIRM_DELAY_SEC:-120}"
   sleep "$CONFIRM_DELAY"
   if "$BIN" --status 2>/dev/null | grep -q '"running":true'; then
     ATTEMPTS="$STATE/boot_attempts"
-    TMP_ATTEMPTS="${ATTEMPTS}.tmp.$$$"
+    TMP_ATTEMPTS="${ATTEMPTS}.tmp.$$"
     if [ ! -L "$ATTEMPTS" ]; then
       rm -f "$TMP_ATTEMPTS"
       printf '0\n' > "$TMP_ATTEMPTS" && chmod 600 "$TMP_ATTEMPTS" && mv -f "$TMP_ATTEMPTS" "$ATTEMPTS"
