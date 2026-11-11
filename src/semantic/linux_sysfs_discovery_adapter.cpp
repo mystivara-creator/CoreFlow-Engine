@@ -268,15 +268,21 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     std::string_view frequency_list(frequencies, frequencies_length);
     bool frequency_valid = false;
     while (!frequency_list.empty()) {
-        const auto split = frequency_list.find_first_of(" \t\r\n");
+        while (!frequency_list.empty() && (frequency_list.front() == ' ' ||
+               frequency_list.front() == '\\t' || frequency_list.front() == '\\r' ||
+               frequency_list.front() == '\\n')) frequency_list.remove_prefix(1);
+        if (frequency_list.empty()) break;
+        const auto split = frequency_list.find_first_of(" \\t\\r\\n");
         const auto token = frequency_list.substr(0, split);
-        if (!token.empty() && parsePositive(token, frequency_value) &&
-            frequency_value >= min_value && frequency_value <= max_value)
-            frequency_valid = true;
+        if (!parsePositive(token, frequency_value) ||
+            frequency_value < min_value || frequency_value > max_value) return 0;
+        frequency_valid = true;
         if (split == std::string_view::npos) break;
         frequency_list.remove_prefix(split + 1);
     }
-    if (!frequency_valid || driver_length == 0) return 0;
+    const std::string_view driver_name(driver, driver_length);
+    if (!frequency_valid || driver_name.empty() ||
+        driver_name.find_first_of(" \\t\\r\\n") != std::string_view::npos) return 0;
 
     char cgroup_path[kPathCapacity]{}, mountpoint[kPathCapacity]{};
     if (!parseCgroupPath(procfs_root_.data(), cgroup_path, sizeof(cgroup_path)) ||
