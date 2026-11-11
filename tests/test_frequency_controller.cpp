@@ -113,6 +113,16 @@ int main() {
     assert(get(gpu / "max_freq") == "800000000");
     assert(coordinator.active_leases().empty());
 
+    // Emergency thermal floor is accepted, but physical per-domain minimums remain authoritative.
+    assert(!controller.apply(0.19));
+    assert(controller.apply(0.2));
+    assert(get(cpu / "scaling_max_freq") == "500000");
+    assert(get(gpu / "max_freq") == "200000000");
+    assert(controller.apply(1.0));
+    assert(get(cpu / "scaling_max_freq") == "2000000");
+    assert(get(gpu / "max_freq") == "800000000");
+    assert(coordinator.active_leases().empty());
+
     assert(controller.apply(0.75));
     assert(get(cpu / "scaling_max_freq") == "1500000");
     assert(get(gpu / "max_freq") == "600000000");

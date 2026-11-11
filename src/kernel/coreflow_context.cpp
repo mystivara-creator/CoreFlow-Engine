@@ -17,6 +17,7 @@
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/memory_warmup_controller.hpp"
 #include "coreflow/transactional_frequency_actuator.hpp"
+#include "coreflow/intent_actuator.hpp"
 
 namespace coreflow {
 
@@ -70,6 +71,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     }
 
     memory_warmup_controller_ = std::make_unique<MemoryWarmupController>();
+    intent_actuator_ = std::make_unique<IntentActuator>(coordinator_, baseline_store(), "/proc");
     recovery_monitor_ = std::make_unique<MutationRecoveryMonitor>(baseline_store(), coordinator_);
     qcom_lmh_ceiling_provider_ = std::make_unique<QualcommLmhFrequencyCeilingProvider>("/sys");
     generic_frequency_ceiling_provider_ = std::make_unique<GenericLinuxFrequencyCeilingProvider>("/sys");
@@ -136,6 +138,7 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 void CoreFlowContext::destroy_runtime_services() noexcept {
     // Reverse dependency order: callback owners die while coordinator_ is alive.
     vulkan_controller_.reset();
+    intent_actuator_.reset();
     if (memory_warmup_controller_) memory_warmup_controller_->cancel();
     memory_warmup_controller_.reset();
     neural_predictor_.reset();

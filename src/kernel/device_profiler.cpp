@@ -467,6 +467,74 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         }
     }
 
+    // P3: discover generic memory and block-I/O controls. Only a small,
+    // ABI-stable allowlist receives semantic/range contracts; arbitrary
+    // writable kernel nodes remain observation-only.
+    const auto scan_scalar = [&](const fs::path& path, HardwareDomain domain,
+                                 ProfileSource source, const char* semantic,
+                                 uint64_t minimum, uint64_t maximum,
+                                 const char* unit) {
+        ++snapshot->infrastructure_nodes_scanned;
+        NodeCapability cap{};
+        cap.path = path.string();
+        cap.domain = domain;
+        cap.source = source;
+        cap.semantic_id = semantic;
+        cap.unit = unit;
+        cap.constraints = std::to_string(minimum) + "<=value<=" + std::to_string(maximum);
+        cap.evidence = "Known Linux VM/block queue ABI; bounded scalar contract; no probe write";
+        if (!cddp_path_exists(path)) {
+            cap.rejection_reason = "node absent";
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::Available;
+        std::string value;
+        if (!read_attribute(path, value, 256U)) {
+            cap.rejection_reason = "node not readable as bounded regular attribute";
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.current_value = trim(value);
+        cap.state = NodeCapabilityState::Readable;
+        uint64_t parsed = 0;
+        const bool numeric = parse_u64(cap.current_value, parsed);
+        if (!writable_by_mode_and_process(path)) {
+            cap.rejection_reason = "write permission not established by mode and process access";
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        ++snapshot->infrastructure_nodes_writable;
+        cap.state = NodeCapabilityState::Writable;
+        if (!numeric || parsed < minimum || parsed > maximum) {
+            cap.rejection_reason = "current value violates verified scalar range";
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::SemanticsVerified;
+        cap.accepted_values = cap.constraints;
+        cap.state = NodeCapabilityState::ConstraintsVerified;
+        cap.state = NodeCapabilityState::MutationEligible;
+        snapshot->node_capabilities.push_back(std::move(cap));
+    };
+
+    scan_scalar(proc / "sys/vm/page-cluster", HardwareDomain::Memory,
+                ProfileSource::Procfs, "vm.page_cluster", 0U, 8U, "pages");
+    scan_scalar(proc / "sys/vm/vfs_cache_pressure", HardwareDomain::Memory,
+                ProfileSource::Procfs, "vm.vfs_cache_pressure", 50U, 200U, "ratio");
+    scan_scalar(proc / "sys/vm/dirty_background_ratio", HardwareDomain::Memory,
+                ProfileSource::Procfs, "vm.dirty_background_ratio", 0U, 10U, "percent");
+    scan_scalar(proc / "sys/vm/dirty_ratio", HardwareDomain::Memory,
+                ProfileSource::Procfs, "vm.dirty_ratio", 5U, 20U, "percent");
+
+    for (const auto& block : directory_entries(sys / "block")) {
+        const std::string device = block.filename().string();
+        if (device.empty()) continue;
+        const fs::path queue = block / "queue";
+        scan_scalar(queue / "read_ahead_kb", HardwareDomain::Storage,
+                    ProfileSource::Sysfs, "block.queue.read_ahead_kb", 32U, 512U, "KiB");
+    }
+
     if (read_attribute(proc / "meminfo", raw)) {
         snapshot->memory_telemetry_available = raw.find("MemTotal:") != std::string::npos &&
             raw.find("MemAvailable:") != std::string::npos;

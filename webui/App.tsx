@@ -14,6 +14,8 @@ import { AndroidQuickSettingsCard } from './components/AndroidQuickSettingsCard'
 import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
 import { DeviceValidationSuiteCard } from './components/DeviceValidationSuiteCard';
 import { VulkanCapabilitiesCard } from './components/VulkanCapabilitiesCard';
+import { SemanticEvidencePanel } from './components/SemanticEvidencePanel';
+import { isSemanticEvidence, SemanticEvidence } from './semanticEvidence';
 import {
   AutonomousConfig,
   AutonomousTelemetry,
@@ -100,6 +102,7 @@ interface NativeStatus {
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
   vulkan?: VulkanTelemetry;
+  semanticEvidence?: SemanticEvidence;
 }
 
 const extractJsonObject = (raw: string): unknown => {
@@ -143,6 +146,9 @@ const checkedNativeStatus = (raw: string): NativeStatus => {
   ) {
     throw new Error('Unexpected daemon status schema');
   }
+  if (status.semanticEvidence !== undefined && !isSemanticEvidence(status.semanticEvidence)) {
+    throw new Error('Unexpected semanticEvidence schema; expected native schemaVersion 1');
+  }
   return status as NativeStatus;
 };
 
@@ -158,6 +164,9 @@ export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
   const [nativeError, setNativeError] = useState<string | null>(null);
+  const [semanticEvidence, setSemanticEvidence] = useState<SemanticEvidence | null>(null);
+  const [nativeStatusAvailable, setNativeStatusAvailable] = useState(false);
+  const nativeConnected = isNativeBridge && nativeStatusAvailable;
   const [isSwitching, setIsSwitching] = useState(false);
   const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
     const initial = createInitialAutonomousTelemetry();
@@ -262,7 +271,10 @@ export const App: React.FC = () => {
   }, []);
 
   const refreshNative = useCallback(async (): Promise<NativeStatus> => {
-    const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
+    try {
+      const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
+      setSemanticEvidence(status.semanticEvidence ?? null);
+      setNativeStatusAvailable(status.semanticEvidence?.status === 'available');
     const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
     const isThermalThrottling =
       status.thermalGuardActive ??
@@ -344,8 +356,13 @@ export const App: React.FC = () => {
         : 'OEM baseline restored',
       timestamp: Date.now(),
     }));
-    setNativeError(null);
-    return status;
+      setNativeError(null);
+      return status;
+    } catch (error) {
+      setNativeStatusAvailable(false);
+      setSemanticEvidence(null);
+      throw error;
+    }
   }, [config.thermalTripCelsius]);
 
   useEffect(() => {
@@ -796,14 +813,23 @@ export const App: React.FC = () => {
         className="pointer-events-none fixed bottom-12 right-1/4 w-[26rem] h-[26rem] rounded-full bg-slate-200/55 dark:bg-slate-800/20 blur-3xl -z-10"
       />
 
-      {/* Subtle Context Banner */}
+      {/* Bridge and telemetry trust state: Connected requires an official daemon schema v1 response. */}
       <div
         role="status"
-        className="px-4 py-2 text-center text-xs bg-[#d3e3fd]/60 text-[#041e49] dark:bg-[#0842a0]/30 dark:text-[#d3e3fd] backdrop-blur-md border-b border-slate-900/[0.04] dark:border-white/[0.04]"
+        className={
+          'px-4 py-2 text-center text-xs backdrop-blur-md border-b border-slate-900/[0.04] dark:border-white/[0.04] ' +
+          (!isNativeBridge
+            ? 'bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-200'
+            : nativeConnected
+              ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200'
+              : 'bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-200')
+        }
       >
-        {isNativeBridge
-          ? 'Native Runtime · Coordinated mutation transactions, readback verification, and OEM thermal safety active.'
-          : 'Browser Preview · Modeling the 5-layer Coordinated Mutation Safety architecture without physical kernel writes.'}
+        {!isNativeBridge
+          ? 'Simulation Mode · Browser-only preview; synthetic values are labelled (sim) and are not kernel audit evidence.'
+          : nativeConnected
+            ? 'Connected · Native bridge and official daemon semanticEvidence schema v1 are available.'
+            : 'Native bridge detected · Awaiting an official daemon status payload; semantic telemetry is unavailable.'}
       </div>
 
       {nativeError && (
@@ -822,6 +848,7 @@ export const App: React.FC = () => {
         onToggleTheme={toggleTheme}
         modeLabel={telemetry.modeLabel}
         nativeMode={isNativeBridge}
+        nativeConnected={nativeConnected}
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
       />
 
@@ -864,6 +891,12 @@ export const App: React.FC = () => {
                 onSimulateIoTrial={handleSimulateIoTrial}
               />
             </section>
+
+            <SemanticEvidencePanel
+              evidence={semanticEvidence}
+              nativeConnected={nativeConnected}
+              simulationMode={!isNativeBridge}
+            />
 
             <section aria-label="Stability policy settings">
               <AutonomousTuningCard

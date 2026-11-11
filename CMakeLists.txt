@@ -61,6 +61,13 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
     src/kernel/device_profiler.cpp
+    src/kernel/intent_actuator.cpp
+    src/mutation/intent_actuator.cpp
+    src/semantic/domain_evidence_aggregator.cpp
+    src/semantic/capability_resolver.cpp
+    src/semantic/semantic_evidence_serializer.cpp
+    src/semantic/linux_sysfs_discovery_adapter.cpp
+    src/platform/discovery_adapter.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
@@ -125,6 +132,67 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_cddp PRIVATE pthread)
     endif()
     add_test(NAME CoreFlowDynamicDeviceProfilingTest COMMAND test_cddp)
+
+    add_executable(test_p3_intent_actuator
+        tests/test_p3_intent_actuator.cpp
+        src/kernel/device_profiler.cpp
+        src/kernel/intent_actuator.cpp
+        src/mutation/intent_actuator.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_p3_intent_actuator PRIVATE include)
+    target_link_libraries(test_p3_intent_actuator PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_p3_intent_actuator PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_p3_intent_actuator PRIVATE log)
+    endif()
+    add_test(NAME P3DynamicInfrastructureActuatorTest COMMAND test_p3_intent_actuator)
+
+    add_executable(test_capability_resolver
+        tests/semantic/test_capability_resolver.cpp
+        src/semantic/capability_resolver.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+        src/platform/discovery_adapter.cpp
+    )
+    target_include_directories(test_capability_resolver PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_capability_resolver PRIVATE pthread)
+    endif()
+    add_test(NAME P3CapabilityResolverTest COMMAND test_capability_resolver)
+
+    add_executable(test_linux_sysfs_discovery_adapter
+        tests/semantic/test_linux_sysfs_discovery_adapter.cpp
+        src/semantic/linux_sysfs_discovery_adapter.cpp
+        src/semantic/capability_resolver.cpp
+        src/platform/discovery_adapter.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+    )
+    target_include_directories(test_linux_sysfs_discovery_adapter PRIVATE include)
+    add_test(NAME LinuxSysfsDiscoveryAdapterTest COMMAND test_linux_sysfs_discovery_adapter)
+
+    add_executable(test_domain_evidence_aggregator
+        tests/semantic/test_domain_evidence_aggregator.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+    )
+    target_include_directories(test_domain_evidence_aggregator PRIVATE include)
+    add_test(NAME P3FunctionalDomainEvidenceTest COMMAND test_domain_evidence_aggregator)
+
+    add_executable(test_semantic_evidence_serializer
+        tests/semantic/test_semantic_evidence_serializer.cpp
+        src/semantic/semantic_evidence_serializer.cpp
+        src/semantic/capability_resolver.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+        src/platform/discovery_adapter.cpp
+    )
+    target_include_directories(test_semantic_evidence_serializer PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_semantic_evidence_serializer PRIVATE pthread)
+    endif()
+    add_test(NAME P3SemanticEvidenceSerializationTest COMMAND test_semantic_evidence_serializer)
 
     add_executable(test_platform_context
         tests/test_platform_context.cpp
@@ -257,7 +325,11 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
-    add_executable(test_coreflow_context tests/test_coreflow_context.cpp ${COREFLOW_KERNEL_SOURCES})
+    add_executable(test_coreflow_context
+        tests/test_coreflow_context.cpp
+        src/daemon/reactor.cpp
+        ${COREFLOW_KERNEL_SOURCES}
+    )
     target_link_libraries(test_coreflow_context PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     if(NOT ANDROID)
         target_link_libraries(test_coreflow_context PRIVATE pthread)
@@ -335,6 +407,24 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_uclamp PRIVATE log)
     endif()
     add_test(NAME UclampTest COMMAND test_uclamp)
+
+    add_executable(test_render_booster
+        tests/test_render_booster.cpp
+        src/kernel/render_booster.cpp
+        src/daemon/reactor.cpp
+        src/kernel/uclamp.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_render_booster PRIVATE include)
+    target_link_libraries(test_render_booster PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_render_booster PRIVATE pthread)
+    endif()
+    if(ANDROID)
+        target_link_libraries(test_render_booster PRIVATE log)
+    endif()
+    add_test(NAME RenderBoosterOwnershipAndExpiryTest COMMAND test_render_booster)
 
     if(NOT ANDROID)
         find_package(Python3 COMPONENTS Interpreter QUIET)

@@ -10,6 +10,7 @@
 #include "coreflow/tiered_policy.hpp"
 #include "coreflow/frequency_target_planner.hpp"
 #include "coreflow/memory_warmup_controller.hpp"
+#include "coreflow/intent_actuator.hpp"
 #include "coreflow/platform_context.hpp"
 
 #include <memory>
@@ -76,6 +77,7 @@ public:
     [[nodiscard]] FrequencyTargetPlanner& frequency_target_planner() noexcept { return frequency_planner_; }
     [[nodiscard]] TransactionalFrequencyActuator* transactional_frequency_actuator() noexcept { return transactional_frequency_actuator_.get(); }
     [[nodiscard]] MemoryWarmupController* memory_warmup_controller() noexcept { return memory_warmup_controller_.get(); }
+    [[nodiscard]] IntentActuator* intent_actuator() noexcept { return intent_actuator_.get(); }
 
 private:
     // Declaration order mirrors startup: reverse member destruction is a
@@ -97,6 +99,7 @@ private:
     std::unique_ptr<FallbackFrequencyCeilingProvider> fallback_frequency_ceiling_provider_;
     std::unique_ptr<TransactionalFrequencyActuator> transactional_frequency_actuator_;
     std::unique_ptr<MemoryWarmupController> memory_warmup_controller_;
+    std::unique_ptr<IntentActuator> intent_actuator_;
     std::unique_ptr<MutationRecoveryMonitor> recovery_monitor_;
     std::unique_ptr<UclampGovernor> uclamp_governor_;
     std::unique_ptr<FrequencyController> frequency_controller_;

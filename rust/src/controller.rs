@@ -63,14 +63,16 @@ impl Controller {
             let velocity = self.previous_pressure
                 .map_or(0.0, |previous| (input.thermal_pressure - previous) / dt);
             let output = p.kp * error + p.ki * self.integral - p.kd * velocity;
-            target_scale = (1.0 + output / 50.0).clamp(0.4, 1.0);
+            // 0.2 is the emergency thermal floor; the slew limiter still bounds each step.
+            target_scale = (1.0 + output / 50.0).clamp(0.2, 1.0);
         }
         self.previous_pressure = Some(input.thermal_pressure);
         if self.thermal_guard { target_scale = target_scale.min(0.875); }
         // At most 2 percentage points per elapsed second, never a fixed cadence jump.
         let delta = (0.02 * dt).min(0.1);
         self.scale += (target_scale - self.scale).clamp(-delta, delta);
-        self.scale = self.scale.clamp(0.4, 1.0);
+        // Preserve the emergency thermal floor after rate-limited convergence.
+        self.scale = self.scale.clamp(0.2, 1.0);
         Decision { valid: true, state, capacity_scale: self.scale }
     }
 }
@@ -138,13 +140,26 @@ mod tests {
         assert_eq!(c.step(s).state, 1);
     }
     #[test]
+    fn severe_thermal_shock_can_reach_emergency_floor() {
+        let mut c = controller();
+        for _ in 0..8 {
+            let mut s = sample(130.0);
+            s.elapsed_seconds = 60.0;
+            let decision = c.step(s);
+            assert!(decision.valid);
+            assert!((0.2..=1.0).contains(&decision.capacity_scale));
+        }
+        assert!((c.scale - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
     fn pressure_wins_over_cpu_boost_and_scale_stays_bounded() {
         let mut c = controller();
         let mut s = sample(38.0); s.io_pressure = 20.0;
         assert_eq!(c.step(s).state, 2);
         for _ in 0..1000 {
             let d = c.step(sample(47.0));
-            assert!((0.4..=1.0).contains(&d.capacity_scale));
+            assert!((0.2..=1.0).contains(&d.capacity_scale));
         }
     }
 }

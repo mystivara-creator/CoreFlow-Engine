@@ -3,6 +3,7 @@
 #include "coreflow/config.hpp"
 #include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
+#include "coreflow/render_booster.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/recovery_monitor.hpp"
@@ -17,6 +18,9 @@
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/vulkan_controller.hpp"
+#include "coreflow/semantic/capability_resolver.hpp"
+#include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
+#include "coreflow/semantic/semantic_evidence_serializer.hpp"
 #include "coreflow/workload_intelligence.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
@@ -48,6 +52,9 @@
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <thread>
+#include <time.h>
+#include <utility>
+#include <vector>
 #include <unistd.h>
 
 #ifdef __ANDROID__
@@ -295,6 +302,31 @@ int stop_daemon() {
 
 std::string json_string(std::string_view text);
 
+std::uint64_t monotonic_now_ns() noexcept {
+    timespec ts{};
+    if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0U;
+    return static_cast<std::uint64_t>(ts.tv_sec) * 1'000'000'000ULL +
+           static_cast<std::uint64_t>(ts.tv_nsec);
+}
+
+std::string collect_semantic_evidence_json() {
+    coreflow::platform::LinuxSysfsDiscoveryAdapter adapter{};
+    const auto endpoints = adapter.discover();
+    coreflow::semantic::CapabilityResolver resolver{};
+    std::vector<coreflow::semantic::DynamicSemanticDescriptor> descriptors{};
+    descriptors.reserve(endpoints.size());
+
+    for (const auto& endpoint : endpoints) {
+        const auto now_ns = monotonic_now_ns();
+        auto descriptor = resolver.resolveOne(
+            endpoint, adapter, endpoint.observed_generation, now_ns);
+        if (descriptor.has_value()) descriptors.push_back(std::move(*descriptor));
+    }
+
+    return coreflow::semantic::serializeSemanticEvidence(
+        descriptors, monotonic_now_ns());
+}
+
 double safe_json_double(double v, double fallback = 0.0) noexcept {
     return std::isfinite(v) ? v : fallback;
 }
@@ -337,16 +369,25 @@ void print_status(CoreFlowContext& context) {
         .workload_name = "Unknown",
         .bottleneck_name = "Unknown",
         .objective_name = "NotEvaluated",
+        .capability_fingerprint = "not_started",
         .active_candidate_id = "none",
         .active_candidate_label = "Mutation runtime not started",
         .decision_rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
         .rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
         .last_verdict = "NOT_STARTED",
         .verdict = TunerVerdict::Hold,
+        .block_queues = {},
+        .candidates = {},
+        .discovered_resources = {},
+        .vm_page_cluster = {},
+        .vm_vfs_cache_pressure = {},
     };
     const VulkanCapabilitiesSnapshot vk{};
     const bool recovery_pending = !journal_clear();
     const size_t journal_nodes = count_journal_entries();
+    // The status contract uses the same live discovery and native resolver path as 2B.
+    // Discovery is strictly passive: the adapter exposes read access only.
+    const std::string semantic_evidence_json = collect_semantic_evidence_json();
 
     // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
     std::ostringstream out;
@@ -565,7 +606,8 @@ void print_status(CoreFlowContext& context) {
         << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
         << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
         << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
-        << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false") << "}";
+        << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
+        << ",\"semanticEvidence\":" << semantic_evidence_json << "}";
 
     std::cout << "\n" << out.str() << "\n" << std::flush;
 }
@@ -1132,6 +1174,8 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
+    RenderBooster render_booster(governor, reactor);
+    (void)render_booster;
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
     if (create_dvs_listener(dvs_listener)) {
