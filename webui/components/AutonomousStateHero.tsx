@@ -90,6 +90,11 @@ export const AutonomousStateHero: React.FC<Props> = ({
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
             Stage{!nativeMode ? ' (sim)' : ''}: {telemetry.tunerStage ?? currentStage}
           </span>
+          {nativeMode && telemetry.tunerRuntimeStage && (
+            <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+              Runtime: {telemetry.tunerRuntimeStage.replace('STAGE_', '')}
+            </span>
+          )}
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           {STAGES.map((item, idx) => {
