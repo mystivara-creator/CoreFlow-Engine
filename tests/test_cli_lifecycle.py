@@ -16,7 +16,11 @@ for command, printer in (
     ('if (command == "--capabilities")', "print_capabilities(context);"),
 ):
     start = source.index(command)
-    stop = source.index("return 0;", start)
+    # Bound the handler at the next sibling command. The live --status path
+    # intentionally returns early after printing the daemon snapshot, so using
+    # the first "return 0;" would truncate the read-only fallback under test.
+    next_command = source.find('\n        if (command ==', start + len(command))
+    stop = next_command if next_command >= 0 else len(source)
     block = source[start:stop]
     assert "CoreFlowContext::Mode::ReadOnly" in block
     assert printer in block
