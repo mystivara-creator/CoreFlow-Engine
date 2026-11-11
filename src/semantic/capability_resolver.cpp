@@ -253,7 +253,7 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     evidence[0].id.value = makeId(mix(fold(endpoint.probe_id) ^ now_ns),
                                   mix(active_generation + 0x45564944ULL));
     evidence[0].provenance = provenance_id;
-    evidence[0].evidence_kind = vocabulary_id;
+    evidence[0].evidence_kind.value = vocabulary_id;
     evidence[0].strength = evidence_strength;
     evidence[0].observation.value = makeId(mix(fold(endpoint.probe_id) + 1U),
                                            mix(now_ns + 0x4f4253ULL));
