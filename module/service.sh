@@ -27,6 +27,53 @@ mkdir -p "$STATE" || exit 1
 mkdir -p "$LOGS" || exit 1
 chmod 700 "$STATE" "$LOGS" 2>/dev/null
 
+# Serialize service invocations with atomic directory creation. The owner marker
+# allows safe stale-lock recovery after a killed service shell.
+SERVICE_LOCK="$STATE/service.lock"
+SERVICE_LOCK_OWNER="$SERVICE_LOCK/owner.pid"
+release_service_lock() {
+  if [ -f "$SERVICE_LOCK_OWNER" ] && [ ! -L "$SERVICE_LOCK_OWNER" ] &&
+     [ "$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)" = "$" ]; then
+    rm -f "$SERVICE_LOCK_OWNER"
+    rmdir "$SERVICE_LOCK" 2>/dev/null || true
+  fi
+}
+acquire_service_lock() {
+  if mkdir "$SERVICE_LOCK" 2>/dev/null; then
+    printf '%s\n' "$" > "$SERVICE_LOCK_OWNER.tmp.$" &&
+      chmod 600 "$SERVICE_LOCK_OWNER.tmp.$" &&
+      mv -f "$SERVICE_LOCK_OWNER.tmp.$" "$SERVICE_LOCK_OWNER" || return 1
+    return 0
+  fi
+  [ -L "$SERVICE_LOCK" ] && return 1
+  WAIT_LOCK=0
+  while [ "$WAIT_LOCK" -lt 10 ] && [ ! -f "$SERVICE_LOCK_OWNER" ]; do
+    sleep 0.1
+    WAIT_LOCK=$((WAIT_LOCK + 1))
+  done
+  [ -L "$SERVICE_LOCK_OWNER" ] && return 1
+  LOCK_OWNER="$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)"
+  case "$LOCK_OWNER" in
+    ''|*[!0-9]*) ;;
+    *)
+      if kill -0 "$LOCK_OWNER" 2>/dev/null; then return 2; fi
+      ;;
+  esac
+  rm -f "$SERVICE_LOCK_OWNER" 2>/dev/null
+  rmdir "$SERVICE_LOCK" 2>/dev/null || return 2
+  mkdir "$SERVICE_LOCK" 2>/dev/null || return 2
+  printf '%s\n' "$" > "$SERVICE_LOCK_OWNER.tmp.$" &&
+    chmod 600 "$SERVICE_LOCK_OWNER.tmp.$" &&
+    mv -f "$SERVICE_LOCK_OWNER.tmp.$" "$SERVICE_LOCK_OWNER" || return 1
+  return 0
+}
+acquire_service_lock
+LOCK_RESULT=$?
+if [ "$LOCK_RESULT" -eq 2 ]; then exit 0; fi
+[ "$LOCK_RESULT" -eq 0 ] || exit 1
+trap 'release_service_lock' 0
+trap 'exit 1' HUP INT TERM
+
 # Ensure boot_epoch exists if post-fs-data.sh was skipped by the root manager.
 BOOT_EPOCH="$STATE/boot_epoch"
 if [ ! -f "$BOOT_EPOCH" ] && [ ! -L "$BOOT_EPOCH" ]; then
@@ -50,53 +97,6 @@ if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable
 fi
 
 chmod 755 "$BIN" 2>/dev/null
-
-# Serialize service invocations with atomic directory creation. The owner marker
-# allows safe stale-lock recovery after a killed service shell.
-SERVICE_LOCK="$STATE/service.lock"
-SERVICE_LOCK_OWNER="$SERVICE_LOCK/owner.pid"
-release_service_lock() {
-  if [ -f "$SERVICE_LOCK_OWNER" ] && [ ! -L "$SERVICE_LOCK_OWNER" ] &&
-     [ "$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)" = "$$" ]; then
-    rm -f "$SERVICE_LOCK_OWNER"
-    rmdir "$SERVICE_LOCK" 2>/dev/null || true
-  fi
-}
-acquire_service_lock() {
-  if mkdir "$SERVICE_LOCK" 2>/dev/null; then
-    printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" &&
-      chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" &&
-      mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER" || return 1
-    return 0
-  fi
-  [ -L "$SERVICE_LOCK" ] && return 1
-  WAIT_LOCK=0
-  while [ "$WAIT_LOCK" -lt 10 ] && [ ! -f "$SERVICE_LOCK_OWNER" ]; do
-    sleep 0.1
-    WAIT_LOCK=$((WAIT_LOCK + 1))
-  done
-  [ -L "$SERVICE_LOCK_OWNER" ] && return 1
-  LOCK_OWNER="$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)"
-  case "$LOCK_OWNER" in
-    ''|*[!0-9]*) ;;
-    *)
-      if kill -0 "$LOCK_OWNER" 2>/dev/null; then return 2; fi
-      ;;
-  esac
-  rm -f "$SERVICE_LOCK_OWNER" 2>/dev/null
-  rmdir "$SERVICE_LOCK" 2>/dev/null || return 2
-  mkdir "$SERVICE_LOCK" 2>/dev/null || return 2
-  printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" &&
-    chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" &&
-    mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER" || return 1
-  return 0
-}
-acquire_service_lock
-LOCK_RESULT=$?
-if [ "$LOCK_RESULT" -eq 2 ]; then exit 0; fi
-[ "$LOCK_RESULT" -eq 0 ] || exit 1
-trap 'release_service_lock' 0
-trap 'exit 1' HUP INT TERM
 
 PID_FILE="$STATE/coreflowd.pid"
 [ -L "$PID_FILE" ] && exit 1
