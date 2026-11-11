@@ -449,7 +449,7 @@ bool GpuUtilizationSampler::start() noexcept {
  struct CandidatePath{const char* suffix;Format format;const char* label;};
  // Prefer interval-capable KGSL counters over static compatibility percentages.
  static constexpr CandidatePath candidates[]{
-  {"class/kgsl/kgsl-3d0/gpubusy",Format::BusyTotalDelta,"kgsl/gpubusy"},
+  {"class/kgsl/kgsl-3d0/gpubusy",Format::KgslIntervalSnapshot,"kgsl/gpubusy"},
   {"class/kgsl/kgsl-3d0/gpu_busy_percent",Format::Percent,"kgsl/gpu_busy_percent"},
   {"class/kgsl/kgsl-3d0/devfreq/gpu_load",Format::Percent,"kgsl/devfreq/gpu_load"},
   {"class/devfreq/gpu/load",Format::Percent,"devfreq/gpu/load"},
@@ -467,8 +467,8 @@ bool GpuUtilizationSampler::start() noexcept {
   double percent=0;uint64_t a=0,b=0;
   const bool valid=candidate.format==Format::Percent?parse_scalar_percent(path,percent):parse_pair(path,a,b);
   if(!valid)continue;
-  if(candidate.format==Format::BusyTotalDelta){
-   if(b==0||a>b)continue;
+  if(candidate.format==Format::KgslIntervalSnapshot){
+   if(b!=0&&a>b)continue;
    previous_busy_=a;previous_total_=b;previous_valid_=true;
   }
   path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
@@ -488,7 +488,7 @@ bool GpuUtilizationSampler::start() noexcept {
     uint64_t busy=0,total=0;
     if(parse_u64_file(busy_path,busy)&&parse_u64_file(total_path,total)&&total>0&&busy<=total){
      path_=busy_path;source_name_="devfreq/named-device/busy_time-total_time";
-     format_=Format::CounterPair;active_=true;previous_busy_=busy;previous_total_=total;previous_valid_=true;break;
+     format_=Format::CumulativeCounterDelta;active_=true;previous_busy_=busy;previous_total_=total;previous_valid_=true;break;
     }
    }
    ::closedir(dir);
@@ -517,19 +517,16 @@ bool GpuUtilizationSampler::sample(uint64_t now,double& output) noexcept {
  last_sample_ns_=now;
  if(format_==Format::Percent)return parse_scalar_percent(path_,output);
  uint64_t busy=0,total=0;
- if(format_==Format::BusyTotalDelta){
+ if(format_==Format::KgslIntervalSnapshot){
   if(!parse_pair(path_,busy,total))return false;
-  if(!previous_valid_){previous_busy_=busy;previous_total_=total;previous_valid_=true;return false;}
-  if(busy<previous_busy_||total<previous_total_){
-   previous_busy_=busy;previous_total_=total;return false;
-  }
-  const uint64_t busy_delta=busy-previous_busy_,total_delta=total-previous_total_;
-  previous_busy_=busy;previous_total_=total;
-  if(total_delta==0||busy_delta>total_delta)return false;
-  output=100.0*static_cast<double>(busy_delta)/static_cast<double>(total_delta);
+  if(previous_valid_&&busy==previous_busy_&&total==previous_total_)return false;
+  if(total>0&&busy>total)return false;
+  previous_busy_=busy;previous_total_=total;previous_valid_=true;
+  if(total==0){output=0.0;return true;}
+  output=100.0*static_cast<double>(busy)/static_cast<double>(total);
   return std::isfinite(output)&&output>=0.0&&output<=100.0;
  }
- if(format_==Format::CounterPair){
+ if(format_==Format::CumulativeCounterDelta){
   const std::string total_path=path_.substr(0,path_.rfind('/')+1)+"total_time";
   if(!parse_u64_file(path_,busy)||!parse_u64_file(total_path,total))return false;
   if(!previous_valid_){previous_busy_=busy;previous_total_=total;previous_valid_=true;return false;}
