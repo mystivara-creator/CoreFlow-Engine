@@ -20,7 +20,7 @@ for command, printer in (
     assert "CoreFlowContext::Mode::ReadOnly" in block
     assert printer in block
 
-status_start = source.index("void print_status(CoreFlowContext& context)")
+status_start = source.index("std::string build_status_json(CoreFlowContext& context)")
 status_end = source.index("void print_capabilities(CoreFlowContext& context)", status_start)
 status = source[status_start:status_end]
 assert "infer_and_learn(" not in status
@@ -31,6 +31,17 @@ assert '.last_verdict = "NOT_STARTED"' in status
 assert '.backend = "not_started"' in status
 assert "tuner.last_verdict" in status
 assert "tunerRuntimeStarted" in status
+assert "tunerRuntimeStage" in status
+assert "context.autonomous_tuner().snapshot()" in status
+assert "context.neural_predictor().last_prediction()" in status
+assert "context.vulkan_controller().snapshot()" in status
+assert "write_status_snapshot" in source
+assert "O_EXCL" in source and "renameat" in source
+assert "print_live_status_snapshot(live_pid)" in source
+assert "std::chrono::milliseconds(500)" in source
+assert "kStartupGrace = std::chrono::seconds(12)" in source
+assert "STAGE_OBSERVING -> STAGE_ACTIVE_TUNING" in source
+assert "set_operational(false)" in source
 assert "vulkanProbeSkipped" in status
 assert "platformVendor" in status
 assert "executionTier" in status
