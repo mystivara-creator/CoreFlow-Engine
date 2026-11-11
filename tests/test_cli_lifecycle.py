@@ -25,7 +25,7 @@ for command, printer in (
     assert "CoreFlowContext::Mode::ReadOnly" in block
     assert printer in block
 
-status_start = source.index("std::string build_status_json(CoreFlowContext& context,")
+status_start = source.index("std::string build_status_json(")
 status_end = source.index("void print_capabilities(CoreFlowContext& context)", status_start)
 status = source[status_start:status_end]
 assert "infer_and_learn(" not in status
