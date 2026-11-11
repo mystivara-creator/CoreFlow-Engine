@@ -55,18 +55,22 @@ export const SemanticEvidencePanel: React.FC<Props> = ({
         <strong>Simulation Mode.</strong> Preview metrics are synthetic and labelled (sim).
         No kernel semantic binding or audit evidence is inferred in the browser.
       </div>
+    ) : evidence?.status === 'unavailable' ? (
+      <div className="rounded-xl bg-slate-100/80 dark:bg-white/[0.04] px-4 py-3 flex gap-2.5 text-xs text-slate-600 dark:text-slate-300">
+        <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span>
+          The daemon returned schema v1 with status unavailable because the adapter has
+          not produced semantic evidence. No binding state or functional domain is fabricated.
+        </span>
+      </div>
     ) : !nativeConnected ? (
       <div className="rounded-xl bg-slate-100/80 dark:bg-white/[0.04] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
         Native bridge detected, but an official schema v1 daemon status payload has not
         been received. Semantic bindings remain unavailable until the daemon responds.
       </div>
-    ) : !evidence || evidence.status === 'unavailable' ? (
-      <div className="rounded-xl bg-slate-100/80 dark:bg-white/[0.04] px-4 py-3 flex gap-2.5 text-xs text-slate-600 dark:text-slate-300">
-        <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
-        <span>
-          Adapter has not produced semantic evidence. No binding state or functional
-          domain is fabricated by the WebUI.
-        </span>
+    ) : !evidence ? (
+      <div className="rounded-xl bg-slate-100/80 dark:bg-white/[0.04] px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
+        No official semantic telemetry is available.
       </div>
     ) : (
       <>
