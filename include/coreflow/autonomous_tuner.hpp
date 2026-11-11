@@ -286,7 +286,8 @@ struct CandidateStats {
 };
 
 struct AutonomousDecisionSnapshot {
-    std::string stage{"RETAINED"};      // PLANNED, SETTLING, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
+    std::string stage{"RETAINED"};      // Transaction stage: PLANNED, SETTLING, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
+    std::string runtime_stage{"ACTIVE_TUNING"}; // Daemon lifecycle: STAGE_OBSERVING or STAGE_ACTIVE_TUNING
     std::string active_intent{"HoldEquilibrium"};
     std::string intent{"HoldEquilibrium"};
     WorkloadClass workload_class{WorkloadClass::Idle};
@@ -386,6 +387,8 @@ public:
     AutonomousTuner& operator=(const AutonomousTuner&) = delete;
 
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
+    // Disables candidate execution during the daemon startup baseline grace period.
+    void set_operational(bool enabled) noexcept;
     // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
     void set_device_profile(DeviceProfileHandle profile);
     void configure_frequency_actuator(
@@ -537,6 +540,7 @@ private:
 
     bool transaction_active_{false};
     bool observing_{false};
+    bool operational_{true};
     bool recovery_required_{false};
     uint32_t contention_backoff_ticks_{0};
     uint32_t total_contention_retries_{0};
