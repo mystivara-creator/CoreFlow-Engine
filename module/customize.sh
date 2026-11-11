@@ -23,9 +23,22 @@ die() {
 }
 
 report() {
-    ui "$1"
     PREFLIGHT_REPORT="$PREFLIGHT_REPORT
 $1"
+}
+
+section() {
+    ui ""
+    ui "+--------------------------------------------------+"
+    ui "| $1"
+    ui "+--------------------------------------------------+"
+    PREFLIGHT_REPORT="$PREFLIGHT_REPORT
+
+$1"
+}
+
+status_line() {
+    ui "  [$1] $2"
 }
 
 read_value() {
@@ -134,11 +147,13 @@ count_input_nodes() {
     echo "$COUNT"
 }
 
-ui "**********************************************"
-ui "          CFAE System Framework v3.1.0"
-ui "          Installer Preflight / ARM64"
-ui "          Author: mystivara-creator"
-ui "**********************************************"
+ui ""
+ui "+==================================================+"
+ui "|          CFAE SYSTEM FRAMEWORK  v3.1.0            |"
+ui "|          DEVICE PREFLIGHT & INSTALLER             |"
+ui "|          by mystivara-creator                     |"
+ui "+==================================================+"
+ui "  Preparing a read-only capability inventory..."
 
 [ -n "$MODPATH" ] || die "MODPATH is not provided by the root-manager installer."
 [ -d "$MODPATH" ] || die "Module staging directory does not exist: $MODPATH"
@@ -153,6 +168,7 @@ mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
 PREFLIGHT_REPORT="CFAE System Framework v3.1.0 — read-only installer preflight"
+section "01 / DEVICE & PLATFORM"
 report "Preflight: package and platform identity"
 
 INSTALL_ARCH="$ARCH"
@@ -216,6 +232,7 @@ fi
 [ -n "$SELINUX_STATE" ] || SELINUX_STATE="unknown"
 report "SELinux: $SELINUX_STATE (installer does not change SELinux mode or policy)"
 
+section "02 / PACKAGE INTEGRITY"
 report "Preflight: package integrity"
 CORE_BIN="$MODPATH/system/bin/coreflowd"
 if [ ! -f "$CORE_BIN" ]; then
@@ -266,15 +283,19 @@ if [ ! -f "$MODPATH/sepolicy.rule" ]; then
     report "INFO: no additional SELinux policy file packaged"
 fi
 
+section "03 / KERNEL CAPABILITY DISCOVERY"
 report "Preflight: read-only kernel capability inventory"
 
 CGROUP2_ROOT="$(awk '$0 ~ / - cgroup2 / { print $5; exit }' /proc/self/mountinfo 2>/dev/null)"
 if [ -n "$CGROUP2_ROOT" ] && [ -r "$CGROUP2_ROOT/cgroup.controllers" ]; then
     CGROUP_CONTROLLERS="$(cat "$CGROUP2_ROOT/cgroup.controllers" 2>/dev/null)"
     [ -n "$CGROUP_CONTROLLERS" ] || CGROUP_CONTROLLERS="none"
+    if [ "$CGROUP_CONTROLLERS" = "none" ]; then CGROUP_STATUS="LIMITED"; else CGROUP_STATUS="AVAILABLE"; fi
     report "cgroup v2: mounted at $CGROUP2_ROOT; controllers=$CGROUP_CONTROLLERS"
 else
     CGROUP2_ROOT=""
+    CGROUP_CONTROLLERS="unavailable"
+    CGROUP_STATUS="UNAVAILABLE"
     report "cgroup v2: no readable unified mount detected; runtime will evaluate available fallbacks"
 fi
 
@@ -340,8 +361,10 @@ if [ -r /sys/class/power_supply/battery/temp ]; then
 else
     report "Battery temperature node: unavailable"
 fi
+PSI_AVAILABLE_COUNT=0
 for PSI_DOMAIN in cpu memory io; do
     if [ -r "/proc/pressure/$PSI_DOMAIN" ]; then
+        PSI_AVAILABLE_COUNT=$((PSI_AVAILABLE_COUNT + 1))
         PSI_SAMPLE="$(head -n 1 "/proc/pressure/$PSI_DOMAIN" 2>/dev/null)"
         report "PSI $PSI_DOMAIN: available ($PSI_SAMPLE)"
     else
@@ -352,9 +375,12 @@ done
 INPUT_COUNT="$(count_input_nodes)"
 report "evdev event nodes visible: $INPUT_COUNT; native ioctl capability filtering decides which nodes are actual touchscreens"
 
+section "04 / NATIVE CAPABILITY PROBE"
 report "Preflight: invoke native read-only capability inspection"
-CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$$"
+CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$"
+NATIVE_PROBE_STATUS="DEFERRED"
 if "$CORE_BIN" --capabilities > "$CAPABILITY_TMP" 2>&1; then
+    NATIVE_PROBE_STATUS="PASS"
     chmod 0600 "$CAPABILITY_TMP" 2>/dev/null
     if [ -s "$CAPABILITY_TMP" ] && [ ! -L "$STATE_DIR/install-capabilities.log" ]; then
         mv -f "$CAPABILITY_TMP" "$STATE_DIR/install-capabilities.log"
@@ -364,6 +390,7 @@ if "$CORE_BIN" --capabilities > "$CAPABILITY_TMP" 2>&1; then
         report "PASS: coreflowd --capabilities returned successfully"
     fi
 else
+    NATIVE_PROBE_STATUS="DEFERRED"
     rm -f "$CAPABILITY_TMP"
     report "INFO: native capability probe could not complete in installer context; service will rediscover after boot"
 fi
@@ -461,8 +488,32 @@ else
     ui "- Reboot once to mount the systemless overlay and let service.sh start coreflowd after boot completion."
 fi
 
-ui "**********************************************"
-ui "CFAE installer preflight complete."
-ui "Read-only device report: $STATE_DIR/install-preflight.log"
-ui "Native runtime remains responsible for final capability admission."
-ui "**********************************************"
+ui ""
+ui "+==================================================+"
+ui "|                 PREFLIGHT SUMMARY                 |"
+ui "+--------------------------------------------------+"
+status_line "PASS" "Platform : Android $ANDROID_RELEASE / API $API_LEVEL / ARM64"
+status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
+status_line "INFO" "Root     : $ROOT_MANAGER | SELinux: $SELINUX_STATE"
+if [ "$CGROUP_STATUS" = "AVAILABLE" ]; then
+    status_line "PASS" "cgroup v2: controllers exposed ($CGROUP_CONTROLLERS)"
+elif [ "$CGROUP_STATUS" = "LIMITED" ]; then
+    status_line "WARN" "cgroup v2 mounted, but no controllers are exposed"
+else
+    status_line "INFO" "cgroup v2 unavailable; runtime fallback discovery applies"
+fi
+status_line "INFO" "CPUFreq  : $CPUFREQ_COUNT policies | devfreq: $DEVFREQ_COUNT"
+status_line "INFO" "Thermal  : $THERMAL_COUNT readable zones | PSI: $PSI_AVAILABLE_COUNT/3 domains"
+status_line "INFO" "Input    : $INPUT_COUNT evdev nodes (native filtering required)"
+status_line "OBSERVE" "KGSL GPU utilization is observation-only"
+if [ "$NATIVE_PROBE_STATUS" = "PASS" ]; then
+    status_line "PASS" "Native capability probe completed"
+else
+    status_line "DEFER" "Native capability probe deferred to post-boot runtime"
+fi
+ui "+--------------------------------------------------+"
+ui "  Installer : SUCCESS"
+ui "  Report    : $STATE_DIR/install-preflight.log"
+ui "  Policy    : no kernel-interface or SELinux mutation"
+ui "  Authority : coreflowd performs final admission/readback"
+ui "+==================================================+"
