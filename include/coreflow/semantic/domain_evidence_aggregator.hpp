@@ -29,6 +29,7 @@ struct FunctionalDomainAssessment final {
     FunctionalDomain domain{FunctionalDomain::Unresolved};
     DomainAssessmentState state{DomainAssessmentState::Unresolved};
     std::uint64_t generation{0};
+    std::uint64_t assessed_at_ns{0};
     std::uint8_t corroborating_relations{0};
     float confidence{0.0F};
 

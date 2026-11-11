@@ -1,4 +1,5 @@
 #include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
+#include "coreflow/semantic/capability_resolver.hpp"
 
 #include <array>
 #include <cassert>
@@ -91,6 +92,20 @@ int main() {
         const auto assessment = aggregator.aggregate(evidence, 44,
             evidence[0].observed_at_ns, 5'000'000'000ULL);
         assert(assessment.mutationEligible());
+
+        // Production discovery -> resolver -> aggregator path, using the exact endpoint generation.
+        CapabilityResolver resolver{};
+        const auto resolved = resolver.resolveOne(endpoints[0], adapter,
+            endpoints[0].observed_generation, endpoints[0].observed_generation + 1'000'000'000ULL);
+        assert(resolved.has_value());
+        assert(resolved->state() == DescriptorState::Validated);
+        assert(resolved->domainAssessment().domain == FunctionalDomain::Cpu);
+        assert(resolved->domainAssessment().corroborating_relations == 3U);
+        assert(resolved->domainAssessment().generation == endpoints[0].observed_generation);
+        assert(resolved->domainAssessment().assessed_at_ns != 0U);
+        // Discovery is read-only; semantic validation does not grant write authority.
+        assert(resolved->mutation().mode == MutationMode::None);
+        assert(!resolved->isMutationCapable());
     }
     {
         Fixture fixture;

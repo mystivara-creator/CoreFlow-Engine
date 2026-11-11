@@ -117,8 +117,11 @@ std::optional<platform::EndpointLocator> CapabilityResolver::resolveLocator(
 std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     const ::coreflow::platform::RawDiscoveredEndpoint& endpoint, ::coreflow::platform::DiscoveryAdapter& adapter,
     std::uint64_t active_generation, std::uint64_t now_ns) noexcept {
-    if (!::coreflow::platform::isValidRawEndpoint(endpoint, active_generation))
+    if (!::coreflow::platform::isValidRawEndpoint(endpoint, active_generation)) {
+        if (endpoint.probe_id.isValid())
+            endpoint_registry_.revoke(CapabilityId{endpoint.probe_id}, endpoint.observed_generation);
         return std::nullopt;
+    }
 
     const auto first_read = adapter.readPassive(endpoint);
     const auto second_read = adapter.readPassive(endpoint);
@@ -244,7 +247,7 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
 
     DynamicSemanticDescriptor descriptor{
         CapabilityId{endpoint.probe_id}, semantic, value, mutation, endpoint.raw_access, risk,
-        provenance, std::move(evidence), active_generation, state};
+        provenance, domain_assessment, std::move(evidence), active_generation, state};
 
     if (state == DescriptorState::Validated) {
         platform::EndpointLocator locator{makeId(fold(endpoint.probe_id), 0x4c4f4341544f52ULL),
@@ -252,6 +255,9 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
                                            endpoint.opaque_locator, active_generation};
         if (!endpoint_registry_.bind(descriptor.capabilityId(), std::move(locator)))
             return std::nullopt;
+    } else {
+        // Failed readback or lost corroboration immediately revokes this generation.
+        endpoint_registry_.revoke(descriptor.capabilityId(), endpoint.observed_generation);
     }
     return descriptor;
 }

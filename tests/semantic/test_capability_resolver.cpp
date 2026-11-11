@@ -101,11 +101,28 @@ int main() {
     assert(validated->semantic().functional_domain == FunctionalDomain::Cpu);
     assert(validated->semantic().domain_verified);
     assert(validated->semantic().domain.isValid());
+    assert(validated->domainAssessment().domain == FunctionalDomain::Cpu);
+    assert(validated->domainAssessment().corroborating_relations == 3);
+    assert(validated->domainAssessment().confidence >= 0.95F);
+    assert(validated->domainAssessment().generation == 7);
+    assert(validated->domainAssessment().assessed_at_ns == 200);
     assert(validated->evidence().size() == 1);
     assert(validated->evidence()[0].strength == EvidenceStrength::Corroborated);
     assert(validated->mutation().mode == MutationMode::BoundedValue);
     assert(validated->isMutationCapable(7, 201));
     assert(resolver.resolveLocator(validated->capabilityId(), 7).has_value());
+    assert(!resolver.resolveLocator(validated->capabilityId(), 8).has_value());
+
+    // A newer failed cycle demotes the binding and revokes its old locator.
+    auto volatile_node = validated_node;
+    volatile_node.observed_generation = 8;
+    FakeAdapter volatile_adapter{};
+    auto demoted = resolver.resolveOne(volatile_node, volatile_adapter, 8, 300);
+    assert(demoted.has_value());
+    assert(demoted->state() == DescriptorState::Candidate);
+    assert(demoted->mutation().mode == MutationMode::None);
+    assert(!demoted->isMutationCapable());
+    assert(!resolver.resolveLocator(validated->capabilityId(), 7).has_value());
     assert(!resolver.resolveLocator(validated->capabilityId(), 8).has_value());
 
     // Partial evidence is never sufficient to promote a semantic binding.

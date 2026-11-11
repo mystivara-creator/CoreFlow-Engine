@@ -88,6 +88,7 @@ public:
     [[nodiscard]] AccessCapability access() const noexcept { return access_; }
     [[nodiscard]] const CapabilityRisk& risk() const noexcept { return risk_; }
     [[nodiscard]] const CapabilityProvenance& provenance() const noexcept { return provenance_; }
+    [[nodiscard]] const FunctionalDomainAssessment& domainAssessment() const noexcept { return domain_assessment_; }
     [[nodiscard]] std::span<const CapabilityEvidence> evidence() const noexcept {
         return {evidence_.data(), evidence_.size()};
     }
@@ -127,10 +128,12 @@ private:
     DynamicSemanticDescriptor(CapabilityId capability, SemanticBinding semantic, ValueModel value,
                               MutationSemantics mutation, AccessCapability access, CapabilityRisk risk,
                               CapabilityProvenance provenance,
+                              FunctionalDomainAssessment domain_assessment,
                               std::array<CapabilityEvidence, 1> evidence,
                               std::uint64_t generation, DescriptorState state) noexcept
         : capability_(capability), semantic_(semantic), value_(value), mutation_(mutation),
-          access_(access), risk_(risk), provenance_(provenance), evidence_(std::move(evidence)),
+          access_(access), risk_(risk), provenance_(provenance), domain_assessment_(domain_assessment),
+          evidence_(std::move(evidence)),
           generation_(generation), state_(state) {}
 
     const CapabilityId capability_;
@@ -140,6 +143,7 @@ private:
     const AccessCapability access_;
     const CapabilityRisk risk_;
     const CapabilityProvenance provenance_;
+    const FunctionalDomainAssessment domain_assessment_;
     const std::array<CapabilityEvidence, 1> evidence_;
     const std::uint64_t generation_;
     const DescriptorState state_;

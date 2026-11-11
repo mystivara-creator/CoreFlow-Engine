@@ -52,9 +52,13 @@ public:
         return std::nullopt;
     }
 
-    void revoke(CapabilityId capability) noexcept {
+    // A delayed stale cycle must not invalidate a newer successful binding.
+    void revoke(CapabilityId capability, std::uint64_t observed_generation) noexcept {
         const std::lock_guard lock(mutex_);
-        for (auto& entry : entries_) if (entry.capability == capability) entry.locator = {};
+        for (auto& entry : entries_) {
+            if (entry.capability == capability && entry.locator.generation <= observed_generation)
+                entry.locator = {};
+        }
     }
 
 private:

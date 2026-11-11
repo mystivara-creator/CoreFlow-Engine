@@ -9,6 +9,7 @@ FunctionalDomainAssessment DomainEvidenceAggregator::aggregate(
     std::uint64_t maximum_age_ns) const noexcept {
     FunctionalDomainAssessment result{};
     result.generation = active_generation;
+    result.assessed_at_ns = now_ns;
     if (evidence.empty() || active_generation == 0U || maximum_age_ns == 0U) return result;
 
     FunctionalDomain selected = FunctionalDomain::Unresolved;
