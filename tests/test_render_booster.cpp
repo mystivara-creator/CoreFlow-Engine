@@ -24,6 +24,7 @@ static std::string get(const fs::path& path) {
     input >> value;
     return value;
 }
+namespace coreflow {
 struct RenderBoosterTestAccess {
     static void dispatch_request(RenderBooster& booster) {
         booster.handle_request(EPOLLIN);
@@ -32,6 +33,7 @@ struct RenderBoosterTestAccess {
         booster.restore_burst();
     }
 };
+} // namespace coreflow
 
 int main() {
     char state_dir[] = "/tmp/coreflow-render-XXXXXX";
