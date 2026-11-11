@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 int main() {
     const auto path = std::filesystem::temp_directory_path() / "coreflow-v2-test-config.ini";
