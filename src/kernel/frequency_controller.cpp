@@ -178,7 +178,8 @@ void FrequencyController::discover(bool cpu, bool gpu) {
     if (gpu) scan(root_ + "/class/devfreq", true);
 }
 bool FrequencyController::apply(double scale) {
-    if (!std::isfinite(scale) || scale < 0.4 || scale > 1.0) return false;
+    // 0.2 is the emergency thermal floor; hardware policy floors still apply per domain.
+    if (!std::isfinite(scale) || scale < 0.2 || scale > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     auto& store = BaselineStore::instance();
     bool ok = true;

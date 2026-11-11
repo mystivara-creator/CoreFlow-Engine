@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 int main() {
     const auto path = std::filesystem::temp_directory_path() / "coreflow-v2-test-config.ini";
@@ -57,6 +59,29 @@ int main() {
     assert(c2.cpu_pressure_boost_pct == 12.5f); // accepted under [stability] alias
     assert(c2.vulkan_layer_mode == "safe_hardware"); // full_capability_override clamped to safe_hardware
 
+    // All audited uclamp keys load from their canonical section and clamp to [0, 1024].
+    {
+        std::ofstream f(path);
+        f << "[uclamp_tuning]\n"
+             "foreground_min=2048\n"
+             "background_max=0\n"
+             "top_app_game_min=444\n"
+             "top_app_game_max=2048\n"
+             "sched_util_clamp_min_rt_default=1025\n";
+    }
+    auto uclamp = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(uclamp.foreground_min == 1024u);
+    assert(uclamp.background_max == 0u);
+    assert(uclamp.top_app_game_min == 444u);
+    assert(uclamp.top_app_game_max == 1024u);
+    assert(uclamp.sched_util_clamp_min_rt_default == 1024u);
+    assert(coreflow::DaemonConfig::canonical_section_for_key("foreground_min") == "uclamp_tuning");
+    assert(coreflow::DaemonConfig::canonical_section_for_key("background_max") == "uclamp_tuning");
+    assert(coreflow::DaemonConfig::canonical_section_for_key("top_app_game_min") == "uclamp_tuning");
+    assert(coreflow::DaemonConfig::canonical_section_for_key("top_app_game_max") == "uclamp_tuning");
+    assert(coreflow::DaemonConfig::canonical_section_for_key("sched_util_clamp_min_rt_default") == "uclamp_tuning");
+
+
     // 3. Test surgical read-modify-write config merging (preserves comments & unknown keys)
     const std::string original =
         "# Header comment\n"
@@ -104,6 +129,31 @@ int main() {
     verify_buf << verify_in.rdbuf();
     assert(verify_buf.str().find("custom_operator_flag = keep_me") != std::string::npos);
     assert(verify_buf.str().find("oem_hint = 42") != std::string::npos);
+
+    // Every audited uclamp key participates in merge and update/load round-trips.
+    const std::vector<std::pair<std::string, std::string>> uclamp_updates = {
+        {"foreground_min", "72"},
+        {"background_max", "180"},
+        {"top_app_game_min", "520"},
+        {"top_app_game_max", "960"},
+        {"sched_util_clamp_min_rt_default", "144"},
+    };
+    const std::string uclamp_merged =
+        coreflow::DaemonConfig::merge_config_text(original, uclamp_updates);
+    for (const auto& [key, value] : uclamp_updates) {
+        assert(uclamp_merged.find(key + " = " + value) != std::string::npos);
+    }
+    {
+        std::ofstream f(path);
+        f << original;
+    }
+    assert(coreflow::DaemonConfig::update_config_file(path.string(), uclamp_updates));
+    const auto updated_uclamp = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(updated_uclamp.foreground_min == 72u);
+    assert(updated_uclamp.background_max == 180u);
+    assert(updated_uclamp.top_app_game_min == 520u);
+    assert(updated_uclamp.top_app_game_max == 960u);
+    assert(updated_uclamp.sched_util_clamp_min_rt_default == 144u);
 
     std::filesystem::remove(path);
     std::cout << "Configuration bounds, section validation, and surgical merge PASS\n";

@@ -27,6 +27,61 @@ mkdir -p "$STATE" || exit 1
 mkdir -p "$LOGS" || exit 1
 chmod 700 "$STATE" "$LOGS" 2>/dev/null
 
+# Serialize service invocations with atomic directory creation. The owner marker
+# allows safe stale-lock recovery after a killed service shell.
+SERVICE_LOCK="$STATE/service.lock"
+SERVICE_LOCK_OWNER="$SERVICE_LOCK/owner.pid"
+release_service_lock() {
+  if [ -f "$SERVICE_LOCK_OWNER" ] && [ ! -L "$SERVICE_LOCK_OWNER" ] &&
+     [ "$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)" = "$$" ]; then
+    rm -f "$SERVICE_LOCK_OWNER" "$SERVICE_LOCK_OWNER.tmp."*
+    rmdir "$SERVICE_LOCK" 2>/dev/null || true
+  fi
+}
+acquire_service_lock() {
+  if mkdir "$SERVICE_LOCK" 2>/dev/null; then
+    if ! printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" ||
+       ! chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" ||
+       ! mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER"; then
+      rm -f "$SERVICE_LOCK_OWNER.tmp."*
+      rmdir "$SERVICE_LOCK" 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+  [ -L "$SERVICE_LOCK" ] && return 1
+  WAIT_LOCK=0
+  while [ "$WAIT_LOCK" -lt 10 ] && [ ! -f "$SERVICE_LOCK_OWNER" ]; do
+    sleep 0.1
+    WAIT_LOCK=$((WAIT_LOCK + 1))
+  done
+  [ -L "$SERVICE_LOCK_OWNER" ] && return 1
+  LOCK_OWNER="$(cat "$SERVICE_LOCK_OWNER" 2>/dev/null)"
+  case "$LOCK_OWNER" in
+    ''|*[!0-9]*) ;;
+    *)
+      if kill -0 "$LOCK_OWNER" 2>/dev/null; then return 2; fi
+      ;;
+  esac
+  rm -f "$SERVICE_LOCK_OWNER" "$SERVICE_LOCK_OWNER.tmp."* 2>/dev/null
+  rmdir "$SERVICE_LOCK" 2>/dev/null || return 2
+  mkdir "$SERVICE_LOCK" 2>/dev/null || return 2
+  if ! printf '%s\n' "$$" > "$SERVICE_LOCK_OWNER.tmp.$$" ||
+     ! chmod 600 "$SERVICE_LOCK_OWNER.tmp.$$" ||
+     ! mv -f "$SERVICE_LOCK_OWNER.tmp.$$" "$SERVICE_LOCK_OWNER"; then
+    rm -f "$SERVICE_LOCK_OWNER.tmp."*
+    rmdir "$SERVICE_LOCK" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+acquire_service_lock
+LOCK_RESULT=$?
+if [ "$LOCK_RESULT" -eq 2 ]; then exit 0; fi
+[ "$LOCK_RESULT" -eq 0 ] || exit 1
+trap 'release_service_lock' 0
+trap 'exit 1' HUP INT TERM
+
 # Ensure boot_epoch exists if post-fs-data.sh was skipped by the root manager.
 BOOT_EPOCH="$STATE/boot_epoch"
 if [ ! -f "$BOOT_EPOCH" ] && [ ! -L "$BOOT_EPOCH" ]; then
@@ -50,7 +105,12 @@ if [ -e "$STATE/SAFE_MODE" ] || [ -e "$STATE/DISABLE" ] || [ -e "$MODDIR/disable
 fi
 
 chmod 755 "$BIN" 2>/dev/null
-"$BIN" --status 2>/dev/null | grep -q '"running":true' && exit 0
+
+PID_FILE="$STATE/coreflowd.pid"
+[ -L "$PID_FILE" ] && exit 1
+if [ -s "$PID_FILE" ] && "$BIN" --status 2>/dev/null | grep -q '"running":true'; then
+  exit 0
+fi
 
 LOG="$LOGS/coreflowd.log"
 [ -L "$LOG" ] && rm -f "$LOG"
@@ -66,12 +126,32 @@ if [ -f "$LOG" ]; then
   esac
 fi
 
-"$BIN" --daemon >> "$LOG" 2>&1 </dev/null || \
-  (setsid "$BIN" >> "$LOG" 2>&1 < /dev/null &) 2>/dev/null || \
-  (nohup "$BIN" >> "$LOG" 2>&1 < /dev/null &) 2>/dev/null || \
-  ("$BIN" </dev/null >> "$LOG" 2>&1 &)
+# Exactly one daemon launch path: coreflowd owns its double-fork and PID-file lock.
+if ! "$BIN" --daemon >> "$LOG" 2>&1 </dev/null; then
+  if ! "$BIN" --status 2>/dev/null | grep -q '"running":true'; then
+    printf '%s CoreFlow daemon launch failed\n' "$(date)" >> "$LOG"
+    exit 1
+  fi
+fi
+
+# The first --daemon parent can exit before the detached child publishes its PID.
+START_ATTEMPT=0
+DAEMON_READY=0
+while [ "$START_ATTEMPT" -lt 20 ]; do
+  if [ -s "$PID_FILE" ] && "$BIN" --status 2>/dev/null | grep -q '"running":true'; then
+    DAEMON_READY=1
+    break
+  fi
+  sleep 0.5
+  START_ATTEMPT=$((START_ATTEMPT + 1))
+done
+if [ "$DAEMON_READY" -ne 1 ]; then
+  printf '%s CoreFlow daemon did not publish a verified PID within 10 seconds\n' "$(date)" >> "$LOG"
+  exit 1
+fi
 
 CONFIRM_DELAY="${COREFLOW_CONFIRM_DELAY_SEC:-120}"
+
 # A boot only counts as healthy after the daemon has survived its start window.
 (
   sleep "$CONFIRM_DELAY"
