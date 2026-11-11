@@ -232,8 +232,12 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     const RawDiscoveredEndpoint& endpoint,
     std::span<semantic::DomainRelationshipEvidence> output) noexcept {
     using namespace semantic;
+    constexpr std::string_view expected_locator =
+        "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
     if (!roots_valid_ || output.size() < 3 || !endpoint.probe_id.isValid() ||
-        endpoint.observed_generation == 0) return 0;
+        endpoint.observed_generation == 0 ||
+        endpoint.opaque_locator != expected_locator ||
+        !hasAccess(endpoint.raw_access, AccessCapability::Read)) return 0;
 
     const auto started = monotonicNowNs();
     if (started == 0) return 0;

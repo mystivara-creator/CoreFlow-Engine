@@ -57,7 +57,7 @@ struct Fixture {
     std::size_t collect(std::array<DomainRelationshipEvidence, 3>& evidence) {
         coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(sys.string(), proc.string());
         coreflow::platform::RawDiscoveredEndpoint endpoint{
-            id(7), "cpu-policy0", AccessCapability::Read, 44};
+            id(7), "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq", AccessCapability::Read, 44};
         return adapter.collectDomainRelationshipEvidence(endpoint, evidence);
     }
 };
