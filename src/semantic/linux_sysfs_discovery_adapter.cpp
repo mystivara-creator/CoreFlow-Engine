@@ -78,11 +78,11 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
 }
 
 [[nodiscard]] bool parseUnsigned(std::string_view value, std::uint64_t& parsed) noexcept {
-    while (!value.empty() && (value.front() == ' ' || value.front() == '\\t' ||
-                              value.front() == '\\n' || value.front() == '\\r'))
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
+                              value.front() == '\n' || value.front() == '\r'))
         value.remove_prefix(1);
-    while (!value.empty() && (value.back() == ' ' || value.back() == '\\t' ||
-                              value.back() == '\\n' || value.back() == '\\r'))
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t' ||
+                              value.back() == '\n' || value.back() == '\r'))
         value.remove_suffix(1);
     if (value.empty()) return false;
     const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
@@ -269,10 +269,10 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     bool frequency_valid = false;
     while (!frequency_list.empty()) {
         while (!frequency_list.empty() && (frequency_list.front() == ' ' ||
-               frequency_list.front() == '\\t' || frequency_list.front() == '\\r' ||
-               frequency_list.front() == '\\n')) frequency_list.remove_prefix(1);
+               frequency_list.front() == '\t' || frequency_list.front() == '\r' ||
+               frequency_list.front() == '\n')) frequency_list.remove_prefix(1);
         if (frequency_list.empty()) break;
-        const auto split = frequency_list.find_first_of(" \\t\\r\\n");
+        const auto split = frequency_list.find_first_of(" \t\r\n");
         const auto token = frequency_list.substr(0, split);
         if (!parsePositive(token, frequency_value) ||
             frequency_value < min_value || frequency_value > max_value) return 0;
@@ -282,7 +282,7 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     }
     const std::string_view driver_name(driver, driver_length);
     if (!frequency_valid || driver_name.empty() ||
-        driver_name.find_first_of(" \\t\\r\\n") != std::string_view::npos) return 0;
+        driver_name.find_first_of(" \t\r\n") != std::string_view::npos) return 0;
 
     char cgroup_path[kPathCapacity]{}, mountpoint[kPathCapacity]{};
     if (!parseCgroupPath(procfs_root_.data(), cgroup_path, sizeof(cgroup_path)) ||
