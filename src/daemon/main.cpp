@@ -457,7 +457,7 @@ std::string build_status_json(CoreFlowContext& context, bool live_runtime = fals
         << ",\"aiRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"tunerRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"tunerRuntimeStage\":" << json_string(tuner.runtime_stage)
-        << ",\"vulkanProbeSkipped\":" << (live_runtime ? "false" : "true")
+        << ",\"vulkanProbeSkipped\":" << (live_runtime && tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
         << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
         << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
@@ -587,7 +587,7 @@ std::string build_status_json(CoreFlowContext& context, bool live_runtime = fals
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
         << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"probeSkipped\":true"
+        << ",\"probeSkipped\":" << (tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
         << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
@@ -967,7 +967,7 @@ bool print_live_status_snapshot(pid_t expected_pid) {
         if (n <= 0) return false;
         offset += static_cast<size_t>(n);
     }
-    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid);
+    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid) + ",";
     if (payload.find("\"running\":true") == std::string::npos ||
         payload.find(pid_field) == std::string::npos || payload.front() != '{' || payload.back() != '}') return false;
     std::cout << "\n" << payload << "\n" << std::flush;
@@ -1256,6 +1256,7 @@ int main(int argc, char* argv[]) {
     frequencies.discover(false, config.enable_gpu_frequency_control);
     auto& autonomous_tuner = context.autonomous_tuner();
     autonomous_tuner.set_operational(false);
+    emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, frequency, and cgroup baselines; grace=12s.");
     const auto daemon_started_at = std::chrono::steady_clock::now();
     bool lifecycle_promoted = false;
     WorkloadTelemetryPipeline workload_pipeline;
