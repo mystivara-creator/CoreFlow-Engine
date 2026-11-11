@@ -66,8 +66,6 @@ void RenderBooster::on_frame_presented(double frame_time_ms) {
 
         if (hitches >= 2) {
             trigger_render_burst(580, std::chrono::milliseconds(250));
-            std::cout << "[CoreFlow][Render] Jank detected (" << frame_time_ms 
-                      << "ms vs " << frame_budget << "ms budget). No native frame backend attached." << std::endl;
         }
     } else {
         consecutive_hitches_.store(0, std::memory_order_relaxed);
