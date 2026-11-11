@@ -89,7 +89,7 @@ int main() {
         Fixture fixture;
         write(fixture.sys, "devices/system/cpu/cpufreq/policy0/scaling_available_frequencies",
               "300000 broken 1200000\n");
-        assert(fixture.collect(evidence) == 3); // at least one valid in-range frequency is required
+        assert(fixture.collect(evidence) == 0); // malformed frequency ABI fails closed
     }
     {
         Fixture fixture;
