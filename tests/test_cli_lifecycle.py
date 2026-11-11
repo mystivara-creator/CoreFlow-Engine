@@ -3,6 +3,7 @@
 from pathlib import Path
 
 source = (Path(__file__).resolve().parents[1] / "src/daemon/main.cpp").read_text()
+config = (Path(__file__).resolve().parents[1] / "include/coreflow/config.hpp").read_text()
 context = (Path(__file__).resolve().parents[1] / "src/kernel/coreflow_context.cpp").read_text()
 
 assert "finish_cli_process" not in source
@@ -42,6 +43,8 @@ assert "std::chrono::milliseconds(500)" in source
 assert "kStartupGrace = std::chrono::seconds(12)" in source
 assert "STAGE_OBSERVING -> STAGE_ACTIVE_TUNING" in source
 assert "set_operational(false)" in source
+assert "bool inspection_mode{false};" in config
+assert "bool enable_tuner{true};" in config
 assert "vulkanProbeSkipped" in status
 assert "platformVendor" in status
 assert "executionTier" in status
