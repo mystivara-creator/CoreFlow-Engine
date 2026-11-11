@@ -481,7 +481,8 @@ bool GpuUtilizationSampler::start() noexcept {
   if(!valid)continue;
   if(candidate.format==Format::KgslIntervalSnapshot){
    if((b==0&&a!=0)|| (b!=0&&a>b))continue;
-   previous_busy_=a;previous_total_=b;previous_valid_=true;
+   // Startup validates the snapshot shape only. The first timed sample must
+   // still be emitted (including an initial (0, 0) power-collapse snapshot).
   }
   path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
  }
