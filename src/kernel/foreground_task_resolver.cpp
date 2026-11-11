@@ -40,7 +40,7 @@ bool read_bounded(const std::string& path, std::string& output, size_t max_bytes
         if (output.size() + static_cast<size_t>(count) > max_bytes) return false;
         output.append(buffer, static_cast<size_t>(count));
     }
-    return !output.empty();
+    return true;
 }
 
 bool parse_positive_pid(std::string_view token, pid_t& pid) noexcept {
@@ -214,7 +214,7 @@ bool ForegroundTaskResolver::collect_render_threads(
         std::string comm;
         if (!read_bounded(task_root + "/" + entry->d_name + "/comm", comm, 128U)) continue;
         while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
-        if (!is_whitelisted_thread(pid, tid, comm)) continue;
+        if (comm.empty() || !is_whitelisted_thread(pid, tid, comm)) continue;
 
         pid_t actual_tgid = 0;
         uint64_t start_time = 0;

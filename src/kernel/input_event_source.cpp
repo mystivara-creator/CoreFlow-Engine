@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <utility>

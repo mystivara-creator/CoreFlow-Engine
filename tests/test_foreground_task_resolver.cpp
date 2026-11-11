@@ -104,6 +104,22 @@ int main() {
         assert(controller.pending_thread_migrations() == 0);
         assert(coordinator.active_leases().empty());
 
+        // Re-admit the same app, then an empty cgroup.procs file represents a real
+        // foreground transition and must trigger restoration rather than a stale-read hold.
+        put(top / "cgroup.procs", "321\n");
+        put(top / "cgroup.threads", "321\n");
+        put(render / "cgroup.threads", "322\n");
+        put(proc / "321/task/322/cgroup", "0::/top-app/render\n");
+        assert(resolver.refresh(true));
+        assert(resolver.tracked_threads() == 2);
+        put(render / "cgroup.threads", "");
+        put(top / "cgroup.threads", "321\n322\n");
+        put(proc / "321/task/322/cgroup", "0::/top-app\n");
+        put(top / "cgroup.procs", "");
+        assert(resolver.refresh(true));
+        assert(resolver.tracked_threads() == 0);
+        assert(controller.pending_thread_migrations() == 0);
+
         // Two distinct app package roots are ambiguous; resolver does not pick one.
         put(top / "cgroup.procs", "321\n331\n");
         put(proc / "331/cmdline", std::string("com.other.app\0", 15));
