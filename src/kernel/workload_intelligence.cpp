@@ -41,115 +41,223 @@ bool disk_sectors(const std::string& p,uint64_t& out) noexcept {
 }
 bool window_ok(const WorkloadFeatureSnapshot& f) noexcept{return f.window_start_ns!=0&&f.window_end_ns>f.window_start_ns;}
 
-bool read_text(const std::string& path,char* buffer,size_t capacity) noexcept {
- if (!capacity) {
-  return false;
- }
- FILE* file = std::fopen(path.c_str(), "r");
- if (!file) {
-  return false;
- }
- const bool ok = std::fgets(buffer, static_cast<int>(capacity), file) != nullptr;
- std::fclose(file);
- return ok;
+bool read_text(const std::string& path, char* buffer, size_t capacity) noexcept {
+    if (capacity == 0) {
+        return false;
+    }
+    FILE* file = std::fopen(path.c_str(), "r");
+    if (file == nullptr) {
+        return false;
+    }
+    const bool ok = std::fgets(buffer, static_cast<int>(capacity), file) != nullptr;
+    std::fclose(file);
+    return ok;
 }
-bool parse_scalar_percent(const std::string& path,double& value) noexcept {
- char text[128]{};if(!read_text(path,text,sizeof(text)))return false;
- char* end=nullptr;const double parsed=std::strtod(text,&end);
- if(end==text||!std::isfinite(parsed)||parsed<0.0||parsed>100.0)return false;
- while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
- if(*end=='%'){++end;while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;}
- if (*end != '\0') {
-  return false;
- }
- value = parsed;
- return true;
+
+bool parse_scalar_percent(const std::string& path, double& value) noexcept {
+    char text[128]{};
+    if (!read_text(path, text, sizeof(text))) {
+        return false;
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(text, &end);
+    if (end == text || !std::isfinite(parsed) || parsed < 0.0 || parsed > 100.0) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        ++end;
+    }
+    if (*end == '%') {
+        ++end;
+        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+            ++end;
+        }
+    }
+    if (*end != '\0') {
+        return false;
+    }
+    value = parsed;
+    return true;
 }
-bool parse_u64_file(const std::string& path,uint64_t& value) noexcept {
- char text[96]{};if(!read_text(path,text,sizeof(text)))return false;
- char* end=nullptr;errno=0;const unsigned long long parsed=std::strtoull(text,&end,10);
- if(errno||end==text)return false;
- while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
- if (*end != '\0') {
-  return false;
- }
- value = static_cast<uint64_t>(parsed);
- return true;
+
+bool parse_u64_file(const std::string& path, uint64_t& value) noexcept {
+    char text[96]{};
+    if (!read_text(path, text, sizeof(text))) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(text, &end, 10);
+    if (errno != 0 || end == text) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        ++end;
+    }
+    if (*end != '\0') {
+        return false;
+    }
+    value = static_cast<uint64_t>(parsed);
+    return true;
 }
-bool parse_pair(const std::string& path,uint64_t& first,uint64_t& second) noexcept {
- char text[160]{};if(!read_text(path,text,sizeof(text)))return false;
- char* end=nullptr;errno=0;const unsigned long long a=std::strtoull(text,&end,10);if(errno||end==text)return false;
- while(*end==' '||*end=='\t')++end;
- errno=0;char* second_end=nullptr;const unsigned long long b=std::strtoull(end,&second_end,10);
- if(errno||second_end==end)return false;
- while(*second_end==' '||*second_end=='\t'||*second_end=='\r'||*second_end=='\n')++second_end;
- if(*second_end!='\0')return false;
- first=static_cast<uint64_t>(a);second=static_cast<uint64_t>(b);return true;
+
+bool parse_pair(const std::string& path, uint64_t& first, uint64_t& second) noexcept {
+    char text[160]{};
+    if (!read_text(path, text, sizeof(text))) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long a = std::strtoull(text, &end, 10);
+    if (errno != 0 || end == text) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t') {
+        ++end;
+    }
+    errno = 0;
+    char* second_end = nullptr;
+    const unsigned long long b = std::strtoull(end, &second_end, 10);
+    if (errno != 0 || second_end == end) {
+        return false;
+    }
+    while (*second_end == ' ' || *second_end == '\t' ||
+           *second_end == '\r' || *second_end == '\n') {
+        ++second_end;
+    }
+    if (*second_end != '\0') {
+        return false;
+    }
+    first = static_cast<uint64_t>(a);
+    second = static_cast<uint64_t>(b);
+    return true;
 }
+
 bool contains_gpu_token(std::string value) {
- std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
- return value.find("gpu")!=std::string::npos||value.find("mali")!=std::string::npos||
-        value.find("kgsl")!=std::string::npos||value.find("3d")!=std::string::npos;
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value.find("gpu") != std::string::npos ||
+           value.find("mali") != std::string::npos ||
+           value.find("kgsl") != std::string::npos ||
+           value.find("3d") != std::string::npos;
 }
+
 bool read_name_matches_gpu(const std::string& path) noexcept {
- char text[128]{};return read_text(path,text,sizeof(text))&&contains_gpu_token(text);
+    char text[128]{};
+    return read_text(path, text, sizeof(text)) && contains_gpu_token(text);
 }
-bool read_varint(std::span<const uint8_t> bytes,size_t& offset,uint64_t& value) noexcept {
- value=0;unsigned shift=0;
- while(offset<bytes.size()&&shift<70){
-  const uint8_t byte=bytes[offset++];
-  if(shift==63&&(byte&0xfeU)!=0)return false;
-  value|=static_cast<uint64_t>(byte&0x7fU)<<shift;
-  if ((byte & 0x80U) == 0) {
-   return true;
-  }
-  shift += 7;
- }
- return false;
+
+bool read_varint(std::span<const uint8_t> bytes, size_t& offset, uint64_t& value) noexcept {
+    value = 0;
+    unsigned shift = 0;
+    while (offset < bytes.size() && shift < 70) {
+        const uint8_t byte = bytes[offset++];
+        if (shift == 63 && (byte & 0xfeU) != 0) {
+            return false;
+        }
+        value |= static_cast<uint64_t>(byte & 0x7fU) << shift;
+        if ((byte & 0x80U) == 0) {
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
 }
-struct ProtoField final {uint32_t number{0};uint8_t wire{0};uint64_t integer{0};std::span<const uint8_t> data{};};
-bool next_proto_field(std::span<const uint8_t> bytes,size_t& offset,ProtoField& field) noexcept {
- if (offset >= bytes.size()) {
-  return false;
- }
- uint64_t tag = 0;
- if(!read_varint(bytes,offset,tag)||tag==0)return false;
- field={};field.number=static_cast<uint32_t>(tag>>3U);field.wire=static_cast<uint8_t>(tag&7U);
- if(field.number==0)return false;
- switch(field.wire){
-  case 0:return read_varint(bytes,offset,field.integer);
-  case 1:if(bytes.size()-offset<8)return false;offset+=8;return true;
-  case 2:{
-   uint64_t length=0;if(!read_varint(bytes,offset,length)||length>bytes.size()-offset)return false;
-   field.data=bytes.subspan(offset,static_cast<size_t>(length));offset+=static_cast<size_t>(length);return true;
-  }
-  case 5:if(bytes.size()-offset<4)return false;offset+=4;return true;
-  default:return false;
- }
+
+struct ProtoField final {
+    uint32_t number{0};
+    uint8_t wire{0};
+    uint64_t integer{0};
+    std::span<const uint8_t> data{};
+};
+
+bool next_proto_field(std::span<const uint8_t> bytes, size_t& offset, ProtoField& field) noexcept {
+    if (offset >= bytes.size()) {
+        return false;
+    }
+    uint64_t tag = 0;
+    if (!read_varint(bytes, offset, tag) || tag == 0) {
+        return false;
+    }
+    field = {};
+    field.number = static_cast<uint32_t>(tag >> 3U);
+    field.wire = static_cast<uint8_t>(tag & 7U);
+    if (field.number == 0) {
+        return false;
+    }
+    switch (field.wire) {
+        case 0:
+            return read_varint(bytes, offset, field.integer);
+        case 1:
+            if (bytes.size() - offset < 8) {
+                return false;
+            }
+            offset += 8;
+            return true;
+        case 2: {
+            uint64_t length = 0;
+            if (!read_varint(bytes, offset, length) || length > bytes.size() - offset) {
+                return false;
+            }
+            field.data = bytes.subspan(offset, static_cast<size_t>(length));
+            offset += static_cast<size_t>(length);
+            return true;
+        }
+        case 5:
+            if (bytes.size() - offset < 4) {
+                return false;
+            }
+            offset += 4;
+            return true;
+        default:
+            return false;
+    }
 }
-bool parse_actual_display_frame(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
- size_t offset=0;uint64_t present=0,jank=0;bool has_present=false,has_on_time=false,on_time=true;
- ProtoField field{};
- while(offset<bytes.size()){
-  if(!next_proto_field(bytes,offset,field))return false;
-  if(field.wire!=0)continue;
-  if(field.number==4){present=field.integer;has_present=true;}
-  else if(field.number==5){on_time=field.integer!=0;has_on_time=true;}
-  else if(field.number==7)jank=field.integer;
- }
- if(!has_present||present<1||present>5)return true;
- if (frames == UINT64_MAX) {
-  return false;
- }
- ++frames;
- constexpr uint64_t kSfCpuDeadline=16ULL,kSfGpuDeadline=32ULL,kDropped=1024ULL;
- if(present==2||present==4||(has_on_time&&!on_time)||(jank&(kSfCpuDeadline|kSfGpuDeadline|kDropped))){
-  if (misses == UINT64_MAX) {
-   return false;
-  }
-  ++misses;
- }
- return true;
+
+bool parse_actual_display_frame(std::span<const uint8_t> bytes,
+                                uint64_t& frames, uint64_t& misses) noexcept {
+    size_t offset = 0;
+    uint64_t present = 0;
+    uint64_t jank = 0;
+    bool has_present = false;
+    bool has_on_time = false;
+    bool on_time = true;
+    ProtoField field{};
+    while (offset < bytes.size()) {
+        if (!next_proto_field(bytes, offset, field)) {
+            return false;
+        }
+        if (field.wire != 0) {
+            continue;
+        }
+        if (field.number == 4) {
+            present = field.integer;
+            has_present = true;
+        } else if (field.number == 5) {
+            on_time = field.integer != 0;
+            has_on_time = true;
+        } else if (field.number == 7) {
+            jank = field.integer;
+        }
+    }
+    if (!has_present || present < 1 || present > 5) {
+        return true;
+    }
+    if (frames == UINT64_MAX) {
+        return false;
+    }
+    ++frames;
+    constexpr uint64_t kSfCpuDeadline = 16ULL;
+    constexpr uint64_t kSfGpuDeadline = 32ULL;
+    constexpr uint64_t kDropped = 1024ULL;
+    if (present == 2 || present == 4 || (has_on_time && !on_time) ||
+        (jank & (kSfCpuDeadline | kSfGpuDeadline | kDropped))) {
+        if (misses == UINT64_MAX) {
+            return false;
+        }
+        ++misses;
+    }
+    return true;
 }
 bool parse_frame_timeline_event(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
  size_t offset=0;ProtoField field{};

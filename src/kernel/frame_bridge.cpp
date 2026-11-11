@@ -19,17 +19,9 @@ bool AndroidFrameEventBridge::submit(const FrameEvent& event) noexcept {
         (event.frame_duration_ns == 0 || event.jank_threshold_ns == 0 ||
          event.frame_duration_ns <= event.jank_threshold_ns)) return false;
     if (event.kind == FrameEventKind::FramePresented && event.frame_duration_ns == 0) return false;
-    FrameEventListener listener;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!active_ || !listener_) return false;
-        listener = listener_;
-    }
-    try {
-        listener(event);
-    } catch (...) {
-        return false;
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active_ || !listener_) return false;
+    listener_(event);
     return true;
 }
 } // namespace coreflow
