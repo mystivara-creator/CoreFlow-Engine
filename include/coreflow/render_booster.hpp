@@ -24,6 +24,7 @@ struct FrameMetrics {
 };
 
 class RenderBooster {
+    friend struct RenderBoosterTestAccess;
 public:
  static constexpr FeatureStatus kStatus=kRenderBoosterStatus;
     RenderBooster(UclampGovernor& governor, EpollReactor& reactor);
@@ -55,6 +56,7 @@ private:
     void trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration) noexcept;
     void handle_request(uint32_t events) noexcept;
     void handle_expiry(uint32_t events) noexcept;
+    void restore_burst() noexcept;
     void revert_burst() noexcept;
 };
 

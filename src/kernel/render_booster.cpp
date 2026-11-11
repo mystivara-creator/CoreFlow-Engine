@@ -42,9 +42,7 @@ RenderBooster::RenderBooster(UclampGovernor& governor, EpollReactor& reactor)
 RenderBooster::~RenderBooster() {
     if (request_fd_.valid()) (void)reactor_.unregister_fd(request_fd_.get());
     if (expiry_fd_.valid()) (void)reactor_.unregister_fd(expiry_fd_.get());
-    itimerspec disarm{};
-    if (expiry_fd_.valid()) (void)::timerfd_settime(expiry_fd_.get(), 0, &disarm, nullptr);
-    revert_burst();
+    restore_burst();
 }
 
 void RenderBooster::on_touch_down() {
@@ -137,7 +135,13 @@ void RenderBooster::handle_expiry(uint32_t) noexcept {
     uint64_t expirations = 0;
     while (::read(expiry_fd_.get(), &expirations, sizeof(expirations)) ==
            static_cast<ssize_t>(sizeof(expirations))) {}
-    if (expirations != 0) revert_burst();
+    if (expirations != 0) restore_burst();
+}
+
+void RenderBooster::restore_burst() noexcept {
+    itimerspec disarm{};
+    if (expiry_fd_.valid()) (void)::timerfd_settime(expiry_fd_.get(), 0, &disarm, nullptr);
+    revert_burst();
 }
 
 void RenderBooster::revert_burst() noexcept {
