@@ -65,6 +65,8 @@ public:
     [[nodiscard]] size_t attached_devices() const noexcept { return devices_.size(); }
 
 private:
+    friend struct NativeInputEventSourceTestAccess;
+
     struct DeviceState final {
         UniqueFd fd;
         std::string path;

@@ -1,5 +1,6 @@
 #include "coreflow/input_event_source.hpp"
 #include "coreflow/foreground_task_resolver.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
 
 #include <array>
@@ -96,10 +97,13 @@ static bool wait_until(const std::function<bool()>& predicate,
 }
 
 static void write_touch_burst(int fd) {
-    const std::array<input_event, 2> events{{
-        input_event{.type = EV_KEY, .code = BTN_TOUCH, .value = 1},
-        input_event{.type = EV_SYN, .code = SYN_REPORT, .value = 0},
-    }};
+    std::array<input_event, 2> events{};
+    events[0].type = EV_KEY;
+    events[0].code = BTN_TOUCH;
+    events[0].value = 1;
+    events[1].type = EV_SYN;
+    events[1].code = SYN_REPORT;
+    events[1].value = 0;
     const ssize_t written = ::write(fd, events.data(), sizeof(events));
     assert(written == static_cast<ssize_t>(sizeof(events)));
 }
