@@ -64,13 +64,12 @@ int main() {
 
         RenderBoosterTestAccess::restore(booster);
         assert(get(top / "cpu.uclamp.min") == "0.00");
-        // Rollback must restore the exact OEM representation, not just an equivalent
-        // normalized capacity; this also clears the journal for the next burst.
+        // Restore the exact OEM representation, not merely equivalent capacity.
         assert(get(top / "cpu.uclamp.max") == "100.00");
         assert(governor.get_top_app_max() == 1024u);
         assert(coordinator.active_leases().empty());
 
-        // A subsequent burst must be admitted after exact baseline rollback.
+        // A subsequent burst must be admitted after restoration and journal cleanup.
         booster.on_touch_down();
         RenderBoosterTestAccess::dispatch_request(booster);
         assert(get(top / "cpu.uclamp.min") == "37.11");

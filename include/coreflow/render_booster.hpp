@@ -50,6 +50,8 @@ private:
     std::atomic<uint32_t> requested_min_{0};
     std::atomic<int64_t> requested_duration_ms_{0};
     bool burst_active_{false}; // Reactor-thread confined.
+    uint32_t baseline_min_{0};
+    uint32_t baseline_max_{1024};
 
     void trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration) noexcept;
     void handle_request(uint32_t events) noexcept;

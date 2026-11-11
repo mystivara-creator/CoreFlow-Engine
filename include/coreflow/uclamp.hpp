@@ -41,8 +41,6 @@ public:
     [[nodiscard]] uint32_t get_top_app_min() const;
     [[nodiscard]] uint32_t get_top_app_max() const;
     [[nodiscard]] bool owned_values_intact();
-    // Roll back this controller's active transaction to the exact captured OEM representation.
-    bool restore_owned_baseline() noexcept;
     bool resync() noexcept;
 
 private:
