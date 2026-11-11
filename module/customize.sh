@@ -99,16 +99,16 @@ set_webroot_perm() {
 }
 
 detect_root_manager() {
-    if [ -n "$KSU" ] || [ -n "$KSU_VER_CODE" ] ||
+    if [ -n "${KSU:-}" ] || [ -n "${KSU_VER_CODE:-}" ] ||
        [ -d /data/adb/ksu ] || [ -x /data/adb/ksud ]; then
         ROOT_MANAGER="KernelSU / KernelSU Next"
-    elif [ -n "$APATCH" ] || [ -n "$APATCH_VER_CODE" ] ||
+    elif [ -n "${APATCH:-}" ] || [ -n "${APATCH_VER_CODE:-}" ] ||
          [ -d /data/adb/ap ] || [ -x /data/adb/apd ]; then
         ROOT_MANAGER="APatch"
-    elif [ -n "$MAGISK_VER_CODE" ] || [ -d /data/adb/magisk ] ||
+    elif [ -n "${MAGISK_VER_CODE:-}" ] || [ -d /data/adb/magisk ] ||
          [ -x /data/adb/magisk/magisk32 ] || [ -x /sbin/.magisk/magisk ]; then
         ROOT_MANAGER="Magisk"
-    elif [ -n "$BOOTMODE" ] || [ -n "$MODPATH" ]; then
+    elif [ -n "${BOOTMODE:-}" ] || [ -n "${MODPATH:-}" ]; then
         ROOT_MANAGER="Root-manager installer environment (unidentified)"
     else
         ROOT_MANAGER="Unknown"
@@ -144,10 +144,8 @@ ui "**********************************************"
 [ -d "$MODPATH" ] || die "Module staging directory does not exist: $MODPATH"
 [ ! -L "$MODPATH" ] || die "Module staging directory must not be a symlink."
 
-STATE_DIR="$COREFLOW_STATE_DIR"
-[ -n "$STATE_DIR" ] || STATE_DIR="/data/adb/coreflow"
-LIVE_MOD="$COREFLOW_LIVE_MOD_DIR"
-[ -n "$LIVE_MOD" ] || LIVE_MOD="/data/adb/modules/cfae_framework"
+STATE_DIR="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
+LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 
 [ ! -L "$STATE_DIR" ] || die "Refusing symlinked runtime state directory: $STATE_DIR"
 [ ! -L "$LIVE_MOD" ] || die "Refusing symlinked active module directory: $LIVE_MOD"
