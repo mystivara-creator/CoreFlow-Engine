@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include <string>
 #include "coreflow/feature_accountability.hpp"
 #include "coreflow/frame_bridge.hpp"
@@ -43,6 +44,7 @@ public:
     [[nodiscard]] FrameMetrics get_metrics() const;
 
 private:
+    mutable std::mutex metrics_mutex_;
     FrameMetrics metrics_;
     std::atomic<bool> in_touch_gesture_{false};
     std::atomic<uint32_t> consecutive_hitches_{0};

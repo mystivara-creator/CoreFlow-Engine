@@ -61,26 +61,43 @@ void RenderBooster::disconnect_frame_source() noexcept {
 }
 
 void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
+    bool trigger_burst = false;
     switch (event.kind) {
         case FrameEventKind::TouchBurst:
             on_touch_down();
-            break;
+            return;
         case FrameEventKind::FrameDropped:
             if (event.frame_duration_ns > event.jank_threshold_ns) {
-                ++metrics_.dropped_frames;
-                const uint32_t hitches = ++consecutive_hitches_;
-                if (hitches >= 2) trigger_render_burst(580, std::chrono::milliseconds(250));
+                {
+                    std::lock_guard<std::mutex> lock(metrics_mutex_);
+                    ++metrics_.dropped_frames;
+                }
+                const uint32_t hitches =
+                    consecutive_hitches_.fetch_add(1, std::memory_order_relaxed) + 1;
+                trigger_burst = hitches >= 2;
             }
             break;
         case FrameEventKind::FramePresented:
             if (event.frame_duration_ns > 0) {
-                const double duration_ms = static_cast<double>(event.frame_duration_ns) / 1'000'000.0;
-                metrics_.average_frame_time_ms = metrics_.average_frame_time_ms == 0.0
-                    ? duration_ms : 0.9 * metrics_.average_frame_time_ms + 0.1 * duration_ms;
-                if (event.jank_threshold_ns > 0 && event.frame_duration_ns <= event.jank_threshold_ns)
+                const double duration_ms =
+                    static_cast<double>(event.frame_duration_ns) / 1'000'000.0;
+                {
+                    std::lock_guard<std::mutex> lock(metrics_mutex_);
+                    metrics_.average_frame_time_ms =
+                        metrics_.average_frame_time_ms == 0.0
+                            ? duration_ms
+                            : 0.9 * metrics_.average_frame_time_ms + 0.1 * duration_ms;
+                }
+                if (event.jank_threshold_ns > 0 &&
+                    event.frame_duration_ns <= event.jank_threshold_ns) {
                     consecutive_hitches_.store(0, std::memory_order_relaxed);
+                }
             }
             break;
+    }
+
+    if (trigger_burst) {
+        trigger_render_burst(580, std::chrono::milliseconds(250));
     }
 }
 
@@ -94,21 +111,31 @@ void RenderBooster::on_touch_up() {
 }
 
 void RenderBooster::on_frame_presented(double frame_time_ms) {
-    if (metrics_.target_fps == 0 || !std::isfinite(frame_time_ms) || frame_time_ms <= 0.0) return;
-    double frame_budget = 1000.0 / metrics_.target_fps;
-
-    if (frame_time_ms > frame_budget * 1.25) {
-        metrics_.dropped_frames++;
-        uint32_t hitches = ++consecutive_hitches_;
-
-        if (hitches >= 2) {
-            trigger_render_burst(580, std::chrono::milliseconds(250));
+    bool trigger_burst = false;
+    {
+        std::lock_guard<std::mutex> lock(metrics_mutex_);
+        if (metrics_.target_fps == 0 || !std::isfinite(frame_time_ms) ||
+            frame_time_ms <= 0.0) {
+            return;
         }
-    } else {
-        consecutive_hitches_.store(0, std::memory_order_relaxed);
+
+        const double frame_budget = 1000.0 / metrics_.target_fps;
+        if (frame_time_ms > frame_budget * 1.25) {
+            ++metrics_.dropped_frames;
+            const uint32_t hitches =
+                consecutive_hitches_.fetch_add(1, std::memory_order_relaxed) + 1;
+            trigger_burst = hitches >= 2;
+        } else {
+            consecutive_hitches_.store(0, std::memory_order_relaxed);
+        }
+
+        metrics_.average_frame_time_ms =
+            0.9 * metrics_.average_frame_time_ms + 0.1 * frame_time_ms;
     }
 
-    metrics_.average_frame_time_ms = 0.9 * metrics_.average_frame_time_ms + 0.1 * frame_time_ms;
+    if (trigger_burst) {
+        trigger_render_burst(580, std::chrono::milliseconds(250));
+    }
 }
 
 bool RenderBooster::unlock_display_refresh_limits() {
@@ -117,6 +144,7 @@ bool RenderBooster::unlock_display_refresh_limits() {
 }
 
 FrameMetrics RenderBooster::get_metrics() const {
+    std::lock_guard<std::mutex> lock(metrics_mutex_);
     return metrics_;
 }
 
@@ -196,4 +224,3 @@ void RenderBooster::revert_burst() noexcept {
 }
 
 } // namespace coreflow
-
