@@ -77,6 +77,16 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
     return ok && length > 0;
 }
 
+[[nodiscard]] std::string_view trimAscii(std::string_view value) noexcept {
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
+                              value.front() == '\n' || value.front() == '\r'))
+        value.remove_prefix(1);
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t' ||
+                              value.back() == '\n' || value.back() == '\r'))
+        value.remove_suffix(1);
+    return value;
+}
+
 [[nodiscard]] bool parseUnsigned(std::string_view value, std::uint64_t& parsed) noexcept {
     while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
                               value.front() == '\n' || value.front() == '\r'))
@@ -284,7 +294,8 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
         if (split == std::string_view::npos) break;
         frequency_list.remove_prefix(split + 1);
     }
-    const std::string_view driver_name(driver, driver_length);
+    const std::string_view driver_name = trimAscii(
+        std::string_view(driver, driver_length));
     if (!frequency_valid || driver_name.empty() ||
         driver_name.find_first_of(" \t\r\n") != std::string_view::npos) return 0;
 
@@ -337,7 +348,7 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
                               hashBytes(ordinal, std::string_view(
                                   reinterpret_cast<const char*>(endpoint.probe_id.bytes.data()), 16)))},
             ProvenanceId{makeId(relation_hash ^ (ordinal << 8U),
-                                hashBytes(ordinal + 17U, std::string_view(driver, driver_length)))},
+                                hashBytes(ordinal + 17U, driver_name))},
             relationship, endpoint.observed_generation, observed, true, capability};
     }
     return 3;
