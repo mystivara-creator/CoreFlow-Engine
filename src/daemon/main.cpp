@@ -443,7 +443,7 @@ std::string build_status_json(CoreFlowContext& context, bool live_runtime = fals
         << ",\"pid\":" << pid
         << ",\"uclampMin\":0"
         << ",\"uclampMax\":0"
-        << ",\"uclampSupported\":false"
+        << ",\"uclampSupported\":" << (live_runtime ? (context.uclamp_governor().is_supported() ? "true" : "false") : "false")
         << ",\"uclampProbeSkipped\":true"
         << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
         << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
@@ -1841,9 +1841,10 @@ int main(int argc, char* argv[]) {
     const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
         const auto snapshot = build_status_json(context, true);
         if (!write_status_snapshot(snapshot)) {
-            static auto last_status_write_warning = std::chrono::steady_clock::time_point::min();
+            static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
             const auto now = std::chrono::steady_clock::now();
-            if (now - last_status_write_warning > std::chrono::seconds(30)) {
+            if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
+                now - last_status_write_warning > std::chrono::seconds(30)) {
                 emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
                 last_status_write_warning = now;
             }
