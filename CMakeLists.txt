@@ -325,7 +325,11 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME RecoveryMonitorTest COMMAND test_recovery_monitor)
 
-    add_executable(test_coreflow_context tests/test_coreflow_context.cpp ${COREFLOW_KERNEL_SOURCES})
+    add_executable(test_coreflow_context
+        tests/test_coreflow_context.cpp
+        src/daemon/reactor.cpp
+        ${COREFLOW_KERNEL_SOURCES}
+    )
     target_link_libraries(test_coreflow_context PRIVATE VkLayer_coreflow ${CMAKE_DL_LIBS} m)
     if(NOT ANDROID)
         target_link_libraries(test_coreflow_context PRIVATE pthread)

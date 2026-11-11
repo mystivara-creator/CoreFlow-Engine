@@ -61,7 +61,8 @@ int main() {
                         std::chrono::milliseconds(100)));
         assert(wait_for(top / "cpu.uclamp.min", "0.00",
                         std::chrono::milliseconds(500)));
-        assert(get(top / "cpu.uclamp.max") == "100.00");
+        assert(wait_for(top / "cpu.uclamp.max", "100.00",
+                        std::chrono::milliseconds(500)));
         assert(coordinator.active_leases().empty());
 
         // External ownership loss during the burst must never be overwritten
