@@ -10,6 +10,7 @@
 #include "coreflow/unique_fd.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <linux/input.h>
 #include <string>
@@ -42,11 +43,14 @@ struct TouchInputState final {
     FrameEvent& output,
     uint64_t minimum_interval_ns = 50'000'000ULL) noexcept;
 
+using TouchscreenDeviceProbe = bool (*)(int fd) noexcept;
+
 class NativeInputEventSource final : public FrameEventSource {
 public:
     explicit NativeInputEventSource(
         EpollReactor& reactor,
-        std::string device_root = "/dev/input") noexcept;
+        std::string device_root = "/dev/input",
+        TouchscreenDeviceProbe touchscreen_probe = nullptr) noexcept;
     ~NativeInputEventSource() override;
 
     NativeInputEventSource(const NativeInputEventSource&) = delete;
@@ -55,7 +59,9 @@ public:
     [[nodiscard]] bool start(FrameEventListener listener) noexcept override;
     void stop() noexcept override;
 
-    [[nodiscard]] bool active() const noexcept { return active_; }
+    [[nodiscard]] bool active() const noexcept {
+        return has_active_devices_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] size_t attached_devices() const noexcept { return devices_.size(); }
 
 private:
@@ -67,10 +73,13 @@ private:
 
     EpollReactor& reactor_;
     std::string device_root_;
+    TouchscreenDeviceProbe touchscreen_probe_{nullptr};
     UniqueFd inotify_fd_;
     FrameEventListener listener_{};
     std::unordered_map<int, DeviceState> devices_;
-    bool active_{false};
+    // Keep source lifecycle separate from instantaneous device availability.
+    std::atomic<bool> running_{false};
+    std::atomic<bool> has_active_devices_{false};
 
     [[nodiscard]] bool add_device(const std::string& path) noexcept;
     void remove_device(int fd) noexcept;

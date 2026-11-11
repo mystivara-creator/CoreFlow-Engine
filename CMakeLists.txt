@@ -457,10 +457,18 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_input_event_source.cpp
         src/kernel/input_event_source.cpp
         src/daemon/reactor.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
     )
     target_include_directories(test_input_event_source PRIVATE include)
+    target_link_libraries(test_input_event_source PRIVATE m)
     if(NOT ANDROID)
         target_link_libraries(test_input_event_source PRIVATE pthread)
+    else()
+        target_link_libraries(test_input_event_source PRIVATE log)
     endif()
     add_test(NAME NativeInputEventSourceTest COMMAND test_input_event_source)
 

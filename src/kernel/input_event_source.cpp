@@ -167,8 +167,12 @@ bool consume_touch_input_event(
 }
 
 NativeInputEventSource::NativeInputEventSource(
-    EpollReactor& reactor, std::string device_root) noexcept
-    : reactor_(reactor), device_root_(std::move(device_root)) {}
+    EpollReactor& reactor,
+    std::string device_root,
+    TouchscreenDeviceProbe touchscreen_probe) noexcept
+    : reactor_(reactor),
+      device_root_(std::move(device_root)),
+      touchscreen_probe_(touchscreen_probe) {}
 
 NativeInputEventSource::~NativeInputEventSource() {
     stop();
@@ -176,7 +180,7 @@ NativeInputEventSource::~NativeInputEventSource() {
 
 bool NativeInputEventSource::start(FrameEventListener listener) noexcept {
     if (!listener) return false;
-    if (active_) return true;
+    if (running_.load(std::memory_order_acquire)) return true;
     listener_ = std::move(listener);
 
     inotify_fd_.reset(::inotify_init1(IN_NONBLOCK | IN_CLOEXEC));
@@ -194,28 +198,39 @@ bool NativeInputEventSource::start(FrameEventListener listener) noexcept {
         }
     }
 
+    // An empty startup directory is not a terminal condition: retain the
+    // inotify watch so late-probed or re-created touchscreen nodes are seen.
     scan_devices();
-    active_ = !devices_.empty();
-    if (!active_) {
-        stop();
+    const bool can_run = inotify_fd_.valid() ||
+        has_active_devices_.load(std::memory_order_acquire);
+    running_.store(can_run, std::memory_order_release);
+    if (!can_run) {
+        listener_ = {};
         return false;
     }
     return true;
 }
 
 void NativeInputEventSource::stop() noexcept {
+    running_.store(false, std::memory_order_release);
     if (inotify_fd_.valid()) {
         (void)reactor_.unregister_fd(inotify_fd_.get());
         inotify_fd_.reset();
     }
     while (!devices_.empty()) remove_device(devices_.begin()->first);
     listener_ = {};
-    active_ = false;
+    has_active_devices_.store(false, std::memory_order_release);
 }
 
 bool NativeInputEventSource::add_device(const std::string& path) noexcept {
-    UniqueFd fd(::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW));
-    if (!fd.valid() || !query_touchscreen(fd.get())) return false;
+    const int access_mode = touchscreen_probe_ != nullptr ? O_RDWR : O_RDONLY;
+    UniqueFd fd(::open(path.c_str(),
+        access_mode | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW));
+    if (!fd.valid()) return false;
+    const bool touchscreen = touchscreen_probe_ != nullptr
+        ? touchscreen_probe_(fd.get())
+        : query_touchscreen(fd.get());
+    if (!touchscreen) return false;
     const int raw_fd = fd.get();
     DeviceState device;
     device.fd = std::move(fd);
@@ -235,11 +250,15 @@ void NativeInputEventSource::remove_device(int fd) noexcept {
     if (it == devices_.end()) return;
     (void)reactor_.unregister_fd(fd);
     devices_.erase(it);
+    has_active_devices_.store(!devices_.empty(), std::memory_order_release);
 }
 
 void NativeInputEventSource::scan_devices() noexcept {
     DIR* directory = ::opendir(device_root_.c_str());
-    if (directory == nullptr) return;
+    if (directory == nullptr) {
+        has_active_devices_.store(!devices_.empty(), std::memory_order_release);
+        return;
+    }
     while (dirent* entry = ::readdir(directory)) {
         if (!is_event_node(entry->d_name)) continue;
         const std::string path = device_root_ + "/" + entry->d_name;
@@ -253,7 +272,10 @@ void NativeInputEventSource::scan_devices() noexcept {
 
     for (auto it = devices_.begin(); it != devices_.end();) {
         struct stat st{};
-        if (::lstat(it->second.path.c_str(), &st) != 0 || !S_ISCHR(st.st_mode)) {
+        const bool valid_node = ::lstat(it->second.path.c_str(), &st) == 0 &&
+            (S_ISCHR(st.st_mode) ||
+             (touchscreen_probe_ != nullptr && S_ISFIFO(st.st_mode)));
+        if (!valid_node) {
             const int fd = it->first;
             ++it;
             remove_device(fd);
@@ -261,6 +283,7 @@ void NativeInputEventSource::scan_devices() noexcept {
             ++it;
         }
     }
+    has_active_devices_.store(!devices_.empty(), std::memory_order_release);
 }
 
 void NativeInputEventSource::handle_inotify(uint32_t events) noexcept {
@@ -282,7 +305,9 @@ void NativeInputEventSource::handle_inotify(uint32_t events) noexcept {
 }
 
 void NativeInputEventSource::dispatch(const FrameEvent& event) noexcept {
-    if (active_ && listener_) listener_(event);
+    // Keep dispatch independent of device count. The inotify callback remains
+    // registered and can repopulate devices_ while the directory is empty.
+    if (running_.load(std::memory_order_acquire) && listener_) listener_(event);
 }
 
 void NativeInputEventSource::handle_device(int fd, uint32_t events) noexcept {
@@ -290,7 +315,6 @@ void NativeInputEventSource::handle_device(int fd, uint32_t events) noexcept {
     if (it == devices_.end()) return;
     if ((events & (EPOLLERR | EPOLLHUP)) != 0U) {
         remove_device(fd);
-        active_ = !devices_.empty();
         return;
     }
 
@@ -301,7 +325,6 @@ void NativeInputEventSource::handle_device(int fd, uint32_t events) noexcept {
         if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         if (bytes <= 0 || (static_cast<size_t>(bytes) % sizeof(input_event)) != 0U) {
             remove_device(fd);
-            active_ = !devices_.empty();
             return;
         }
         const size_t count = static_cast<size_t>(bytes) / sizeof(input_event);
