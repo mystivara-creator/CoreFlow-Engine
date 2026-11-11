@@ -317,7 +317,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
             std::none_of(roots.begin(), roots.end(), [](const RootEntry& root) {
                 return root.path == "/dev/cpuctl";
             })) {
-            roots.push_back(RootEntry{"/dev/cpuctl", MountKind::CgroupV1});
+            roots.insert(roots.begin(), RootEntry{"/dev/cpuctl", MountKind::CgroupV1});
         }
     }
 
