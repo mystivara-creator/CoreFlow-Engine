@@ -77,6 +77,18 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
     return ok && length > 0;
 }
 
+[[nodiscard]] bool parseUnsigned(std::string_view value, std::uint64_t& parsed) noexcept {
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\\t' ||
+                              value.front() == '\\n' || value.front() == '\\r'))
+        value.remove_prefix(1);
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\\t' ||
+                              value.back() == '\\n' || value.back() == '\\r'))
+        value.remove_suffix(1);
+    if (value.empty()) return false;
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    return result.ec == std::errc{} && result.ptr == value.data() + value.size();
+}
+
 [[nodiscard]] bool parsePositive(std::string_view value, std::uint64_t& parsed) noexcept {
     while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
                               value.front() == '\n' || value.front() == '\r'))
@@ -179,7 +191,7 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
     const auto total_pos = text.find("total=");
     auto total_end = text.find_first_of(" \n\r", total_pos);
     if (total_end == std::string_view::npos) total_end = text.size();
-    return parsePositive(text.substr(total_pos + 6, total_end - total_pos - 6), total);
+    return parseUnsigned(text.substr(total_pos + 6, total_end - total_pos - 6), total);
 }
 
 [[nodiscard]] bool validUclamp(const char* path) noexcept {
@@ -187,7 +199,7 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
     std::size_t length = 0;
     if (!readFile(path, contents, sizeof(contents), length)) return false;
     std::uint64_t value = 0;
-    return parsePositive(std::string_view(contents, length), value) && value <= 1024;
+    return parseUnsigned(std::string_view(contents, length), value) && value <= 1024;
 }
 
 } // namespace
