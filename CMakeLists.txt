@@ -64,6 +64,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
     src/semantic/domain_evidence_aggregator.cpp
+    src/semantic/linux_sysfs_discovery_adapter.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
@@ -159,6 +160,15 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_capability_resolver PRIVATE pthread)
     endif()
     add_test(NAME P3CapabilityResolverTest COMMAND test_capability_resolver)
+
+    add_executable(test_linux_sysfs_discovery_adapter
+        tests/semantic/test_linux_sysfs_discovery_adapter.cpp
+        src/semantic/linux_sysfs_discovery_adapter.cpp
+        src/platform/discovery_adapter.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+    )
+    target_include_directories(test_linux_sysfs_discovery_adapter PRIVATE include)
+    add_test(NAME LinuxSysfsDiscoveryAdapterTest COMMAND test_linux_sysfs_discovery_adapter)
 
     add_executable(test_domain_evidence_aggregator
         tests/semantic/test_domain_evidence_aggregator.cpp
