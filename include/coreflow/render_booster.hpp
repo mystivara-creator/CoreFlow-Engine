@@ -11,6 +11,8 @@
 #include <atomic>
 #include <string>
 #include "coreflow/feature_accountability.hpp"
+#include "coreflow/reactor.hpp"
+#include "coreflow/uclamp.hpp"
 
 namespace coreflow {
 
@@ -24,8 +26,10 @@ struct FrameMetrics {
 class RenderBooster {
 public:
  static constexpr FeatureStatus kStatus=kRenderBoosterStatus;
-    RenderBooster();
-    ~RenderBooster() = default;
+    RenderBooster(UclampGovernor& governor, EpollReactor& reactor);
+    ~RenderBooster();
+    RenderBooster(const RenderBooster&) = delete;
+    RenderBooster& operator=(const RenderBooster&) = delete;
 
     void on_touch_down();
     void on_touch_up();
@@ -38,8 +42,20 @@ private:
     FrameMetrics metrics_;
     std::atomic<bool> in_touch_gesture_{false};
     std::atomic<uint32_t> consecutive_hitches_{0};
+    UclampGovernor& governor_;
+    EpollReactor& reactor_;
+    UniqueFd request_fd_;
+    UniqueFd expiry_fd_;
+    std::atomic<uint32_t> requested_min_{0};
+    std::atomic<int64_t> requested_duration_ms_{0};
+    bool burst_active_{false}; // Reactor-thread confined.
+    uint32_t baseline_min_{0};
+    uint32_t baseline_max_{1024};
 
-    void trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration);
+    void trigger_render_burst(uint32_t uclamp_min, std::chrono::milliseconds duration) noexcept;
+    void handle_request(uint32_t events) noexcept;
+    void handle_expiry(uint32_t events) noexcept;
+    void revert_burst() noexcept;
 };
 
 } // namespace coreflow

@@ -3,6 +3,7 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/baseline_store.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -34,6 +35,9 @@ int main() {
     const fs::path cpuset = top_app / "cpuset.cpus";
     const fs::path weight = top_app / "cpu.weight";
     put(root / "cgroup.controllers", "cpu cpuset\n");
+    put(root / "cgroup.subtree_control", "");
+    put(root / "cgroup.threads", std::to_string(::getpid()));
+    put(root / "background/cgroup.threads", "");
     put(cpuset, "0-3\n");
     put(weight, "100\n");
     ::setenv("COREFLOW_TEST_STATE_DIR", (root / "state").c_str(), 1);
@@ -104,8 +108,24 @@ int main() {
         assert(get(cpuset) == "0-3");
         assert(coordinator.active_leases().empty());
         assert(!baseline.has_active_mutations());
-        assert(!controller.migrate_task(::getpid(), coreflow::CgroupTarget::Background));
-        assert(!controller.unlock_vendor_restrictions());
+        // Single-TID migration captures the original cgroup.threads snapshot,
+        // writes only the requested TID, and confirms target membership by readback.
+        assert(controller.migrate_task(::getpid(), coreflow::CgroupTarget::Background));
+        assert(get(root / "background/cgroup.threads") == std::to_string(::getpid()));
+        const auto placement_audit = baseline.get_audit_trail();
+        const std::string thread_membership =
+            "/proc/" + std::to_string(::getpid()) + "/task/" +
+            std::to_string(::getpid()) + "/cgroup";
+        const auto placement = std::find_if(placement_audit.begin(), placement_audit.end(),
+            [&](const coreflow::NodeSnapshot& node) {
+                return node.path == thread_membership;
+            });
+        assert(placement != placement_audit.end());
+        assert(placement->factory_value.find("0::/") != std::string::npos);
+        assert(!controller.migrate_task(-1, coreflow::CgroupTarget::Background));
+        assert(controller.unlock_vendor_restrictions());
+        assert(get(root / "cgroup.subtree_control") == "+cpu");
+        assert(controller.unlock_vendor_restrictions());
 
         // A controller that already owns TopApp must still reject a different
         // path whose BaselineStore entry is modified by an unrelated legacy owner.

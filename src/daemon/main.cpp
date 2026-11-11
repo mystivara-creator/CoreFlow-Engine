@@ -3,6 +3,7 @@
 #include "coreflow/config.hpp"
 #include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
+#include "coreflow/render_booster.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/recovery_monitor.hpp"
@@ -1173,6 +1174,8 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
+    RenderBooster render_booster(governor, reactor);
+    (void)render_booster;
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
     if (create_dvs_listener(dvs_listener)) {
