@@ -331,9 +331,9 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
     return std::isfinite(v) ? v : fallback;
 }
 
-void print_status(CoreFlowContext& context) {
+std::string build_status_json(CoreFlowContext& context, bool live_runtime = false, bool daemon_running = true) {
     // 1. Perform passive hardware/kernel inspection before writing the JSON payload
-    const pid_t pid = daemon_pid();
+    const pid_t pid = live_runtime ? (daemon_running ? ::getpid() : 0) : daemon_pid();
     const auto& platform = context.platform_context();
     const DaemonConfig cfg_status = DaemonConfig::load_best_available();
     const auto profile = context.thermal_monitor().multi_sensor_profile();
@@ -361,8 +361,8 @@ void print_status(CoreFlowContext& context) {
     const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
     const auto io_psi = read_psi_avg10("/proc/pressure/io");
     // Read-only status does not train models or create mutation-capable owners.
-    const NeuralPrediction ai{.backend = "not_started"};
-    const AutonomousDecisionSnapshot tuner{
+    const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
+    AutonomousDecisionSnapshot tuner{
         .stage = "READ_ONLY",
         .active_intent = "ReadOnlyInspection",
         .intent = "ReadOnlyInspection",
@@ -412,7 +412,8 @@ void print_status(CoreFlowContext& context) {
         .vm_page_cluster = {},
         .vm_vfs_cache_pressure = {},
     };
-    const VulkanCapabilitiesSnapshot vk{};
+    if (live_runtime) tuner = context.autonomous_tuner().snapshot();
+    const VulkanCapabilitiesSnapshot vk = live_runtime ? context.vulkan_controller().snapshot() : VulkanCapabilitiesSnapshot{};
     const bool recovery_pending = !journal_clear();
     const size_t journal_nodes = count_journal_entries();
     // The status contract uses the same live discovery and native resolver path as 2B.
@@ -427,8 +428,8 @@ void print_status(CoreFlowContext& context) {
         << ",\"uclampMax\":0"
         << ",\"uclampSupported\":false"
         << ",\"uclampProbeSkipped\":true"
-        << ",\"inspectionMode\":\"read-only\""
-        << ",\"mutationRuntimeStarted\":false"
+        << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
+        << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
         << ",\"osFamily\":\"" << os_family_name(platform.identity.os_family) << "\""
         << ",\"osMajor\":" << platform.identity.os_major
@@ -436,9 +437,10 @@ void print_status(CoreFlowContext& context) {
         << ",\"policyFamily\":\"" << policy_family_name(platform.policy_family) << "\""
         << ",\"identityConfidence\":\"" << identity_confidence_name(platform.identity.confidence) << "\""
         << ",\"tier1Eligible\":" << (platform.tier1_eligible ? "true" : "false")
-        << ",\"aiRuntimeStarted\":false"
-        << ",\"tunerRuntimeStarted\":false"
-        << ",\"vulkanProbeSkipped\":true"
+        << ",\"aiRuntimeStarted\":" << (live_runtime ? "true" : "false")
+        << ",\"tunerRuntimeStarted\":" << (live_runtime ? "true" : "false")
+        << ",\"tunerRuntimeStage\":" << json_string(tuner.runtime_stage)
+        << ",\"vulkanProbeSkipped\":" << (live_runtime ? "false" : "true")
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
         << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
         << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
@@ -639,7 +641,11 @@ void print_status(CoreFlowContext& context) {
         << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
         << ",\"semanticEvidence\":" << semantic_evidence_json << "}";
 
-    std::cout << "\n" << out.str() << "\n" << std::flush;
+    return out.str();
+}
+
+void print_status(CoreFlowContext& context) {
+    std::cout << "\n" << build_status_json(context, false) << "\n" << std::flush;
 }
 
 std::string json_string(std::string_view text) {
@@ -903,6 +909,54 @@ void clear_pid(const UniqueFd& lock) noexcept {
     }
 }
 
+bool write_status_snapshot(std::string_view payload) noexcept {
+    if (payload.empty() || payload.size() > 1024U * 1024U || !ensure_secure_state_dir()) return false;
+    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    static uint64_t nonce = 0;
+    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(++nonce);
+    UniqueFd temp(::openat(dir.get(), temp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!temp.valid()) return false;
+    (void)::fchmod(temp.get(), 0600);
+    size_t offset = 0;
+    while (offset < payload.size()) {
+        const ssize_t n = ::write(temp.get(), payload.data() + offset, payload.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { (void)::unlinkat(dir.get(), temp_name.c_str(), 0); return false; }
+        offset += static_cast<size_t>(n);
+    }
+    if (::fsync(temp.get()) != 0 || ::renameat(dir.get(), temp_name.c_str(), dir.get(), "status.json") != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return false;
+    }
+    (void)::fsync(dir.get());
+    return true;
+}
+
+bool print_live_status_snapshot(pid_t expected_pid) {
+    if (expected_pid <= 0) return false;
+    UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 1024 * 1024) return false;
+    const auto now = std::chrono::system_clock::now();
+    const auto modified = std::chrono::system_clock::from_time_t(st.st_mtime);
+    if (now < modified || now - modified > std::chrono::seconds(3)) return false;
+    std::string payload(static_cast<size_t>(st.st_size), '\0');
+    size_t offset = 0;
+    while (offset < payload.size()) {
+        const ssize_t n = ::read(fd.get(), payload.data() + offset, payload.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        offset += static_cast<size_t>(n);
+    }
+    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid);
+    if (payload.find("\"running\":true") == std::string::npos ||
+        payload.find(pid_field) == std::string::npos || payload.front() != '{' || payload.back() != '}') return false;
+    std::cout << "\n" << payload << "\n" << std::flush;
+    return true;
+}
+
 bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
     constexpr std::string_view kAllowed[] = {
         "/sys/fs/cgroup/cgroup.procs",
@@ -1108,6 +1162,8 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (command == "--status") {
+            const pid_t live_pid = daemon_pid();
+            if (live_pid > 0 && print_live_status_snapshot(live_pid)) return 0;
             CoreFlowContext context;
             if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
             print_status(context);
