@@ -157,6 +157,20 @@ int main() {
         const auto assessment = aggregator.aggregate(evidence, 44,
             evidence[0].observed_at_ns, 5'000'000'000ULL);
         assert(assessment.mutationEligible());
+
+        coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(
+            fixture.sys.string(), fixture.proc.string());
+        RawDiscoveredEndpoint endpoint{
+            id(7), "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq",
+            AccessCapability::Read, 44};
+        CapabilityResolver resolver{};
+        const auto descriptor = resolver.resolveOne(
+            endpoint, adapter, 44, evidence[0].observed_at_ns);
+        assert(descriptor.has_value());
+        assert(descriptor->state() == DescriptorState::Validated);
+        assert(descriptor->semantic().functional_domain == FunctionalDomain::Cpu);
+        assert(descriptor->domainAssessment().corroborating_relations == 3U);
+        assert(descriptor->mutation().mode == MutationMode::None);
     }
     std::cout << "Linux sysfs discovery adapter mock filesystem: PASS\n";
     return 0;
