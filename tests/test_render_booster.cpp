@@ -59,7 +59,7 @@ int main() {
         assert(booster.connect_frame_source(frame_bridge));
         const FrameEvent touch_event{
             .kind = FrameEventKind::TouchBurst,
-            .vsync_timestamp_ns = 1\'000\'000ULL,
+            .vsync_timestamp_ns = 1000000ULL,
         };
         assert(frame_bridge.submit(touch_event));
         booster.disconnect_frame_source();
