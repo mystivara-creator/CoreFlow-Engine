@@ -473,7 +473,7 @@ std::string build_status_json(
         << ",\"uclampMin\":" << uclamp_min
         << ",\"uclampMax\":" << uclamp_max
         << ",\"uclampSupported\":" << (uclamp_supported ? "true" : "false")
-        << ",\"uclampProbeSkipped\":true"
+        << ",\"uclampProbeSkipped\":" << (live_runtime ? "false" : "true")
         << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
         << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""

@@ -311,6 +311,14 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 mount.is_v2 ? MountKind::CgroupV2 : MountKind::CgroupV1,
             });
         }
+        // Some Android builds expose the CPU controller at /dev/cpuctl even
+        // when mountinfo filtering or delegated cgroup2 discovery is incomplete.
+        if (fs::exists("/dev/cpuctl/top-app/cpu.uclamp.min") &&
+            std::none_of(roots.begin(), roots.end(), [](const RootEntry& root) {
+                return root.path == "/dev/cpuctl";
+            })) {
+            roots.push_back(RootEntry{"/dev/cpuctl", MountKind::CgroupV1});
+        }
     }
 
     struct Pending { fs::path path; unsigned depth; };

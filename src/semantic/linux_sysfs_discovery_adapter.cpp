@@ -208,8 +208,69 @@ constexpr std::uint64_t kMaximumEvidenceAgeNs = 5'000'000'000ULL;
     char contents[128]{};
     std::size_t length = 0;
     if (!readFile(path, contents, sizeof(contents), length)) return false;
-    std::uint64_t value = 0;
-    return parseUnsigned(std::string_view(contents, length), value) && value <= 1024;
+    const auto value = trimAscii(std::string_view(contents, length));
+    if (value == "max") return true;
+    double parsed = 0.0;
+    const auto result = std::from_chars(value.data(), value.data() + value.size(),
+                                        parsed, std::chars_format::general);
+    return result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
+           parsed >= 0.0 && parsed <= 1024.0;
+}
+
+[[nodiscard]] bool findCgroupV1CpuMount(const char* proc_root, char* out,
+                                        std::size_t capacity) noexcept {
+    char path[kPathCapacity]{}, contents[kFileCapacity]{};
+    std::size_t length = 0;
+    if (!makePath(path, sizeof(path), proc_root, "self/mountinfo") ||
+        !readFile(path, contents, sizeof(contents), length)) return false;
+    const std::string_view text(contents, length);
+    std::size_t cursor = 0;
+    unsigned matches = 0;
+    while (cursor < text.size()) {
+        auto end = text.find('\n', cursor);
+        if (end == std::string_view::npos) end = text.size();
+        const auto line = text.substr(cursor, end - cursor);
+        cursor = end + 1;
+        const auto separator = line.find(" - ");
+        if (separator == std::string_view::npos) continue;
+        const auto right = line.substr(separator + 3);
+        if (!right.starts_with("cgroup ")) continue;
+        const auto options = right.find("rw,");
+        const auto option_text = options == std::string_view::npos
+            ? right : right.substr(options + 3);
+        bool cpu_controller = false;
+        std::size_t token = 0;
+        while (token <= option_text.size()) {
+            const auto comma = option_text.find(',', token);
+            const auto item = option_text.substr(token,
+                comma == std::string_view::npos ? option_text.size() - token : comma - token);
+            if (item == "cpu" || item == "cpuacct" || item == "cpuctl") {
+                cpu_controller = true;
+                break;
+            }
+            if (comma == std::string_view::npos) break;
+            token = comma + 1;
+        }
+        if (!cpu_controller) continue;
+        auto left = line.substr(0, separator);
+        std::size_t field = 0, start = 0;
+        std::string_view mountpoint{};
+        while (start < left.size()) {
+            while (start < left.size() && left[start] == ' ') ++start;
+            auto stop = left.find(' ', start);
+            if (stop == std::string_view::npos) stop = left.size();
+            if (field == 4) mountpoint = left.substr(start, stop - start);
+            ++field;
+            start = stop + 1;
+        }
+        if (field < 6 || mountpoint.empty() || mountpoint.front() != '/' ||
+            mountpoint.find("..") != std::string_view::npos || mountpoint.size() >= capacity)
+            return false;
+        ++matches;
+        std::memcpy(out, mountpoint.data(), mountpoint.size());
+        out[mountpoint.size()] = '\0';
+    }
+    return matches == 1;
 }
 
 } // namespace
@@ -350,31 +411,64 @@ std::size_t LinuxSysfsDiscoveryAdapter::collectDomainRelationshipEvidence(
     if (!frequency_valid || driver_name.empty() ||
         driver_name.find_first_of(" \t\r\n") != std::string_view::npos) return 0;
 
-    char cgroup_path[kPathCapacity]{}, mountpoint[kPathCapacity]{};
-    if (!parseCgroupPath(procfs_root_.data(), cgroup_path, sizeof(cgroup_path)) ||
-        !findCgroup2Mount(procfs_root_.data(), mountpoint, sizeof(mountpoint))) return 0;
-
     char cgroup_root[kPathCapacity]{}, cgroup_file[kPathCapacity]{};
-    int written = std::snprintf(cgroup_root, sizeof(cgroup_root), "%s%s",
+    int written = 0;
+    bool cpu_cgroup_valid = false;
+
+    // Unified v2 path: require its CPU accounting ABI and cgroup-local PSI.
+    char cgroup_path[kPathCapacity]{}, mountpoint[kPathCapacity]{};
+    if (parseCgroupPath(procfs_root_.data(), cgroup_path, sizeof(cgroup_path)) &&
+        findCgroup2Mount(procfs_root_.data(), mountpoint, sizeof(mountpoint))) {
+        written = std::snprintf(cgroup_root, sizeof(cgroup_root), "%s%s",
                                 mountpoint, cgroup_path);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_root)) return 0;
+        if (written > 0 && static_cast<std::size_t>(written) < sizeof(cgroup_root)) {
+            char cpu_stat[kFileCapacity]{};
+            std::size_t cpu_stat_length = 0;
+            written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.min", cgroup_root);
+            const bool min_ok = written > 0 && static_cast<std::size_t>(written) < sizeof(cgroup_file) &&
+                                validUclamp(cgroup_file);
+            written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.max", cgroup_root);
+            const bool max_ok = written > 0 && static_cast<std::size_t>(written) < sizeof(cgroup_file) &&
+                                validUclamp(cgroup_file);
+            written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.stat", cgroup_root);
+            const bool stat_ok = written > 0 && static_cast<std::size_t>(written) < sizeof(cgroup_file) &&
+                readFile(cgroup_file, cpu_stat, sizeof(cpu_stat), cpu_stat_length) &&
+                containsToken(std::string_view(cpu_stat, cpu_stat_length), "usage_usec");
+            written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.pressure", cgroup_root);
+            const bool psi_ok = written > 0 && static_cast<std::size_t>(written) < sizeof(cgroup_file) &&
+                                validatePsi(cgroup_file);
+            cpu_cgroup_valid = min_ok && max_ok && stat_ok && psi_ok;
+        }
+    }
 
-    written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.min", cgroup_root);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_file) ||
-        !validUclamp(cgroup_file)) return 0;
-    written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.max", cgroup_root);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_file) ||
-        !validUclamp(cgroup_file)) return 0;
-    written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.stat", cgroup_root);
-    char cpu_stat[kFileCapacity]{};
-    std::size_t cpu_stat_length = 0;
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_file) ||
-        !readFile(cgroup_file, cpu_stat, sizeof(cpu_stat), cpu_stat_length) ||
-        !containsToken(std::string_view(cpu_stat, cpu_stat_length), "usage_usec")) return 0;
-
-    written = std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.pressure", cgroup_root);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_file) ||
-        !validatePsi(cgroup_file)) return 0;
+    // Android GKI v1 cpuctl path: cgroup2 may be mounted but delegate no CPU
+    // controller. Validate the real top-app task/proc ABI plus global CPU PSI.
+    if (!cpu_cgroup_valid &&
+        findCgroupV1CpuMount(procfs_root_.data(), mountpoint, sizeof(mountpoint))) {
+        written = std::snprintf(cgroup_root, sizeof(cgroup_root), "%s/top-app", mountpoint);
+        if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(cgroup_root)) return 0;
+        char tasks[kFileCapacity]{}, procs[kFileCapacity]{}, pressure[kFileCapacity]{};
+        std::size_t tasks_length = 0, procs_length = 0, pressure_length = 0;
+        const bool min_ok =
+            std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.min", cgroup_root) > 0 &&
+            validUclamp(cgroup_file);
+        const bool max_ok =
+            std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cpu.uclamp.max", cgroup_root) > 0 &&
+            validUclamp(cgroup_file);
+        const bool tasks_ok =
+            std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/tasks", cgroup_root) > 0 &&
+            readFile(cgroup_file, tasks, sizeof(tasks), tasks_length);
+        const bool procs_ok =
+            std::snprintf(cgroup_file, sizeof(cgroup_file), "%s/cgroup.procs", cgroup_root) > 0 &&
+            readFile(cgroup_file, procs, sizeof(procs), procs_length);
+        const bool psi_ok = makePath(cgroup_file, sizeof(cgroup_file),
+                                     procfs_root_.data(), "pressure/cpu") &&
+                            validatePsi(cgroup_file);
+        cpu_cgroup_valid = min_ok && max_ok && tasks_ok && procs_ok && psi_ok;
+        (void)pressure;
+        (void)pressure_length;
+    }
+    if (!cpu_cgroup_valid) return 0;
 
     const auto observed = monotonicNowNs();
     if (observed == 0 || observed < started || observed - started > kMaximumEvidenceAgeNs)

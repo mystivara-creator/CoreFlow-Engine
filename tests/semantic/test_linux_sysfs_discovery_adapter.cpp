@@ -133,6 +133,31 @@ int main() {
         write(fixture.sys, "devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq", "300000\n");
         assert(fixture.collect(evidence) == 0);
     }
+    {
+        Fixture fixture;
+        const auto cpuctl = fixture.root / "cpuctl";
+        const auto top_app = cpuctl / "top-app";
+        write(fixture.proc, "self/cgroup", "2:cpu,cpuacct:/top-app\n");
+        write(fixture.proc, "self/mountinfo",
+              "30 23 0:27 / " + cpuctl.string() +
+              " rw,nosuid,nodev - cgroup cgroup rw,cpu,cpuacct\n");
+        write(fixture.proc, "pressure/cpu",
+              "some avg10=1.00 avg60=0.50 avg300=0.10 total=12345\n"
+              "full avg10=0.00 avg60=0.00 avg300=0.00 total=123\n");
+        write(top_app, "cpu.uclamp.min", "0.00");
+        write(top_app, "cpu.uclamp.max", "max");
+        write(top_app, "tasks", "1234\n");
+        write(top_app, "cgroup.procs", "1234\n");
+        write(top_app, "cpu.uclamp.latency_sensitive", "0\n");
+        assert(fixture.collect(evidence) == 3);
+        assert(evidence[0].kind == DomainEvidenceKind::SubsystemAssociation);
+        assert(evidence[1].kind == DomainEvidenceKind::DriverAbi);
+        assert(evidence[2].kind == DomainEvidenceKind::PsiResponseCorrelation);
+        DomainEvidenceAggregator aggregator{};
+        const auto assessment = aggregator.aggregate(evidence, 44,
+            evidence[0].observed_at_ns, 5'000'000'000ULL);
+        assert(assessment.mutationEligible());
+    }
     std::cout << "Linux sysfs discovery adapter mock filesystem: PASS\n";
     return 0;
 }
