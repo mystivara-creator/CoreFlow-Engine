@@ -90,30 +90,30 @@ bool IntentActuator::begin(DeviceProfileHandle profile, std::string_view semanti
         now - profile->captured_monotonic_ns > 5'000'000'000ULL ||
         admission.monotonic_ns == 0U || now < admission.monotonic_ns ||
         now - admission.monotonic_ns > 2'000'000'000ULL) {
-        state_ = {.state=IntentActuatorState::Rejected,.reason="stale profile or PSI admission"};
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id={},.path={},.transaction_id={},.reason="stale profile or PSI admission"};
         return false;
     }
     const auto it = std::find_if(profile->node_capabilities.begin(), profile->node_capabilities.end(),
         [&](const NodeCapability& cap) { return cap.semantic_id == semantic_id; });
     if (it == profile->node_capabilities.end() || !it->mutation_eligible()) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="node lacks verified writable semantic/range contract"};
         return false;
     }
     memory_domain_ = it->domain == HardwareDomain::Memory;
     if (!memory_domain_ && it->domain != HardwareDomain::Storage) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="IntentActuator accepts only memory and storage domains"};
         return false;
     }
     if ((memory_domain_ && !admission.memory_valid) || (!memory_domain_ && !admission.io_valid)) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="required PSI domain is unavailable"};
         return false;
     }
     const double psi = selected_psi(admission);
     if (!std::isfinite(psi) || psi < 1.0 || psi > 100.0) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="PSI bottleneck admission below 1.0% some avg10"};
         return false;
     }
@@ -122,7 +122,7 @@ bool IntentActuator::begin(DeviceProfileHandle profile, std::string_view semanti
         !parse_number(target_value, target) || target < minimum || target > maximum ||
         !parse_number(it->current_value, baseline) || baseline < minimum || baseline > maximum ||
         std::abs(target - baseline) < 0.000001) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="target or baseline violates the profiled numeric contract"};
         return false;
     }
@@ -131,7 +131,7 @@ bool IntentActuator::begin(DeviceProfileHandle profile, std::string_view semanti
     const std::string tx = std::string(semantic_id) + ":" + std::to_string(sequence);
     if (!coordinator_.acquire_lease(domain_, controller_id_, tx,
                                     ControllerPriority::PressureGuard)) {
-        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),
+        state_ = {.state=IntentActuatorState::Rejected,.semantic_id=std::string(semantic_id),.path={},.transaction_id={},
                   .reason="mutation domain lease unavailable"};
         return false;
     }
