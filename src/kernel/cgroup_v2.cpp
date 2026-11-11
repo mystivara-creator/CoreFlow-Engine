@@ -59,7 +59,7 @@ ssize_t read_at(int directory_fd, const char* name, char* buffer, size_t capacit
 }
 
 int open_cgroup_dir(int root_fd, const char* name) noexcept {
-    if (name == nullptr || name[0] == '\\0') return ::fcntl(root_fd, F_DUPFD_CLOEXEC, 0);
+    if (name == nullptr || name[0] == '\0') return ::fcntl(root_fd, F_DUPFD_CLOEXEC, 0);
     return ::openat(root_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 }
 bool capture_thread_membership(pid_t tid) noexcept {
@@ -265,7 +265,7 @@ bool CgroupV2Controller::unlock_vendor_restrictions() {
 
     char command[64];
     size_t command_size = 0;
-    bool selected[3]{false, false, false};
+    std::array<bool, 3> selected{};
     for (size_t i = 0; i < kDelegatedControllers.size(); ++i) {
         const std::string_view controller(kDelegatedControllers[i]);
         if (!token_present(available, static_cast<size_t>(available_size), controller)) continue;
