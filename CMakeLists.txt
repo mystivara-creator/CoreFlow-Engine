@@ -164,6 +164,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_linux_sysfs_discovery_adapter
         tests/semantic/test_linux_sysfs_discovery_adapter.cpp
         src/semantic/linux_sysfs_discovery_adapter.cpp
+        src/semantic/capability_resolver.cpp
         src/platform/discovery_adapter.cpp
         src/semantic/domain_evidence_aggregator.cpp
     )
