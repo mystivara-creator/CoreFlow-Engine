@@ -31,9 +31,11 @@ chmod +x "$MOD_DIR/post-fs-data.sh" "$MOD_DIR/service.sh" "$MOD_DIR/customize.sh
 # Create a mock coreflowd binary that supports --daemon, --status, and --stop
 cat <<'EOF' > "$MOD_DIR/system/bin/coreflowd"
 #!/bin/sh
-PID_FILE="${COREFLOW_STATE_DIR}/coreflowd.mock.pid"
+PID_FILE="${COREFLOW_STATE_DIR}/coreflowd.pid"
 case "${1:-}" in
   --daemon)
+    printf 'launch\n' >> "$COREFLOW_LAUNCH_LOG"
+    sleep "${COREFLOW_MOCK_START_DELAY:-0}"
     echo "$$" > "$PID_FILE"
     exit 0
     ;;
@@ -56,6 +58,8 @@ chmod +x "$MOD_DIR/system/bin/coreflowd"
 
 export COREFLOW_STATE_DIR="$STATE_DIR"
 export COREFLOW_LIVE_MOD_DIR="$LIVE_MOD"
+export COREFLOW_LAUNCH_LOG="$TMP_ROOT/daemon-launches.log"
+: > "$COREFLOW_LAUNCH_LOG"
 
 # 1. Test post-fs-data.sh boot_epoch generation & boot_attempts escalation
 sh "$MOD_DIR/post-fs-data.sh"
@@ -93,11 +97,35 @@ run_customize
 
 [ -f "$STATE_DIR/SAFE_MODE" ] || { echo "FAIL: customize.sh deleted SAFE_MODE"; exit 1; }
 [ -f "$STATE_DIR/DISABLE" ] || { echo "FAIL: customize.sh deleted DISABLE"; exit 1; }
-[ ! -f "$STATE_DIR/coreflowd.mock.pid" ] || { echo "FAIL: daemon started despite SAFE_MODE/DISABLE"; exit 1; }
+[ ! -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon started despite SAFE_MODE/DISABLE"; exit 1; }
 
 # 4. Clear safety markers and verify customize.sh hot-reloads and verifies daemon status
 rm -f "$STATE_DIR/SAFE_MODE" "$STATE_DIR/DISABLE"
 run_customize
-[ -f "$STATE_DIR/coreflowd.mock.pid" ] || { echo "FAIL: daemon did not start after clearing markers"; exit 1; }
+[ -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon did not start after clearing markers"; exit 1; }
+
+# 5. Concurrent service invocations must result in one deterministic daemon launch.
+rm -f "$STATE_DIR/coreflowd.pid"
+: > "$COREFLOW_LAUNCH_LOG"
+export COREFLOW_SKIP_BOOT_WAIT=1
+export COREFLOW_CONFIRM_DELAY_SEC=0
+export COREFLOW_MOCK_START_DELAY=1
+sh "$MOD_DIR/service.sh" &
+SERVICE_PID_1=$!
+sh "$MOD_DIR/service.sh" &
+SERVICE_PID_2=$!
+wait "$SERVICE_PID_1"
+wait "$SERVICE_PID_2"
+[ "$(wc -l < "$COREFLOW_LAUNCH_LOG")" -eq 1 ] || {
+  echo "FAIL: concurrent service invocations launched daemon more than once"
+  exit 1
+}
+[ -s "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: service did not publish daemon PID"; exit 1; }
+sh "$MOD_DIR/service.sh"
+[ "$(wc -l < "$COREFLOW_LAUNCH_LOG")" -eq 1 ] || {
+  echo "FAIL: idempotent service invocation launched a second daemon"
+  exit 1
+}
+[ ! -e "$STATE_DIR/service.lock" ] || { echo "FAIL: service lock was not released"; exit 1; }
 
 echo "Module lifecycle scripts PASS"
