@@ -2,6 +2,7 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
+#include "coreflow/frame_bridge.hpp"
 #include "coreflow/uclamp.hpp"
 
 #include <cassert>
@@ -54,6 +55,16 @@ int main() {
     EpollReactor reactor;
     {
         RenderBooster booster(governor, reactor);
+        AndroidFrameEventBridge frame_bridge;
+        assert(booster.connect_frame_source(frame_bridge));
+        const FrameEvent touch_event{
+            .kind = FrameEventKind::TouchBurst,
+            .vsync_timestamp_ns = 1\'000\'000ULL,
+        };
+        assert(frame_bridge.submit(touch_event));
+        booster.disconnect_frame_source();
+        assert(!frame_bridge.submit(touch_event));
+
         // Drive the exact reactor callbacks synchronously. This validates
         // mutation and expiry/restore semantics without scheduler timing,
         // sleeps, or dependence on CI runner CPU availability.

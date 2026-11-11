@@ -60,6 +60,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/mutation_coordinator.cpp
     src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
+    src/kernel/frame_bridge.cpp
     src/kernel/device_profiler.cpp
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
@@ -411,6 +412,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_render_booster
         tests/test_render_booster.cpp
         src/kernel/render_booster.cpp
+        src/kernel/frame_bridge.cpp
         src/daemon/reactor.cpp
         src/kernel/uclamp.cpp
         src/kernel/mutation_coordinator.cpp

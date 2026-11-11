@@ -40,9 +40,48 @@ RenderBooster::RenderBooster(UclampGovernor& governor, EpollReactor& reactor)
 }
 
 RenderBooster::~RenderBooster() {
+    disconnect_frame_source();
     if (request_fd_.valid()) (void)reactor_.unregister_fd(request_fd_.get());
     if (expiry_fd_.valid()) (void)reactor_.unregister_fd(expiry_fd_.get());
     restore_burst();
+}
+
+bool RenderBooster::connect_frame_source(FrameEventSource& source) noexcept {
+    disconnect_frame_source();
+    if (!source.start([this](const FrameEvent& event) { on_frame_event(event); })) return false;
+    frame_source_ = &source;
+    return true;
+}
+
+void RenderBooster::disconnect_frame_source() noexcept {
+    if (frame_source_ != nullptr) {
+        frame_source_->stop();
+        frame_source_ = nullptr;
+    }
+}
+
+void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
+    switch (event.kind) {
+        case FrameEventKind::TouchBurst:
+            on_touch_down();
+            break;
+        case FrameEventKind::FrameDropped:
+            if (event.frame_duration_ns > event.jank_threshold_ns) {
+                ++metrics_.dropped_frames;
+                const uint32_t hitches = ++consecutive_hitches_;
+                if (hitches >= 2) trigger_render_burst(580, std::chrono::milliseconds(250));
+            }
+            break;
+        case FrameEventKind::FramePresented:
+            if (event.frame_duration_ns > 0) {
+                const double duration_ms = static_cast<double>(event.frame_duration_ns) / 1'000'000.0;
+                metrics_.average_frame_time_ms = metrics_.average_frame_time_ms == 0.0
+                    ? duration_ms : 0.9 * metrics_.average_frame_time_ms + 0.1 * duration_ms;
+                if (event.jank_threshold_ns > 0 && event.frame_duration_ns <= event.jank_threshold_ns)
+                    consecutive_hitches_.store(0, std::memory_order_relaxed);
+            }
+            break;
+    }
 }
 
 void RenderBooster::on_touch_down() {

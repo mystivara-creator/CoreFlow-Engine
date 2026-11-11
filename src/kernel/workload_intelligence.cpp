@@ -42,8 +42,16 @@ bool disk_sectors(const std::string& p,uint64_t& out) noexcept {
 bool window_ok(const WorkloadFeatureSnapshot& f) noexcept{return f.window_start_ns!=0&&f.window_end_ns>f.window_start_ns;}
 
 bool read_text(const std::string& path,char* buffer,size_t capacity) noexcept {
- if(!capacity)return false;FILE* file=std::fopen(path.c_str(),"r");if(!file)return false;
- const bool ok=std::fgets(buffer,static_cast<int>(capacity),file)!=nullptr;std::fclose(file);return ok;
+ if (!capacity) {
+  return false;
+ }
+ FILE* file = std::fopen(path.c_str(), "r");
+ if (!file) {
+  return false;
+ }
+ const bool ok = std::fgets(buffer, static_cast<int>(capacity), file) != nullptr;
+ std::fclose(file);
+ return ok;
 }
 bool parse_scalar_percent(const std::string& path,double& value) noexcept {
  char text[128]{};if(!read_text(path,text,sizeof(text)))return false;
@@ -51,14 +59,22 @@ bool parse_scalar_percent(const std::string& path,double& value) noexcept {
  if(end==text||!std::isfinite(parsed)||parsed<0.0||parsed>100.0)return false;
  while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
  if(*end=='%'){++end;while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;}
- if(*end!='\0')return false;value=parsed;return true;
+ if (*end != '\0') {
+  return false;
+ }
+ value = parsed;
+ return true;
 }
 bool parse_u64_file(const std::string& path,uint64_t& value) noexcept {
  char text[96]{};if(!read_text(path,text,sizeof(text)))return false;
  char* end=nullptr;errno=0;const unsigned long long parsed=std::strtoull(text,&end,10);
  if(errno||end==text)return false;
  while(*end==' '||*end=='\t'||*end=='\r'||*end=='\n')++end;
- if(*end!='\0')return false;value=static_cast<uint64_t>(parsed);return true;
+ if (*end != '\0') {
+  return false;
+ }
+ value = static_cast<uint64_t>(parsed);
+ return true;
 }
 bool parse_pair(const std::string& path,uint64_t& first,uint64_t& second) noexcept {
  char text[160]{};if(!read_text(path,text,sizeof(text)))return false;
@@ -84,13 +100,19 @@ bool read_varint(std::span<const uint8_t> bytes,size_t& offset,uint64_t& value) 
   const uint8_t byte=bytes[offset++];
   if(shift==63&&(byte&0xfeU)!=0)return false;
   value|=static_cast<uint64_t>(byte&0x7fU)<<shift;
-  if((byte&0x80U)==0)return true;shift+=7;
+  if ((byte & 0x80U) == 0) {
+   return true;
+  }
+  shift += 7;
  }
  return false;
 }
 struct ProtoField final {uint32_t number{0};uint8_t wire{0};uint64_t integer{0};std::span<const uint8_t> data{};};
 bool next_proto_field(std::span<const uint8_t> bytes,size_t& offset,ProtoField& field) noexcept {
- if(offset>=bytes.size())return false;uint64_t tag=0;
+ if (offset >= bytes.size()) {
+  return false;
+ }
+ uint64_t tag = 0;
  if(!read_varint(bytes,offset,tag)||tag==0)return false;
  field={};field.number=static_cast<uint32_t>(tag>>3U);field.wire=static_cast<uint8_t>(tag&7U);
  if(field.number==0)return false;
@@ -116,10 +138,16 @@ bool parse_actual_display_frame(std::span<const uint8_t> bytes,uint64_t& frames,
   else if(field.number==7)jank=field.integer;
  }
  if(!has_present||present<1||present>5)return true;
- if(frames==UINT64_MAX)return false;++frames;
+ if (frames == UINT64_MAX) {
+  return false;
+ }
+ ++frames;
  constexpr uint64_t kSfCpuDeadline=16ULL,kSfGpuDeadline=32ULL,kDropped=1024ULL;
  if(present==2||present==4||(has_on_time&&!on_time)||(jank&(kSfCpuDeadline|kSfGpuDeadline|kDropped))){
-  if(misses==UINT64_MAX)return false;++misses;
+  if (misses == UINT64_MAX) {
+   return false;
+  }
+  ++misses;
  }
  return true;
 }
@@ -127,7 +155,11 @@ bool parse_frame_timeline_event(std::span<const uint8_t> bytes,uint64_t& frames,
  size_t offset=0;ProtoField field{};
  while(offset<bytes.size()){
   if(!next_proto_field(bytes,offset,field))return false;
-  if(field.number==2&&field.wire==2)if(!parse_actual_display_frame(field.data,frames,misses))return false;
+  if (field.number == 2 && field.wire == 2) {
+   if (!parse_actual_display_frame(field.data, frames, misses)) {
+    return false;
+   }
+  }
  }
  return true;
 }
@@ -135,7 +167,11 @@ bool parse_trace_packet(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t
  size_t offset=0;ProtoField field{};
  while(offset<bytes.size()){
   if(!next_proto_field(bytes,offset,field))return false;
-  if(field.number==76&&field.wire==2)if(!parse_frame_timeline_event(field.data,frames,misses))return false;
+  if (field.number == 76 && field.wire == 2) {
+   if (!parse_frame_timeline_event(field.data, frames, misses)) {
+    return false;
+   }
+  }
  }
  return true;
 }
