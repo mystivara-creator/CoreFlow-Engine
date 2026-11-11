@@ -115,7 +115,7 @@ public:
  [[nodiscard]] bool sample(uint64_t now_ns,double& busy_pct) noexcept;
  [[nodiscard]] std::string_view source_name() const noexcept;
 private:
- enum class Format : uint8_t { Unavailable, Percent, BusyTotalDelta, CounterPair };
+ enum class Format : uint8_t { Unavailable, Percent, KgslIntervalSnapshot, CumulativeCounterDelta };
  std::string sys_root_,path_,source_name_;
  Format format_{Format::Unavailable};
  uint64_t previous_busy_{0},previous_total_{0},last_sample_ns_{0};

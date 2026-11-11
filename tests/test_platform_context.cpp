@@ -34,25 +34,72 @@ int main(){
  SysfsProcfsWorkloadSource sampler(proc.string(),root.string());assert(sampler.start());auto s1=sampler.sample(1'000'000'000ULL,2'000'000'000ULL);assert(s1.source==TelemetryBackend::SysfsProcfs);assert((s1.valid_features&FeatureCpuPressure)&&(s1.valid_features&FeatureMemoryPressure)&&(s1.valid_features&FeatureIoPressure));assert(!(s1.valid_features&FeatureIoBytes));
  write(proc/"diskstats","8 0 sda 20 0 150 0 40 0 250 0 0 0 0\n");auto s2=sampler.sample(2'000'000'000ULL,3'000'000'000ULL);assert((s2.valid_features&FeatureIoBytes)&&s2.io_bytes==51'200);assert(!(s2.valid_features&FeatureGpuBusy));
 
- // KGSL gpubusy is a cumulative busy/total counter pair. Prefer its deltas
- // over the OEM compatibility percentage node, which may remain frozen at 0.
+ // KGSL gpubusy exposes interval snapshots, not monotonic cumulative counters.
+ // Ratios are computed directly from each distinct snapshot; counter rollover is valid.
  char gpu_root_template[]="/tmp/coreflow-gpu-counter-XXXXXX";assert(::mkdtemp(gpu_root_template));
  std::filesystem::path gpu_root(gpu_root_template);
  write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","100 200\n");
  write(gpu_root/"class/kgsl/kgsl-3d0/gpu_busy_percentage","0\n");
  GpuUtilizationSampler gpu_sampler(gpu_root.string());assert(gpu_sampler.start());
  assert(gpu_sampler.source_name()=="kgsl/gpubusy");
+ double gpu_pct=-1.0;
  write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","160 300\n");
- double gpu_pct=-1.0;assert(gpu_sampler.sample(1'000'000'000ULL,gpu_pct));
- assert(std::abs(gpu_pct-60.0)<0.001);
- write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","260 500\n");
- assert(gpu_sampler.sample(1'200'000'000ULL,gpu_pct));assert(std::abs(gpu_pct-50.0)<0.001);
- // A counter reset re-establishes the baseline instead of emitting a spike.
- write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","20 40\n");
+ assert(gpu_sampler.sample(1'000'000'000ULL,gpu_pct));
+ assert(std::abs(gpu_pct-(160.0/300.0*100.0))<0.001);
+ // Both values can decrease when KGSL publishes a new interval snapshot.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","40 100\n");
+ assert(gpu_sampler.sample(1'200'000'000ULL,gpu_pct));
+ assert(std::abs(gpu_pct-40.0)<0.001);
+ // An identical snapshot is not a second independent sample.
  assert(!gpu_sampler.sample(1'400'000'000ULL,gpu_pct));
- write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","45 90\n");
- assert(gpu_sampler.sample(1'600'000'000ULL,gpu_pct));assert(std::abs(gpu_pct-50.0)<0.001);
+ // Reject impossible non-zero snapshots and nonzero busy with no denominator.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","120 100\n");
+ assert(!gpu_sampler.sample(1'600'000'000ULL,gpu_pct));
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","50 0\n");
+ assert(!gpu_sampler.sample(1'800'000'000ULL,gpu_pct));
+ // Reject signed sysfs error sentinels instead of parsing them as UINT64_MAX.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","-1 -1\n");
+ assert(!gpu_sampler.sample(2'000'000'000ULL,gpu_pct));
+ // KGSL power-collapse snapshot is valid only when both counters are zero.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","0 0\n");
+ assert(gpu_sampler.sample(2'200'000'000ULL,gpu_pct));
+ assert(gpu_pct==0.0);
+ assert(!gpu_sampler.sample(2'400'000'000ULL,gpu_pct));
  gpu_sampler.stop();std::filesystem::remove_all(gpu_root);
+
+ // A cold-start power-collapse snapshot must be emitted once, not consumed by start().
+ char gpu_cold_template[]="/tmp/coreflow-gpu-cold-XXXXXX";assert(::mkdtemp(gpu_cold_template));
+ std::filesystem::path gpu_cold_root(gpu_cold_template);
+ write(gpu_cold_root/"class/kgsl/kgsl-3d0/gpubusy","0 0\n");
+ GpuUtilizationSampler cold_gpu(gpu_cold_root.string());assert(cold_gpu.start());
+ assert(cold_gpu.source_name()=="kgsl/gpubusy");
+ gpu_pct=-1.0;
+ assert(cold_gpu.sample(2'600'000'000ULL,gpu_pct)&&gpu_pct==0.0);
+ assert(!cold_gpu.sample(2'800'000'000ULL,gpu_pct));
+ cold_gpu.stop();std::filesystem::remove_all(gpu_cold_root);
+
+ // Generic devfreq busy_time/total_time remains monotonic cumulative delta telemetry.
+ char devfreq_template[]="/tmp/coreflow-devfreq-counter-XXXXXX";assert(::mkdtemp(devfreq_template));
+ std::filesystem::path devfreq_root(devfreq_template);
+ const auto devfreq_node=devfreq_root/"class/devfreq/3d00000.qcom,kgsl-3d0";
+ write(devfreq_node/"name","qcom,gpu\n");
+ write(devfreq_node/"busy_time","100\n");
+ write(devfreq_node/"total_time","200\n");
+ GpuUtilizationSampler devfreq_sampler(devfreq_root.string());assert(devfreq_sampler.start());
+ assert(devfreq_sampler.source_name()=="devfreq/named-device/busy_time-total_time");
+ write(devfreq_node/"busy_time","160\n");
+ write(devfreq_node/"total_time","300\n");
+ assert(devfreq_sampler.sample(3'000'000'000ULL,gpu_pct));
+ assert(std::abs(gpu_pct-60.0)<0.001);
+ // A reset in generic cumulative counters re-establishes the baseline without a sample.
+ write(devfreq_node/"busy_time","20\n");
+ write(devfreq_node/"total_time","40\n");
+ assert(!devfreq_sampler.sample(3'200'000'000ULL,gpu_pct));
+ write(devfreq_node/"busy_time","45\n");
+ write(devfreq_node/"total_time","90\n");
+ assert(devfreq_sampler.sample(3'400'000'000ULL,gpu_pct));
+ assert(std::abs(gpu_pct-50.0)<0.001);
+ devfreq_sampler.stop();std::filesystem::remove_all(devfreq_root);
 
  // If gpubusy is malformed, gpu_busy_percentage remains the final fallback.
  char gpu_fallback_template[]="/tmp/coreflow-gpu-fallback-XXXXXX";assert(::mkdtemp(gpu_fallback_template));
