@@ -4,6 +4,7 @@
  * @license Apache-2.0
  */
 #include "coreflow/foreground_task_resolver.hpp"
+#include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
 #include <array>
