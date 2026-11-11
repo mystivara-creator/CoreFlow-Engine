@@ -134,6 +134,48 @@ int main() {
         assert(resolver.tracked_threads() == 0);
         assert(coordinator.active_leases().empty());
     }
+    // Android GKI legacy cpuctl layout: process discovery comes from
+    // top-app/cgroup.procs while per-thread placement uses the v1 tasks ABI.
+    {
+        const fs::path legacy = root / "cpuctl-layout";
+        const fs::path legacy_proc = root / "legacy-proc";
+        const fs::path legacy_top = legacy / "top-app";
+        const fs::path legacy_foreground = legacy / "foreground";
+        constexpr pid_t legacy_pid = 441;
+        put(legacy_top / "cgroup.procs", "441\n");
+        put(legacy_top / "tasks", "");
+        put(legacy_top / "cpu.uclamp.min", "0.00");
+        put(legacy_foreground / "tasks", "441\n");
+        put(legacy_proc / "441/cmdline", std::string("com.example.androidgame\0", 25));
+        put(legacy_proc / "441/status",
+            "Name:\tcom.example.androidgame\nTgid:\t441\nUid:\t10000\t10000\t10000\t10000\n");
+        make_task(legacy_proc, legacy_pid, legacy_pid, "main", 4401);
+        put(legacy_proc / "441/task/441/cgroup", "2:cpu,cpuacct:/foreground\n");
+
+        CentralMutationCoordinator legacy_coordinator;
+        legacy_coordinator.reset();
+        {
+            CgroupV2Controller legacy_controller(
+                legacy_coordinator, legacy.string(), legacy_proc.string());
+            assert(legacy_controller.is_supported());
+            ForegroundTaskResolver legacy_resolver(
+                legacy_controller, legacy_top.string(), legacy_proc.string());
+            assert(legacy_resolver.refresh(true));
+            const auto legacy_snapshot = legacy_resolver.snapshot();
+            assert(legacy_snapshot.source_available);
+            assert(legacy_snapshot.process_count == 1U);
+            assert(legacy_snapshot.package_name == "com.example.androidgame");
+            assert(legacy_snapshot.discovered_thread_count == 1U);
+            assert(legacy_snapshot.migrated_thread_count == 1U);
+            assert(get(legacy_top / "tasks") == "441");
+            put(legacy_proc / "441/task/441/cgroup", "2:cpu,cpuacct:/top-app\n");
+            assert(legacy_resolver.restore_all());
+            assert(get(legacy_foreground / "tasks") == "441");
+            assert(legacy_controller.pending_thread_migrations() == 0U);
+            assert(legacy_coordinator.active_leases().empty());
+        }
+    }
+
     fs::remove_all(root);
     return 0;
 }

@@ -335,7 +335,7 @@ CgroupV2Controller::CgroupV2Controller(
         token_present(root_controllers.data(), root_controllers.size(), "cpu");
     legacy_tasks_ = legacy_tasks_ || (!unified_cpu &&
         fs::exists(root_path_ + "/top-app/tasks") &&
-        fs::exists(root_path_ + "/top-app/cpu.uclamp.min"));
+        fs::exists(root_path_ + "/top-app/cgroup.procs"));
     supported_ = unified_cpu || legacy_tasks_;
     (void)coordinator_.register_preemption_handler(
         controller_name_,
