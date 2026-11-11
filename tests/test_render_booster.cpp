@@ -1,4 +1,5 @@
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
 #include "coreflow/uclamp.hpp"
