@@ -19,16 +19,17 @@ interface VulkanCapabilitiesCardProps {
 
 interface CapabilityRowProps {
   label: string;
+  simulated?: boolean;
   value: boolean | string | number;
   note?: string;
 }
 
-const CapabilityRow: React.FC<CapabilityRowProps> = ({ label, value, note }) => {
+const CapabilityRow: React.FC<CapabilityRowProps> = ({ label, value, note, simulated = false }) => {
   const isBool = typeof value === 'boolean';
   return (
     <div className="flex items-center justify-between py-2.5 border-b border-slate-900/[0.05] dark:border-white/[0.05] last:border-b-0 text-xs">
       <div className="text-slate-600 dark:text-slate-300 pr-3">
-        <span>{label}</span>
+        <span>{label}{simulated ? ' (sim)' : ''}</span>
         {note && (
           <span className="text-[11px] text-slate-400 dark:text-slate-500"> · {note}</span>
         )}
@@ -100,14 +101,14 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="space-y-1.5 max-w-2xl">
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              <span>Universal Multi-Vendor GPU & Truthful Vulkan Diagnostics</span>
+              <span>Universal Multi-Vendor GPU & Truthful Vulkan Diagnostics{!nativeMode ? ' (sim)' : ''}</span>
               <span aria-hidden="true"> · </span>
               <span>{vk.deviceName}</span>
               <span aria-hidden="true"> · </span>
               <span>{nativeMode ? 'Live Device ICD Probe' : 'Hardware Pass-Through Model'}</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Vulkan Capabilities & Truthful Hardware Pass-Through
+              Vulkan Capabilities & Truthful Hardware Pass-Through{!nativeMode ? ' (sim)' : ''}
             </h2>
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
               Dynamically probes the active device&apos;s physical GPU ICD (Qualcomm Adreno KGSL, ARM Mali /
@@ -261,42 +262,42 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Capabilities
             </h3>
             <div className="divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Ray tracing"
                 value={vk.rayTracing}
                 note={badgeFor(vk.rayTracing, vk.hwRayTracing, true)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Mesh shaders"
                 value={vk.meshShaders}
                 note={badgeFor(vk.meshShaders, vk.hwMeshShaders, true)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Variable rate shading"
                 value={vk.variableRateShading}
                 note={badgeFor(vk.variableRateShading, vk.hwVariableRateShading)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Cooperative matrix"
                 value={vk.cooperativeMatrix}
                 note={badgeFor(vk.cooperativeMatrix, vk.hwCooperativeMatrix, true)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="RT pipeline"
                 value={vk.rtPipeline}
                 note={badgeFor(vk.rtPipeline, vk.hwRtPipeline, true)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Ray query"
                 value={vk.rayQuery}
                 note={badgeFor(vk.rayQuery, vk.hwRayQuery, true)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Acceleration structure"
                 value={vk.accelerationStructure}
                 note={badgeFor(vk.accelerationStructure, vk.hwAccelerationStructure, true)}
               />
-              <CapabilityRow label="Portability subset" value={vk.portabilitySubset} />
+              <CapabilityRow simulated={!nativeMode} label="Portability subset" value={vk.portabilitySubset} />
             </div>
           </div>
 
@@ -305,10 +306,10 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Core Features
             </h3>
             <div>
-              <CapabilityRow label="Robust buffer access" value={vk.robustBufferAccess} />
-              <CapabilityRow label="Sampler anisotropy" value={vk.samplerAnisotropy} />
-              <CapabilityRow label="Shader Int16" value={vk.shaderInt16} />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode} label="Robust buffer access" value={vk.robustBufferAccess} />
+              <CapabilityRow simulated={!nativeMode} label="Sampler anisotropy" value={vk.samplerAnisotropy} />
+              <CapabilityRow simulated={!nativeMode} label="Shader Int16" value={vk.shaderInt16} />
+              <CapabilityRow simulated={!nativeMode}
                 label="Shader Float64"
                 value={vk.shaderFloat64}
                 note={badgeFor(vk.shaderFloat64, vk.hwShaderFloat64, true)}
@@ -324,12 +325,12 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Vulkan 1.1 · 1.2 · 1.3
             </h3>
             <div>
-              <CapabilityRow label="Protected memory" value={vk.protectedMemory} note="1.1" />
-              <CapabilityRow label="Timeline semaphore" value={vk.timelineSemaphore} note="1.2" />
-              <CapabilityRow label="Descriptor indexing" value={vk.descriptorIndexing} note="1.2" />
-              <CapabilityRow label="Buffer device address" value={vk.bufferDeviceAddress} note="1.2" />
-              <CapabilityRow label="Dynamic rendering" value={vk.dynamicRendering} note="1.3" />
-              <CapabilityRow label="Synchronization2" value={vk.synchronization2} note="1.3" />
+              <CapabilityRow simulated={!nativeMode} label="Protected memory" value={vk.protectedMemory} note="1.1" />
+              <CapabilityRow simulated={!nativeMode} label="Timeline semaphore" value={vk.timelineSemaphore} note="1.2" />
+              <CapabilityRow simulated={!nativeMode} label="Descriptor indexing" value={vk.descriptorIndexing} note="1.2" />
+              <CapabilityRow simulated={!nativeMode} label="Buffer device address" value={vk.bufferDeviceAddress} note="1.2" />
+              <CapabilityRow simulated={!nativeMode} label="Dynamic rendering" value={vk.dynamicRendering} note="1.3" />
+              <CapabilityRow simulated={!nativeMode} label="Synchronization2" value={vk.synchronization2} note="1.3" />
             </div>
           </div>
 
@@ -338,32 +339,32 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Vulkan 1.4
             </h3>
             <div>
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Index type UINT8"
                 value={vk.indexTypeUint8}
                 note={badgeFor(vk.indexTypeUint8, vk.hwIndexTypeUint8)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Line rasterization"
                 value={vk.lineRasterization}
                 note={badgeFor(vk.lineRasterization, vk.hwLineRasterization)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Push descriptors"
                 value={vk.pushDescriptors}
                 note={badgeFor(vk.pushDescriptors, vk.hwPushDescriptors)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Global priority query"
                 value={vk.globalPriorityQuery}
                 note={badgeFor(vk.globalPriorityQuery, vk.hwGlobalPriorityQuery)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Shader float controls 2"
                 value={vk.shaderFloatControls2}
                 note={badgeFor(vk.shaderFloatControls2, vk.hwShaderFloatControls2)}
               />
-              <CapabilityRow label="Max push descriptors" value={vk.maxPushDescriptors} />
+              <CapabilityRow simulated={!nativeMode} label="Max push descriptors" value={vk.maxPushDescriptors} />
             </div>
           </div>
         </div>
@@ -375,27 +376,27 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Highlights
             </h3>
             <div>
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Maintenance5"
                 value={vk.maintenance5}
                 note={badgeFor(vk.maintenance5, vk.hwMaintenance5)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Maintenance6"
                 value={vk.maintenance6}
                 note={badgeFor(vk.maintenance6, vk.hwMaintenance6)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Maintenance7"
                 value={vk.maintenance7}
                 note={badgeFor(vk.maintenance7, vk.hwMaintenance7)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Descriptor buffer"
                 value={vk.descriptorBuffer}
                 note={badgeFor(vk.descriptorBuffer, vk.hwDescriptorBuffer)}
               />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode}
                 label="Graphics pipeline library"
                 value={vk.graphicsPipelineLibrary}
                 note={badgeFor(vk.graphicsPipelineLibrary, vk.hwGraphicsPipelineLibrary)}
@@ -408,14 +409,14 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
               Universal Multi-Vendor GPU Surface
             </h3>
             <div>
-              <CapabilityRow label="Detected GPU" value={vk.deviceName} />
-              <CapabilityRow label="Vendor Domain" value={vk.vendor} />
-              <CapabilityRow label="Active Governor" value={vk.gpuGovernor} />
-              <CapabilityRow
+              <CapabilityRow simulated={!nativeMode} label="Detected GPU" value={vk.deviceName} />
+              <CapabilityRow simulated={!nativeMode} label="Vendor Domain" value={vk.vendor} />
+              <CapabilityRow simulated={!nativeMode} label="Active Governor" value={vk.gpuGovernor} />
+              <CapabilityRow simulated={!nativeMode}
                 label="Clock Window"
                 value={`${vk.gpuCurrentFreqMhz} / ${vk.gpuMaxFreqMhz} MHz`}
               />
-              <CapabilityRow label="Adrenoboost / Pacing" value={`Level ${vk.adrenoboostLevel}`} />
+              <CapabilityRow simulated={!nativeMode} label="Adrenoboost / Pacing" value={`Level ${vk.adrenoboostLevel}`} />
             </div>
           </div>
 

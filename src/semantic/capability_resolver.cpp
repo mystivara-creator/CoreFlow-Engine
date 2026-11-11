@@ -158,11 +158,29 @@ std::optional<DynamicSemanticDescriptor> CapabilityResolver::buildDescriptor(
     FunctionalDomainAssessment domain_assessment{};
     if (evidence_scoped_to_endpoint) {
         constexpr std::uint64_t maximum_domain_evidence_age_ns = 5'000'000'000ULL;
-        const DomainEvidenceAggregator aggregator{};
-        domain_assessment = aggregator.aggregate(
-            std::span<const DomainRelationshipEvidence>{domain_evidence.data(),
-                                                        domain_evidence_count},
-            active_generation, now_ns, maximum_domain_evidence_age_ns);
+        // Adapter evidence is collected inside resolveOne(), after its caller
+        // captured now_ns. Permit bounded forward skew for evidence sampled
+        // during this same read-only resolution cycle, while retaining strict
+        // generation, uniqueness, and maximum-age checks in the aggregator.
+        std::uint64_t aggregation_now_ns = now_ns;
+        bool bounded_observation_window = true;
+        for (std::size_t i = 0; i < domain_evidence_count; ++i) {
+            const auto observed_ns = domain_evidence[i].observed_at_ns;
+            if (observed_ns > aggregation_now_ns) {
+                if (observed_ns - aggregation_now_ns > maximum_domain_evidence_age_ns) {
+                    bounded_observation_window = false;
+                    break;
+                }
+                aggregation_now_ns = observed_ns;
+            }
+        }
+        if (bounded_observation_window) {
+            const DomainEvidenceAggregator aggregator{};
+            domain_assessment = aggregator.aggregate(
+                std::span<const DomainRelationshipEvidence>{domain_evidence.data(),
+                                                            domain_evidence_count},
+                active_generation, aggregation_now_ns, maximum_domain_evidence_age_ns);
+        }
     }
     const bool corroborated =
         evidence_scoped_to_endpoint &&

@@ -35,7 +35,7 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="font-semibold text-base sm:text-lg text-slate-900 dark:text-slate-100">
-                Ownership Guard & Idempotent Baseline Recovery
+                Ownership Guard & Idempotent Baseline Recovery{!nativeMode ? ' (sim)' : ''}
               </h3>
               <span className="text-xs text-slate-400" aria-hidden="true">·</span>
               <span className="text-xs font-mono text-[#0b57d0] dark:text-[#a8c7fa]">
@@ -49,7 +49,7 @@ export const BaselineGuardianCard: React.FC<BaselineGuardianCardProps> = ({
             <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
               {nativeMode
                 ? 'Records factory & prior baseline values, validated boot_id/boot_epoch, object identity (st_dev:st_ino), and last verified write prior to mutation. Rollback restores only values still owned by CoreFlow and never overwrites external OEM/Android adjustments.'
-                : `Tracking ${nodesSnapshotted} capability baselines with CFJ4 st_dev:st_ino ownership & boot_epoch verification; zero physical writes in browser preview.`}
+                : `Tracking ${nodesSnapshotted} (sim) capability baselines with CFJ4 st_dev:st_ino ownership & boot_epoch verification; zero physical writes in browser preview.`}
             </p>
           </div>
         </div>

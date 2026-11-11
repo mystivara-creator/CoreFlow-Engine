@@ -8,6 +8,7 @@ interface Props {
   onToggleTheme: () => void;
   modeLabel: string;
   nativeMode?: boolean;
+  nativeConnected?: boolean;
   onOpenArchitectureStudio: () => void;
 }
 
@@ -18,6 +19,7 @@ export const PixelHeader: React.FC<Props> = ({
   onToggleTheme,
   modeLabel,
   nativeMode = false,
+  nativeConnected = false,
   onOpenArchitectureStudio,
 }) => (
   <header className="sticky top-0 z-30 backdrop-blur-2xl bg-[#f7f9fc]/80 dark:bg-[#0e1117]/80 border-b border-slate-900/[0.06] dark:border-white/[0.06] transition-colors duration-200">
@@ -34,6 +36,17 @@ export const PixelHeader: React.FC<Props> = ({
             </span>
             <span className="text-[10px] sm:text-xs font-mono px-1.5 py-0.5 rounded-md bg-slate-900/[0.05] dark:bg-white/[0.07] text-slate-600 dark:text-slate-300 shrink-0">
               v3.1.0
+            </span>
+            <span
+              role="status"
+              className={
+                'text-[9px] sm:text-[10px] font-bold tracking-wide px-2 py-1 rounded-full whitespace-nowrap shrink-0 ' +
+                (nativeMode && nativeConnected
+                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                  : 'bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200')
+              }
+            >
+              {nativeMode ? (nativeConnected ? 'Connected' : 'Awaiting Data') : 'Simulation Mode'}
             </span>
           </div>
           <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">

@@ -72,11 +72,11 @@ export const ThermalMatrixCard: React.FC<Props> = ({
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <Flame className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
             <span className="font-semibold text-slate-900 dark:text-slate-100 text-base sm:text-lg">
-              Multi-Sensor Thermal & OEM Policy Matrix
+              Multi-Sensor Thermal & OEM Policy Matrix{!nativeMode ? ' (sim)' : ''}
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-medium text-[#0b57d0] dark:text-[#a8c7fa]">
-              {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}
+              {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}{!nativeMode ? ' (sim)' : ''}
             </span>
             <span aria-hidden="true">·</span>
             <span>{nativeMode ? 'Hardware sysfs / hwmon Live' : 'Preview Model'}</span>
@@ -113,7 +113,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
         <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 mb-3">
           <span className="flex items-center gap-2 font-medium">
             <Thermometer className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
-            <span>Weighted SoC Composite Diagnostic</span>
+            <span>Weighted SoC Composite Diagnostic{!nativeMode ? ' (sim)' : ''}</span>
           </span>
           <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 text-sm shrink-0">
             {composite > 0 ? composite.toFixed(1) : '--.-'} °C
@@ -135,11 +135,11 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       {/* Cluster & Subsystem Cards Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
         {[
-          { label: 'CPU Cluster Avg', val: cpuAvg, sub: 'Little & Big Cores', Icon: Cpu },
-          { label: 'CPU Peak Core', val: cpuPeak, sub: 'Hottest Core Zone', Icon: Zap },
-          { label: 'GPU Domain', val: gpu, sub: 'Shader / Devfreq', Icon: Layers },
-          { label: 'Battery Cell', val: battery, sub: 'Charge Guard Input', Icon: ShieldCheck },
-          { label: 'Skin / Surface', val: skin, sub: 'Chassis Thermistor', Icon: Thermometer },
+          { label: nativeMode ? 'CPU Cluster Avg' : 'CPU Cluster Avg (sim)', val: cpuAvg, sub: 'Little & Big Cores', Icon: Cpu },
+          { label: nativeMode ? 'CPU Peak Core' : 'CPU Peak Core (sim)', val: cpuPeak, sub: 'Hottest Core Zone', Icon: Zap },
+          { label: nativeMode ? 'GPU Domain' : 'GPU Domain (sim)', val: gpu, sub: 'Shader / Devfreq', Icon: Layers },
+          { label: nativeMode ? 'Battery Cell' : 'Battery Cell (sim)', val: battery, sub: 'Charge Guard Input', Icon: ShieldCheck },
+          { label: nativeMode ? 'Skin / Surface' : 'Skin / Surface (sim)', val: skin, sub: 'Chassis Thermistor', Icon: Thermometer },
         ].map(({ label, val, sub, Icon }) => (
           <div
             key={label}
@@ -164,7 +164,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
           <summary className="flex items-center justify-between gap-3 px-5 py-4 cursor-pointer select-none text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03]">
             <span className="flex items-center gap-2 min-w-0">
               <Filter className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
-              <span className="truncate">Discovered Hardware Thermal Zones ({sensors.length} Zones)</span>
+              <span className="truncate">Discovered Hardware Thermal Zones{!nativeMode ? ' (sim)' : ''} ({sensors.length} Zones)</span>
             </span>
             <span className="text-xs font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200 shrink-0">
               ▼

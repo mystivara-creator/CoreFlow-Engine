@@ -89,6 +89,19 @@ int main() {
     assert(!candidate->isMutationCapable(7, 201));
     assert(!resolver.resolveLocator(candidate->capabilityId(), 7).has_value());
 
+    // Evidence sampled by the adapter after the resolver's caller captured now_ns
+    // is accepted only within the bounded five-second monotonic observation window.
+    const auto in_cycle_node = endpoint(40);
+    FakeAdapter in_cycle_adapter{};
+    in_cycle_adapter.reads = {"42", "42"};
+    in_cycle_adapter.relationships = domainEvidence(in_cycle_node);
+    in_cycle_adapter.relationships[2].observed_at_ns = 201;
+    in_cycle_adapter.relationship_count = 3;
+    const auto in_cycle = resolver.resolveOne(in_cycle_node, in_cycle_adapter, 7, 200);
+    assert(in_cycle.has_value());
+    assert(in_cycle->state() == DescriptorState::Validated);
+    assert(in_cycle->domainAssessment().assessed_at_ns == 201);
+
     // Three independent, fresh, node-scoped relations promote the binding.
     const auto validated_node = endpoint(41);
     FakeAdapter complete_adapter{};

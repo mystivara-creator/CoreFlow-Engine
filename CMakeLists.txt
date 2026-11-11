@@ -64,7 +64,10 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
     src/semantic/domain_evidence_aggregator.cpp
+    src/semantic/capability_resolver.cpp
+    src/semantic/semantic_evidence_serializer.cpp
     src/semantic/linux_sysfs_discovery_adapter.cpp
+    src/platform/discovery_adapter.cpp
     src/kernel/thermal_monitor.cpp
     src/kernel/hardware_longevity.cpp
     src/kernel/frequency_controller.cpp
@@ -177,6 +180,19 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_domain_evidence_aggregator PRIVATE include)
     add_test(NAME P3FunctionalDomainEvidenceTest COMMAND test_domain_evidence_aggregator)
+
+    add_executable(test_semantic_evidence_serializer
+        tests/semantic/test_semantic_evidence_serializer.cpp
+        src/semantic/semantic_evidence_serializer.cpp
+        src/semantic/capability_resolver.cpp
+        src/semantic/domain_evidence_aggregator.cpp
+        src/platform/discovery_adapter.cpp
+    )
+    target_include_directories(test_semantic_evidence_serializer PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_semantic_evidence_serializer PRIVATE pthread)
+    endif()
+    add_test(NAME P3SemanticEvidenceSerializationTest COMMAND test_semantic_evidence_serializer)
 
     add_executable(test_platform_context
         tests/test_platform_context.cpp

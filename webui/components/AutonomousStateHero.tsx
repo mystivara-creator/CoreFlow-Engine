@@ -52,7 +52,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
         <div className="space-y-2 max-w-2xl">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <span className="font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
-              Coordinated Mutation Transaction
+              Coordinated Mutation Transaction{!nativeMode ? ' (sim)' : ''}
             </span>
             <span aria-hidden="true">·</span>
             <span>{nativeMode ? (telemetry.engineActive ? 'Native Runtime' : 'Native Standby') : meta.label}</span>
@@ -85,10 +85,10 @@ export const AutonomousStateHero: React.FC<Props> = ({
         <div className="flex items-center justify-between gap-2 mb-3">
           <span className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
             <GitCommit className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            Transaction Lifecycle State
+            Transaction Lifecycle State{!nativeMode ? ' (sim)' : ''}
           </span>
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            Stage: {telemetry.tunerStage ?? currentStage}
+            Stage{!nativeMode ? ' (sim)' : ''}: {telemetry.tunerStage ?? currentStage}
           </span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
@@ -119,7 +119,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
       <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-6">
         <div className="m3-tonal-block p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-            <span className="font-medium">Top-App UClamp</span>
+            <span className="font-medium">Top-App UClamp{!nativeMode ? ' (sim)' : ''}</span>
             <Zap className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
           </div>
           <div className="text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
@@ -133,7 +133,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
         <div className="m3-tonal-block p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-            <span className="font-medium">SoC Thermal Composite</span>
+            <span className="font-medium">SoC Thermal Composite{!nativeMode ? ' (sim)' : ''}</span>
             <Flame className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
           </div>
           <div className="text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
@@ -147,7 +147,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
         <div className="m3-tonal-block p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-            <span className="font-medium">PSI Resource Pressure</span>
+            <span className="font-medium">PSI Resource Pressure{!nativeMode ? ' (sim)' : ''}</span>
             <Gauge className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
           </div>
           <div className="grid grid-cols-3 gap-2 font-mono tabular-nums text-xs text-slate-800 dark:text-slate-200 my-1">
@@ -171,7 +171,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
         <div className="m3-tonal-block p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-            <span className="font-medium">Durable Journal</span>
+            <span className="font-medium">Durable Journal{!nativeMode ? ' (sim)' : ''}</span>
             <ShieldCheck className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
           </div>
           <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
@@ -192,10 +192,10 @@ export const AutonomousStateHero: React.FC<Props> = ({
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <Sliders className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
               <span className="font-semibold text-slate-900 dark:text-slate-100">
-                Autonomous Multi-Domain Scheduler & Tunable Evaluator
+                Autonomous Multi-Domain Scheduler & Tunable Evaluator{!nativeMode ? ' (sim)' : ''}
               </span>
               <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]">
-                Intent: {telemetry.tunerIntent ?? 'HoldEquilibrium'}
+                Intent{!nativeMode ? ' (sim)' : ''}: {telemetry.tunerIntent ?? 'HoldEquilibrium'}
               </span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
@@ -206,19 +206,19 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
           <div className="grid grid-cols-3 gap-3 sm:gap-4 shrink-0 font-mono tabular-nums text-xs">
             <div>
-              <div className="text-[11px] text-slate-400 font-sans">Empirical ΔU</div>
+              <div className="text-[11px] text-slate-400 font-sans">Empirical ΔU{!nativeMode ? ' (sim)' : ''}</div>
               <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
                 {utilityDelta >= 0 ? `+${utilityDelta.toFixed(2)}` : utilityDelta.toFixed(2)}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-slate-400 font-sans">Retained</div>
+              <div className="text-[11px] text-slate-400 font-sans">Retained{!nativeMode ? " (sim)" : ""}</div>
               <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
                 {telemetry.tunerImproved ?? 0} / {telemetry.tunerTrials ?? 0}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-slate-400 font-sans">Rolled Back</div>
+              <div className="text-[11px] text-slate-400 font-sans">Rolled Back{!nativeMode ? ' (sim)' : ''}</div>
               <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
                 {telemetry.tunerRolledBack ?? 0}
               </div>
@@ -232,7 +232,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                 <HardDrive className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
-                Block Queue Surface ({primaryQueue ? `/sys/block/${primaryQueue.device}/queue` : 'Awaiting block queue probe'})
+                Block Queue Surface{!nativeMode ? ' (sim)' : ''} ({primaryQueue ? `/sys/block/${primaryQueue.device}/queue` : 'Awaiting block queue probe'})
               </span>
               <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
                 Baseline: {primaryQueue?.baselineScheduler ?? 'N/A'} → Active:{' '}
@@ -285,7 +285,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
           <div className="rounded-2xl bg-white/70 dark:bg-slate-900/40 p-3.5 border border-slate-900/[0.05] dark:border-white/[0.05] space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium text-slate-700 dark:text-slate-200">
-                UCB1 Empirical Bandit Candidate Memory
+                UCB1 Empirical Bandit Candidate Memory{!nativeMode ? ' (sim)' : ''}
               </span>
               <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
                 Active: {telemetry.tunerCandidateId ?? 'oem_baseline'}
@@ -315,7 +315,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
         <div className="space-y-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="font-semibold text-slate-900 dark:text-slate-100">
-              Neural Horizon Predictor (ONNX / Online RLS-MLP)
+              Neural Horizon Predictor (ONNX / Online RLS-MLP){!nativeMode ? ' (sim)' : ''}
             </span>
             <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]">
               {telemetry.aiBackend ?? 'embedded-rls-mlp'}
@@ -328,13 +328,13 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
         <div className="grid grid-cols-4 gap-3 sm:gap-5 shrink-0 font-mono tabular-nums text-xs border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-900/[0.06] dark:border-white/[0.06]">
           <div>
-            <div className="text-[11px] text-slate-400 font-sans">10s Forecast</div>
+            <div className="text-[11px] text-slate-400 font-sans">10s Forecast{!nativeMode ? ' (sim)' : ''}</div>
             <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
               {(telemetry.aiPredictedPressure10s ?? 45.0).toFixed(1)}
             </div>
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 font-sans">Velocity</div>
+            <div className="text-[11px] text-slate-400 font-sans">Velocity{!nativeMode ? ' (sim)' : ''}</div>
             <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
               {(telemetry.aiPredictedVelocity ?? 0) >= 0
                 ? `+${(telemetry.aiPredictedVelocity ?? 0).toFixed(2)}/s`
@@ -342,13 +342,13 @@ export const AutonomousStateHero: React.FC<Props> = ({
             </div>
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 font-sans">Scale Hint</div>
+            <div className="text-[11px] text-slate-400 font-sans">Scale Hint{!nativeMode ? ' (sim)' : ''}</div>
             <div className="font-semibold text-sm text-slate-900 dark:text-slate-100 mt-0.5">
               {Math.round((telemetry.aiRecommendedScale ?? 1.0) * 100)}%
             </div>
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 font-sans">Confidence</div>
+            <div className="text-[11px] text-slate-400 font-sans">Confidence{!nativeMode ? ' (sim)' : ''}</div>
             <div className="font-semibold text-sm text-[#0b57d0] dark:text-[#a8c7fa] mt-0.5">
               {Math.round((telemetry.aiConfidence ?? 0.85) * 100)}%
             </div>
