@@ -509,6 +509,7 @@ export interface AutonomousTelemetry {
   aiRecommendedScale?: number;
   aiConfidence?: number;
   aiSamples?: number;
+  tunerRuntimeStage?: string;
   tunerStage?: string;
   tunerIntent?: string;
   tunerCandidateId?: string;

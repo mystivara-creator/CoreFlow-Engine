@@ -1327,6 +1327,11 @@ void AutonomousTuner::classify_discovered_resources() {
     }
 }
 
+void AutonomousTuner::set_operational(bool enabled) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    operational_ = enabled;
+}
+
 void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_root) {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     sys_root_ = std::string(sys_root);
@@ -2186,6 +2191,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     latest_temperature_velocity_valid_ = telemetry.temperature_velocity_valid;
     latest_pressure_velocity_ = telemetry.thermal_pressure_velocity;
 
+    // Startup observation is a hard admission gate: collect telemetry and preserve
+    // state, but do not plan or execute candidate mutations before auto-promotion.
+    if (!operational_) {
+        return snapshot();
+    }
+
     // Backward compatibility: if caller set thermal_trend_celsius without setting temperature_velocity_valid,
     // adopt it only if non-zero, but keep them distinct.
     if (!telemetry.temperature_velocity_valid && std::abs(telemetry.thermal_trend_celsius) > 1e-6) {
@@ -2914,8 +2925,9 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     } else {
         out.stage = "PLANNED";
     }
-    out.active_intent = current_intent_;
-    out.intent = current_intent_;
+    out.runtime_stage = operational_ ? "STAGE_ACTIVE_TUNING" : "STAGE_OBSERVING";
+    out.active_intent = operational_ ? current_intent_ : "StartupBaselineObservation";
+    out.intent = out.active_intent;
     out.workload_class = current_workload_;
     out.workload_name = std::string(workload_class_name(current_workload_));
     out.bottleneck = current_bottleneck_;

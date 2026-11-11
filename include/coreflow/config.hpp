@@ -24,6 +24,9 @@ struct DaemonConfig {
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
     bool enable_uclamp{true};
+    // Normal daemon operation is autonomous; read-only inspection is an explicit CLI mode.
+    bool inspection_mode{false};
+    bool enable_tuner{true};
 
     // [device_adaptation]
     std::string tier_override{"auto"};
@@ -126,7 +129,8 @@ struct DaemonConfig {
 
     static std::string canonical_section_for_key(std::string_view key) {
         if (key == "version" || key == "log_level" || key == "zero_polling_mode" ||
-            key == "enable_cgroups_v2" || key == "enable_uclamp") {
+            key == "enable_cgroups_v2" || key == "enable_uclamp" ||
+            key == "enable_tuner") {
             return "general";
         }
         if (key == "tier_override" || key == "unlock_vendor_clamping" ||
@@ -218,6 +222,7 @@ struct DaemonConfig {
             else if (key == "zero_polling_mode") cfg.zero_polling_mode = parse_bool(val);
             else if (key == "enable_cgroups_v2") cfg.enable_cgroups_v2 = parse_bool(val);
             else if (key == "enable_uclamp") cfg.enable_uclamp = parse_bool(val);
+            else if (key == "enable_tuner") cfg.enable_tuner = parse_bool(val);
 
             // [device_adaptation]
             else if (key == "tier_override") cfg.tier_override = val;
@@ -496,7 +501,7 @@ struct DaemonConfig {
         return true;
     }
 
-    static DaemonConfig load_best_available() {
+    static DaemonConfig load_best_available(bool announce = true) {
         const std::vector<std::string> paths = {
             "/data/adb/coreflow/coreflow.conf",
             "/data/adb/modules/cfae_framework/coreflow.conf",
@@ -508,11 +513,11 @@ struct DaemonConfig {
         for (const auto& path : paths) {
             std::ifstream f(path);
             if (f.good()) {
-                std::cout << "[Config] Loaded configuration dynamically from: " << path << std::endl;
+                if (announce) std::cout << "[Config] Loaded configuration dynamically from: " << path << std::endl;
                 return load_from_file(path);
             }
         }
-        std::cout << "[Config] Using default in-memory configuration." << std::endl;
+        if (announce) std::cout << "[Config] Using default in-memory configuration." << std::endl;
         return DaemonConfig{};
     }
 };

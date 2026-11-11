@@ -1535,6 +1535,17 @@ int main() {
     {
         coreflow::AutonomousTuner preflight_tuner(coordinator, preflight_sys.string(), preflight_proc.string());
         assert(preflight_tuner.snapshot().block_queues.size() == 1);
+        preflight_tuner.set_operational(false);
+        const auto startup_observation = preflight_tuner.step({
+            .cpu_psi = 10.0, .memory_psi = 0.5, .io_psi = 12.0,
+            .thermal_pressure = 48.0,
+        });
+        assert(startup_observation.runtime_stage == "STAGE_OBSERVING");
+        assert(startup_observation.active_candidate_id == "baseline");
+        assert(coordinator.active_leases().empty());
+        assert(!baseline.has_active_mutations());
+        preflight_tuner.set_operational(true);
+        assert(preflight_tuner.snapshot().runtime_stage == "STAGE_ACTIVE_TUNING");
         const fs::path scheduler = preflight_queue / "scheduler";
         const fs::path scheduler_backup = preflight_queue / "scheduler.backup";
         fs::rename(scheduler, scheduler_backup);

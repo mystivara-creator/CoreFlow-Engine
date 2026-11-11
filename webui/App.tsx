@@ -89,6 +89,7 @@ interface NativeStatus {
   aiRecommendedScale?: number;
   aiConfidence?: number;
   aiSamples?: number;
+  tunerRuntimeStage?: string;
   tunerStage?: string;
   tunerIntent?: string;
   tunerCandidateId?: string;
@@ -317,6 +318,7 @@ export const App: React.FC = () => {
       aiRecommendedScale: status.aiRecommendedScale ?? old.aiRecommendedScale,
       aiConfidence: status.aiConfidence ?? old.aiConfidence,
       aiSamples: status.aiSamples ?? old.aiSamples,
+      tunerRuntimeStage: status.tunerRuntimeStage ?? old.tunerRuntimeStage,
       tunerStage: status.tunerStage ?? old.tunerStage,
       tunerIntent: status.tunerIntent ?? old.tunerIntent,
       tunerCandidateId: status.tunerCandidateId ?? old.tunerCandidateId,

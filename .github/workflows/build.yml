@@ -54,7 +54,7 @@ jobs:
         run: npm run build
       - name: Upload WebUI build
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coreflow-webui-build
           path: module/webroot/
@@ -143,7 +143,7 @@ jobs:
           exit "$result"
       - name: Upload host test diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coreflow-host-test-diagnostics
           path: |
@@ -192,7 +192,7 @@ jobs:
           exit "$result"
       - name: Upload sanitizer diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coreflow-sanitizer-diagnostics
           path: |
@@ -307,14 +307,14 @@ jobs:
           (cd "${MODULE_DIR}" && zip -qr9 "../${ZIP_NAME}" .)
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
       - name: Upload flashable package for inspection
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-package
           path: artifacts/CFAE-System-Framework-*-arm64.zip
           if-no-files-found: error
           retention-days: 30
       - name: Upload unpacked module
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-unpacked
           path: artifacts/CFAE-System-Framework/

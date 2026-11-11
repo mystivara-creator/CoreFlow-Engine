@@ -38,6 +38,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <poll.h>
 #include <pthread.h>
@@ -331,15 +332,49 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
     return std::isfinite(v) ? v : fallback;
 }
 
-void print_status(CoreFlowContext& context) {
+std::string collect_semantic_evidence_json_cached() {
+    static std::mutex cache_mutex;
+    static std::string cached;
+    static bool initialized = false;
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    // Semantic capability evidence is a boot-scoped discovery snapshot. Never
+    // rescan sysfs from the 500 ms status timer and stall the control reactor.
+    if (!initialized) {
+        cached = collect_semantic_evidence_json();
+        initialized = true;
+    }
+    return cached;
+}
+
+struct StatusTelemetrySnapshot final {
+    DaemonConfig config{};
+    MultiSensorProfile profile{};
+    ThermalAssessment thermal{};
+    float temperature{-1.0F};
+    float battery{-1.0F};
+    float skin{-1.0F};
+    std::optional<double> cpu_psi{};
+    std::optional<double> memory_psi{};
+    std::optional<double> io_psi{};
+};
+
+std::string build_status_json(
+    CoreFlowContext& context,
+    bool live_runtime = false,
+    bool daemon_running = true,
+    const StatusTelemetrySnapshot* cached = nullptr) {
     // 1. Perform passive hardware/kernel inspection before writing the JSON payload
-    const pid_t pid = daemon_pid();
+    const pid_t pid = live_runtime ? (daemon_running ? ::getpid() : 0) : daemon_pid();
     const auto& platform = context.platform_context();
-    const DaemonConfig cfg_status = DaemonConfig::load_best_available();
-    const auto profile = context.thermal_monitor().multi_sensor_profile();
-    const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
-    auto thermal = context.thermal_monitor().assess(false);
-    if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
+    const DaemonConfig cfg_status = cached != nullptr
+        ? cached->config : DaemonConfig::load_best_available(false);
+    const auto profile = cached != nullptr
+        ? cached->profile : context.thermal_monitor().multi_sensor_profile();
+    const float temp = cached != nullptr
+        ? cached->temperature
+        : (profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius());
+    auto thermal = cached != nullptr ? cached->thermal : context.thermal_monitor().assess(false);
+    if (cached == nullptr && !thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
         thermal.available = true;
         thermal.fallback_active = true;
         thermal.source = "generic_fallback";
@@ -355,15 +390,21 @@ void print_status(CoreFlowContext& context) {
     const bool thermal_guard_active = !thermal.fallback_active
         ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0)
         : (thermal.emergency || temp >= cfg_status.thermal_trip_celsius);
-    const auto battery = context.thermal_monitor().battery_celsius();
-    const auto skin = context.thermal_monitor().skin_celsius();
-    const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-    const auto mem_psi = read_psi_avg10("/proc/pressure/memory");
-    const auto io_psi = read_psi_avg10("/proc/pressure/io");
+    const auto battery = cached != nullptr ? cached->battery : context.thermal_monitor().battery_celsius();
+    const auto skin = cached != nullptr ? cached->skin : context.thermal_monitor().skin_celsius();
+    const auto cpu_psi = cached != nullptr ? cached->cpu_psi : read_psi_avg10("/proc/pressure/cpu");
+    const auto mem_psi = cached != nullptr ? cached->memory_psi : read_psi_avg10("/proc/pressure/memory");
+    const auto io_psi = cached != nullptr ? cached->io_psi : read_psi_avg10("/proc/pressure/io");
+    // Status JSON is built on the control thread from the current tick's telemetry.
+    // The 500 ms IPC timer only writes this serialized snapshot; it never probes sysfs.
+    const bool uclamp_supported = live_runtime && context.uclamp_governor().is_supported();
+    const uint32_t uclamp_min = uclamp_supported ? context.uclamp_governor().get_top_app_min() : 0U;
+    const uint32_t uclamp_max = uclamp_supported ? context.uclamp_governor().get_top_app_max() : 0U;
     // Read-only status does not train models or create mutation-capable owners.
-    const NeuralPrediction ai{.backend = "not_started"};
-    const AutonomousDecisionSnapshot tuner{
+    const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
+    AutonomousDecisionSnapshot tuner{
         .stage = "READ_ONLY",
+        .runtime_stage = "READ_ONLY",
         .active_intent = "ReadOnlyInspection",
         .intent = "ReadOnlyInspection",
         .workload_class = WorkloadClass::Idle,
@@ -412,23 +453,26 @@ void print_status(CoreFlowContext& context) {
         .vm_page_cluster = {},
         .vm_vfs_cache_pressure = {},
     };
-    const VulkanCapabilitiesSnapshot vk{};
+    if (live_runtime) tuner = context.autonomous_tuner().snapshot();
+    const VulkanCapabilitiesSnapshot vk = live_runtime ? context.vulkan_controller().snapshot() : VulkanCapabilitiesSnapshot{};
     const bool recovery_pending = !journal_clear();
     const size_t journal_nodes = count_journal_entries();
     // The status contract uses the same live discovery and native resolver path as 2B.
     // Discovery is strictly passive: the adapter exposes read access only.
-    const std::string semantic_evidence_json = collect_semantic_evidence_json();
+    const std::string semantic_evidence_json = live_runtime
+        ? collect_semantic_evidence_json_cached()
+        : collect_semantic_evidence_json();
 
     // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
     std::ostringstream out;
     out << "{\"running\":" << (pid ? "true" : "false")
         << ",\"pid\":" << pid
-        << ",\"uclampMin\":0"
-        << ",\"uclampMax\":0"
-        << ",\"uclampSupported\":false"
+        << ",\"uclampMin\":" << uclamp_min
+        << ",\"uclampMax\":" << uclamp_max
+        << ",\"uclampSupported\":" << (uclamp_supported ? "true" : "false")
         << ",\"uclampProbeSkipped\":true"
-        << ",\"inspectionMode\":\"read-only\""
-        << ",\"mutationRuntimeStarted\":false"
+        << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
+        << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
         << ",\"osFamily\":\"" << os_family_name(platform.identity.os_family) << "\""
         << ",\"osMajor\":" << platform.identity.os_major
@@ -436,9 +480,10 @@ void print_status(CoreFlowContext& context) {
         << ",\"policyFamily\":\"" << policy_family_name(platform.policy_family) << "\""
         << ",\"identityConfidence\":\"" << identity_confidence_name(platform.identity.confidence) << "\""
         << ",\"tier1Eligible\":" << (platform.tier1_eligible ? "true" : "false")
-        << ",\"aiRuntimeStarted\":false"
-        << ",\"tunerRuntimeStarted\":false"
-        << ",\"vulkanProbeSkipped\":true"
+        << ",\"aiRuntimeStarted\":" << (live_runtime ? "true" : "false")
+        << ",\"tunerRuntimeStarted\":" << (live_runtime ? "true" : "false")
+        << ",\"tunerRuntimeStage\":" << json_string(tuner.runtime_stage)
+        << ",\"vulkanProbeSkipped\":" << (live_runtime && tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
         << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
         << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
         << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
@@ -568,7 +613,7 @@ void print_status(CoreFlowContext& context) {
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
         << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"probeSkipped\":true"
+        << ",\"probeSkipped\":" << (tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
         << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
         << ",\"deviceName\":" << json_string(vk.device_name)
         << ",\"apiVersion\":" << json_string(vk.api_version)
@@ -639,7 +684,11 @@ void print_status(CoreFlowContext& context) {
         << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
         << ",\"semanticEvidence\":" << semantic_evidence_json << "}";
 
-    std::cout << "\n" << out.str() << "\n" << std::flush;
+    return out.str();
+}
+
+void print_status(CoreFlowContext& context) {
+    std::cout << "\n" << build_status_json(context, false) << "\n" << std::flush;
 }
 
 std::string json_string(std::string_view text) {
@@ -903,6 +952,54 @@ void clear_pid(const UniqueFd& lock) noexcept {
     }
 }
 
+bool write_status_snapshot(std::string_view payload) noexcept {
+    if (payload.empty() || payload.size() > 1024U * 1024U || !ensure_secure_state_dir()) return false;
+    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    static uint64_t nonce = 0;
+    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(++nonce);
+    UniqueFd temp(::openat(dir.get(), temp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!temp.valid()) return false;
+    (void)::fchmod(temp.get(), 0600);
+    size_t offset = 0;
+    while (offset < payload.size()) {
+        const ssize_t n = ::write(temp.get(), payload.data() + offset, payload.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { (void)::unlinkat(dir.get(), temp_name.c_str(), 0); return false; }
+        offset += static_cast<size_t>(n);
+    }
+    if (::fsync(temp.get()) != 0 || ::renameat(dir.get(), temp_name.c_str(), dir.get(), "status.json") != 0) {
+        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+        return false;
+    }
+    (void)::fsync(dir.get());
+    return true;
+}
+
+bool print_live_status_snapshot(pid_t expected_pid) {
+    if (expected_pid <= 0) return false;
+    UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 1024 * 1024) return false;
+    const auto now = std::chrono::system_clock::now();
+    const auto modified = std::chrono::system_clock::from_time_t(st.st_mtime);
+    if (now < modified || now - modified > std::chrono::seconds(3)) return false;
+    std::string payload(static_cast<size_t>(st.st_size), '\0');
+    size_t offset = 0;
+    while (offset < payload.size()) {
+        const ssize_t n = ::read(fd.get(), payload.data() + offset, payload.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        offset += static_cast<size_t>(n);
+    }
+    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid) + ",";
+    if (payload.find("\"running\":true") == std::string::npos ||
+        payload.find(pid_field) == std::string::npos || payload.front() != '{' || payload.back() != '}') return false;
+    std::cout << "\n" << payload << "\n" << std::flush;
+    return true;
+}
+
 bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
     constexpr std::string_view kAllowed[] = {
         "/sys/fs/cgroup/cgroup.procs",
@@ -1108,6 +1205,8 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (command == "--status") {
+            const pid_t live_pid = daemon_pid();
+            if (live_pid > 0 && print_live_status_snapshot(live_pid)) return 0;
             CoreFlowContext context;
             if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
             print_status(context);
@@ -1182,6 +1281,10 @@ int main(int argc, char* argv[]) {
     // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
     frequencies.discover(false, config.enable_gpu_frequency_control);
     auto& autonomous_tuner = context.autonomous_tuner();
+    autonomous_tuner.set_operational(false);
+    emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, CPU/GPU frequency, and PSI baselines; grace=12s.");
+    const auto daemon_started_at = std::chrono::steady_clock::now();
+    bool lifecycle_promoted = false;
     WorkloadTelemetryPipeline workload_pipeline;
     const bool workload_pipeline_ready = workload_pipeline.start();
     WorkloadClassifier workload_classifier;
@@ -1276,12 +1379,7 @@ int main(int argc, char* argv[]) {
     std::string last_tuner_candidate = "oem_baseline";
     TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
     context.neural_predictor().initialize("/data/adb/coreflow/models");
-    context.vulkan_controller().initialize({
-        .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-        .enable_skiavk_threaded = config.enable_skiavk_threaded,
-        .enable_adaptive_vrs = config.enable_adaptive_vrs,
-        .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-    });
+    // Vulkan activation is deferred until the OEM baseline grace period is accepted.
 
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
@@ -1338,7 +1436,15 @@ int main(int argc, char* argv[]) {
 
     const auto interval = std::chrono::milliseconds(
         std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+    StatusTelemetrySnapshot status_inputs{};
+    status_inputs.config = config;
+    std::string latest_status_payload = build_status_json(context, true);
+    const auto refresh_status_payload = [&]() {
+        latest_status_payload = build_status_json(context, true, true, &status_inputs);
+    };
+
     timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
+        const auto run_tick = [&]() {
         if (safety_halt_requested()) {
             reactor.stop();
             return;
@@ -1382,6 +1488,8 @@ int main(int argc, char* argv[]) {
         const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
         const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
         const auto io_psi = read_psi_avg10("/proc/pressure/io");
+        const float battery_temp = context.thermal_monitor().battery_celsius();
+        const float skin_temp = context.thermal_monitor().skin_celsius();
 
         const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
                                            std::optional<double> confidence = std::nullopt,
@@ -1438,6 +1546,16 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        status_inputs.config = config;
+        status_inputs.profile = profile;
+        status_inputs.thermal = thermal;
+        status_inputs.temperature = temp;
+        status_inputs.battery = battery_temp;
+        status_inputs.skin = skin_temp;
+        status_inputs.cpu_psi = cpu_psi;
+        status_inputs.memory_psi = memory_psi;
+        status_inputs.io_psi = io_psi;
+
         if (!thermal.available) {
             last_tick = std::chrono::steady_clock::now();
             if (!unavailable_reported) {
@@ -1473,7 +1591,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
-        const float batt = context.thermal_monitor().battery_celsius();
+        const float batt = battery_temp;
         if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
             emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
                      std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
@@ -1523,6 +1641,38 @@ int main(int argc, char* argv[]) {
         const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
         const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
         last_tick = now_tick;
+
+        if (config.inspection_mode) {
+            autonomous_tuner.set_operational(false);
+            record_dvs_sample();
+            return;
+        }
+        if (!lifecycle_promoted) {
+            constexpr auto kStartupGrace = std::chrono::seconds(12);
+            const auto observed_for = now_tick - daemon_started_at;
+            const bool psi_stable =
+                cpu_psi.has_value() && memory_psi.has_value() && io_psi.has_value() &&
+                *cpu_psi <= 25.0 && *memory_psi <= 20.0 && *io_psi <= 20.0;
+            const bool thermal_stable =
+                thermal.available && !thermal.emergency && thermal.pressure <= 65.0 &&
+                temp_vel.valid && std::abs(temp_vel.velocity_celsius_per_sec) <= 0.5;
+            if (observed_for < kStartupGrace || !psi_stable || !thermal_stable) {
+                // Keep tuner candidate execution closed without starving independent
+                // PID, frequency, UClamp, and thermal-mitigation paths below.
+                autonomous_tuner.set_operational(false);
+            } else {
+                lifecycle_promoted = true;
+                autonomous_tuner.set_operational(config.enable_tuner);
+                context.vulkan_controller().initialize({
+                    .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+                    .enable_skiavk_threaded = config.enable_skiavk_threaded,
+                    .enable_adaptive_vrs = config.enable_adaptive_vrs,
+                    .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+                });
+                emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING -> STAGE_ACTIVE_TUNING; " +
+                    std::to_string(profile.total_valid_sensors) + " thermal sensors valid; thermal/PSI stability verified.");
+            }
+        }
 
         // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
         const auto ai_pred = context.neural_predictor().infer_and_learn({
@@ -1609,8 +1759,10 @@ int main(int argc, char* argv[]) {
         }
         (void)context.hardware_longevity().apply_storage_pacing();
         context.hardware_longevity().monitor_battery_thermals(temp);
-        (void)context.vulkan_controller().apply_workload_policy(
-            desired, active_capacity_scale, thermal_limit_hit);
+        if (lifecycle_promoted) {
+            (void)context.vulkan_controller().apply_workload_policy(
+                desired, active_capacity_scale, thermal_limit_hit);
+        }
 
         // Build a fresh sliding workload window for the tiered CPU policy.
         const uint64_t workload_now_ns = static_cast<uint64_t>(
@@ -1655,7 +1807,7 @@ int main(int argc, char* argv[]) {
         const double remaining_headroom = thermal.headroom_valid
             ? std::max(0.0, 1.0 - static_cast<double>(thermal.headroom_value))
             : -1.0;
-        const auto tuner_snap = autonomous_tuner.step({
+        const auto tuner_snap = config.enable_tuner ? autonomous_tuner.step({
             .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
             .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
             .io_psi = std::clamp(pressure.io, 0.0, 100.0),
@@ -1677,7 +1829,7 @@ int main(int argc, char* argv[]) {
             .frequency_policy_evidence = frequency_policy_evidence,
             .frequency_policy_evidence_valid =
                 config.enable_cpu_frequency_control && workload_pipeline_ready,
-        });
+        }) : autonomous_tuner.snapshot();
         record_dvs_sample(
             ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
             ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
@@ -1730,11 +1882,27 @@ int main(int argc, char* argv[]) {
                 emit_log(true, line.str());
             }
         }
+        };
+        run_tick();
+        refresh_status_payload();
     });
     if (timer_fd < 0) {
         clear_pid(pid_lock);
         return 1;
     }
+    const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
+        if (!write_status_snapshot(latest_status_payload)) {
+            static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
+            const auto now = std::chrono::steady_clock::now();
+            if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
+                now - last_status_write_warning > std::chrono::seconds(30)) {
+                emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
+                last_status_write_warning = now;
+            }
+        }
+    });
+    (void)status_timer_fd;
+    (void)write_status_snapshot(latest_status_payload);
 
     emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
     reactor.run();
@@ -1749,6 +1917,7 @@ int main(int argc, char* argv[]) {
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
     workload_pipeline.stop();
+    (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
     const bool stopped = context.Stop("Daemon shutdown");
     const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
