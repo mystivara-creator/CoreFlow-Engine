@@ -343,8 +343,11 @@ CgroupV2Controller::CgroupV2Controller(
             return handle_preemption(domain, transaction_id);
         });
 
-    if (supported_) {
-        std::cout << "[CoreFlow][CgroupV2] Modern cgroups v2 verified at "
+    if (supported_ && legacy_tasks_) {
+        std::cout << "[CoreFlow][Cgroup] Android legacy CPU controller verified at "
+                  << root_path_ << " (tasks interface)" << std::endl;
+    } else if (supported_) {
+        std::cout << "[CoreFlow][CgroupV2] Unified CPU controller verified at "
                   << root_path_ << std::endl;
     } else {
         std::cerr << "[CoreFlow][CgroupV2] Notice: cgroups v2 not mounted at "
