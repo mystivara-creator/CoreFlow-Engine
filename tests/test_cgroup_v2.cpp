@@ -36,7 +36,11 @@ int main() {
     const fs::path weight = top_app / "cpu.weight";
     put(root / "cgroup.controllers", "cpu cpuset\n");
     put(root / "cgroup.subtree_control", "");
+    put(root / "cgroup.type", "domain threaded\n");
     put(root / "cgroup.threads", std::to_string(::getpid()));
+    put(root / "top-app/cgroup.type", "threaded\n");
+    put(root / "top-app/cgroup.threads", "");
+    put(root / "background/cgroup.type", "threaded\n");
     put(root / "background/cgroup.threads", "");
     put(cpuset, "0-3\n");
     put(weight, "100\n");
@@ -108,20 +112,17 @@ int main() {
         assert(get(cpuset) == "0-3");
         assert(coordinator.active_leases().empty());
         assert(!baseline.has_active_mutations());
-        // Single-TID migration captures the original cgroup.threads snapshot,
-        // writes only the requested TID, and confirms target membership by readback.
+        // Per-thread migration is journaled in memory and limited to one
+        // verified threaded resource domain. Simulate kernel source removal here.
         assert(controller.migrate_task(::getpid(), coreflow::CgroupTarget::Background));
         assert(get(root / "background/cgroup.threads") == std::to_string(::getpid()));
-        const auto placement_audit = baseline.get_audit_trail();
-        const std::string thread_membership =
-            "/proc/" + std::to_string(::getpid()) + "/task/" +
-            std::to_string(::getpid()) + "/cgroup";
-        const auto placement = std::find_if(placement_audit.begin(), placement_audit.end(),
-            [&](const coreflow::NodeSnapshot& node) {
-                return node.path == thread_membership;
-            });
-        assert(placement != placement_audit.end());
-        assert(placement->factory_value.find("0::/") != std::string::npos);
+        assert(controller.pending_thread_migrations() == 1);
+        assert(coordinator.active_leases().size() == 1);
+        put(root / "cgroup.threads", "");
+        assert(controller.restore_thread(::getpid()));
+        assert(get(root / "cgroup.threads") == std::to_string(::getpid()));
+        assert(controller.pending_thread_migrations() == 0);
+        assert(coordinator.active_leases().empty());
         assert(!controller.migrate_task(-1, coreflow::CgroupTarget::Background));
         assert(controller.unlock_vendor_restrictions());
         assert(get(root / "cgroup.subtree_control") == "+cpu");

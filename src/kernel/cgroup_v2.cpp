@@ -20,6 +20,9 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <sstream>
+#include <string_view>
 #include <iostream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -62,52 +65,220 @@ int open_cgroup_dir(int root_fd, const char* name) noexcept {
     if (name == nullptr || name[0] == '\0') return ::fcntl(root_fd, F_DUPFD_CLOEXEC, 0);
     return ::openat(root_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 }
-bool capture_thread_membership(pid_t tid) noexcept {
-    char status_path[64];
-    const int status_length = std::snprintf(status_path, sizeof(status_path),
-                                             "/proc/%d/status", tid);
-    if (status_length <= 0 || static_cast<size_t>(status_length) >= sizeof(status_path)) return false;
-    UniqueFd status_fd(::open(status_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!status_fd.valid()) return false;
-    char status[4096];
-    ssize_t count;
-    do { count = ::read(status_fd.get(), status, sizeof(status)); }
-    while (count < 0 && errno == EINTR);
-    if (count <= 0) return false;
+bool read_bounded_file(const std::string& path, std::string& output,
+                       size_t maximum = 16384U) noexcept {
+    output.clear();
+    UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+    char buffer[1024];
+    for (;;) {
+        ssize_t count = ::read(fd.get(), buffer, sizeof(buffer));
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        if (count < 0) return false;
+        if (count == 0) break;
+        if (output.size() + static_cast<size_t>(count) > maximum) return false;
+        output.append(buffer, static_cast<size_t>(count));
+    }
+    return !output.empty();
+}
 
-    pid_t tgid = 0;
+bool parse_tgid_from_status(std::string_view status, pid_t& tgid) noexcept {
     size_t pos = 0;
-    while (pos < static_cast<size_t>(count)) {
-        size_t end = pos;
-        while (end < static_cast<size_t>(count) && status[end] != '\n') ++end;
-        constexpr std::string_view key{"Tgid:"};
-        if (end - pos >= key.size() &&
-            std::memcmp(status + pos, key.data(), key.size()) == 0) {
-            size_t value = pos + key.size();
-            while (value < end && (status[value] == ' ' || status[value] == '\t')) ++value;
-            const auto parsed = std::from_chars(status + value, status + end, tgid);
-            if (parsed.ec != std::errc{} || parsed.ptr != status + end || tgid <= 0) return false;
-            break;
+    while (pos < status.size()) {
+        const size_t end = status.find('\n', pos);
+        const std::string_view line = status.substr(
+            pos, end == std::string_view::npos ? status.size() - pos : end - pos);
+        if (line.rfind("Tgid:", 0) == 0) {
+            size_t value = 5;
+            while (value < line.size() && (line[value] == ' ' || line[value] == '\t')) ++value;
+            const auto parsed = std::from_chars(line.data() + value, line.data() + line.size(), tgid);
+            return parsed.ec == std::errc{} && parsed.ptr == line.data() + line.size() && tgid > 0;
         }
+        if (end == std::string_view::npos) break;
         pos = end + 1;
     }
-    if (tgid <= 0) return false;
+    return false;
+}
 
-    char membership_path[96];
-    const int path_length = std::snprintf(membership_path, sizeof(membership_path),
-        "/proc/%d/task/%d/cgroup", tgid, tid);
-    if (path_length <= 0 || static_cast<size_t>(path_length) >= sizeof(membership_path)) return false;
-    // This per-thread proc record captures the exact original placement before
-    // the cgroup.threads write; unlike a cgroup.threads snapshot it is TID-specific.
-    return BaselineStore::instance().capture(std::string(membership_path));
+bool parse_start_time_from_stat(std::string_view stat, uint64_t& start_time) noexcept {
+    const size_t close = stat.rfind(')');
+    if (close == std::string_view::npos || close + 1 >= stat.size()) return false;
+    size_t pos = close + 1;
+    unsigned field = 3;
+    while (pos < stat.size()) {
+        while (pos < stat.size() && (stat[pos] == ' ' || stat[pos] == '\t')) ++pos;
+        const size_t begin = pos;
+        while (pos < stat.size() && stat[pos] != ' ' && stat[pos] != '\t' &&
+               stat[pos] != '\n') ++pos;
+        if (begin == pos) break;
+        if (field == 22) {
+            const auto parsed = std::from_chars(stat.data() + begin, stat.data() + pos, start_time);
+            return parsed.ec == std::errc{} && parsed.ptr == stat.data() + pos && start_time > 0;
+        }
+        ++field;
+    }
+    return false;
+}
+
+bool read_task_identity(const std::string& proc_root, pid_t tid, pid_t& tgid,
+                        uint64_t& start_time_ticks) noexcept {
+    if (tid <= 0) return false;
+    std::string status;
+    if (!read_bounded_file(proc_root + "/" + std::to_string(tid) + "/status", status, 8192U) ||
+        !parse_tgid_from_status(status, tgid)) return false;
+    std::string stat;
+    const std::string stat_path = proc_root + "/" + std::to_string(tgid) +
+        "/task/" + std::to_string(tid) + "/stat";
+    return read_bounded_file(stat_path, stat, 4096U) &&
+        parse_start_time_from_stat(stat, start_time_ticks);
+}
+
+bool parse_proc_cgroup_relative(const std::string& proc_root, pid_t tgid, pid_t tid,
+                                std::string& relative) noexcept {
+    std::string contents;
+    const std::string path = proc_root + "/" + std::to_string(tgid) +
+        "/task/" + std::to_string(tid) + "/cgroup";
+    if (!read_bounded_file(path, contents, 8192U)) return false;
+    size_t pos = 0;
+    while (pos < contents.size()) {
+        const size_t end = contents.find('\n', pos);
+        const std::string_view line(contents.data() + pos,
+            (end == std::string::npos ? contents.size() : end) - pos);
+        if (line.rfind("0::", 0) == 0) {
+            std::string_view value = line.substr(3);
+            while (!value.empty() && value.front() == '/') value.remove_prefix(1);
+            if (value.find("..") != std::string_view::npos) return false;
+            relative.assign(value);
+            return true;
+        }
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return false;
+}
+
+bool open_cgroup_relative(int root_fd, std::string_view relative, UniqueFd& output) noexcept {
+    UniqueFd current(::fcntl(root_fd, F_DUPFD_CLOEXEC, 0));
+    if (!current.valid()) return false;
+    size_t pos = 0;
+    while (pos < relative.size()) {
+        const size_t slash = relative.find('/', pos);
+        const std::string_view component = relative.substr(
+            pos, slash == std::string_view::npos ? relative.size() - pos : slash - pos);
+        if (component.empty() || component == "." || component == "..") return false;
+        const std::string name(component);
+        UniqueFd next(::openat(current.get(), name.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+        if (!next.valid()) return false;
+        current = std::move(next);
+        if (slash == std::string_view::npos) break;
+        pos = slash + 1;
+    }
+    output = std::move(current);
+    return true;
+}
+
+bool path_has_thread(const std::string& path, pid_t tid) noexcept {
+    UniqueFd dir(::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    char buffer[8192];
+    const ssize_t count = read_at(dir.get(), "cgroup.threads", buffer, sizeof(buffer));
+    if (count < 0) return false;
+    char token[24];
+    const int size = std::snprintf(token, sizeof(token), "%d", tid);
+    return size > 0 && static_cast<size_t>(size) < sizeof(token) &&
+        token_present(buffer, static_cast<size_t>(count),
+                      std::string_view(token, static_cast<size_t>(size)));
+}
+
+bool find_thread_membership(const std::string& root_path, const std::string& proc_root,
+                            pid_t tid, pid_t tgid, std::string& relative) noexcept {
+    std::vector<std::string> matches;
+    if (path_has_thread(root_path, tid)) matches.emplace_back();
+    std::error_code ec;
+    size_t visited = 0;
+    for (fs::recursive_directory_iterator it(
+             root_path, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && visited < 1024U; it.increment(ec)) {
+        ++visited;
+        if (it.depth() > 8) { it.disable_recursion_pending(); continue; }
+        const fs::file_status status = it->symlink_status(ec);
+        if (ec) { ec.clear(); continue; }
+        if (fs::is_symlink(status)) { it.disable_recursion_pending(); continue; }
+        if (!fs::is_directory(status)) continue;
+        if (path_has_thread(it->path().string(), tid)) {
+            std::error_code relative_error;
+            const fs::path value = fs::relative(it->path(), fs::path(root_path), relative_error);
+            if (!relative_error) matches.push_back(value.generic_string());
+        }
+    }
+    if (matches.empty()) return false;
+    if (matches.size() == 1U) { relative = matches.front(); return true; }
+    std::string proc_relative;
+    if (!parse_proc_cgroup_relative(proc_root, tgid, tid, proc_relative)) return false;
+    const auto found = std::find(matches.begin(), matches.end(), proc_relative);
+    if (found == matches.end() ||
+        std::find(std::next(found), matches.end(), proc_relative) != matches.end()) return false;
+    relative = *found;
+    return true;
+}
+
+bool read_cgroup_type(int root_fd, std::string_view relative, std::string& type) noexcept {
+    UniqueFd directory;
+    if (!open_cgroup_relative(root_fd, relative, directory)) return false;
+    char buffer[64];
+    const ssize_t count = read_at(directory.get(), "cgroup.type", buffer, sizeof(buffer));
+    if (count <= 0) return false;
+    type.assign(buffer, static_cast<size_t>(count));
+    while (!type.empty() && (type.back() == '\n' || type.back() == '\r' ||
+                             type.back() == ' ' || type.back() == '\t')) type.pop_back();
+    return !type.empty();
+}
+
+bool resource_domain_root(int root_fd, std::string_view relative,
+                          std::string& domain_root) noexcept {
+    std::string current(relative);
+    for (unsigned depth = 0; depth <= 8; ++depth) {
+        std::string type;
+        if (!read_cgroup_type(root_fd, current, type)) return false;
+        if (type == "domain" || type == "domain threaded") {
+            domain_root = current;
+            return true;
+        }
+        if (type != "threaded") return false;
+        const size_t slash = current.rfind('/');
+        current = slash == std::string::npos ? std::string{} : current.substr(0, slash);
+    }
+    return false;
+}
+
+bool write_thread_at(int root_fd, std::string_view relative, pid_t tid) noexcept {
+    UniqueFd directory;
+    if (!open_cgroup_relative(root_fd, relative, directory)) return false;
+    UniqueFd threads(::openat(directory.get(), "cgroup.threads",
+        O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!threads.valid()) return false;
+    char value[24];
+    const int length = std::snprintf(value, sizeof(value), "%d", tid);
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(value)) return false;
+    ssize_t count;
+    do { count = ::write(threads.get(), value, static_cast<size_t>(length)); }
+    while (count < 0 && errno == EINTR);
+    if (count != length) return false;
+    char verify[8192];
+    const ssize_t size = read_at(directory.get(), "cgroup.threads", verify, sizeof(verify));
+    return size >= 0 && token_present(
+        verify, static_cast<size_t>(size), std::string_view(value, static_cast<size_t>(length)));
 }
 
 
 } // namespace
 
 
-CgroupV2Controller::CgroupV2Controller(CentralMutationCoordinator& coordinator, std::string_view root_path)
-    : coordinator_(coordinator), root_path_(root_path),
+CgroupV2Controller::CgroupV2Controller(
+    CentralMutationCoordinator& coordinator, std::string_view root_path, std::string_view proc_root)
+    : coordinator_(coordinator), root_path_(root_path), proc_root_(proc_root),
       controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")) {
     const std::string controllers_file = root_path_ + "/cgroup.controllers";
     supported_ = fs::exists(controllers_file);
@@ -129,7 +300,9 @@ CgroupV2Controller::CgroupV2Controller(CentralMutationCoordinator& coordinator, 
 CgroupV2Controller::~CgroupV2Controller() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!transaction_id_.empty()) (void)rollback_transaction_locked();
+        if (!transaction_id_.empty() || !thread_migrations_.empty() || !active_mutation_paths_.empty()) {
+            (void)rollback_transaction_locked();
+        }
     }
     // unregister waits for any callback that was already dispatched.
     coordinator_.unregister_preemption_handler(controller_name_);
@@ -149,9 +322,22 @@ std::string CgroupV2Controller::get_cgroup_path(CgroupTarget target) const {
     return root_path_;
 }
 
-bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
-    if (!supported_ || tid <= 0 || root_path_.empty()) return false;
+bool CgroupV2Controller::get_thread_identity(
+    pid_t tid, pid_t& tgid, uint64_t& start_time_ticks) const noexcept {
+    return read_task_identity(proc_root_, tid, tgid, start_time_ticks);
+}
 
+bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
+    pid_t tgid = 0;
+    uint64_t start_time = 0;
+    if (!get_thread_identity(tid, tgid, start_time)) return false;
+    return migrate_thread(tid, tgid, start_time, target);
+}
+
+bool CgroupV2Controller::migrate_thread(
+    pid_t tid, pid_t expected_tgid, uint64_t expected_start_time_ticks, CgroupTarget target) {
+    if (!supported_ || tid <= 0 || expected_tgid <= 0 || expected_start_time_ticks == 0 ||
+        root_path_.empty()) return false;
     const char* target_name = nullptr;
     switch (target) {
         case CgroupTarget::TopApp: target_name = "top-app"; break;
@@ -160,82 +346,100 @@ bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
         case CgroupTarget::System: target_name = "system"; break;
         default: return false;
     }
+    const std::string target_relative(target_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    pid_t actual_tgid = 0;
+    uint64_t actual_start = 0;
+    if (!read_task_identity(proc_root_, tid, actual_tgid, actual_start) ||
+        actual_tgid != expected_tgid || actual_start != expected_start_time_ticks) return false;
+
+    std::string source_relative;
+    if (!find_thread_membership(root_path_, proc_root_, tid, expected_tgid, source_relative)) return false;
+    if (source_relative == target_relative) return true;
+
+    const auto existing = std::find_if(thread_migrations_.begin(), thread_migrations_.end(),
+        [&](const ThreadMigration& entry) { return entry.tid == tid; });
+    if (existing != thread_migrations_.end()) return false;
 
     UniqueFd root_fd(::open(root_path_.c_str(),
         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!root_fd.valid()) return false;
-
-    // Resolve the TID's current managed membership before touching the destination.
-    // Only cgroup.threads is used: cgroup.procs would migrate the entire process.
-    char tid_list[4096];
-    const int destination_fd_raw = open_cgroup_dir(root_fd.get(), target_name);
-    UniqueFd destination_fd(destination_fd_raw);
-    if (!destination_fd.valid()) return false;
-    const ssize_t destination_size = read_at(destination_fd.get(), "cgroup.threads",
-                                               tid_list, sizeof(tid_list));
-    if (destination_size < 0) return false;
-    const std::string_view tid_text = [&]() noexcept {
-        static thread_local char value[16];
-        const auto converted = std::to_chars(value, value + sizeof(value), tid);
-        return converted.ec == std::errc{} ?
-            std::string_view(value, static_cast<size_t>(converted.ptr - value)) :
-            std::string_view{};
-    }();
-    if (tid_text.empty()) return false;
-
-    int source_fd_raw = -1;
-    const char* source_name = nullptr;
-    char membership[4096];
-    const auto locate_tid = [&](int directory_fd, const char* name) noexcept {
-        const ssize_t count = read_at(directory_fd, "cgroup.threads",
-                                      membership, sizeof(membership));
-        if (count < 0) return false;
-        if (!token_present(membership, static_cast<size_t>(count), tid_text)) return false;
-        source_fd_raw = ::dup(directory_fd);
-        source_name = name;
-        return source_fd_raw >= 0;
-    };
-
-    if (!locate_tid(root_fd.get(), "")) {
-        for (const char* name : kManagedCgroups) {
-            UniqueFd candidate(open_cgroup_dir(root_fd.get(), name));
-            if (!candidate.valid()) continue;
-            if (locate_tid(candidate.get(), name)) break;
-        }
-    }
-    UniqueFd source_fd(source_fd_raw);
-    if (!source_fd.valid() || source_name == nullptr) return false;
-
-    // Already in the destination: success is based on an actual membership readback.
-    if (std::strcmp(source_name, target_name) == 0) return true;
-
-    // Capture the exact thread's original /proc membership record. This avoids
-    // treating the whole cgroup.threads list as a rollback value (which could move
-    // unrelated threads) and remains immutable after the migration.
-    if (!capture_thread_membership(tid)) return false;
-
-    UniqueFd target_threads(::openat(destination_fd.get(), "cgroup.threads",
-        O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!target_threads.valid()) {
-        // ENOENT (task/group lifecycle), EPERM and EINVAL are expected kernel denials.
+    std::string source_domain, target_domain;
+    if (!resource_domain_root(root_fd.get(), source_relative, source_domain) ||
+        !resource_domain_root(root_fd.get(), target_relative, target_domain) ||
+        source_domain != target_domain) {
+        // Never fall back to cgroup.procs: that would migrate every app thread.
         return false;
     }
 
-    char tid_buffer[24];
-    const int tid_length = std::snprintf(tid_buffer, sizeof(tid_buffer), "%d", tid);
-    if (tid_length <= 0 || static_cast<size_t>(tid_length) >= sizeof(tid_buffer)) return false;
-    ssize_t written;
-    do { written = ::write(target_threads.get(), tid_buffer, static_cast<size_t>(tid_length)); }
-    while (written < 0 && errno == EINTR);
-    if (written != tid_length) return false;
+    if (!acquire_lease_locked()) return false;
+    thread_migrations_.push_back(ThreadMigration{
+        .tid = tid, .tgid = expected_tgid,
+        .start_time_ticks = expected_start_time_ticks,
+        .source_relative_path = source_relative,
+        .target_relative_path = target_relative,
+    });
+    if (!write_thread_at(root_fd.get(), target_relative, tid)) {
+        (void)restore_thread_locked(tid);
+        release_lease_locked();
+        return false;
+    }
+    return true;
+}
 
-    // The kernel's cgroup.threads view is authoritative; a successful write alone
-    // is insufficient because a task may exit or be rejected during migration.
-    char verify[4096];
-    const ssize_t verified_size = read_at(destination_fd.get(), "cgroup.threads",
-                                           verify, sizeof(verify));
-    return verified_size >= 0 &&
-        token_present(verify, static_cast<size_t>(verified_size), tid_text);
+bool CgroupV2Controller::restore_thread_locked(pid_t tid) noexcept {
+    const auto it = std::find_if(thread_migrations_.begin(), thread_migrations_.end(),
+        [&](const ThreadMigration& entry) { return entry.tid == tid; });
+    if (it == thread_migrations_.end()) return true;
+
+    pid_t actual_tgid = 0;
+    uint64_t actual_start = 0;
+    if (!read_task_identity(proc_root_, it->tid, actual_tgid, actual_start) ||
+        actual_tgid != it->tgid || actual_start != it->start_time_ticks) {
+        thread_migrations_.erase(it);
+        return true;
+    }
+
+    std::string current_relative;
+    if (!find_thread_membership(root_path_, proc_root_, it->tid, it->tgid, current_relative)) return false;
+    if (current_relative != it->target_relative_path) {
+        // Android/OEM already moved the task. Retire our journal without overwriting it.
+        thread_migrations_.erase(it);
+        return true;
+    }
+
+    UniqueFd root_fd(::open(root_path_.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!root_fd.valid()) return false;
+    std::string source_domain, target_domain;
+    if (!resource_domain_root(root_fd.get(), it->source_relative_path, source_domain) ||
+        !resource_domain_root(root_fd.get(), it->target_relative_path, target_domain) ||
+        source_domain != target_domain) return false;
+    if (!write_thread_at(root_fd.get(), it->source_relative_path, tid)) return false;
+    thread_migrations_.erase(it);
+    return true;
+}
+
+bool CgroupV2Controller::restore_thread(pid_t tid) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool restored = restore_thread_locked(tid);
+    if (restored) release_lease_locked();
+    return restored;
+}
+
+bool CgroupV2Controller::restore_all_migrated_threads() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    while (!thread_migrations_.empty()) {
+        if (!restore_thread_locked(thread_migrations_.back().tid)) return false;
+    }
+    release_lease_locked();
+    return true;
+}
+
+size_t CgroupV2Controller::pending_thread_migrations() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return thread_migrations_.size();
 }
 
 bool CgroupV2Controller::set_cpuset(CgroupTarget target, std::string_view cpus) {
@@ -330,14 +534,17 @@ bool CgroupV2Controller::acquire_lease_locked() {
 }
 
 void CgroupV2Controller::release_lease_locked() noexcept {
-    if (transaction_id_.empty()) return;
+    if (transaction_id_.empty() || !active_mutation_paths_.empty() || !thread_migrations_.empty()) return;
     coordinator_.release_lease(
         MutationDomain::CpuPolicy, controller_name_, transaction_id_);
     transaction_id_.clear();
 }
 
 bool CgroupV2Controller::rollback_transaction_locked() noexcept {
-    if (transaction_id_.empty()) return active_mutation_paths_.empty();
+    if (transaction_id_.empty()) return active_mutation_paths_.empty() && thread_migrations_.empty();
+    while (!thread_migrations_.empty()) {
+        if (!restore_thread_locked(thread_migrations_.back().tid)) return false;
+    }
     auto& store = BaselineStore::instance();
     for (const auto& path : active_mutation_paths_) {
         if (!store.rollback(path)) return false;
