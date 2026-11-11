@@ -335,12 +335,13 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
 std::string collect_semantic_evidence_json_cached() {
     static std::mutex cache_mutex;
     static std::string cached;
-    static std::chrono::steady_clock::time_point last_refresh{};
+    static bool initialized = false;
     std::lock_guard<std::mutex> lock(cache_mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (cached.empty() || now - last_refresh >= std::chrono::seconds(5)) {
+    // Semantic capability evidence is a boot-scoped discovery snapshot. Never
+    // rescan sysfs from the 500 ms status timer and stall the control reactor.
+    if (!initialized) {
         cached = collect_semantic_evidence_json();
-        last_refresh = now;
+        initialized = true;
     }
     return cached;
 }
