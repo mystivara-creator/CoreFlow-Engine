@@ -5,6 +5,8 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
 #include "coreflow/input_event_source.hpp"
+#include "coreflow/cgroup_v2.hpp"
+#include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/recovery_monitor.hpp"
@@ -1281,7 +1283,13 @@ int main(int argc, char* argv[]) {
     // CPU scaling_max_freq ownership is delegated exclusively to the tiered,
     // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
     frequencies.discover(false, config.enable_gpu_frequency_control);
+    CgroupV2Controller cgroup_controller(context.mutation_coordinator());
+    ForegroundTaskResolver foreground_task_resolver(
+        cgroup_controller, cgroup_controller.get_cgroup_path(CgroupTarget::TopApp));
     auto& autonomous_tuner = context.autonomous_tuner();
+    if (config.enable_cgroups_v2 && cgroup_controller.is_supported()) {
+        autonomous_tuner.configure_foreground_task_resolver(&foreground_task_resolver);
+    }
     autonomous_tuner.set_operational(false);
     emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, CPU/GPU frequency, and PSI baselines; grace=12s.");
     const auto daemon_started_at = std::chrono::steady_clock::now();
@@ -1664,10 +1672,12 @@ int main(int argc, char* argv[]) {
                 autonomous_tuner.set_operational(false);
             } else {
                 lifecycle_promoted = true;
-                if (!render_booster.connect_frame_source(input_event_source)) {
-                    emit_log(true, "[CoreFlow][Input] No verified touchscreen evdev source is available; RenderBooster remains idle.");
-                } else {
-                    emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
+                if (config.enable_uclamp) {
+                    if (!render_booster.connect_frame_source(input_event_source)) {
+                        emit_log(true, "[CoreFlow][Input] No verified touchscreen evdev source is available; RenderBooster remains idle.");
+                    } else {
+                        emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
+                    }
                 }
                 autonomous_tuner.set_operational(config.enable_tuner);
                 context.vulkan_controller().initialize({
@@ -1928,7 +1938,15 @@ int main(int argc, char* argv[]) {
     workload_pipeline.stop();
     (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
     const bool stopped = context.Stop("Daemon shutdown");
-    const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
+    // CoreFlowContext teardown asks AutonomousTuner to restore its resolver journal;
+    // verify the external controller has no remaining thread placements before exit.
+    const bool foreground_restored = foreground_task_resolver.restore_all();
+    const bool thread_journal_clear = cgroup_controller.pending_thread_migrations() == 0U;
+    if (!foreground_restored || !thread_journal_clear) {
+        emit_log(true, "[CoreFlow][CgroupV2] Foreground thread rollback remains pending at daemon shutdown.");
+    }
+    const bool restored = stopped && foreground_restored && thread_journal_clear &&
+        !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
 }

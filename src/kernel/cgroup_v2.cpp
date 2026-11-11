@@ -32,9 +32,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr std::array<const char*, 4> kManagedCgroups{
-    "top-app", "foreground", "background", "system"
-};
 constexpr std::array<const char*, 3> kDelegatedControllers{
     "cpu", "memory", "io"
 };
@@ -61,10 +58,6 @@ ssize_t read_at(int directory_fd, const char* name, char* buffer, size_t capacit
     return count;
 }
 
-int open_cgroup_dir(int root_fd, const char* name) noexcept {
-    if (name == nullptr || name[0] == '\0') return ::fcntl(root_fd, F_DUPFD_CLOEXEC, 0);
-    return ::openat(root_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-}
 bool read_bounded_file(const std::string& path, std::string& output,
                        size_t maximum = 16384U) noexcept {
     output.clear();
@@ -80,7 +73,7 @@ bool read_bounded_file(const std::string& path, std::string& output,
         if (output.size() + static_cast<size_t>(count) > maximum) return false;
         output.append(buffer, static_cast<size_t>(count));
     }
-    return !output.empty();
+    return true; // Empty cgroup.procs is a valid no-foreground-app snapshot.
 }
 
 bool parse_tgid_from_status(std::string_view status, pid_t& tgid) noexcept {
@@ -365,6 +358,11 @@ bool CgroupV2Controller::migrate_thread(
     UniqueFd root_fd(::open(root_path_.c_str(),
         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!root_fd.valid()) return false;
+    std::string source_type, target_type;
+    if (!read_cgroup_type(root_fd.get(), source_relative, source_type) ||
+        !read_cgroup_type(root_fd.get(), target_relative, target_type) ||
+        (source_type != "threaded" && source_type != "domain threaded") ||
+        (target_type != "threaded" && target_type != "domain threaded")) return false;
     std::string source_domain, target_domain;
     if (!resource_domain_root(root_fd.get(), source_relative, source_domain) ||
         !resource_domain_root(root_fd.get(), target_relative, target_domain) ||

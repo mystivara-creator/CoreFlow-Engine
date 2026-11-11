@@ -33,6 +33,7 @@ namespace coreflow {
 
 class BaselineStore;
 class TransactionalFrequencyActuator;
+class ForegroundTaskResolver;
 
 enum class TunerVerdict : uint8_t {
     Pending = 0,
@@ -389,6 +390,7 @@ public:
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
     // Disables candidate execution during the daemon startup baseline grace period.
     void set_operational(bool enabled) noexcept;
+    void configure_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept;
     // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
     void set_device_profile(DeviceProfileHandle profile);
     void configure_frequency_actuator(
@@ -527,6 +529,7 @@ private:
     std::string proc_root_;
     DeviceProfileHandle device_profile_;
     TransactionalFrequencyActuator* frequency_actuator_{nullptr};
+    ForegroundTaskResolver* foreground_task_resolver_{nullptr};
     const TieredPolicyRouter* tiered_policy_router_{nullptr};
     PlatformContextSnapshot platform_context_{};
     bool frequency_mutation_active_{false};

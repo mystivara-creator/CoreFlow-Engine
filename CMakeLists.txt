@@ -62,6 +62,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/render_booster.cpp
     src/kernel/frame_bridge.cpp
     src/kernel/input_event_source.cpp
+    src/kernel/foreground_task_resolver.cpp
     src/kernel/device_profiler.cpp
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
@@ -259,6 +260,8 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_autonomous_tuner
         tests/test_autonomous_tuner.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
@@ -302,6 +305,23 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_cgroup_v2 PRIVATE log)
     endif()
     add_test(NAME CgroupV2OwnershipTest COMMAND test_cgroup_v2)
+
+    add_executable(test_foreground_task_resolver
+        tests/test_foreground_task_resolver.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_foreground_task_resolver PRIVATE include)
+    target_link_libraries(test_foreground_task_resolver PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_foreground_task_resolver PRIVATE pthread)
+    else()
+        target_link_libraries(test_foreground_task_resolver PRIVATE log)
+    endif()
+    add_test(NAME ForegroundTaskResolverTest COMMAND test_foreground_task_resolver)
 
     add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)

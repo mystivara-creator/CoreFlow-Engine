@@ -4,6 +4,7 @@
  * @license MIT
  */
 #include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
@@ -298,6 +299,10 @@ AutonomousTuner::AutonomousTuner(CentralMutationCoordinator& coordinator,
 AutonomousTuner::~AutonomousTuner() {
     {
         std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+        if (foreground_task_resolver_) {
+            (void)foreground_task_resolver_->restore_all();
+            foreground_task_resolver_ = nullptr;
+        }
         if (!applied_steps_.empty() ||
             (frequency_actuator_ &&
              (frequency_actuator_->mutation_active() || frequency_actuator_->recovery_required()))) {
@@ -1329,7 +1334,18 @@ void AutonomousTuner::classify_discovered_resources() {
 
 void AutonomousTuner::set_operational(bool enabled) noexcept {
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (!enabled && foreground_task_resolver_) {
+        (void)foreground_task_resolver_->restore_all();
+    }
     operational_ = enabled;
+}
+
+void AutonomousTuner::configure_foreground_task_resolver(
+    ForegroundTaskResolver* resolver) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (foreground_task_resolver_ == resolver) return;
+    if (foreground_task_resolver_ && !foreground_task_resolver_->restore_all()) return;
+    foreground_task_resolver_ = resolver;
 }
 
 void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_root) {
@@ -2254,6 +2270,20 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     // Update workload classification, bottleneck diagnosis, and optimization objective
     current_workload_ = classify_workload(telemetry);
+    if (foreground_task_resolver_) {
+        const bool foreground_render_workload =
+            current_workload_ == WorkloadClass::Gaming ||
+            current_workload_ == WorkloadClass::ScrollingAndAnimation ||
+            current_workload_ == WorkloadClass::GeneralInteraction;
+        const bool thermal_admitted = !telemetry.thermal_guard_active &&
+            !telemetry.thermal_emergency && telemetry.thermal_pressure_valid &&
+            std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure < 78.0;
+        if (foreground_render_workload && thermal_admitted) {
+            (void)foreground_task_resolver_->refresh();
+        } else {
+            (void)foreground_task_resolver_->restore_all();
+        }
+    }
     current_bottleneck_ = diagnose_bottleneck(telemetry, current_workload_);
     const uint8_t thermal_bucket = compute_thermal_bucket(telemetry);
 
