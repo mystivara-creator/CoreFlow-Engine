@@ -106,14 +106,26 @@ bool parse_pair(const std::string& path, uint64_t& first, uint64_t& second) noex
     if (!read_text(path, text, sizeof(text))) {
         return false;
     }
+    char* cursor = text;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        ++cursor;
+    }
+    // strtoull accepts optional signs; sysfs sentinels such as "-1" must
+    // never be reinterpreted as huge unsigned utilization counters.
+    if (*cursor < '0' || *cursor > '9') {
+        return false;
+    }
     char* end = nullptr;
     errno = 0;
-    const unsigned long long a = std::strtoull(text, &end, 10);
-    if (errno != 0 || end == text) {
+    const unsigned long long a = std::strtoull(cursor, &end, 10);
+    if (errno != 0 || end == cursor) {
         return false;
     }
     while (*end == ' ' || *end == '\t') {
         ++end;
+    }
+    if (*end < '0' || *end > '9') {
+        return false;
     }
     errno = 0;
     char* second_end = nullptr;
@@ -468,7 +480,7 @@ bool GpuUtilizationSampler::start() noexcept {
   const bool valid=candidate.format==Format::Percent?parse_scalar_percent(path,percent):parse_pair(path,a,b);
   if(!valid)continue;
   if(candidate.format==Format::KgslIntervalSnapshot){
-   if(b!=0&&a>b)continue;
+   if((b==0&&a!=0)|| (b!=0&&a>b))continue;
    previous_busy_=a;previous_total_=b;previous_valid_=true;
   }
   path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
@@ -520,7 +532,7 @@ bool GpuUtilizationSampler::sample(uint64_t now,double& output) noexcept {
  if(format_==Format::KgslIntervalSnapshot){
   if(!parse_pair(path_,busy,total))return false;
   if(previous_valid_&&busy==previous_busy_&&total==previous_total_)return false;
-  if(total>0&&busy>total)return false;
+  if((total==0&&busy!=0)||(total>0&&busy>total))return false;
   previous_busy_=busy;previous_total_=total;previous_valid_=true;
   if(total==0){output=0.0;return true;}
   output=100.0*static_cast<double>(busy)/static_cast<double>(total);
