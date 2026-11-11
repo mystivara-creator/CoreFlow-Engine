@@ -128,7 +128,7 @@ bool read_task_identity(const std::string& proc_root, pid_t tid, pid_t& tgid,
 }
 
 bool parse_proc_cgroup_relative(const std::string& proc_root, pid_t tgid, pid_t tid,
-                                std::string& relative) noexcept {
+                                std::string& relative, bool legacy_cpu = false) noexcept {
     std::string contents;
     const std::string path = proc_root + "/" + std::to_string(tgid) +
         "/task/" + std::to_string(tid) + "/cgroup";
@@ -138,10 +138,36 @@ bool parse_proc_cgroup_relative(const std::string& proc_root, pid_t tgid, pid_t 
         const size_t end = contents.find('\n', pos);
         const std::string_view line(contents.data() + pos,
             (end == std::string::npos ? contents.size() : end) - pos);
-        if (line.rfind("0::", 0) == 0) {
-            std::string_view value = line.substr(3);
+        std::string_view value;
+        bool matched = false;
+        if (!legacy_cpu && line.rfind("0::", 0) == 0) {
+            value = line.substr(3);
+            matched = true;
+        } else if (legacy_cpu) {
+            const size_t first = line.find(':');
+            const size_t second = first == std::string_view::npos
+                ? first : line.find(':', first + 1);
+            if (first != std::string_view::npos && second != std::string_view::npos) {
+                std::string_view controllers = line.substr(first + 1, second - first - 1);
+                size_t token = 0;
+                while (token <= controllers.size()) {
+                    const size_t comma = controllers.find(',', token);
+                    const auto name = controllers.substr(token,
+                        comma == std::string_view::npos ? controllers.size() - token : comma - token);
+                    if (name == "cpu" || name == "cpuacct" || name == "cpuctl") {
+                        value = line.substr(second + 1);
+                        matched = true;
+                        break;
+                    }
+                    if (comma == std::string_view::npos) break;
+                    token = comma + 1;
+                }
+            }
+        }
+        if (matched) {
             while (!value.empty() && value.front() == '/') value.remove_prefix(1);
-            if (value.find("..") != std::string_view::npos) return false;
+            if (value.find("..") != std::string_view::npos ||
+                value.find('\\') != std::string_view::npos) return false;
             relative.assign(value);
             return true;
         }
@@ -176,7 +202,8 @@ bool path_has_thread(const std::string& path, pid_t tid) noexcept {
     UniqueFd dir(::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
     char buffer[8192];
-    const ssize_t count = read_at(dir.get(), "cgroup.threads", buffer, sizeof(buffer));
+    ssize_t count = read_at(dir.get(), "cgroup.threads", buffer, sizeof(buffer));
+    if (count < 0) count = read_at(dir.get(), "tasks", buffer, sizeof(buffer));
     if (count < 0) return false;
     char token[24];
     const int size = std::snprintf(token, sizeof(token), "%d", tid);
@@ -186,7 +213,16 @@ bool path_has_thread(const std::string& path, pid_t tid) noexcept {
 }
 
 bool find_thread_membership(const std::string& root_path, const std::string& proc_root,
-                            pid_t tid, pid_t tgid, std::string& relative) noexcept {
+                            pid_t tid, pid_t tgid, std::string& relative,
+                            bool legacy_cpu = false) noexcept {
+    if (legacy_cpu) {
+        std::string proc_relative;
+        if (!parse_proc_cgroup_relative(proc_root, tgid, tid, proc_relative, true) ||
+            proc_relative.empty() || !path_has_thread(root_path + "/" + proc_relative, tid))
+            return false;
+        relative = std::move(proc_relative);
+        return true;
+    }
     std::vector<std::string> matches;
     if (path_has_thread(root_path, tid)) matches.emplace_back();
     std::error_code ec;
@@ -249,8 +285,13 @@ bool resource_domain_root(int root_fd, std::string_view relative,
 bool write_thread_at(int root_fd, std::string_view relative, pid_t tid) noexcept {
     UniqueFd directory;
     if (!open_cgroup_relative(root_fd, relative, directory)) return false;
-    UniqueFd threads(::openat(directory.get(), "cgroup.threads",
-        O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    int membership_fd = ::openat(directory.get(), "cgroup.threads",
+        O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (membership_fd < 0) {
+        membership_fd = ::openat(directory.get(), "tasks",
+            O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    }
+    UniqueFd threads(membership_fd);
     if (!threads.valid()) return false;
     char value[24];
     const int length = std::snprintf(value, sizeof(value), "%d", tid);
@@ -260,7 +301,8 @@ bool write_thread_at(int root_fd, std::string_view relative, pid_t tid) noexcept
     while (count < 0 && errno == EINTR);
     if (count != length) return false;
     char verify[8192];
-    const ssize_t size = read_at(directory.get(), "cgroup.threads", verify, sizeof(verify));
+    ssize_t size = read_at(directory.get(), "cgroup.threads", verify, sizeof(verify));
+    if (size < 0) size = read_at(directory.get(), "tasks", verify, sizeof(verify));
     return size >= 0 && token_present(
         verify, static_cast<size_t>(size), std::string_view(value, static_cast<size_t>(length)));
 }
@@ -273,8 +315,28 @@ CgroupV2Controller::CgroupV2Controller(
     CentralMutationCoordinator& coordinator, std::string_view root_path, std::string_view proc_root)
     : coordinator_(coordinator), root_path_(root_path), proc_root_(proc_root),
       controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")) {
-    const std::string controllers_file = root_path_ + "/cgroup.controllers";
-    supported_ = fs::exists(controllers_file);
+    // Android GKI may expose a cgroup2 mount without delegated CPU controllers.
+    // Prefer the legacy cpuctl hierarchy when the unified root cannot host top-app.
+    if (root_path_ == "/sys/fs/cgroup") {
+        std::string controllers;
+        const bool has_cpu_controller =
+            read_bounded_file(root_path_ + "/cgroup.controllers", controllers, 4096U) &&
+            token_present(controllers.data(), controllers.size(), "cpu");
+        const bool has_unified_top = fs::exists(root_path_ + "/top-app/cgroup.threads");
+        if ((!has_cpu_controller || !has_unified_top) &&
+            fs::exists("/dev/cpuctl/top-app/tasks")) {
+            root_path_ = "/dev/cpuctl";
+            legacy_tasks_ = true;
+        }
+    }
+    std::string root_controllers;
+    const bool unified_cpu =
+        read_bounded_file(root_path_ + "/cgroup.controllers", root_controllers, 4096U) &&
+        token_present(root_controllers.data(), root_controllers.size(), "cpu");
+    legacy_tasks_ = legacy_tasks_ || (!unified_cpu &&
+        fs::exists(root_path_ + "/top-app/tasks") &&
+        fs::exists(root_path_ + "/top-app/cpu.uclamp.min"));
+    supported_ = unified_cpu || legacy_tasks_;
     (void)coordinator_.register_preemption_handler(
         controller_name_,
         [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
@@ -348,7 +410,7 @@ bool CgroupV2Controller::migrate_thread(
         actual_tgid != expected_tgid || actual_start != expected_start_time_ticks) return false;
 
     std::string source_relative;
-    if (!find_thread_membership(root_path_, proc_root_, tid, expected_tgid, source_relative)) return false;
+    if (!find_thread_membership(root_path_, proc_root_, tid, expected_tgid, source_relative, legacy_tasks_)) return false;
     if (source_relative == target_relative) return true;
 
     const auto existing = std::find_if(thread_migrations_.begin(), thread_migrations_.end(),
@@ -358,17 +420,25 @@ bool CgroupV2Controller::migrate_thread(
     UniqueFd root_fd(::open(root_path_.c_str(),
         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!root_fd.valid()) return false;
-    std::string source_type, target_type;
-    if (!read_cgroup_type(root_fd.get(), source_relative, source_type) ||
-        !read_cgroup_type(root_fd.get(), target_relative, target_type) ||
-        (source_type != "threaded" && source_type != "domain threaded") ||
-        (target_type != "threaded" && target_type != "domain threaded")) return false;
-    std::string source_domain, target_domain;
-    if (!resource_domain_root(root_fd.get(), source_relative, source_domain) ||
-        !resource_domain_root(root_fd.get(), target_relative, target_domain) ||
-        source_domain != target_domain) {
-        // Never fall back to cgroup.procs: that would migrate every app thread.
-        return false;
+    if (legacy_tasks_) {
+        // Android cpuctl is a v1 CPU controller: tasks is per-thread. Never
+        // substitute cgroup.procs here because that moves every thread in a process.
+        struct stat source_tasks{}, target_tasks{};
+        if (::fstatat(root_fd.get(), (source_relative.empty() ? "tasks" :
+                (source_relative + "/tasks").c_str()), &source_tasks, AT_SYMLINK_NOFOLLOW) != 0 ||
+            ::fstatat(root_fd.get(), (target_relative + "/tasks").c_str(),
+                &target_tasks, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(source_tasks.st_mode) || !S_ISREG(target_tasks.st_mode)) return false;
+    } else {
+        std::string source_type, target_type;
+        if (!read_cgroup_type(root_fd.get(), source_relative, source_type) ||
+            !read_cgroup_type(root_fd.get(), target_relative, target_type) ||
+            (source_type != "threaded" && source_type != "domain threaded") ||
+            (target_type != "threaded" && target_type != "domain threaded")) return false;
+        std::string source_domain, target_domain;
+        if (!resource_domain_root(root_fd.get(), source_relative, source_domain) ||
+            !resource_domain_root(root_fd.get(), target_relative, target_domain) ||
+            source_domain != target_domain) return false;
     }
 
     if (!acquire_lease_locked()) return false;
@@ -400,7 +470,7 @@ bool CgroupV2Controller::restore_thread_locked(pid_t tid) noexcept {
     }
 
     std::string current_relative;
-    if (!find_thread_membership(root_path_, proc_root_, it->tid, it->tgid, current_relative)) return false;
+    if (!find_thread_membership(root_path_, proc_root_, it->tid, it->tgid, current_relative, legacy_tasks_)) return false;
     if (current_relative != it->target_relative_path) {
         // Android/OEM already moved the task. Retire our journal without overwriting it.
         thread_migrations_.erase(it);
@@ -410,10 +480,12 @@ bool CgroupV2Controller::restore_thread_locked(pid_t tid) noexcept {
     UniqueFd root_fd(::open(root_path_.c_str(),
         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!root_fd.valid()) return false;
-    std::string source_domain, target_domain;
-    if (!resource_domain_root(root_fd.get(), it->source_relative_path, source_domain) ||
-        !resource_domain_root(root_fd.get(), it->target_relative_path, target_domain) ||
-        source_domain != target_domain) return false;
+    if (!legacy_tasks_) {
+        std::string source_domain, target_domain;
+        if (!resource_domain_root(root_fd.get(), it->source_relative_path, source_domain) ||
+            !resource_domain_root(root_fd.get(), it->target_relative_path, target_domain) ||
+            source_domain != target_domain) return false;
+    }
     if (!write_thread_at(root_fd.get(), it->source_relative_path, tid)) return false;
     thread_migrations_.erase(it);
     return true;

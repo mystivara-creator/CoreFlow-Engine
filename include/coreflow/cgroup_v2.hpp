@@ -55,6 +55,7 @@ private:
     std::vector<std::string> active_mutation_paths_;
     std::vector<ThreadMigration> thread_migrations_;
     bool supported_{false};
+    bool legacy_tasks_{false};
     bool write_node(const std::string& path, std::string_view value);
     [[nodiscard]] std::string read_node(const std::string& path) const;
     bool acquire_lease_locked();
