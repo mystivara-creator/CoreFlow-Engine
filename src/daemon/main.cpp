@@ -38,6 +38,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <poll.h>
 #include <pthread.h>
@@ -331,6 +332,19 @@ double safe_json_double(double v, double fallback = 0.0) noexcept {
     return std::isfinite(v) ? v : fallback;
 }
 
+std::string collect_semantic_evidence_json_cached() {
+    static std::mutex cache_mutex;
+    static std::string cached;
+    static std::chrono::steady_clock::time_point last_refresh{};
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (cached.empty() || now - last_refresh >= std::chrono::seconds(5)) {
+        cached = collect_semantic_evidence_json();
+        last_refresh = now;
+    }
+    return cached;
+}
+
 std::string build_status_json(CoreFlowContext& context, bool live_runtime = false, bool daemon_running = true) {
     // 1. Perform passive hardware/kernel inspection before writing the JSON payload
     const pid_t pid = live_runtime ? (daemon_running ? ::getpid() : 0) : daemon_pid();
@@ -364,6 +378,7 @@ std::string build_status_json(CoreFlowContext& context, bool live_runtime = fals
     const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
     AutonomousDecisionSnapshot tuner{
         .stage = "READ_ONLY",
+        .runtime_stage = "READ_ONLY",
         .active_intent = "ReadOnlyInspection",
         .intent = "ReadOnlyInspection",
         .workload_class = WorkloadClass::Idle,
@@ -418,7 +433,9 @@ std::string build_status_json(CoreFlowContext& context, bool live_runtime = fals
     const size_t journal_nodes = count_journal_entries();
     // The status contract uses the same live discovery and native resolver path as 2B.
     // Discovery is strictly passive: the adapter exposes read access only.
-    const std::string semantic_evidence_json = collect_semantic_evidence_json();
+    const std::string semantic_evidence_json = live_runtime
+        ? collect_semantic_evidence_json_cached()
+        : collect_semantic_evidence_json();
 
     // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
     std::ostringstream out;
