@@ -117,6 +117,8 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/thermal_monitor.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/tiered_policy.cpp
@@ -332,6 +334,8 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
