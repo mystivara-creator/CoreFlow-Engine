@@ -52,14 +52,19 @@ int main(){
  assert(std::abs(gpu_pct-40.0)<0.001);
  // An identical snapshot is not a second independent sample.
  assert(!gpu_sampler.sample(1'400'000'000ULL,gpu_pct));
- // Reject impossible non-zero snapshots without poisoning the last valid sample.
+ // Reject impossible non-zero snapshots and nonzero busy with no denominator.
  write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","120 100\n");
  assert(!gpu_sampler.sample(1'600'000'000ULL,gpu_pct));
- // KGSL power-collapse snapshot (total == 0) is valid zero utilization.
- write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","0 0\n");
- assert(gpu_sampler.sample(1'800'000'000ULL,gpu_pct));
- assert(gpu_pct==0.0);
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","50 0\n");
+ assert(!gpu_sampler.sample(1'800'000'000ULL,gpu_pct));
+ // Reject signed sysfs error sentinels instead of parsing them as UINT64_MAX.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","-1 -1\n");
  assert(!gpu_sampler.sample(2'000'000'000ULL,gpu_pct));
+ // KGSL power-collapse snapshot is valid only when both counters are zero.
+ write(gpu_root/"class/kgsl/kgsl-3d0/gpubusy","0 0\n");
+ assert(gpu_sampler.sample(2'200'000'000ULL,gpu_pct));
+ assert(gpu_pct==0.0);
+ assert(!gpu_sampler.sample(2'400'000'000ULL,gpu_pct));
  gpu_sampler.stop();std::filesystem::remove_all(gpu_root);
 
  // Generic devfreq busy_time/total_time remains monotonic cumulative delta telemetry.
