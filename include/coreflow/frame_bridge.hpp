@@ -14,6 +14,8 @@ struct FrameEvent final {
     uint64_t vsync_timestamp_ns{0};
     uint64_t frame_duration_ns{0};
     uint64_t jank_threshold_ns{0};
+    // Optional touch-driven UClamp window; zero selects the RenderBooster default.
+    uint32_t burst_duration_ms{0};
 };
 using FrameEventListener = std::function<void(const FrameEvent&)>;
 class FrameEventSource {

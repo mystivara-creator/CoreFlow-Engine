@@ -61,6 +61,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
     src/kernel/frame_bridge.cpp
+    src/kernel/input_event_source.cpp
     src/kernel/device_profiler.cpp
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
@@ -427,6 +428,17 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_render_booster PRIVATE log)
     endif()
     add_test(NAME RenderBoosterOwnershipAndExpiryTest COMMAND test_render_booster)
+
+    add_executable(test_input_event_source
+        tests/test_input_event_source.cpp
+        src/kernel/input_event_source.cpp
+        src/daemon/reactor.cpp
+    )
+    target_include_directories(test_input_event_source PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_input_event_source PRIVATE pthread)
+    endif()
+    add_test(NAME NativeInputEventSourceTest COMMAND test_input_event_source)
 
     if(NOT ANDROID)
         find_package(Python3 COMPONENTS Interpreter QUIET)

@@ -63,9 +63,13 @@ void RenderBooster::disconnect_frame_source() noexcept {
 void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
     bool trigger_burst = false;
     switch (event.kind) {
-        case FrameEventKind::TouchBurst:
-            on_touch_down();
+        case FrameEventKind::TouchBurst: {
+            in_touch_gesture_.store(true, std::memory_order_relaxed);
+            const uint32_t duration = event.burst_duration_ms >= 50U &&
+                event.burst_duration_ms <= 100U ? event.burst_duration_ms : 80U;
+            trigger_render_burst(380U, std::chrono::milliseconds(duration));
             return;
+        }
         case FrameEventKind::FrameDropped:
             if (event.frame_duration_ns > event.jank_threshold_ns) {
                 {

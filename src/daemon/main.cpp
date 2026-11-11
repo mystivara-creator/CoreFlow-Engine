@@ -4,6 +4,7 @@
 #include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
+#include "coreflow/input_event_source.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/recovery_monitor.hpp"
@@ -1307,6 +1308,7 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
+    NativeInputEventSource input_event_source(reactor);
     RenderBooster render_booster(governor, reactor);
     (void)render_booster;
     DeviceValidationRecorder dvs_recorder;
@@ -1662,6 +1664,11 @@ int main(int argc, char* argv[]) {
                 autonomous_tuner.set_operational(false);
             } else {
                 lifecycle_promoted = true;
+                if (!render_booster.connect_frame_source(input_event_source)) {
+                    emit_log(true, "[CoreFlow][Input] No verified touchscreen evdev source is available; RenderBooster remains idle.");
+                } else {
+                    emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
+                }
                 autonomous_tuner.set_operational(config.enable_tuner);
                 context.vulkan_controller().initialize({
                     .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
@@ -1916,6 +1923,8 @@ int main(int argc, char* argv[]) {
     }
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
+    input_event_source.stop();
+    render_booster.disconnect_frame_source();
     workload_pipeline.stop();
     (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
     const bool stopped = context.Stop("Daemon shutdown");
