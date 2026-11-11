@@ -274,7 +274,7 @@ export const App: React.FC = () => {
     try {
       const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
       setSemanticEvidence(status.semanticEvidence ?? null);
-      setNativeStatusAvailable(status.semanticEvidence !== undefined);
+      setNativeStatusAvailable(status.semanticEvidence?.status === 'available');
     const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
     const isThermalThrottling =
       status.thermalGuardActive ??
