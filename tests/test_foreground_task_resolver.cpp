@@ -169,6 +169,9 @@ int main() {
             assert(legacy_snapshot.migrated_thread_count == 1U);
             assert(get(legacy_top / "tasks") == "441");
             put(legacy_proc / "441/task/441/cgroup", "2:cpu,cpuacct:/top-app\n");
+            // Regular files do not emulate the kernel tasks ABI: simulate the
+            // kernel removing the TID from its source cgroup after migration.
+            put(legacy_foreground / "tasks", "");
             assert(legacy_resolver.restore_all());
             assert(get(legacy_foreground / "tasks") == "441");
             assert(legacy_controller.pending_thread_migrations() == 0U);
