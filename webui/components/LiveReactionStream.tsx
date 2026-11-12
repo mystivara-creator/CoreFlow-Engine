@@ -1,17 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal, Copy, Check, Trash2, Search } from 'lucide-react';
+import { Terminal, Copy, Check, Search } from 'lucide-react';
 import { ReactionLogEvent } from '../engine/autonomousEngine';
 
 interface LiveReactionStreamProps {
   logs: ReactionLogEvent[];
-  onClearLogs: () => void;
-  engineActive: boolean;
   nativeMode?: boolean;
 }
 
 export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
   logs,
-  onClearLogs,
   nativeMode = false,
 }) => {
   const [filterType, setFilterType] = useState<string>('ALL');
@@ -89,14 +86,6 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
               <Copy className="w-3.5 h-3.5" />
             )}
             <span>{copied ? 'Copied' : 'Copy Audit Log'}</span>
-          </button>
-          <button
-            onClick={onClearLogs}
-            className="w-9 h-9 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] flex items-center justify-center text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
-            title="Clear log buffer"
-            aria-label="Clear log buffer"
-          >
-            <Trash2 className="w-4 h-4" />
           </button>
         </div>
       </div>

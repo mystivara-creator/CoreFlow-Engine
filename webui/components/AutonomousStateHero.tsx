@@ -1,14 +1,11 @@
 import React from 'react';
-import { Activity, Flame, Gauge, ShieldCheck, Zap, GitCommit, HardDrive, Sliders } from 'lucide-react';
+import { Flame, Gauge, ShieldCheck, Zap, GitCommit, HardDrive, Sliders } from 'lucide-react';
 import { AutonomousTelemetry, getModeMeta, TransactionStage } from '../engine/autonomousEngine';
 
 interface Props {
   telemetry: AutonomousTelemetry;
   nativeMode?: boolean;
   thermalTripCelsius: number;
-  onSimulateCpuLoad: () => void;
-  onSimulateMemoryPressure: () => void;
-  onSimulateIoTrial?: () => void;
 }
 
 const STAGES: { key: TransactionStage; label: string }[] = [
@@ -23,9 +20,6 @@ export const AutonomousStateHero: React.FC<Props> = ({
   telemetry,
   nativeMode = false,
   thermalTripCelsius,
-  onSimulateCpuLoad,
-  onSimulateMemoryPressure,
-  onSimulateIoTrial,
 }) => {
   const meta = getModeMeta(telemetry.mode);
   const temp = telemetry.socTempCelsius;
@@ -190,14 +184,14 @@ export const AutonomousStateHero: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Multi-Domain Autonomous Scheduler & Outcome Evaluator (mq-deadline, kyber, bfq, iosched/*, vm/*) */}
+      {/* Contract-gated autonomous tuning and outcome evaluator. */}
       <div className="relative z-10 mt-4 m3-tonal-block p-4 sm:p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-900/[0.06] dark:border-white/[0.06] pb-3.5">
           <div className="space-y-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <Sliders className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
               <span className="font-semibold text-slate-900 dark:text-slate-100">
-                Autonomous Multi-Domain Scheduler & Tunable Evaluator{!nativeMode ? ' (sim)' : ''}
+                Autonomous Contract-Gated Tuning Evaluator{!nativeMode ? ' (sim)' : ''}
               </span>
               <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]">
                 Intent{!nativeMode ? ' (sim)' : ''}: {telemetry.tunerIntent ?? 'HoldEquilibrium'}
@@ -205,7 +199,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               {telemetry.tunerRationale ??
-                'Dynamically selects block I/O schedulers (mq-deadline, kyber, bfq) & iosched/VM tunables when contention arises, then evaluates empirical Before/After PSI delta (ΔU) to retain or roll back.'}
+                'Evaluates workload-specific candidates only after the kernel contract, access path, valid range, and baseline have been verified. Observation-only, test-only, protected, virtual, and unknown storage nodes remain outside automatic mutation.'}
             </p>
           </div>
 
@@ -361,37 +355,7 @@ export const AutonomousStateHero: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Preview Simulation Controls */}
-      {!nativeMode && (
-        <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 pt-5 mt-5 border-t border-slate-900/[0.06] dark:border-white/[0.06] text-xs text-slate-600 dark:text-slate-400">
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            <span>Preview workload stimulus (tests Reasoning Engine & Empirical Evaluator):</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={onSimulateCpuLoad}
-              className="px-4 py-1.5 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-slate-800 dark:text-slate-200 font-medium"
-            >
-              Simulate Interactive CPU Load
-            </button>
-            <button
-              onClick={onSimulateMemoryPressure}
-              className="px-4 py-1.5 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-slate-800 dark:text-slate-200 font-medium"
-            >
-              Simulate Memory Reclaim
-            </button>
-            {onSimulateIoTrial && (
-              <button
-                onClick={onSimulateIoTrial}
-                className="px-4 py-1.5 rounded-full bg-[#d3e3fd] hover:bg-[#c2d7fc] dark:bg-[#0842a0] dark:hover:bg-[#0b57d0] text-[#041e49] dark:text-[#d3e3fd] font-medium"
-              >
-                Simulate I/O Scheduler Trial (mq-deadline)
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+
     </div>
   );
 };

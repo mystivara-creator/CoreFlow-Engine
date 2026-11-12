@@ -24,8 +24,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
     '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
-    'chmod 755 "$BIN" 2>/dev/null';
+    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
 
   const extractJson = (raw: string): unknown => {
     const trimmed = raw.trim();

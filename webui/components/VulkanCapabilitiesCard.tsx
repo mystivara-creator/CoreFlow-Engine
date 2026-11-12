@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Cpu, Shield, Sliders, X } from 'lucide-react';
+import { Check, Cpu, Shield, X } from 'lucide-react';
 import {
   computeVulkanTelemetry,
   VulkanEngineConfig,
@@ -11,7 +11,6 @@ interface VulkanCapabilitiesCardProps {
   vulkanTelemetry?: VulkanTelemetry;
   vulkanConfig: VulkanEngineConfig;
   nativeMode: boolean;
-  onChangeVulkanConfig: (next: VulkanEngineConfig) => void;
   onSaveVulkanConfig: (next: VulkanEngineConfig) => Promise<void>;
   isSaving: boolean;
   saveMessage: string | null;
@@ -68,7 +67,6 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
   vulkanTelemetry,
   vulkanConfig,
   nativeMode,
-  onChangeVulkanConfig,
   onSaveVulkanConfig,
   isSaving,
   saveMessage,
@@ -82,17 +80,10 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
   const handleSelectMode = async (mode: VulkanLayerMode) => {
     const normalizedMode: VulkanLayerMode = mode === 'disabled' ? 'disabled' : 'safe_hardware';
     const updated: VulkanEngineConfig = { ...vulkanConfig, mode: normalizedMode };
-    onChangeVulkanConfig(updated);
     await onSaveVulkanConfig(updated);
   };
 
-  const handleToggleOption = (key: keyof Omit<VulkanEngineConfig, 'mode'>) => {
-    const updated: VulkanEngineConfig = {
-      ...vulkanConfig,
-      [key]: !vulkanConfig[key],
-    };
-    onChangeVulkanConfig(updated);
-  };
+
 
   return (
     <div className="space-y-6">
@@ -144,6 +135,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <button
               type="button"
+              disabled={isSaving}
               onClick={() => void handleSelectMode('disabled')}
               className={
                 'text-left p-4 rounded-2xl border transition-colors ' +
@@ -167,6 +159,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
 
             <button
               type="button"
+              disabled={isSaving}
               onClick={() => void handleSelectMode('safe_hardware')}
               className={
                 'text-left p-4 rounded-2xl border transition-colors ' +
@@ -177,7 +170,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
             >
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="text-xs font-bold whitespace-nowrap">
-                  Truthful Hardware Pass-Through & GPU Pacing
+                  Truthful Hardware Pass-Through
                 </span>
                 <Shield className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
               </div>
@@ -190,65 +183,15 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
           </div>
         </div>
 
-        {/* Optimization controls stay disabled until OS-facing actuators exist. */}
-        <div className="pt-4 border-t border-slate-900/[0.06] dark:border-white/[0.06] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex flex-col gap-2 text-xs">
-<p className="text-amber-700 dark:text-amber-300">Rendering optimizers: NOT_IMPLEMENTED. Vulkan probing and pass-through do not change application rendering.</p>
-<div className="flex flex-wrap items-center gap-4 text-xs">
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={vulkanConfig.enableSkiavkThreaded}
-                disabled={true}
-                onChange={() => handleToggleOption('enableSkiavkThreaded')}
-                className="rounded border-slate-300 dark:border-slate-700"
-              />
-              <span className="text-slate-700 dark:text-slate-300 font-medium">
-                SkiaVK Threaded Renderer
-              </span>
-            </label>
-
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={vulkanConfig.enableAdaptiveVrs}
-                disabled={true}
-                onChange={() => handleToggleOption('enableAdaptiveVrs')}
-                className="rounded border-slate-300 dark:border-slate-700"
-              />
-              <span className="text-slate-700 dark:text-slate-300 font-medium">
-                Adaptive Variable Rate Shading (VRS)
-              </span>
-            </label>
-
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={vulkanConfig.enablePipelineCachePrewarm}
-                disabled={true}
-                onChange={() => handleToggleOption('enablePipelineCachePrewarm')}
-                className="rounded border-slate-300 dark:border-slate-700"
-              />
-              <span className="text-slate-700 dark:text-slate-300 font-medium">
-                Pipeline Cache Pre-Warming
-              </span>
-            </label>
-            </div>
+        {/* The only manual mutation surface in this dashboard is Vulkan layer opt-in. */}
+        <div className="flex flex-col gap-3 border-t border-slate-900/[0.06] pt-4 dark:border-white/[0.06] sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+            <p className="font-semibold text-slate-800 dark:text-slate-200">Manual Vulkan diagnostic layer</p>
+            <p className="mt-1">This opt-in controls only the Vulkan diagnostic / pass-through layer. It does not enable rendering optimizers or fabricate hardware capabilities. All CPU, memory, storage and thermal policies remain daemon-owned.</p>
           </div>
-
-          <div className="flex items-center gap-3 shrink-0">
-            {saveMessage && (
-              <span className="text-xs text-slate-600 dark:text-slate-400">{saveMessage}</span>
-            )}
-            <button
-              type="button"
-              disabled={isSaving}
-              onClick={() => void onSaveVulkanConfig(vulkanConfig)}
-              className="px-4 py-2 rounded-full bg-[#041e49] text-white dark:bg-[#d3e3fd] dark:text-[#041e49] text-xs font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap shrink-0 inline-flex items-center gap-2"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              <span>{isSaving ? 'Applying Policy...' : 'Commit Vulkan Policy'}</span>
-            </button>
+          <div className="flex shrink-0 items-center gap-3">
+            {isSaving ? <span className="text-xs text-slate-600 dark:text-slate-400">Applying Vulkan mode…</span> : saveMessage && <span className="text-xs text-slate-600 dark:text-slate-400">{saveMessage}</span>}
+            <span className="rounded-full bg-slate-900/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-700 dark:bg-white/[0.07] dark:text-slate-200">{vulkanConfig.mode === 'disabled' ? 'Layer disabled' : 'Layer enabled'}</span>
           </div>
         </div>
       </div>
