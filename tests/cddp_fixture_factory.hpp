@@ -28,11 +28,32 @@ inline bool put(const fs::path& path, const std::string& value, mode_t mode = 06
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     if (ec) return false;
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out.write(value.data(), static_cast<std::streamsize>(value.size()));
-    out.close();
-    return out.good() && ::chmod(path.c_str(), mode) == 0;
+
+    // Replace fixture attributes atomically. Tests intentionally model read-only
+    // sysfs nodes (0444) and later need to simulate a hardware value changing.
+    // Opening the original with std::ios::trunc fails for non-root CI runners.
+    const fs::path temporary = path.string() + ".fixture.tmp." + std::to_string(::getpid());
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        out.close();
+        if (!out.good()) {
+            fs::remove(temporary, ec);
+            return false;
+        }
+    }
+
+    if (::chmod(temporary.c_str(), mode) != 0) {
+        fs::remove(temporary, ec);
+        return false;
+    }
+    fs::rename(temporary, path, ec);
+    if (ec) {
+        fs::remove(temporary, ec);
+        return false;
+    }
+    return true;
 }
 inline Fixture create(const std::string& id) {
     Fixture f;
