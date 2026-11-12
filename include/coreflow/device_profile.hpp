@@ -17,12 +17,29 @@
 namespace coreflow {
 
 enum class NodeCapabilityState : uint8_t {
-    Available = 0,
+    Discovered = 0,
+    Available = Discovered, // Compatibility alias for existing profile consumers.
     Readable = 1,
-    Writable = 2,
+    AccessChecked = 2,
+    Writable = AccessChecked, // Compatibility alias; access check is not mutation authority.
     SemanticsVerified = 3,
     ConstraintsVerified = 4,
     MutationEligible = 5,
+};
+
+enum class NodeRejectionReason : uint8_t {
+    None = 0,
+    EaccesSelinux,
+    NodeMissing,
+    FormatMismatch,
+    BaselineCaptureFailed,
+    BaselineNotCaptured,
+    ReadbackMismatch,
+    PermissionDenied,
+    SemanticsUnverified,
+    ConstraintsUnverified,
+    AmbiguousTarget,
+    IoError,
 };
 
 enum class ProfileSource : uint8_t {
@@ -94,6 +111,7 @@ struct NodeCapability {
     std::string constraints;
     std::string evidence;
     std::string rejection_reason;
+    NodeRejectionReason rejection_code{NodeRejectionReason::None};
 
     [[nodiscard]] bool mutation_eligible() const noexcept {
         return state == NodeCapabilityState::MutationEligible &&

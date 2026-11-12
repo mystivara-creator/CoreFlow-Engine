@@ -55,9 +55,14 @@ inline Fixture create(const std::string& id) {
         put(f.proc / "sys/kernel/osrelease", "6.1.0-cddp-fixture\n");
         put(f.proc / "meminfo", "MemTotal: 8192000 kB\nMemAvailable: 4096000 kB\n");
         put(f.proc / "pressure/cpu", "some avg10=1.00 avg60=1.00 avg300=1.00 total=10\n");
-        put(f.proc / "self/mountinfo", "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n");
-        put(f.sys / "fs/cgroup/cgroup.controllers", "cpu cpuset memory io\n");
-        put(f.sys / "fs/cgroup/top-app/cpu.uclamp.min", "0\n");
+        const auto cgroup_mount = f.sys / "fs/cgroup";
+        put(f.proc / "self/mountinfo", "31 20 0:28 / " + cgroup_mount.string() + " rw - cgroup2 cgroup rw\n");
+        put(cgroup_mount / "cgroup.controllers", "cpu cpuset memory io\n");
+        const auto foreground_group = cgroup_mount / "interactive-session";
+        put(foreground_group / "cpu.uclamp.min", "0.00\n");
+        put(foreground_group / "cpu.uclamp.max", "max\n");
+        put(foreground_group / "cgroup.threads", "");
+        put(foreground_group / "cgroup.procs", "");
         put(f.sys / "class/thermal/thermal_zone0/type", "soc-thermal\n");
         put(f.sys / "class/thermal/thermal_zone0/temp", "42000\n");
         put(f.sys / "devices/soc0/machine", "Synthetic SoC A\n");

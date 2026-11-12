@@ -44,6 +44,10 @@ int main() {
     // A: profile -> classify -> baseline -> act -> readback -> restore.
     // No IMPROVED verdict is fabricated without comparable workload telemetry.
     auto a = cddp_fixture::create("A");
+    const std::string state_dir = (a.root / "state").string();
+    (void)::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
+    auto& baseline_store = BaselineStore::instance();
+    assert(baseline_store.recover_pending());
     DeviceProfiler pa(a.sys.string(), a.proc.string());
     const auto profile_a = pa.refresh();
     assert(profile_a && profile_a->cpu_topology_valid);
@@ -56,13 +60,7 @@ int main() {
     assert(profile_a_refresh->generation > profile_a->generation);
     assert(profile_a_refresh->fingerprint == profile_a->fingerprint);
 
-    const std::string state_dir = (a.root / "state").string();
-    (void)::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
-    auto& baseline_store = BaselineStore::instance();
     CentralMutationCoordinator coordinator;
-    const bool baseline_recovered = baseline_store.recover_pending();
-    assert(baseline_recovered);
-    (void)baseline_recovered;
     {
         FrequencyController controller(coordinator, a.sys.string(), profile_a);
         controller.discover(true, false);

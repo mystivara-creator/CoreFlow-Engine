@@ -6,6 +6,7 @@
 #include "coreflow/render_booster.hpp"
 #include "coreflow/input_event_source.hpp"
 #include "coreflow/cgroup_v2.hpp"
+#include "coreflow/mount_topology.hpp"
 #include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
@@ -306,6 +307,89 @@ int stop_daemon() {
 
 std::string json_string(std::string_view text);
 
+const char* node_capability_state_name(NodeCapabilityState state) noexcept {
+    switch (state) {
+        case NodeCapabilityState::Discovered: return "DISCOVERED";
+        case NodeCapabilityState::Readable: return "READABLE";
+        case NodeCapabilityState::AccessChecked: return "ACCESS_CHECKED";
+        case NodeCapabilityState::SemanticsVerified: return "SEMANTICS_VERIFIED";
+        case NodeCapabilityState::ConstraintsVerified: return "CONSTRAINTS_VERIFIED";
+        case NodeCapabilityState::MutationEligible: return "MUTATION_ELIGIBLE";
+    }
+    return "UNKNOWN";
+}
+
+const char* node_rejection_reason_name(NodeRejectionReason reason) noexcept {
+    switch (reason) {
+        case NodeRejectionReason::None: return "NONE";
+        case NodeRejectionReason::EaccesSelinux: return "EACCES_SELINUX";
+        case NodeRejectionReason::NodeMissing: return "ENOENT";
+        case NodeRejectionReason::FormatMismatch: return "FORMAT_MISMATCH";
+        case NodeRejectionReason::BaselineCaptureFailed: return "BASELINE_CAPTURE_FAILED";
+        case NodeRejectionReason::BaselineNotCaptured: return "BASELINE_NOT_CAPTURED";
+        case NodeRejectionReason::ReadbackMismatch: return "READBACK_MISMATCH";
+        case NodeRejectionReason::PermissionDenied: return "PERMISSION_DENIED";
+        case NodeRejectionReason::SemanticsUnverified: return "SEMANTICS_UNVERIFIED";
+        case NodeRejectionReason::ConstraintsUnverified: return "CONSTRAINTS_UNVERIFIED";
+        case NodeRejectionReason::AmbiguousTarget: return "AMBIGUOUS_TARGET";
+        case NodeRejectionReason::IoError: return "IO_ERROR";
+    }
+    return "UNKNOWN";
+}
+
+const char* node_domain_name(HardwareDomain domain) noexcept {
+    switch (domain) {
+        case HardwareDomain::Cpu: return "cpu";
+        case HardwareDomain::Gpu: return "gpu";
+        case HardwareDomain::Thermal: return "thermal";
+        case HardwareDomain::Memory: return "memory";
+        case HardwareDomain::Storage: return "storage";
+        case HardwareDomain::Cgroup: return "cgroup";
+        case HardwareDomain::AndroidRuntime: return "android_runtime";
+        case HardwareDomain::Graphics: return "graphics";
+        case HardwareDomain::Power: return "power";
+        case HardwareDomain::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+const char* node_source_name(ProfileSource source) noexcept {
+    switch (source) {
+        case ProfileSource::Sysfs: return "sysfs";
+        case ProfileSource::Procfs: return "procfs";
+        case ProfileSource::DeviceTree: return "device_tree";
+        case ProfileSource::AndroidProperty: return "android_property";
+        case ProfileSource::KernelApi: return "kernel_api";
+        case ProfileSource::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+std::string serialize_node_capabilities(const DeviceProfileSnapshot& profile) {
+    std::ostringstream out;
+    out << '[';
+    const std::size_t count = std::min<std::size_t>(profile.node_capabilities.size(), 2048U);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& node = profile.node_capabilities[i];
+        if (i != 0U) out << ',';
+        out << "{\"path\":" << json_string(node.path)
+            << ",\"domain\":" << json_string(node_domain_name(node.domain))
+            << ",\"source\":" << json_string(node_source_name(node.source))
+            << ",\"state\":" << json_string(node_capability_state_name(node.state))
+            << ",\"semanticId\":" << json_string(node.semantic_id)
+            << ",\"unit\":" << json_string(node.unit)
+            << ",\"currentValue\":" << json_string(node.current_value)
+            << ",\"acceptedValues\":" << json_string(node.accepted_values)
+            << ",\"constraints\":" << json_string(node.constraints)
+            << ",\"evidence\":" << json_string(node.evidence)
+            << ",\"rejectionReason\":" << json_string(node_rejection_reason_name(node.rejection_code))
+            << ",\"rejectionDetail\":" << json_string(node.rejection_reason)
+            << ",\"mutationEligible\":" << (node.mutation_eligible() ? "true" : "false") << '}';
+    }
+    out << ']';
+    return out.str();
+}
+
 std::uint64_t monotonic_now_ns() noexcept {
     timespec ts{};
     if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0U;
@@ -465,6 +549,8 @@ std::string build_status_json(
     const std::string semantic_evidence_json = live_runtime
         ? collect_semantic_evidence_json_cached()
         : collect_semantic_evidence_json();
+    const auto device_inventory = context.device_profiler().profile();
+    const std::string node_inventory_json = serialize_node_capabilities(*device_inventory);
 
     // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
     std::ostringstream out;
@@ -685,7 +771,9 @@ std::string build_status_json(
         << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
         << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
         << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
-        << ",\"semanticEvidence\":" << semantic_evidence_json << "}";
+        << ",\"semanticEvidence\":" << semantic_evidence_json
+        << ",\"node_capabilities\":" << node_inventory_json
+        << ",\"nodeCapabilityGeneration\":" << device_inventory->generation << "}";
 
     return out.str();
 }
@@ -706,8 +794,9 @@ std::string json_string(std::string_view text) {
 
 void print_capabilities(CoreFlowContext& context) {
     const auto topology = context.device_profiler().probe();
+    const auto profile = context.device_profiler().profile();
     const auto power = PowerBridge{}.probe();
-    // Capabilities is a passive probe: no online learning, layer setup, or actuators.
+    // The profile includes an actual read-only cgroup/UClamp ABI scan.
     const NeuralPrediction ai{.backend = "not_started"};
     const VulkanCapabilitiesSnapshot vk{};
     std::ostringstream out;
@@ -720,6 +809,11 @@ void print_capabilities(CoreFlowContext& context) {
         << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
         << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
         << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true"
+        << ",\"uclampProbeSkipped\":false"
+        << ",\"uclampInterfaceAvailable\":" << (profile->uclamp_interface_available ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (profile->cgroup_v2_available ? "true" : "false")
+        << ",\"nodeCapabilityGeneration\":" << profile->generation
+        << ",\"node_capabilities\":" << serialize_node_capabilities(*profile)
         << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
         << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
     std::cout << "\n" << out.str() << "\n" << std::flush;
@@ -1003,16 +1097,35 @@ bool print_live_status_snapshot(pid_t expected_pid) {
     return true;
 }
 
-bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
-    constexpr std::string_view kAllowed[] = {
-        "/sys/fs/cgroup/cgroup.procs",
-        "/dev/cg2_bpf/cgroup.procs",
-        "/acct/cgroup.procs",
-        "/dev/cpuset/system-background/cgroup.procs",
-        "/dev/cpuset/system-background/tasks",
-        "/proc/self/oom_score_adj",
-    };
-    return std::find(std::begin(kAllowed), std::end(kAllowed), path) != std::end(kAllowed);
+std::vector<std::string> discover_lifecycle_membership_targets() {
+    // Lifecycle placement is resolved from the active mount topology. The
+    // controller ABI file is selected by presence, never by a vendor mount path.
+    MountTopologyResolver topology{};
+    std::vector<std::string> targets;
+    for (const auto& mount : topology.discover_cgroup_mounts()) {
+        const std::string process_path = mount.mount_point + "/cgroup.procs";
+        const std::string task_path = mount.mount_point + "/tasks";
+        struct stat st{};
+        const std::string* selected = nullptr;
+        if (::lstat(process_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            selected = &process_path;
+        } else if (::lstat(task_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            selected = &task_path;
+        }
+        if (selected != nullptr &&
+            std::find(targets.begin(), targets.end(), *selected) == targets.end())
+            targets.push_back(*selected);
+    }
+    return targets;
+}
+
+bool is_allowlisted_lifecycle_target(
+    std::string_view path, const std::vector<std::string>& discovered_targets) noexcept {
+    if (std::find(discovered_targets.begin(), discovered_targets.end(), path) != discovered_targets.end())
+        return true;
+    // This is the current process's standardized OOM admission control, not a
+    // cgroup endpoint. Keep it separate from discovered cgroup membership files.
+    return path == "/proc/self/oom_score_adj";
 }
 
 bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
@@ -1046,8 +1159,9 @@ bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
 bool write_sys_node_verified(
     std::string_view path,
     std::string_view content,
-    std::string_view expected_readback_line) {
-    if (!is_allowlisted_lifecycle_target(path) || content.empty() ||
+    std::string_view expected_readback_line,
+    const std::vector<std::string>& discovered_targets) {
+    if (!is_allowlisted_lifecycle_target(path, discovered_targets) || content.empty() ||
         expected_readback_line.empty()) {
         return false;
     }
@@ -1077,17 +1191,10 @@ void escape_app_cgroups_and_protect_oom() {
     // domains. Every target is explicitly allowlisted and must pass readback.
     const std::string pid_token = std::to_string(::getpid());
     const std::string pid_command = pid_token + "\n";
-    constexpr const char* kRootCgroups[] = {
-        "/sys/fs/cgroup/cgroup.procs",
-        "/dev/cg2_bpf/cgroup.procs",
-        "/acct/cgroup.procs",
-        "/dev/cpuset/system-background/cgroup.procs",
-        "/dev/cpuset/system-background/tasks",
-    };
-
+    const auto membership_targets = discover_lifecycle_membership_targets();
     size_t verified_memberships = 0;
-    for (const char* cg : kRootCgroups) {
-        if (write_sys_node_verified(cg, pid_command, pid_token)) {
+    for (const auto& cg : membership_targets) {
+        if (write_sys_node_verified(cg, pid_command, pid_token, membership_targets)) {
             ++verified_memberships;
         }
     }
@@ -1095,7 +1202,7 @@ void escape_app_cgroups_and_protect_oom() {
         emit_log(true, "[CoreFlow][Lifecycle] No allowlisted cgroup membership write passed readback; inherited membership remains in effect.");
     }
 
-    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900")) {
+    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900", membership_targets)) {
         emit_log(true, "[CoreFlow][Lifecycle] oom_score_adj write was not verified; retaining the kernel-provided value.");
     }
 }
@@ -1285,7 +1392,7 @@ int main(int argc, char* argv[]) {
     frequencies.discover(false, config.enable_gpu_frequency_control);
     CgroupV2Controller cgroup_controller(context.mutation_coordinator());
     ForegroundTaskResolver foreground_task_resolver(
-        cgroup_controller, cgroup_controller.get_cgroup_path(CgroupTarget::TopApp));
+        cgroup_controller);
     auto& autonomous_tuner = context.autonomous_tuner();
     if (config.enable_cgroups_v2 && cgroup_controller.is_supported()) {
         autonomous_tuner.configure_foreground_task_resolver(&foreground_task_resolver);

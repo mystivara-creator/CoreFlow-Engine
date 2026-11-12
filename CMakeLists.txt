@@ -55,6 +55,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/transactional_frequency_actuator.cpp
     src/kernel/memory_warmup_controller.cpp
     src/kernel/cgroup_v2.cpp
+    src/kernel/mount_topology.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
@@ -111,6 +112,13 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    add_executable(test_mount_topology
+        tests/test_mount_topology.cpp
+        src/kernel/mount_topology.cpp
+    )
+    target_include_directories(test_mount_topology PRIVATE include)
+    add_test(NAME MountTopologyDynamicDiscoveryTest COMMAND test_mount_topology)
+
     add_executable(test_cddp
         tests/test_cddp.cpp
         src/kernel/device_profiler.cpp
@@ -119,6 +127,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/autonomous_tuner.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/tiered_policy.cpp
@@ -141,6 +150,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_p3_intent_actuator
         tests/test_p3_intent_actuator.cpp
         src/kernel/device_profiler.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/intent_actuator.cpp
         src/mutation/intent_actuator.cpp
         src/kernel/thermal_monitor.cpp
@@ -172,6 +182,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_linux_sysfs_discovery_adapter
         tests/semantic/test_linux_sysfs_discovery_adapter.cpp
         src/semantic/linux_sysfs_discovery_adapter.cpp
+        src/kernel/mount_topology.cpp
         src/semantic/capability_resolver.cpp
         src/platform/discovery_adapter.cpp
         src/semantic/domain_evidence_aggregator.cpp
@@ -264,6 +275,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/autonomous_tuner.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
@@ -297,6 +309,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_cgroup_v2
         tests/test_cgroup_v2.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
@@ -312,6 +325,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_foreground_task_resolver.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
@@ -325,7 +339,7 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME ForegroundTaskResolverTest COMMAND test_foreground_task_resolver)
 
-    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mount_topology.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
 
@@ -336,6 +350,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/autonomous_tuner.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
@@ -424,6 +439,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_uclamp
         tests/test_uclamp.cpp
         src/kernel/uclamp.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
@@ -440,6 +456,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/frame_bridge.cpp
         src/daemon/reactor.cpp
         src/kernel/uclamp.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
@@ -459,6 +476,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp

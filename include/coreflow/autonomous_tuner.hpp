@@ -6,7 +6,7 @@
  * Extends CFAE beyond UClamp to autonomously discover, classify, plan, coordinate, apply, and
  * empirically evaluate kernel transactions across:
  *   1. Block I/O Schedulers (mq-deadline, kyber, bfq, none) & iosched/<tunable> queue tunables
- *   2. VM / Memory Subsystem (/proc/sys/vm/page-cluster, vfs_cache_pressure, watermark_scale_factor)
+ *   2. VM / Memory Subsystem (dynamically enumerated /proc/sys/vm ABI)
  *   3. CPUFreq Governor & rate-limit tunables (schedutil/walt up_rate_limit_us / down_rate_limit_us)
  *   4. Active Thermal Stabilization & Hysteresis Recovery (damped governor & I/O burst pacing)
  */
@@ -235,7 +235,7 @@ private:
 
 struct BlockQueueSurface {
     std::string device_name;            // e.g. "sda", "mmcblk0"
-    std::string queue_dir;              // e.g. "/sys/block/sda/queue"
+    std::string queue_dir;              // dynamically resolved block queue directory
     std::string baseline_scheduler;     // e.g. "mq-deadline" or "none"
     std::string active_scheduler;       // current active token
     std::vector<std::string> available_schedulers;
@@ -540,6 +540,8 @@ private:
     std::vector<CandidateStats> candidates_;
     std::vector<DiscoveredResourceMetadata> discovered_resources_;
     bool zram_active_{false};
+
+    [[nodiscard]] std::string resolve_vm_node_path(std::string_view semantic_id) const;
 
     bool transaction_active_{false};
     bool observing_{false};

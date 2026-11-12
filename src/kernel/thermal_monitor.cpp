@@ -17,6 +17,7 @@
 #endif
 
 namespace coreflow {
+namespace fs = std::filesystem;
 namespace {
 
 bool read_sysfs_line(const std::string& path, std::string& out,
@@ -436,15 +437,25 @@ float ThermalMonitor::hottest_celsius() const { return hottest_category(1); }
 float ThermalMonitor::battery_celsius() const {
     const float tz_batt = hottest_category(2);
     if (tz_batt >= 0.0f) return tz_batt;
-    if (sysfs_root_ == "/sys/class/thermal") {
+    const fs::path supply_root = fs::path(sysfs_root_).parent_path().parent_path() / "power_supply";
+    std::error_code ec;
+    float observed = -1.0f;
+    unsigned battery_count = 0;
+    for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        std::error_code type_ec;
+        const auto status = it->symlink_status(type_ec);
+        if (type_ec || fs::is_symlink(status) || !fs::is_directory(status)) continue;
+        std::string type;
+        if (!read_sysfs_line((it->path() / "type").string(), type) || type != "Battery") continue;
+        ++battery_count;
         std::string raw;
         double tenths = 0.0;
-        if (read_sysfs_line("/sys/class/power_supply/battery/temp", raw) &&
-            parse_ascii_double(raw, tenths) && tenths > 0.0 && tenths <= 800.0) {
-            return static_cast<float>(tenths / 10.0);
-        }
+        if (!read_sysfs_line((it->path() / "temp").string(), raw) ||
+            !parse_ascii_double(raw, tenths) || tenths <= 0.0 || tenths > 800.0) return -1.0f;
+        observed = static_cast<float>(tenths / 10.0);
     }
-    return -1.0f;
+    return battery_count == 1U ? observed : -1.0f;
 }
 float ThermalMonitor::skin_celsius() const { return hottest_category(3); }
 

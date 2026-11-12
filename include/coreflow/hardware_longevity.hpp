@@ -30,7 +30,8 @@ struct LongevityConfig {
 
 class HardwareLongevityManager {
 public:
-    explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys");
+    explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys",
+                                      std::string proc_root = "/proc");
     ~HardwareLongevityManager();
     HardwareLongevityManager(const HardwareLongevityManager&) = delete;
     HardwareLongevityManager& operator=(const HardwareLongevityManager&) = delete;
@@ -54,11 +55,14 @@ public:
 private:
     CentralMutationCoordinator& coordinator_;
     std::string root_;
+    std::string proc_root_;
     std::string controller_name_;
     mutable std::mutex mutex_;
 
     LongevityConfig config_;
     std::string battery_node_;
+    std::string battery_temp_node_;
+    std::string battery_status_node_;
     bool battery_stepped_{false};
     bool storage_paced_{false};
     uint64_t charge_baseline_ua_{0};

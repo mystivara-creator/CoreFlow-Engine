@@ -142,7 +142,7 @@ int main() {
     assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
     assert(coordinator.active_leases().empty());
 
-    // Unified cgroup v2 hierarchy identified by cgroup.controllers uses percentage.
+    // Encoding is derived from baseline bytes, not the cgroup mount kind.
     const std::string v2_ctrl_root = root + "/unified-controllers";
     const std::string v2_ctrl_top = v2_ctrl_root + "/top-app";
     std::filesystem::create_directories(v2_ctrl_top);
@@ -152,7 +152,7 @@ int main() {
 
     UclampGovernor v2_ctrl(coordinator, v2_ctrl_root);
     assert(v2_ctrl.is_supported());
-    assert(v2_ctrl.encoding_name() == "percentage");
+    assert(v2_ctrl.encoding_name() == "capacity1024");
 
     std::filesystem::remove_all(root);
     // Android GKI legacy cpuctl uses per-thread tasks and percentage UClamp

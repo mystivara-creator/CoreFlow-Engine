@@ -168,10 +168,10 @@ struct UclampValues {
 // Cgroup v2 Migration Targets
 // ============================================================================
 enum class CgroupTarget : uint8_t {
-    TopApp,      ///< /sys/fs/cgroup/top-app
-    Foreground,  ///< /sys/fs/cgroup/foreground
-    Background,  ///< /sys/fs/cgroup/background
-    System       ///< /sys/fs/cgroup/system
+    TopApp,      ///< Semantic target resolved from runtime cgroup topology.
+    Foreground,  ///< Semantic target resolved from runtime cgroup topology.
+    Background,  ///< Semantic target resolved from runtime cgroup topology.
+    System       ///< Semantic target resolved from runtime cgroup topology.
 };
 
 // ============================================================================

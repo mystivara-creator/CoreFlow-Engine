@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <map>
 #include <string_view>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -118,7 +119,8 @@ ForegroundTaskResolver::ForegroundTaskResolver(
     std::string top_app_cgroup,
     std::string proc_root) noexcept
     : controller_(controller),
-      top_app_cgroup_(std::move(top_app_cgroup)),
+      top_app_cgroup_(top_app_cgroup.empty()
+          ? controller.get_cgroup_path(CgroupTarget::TopApp) : std::move(top_app_cgroup)),
       proc_root_(std::move(proc_root)) {}
 
 ForegroundTaskResolver::~ForegroundTaskResolver() {
@@ -160,7 +162,15 @@ bool ForegroundTaskResolver::is_whitelisted_thread(
 
 bool ForegroundTaskResolver::read_top_app_pids(std::vector<pid_t>& pids) const noexcept {
     std::string contents;
-    const std::string path = top_app_cgroup_ + "/cgroup.procs";
+    // Prefer process membership. When only a task/thread ABI is exposed,
+    // normalize leader TIDs to process IDs and cross-check proc membership.
+    const std::string process_list = top_app_cgroup_ + "/cgroup.procs";
+    struct stat st{};
+    const bool has_process_list =
+        ::lstat(process_list.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode);
+    const bool contains_tids = !has_process_list;
+    const std::string path = has_process_list ? process_list :
+        top_app_cgroup_ + (controller_.uses_legacy_tasks() ? "/tasks" : "/cgroup.threads");
     if (!read_bounded(path, contents, kMaxPidListBytes)) return false;
     size_t pos = 0;
     while (pos < contents.size() && pids.size() < kMaxProcesses) {
@@ -172,8 +182,18 @@ bool ForegroundTaskResolver::read_top_app_pids(std::vector<pid_t>& pids) const n
         size_t finish = begin;
         while (finish < line.size() && line[finish] >= '0' && line[finish] <= '9') ++finish;
         if (finish > begin) {
-            pid_t pid = 0;
-            if (parse_positive_pid(line.substr(begin, finish - begin), pid)) pids.push_back(pid);
+            pid_t id = 0;
+            if (parse_positive_pid(line.substr(begin, finish - begin), id)) {
+                pid_t pid = id;
+                if (contains_tids) {
+                    pid_t tgid = 0;
+                    uint64_t start_time = 0;
+                    if (!controller_.get_thread_identity(id, tgid, start_time) || tgid <= 0 || id != tgid)
+                        pid = 0;
+                    else pid = tgid;
+                }
+                if (pid > 0 && controller_.is_task_in_hierarchy(pid)) pids.push_back(pid);
+            }
         }
         if (end == std::string::npos) break;
         pos = end + 1;

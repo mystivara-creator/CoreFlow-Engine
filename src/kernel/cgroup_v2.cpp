@@ -10,6 +10,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/unique_fd.hpp"
+#include "coreflow/mount_topology.hpp"
 
 #include <algorithm>
 #include <array>
@@ -314,44 +315,99 @@ bool write_thread_at(int root_fd, std::string_view relative, pid_t tid) noexcept
 CgroupV2Controller::CgroupV2Controller(
     CentralMutationCoordinator& coordinator, std::string_view root_path, std::string_view proc_root)
     : coordinator_(coordinator), root_path_(root_path), proc_root_(proc_root),
-      controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")) {
-    // Android GKI may expose a cgroup2 mount without delegated CPU controllers.
-    // Prefer the legacy cpuctl hierarchy when the unified root cannot host top-app.
-    if (root_path_ == "/sys/fs/cgroup") {
-        std::string controllers;
-        const bool has_cpu_controller =
-            read_bounded_file(root_path_ + "/cgroup.controllers", controllers, 4096U) &&
-            token_present(controllers.data(), controllers.size(), "cpu");
-        const bool has_unified_top = fs::exists(root_path_ + "/top-app/cgroup.threads");
-        if ((!has_cpu_controller || !has_unified_top) &&
-            fs::exists("/dev/cpuctl/top-app/tasks")) {
-            root_path_ = "/dev/cpuctl";
-            legacy_tasks_ = true;
+      controller_name_(CentralMutationCoordinator::make_controller_identity("CgroupV2Controller")),
+      explicit_root_(!root_path.empty()) {
+    if (explicit_root_) {
+        // Hermetic test/bring-up root. Discover candidate groups from controller
+        // ABI files, never from a predefined child path or group basename.
+        struct Candidate final { std::string relative; int score; bool legacy; };
+        std::vector<Candidate> candidates;
+        std::error_code ec;
+        std::size_t visited = 0;
+        for (fs::recursive_directory_iterator it(root_path_,
+                 fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end && visited < 1024U; it.increment(ec)) {
+            ++visited;
+            if (it.depth() > 6) { it.disable_recursion_pending(); continue; }
+            const auto status = it->symlink_status(ec);
+            if (ec) { ec.clear(); continue; }
+            if (fs::is_symlink(status)) { it.disable_recursion_pending(); continue; }
+            if (!fs::is_directory(status)) continue;
+            const auto dir = it->path();
+            const bool has_min = fs::is_regular_file(dir / "cpu.uclamp.min", ec) && !ec;
+            ec.clear();
+            const bool has_max = fs::is_regular_file(dir / "cpu.uclamp.max", ec) && !ec;
+            ec.clear();
+            const bool has_threads = fs::is_regular_file(dir / "cgroup.threads", ec) && !ec;
+            ec.clear();
+            const bool has_tasks = fs::is_regular_file(dir / "tasks", ec) && !ec;
+            ec.clear();
+            const bool has_procs = fs::is_regular_file(dir / "cgroup.procs", ec) && !ec;
+            ec.clear();
+            const bool has_cpu_weight = fs::is_regular_file(dir / "cpu.weight", ec) && !ec;
+            ec.clear();
+            const bool has_cpuset = fs::is_regular_file(dir / "cpuset.cpus", ec) && !ec;
+            ec.clear();
+            const bool membership = has_threads || has_tasks;
+            if (!membership) continue;
+            const auto rel = fs::relative(dir, fs::path(root_path_), ec);
+            if (ec || rel.empty() || rel.native().find("..") != std::string::npos) { ec.clear(); continue; }
+            int score = 0;
+            if (has_min && has_max && has_procs) score = 100;
+            else if (has_min && has_max) score = 90;
+            else if (has_cpu_weight && has_cpuset) score = 80;
+            else if (has_procs) score = 70;
+            candidates.push_back(Candidate{rel.generic_string(), score, !has_threads && has_tasks});
+        }
+        if (!candidates.empty()) {
+            const auto best = std::max_element(candidates.begin(), candidates.end(),
+                [](const Candidate& a, const Candidate& b) { return a.score < b.score; });
+            const auto same = std::count_if(candidates.begin(), candidates.end(),
+                [&](const Candidate& item) { return item.score == best->score; });
+            if (same == 1 && best->score > 0) {
+                target_relative_paths_[0] = best->relative;
+                target_available_[0] = true;
+                legacy_tasks_ = best->legacy;
+                supported_ = true;
+            }
+            // A unique remaining membership-only group can be used as a
+            // secondary test target; ambiguous layouts are deliberately omitted.
+            std::vector<Candidate> secondary;
+            for (const auto& item : candidates) {
+                if (item.relative == target_relative_paths_[0] || item.score != 0) continue;
+                secondary.push_back(item);
+            }
+            if (secondary.size() == 1U) {
+                target_relative_paths_[2] = secondary.front().relative;
+                target_available_[2] = true;
+            }
+        }
+    } else {
+        // Production always starts from mountinfo and process membership. The
+        // foreground group is accepted only when ABI controls and PID topology
+        // independently corroborate the same hierarchy.
+        MountTopologyResolver topology(proc_root_);
+        const auto foreground = topology.resolve_foreground_group();
+        if (foreground && !foreground->mount.read_only) {
+            root_path_ = foreground->mount.mount_point;
+            target_relative_paths_[0] = foreground->relative_path;
+            target_available_[0] = true;
+            legacy_tasks_ = foreground->mount.filesystem == CgroupFilesystem::V1 ||
+                foreground->membership == CgroupMembershipInterface::Tasks;
+            supported_ = true;
         }
     }
-    std::string root_controllers;
-    const bool unified_cpu =
-        read_bounded_file(root_path_ + "/cgroup.controllers", root_controllers, 4096U) &&
-        token_present(root_controllers.data(), root_controllers.size(), "cpu");
-    legacy_tasks_ = legacy_tasks_ || (!unified_cpu &&
-        fs::exists(root_path_ + "/top-app/tasks") &&
-        fs::exists(root_path_ + "/top-app/cgroup.procs"));
-    supported_ = unified_cpu || legacy_tasks_;
-    (void)coordinator_.register_preemption_handler(
-        controller_name_,
-        [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
-            return handle_preemption(domain, transaction_id);
-        });
 
-    if (supported_ && legacy_tasks_) {
-        std::cout << "[CoreFlow][Cgroup] Android legacy CPU controller verified at "
-                  << root_path_ << " (tasks interface)" << std::endl;
-    } else if (supported_) {
-        std::cout << "[CoreFlow][CgroupV2] Unified CPU controller verified at "
-                  << root_path_ << std::endl;
+    if (supported_) {
+        (void)coordinator_.register_preemption_handler(
+            controller_name_,
+            [this](MutationDomain domain, std::string_view transaction_id, std::string_view) noexcept {
+                return handle_preemption(domain, transaction_id);
+            });
+        std::cout << "[CoreFlow][Cgroup] runtime hierarchy verified at " << root_path_
+                  << " (" << (legacy_tasks_ ? "tasks" : "cgroup.threads") << " ABI)" << std::endl;
     } else {
-        std::cerr << "[CoreFlow][CgroupV2] Notice: cgroups v2 not mounted at "
-                  << root_path_ << ", attempting fallback discovery..." << std::endl;
+        std::cerr << "[CoreFlow][Cgroup] no unambiguous writable foreground cgroup capability found" << std::endl;
     }
 }
 
@@ -371,18 +427,51 @@ bool CgroupV2Controller::is_supported() const noexcept {
 }
 
 std::string CgroupV2Controller::get_cgroup_path(CgroupTarget target) const {
+    std::size_t index = 0;
     switch (target) {
-        case CgroupTarget::TopApp: return root_path_ + "/top-app";
-        case CgroupTarget::Foreground: return root_path_ + "/foreground";
-        case CgroupTarget::Background: return root_path_ + "/background";
-        case CgroupTarget::System: return root_path_ + "/system";
+        case CgroupTarget::TopApp: index = 0U; break;
+        case CgroupTarget::Foreground: index = 1U; break;
+        case CgroupTarget::Background: index = 2U; break;
+        case CgroupTarget::System: index = 3U; break;
     }
-    return root_path_;
+    if (index >= target_available_.size() || !target_available_[index] || root_path_.empty()) return {};
+    return target_relative_paths_[index].empty() ? root_path_ :
+        (fs::path(root_path_) / target_relative_paths_[index]).lexically_normal().string();
 }
 
 bool CgroupV2Controller::get_thread_identity(
     pid_t tid, pid_t& tgid, uint64_t& start_time_ticks) const noexcept {
     return read_task_identity(proc_root_, tid, tgid, start_time_ticks);
+}
+
+bool CgroupV2Controller::is_task_in_target(pid_t tid, CgroupTarget target) const noexcept {
+    if (!supported_ || tid <= 0) return false;
+    std::size_t index = 0U;
+    switch (target) {
+        case CgroupTarget::TopApp: index = 0U; break;
+        case CgroupTarget::Foreground: index = 1U; break;
+        case CgroupTarget::Background: index = 2U; break;
+        case CgroupTarget::System: index = 3U; break;
+    }
+    if (index >= target_available_.size() || !target_available_[index]) return false;
+    pid_t tgid = 0;
+    uint64_t start_time = 0;
+    if (!read_task_identity(proc_root_, tid, tgid, start_time)) return false;
+    std::string relative;
+    return find_thread_membership(root_path_, proc_root_, tid, tgid, relative, legacy_tasks_) &&
+        relative == target_relative_paths_[index];
+}
+
+bool CgroupV2Controller::is_task_in_hierarchy(pid_t tid) const noexcept {
+    if (!supported_ || tid <= 0 || root_path_.empty()) return false;
+    pid_t tgid = 0;
+    uint64_t start_time = 0;
+    if (!read_task_identity(proc_root_, tid, tgid, start_time)) return false;
+    std::string relative;
+    // This proves that /proc/<tgid>/task/<tid>/cgroup resolves to a real
+    // membership interface inside the discovered hierarchy. It deliberately
+    // does not require the task to already occupy the mutation destination.
+    return find_thread_membership(root_path_, proc_root_, tid, tgid, relative, legacy_tasks_);
 }
 
 bool CgroupV2Controller::migrate_task(pid_t tid, CgroupTarget target) {
@@ -396,15 +485,16 @@ bool CgroupV2Controller::migrate_thread(
     pid_t tid, pid_t expected_tgid, uint64_t expected_start_time_ticks, CgroupTarget target) {
     if (!supported_ || tid <= 0 || expected_tgid <= 0 || expected_start_time_ticks == 0 ||
         root_path_.empty()) return false;
-    const char* target_name = nullptr;
+    std::size_t target_index = 0U;
     switch (target) {
-        case CgroupTarget::TopApp: target_name = "top-app"; break;
-        case CgroupTarget::Foreground: target_name = "foreground"; break;
-        case CgroupTarget::Background: target_name = "background"; break;
-        case CgroupTarget::System: target_name = "system"; break;
-        default: return false;
+        case CgroupTarget::TopApp: target_index = 0U; break;
+        case CgroupTarget::Foreground: target_index = 1U; break;
+        case CgroupTarget::Background: target_index = 2U; break;
+        case CgroupTarget::System: target_index = 3U; break;
     }
-    const std::string target_relative(target_name);
+    if (target_index >= target_available_.size() || !target_available_[target_index]) return false;
+    const std::string target_relative = target_relative_paths_[target_index];
+    if (target_relative.empty()) return false;
     std::lock_guard<std::mutex> lock(mutex_);
 
     pid_t actual_tgid = 0;

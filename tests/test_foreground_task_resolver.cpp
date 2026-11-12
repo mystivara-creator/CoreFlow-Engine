@@ -126,6 +126,7 @@ int main() {
         put(proc / "331/status", "Name:\tcom.other.app\nTgid:\t331\nUid:\t10001\t10001\t10001\t10001\n");
         make_task(proc, 331, 331, "main", 2001);
         put(proc / "331/task/331/cgroup", "0::/top-app\n");
+        put(top / "cgroup.threads", "321\n331\n");
         const auto before = resolver.refresh(true);
         assert(!before);
         snapshot = resolver.snapshot();
@@ -142,9 +143,10 @@ int main() {
         const fs::path legacy_top = legacy / "top-app";
         const fs::path legacy_foreground = legacy / "foreground";
         constexpr pid_t legacy_pid = 441;
-        put(legacy_top / "cgroup.procs", "441\n");
-        put(legacy_top / "tasks", "");
+        // A task-only source must remain discoverable without cgroup.procs.
+        put(legacy_top / "tasks", "441");
         put(legacy_top / "cpu.uclamp.min", "0.00");
+        put(legacy_top / "cpu.uclamp.max", "1024");
         put(legacy_foreground / "tasks", "441\n");
         put(legacy_proc / "441/cmdline", std::string("com.example.androidgame\0", 25));
         put(legacy_proc / "441/status",

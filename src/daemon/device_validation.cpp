@@ -304,12 +304,29 @@ std::string profile_path_token(const std::string& path, const std::string& root,
 }
 const char* capability_state_name(NodeCapabilityState state) noexcept {
     switch (state) {
-        case NodeCapabilityState::Available: return "AVAILABLE";
+        case NodeCapabilityState::Discovered: return "DISCOVERED";
         case NodeCapabilityState::Readable: return "READABLE";
-        case NodeCapabilityState::Writable: return "WRITABLE";
+        case NodeCapabilityState::AccessChecked: return "ACCESS_CHECKED";
         case NodeCapabilityState::SemanticsVerified: return "SEMANTICS_VERIFIED";
         case NodeCapabilityState::ConstraintsVerified: return "CONSTRAINTS_VERIFIED";
         case NodeCapabilityState::MutationEligible: return "MUTATION_ELIGIBLE";
+    }
+    return "UNKNOWN";
+}
+const char* rejection_code_name(NodeRejectionReason reason) noexcept {
+    switch (reason) {
+        case NodeRejectionReason::None: return "NONE";
+        case NodeRejectionReason::EaccesSelinux: return "EACCES_SELINUX";
+        case NodeRejectionReason::NodeMissing: return "ENOENT";
+        case NodeRejectionReason::FormatMismatch: return "FORMAT_MISMATCH";
+        case NodeRejectionReason::BaselineCaptureFailed: return "BASELINE_CAPTURE_FAILED";
+        case NodeRejectionReason::BaselineNotCaptured: return "BASELINE_NOT_CAPTURED";
+        case NodeRejectionReason::ReadbackMismatch: return "READBACK_MISMATCH";
+        case NodeRejectionReason::PermissionDenied: return "PERMISSION_DENIED";
+        case NodeRejectionReason::SemanticsUnverified: return "SEMANTICS_UNVERIFIED";
+        case NodeRejectionReason::ConstraintsUnverified: return "CONSTRAINTS_UNVERIFIED";
+        case NodeRejectionReason::AmbiguousTarget: return "AMBIGUOUS_TARGET";
+        case NodeRejectionReason::IoError: return "IO_ERROR";
     }
     return "UNKNOWN";
 }
@@ -408,7 +425,8 @@ std::string serialize_device_profile(const DeviceProfileSnapshot& p) {
             << ",\"accepted_values\":\"" << json_escape(x.accepted_values) << '"'
             << ",\"constraints\":\"" << json_escape(x.constraints) << '"'
             << ",\"evidence\":\"" << json_escape(x.evidence) << '"'
-            << ",\"rejection_reason\":\"" << json_escape(x.rejection_reason) << "\"}";
+            << ",\"rejection_reason\":\"" << json_escape(x.rejection_reason) << "\""
+            << ",\"rejection_code\":\"" << rejection_code_name(x.rejection_code) << "\"}";
     }
     out << "],\"memory_telemetry_available\":" << (p.memory_telemetry_available ? "true" : "false")
         << ",\"cgroup_v2_available\":" << (p.cgroup_v2_available ? "true" : "false")

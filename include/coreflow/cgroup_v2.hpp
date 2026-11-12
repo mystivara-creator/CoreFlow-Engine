@@ -6,6 +6,7 @@
  */
 #pragma once
 #include "types.hpp"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -19,12 +20,13 @@ enum class ControllerPriority : uint8_t;
 class CgroupV2Controller {
 public:
     explicit CgroupV2Controller(CentralMutationCoordinator& coordinator,
-        std::string_view root_path = "/sys/fs/cgroup",
+        std::string_view root_path = {},
         std::string_view proc_root = "/proc");
     ~CgroupV2Controller();
     CgroupV2Controller(const CgroupV2Controller&) = delete;
     CgroupV2Controller& operator=(const CgroupV2Controller&) = delete;
     [[nodiscard]] bool is_supported() const noexcept;
+    [[nodiscard]] bool uses_legacy_tasks() const noexcept { return legacy_tasks_; }
     [[nodiscard]] std::string get_cgroup_path(CgroupTarget target) const;
     bool migrate_task(pid_t tid, CgroupTarget target);
     bool migrate_thread(pid_t tid, pid_t expected_tgid,
@@ -33,6 +35,8 @@ public:
     bool restore_all_migrated_threads() noexcept;
     [[nodiscard]] bool get_thread_identity(pid_t tid, pid_t& tgid,
                                             uint64_t& start_time_ticks) const noexcept;
+    [[nodiscard]] bool is_task_in_target(pid_t tid, CgroupTarget target) const noexcept;
+    [[nodiscard]] bool is_task_in_hierarchy(pid_t tid) const noexcept;
     [[nodiscard]] size_t pending_thread_migrations() const noexcept;
     bool set_cpuset(CgroupTarget target, std::string_view cpus);
     bool set_cpu_weight(CgroupTarget target, uint32_t weight);
@@ -56,6 +60,9 @@ private:
     std::vector<ThreadMigration> thread_migrations_;
     bool supported_{false};
     bool legacy_tasks_{false};
+    std::array<std::string, 4> target_relative_paths_{};
+    std::array<bool, 4> target_available_{};
+    bool explicit_root_{false};
     bool write_node(const std::string& path, std::string_view value);
     [[nodiscard]] std::string read_node(const std::string& path) const;
     bool acquire_lease_locked();

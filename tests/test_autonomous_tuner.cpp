@@ -43,8 +43,8 @@ int main() {
 
     const fs::path sys_root = root / "sys";
     const fs::path proc_root = root / "proc";
-    const fs::path sda_q = sys_root / "block/sda/queue";
-    const fs::path zram_q = sys_root / "block/zram0/queue";
+    const fs::path sda_q = sys_root / "class/block/sda/queue";
+    const fs::path zram_q = sys_root / "class/block/zram0/queue";
 
     put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
     put(sda_q / "read_ahead_kb", "128");
@@ -456,7 +456,7 @@ int main() {
     tuner.reset();
 
     // 9. Section 13.1: Resource Permission Classification (VerifiedConstraints vs WritableButUnsafe vs UnknownSemantic)
-    put(sys_root / "block/custom0/queue/scheduler", "mystery_token");
+    put(sys_root / "class/block/custom0/queue/scheduler", "mystery_token");
     tuner.discover(sys_root.string(), proc_root.string());
     bool found_sda_verified = false;
     bool found_zram_unsafe = false;
@@ -1364,7 +1364,7 @@ int main() {
     coordinator.reset();
     const fs::path teardown_sys = root / "teardown_sys";
     const fs::path teardown_proc = root / "teardown_proc";
-    const fs::path teardown_queue = teardown_sys / "block/sdb/queue";
+    const fs::path teardown_queue = teardown_sys / "class/block/sdb/queue";
     put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
     put(teardown_queue / "read_ahead_kb", "128");
     put(teardown_queue / "nr_requests", "64");
@@ -1521,7 +1521,7 @@ int main() {
 
     const fs::path preflight_sys = root / "preflight-sys";
     const fs::path preflight_proc = root / "preflight-proc";
-    const fs::path preflight_queue = preflight_sys / "block/sda/queue";
+    const fs::path preflight_queue = preflight_sys / "class/block/sda/queue";
     put(preflight_queue / "scheduler", "[none] mq-deadline");
     put(preflight_queue / "read_ahead_kb", "128");
     put(preflight_queue / "nr_requests", "64");

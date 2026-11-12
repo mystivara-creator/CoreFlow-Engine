@@ -810,51 +810,60 @@ void VulkanController::discover_gpu_kernel_surface(const std::string& root_overr
     GpuKernelSurface surf{};
     const std::string prefix = root_override.empty() ? "" : root_override;
 
-    // 1. Probe Qualcomm Adreno KGSL (/sys/class/kgsl/kgsl-3d0)
-    const std::string kgsl_dir = prefix + "/sys/class/kgsl/kgsl-3d0";
-    if (path_exists(kgsl_dir)) {
-        surf.available = true;
-        surf.vendor = GpuVendor::QualcommAdreno;
-        const std::string gpu_model = read_first_line(kgsl_dir + "/gpu_model");
-        surf.vendor_label = gpu_model.empty()
-            ? "Qualcomm Adreno (KGSL)"
-            : "Qualcomm " + gpu_model + " (KGSL)";
-        surf.sysfs_root = kgsl_dir;
+    // 1. Probe every dynamically enumerated KGSL class device. The class
+    // directory is a discovery root; no device instance name is assumed.
+    const std::string kgsl_root = prefix + "/sys/class/kgsl";
+    if (path_exists(kgsl_root)) {
+        std::error_code kgsl_ec;
+        for (fs::directory_iterator it(kgsl_root, fs::directory_options::skip_permission_denied, kgsl_ec), end;
+             !kgsl_ec && it != end; it.increment(kgsl_ec)) {
+            const std::string kgsl_dir = it->path().string();
+            const std::string gpu_model = read_first_line(kgsl_dir + "/gpu_model");
+            const std::string gpu_clock_path = kgsl_dir + "/gpuclk";
+            const std::string maximum_clock_path = kgsl_dir + "/max_gpuclk";
+            if (gpu_model.empty() && !path_exists(gpu_clock_path) && !path_exists(maximum_clock_path)) continue;
 
-        const std::string gov_path = kgsl_dir + "/devfreq/governor";
-        if (path_exists(gov_path)) {
-            surf.active_governor = read_first_line(gov_path);
-            surf.baseline_governor = surf.active_governor;
-        }
-        const uint32_t clk_hz = read_uint32_node(kgsl_dir + "/gpuclk", 0);
-        const uint32_t max_hz = read_uint32_node(kgsl_dir + "/max_gpuclk", 0);
-        surf.current_freq_mhz = clk_hz > 1000000U ? clk_hz / 1000000U : clk_hz / 1000U;
-        surf.max_freq_mhz = max_hz > 1000000U ? max_hz / 1000000U : max_hz / 1000U;
+            surf.available = true;
+            surf.vendor = GpuVendor::QualcommAdreno;
+            surf.vendor_label = gpu_model.empty()
+                ? "Qualcomm Adreno (KGSL)"
+                : "Qualcomm " + gpu_model + " (KGSL)";
+            surf.sysfs_root = kgsl_dir;
 
-        if (path_exists(kgsl_dir + "/devfreq/adrenoboost")) {
-            adrenoboost_node_ = kgsl_dir + "/devfreq/adrenoboost";
-            (void)baseline.capture(adrenoboost_node_);
-            surf.adrenoboost_level = read_uint32_node(adrenoboost_node_, 0);
-        }
-        if (path_exists(kgsl_dir + "/bus_split")) {
-            bus_split_node_ = kgsl_dir + "/bus_split";
-            (void)baseline.capture(bus_split_node_);
-            surf.bus_split_enabled = (read_uint32_node(bus_split_node_, 1) != 0);
-        }
-        if (path_exists(kgsl_dir + "/throttling")) {
-            throttling_node_ = kgsl_dir + "/throttling";
-            (void)baseline.capture(throttling_node_);
-            surf.throttling_enabled = (read_uint32_node(throttling_node_, 1) != 0);
-        }
+            const std::string gov_path = kgsl_dir + "/devfreq/governor";
+            if (path_exists(gov_path)) {
+                surf.active_governor = read_first_line(gov_path);
+                surf.baseline_governor = surf.active_governor;
+            }
+            const uint32_t clk_hz = read_uint32_node(gpu_clock_path, 0);
+            const uint32_t max_hz = read_uint32_node(maximum_clock_path, 0);
+            surf.current_freq_mhz = clk_hz > 1000000U ? clk_hz / 1000000U : clk_hz / 1000U;
+            surf.max_freq_mhz = max_hz > 1000000U ? max_hz / 1000000U : max_hz / 1000U;
 
-        if (snap_.vendor == GpuVendor::Unknown) {
-            snap_.vendor = GpuVendor::QualcommAdreno;
+            const std::string boost_node = kgsl_dir + "/devfreq/adrenoboost";
+            if (path_exists(boost_node)) {
+                adrenoboost_node_ = boost_node;
+                (void)baseline.capture(adrenoboost_node_);
+                surf.adrenoboost_level = read_uint32_node(adrenoboost_node_, 0);
+            }
+            const std::string split_node = kgsl_dir + "/bus_split";
+            if (path_exists(split_node)) {
+                bus_split_node_ = split_node;
+                (void)baseline.capture(bus_split_node_);
+                surf.bus_split_enabled = (read_uint32_node(bus_split_node_, 1) != 0);
+            }
+            const std::string throttle_node = kgsl_dir + "/throttling";
+            if (path_exists(throttle_node)) {
+                throttling_node_ = throttle_node;
+                (void)baseline.capture(throttling_node_);
+                surf.throttling_enabled = (read_uint32_node(throttling_node_, 1) != 0);
+            }
+
+            if (snap_.vendor == GpuVendor::Unknown) snap_.vendor = GpuVendor::QualcommAdreno;
+            if (!snap_.vulkan_available && !gpu_model.empty()) snap_.device_name = gpu_model;
+            snap_.gpu_surface = surf;
+            return;
         }
-        if (!snap_.vulkan_available && !gpu_model.empty()) {
-            snap_.device_name = gpu_model;
-        }
-        snap_.gpu_surface = surf;
-        return;
     }
 
     // 2. Probe Universal Devfreq GPU domains (ARM Mali / Immortalis, Samsung Xclipse, PowerVR, Panfrost)

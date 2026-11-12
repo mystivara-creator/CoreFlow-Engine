@@ -1147,12 +1147,41 @@ void AutonomousTuner::load_persisted_stats() {
     update_ucb_scores();
 }
 
+std::string AutonomousTuner::resolve_vm_node_path(std::string_view semantic_id) const {
+    if (device_profile_) {
+        const auto found = std::find_if(device_profile_->node_capabilities.begin(),
+            device_profile_->node_capabilities.end(), [&](const NodeCapability& node) {
+                return node.semantic_id == semantic_id && node.domain == HardwareDomain::Memory &&
+                       node.source == ProfileSource::Procfs;
+            });
+        if (found != device_profile_->node_capabilities.end()) return found->path;
+    }
+
+    // Compatibility path for standalone/tests without a pinned CDDP profile:
+    // enumerate the VM virtual table and match the standardized ABI name.
+    const std::string leaf = semantic_id == "vm.page_cluster" ? "page-cluster" :
+        semantic_id == "vm.vfs_cache_pressure" ? "vfs_cache_pressure" : std::string{};
+    if (leaf.empty()) return {};
+    const fs::path root = fs::path(proc_root_) / "sys/vm";
+    std::error_code ec;
+    for (fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (it->path().filename() == leaf) {
+            std::error_code type_ec;
+            const auto status = it->symlink_status(type_ec);
+            if (!type_ec && !fs::is_symlink(status) && fs::is_regular_file(status))
+                return it->path().string();
+        }
+    }
+    return {};
+}
+
 void AutonomousTuner::classify_discovered_resources() {
     discovered_resources_.clear();
     std::error_code ec;
 
     // 1. Classify all block devices (both physical and virtual/unsafe)
-    const fs::path block_root = fs::path(sys_root_) / "block";
+    const fs::path block_root = fs::path(sys_root_) / "class/block";
     for (fs::directory_iterator it(block_root, fs::directory_options::skip_permission_denied, ec), end;
          !ec && it != end && discovered_resources_.size() < 64;
          it.increment(ec)) {
@@ -1302,8 +1331,9 @@ void AutonomousTuner::classify_discovered_resources() {
              std::tuple{"page-cluster", "log2_pages", "[0..3] requires active zram"},
              std::tuple{"vfs_cache_pressure", "percentage", "[50..150] requires active zram"},
          }) {
-        const std::string p = proc_root_ + "/sys/vm/" + leaf;
-        if (!fs::exists(p, ec) || ec) continue;
+        const std::string semantic = std::string_view(leaf) == "page-cluster" ? "vm.page_cluster" : "vm.vfs_cache_pressure";
+        const std::string p = resolve_vm_node_path(semantic);
+        if (p.empty() || !fs::exists(p, ec) || ec) continue;
         uint64_t parsed = 0;
         const std::string raw = read_first_line(p);
         const bool valid_num = parse_u64(raw, parsed);
@@ -1356,7 +1386,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     cpufreq_governor_dirs_.clear();
     zram_active_ = check_zram_swap_active(proc_root_, sys_root_);
 
-    const fs::path block_root = fs::path(sys_root_) / "block";
+    const fs::path block_root = fs::path(sys_root_) / "class/block";
     std::error_code ec;
     for (fs::directory_iterator it(block_root, fs::directory_options::skip_permission_denied, ec), end;
          !ec && it != end && block_queues_.size() < 8;
@@ -1483,8 +1513,10 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     std::sort(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end());
 
     // Capture VM baseline nodes if accessible
-    (void)store.capture(proc_root_ + "/sys/vm/page-cluster");
-    (void)store.capture(proc_root_ + "/sys/vm/vfs_cache_pressure");
+    const auto page_cluster_path = resolve_vm_node_path("vm.page_cluster");
+    const auto cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
+    if (!page_cluster_path.empty()) (void)store.capture(page_cluster_path);
+    if (!cache_pressure_path.empty()) (void)store.capture(cache_pressure_path);
 
     classify_discovered_resources();
     load_persisted_stats();
@@ -2898,9 +2930,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     // Priority B: Memory PSI Contention -> VM Subsystem Relief Transaction (requires active zram swap)
     if (mem_bottleneck && is_candidate_eligible_for_context("vm.zram_latency_relief", current_workload_, thermal_bucket)) {
+        const auto page_cluster_path = resolve_vm_node_path("vm.page_cluster");
+        const auto cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
+        if (page_cluster_path.empty() || cache_pressure_path.empty()) return snapshot();
         std::vector<MutationStep> steps{
-            {proc_root_ + "/sys/vm/page-cluster", "0", "Anchor (Required-before)", StepRelation::RequiredAnchor},
-            {proc_root_ + "/sys/vm/vfs_cache_pressure", "80", "Coupled-with", StepRelation::RequiredDependent},
+            {page_cluster_path, "0", "Anchor (Required-before)", StepRelation::RequiredAnchor},
+            {cache_pressure_path, "80", "Coupled-with", StepRelation::RequiredDependent},
         };
         (void)apply_transaction(
             "vm.zram_latency_relief",
@@ -3008,8 +3043,10 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.block_queues = block_queues_;
     out.candidates = candidates_;
     out.discovered_resources = discovered_resources_;
-    out.vm_page_cluster = read_first_line(proc_root_ + "/sys/vm/page-cluster");
-    out.vm_vfs_cache_pressure = read_first_line(proc_root_ + "/sys/vm/vfs_cache_pressure");
+    const auto page_cluster_path = resolve_vm_node_path("vm.page_cluster");
+    const auto cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
+    if (!page_cluster_path.empty()) out.vm_page_cluster = read_first_line(page_cluster_path);
+    if (!cache_pressure_path.empty()) out.vm_vfs_cache_pressure = read_first_line(cache_pressure_path);
     return out;
 }
 

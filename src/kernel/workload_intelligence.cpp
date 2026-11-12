@@ -458,34 +458,39 @@ WorkloadFeatureSnapshot SysfsProcfsWorkloadSource::sample(uint64_t start,uint64_
 GpuUtilizationSampler::GpuUtilizationSampler(std::string root) noexcept:sys_root_(std::move(root)){}
 bool GpuUtilizationSampler::start() noexcept {
  stop();
- struct CandidatePath{const char* suffix;Format format;const char* label;};
- // Prefer interval-capable KGSL counters over static compatibility percentages.
+ // KGSL nodes are resolved below the class discovery root. The device
+ // instance name is never assumed; ABI filenames identify the counter type.
+ struct CandidatePath { const char* suffix; Format format; const char* label; };
  static constexpr CandidatePath candidates[]{
-  {"class/kgsl/kgsl-3d0/gpubusy",Format::KgslIntervalSnapshot,"kgsl/gpubusy"},
-  {"class/kgsl/kgsl-3d0/gpu_busy_percent",Format::Percent,"kgsl/gpu_busy_percent"},
-  {"class/kgsl/kgsl-3d0/devfreq/gpu_load",Format::Percent,"kgsl/devfreq/gpu_load"},
-  {"class/devfreq/gpu/load",Format::Percent,"devfreq/gpu/load"},
-  {"class/drm/card0/device/gpu_busy_percent",Format::Percent,"drm/gpu_busy_percent"},
-  {"class/misc/mali0/device/utilization",Format::Percent,"mali/utilization"},
-  {"class/misc/mali0/device/utilisation",Format::Percent,"mali/utilisation"},
-  {"devices/platform/mali/utilization",Format::Percent,"platform/mali/utilization"},
-  {"devices/platform/mali.0/utilization",Format::Percent,"platform/mali.0/utilization"},
-  {"kernel/gpu/gpu_busy",Format::Percent,"kernel/gpu_busy"},
-  {"devices/platform/gpusysfs/gpu_busy",Format::Percent,"platform/gpusysfs/gpu_busy"}
+  {"gpubusy",Format::KgslIntervalSnapshot,"kgsl/gpubusy"},
+  {"gpu_busy_percent",Format::Percent,"kgsl/gpu_busy_percent"},
+  {"devfreq/gpu_load",Format::Percent,"kgsl/devfreq/gpu_load"},
+  {"gpu_busy_percentage",Format::Percent,"kgsl/gpu_busy_percentage"}
  };
- for(const auto& candidate:candidates){
-  const std::string path=sys_root_+"/"+candidate.suffix;struct stat st{};
-  if(::stat(path.c_str(),&st)!=0||!S_ISREG(st.st_mode)||::access(path.c_str(),R_OK)!=0)continue;
-  double percent=0;uint64_t a=0,b=0;
-  const bool valid=candidate.format==Format::Percent?parse_scalar_percent(path,percent):parse_pair(path,a,b);
-  if(!valid)continue;
-  if(candidate.format==Format::KgslIntervalSnapshot){
-   if((b==0&&a!=0)|| (b!=0&&a>b))continue;
-   // Startup validates the snapshot shape only. The first timed sample must
-   // still be emitted (including an initial (0, 0) power-collapse snapshot).
+ const std::string kgsl_root=sys_root_+"/class/kgsl";
+ DIR* kgsl=::opendir(kgsl_root.c_str());
+ if(kgsl){
+  while(const dirent* entry=::readdir(kgsl)){
+   if(entry->d_name[0]=='.')continue;
+   const std::string device=kgsl_root+"/"+entry->d_name;
+   for(const auto& candidate:candidates){
+    const std::string path=device+"/"+candidate.suffix;struct stat st{};
+    if(::stat(path.c_str(),&st)!=0||!S_ISREG(st.st_mode)||::access(path.c_str(),R_OK)!=0)continue;
+    double percent=0;uint64_t busy=0,total=0;
+    const bool valid=candidate.format==Format::Percent
+      ? parse_scalar_percent(path,percent) : parse_pair(path,busy,total);
+    if(!valid)continue;
+    if(candidate.format==Format::KgslIntervalSnapshot &&
+       ((total==0&&busy!=0)||(total!=0&&busy>total)))continue;
+    path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;
+    break;
+   }
+   if(active_)break;
   }
-  path_=path;source_name_=candidate.label;format_=candidate.format;active_=true;break;
+  ::closedir(kgsl);
  }
+ // Generic devfreq GPU domains are also enumerated dynamically and selected
+ // by their driver/name ABI rather than a device-specific directory.
  if(!active_){
   const std::string directory=sys_root_+"/class/devfreq";DIR* dir=::opendir(directory.c_str());
   if(dir){
@@ -505,18 +510,6 @@ bool GpuUtilizationSampler::start() noexcept {
     }
    }
    ::closedir(dir);
-  }
- }
- // gpu_busy_percentage is deliberately the final KGSL fallback. Some OEM
- // kernels expose a readable but permanently-zero compatibility value.
- if(!active_){
-  const std::string path=sys_root_+"/class/kgsl/kgsl-3d0/gpu_busy_percentage";
-  struct stat st{};
-  if(::stat(path.c_str(),&st)==0&&S_ISREG(st.st_mode)&&::access(path.c_str(),R_OK)==0){
-   double percent=0;
-   if(parse_scalar_percent(path,percent)){
-    path_=path;source_name_="kgsl/gpu_busy_percentage";format_=Format::Percent;active_=true;
-   }
   }
  }
  last_sample_ns_=0;return active_;

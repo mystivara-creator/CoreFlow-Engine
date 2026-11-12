@@ -31,7 +31,7 @@ class ForegroundTaskResolver final {
 public:
     explicit ForegroundTaskResolver(
         CgroupV2Controller& controller,
-        std::string top_app_cgroup = "/sys/fs/cgroup/top-app",
+        std::string top_app_cgroup = {},
         std::string proc_root = "/proc") noexcept;
     ~ForegroundTaskResolver();
 

@@ -4,6 +4,8 @@
  * @license Apache-2.0
  */
 #include "coreflow/device_profiler.hpp"
+#include "coreflow/baseline_store.hpp"
+#include "coreflow/mount_topology.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include <algorithm>
 #include <array>
@@ -33,6 +35,7 @@ std::string trim(std::string value) {
     const size_t last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1U);
 }
+
 bool read_attribute(const fs::path& path, std::string& out, size_t limit = kMaxAttributeBytes) {
     out.clear();
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
@@ -53,6 +56,11 @@ bool read_attribute(const fs::path& path, std::string& out, size_t limit = kMaxA
     (void)::close(fd);
     if (!ok) out.clear();
     return ok && !out.empty();
+}
+std::string read_node_value(const std::string& path) {
+    std::string value;
+    if (!read_attribute(fs::path(path), value, 1024U)) return {};
+    return trim(std::move(value));
 }
 bool parse_u64(std::string_view text, uint64_t& out) noexcept {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) text.remove_prefix(1);
@@ -151,28 +159,48 @@ NodeCapability observe_capability(
     cap.unit = std::move(unit);
     cap.constraints = std::move(constraints);
     cap.evidence = std::move(evidence);
-    if (!cddp_path_exists(path)) { cap.rejection_reason = "node absent"; return cap; }
+    if (!cddp_path_exists(path)) { cap.rejection_reason = "node absent"; cap.rejection_code = NodeRejectionReason::NodeMissing; return cap; }
     cap.state = NodeCapabilityState::Available;
     std::string raw;
     if (!read_attribute(path, raw, 1024U)) {
-        cap.rejection_reason = "node not readable as a bounded regular attribute"; return cap;
+        cap.rejection_reason = "node not readable as a bounded regular attribute"; cap.rejection_code = NodeRejectionReason::IoError; return cap;
     }
     cap.current_value = trim(raw);
     cap.state = NodeCapabilityState::Readable;
     if (!writable_by_mode_and_process(path)) {
-        cap.rejection_reason = "write permission not established by mode and process access"; return cap;
+        cap.rejection_reason = "write permission not established by mode and process access"; cap.rejection_code = NodeRejectionReason::PermissionDenied; return cap;
     }
     cap.state = NodeCapabilityState::Writable;
     if (!semantics_known || cap.semantic_id.empty() || cap.unit.empty()) {
-        cap.rejection_reason = "interface semantics or unit are not verified"; return cap;
+        cap.rejection_reason = "interface semantics or unit are not verified"; cap.rejection_code = NodeRejectionReason::SemanticsUnverified; return cap;
     }
     cap.state = NodeCapabilityState::SemanticsVerified;
     if (!constraints_valid || cap.constraints.empty()) {
-        cap.rejection_reason = "accepted value constraints or preflight are not verified"; return cap;
+        cap.rejection_reason = "accepted value constraints or preflight are not verified"; cap.rejection_code = NodeRejectionReason::ConstraintsUnverified; return cap;
     }
     cap.state = NodeCapabilityState::ConstraintsVerified;
-    if (!eligible) { cap.rejection_reason = "static checks passed but mutation admission was denied"; return cap; }
+    if (!eligible) {
+        cap.rejection_reason = "static checks passed but runtime mutation admission was not granted";
+        cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+        return cap;
+    }
+    auto& baseline = BaselineStore::instance();
+    if (!baseline.capture(path.string())) {
+        cap.rejection_reason = "OEM baseline capture failed during passive discovery";
+        cap.rejection_code = NodeRejectionReason::BaselineCaptureFailed;
+        return cap;
+    }
+    const auto audit = baseline.get_audit_trail();
+    const auto captured = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == path.string() && !node.is_modified && node.factory_value == cap.current_value;
+    });
+    if (captured == audit.end()) {
+        cap.rejection_reason = "baseline is missing, modified, or differs from the observed value";
+        cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+        return cap;
+    }
     cap.state = NodeCapabilityState::MutationEligible;
+    cap.rejection_code = NodeRejectionReason::None;
     return cap;
 }
 bool valid_subset(const std::vector<uint32_t>& subset, const std::vector<uint32_t>& superset) {
@@ -412,25 +440,39 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         snapshot->gpu_domains.push_back(std::move(gpu));
     }
 
-    // KGSL remains visible but observation-only until its vendor ABI is proven.
-    const fs::path kgsl = sys / "class/kgsl/kgsl-3d0";
-    if (cddp_path_exists(kgsl)) {
+    // Vendor GPU classes are enumerated dynamically. Unknown attributes remain
+    // visible as observation-only rather than being guessed as controls.
+    const fs::path kgsl_root = sys / "class/kgsl";
+    for (const auto& kgsl : directory_entries(kgsl_root)) {
         GpuDomainProfile gpu{};
         gpu.device_path = kgsl.string();
-        gpu.driver = "kgsl-observation-only";
+        std::string driver_name;
+        if (read_attribute(kgsl / "name", driver_name, 256U)) driver_name = trim(driver_name);
+        gpu.driver = driver_name.empty() ? kgsl.filename().string() : driver_name;
         snapshot->gpu_domains.push_back(std::move(gpu));
-        for (const char* attr : {"gpuclk", "max_gpuclk", "min_gpuclk", "max_gpu_freq", "min_gpu_freq"}) {
-            const fs::path path = kgsl / attr;
-            if (!cddp_path_exists(path)) continue;
+        std::error_code iter_ec;
+        for (fs::directory_iterator it(kgsl, fs::directory_options::skip_permission_denied, iter_ec), end;
+             !iter_ec && it != end; it.increment(iter_ec)) {
+            std::error_code type_ec;
+            const auto status = it->symlink_status(type_ec);
+            if (type_ec || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
             NodeCapability cap{};
-            cap.path = path.string();
+            cap.path = it->path().string();
             cap.domain = HardwareDomain::Gpu;
             cap.source = ProfileSource::Sysfs;
-            cap.semantic_id = "kgsl.vendor_control.unverified";
-            cap.evidence = "KGSL node observed without portable verified mutation contract";
-            if (read_attribute(path, raw, 256U)) { cap.current_value = trim(raw); cap.state = NodeCapabilityState::Readable; }
-            else cap.state = NodeCapabilityState::Available;
-            cap.rejection_reason = "KGSL control is observation-only in this CDDP generation";
+            cap.semantic_id = "kgsl.vendor_attribute.unverified";
+            cap.evidence = "Discovered through the runtime GPU class directory; vendor ABI is not yet verified";
+            std::string value;
+            if (read_attribute(it->path(), value, 256U)) {
+                cap.current_value = trim(value);
+                cap.state = NodeCapabilityState::Readable;
+                cap.rejection_reason = "vendor-specific control is observation-only until its ABI and constraints are verified";
+                cap.rejection_code = NodeRejectionReason::SemanticsUnverified;
+            } else {
+                cap.state = NodeCapabilityState::Discovered;
+                cap.rejection_reason = "discovered GPU attribute could not be read";
+                cap.rejection_code = NodeRejectionReason::IoError;
+            }
             snapshot->node_capabilities.push_back(std::move(cap));
         }
     }
@@ -467,85 +509,300 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         }
     }
 
-    // P3: discover generic memory and block-I/O controls. Only a small,
-    // ABI-stable allowlist receives semantic/range contracts; arbitrary
-    // writable kernel nodes remain observation-only.
-    const auto scan_scalar = [&](const fs::path& path, HardwareDomain domain,
-                                 ProfileSource source, const char* semantic,
-                                 uint64_t minimum, uint64_t maximum,
-                                 const char* unit) {
+    // Enumerate all VM and block-queue attributes from their subsystem roots.
+    // A small ABI contract map promotes only known scalar interfaces; every
+    // unknown node is still exposed as observation-only inventory.
+    const auto scan_observation = [&](const fs::path& path, HardwareDomain domain,
+                                      ProfileSource source, std::string semantic,
+                                      std::string evidence) {
         ++snapshot->infrastructure_nodes_scanned;
         NodeCapability cap{};
         cap.path = path.string();
         cap.domain = domain;
         cap.source = source;
-        cap.semantic_id = semantic;
-        cap.unit = unit;
-        cap.constraints = std::to_string(minimum) + "<=value<=" + std::to_string(maximum);
-        cap.evidence = "Known Linux VM/block queue ABI; bounded scalar contract; no probe write";
-        if (!cddp_path_exists(path)) {
-            cap.rejection_reason = "node absent";
+        cap.semantic_id = std::move(semantic);
+        cap.evidence = std::move(evidence);
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+            cap.rejection_reason = "node absent or not a regular ABI attribute";
+            cap.rejection_code = NodeRejectionReason::NodeMissing;
             snapshot->node_capabilities.push_back(std::move(cap));
             return;
         }
-        cap.state = NodeCapabilityState::Available;
+        cap.state = NodeCapabilityState::Discovered;
         std::string value;
-        if (!read_attribute(path, value, 256U)) {
-            cap.rejection_reason = "node not readable as bounded regular attribute";
+        if (!read_attribute(path, value, 4096U)) {
+            cap.rejection_reason = "node exists but bounded read failed";
+            cap.rejection_code = NodeRejectionReason::IoError;
             snapshot->node_capabilities.push_back(std::move(cap));
             return;
         }
         cap.current_value = trim(value);
         cap.state = NodeCapabilityState::Readable;
-        uint64_t parsed = 0;
-        const bool numeric = parse_u64(cap.current_value, parsed);
-        if (!writable_by_mode_and_process(path)) {
-            cap.rejection_reason = "write permission not established by mode and process access";
-            snapshot->node_capabilities.push_back(std::move(cap));
-            return;
+        if (writable_by_mode_and_process(path)) {
+            cap.state = NodeCapabilityState::AccessChecked;
+            ++snapshot->infrastructure_nodes_writable;
+            cap.rejection_reason = "access is visible, but mutation remains disabled without a verified ABI contract and baseline";
+            cap.rejection_code = NodeRejectionReason::SemanticsUnverified;
+        } else {
+            cap.rejection_reason = "readable node; write access not established";
+            cap.rejection_code = NodeRejectionReason::PermissionDenied;
         }
-        ++snapshot->infrastructure_nodes_writable;
-        cap.state = NodeCapabilityState::Writable;
-        if (!numeric || parsed < minimum || parsed > maximum) {
-            cap.rejection_reason = "current value violates verified scalar range";
-            snapshot->node_capabilities.push_back(std::move(cap));
-            return;
-        }
-        cap.state = NodeCapabilityState::SemanticsVerified;
-        cap.accepted_values = cap.constraints;
-        cap.state = NodeCapabilityState::ConstraintsVerified;
-        cap.state = NodeCapabilityState::MutationEligible;
         snapshot->node_capabilities.push_back(std::move(cap));
     };
 
-    scan_scalar(proc / "sys/vm/page-cluster", HardwareDomain::Memory,
-                ProfileSource::Procfs, "vm.page_cluster", 0U, 8U, "pages");
-    scan_scalar(proc / "sys/vm/vfs_cache_pressure", HardwareDomain::Memory,
-                ProfileSource::Procfs, "vm.vfs_cache_pressure", 50U, 200U, "ratio");
-    scan_scalar(proc / "sys/vm/dirty_background_ratio", HardwareDomain::Memory,
-                ProfileSource::Procfs, "vm.dirty_background_ratio", 0U, 10U, "percent");
-    scan_scalar(proc / "sys/vm/dirty_ratio", HardwareDomain::Memory,
-                ProfileSource::Procfs, "vm.dirty_ratio", 5U, 20U, "percent");
+    const auto scan_scalar = [&](const fs::path& path, HardwareDomain domain,
+                                 ProfileSource source, std::string semantic,
+                                 uint64_t minimum, uint64_t maximum, std::string unit) {
+        ++snapshot->infrastructure_nodes_scanned;
+        NodeCapability cap{};
+        cap.path = path.string();
+        cap.domain = domain;
+        cap.source = source;
+        cap.semantic_id = std::move(semantic);
+        cap.unit = std::move(unit);
+        cap.constraints = std::to_string(minimum) + "<=value<=" + std::to_string(maximum);
+        cap.accepted_values = cap.constraints;
+        cap.evidence = "Dynamically enumerated subsystem ABI with a bounded scalar contract; mutation remains baseline-gated";
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+            cap.rejection_reason = "node absent or not a regular ABI attribute";
+            cap.rejection_code = NodeRejectionReason::NodeMissing;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::Discovered;
+        std::string value;
+        uint64_t parsed = 0;
+        if (!read_attribute(path, value, 256U)) {
+            cap.rejection_reason = "bounded scalar read failed";
+            cap.rejection_code = NodeRejectionReason::IoError;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.current_value = trim(value);
+        cap.state = NodeCapabilityState::Readable;
+        if (!parse_u64(cap.current_value, parsed)) {
+            cap.rejection_reason = "scalar ABI value is not an unsigned integer";
+            cap.rejection_code = NodeRejectionReason::FormatMismatch;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        if (!writable_by_mode_and_process(path)) {
+            cap.rejection_reason = "readable, but write permission was not established";
+            cap.rejection_code = NodeRejectionReason::PermissionDenied;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::AccessChecked;
+        ++snapshot->infrastructure_nodes_writable;
+        cap.state = NodeCapabilityState::SemanticsVerified;
+        if (parsed < minimum || parsed > maximum) {
+            cap.rejection_reason = "current scalar lies outside the verified subsystem contract";
+            cap.rejection_code = NodeRejectionReason::ConstraintsUnverified;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::ConstraintsVerified;
+        auto& baseline = BaselineStore::instance();
+        if (!baseline.capture(path.string())) {
+            cap.rejection_reason = "OEM baseline capture failed during passive discovery";
+            cap.rejection_code = NodeRejectionReason::BaselineCaptureFailed;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        const auto audit = baseline.get_audit_trail();
+        const auto captured = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == path.string() && !node.is_modified && node.factory_value == cap.current_value;
+        });
+        const bool retained_owner = baseline.owns_retained_performance_value(
+            path.string(), cap.current_value);
+        if (captured == audit.end() && !retained_owner) {
+            cap.rejection_reason = "OEM baseline is modified or no persisted CoreFlow retained-value ownership proof exists";
+            cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+        } else {
+            cap.state = NodeCapabilityState::MutationEligible;
+            cap.rejection_code = NodeRejectionReason::None;
+        }
+        snapshot->node_capabilities.push_back(std::move(cap));
+    };
 
-    for (const auto& block : directory_entries(sys / "block")) {
-        const std::string device = block.filename().string();
-        if (device.empty()) continue;
+    const fs::path vm_root = proc / "sys/vm";
+    std::error_code vm_ec;
+    for (fs::directory_iterator it(vm_root, fs::directory_options::skip_permission_denied, vm_ec), end;
+         !vm_ec && it != end; it.increment(vm_ec)) {
+        std::error_code type_ec;
+        const auto status = it->symlink_status(type_ec);
+        if (type_ec || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
+        const std::string name = it->path().filename().string();
+        if (name == "page-cluster")
+            scan_scalar(it->path(), HardwareDomain::Memory, ProfileSource::Procfs, "vm.page_cluster", 0U, 8U, "pages");
+        else if (name == "vfs_cache_pressure")
+            scan_scalar(it->path(), HardwareDomain::Memory, ProfileSource::Procfs, "vm.vfs_cache_pressure", 50U, 200U, "ratio");
+        else if (name == "dirty_background_ratio")
+            scan_scalar(it->path(), HardwareDomain::Memory, ProfileSource::Procfs, "vm.dirty_background_ratio", 0U, 10U, "percent");
+        else if (name == "dirty_ratio")
+            scan_scalar(it->path(), HardwareDomain::Memory, ProfileSource::Procfs, "vm.dirty_ratio", 5U, 20U, "percent");
+        else
+            scan_observation(it->path(), HardwareDomain::Memory, ProfileSource::Procfs,
+                "vm.tunable.unverified", "Dynamically enumerated VM sysctl; no portable mutation range contract");
+    }
+
+    const fs::path block_root = sys / "class/block";
+    for (const auto& block : directory_entries(block_root)) {
         const fs::path queue = block / "queue";
-        scan_scalar(queue / "read_ahead_kb", HardwareDomain::Storage,
-                    ProfileSource::Sysfs, "block.queue.read_ahead_kb", 32U, 512U, "KiB");
+        std::error_code queue_ec;
+        for (fs::directory_iterator it(queue, fs::directory_options::skip_permission_denied, queue_ec), end;
+             !queue_ec && it != end; it.increment(queue_ec)) {
+            std::error_code type_ec;
+            const auto status = it->symlink_status(type_ec);
+            if (type_ec || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
+            const std::string name = it->path().filename().string();
+            if (name == "read_ahead_kb")
+                scan_scalar(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
+                    "block.queue.read_ahead_kb", 32U, 512U, "KiB");
+            else
+                scan_observation(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
+                    "block.queue.tunable.unverified", "Dynamically enumerated block queue ABI; vendor range not assumed");
+        }
     }
 
     if (read_attribute(proc / "meminfo", raw)) {
         snapshot->memory_telemetry_available = raw.find("MemTotal:") != std::string::npos &&
             raw.find("MemAvailable:") != std::string::npos;
     }
-    std::string mountinfo;
-    const bool mountinfo_read = read_attribute(proc / "self/mountinfo", mountinfo);
-    snapshot->cgroup_v2_available = cddp_path_exists(sys / "fs/cgroup/cgroup.controllers") ||
-        (mountinfo_read && mountinfo.find(" - cgroup2 ") != std::string::npos);
-    snapshot->uclamp_interface_available = cddp_path_exists(sys / "fs/cgroup/cpu.uclamp.min") ||
-        cddp_path_exists(sys / "fs/cgroup/top-app/cpu.uclamp.min") ||
-        cddp_path_exists(sys / "fs/cgroup/top-app/cpu.uclamp.max");
+    // A single topology source resolves cgroup mounts, process-relative
+    // hierarchy roots, and ABI-bearing groups. Discovery remains read-only.
+    MountTopologyResolver mount_topology(proc_root_);
+    const auto cgroup_mounts = mount_topology.discover_cgroup_mounts();
+    const auto cgroup_groups = mount_topology.discover_cgroup_groups(4096U, 8U);
+    const auto foreground_uclamp = mount_topology.resolve_foreground_uclamp_group();
+    bool foreground_uclamp_baseline_ready = false;
+    if (foreground_uclamp) {
+        auto& baseline = BaselineStore::instance();
+        const auto& min_path = foreground_uclamp->uclamp_min_path;
+        const auto& max_path = foreground_uclamp->uclamp_max_path;
+        const bool min_captured = !min_path.empty() && baseline.capture(min_path);
+        const bool max_captured = !max_path.empty() && baseline.capture(max_path);
+        const auto audit = baseline.get_audit_trail();
+        const auto baseline_matches = [&](const std::string& path) {
+            const auto node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& item) {
+                return item.path == path;
+            });
+            if (node != audit.end() && !node->is_modified &&
+                node->factory_value == read_node_value(path)) return true;
+            return baseline.owns_retained_performance_value(path, read_node_value(path));
+        };
+        foreground_uclamp_baseline_ready = min_captured && max_captured &&
+            baseline_matches(min_path) && baseline_matches(max_path);
+    }
+    snapshot->cgroup_v2_available = std::any_of(cgroup_mounts.begin(), cgroup_mounts.end(),
+        [](const CgroupMount& mount) { return mount.filesystem == CgroupFilesystem::V2; });
+    snapshot->uclamp_interface_available = std::any_of(cgroup_groups.begin(), cgroup_groups.end(),
+        [](const CgroupGroupCapability& group) { return group.has_uclamp_min && group.has_uclamp_max; });
+
+    const auto append_cgroup_node = [&](const std::string& path, std::string semantic,
+                                        std::string unit, HardwareDomain domain,
+                                        bool verify_uclamp, bool verify_boolean,
+                                        bool mutation_target = false) {
+        NodeCapability cap{};
+        cap.path = path;
+        cap.domain = domain;
+        cap.source = ProfileSource::KernelApi;
+        cap.semantic_id = std::move(semantic);
+        cap.unit = std::move(unit);
+        cap.state = NodeCapabilityState::Discovered;
+        cap.evidence = "Runtime mount topology plus Linux cgroup control-file ABI discovery; passive read-only probe";
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) != 0) {
+            cap.rejection_reason = "discovered ABI node disappeared before inspection";
+            cap.rejection_code = NodeRejectionReason::NodeMissing;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        std::string value;
+        if (!read_attribute(path, value, 1024U)) {
+            cap.rejection_reason = "ABI node exists but bounded read failed";
+            cap.rejection_code = (errno == EACCES && ::geteuid() == 0 && (st.st_mode & S_IWUSR) != 0)
+                ? NodeRejectionReason::EaccesSelinux : NodeRejectionReason::IoError;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.current_value = trim(value);
+        cap.state = NodeCapabilityState::Readable;
+        if (writable_by_mode_and_process(path)) {
+            cap.state = NodeCapabilityState::AccessChecked;
+            ++snapshot->infrastructure_nodes_writable;
+        } else {
+            cap.rejection_reason = "readable, but write access was not established; no write probe was attempted";
+            cap.rejection_code = NodeRejectionReason::PermissionDenied;
+        }
+        if (verify_uclamp) {
+            if (cap.state != NodeCapabilityState::AccessChecked) {
+                snapshot->node_capabilities.push_back(std::move(cap));
+                return;
+            }
+            const auto parsed = MountTopologyResolver::parse_uclamp_value(cap.current_value);
+            if (!parsed) {
+                cap.rejection_reason = "baseline node format is not a supported UClamp scalar";
+                cap.rejection_code = NodeRejectionReason::FormatMismatch;
+            } else {
+                cap.state = NodeCapabilityState::SemanticsVerified;
+                cap.constraints = parsed->encoding == UclampEncoding::Percent
+                    ? "0.00<=percent<=100.00 or max" : "0<=capacity<=1024 or max";
+                cap.state = NodeCapabilityState::ConstraintsVerified;
+                cap.accepted_values = cap.constraints;
+                if (mutation_target && foreground_uclamp_baseline_ready) {
+                    cap.state = NodeCapabilityState::MutationEligible;
+                    cap.rejection_reason.clear();
+                    cap.rejection_code = NodeRejectionReason::None;
+                } else {
+                    cap.rejection_reason = mutation_target
+                        ? "OEM UClamp baseline pair was not captured or retained ownership was not proven"
+                        : "ABI is valid, but this group is not the uniquely resolved foreground hierarchy";
+                    cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+                }
+            }
+        } else if (verify_boolean) {
+            if (cap.state != NodeCapabilityState::AccessChecked) {
+                snapshot->node_capabilities.push_back(std::move(cap));
+                return;
+            }
+            const auto lower = cap.current_value;
+            if (lower == "0" || lower == "1" || lower == "Enabled" || lower == "Disabled" ||
+                lower == "enabled" || lower == "disabled") {
+                cap.state = NodeCapabilityState::SemanticsVerified;
+                cap.constraints = "boolean ABI values only";
+                cap.accepted_values = "0|1|Enabled|Disabled";
+                cap.state = NodeCapabilityState::ConstraintsVerified;
+                cap.rejection_reason = "membership/control interface requires controller-specific ownership and task identity";
+                cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+            } else {
+                cap.rejection_reason = "unrecognized ABI value representation";
+                cap.rejection_code = NodeRejectionReason::FormatMismatch;
+            }
+        }
+        snapshot->node_capabilities.push_back(std::move(cap));
+    };
+
+    for (const auto& group : cgroup_groups) {
+        const bool foreground_target = foreground_uclamp &&
+            foreground_uclamp->mount.mount_id == group.mount.mount_id &&
+            foreground_uclamp->absolute_path == group.absolute_path;
+        if (group.has_uclamp_min)
+            append_cgroup_node(group.uclamp_min_path, "cgroup.uclamp.min", "capacity", HardwareDomain::Cgroup, true, false, foreground_target);
+        if (group.has_uclamp_max)
+            append_cgroup_node(group.uclamp_max_path, "cgroup.uclamp.max", "capacity", HardwareDomain::Cgroup, true, false, foreground_target);
+        if (!group.uclamp_latency_sensitive_path.empty())
+            append_cgroup_node(group.uclamp_latency_sensitive_path, "cgroup.uclamp.latency_sensitive", "boolean", HardwareDomain::Cgroup, false, true);
+        const std::string member_name = MountTopologyResolver::membership_name(group.membership);
+        if (group.membership != CgroupMembershipInterface::None)
+            append_cgroup_node(group.absolute_path + "/" + member_name,
+                "cgroup.membership.thread", "tid", HardwareDomain::Cgroup, false, false);
+        if (group.has_process_list)
+            append_cgroup_node(group.absolute_path + "/cgroup.procs",
+                "cgroup.membership.process", "pid", HardwareDomain::Cgroup, false, false);
+    }
     snapshot->fingerprint = make_fingerprint(*snapshot);
     return snapshot;
 }
