@@ -419,6 +419,7 @@ std::string serialize_device_profile(const DeviceProfileSnapshot& p) {
             << ",\"domain\":\"" << hardware_domain_name(x.domain) << '"'
             << ",\"source\":\"" << profile_source_name(x.source) << '"'
             << ",\"state\":\"" << capability_state_name(x.state) << '"'
+            << ",\"classification\":\"" << kernel_node_classification_name(x.classification) << '"'
             << ",\"semantic_id\":\"" << json_escape(x.semantic_id) << '"'
             << ",\"unit\":\"" << json_escape(x.unit) << '"'
             << ",\"current_value\":\"" << json_escape(x.current_value) << '"'

@@ -57,6 +57,8 @@ int main() {
     }
     assert(cache_cap && cache_cap->mutation_eligible());
     assert(io_cap && io_cap->mutation_eligible());
+    assert(cache_cap->classification == KernelNodeClassification::RuntimeTunable);
+    assert(io_cap->classification == KernelNodeClassification::RuntimeTunable);
 
     CentralMutationCoordinator coordinator;
     {

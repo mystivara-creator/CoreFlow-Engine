@@ -559,11 +559,14 @@ private:
     PolicyDecision frequency_policy_decision_{};
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
+    std::vector<NodeCapability> kernel_node_capabilities_;
     std::vector<CandidateStats> candidates_;
     std::vector<DiscoveredResourceMetadata> discovered_resources_;
     bool zram_active_{false};
 
     [[nodiscard]] std::string resolve_vm_node_path(std::string_view semantic_id) const;
+    [[nodiscard]] bool has_runtime_node(std::string_view path) const noexcept;
+    [[nodiscard]] bool candidate_contract_eligible(std::string_view candidate_id) const noexcept;
 
     bool transaction_active_{false};
     bool observing_{false};

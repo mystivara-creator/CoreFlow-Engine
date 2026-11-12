@@ -107,6 +107,26 @@ std::string active_bracketed_token(std::string_view text) {
         return std::string(text.substr(open + 1U, close - open - 1U));
     return std::string(text);
 }
+bool is_physical_block_device(std::string_view name) noexcept {
+    return CandidateSelector::is_physical_block_device(name) &&
+           name.rfind("md", 0) != 0 && name.rfind("loop", 0) != 0 &&
+           name.rfind("ram", 0) != 0 && name.rfind("zram", 0) != 0 &&
+           name.rfind("dm-", 0) != 0 && name.rfind("nbd", 0) != 0 &&
+           name.rfind("ublkb", 0) != 0 && name.rfind("zd", 0) != 0;
+}
+KernelNodeClassification classification_for_leaf(std::string_view leaf) noexcept {
+    if (leaf == "stable_writes") return KernelNodeClassification::TestOnly;
+    if (leaf == "write_cache") return KernelNodeClassification::Protected;
+    return KernelNodeClassification::ObservationOnly;
+}
+std::string block_observation_semantic(std::string_view leaf) {
+    if (leaf == "max_segment_size") return "block.queue.hardware.max_segment_size";
+    if (leaf == "virt_boundary_mask") return "block.queue.hardware.virt_boundary_mask";
+    if (leaf == "zone_append_max_bytes") return "block.queue.hardware.zone_append_max_bytes";
+    if (leaf == "stable_writes") return "block.queue.test.stable_writes";
+    if (leaf == "write_cache") return "block.queue.protected.write_cache";
+    return "block.queue.attribute.observation_only";
+}
 bool parse_frequency_table(std::string_view text, std::vector<uint64_t>& out) {
     out.clear();
     std::istringstream input{std::string(text)};
@@ -191,7 +211,18 @@ std::string make_fingerprint(const DeviceProfileSnapshot& profile) {
     }
     for (const auto& cap : profile.node_capabilities) {
         data << "cap:" << cap.path << ':' << cap.semantic_id << ':'
-             << static_cast<unsigned>(cap.state) << ':' << cap.unit << ':' << cap.constraints << '|';
+             << static_cast<unsigned>(cap.state) << ':'
+             << static_cast<unsigned>(cap.classification) << ':'
+             << cap.unit << ':' << cap.constraints << ':';
+        // Queue attributes outside the runtime-mutability contract describe
+        // the device/ABI surface itself. Their observed values therefore feed
+        // the hardware fingerprint; mutable runtime tuning values do not.
+        if (cap.domain == HardwareDomain::Storage &&
+            cap.semantic_id.rfind("block.queue.", 0) == 0 &&
+            cap.classification != KernelNodeClassification::RuntimeTunable) {
+            data << cap.current_value;
+        }
+        data << '|';
     }
     std::ostringstream out;
     out << std::hex << std::setw(16) << std::setfill('0') << fnv1a(data.str());
@@ -250,6 +281,7 @@ NodeCapability observe_capability(
         return cap;
     }
     cap.state = NodeCapabilityState::MutationEligible;
+    cap.classification = KernelNodeClassification::RuntimeTunable;
     cap.rejection_code = NodeRejectionReason::None;
     return cap;
 }
@@ -673,6 +705,7 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         cap.domain = domain;
         cap.source = source;
         cap.semantic_id = std::move(semantic);
+        cap.classification = classification_for_leaf(path.filename().string());
         cap.evidence = std::move(evidence);
         struct stat st{};
         if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
@@ -774,8 +807,81 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
             cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
         } else {
             cap.state = NodeCapabilityState::MutationEligible;
+            cap.classification = KernelNodeClassification::RuntimeTunable;
             cap.rejection_code = NodeRejectionReason::None;
         }
+        snapshot->node_capabilities.push_back(std::move(cap));
+    };
+
+    const auto scan_scheduler = [&](const fs::path& path, std::string_view device_name) {
+        ++snapshot->infrastructure_nodes_scanned;
+        NodeCapability cap{};
+        cap.path = path.string();
+        cap.domain = HardwareDomain::Storage;
+        cap.source = ProfileSource::Sysfs;
+        cap.semantic_id = "block.queue.scheduler_policy";
+        cap.unit = "scheduler_token";
+        cap.evidence = "Kernel queue scheduler selector; mutation requires an advertised token and a captured OEM baseline";
+        if (!is_physical_block_device(device_name)) {
+            cap.rejection_reason = "Virtual or unrecognized block device is observation-only";
+            cap.rejection_code = NodeRejectionReason::SemanticsUnverified;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        struct stat st{};
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+            cap.rejection_reason = "scheduler node absent or not a regular ABI attribute";
+            cap.rejection_code = NodeRejectionReason::NodeMissing;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        std::string raw;
+        if (!read_attribute(path, raw, 4096U)) {
+            cap.rejection_reason = "scheduler token list could not be read";
+            cap.rejection_code = NodeRejectionReason::IoError;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.current_value = active_bracketed_token(raw);
+        cap.accepted_values = trim(raw);
+        cap.state = NodeCapabilityState::Readable;
+        const auto tokens = parse_tokens(raw);
+        const bool active_advertised = std::find(tokens.begin(), tokens.end(), cap.current_value) != tokens.end();
+        if (!active_advertised || tokens.empty()) {
+            cap.rejection_reason = "active scheduler token is not present in the kernel-advertised set";
+            cap.rejection_code = NodeRejectionReason::FormatMismatch;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.constraints = "value must be one of the kernel-advertised scheduler tokens";
+        if (!writable_by_mode_and_process(path)) {
+            cap.rejection_reason = "scheduler selector is readable but write access is not established";
+            cap.rejection_code = NodeRejectionReason::PermissionDenied;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::ConstraintsVerified;
+        auto& baseline = BaselineStore::instance();
+        if (!baseline.capture(path.string())) {
+            cap.rejection_reason = "OEM scheduler baseline capture failed";
+            cap.rejection_code = NodeRejectionReason::BaselineCaptureFailed;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        const auto audit = baseline.get_audit_trail();
+        const auto captured = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == path.string() && !node.is_modified && node.factory_value == cap.current_value;
+        });
+        if (captured == audit.end() &&
+            !baseline.owns_retained_performance_value(path.string(), cap.current_value)) {
+            cap.rejection_reason = "scheduler OEM baseline is not verified against the live token";
+            cap.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+            snapshot->node_capabilities.push_back(std::move(cap));
+            return;
+        }
+        cap.state = NodeCapabilityState::MutationEligible;
+        cap.classification = KernelNodeClassification::RuntimeTunable;
+        cap.rejection_code = NodeRejectionReason::None;
         snapshot->node_capabilities.push_back(std::move(cap));
     };
 
@@ -803,6 +909,8 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
     const fs::path block_root = sys / "class/block";
     for (const auto& block : directory_entries(block_root)) {
         const fs::path queue = block / "queue";
+        const std::string device_name = block.filename().string();
+        const bool physical_device = is_physical_block_device(device_name);
         std::error_code queue_ec;
         for (fs::directory_iterator it(queue, fs::directory_options::skip_permission_denied, queue_ec), end;
              !queue_ec && it != end; it.increment(queue_ec)) {
@@ -810,12 +918,23 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
             const auto status = it->symlink_status(type_ec);
             if (type_ec || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
             const std::string name = it->path().filename().string();
-            if (name == "read_ahead_kb")
+            if (name == "scheduler" && physical_device) {
+                scan_scheduler(it->path(), device_name);
+            } else if (physical_device && name == "read_ahead_kb") {
                 scan_scalar(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
                     "block.queue.read_ahead_kb", 32U, 512U, "KiB");
-            else
+            } else if (physical_device && name == "nr_requests") {
+                scan_scalar(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
+                    "block.queue.nr_requests", 32U, 512U, "requests");
+            } else if (physical_device && name == "rq_affinity") {
+                scan_scalar(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
+                    "block.queue.rq_affinity", 0U, 2U, "mode");
+            } else {
                 scan_observation(it->path(), HardwareDomain::Storage, ProfileSource::Sysfs,
-                    "block.queue.tunable.unverified", "Dynamically enumerated block queue ABI; vendor range not assumed");
+                    block_observation_semantic(name), physical_device
+                        ? "Observed block queue ABI; no verified runtime mutation contract"
+                        : "Virtual or unrecognized block device retained for observation only");
+            }
         }
     }
 
@@ -906,6 +1025,7 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
                 cap.accepted_values = cap.constraints;
                 if (mutation_target && foreground_uclamp_baseline_ready) {
                     cap.state = NodeCapabilityState::MutationEligible;
+                    cap.classification = KernelNodeClassification::RuntimeTunable;
                     cap.rejection_reason.clear();
                     cap.rejection_code = NodeRejectionReason::None;
                 } else {

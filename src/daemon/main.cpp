@@ -376,6 +376,7 @@ std::string serialize_node_capabilities(const DeviceProfileSnapshot& profile) {
             << ",\"domain\":" << json_string(node_domain_name(node.domain))
             << ",\"source\":" << json_string(node_source_name(node.source))
             << ",\"state\":" << json_string(node_capability_state_name(node.state))
+            << ",\"classification\":" << json_string(kernel_node_classification_name(node.classification))
             << ",\"semanticId\":" << json_string(node.semantic_id)
             << ",\"unit\":" << json_string(node.unit)
             << ",\"currentValue\":" << json_string(node.current_value)

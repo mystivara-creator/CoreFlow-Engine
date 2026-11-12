@@ -6,6 +6,7 @@
 #include "coreflow/autonomous_tuner.hpp"
 #include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/kernel_node_inventory.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/unique_fd.hpp"
 #include "coreflow/transactional_frequency_actuator.hpp"
@@ -68,16 +69,13 @@ std::vector<std::string> enumerate_attribute_names(const fs::path& directory,
     return names;
 }
 
-bool contains_name(const std::vector<std::string>& names, std::string_view target) {
-    return std::find(names.begin(), names.end(), target) != names.end();
-}
-
 bool is_physical_block_device(std::string_view name) {
     if (name.empty()) return false;
-    // Exclude virtual block devices: loop*, ram*, zram*, dm-*, md*, nbd*
+    // Exclude virtual block devices: loop*, ram*, zram*, dm-*, md*, nbd*, ublk*, z*
     if (name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
         name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0 ||
-        name.rfind("md", 0) == 0 || name.rfind("nbd", 0) == 0) {
+        name.rfind("md", 0) == 0 || name.rfind("nbd", 0) == 0 ||
+        name.rfind("ublkb", 0) == 0 || name.rfind("zd", 0) == 0) {
         return false;
     }
     return name.rfind("sd", 0) == 0 ||
@@ -106,7 +104,8 @@ double contextual_ucb_score(const CandidateStats& stats,
 bool is_virtual_block_device(std::string_view name) {
     return name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
            name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0 ||
-           name.rfind("md", 0) == 0 || name.rfind("nbd", 0) == 0;
+           name.rfind("md", 0) == 0 || name.rfind("nbd", 0) == 0 ||
+           name.rfind("ublkb", 0) == 0 || name.rfind("zd", 0) == 0;
 }
 
 void parse_scheduler_line(
@@ -769,6 +768,7 @@ bool AutonomousTuner::is_candidate_eligible(std::string_view id) const noexcept 
     const auto* c = find_candidate(id);
     if (c == nullptr || c->ownership_quarantine_ticks > 0 || c->cooldown_ticks > 0) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
+    if (!candidate_contract_eligible(id)) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
         return false;
@@ -795,6 +795,7 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     if (regime_index < c->regime_cooldown_ticks.size() &&
         c->regime_cooldown_ticks[regime_index] > 0U) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
+    if (!candidate_contract_eligible(id)) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
         return false;
@@ -1294,6 +1295,49 @@ std::string AutonomousTuner::resolve_vm_node_path(std::string_view semantic_id) 
     return {};
 }
 
+bool AutonomousTuner::has_runtime_node(std::string_view path) const noexcept {
+    return CandidateSelector::has_runtime_path(kernel_node_capabilities_, path);
+}
+
+bool AutonomousTuner::candidate_contract_eligible(std::string_view candidate_id) const noexcept {
+    const bool storage_candidate = candidate_id.rfind("io.", 0) == 0 ||
+        candidate_id == "thermal.io_burst_pacing";
+    if (storage_candidate) {
+        for (const auto& queue : block_queues_) {
+            const std::string scheduler = queue.queue_dir + "/scheduler";
+            const std::string read_ahead = queue.queue_dir + "/read_ahead_kb";
+            const std::string requests = queue.queue_dir + "/nr_requests";
+            if (candidate_id == "io.queue_readahead_pacing") {
+                if (has_runtime_node(read_ahead)) return true;
+                continue;
+            }
+            if (candidate_id == "thermal.io_burst_pacing") {
+                if (has_runtime_node(read_ahead) && has_runtime_node(requests)) return true;
+                continue;
+            }
+            if (has_runtime_node(scheduler) && has_runtime_node(read_ahead)) return true;
+        }
+        return false;
+    }
+
+    if (candidate_id == "vm.zram_latency_relief") {
+        const auto page_cluster = resolve_vm_node_path("vm.page_cluster");
+        const auto cache_pressure = resolve_vm_node_path("vm.vfs_cache_pressure");
+        return !page_cluster.empty() && !cache_pressure.empty() &&
+               has_runtime_node(page_cluster) && has_runtime_node(cache_pressure);
+    }
+
+    if (candidate_id == "cpufreq.schedutil_interactive_response" ||
+        candidate_id == "thermal.schedutil_damped_pacing") {
+        return std::any_of(cpufreq_governor_dirs_.begin(), cpufreq_governor_dirs_.end(),
+            [&](const std::string& governor_dir) {
+                return has_runtime_node(governor_dir + "/up_rate_limit_us") &&
+                       has_runtime_node(governor_dir + "/down_rate_limit_us");
+            });
+    }
+    return true;
+}
+
 void AutonomousTuner::classify_discovered_resources() {
     discovered_resources_.clear();
     std::error_code ec;
@@ -1342,15 +1386,18 @@ void AutonomousTuner::classify_discovered_resources() {
             .domain = MutationDomain::BlockIo,
             .permission_class = !writable ? ResourcePermissionClass::ReadOnly
                                 : avail.empty() ? ResourcePermissionClass::IncompleteMetadata
-                                                : ResourcePermissionClass::VerifiedConstraints,
+                                : has_runtime_node(sched_path) ? ResourcePermissionClass::VerifiedConstraints
+                                                              : ResourcePermissionClass::UnknownSemantic,
             .unit = "scheduler_token",
             .range_provenance = "sysfs:queue/scheduler",
             .baseline_value = active,
-            .reason = writable ? "Verified kernel scheduler token list" : "Read-only scheduler node",
+            .reason = !writable ? "Read-only scheduler node"
+                : has_runtime_node(sched_path) ? "Verified scheduler ABI and immutable OEM baseline"
+                                               : "Scheduler is observable; mutation contract/baseline not verified",
         });
 
         for (const auto& [leaf, unit_str, range_str] : {
-                 std::tuple{"read_ahead_kb", "KiB", "[64..2048] relative to OEM baseline"},
+                 std::tuple{"read_ahead_kb", "KiB", "[32..512] relative to OEM baseline"},
                  std::tuple{"nr_requests", "requests", "[32..512] relative to OEM baseline"},
                  std::tuple{"rq_affinity", "mode", "{0,1,2}"},
              }) {
@@ -1365,13 +1412,15 @@ void AutonomousTuner::classify_discovered_resources() {
                 .domain = MutationDomain::BlockIo,
                 .permission_class = !valid_num ? ResourcePermissionClass::UnknownSemantic
                                     : !leaf_w  ? ResourcePermissionClass::ReadOnly
-                                               : ResourcePermissionClass::VerifiedConstraints,
+                                    : has_runtime_node(p) ? ResourcePermissionClass::VerifiedConstraints
+                                                          : ResourcePermissionClass::UnknownSemantic,
                 .unit = unit_str,
                 .range_provenance = range_str,
                 .baseline_value = raw,
                 .reason = !valid_num ? "Non-numeric sysfs content"
                           : !leaf_w  ? "Read-only queue node"
-                                     : "Verified numeric queue tunable",
+                          : has_runtime_node(p) ? "Verified numeric queue ABI and immutable OEM baseline"
+                                                : "Numeric queue attribute remains observation-only",
             });
         }
     }
@@ -1382,7 +1431,7 @@ void AutonomousTuner::classify_discovered_resources() {
             if (cap.domain != HardwareDomain::Cpu ||
                 cap.semantic_id != "cpufreq.governor_tunable.unverified") continue;
             ResourcePermissionClass permission = ResourcePermissionClass::IncompleteMetadata;
-            if (cap.state == NodeCapabilityState::MutationEligible) {
+            if (CandidateSelector::is_mutation_candidate(cap)) {
                 permission = ResourcePermissionClass::VerifiedConstraints;
             } else if (cap.state == NodeCapabilityState::Writable) {
                 permission = ResourcePermissionClass::WritableButUnsafe;
@@ -1446,8 +1495,11 @@ void AutonomousTuner::classify_discovered_resources() {
         const std::string raw = read_first_line(p);
         const bool valid_num = parse_u64(raw, parsed);
         const bool writable = (::access(p.c_str(), R_OK | W_OK) == 0);
-        ResourcePermissionClass perm = ResourcePermissionClass::VerifiedConstraints;
-        std::string reason = "Verified VM tunable with active zram swap";
+        ResourcePermissionClass perm = has_runtime_node(p)
+            ? ResourcePermissionClass::VerifiedConstraints : ResourcePermissionClass::UnknownSemantic;
+        std::string reason = has_runtime_node(p)
+            ? "Verified VM tunable ABI and immutable OEM baseline"
+            : "VM node is observed; runtime contract/baseline not verified";
         if (!valid_num) {
             perm = ResourcePermissionClass::UnknownSemantic;
             reason = "Unparseable VM tunable value";
@@ -1621,6 +1673,18 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     const auto cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
     if (!page_cluster_path.empty()) (void)store.capture(page_cluster_path);
     if (!cache_pressure_path.empty()) (void)store.capture(cache_pressure_path);
+
+    // Pin the semantic inventory used by every candidate admission and
+    // transaction preflight.  A profile is authoritative when supplied;
+    // standalone/test construction gets the same bounded scanner after OEM
+    // baselines have been captured above.
+    kernel_node_capabilities_.clear();
+    if (device_profile_) {
+        kernel_node_capabilities_ = device_profile_->node_capabilities;
+    } else {
+        KernelNodeInventory inventory(sys_root_, proc_root_);
+        kernel_node_capabilities_ = inventory.scan(512U);
+    }
 
     classify_discovered_resources();
     load_persisted_stats();
@@ -1945,6 +2009,16 @@ bool AutonomousTuner::apply_transaction(
     for (const auto& step : steps) {
         const bool is_required = (step.relation == StepRelation::RequiredAnchor ||
                                   step.relation == StepRelation::RequiredDependent);
+        // Writability is not mutation authority. Every path in this transaction
+        // must have an explicit runtime ABI contract, an in-range current value,
+        // and a verified immutable OEM baseline in the capability snapshot.
+        if (!has_runtime_node(step.path)) {
+            if (is_required) {
+                reject_preflight("Node has no RUNTIME_TUNABLE contract: " + step.path);
+                return false;
+            }
+            continue;
+        }
         bool accessible = (::access(step.path.c_str(), R_OK | W_OK) == 0) &&
                           store.capture(step.path);
         if (accessible) {
@@ -2561,7 +2635,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 for (const auto& q : block_queues_) {
                     const std::string ra_path = q.queue_dir + "/read_ahead_kb";
                     const std::string nr_path = q.queue_dir + "/nr_requests";
-                    const uint64_t damped_ra = compute_relative_u64(ra_path, q.baseline_read_ahead_kb, 0.50, 64, 512, scale);
+                    if (!has_runtime_node(ra_path) || !has_runtime_node(nr_path)) continue;
+                    const uint64_t damped_ra = compute_relative_u64(ra_path, q.baseline_read_ahead_kb, 0.50, 32, 512, scale);
                     const uint64_t damped_nr = compute_relative_u64(nr_path, q.baseline_nr_requests, 0.75, 32, 256, scale);
                     steps.push_back({ra_path, std::to_string(damped_ra), "Anchor (Required-before)", StepRelation::RequiredAnchor});
                     steps.push_back({nr_path, std::to_string(damped_nr), "Coupled-with", StepRelation::RequiredDependent});
@@ -2977,30 +3052,21 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "mq-deadline")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "mq-deadline", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                if (q.has_iosched_tunables && contains_name(q.iosched_tunables, "read_expire") &&
-                    contains_name(q.iosched_tunables, "writes_starved") &&
-                    contains_name(q.iosched_tunables, "fifo_batch")) {
-                    const std::string read_exp_path = q.queue_dir + "/iosched/read_expire";
-                    const uint64_t rel_read_expire = compute_relative_u64(read_exp_path, q.read_expire_ms, 0.50, 100, 2000, scale);
-                    steps.push_back({read_exp_path, std::to_string(rel_read_expire), "Coupled-with", StepRelation::RequiredDependent});
+                const std::string scheduler_path = q.queue_dir + "/scheduler";
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                if (!has_runtime_node(scheduler_path) || !has_runtime_node(readahead_path)) continue;
+                steps.push_back({scheduler_path, "mq-deadline", "Anchor (Required-before)", StepRelation::RequiredAnchor});
 
-                    const std::string starved_path = q.queue_dir + "/iosched/writes_starved";
-                    const uint64_t rel_starved = compute_relative_u64(starved_path, q.writes_starved, 1.50, 1, 32, scale);
-                    steps.push_back({starved_path, std::to_string(rel_starved), "Coupled-with", StepRelation::RequiredDependent});
-
-                    const std::string fifo_path = q.queue_dir + "/iosched/fifo_batch";
-                    const uint64_t rel_fifo = compute_relative_u64(fifo_path, q.fifo_batch, 0.50, 1, 64, scale);
-                    steps.push_back({fifo_path, std::to_string(rel_fifo), "Coupled-with", StepRelation::RequiredDependent});
-                }
-                if (contains_name(q.queue_tunables, "rq_affinity"))
-                    steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
-
-                if (contains_name(q.queue_tunables, "read_ahead_kb")) {
-                    const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                    const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
-                    steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
-                }
+                // iosched/{read_expire,writes_starved,fifo_batch} are deliberately
+                // omitted: their active-scheduler-specific write contracts and
+                // ranges have not earned runtime mutation authority yet.
+                const uint64_t rel_readahead = compute_relative_u64(
+                    readahead_path, q.baseline_read_ahead_kb, 2.00, 32, 512, scale);
+                steps.push_back({readahead_path, std::to_string(rel_readahead),
+                                 "Coupled-with", StepRelation::RequiredDependent});
+                const std::string affinity_path = q.queue_dir + "/rq_affinity";
+                if (has_runtime_node(affinity_path))
+                    steps.push_back({affinity_path, "2", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.mq_deadline_low_latency",
@@ -3021,19 +3087,21 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "kyber")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "kyber", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                if (contains_name(q.queue_tunables, "nr_requests")) {
-                    const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                const std::string scheduler_path = q.queue_dir + "/scheduler";
+                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                if (!has_runtime_node(scheduler_path) || !has_runtime_node(readahead_path)) continue;
+                steps.push_back({scheduler_path, "kyber", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                if (has_runtime_node(nr_req_path)) {
                     const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
                     steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
                 }
-                if (contains_name(q.queue_tunables, "read_ahead_kb")) {
-                    const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                    const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 1.00, 64, 2048, scale);
-                    steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
-                }
-                if (contains_name(q.queue_tunables, "rq_affinity"))
-                    steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
+                const uint64_t rel_readahead = compute_relative_u64(
+                    readahead_path, q.baseline_read_ahead_kb, 1.00, 32, 512, scale);
+                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
+                const std::string affinity_path = q.queue_dir + "/rq_affinity";
+                if (has_runtime_node(affinity_path))
+                    steps.push_back({affinity_path, "2", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.kyber_token_bucket",
@@ -3054,9 +3122,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "bfq")) continue;
-                steps.push_back({q.queue_dir + "/scheduler", "bfq", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                const std::string scheduler_path = q.queue_dir + "/scheduler";
                 const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
+                if (!has_runtime_node(scheduler_path) || !has_runtime_node(readahead_path)) continue;
+                steps.push_back({scheduler_path, "bfq", "Anchor (Required-before)", StepRelation::RequiredAnchor});
+                const uint64_t rel_readahead = compute_relative_u64(
+                    readahead_path, q.baseline_read_ahead_kb, 2.00, 32, 512, scale);
                 steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
@@ -3064,7 +3135,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 "bfq Proportional-Share Interactive I/O Scheduler",
                 "IoLatencyRelief",
                 "Sustained I/O contention (" + std::to_string(telemetry.io_psi).substr(0, 4) +
-                    "%); evaluating bfq proportional-share scheduler against OEM baseline with relative read-ahead scaling.",
+                    "%); evaluating bfq proportional-share scheduler against OEM baseline with contract-bounded read-ahead scaling.",
                 steps,
                 telemetry);
             refresh_surface_readings();
@@ -3077,11 +3148,13 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             std::vector<MutationStep> steps;
             for (const auto& q : block_queues_) {
                 const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
+                if (!has_runtime_node(readahead_path)) continue;
+                const uint64_t rel_readahead = compute_relative_u64(
+                    readahead_path, q.baseline_read_ahead_kb, 2.00, 32, 512, scale);
                 steps.push_back({readahead_path, std::to_string(rel_readahead), "Anchor (Required-before)", StepRelation::RequiredAnchor});
 
-                if (contains_name(q.queue_tunables, "nr_requests")) {
-                    const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                if (has_runtime_node(nr_req_path)) {
                     const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
                     steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
                 }
@@ -3090,7 +3163,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 "io.queue_readahead_pacing",
                 "Adaptive Block Queue Read-Ahead & Request Depth (2.0x OEM baseline)",
                 "IoLatencyRelief",
-                "I/O stall pressure elevated; relative scaling of block queue read_ahead_kb and nr_requests from OEM baseline.",
+                    "I/O stall pressure elevated; relative scaling of verified block queue read_ahead_kb and nr_requests contracts from OEM baseline.",
                 steps,
                 telemetry);
             return snapshot();

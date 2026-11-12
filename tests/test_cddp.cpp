@@ -20,6 +20,12 @@ const coreflow::NodeCapability* find_cap(
         [&](const auto& cap) { return cap.semantic_id == semantic; });
     return it == profile.node_capabilities.end() ? nullptr : &*it;
 }
+const coreflow::NodeCapability* find_cap_path(
+    const coreflow::DeviceProfileSnapshot& profile, const std::filesystem::path& path) {
+    const auto it = std::find_if(profile.node_capabilities.begin(), profile.node_capabilities.end(),
+        [&](const auto& cap) { return cap.path == path.string(); });
+    return it == profile.node_capabilities.end() ? nullptr : &*it;
+}
 }
 int main() {
     using namespace coreflow;
@@ -59,13 +65,27 @@ int main() {
     const auto policy_a = a.sys / "devices/system/cpu/cpufreq/policy0";
     cddp_fixture::put(policy_a / "scaling_available_governors", "schedutil vendor_governor\n");
     cddp_fixture::put(policy_a / "schedutil/vendor_adaptive_level", "2\n");
-    const auto storage_a = a.sys / "class/block/ufs0";
+    // Model a known physical ABI device. Virtual devices remain present in the
+    // profile but never receive runtime mutation authority.
+    const auto storage_a = a.sys / "class/block/mmcblk0";
     cddp_fixture::put(storage_a / "size", "2097152\n");
     cddp_fixture::put(storage_a / "queue/nr_hw_queues", "4\n");
     cddp_fixture::put(storage_a / "queue/rotational", "0\n");
     cddp_fixture::put(storage_a / "queue/scheduler", "none [mq-deadline] kyber\n");
     cddp_fixture::put(storage_a / "queue/read_ahead_kb", "128\n");
+    cddp_fixture::put(storage_a / "queue/nr_requests", "128\n");
+    cddp_fixture::put(storage_a / "queue/rq_affinity", "1\n");
+    cddp_fixture::put(storage_a / "queue/max_segment_size", "65536\n", 0444);
+    cddp_fixture::put(storage_a / "queue/virt_boundary_mask", "4095\n", 0444);
+    cddp_fixture::put(storage_a / "queue/zone_append_max_bytes", "0\n", 0444);
+    cddp_fixture::put(storage_a / "queue/stable_writes", "0\n");
+    cddp_fixture::put(storage_a / "queue/write_cache", "write back\n");
     cddp_fixture::put(storage_a / "queue/iosched/read_expire", "500\n");
+    // A real app PID in the uniquely-resolved CPU foreground group proves the
+    // UClamp contract without relying on cgroup-directory names alone.
+    cddp_fixture::put(a.sys / "fs/cgroup/interactive-session/cgroup.procs", "123\n");
+    cddp_fixture::put(a.proc / "123/status", "Name:\tgame\nUid:\t10123\t10123\t10123\t10123\nTgid:\t123\n");
+    cddp_fixture::put(a.proc / "123/cgroup", "0::/interactive-session\n");
     cddp_fixture::put(a.sys / "block/zram0/disksize", "1073741824\n");
     cddp_fixture::put(a.sys / "block/zram0/comp_algorithm", "[lz4] lzo lzo-rle zstd\n");
     cddp_fixture::put(a.proc / "swaps", "Filename Type Size Used Priority\n/dev/block/zram0 partition 1048576 128 0\n");
@@ -88,6 +108,27 @@ int main() {
     assert(profile_a->block_devices.front().capacity_bytes == 2097152ULL * 512ULL);
     assert(profile_a->block_devices.front().rotational_valid && !profile_a->block_devices.front().rotational);
     assert(profile_a->block_devices.front().active_scheduler == "mq-deadline");
+    const auto* read_ahead_cap = find_cap_path(*profile_a, storage_a / "queue/read_ahead_kb");
+    const auto* segment_cap = find_cap_path(*profile_a, storage_a / "queue/max_segment_size");
+    const auto* boundary_cap = find_cap_path(*profile_a, storage_a / "queue/virt_boundary_mask");
+    const auto* zone_cap = find_cap_path(*profile_a, storage_a / "queue/zone_append_max_bytes");
+    const auto* stable_cap = find_cap_path(*profile_a, storage_a / "queue/stable_writes");
+    const auto* cache_cap = find_cap_path(*profile_a, storage_a / "queue/write_cache");
+    const auto* scheduler_cap = find_cap_path(*profile_a, storage_a / "queue/scheduler");
+    assert(read_ahead_cap && read_ahead_cap->classification == KernelNodeClassification::RuntimeTunable);
+    assert(segment_cap && segment_cap->classification == KernelNodeClassification::ObservationOnly);
+    assert(boundary_cap && boundary_cap->classification == KernelNodeClassification::ObservationOnly);
+    assert(zone_cap && zone_cap->classification == KernelNodeClassification::ObservationOnly);
+    assert(stable_cap && stable_cap->classification == KernelNodeClassification::TestOnly);
+    assert(cache_cap && cache_cap->classification == KernelNodeClassification::Protected);
+    assert(scheduler_cap && scheduler_cap->classification == KernelNodeClassification::RuntimeTunable);
+    const auto* uclamp_min = find_cap_path(*profile_a,
+        a.sys / "fs/cgroup/interactive-session/cpu.uclamp.min");
+    const auto* uclamp_max = find_cap_path(*profile_a,
+        a.sys / "fs/cgroup/interactive-session/cpu.uclamp.max");
+    assert(uclamp_min && uclamp_min->classification == KernelNodeClassification::RuntimeTunable);
+    assert(uclamp_max && uclamp_max->classification == KernelNodeClassification::RuntimeTunable);
+    assert(uclamp_min->mutation_eligible() && uclamp_max->mutation_eligible());
     assert(std::find(profile_a->block_devices.front().iosched_tunables.begin(),
                      profile_a->block_devices.front().iosched_tunables.end(), "read_expire") !=
            profile_a->block_devices.front().iosched_tunables.end());
@@ -102,6 +143,14 @@ int main() {
     const auto profile_a_refresh = pa.refresh();
     assert(profile_a_refresh->generation > profile_a->generation);
     assert(profile_a_refresh->fingerprint == profile_a->fingerprint);
+    // Observation-only physical queue constraints are part of the hardware
+    // fingerprint, while mutable tuner values are intentionally excluded.
+    cddp_fixture::put(storage_a / "queue/max_segment_size", "131072\n", 0444);
+    const auto hardware_changed = pa.refresh();
+    assert(hardware_changed->fingerprint != profile_a_refresh->fingerprint);
+    const auto* refreshed_segment = find_cap_path(*hardware_changed,
+        storage_a / "queue/max_segment_size");
+    assert(refreshed_segment && refreshed_segment->current_value == "131072");
 
     CentralMutationCoordinator coordinator;
     {

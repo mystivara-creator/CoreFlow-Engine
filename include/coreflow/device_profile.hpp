@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace coreflow {
@@ -50,6 +51,28 @@ enum class ProfileSource : uint8_t {
     KernelApi,
     Unknown,
 };
+
+// A capability inventory is not a mutation allow-list.  This classification
+// records the kernel ABI contract independently from current access bits.
+// Only RuntimeTunable nodes with a verified range and captured baseline may
+// be admitted by CandidateSelector.
+enum class KernelNodeClassification : uint8_t {
+    RuntimeTunable = 0,
+    ObservationOnly = 1,
+    TestOnly = 2,
+    Protected = 3,
+};
+
+[[nodiscard]] inline constexpr std::string_view kernel_node_classification_name(
+    KernelNodeClassification classification) noexcept {
+    switch (classification) {
+        case KernelNodeClassification::RuntimeTunable: return "RUNTIME_TUNABLE";
+        case KernelNodeClassification::ObservationOnly: return "OBSERVATION_ONLY";
+        case KernelNodeClassification::TestOnly: return "TEST_ONLY";
+        case KernelNodeClassification::Protected: return "PROTECTED";
+    }
+    return "OBSERVATION_ONLY";
+}
 
 enum class HardwareDomain : uint8_t {
     Cpu,
@@ -136,6 +159,7 @@ struct NodeCapability {
     HardwareDomain domain{HardwareDomain::Unknown};
     ProfileSource source{ProfileSource::Unknown};
     NodeCapabilityState state{NodeCapabilityState::Available};
+    KernelNodeClassification classification{KernelNodeClassification::ObservationOnly};
 
     // Semantic identity and units must come from a known ABI/interface contract,
     // never from a writable bit or a filename guess.
@@ -155,7 +179,8 @@ struct NodeCapability {
     NodeRejectionReason rejection_code{NodeRejectionReason::None};
 
     [[nodiscard]] bool mutation_eligible() const noexcept {
-        return state == NodeCapabilityState::MutationEligible &&
+        return classification == KernelNodeClassification::RuntimeTunable &&
+               state == NodeCapabilityState::MutationEligible &&
                !path.empty() && !semantic_id.empty() && !unit.empty() &&
                !constraints.empty();
     }

@@ -1,10 +1,14 @@
 #include "coreflow/kernel_node_inventory.hpp"
+#include "coreflow/baseline_store.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
+#include <cctype>
 #include <filesystem>
 #include <fcntl.h>
+#include <sstream>
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -113,6 +117,94 @@ std::string active_token(std::string value) {
     if (open != std::string::npos && close != std::string::npos) return value.substr(open + 1U, close - open - 1U);
     return value;
 }
+
+bool parse_u64(std::string_view text, uint64_t& value) noexcept {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0)
+        text.remove_prefix(1U);
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0)
+        text.remove_suffix(1U);
+    if (text.empty()) return false;
+    uint64_t parsed = 0U;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed, 10);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) return false;
+    value = parsed;
+    return true;
+}
+
+bool writable_attribute(const fs::path& path) noexcept {
+    struct stat st{};
+    if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || S_ISLNK(st.st_mode))
+        return false;
+    // access(W_OK) alone is insufficient on root test runners because root can
+    // bypass ordinary DAC mode bits. Never infer a writable ABI from that.
+    return (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 &&
+           ::access(path.c_str(), W_OK) == 0;
+}
+
+KernelNodeClassification classification_for_leaf(std::string_view leaf) noexcept {
+    if (leaf == "stable_writes") return KernelNodeClassification::TestOnly;
+    if (leaf == "write_cache") return KernelNodeClassification::Protected;
+    return KernelNodeClassification::ObservationOnly;
+}
+
+bool baseline_verified(const std::string& path, const std::string& value) {
+    if (path.empty() || value.empty()) return false;
+    auto& baseline = BaselineStore::instance();
+    const auto audit = baseline.get_audit_trail();
+    const auto found = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == path && !node.is_modified && node.factory_value == value;
+    });
+    return found != audit.end() || baseline.owns_retained_performance_value(path, value);
+}
+
+void promote_runtime_tunable(NodeCapability& node, std::string unit,
+                             std::string constraints, uint64_t minimum,
+                             uint64_t maximum) {
+    node.unit = std::move(unit);
+    node.constraints = std::move(constraints);
+    node.accepted_values = node.constraints;
+    uint64_t value = 0U;
+    if (!parse_u64(node.current_value, value)) {
+        node.rejection_code = NodeRejectionReason::FormatMismatch;
+        node.rejection_reason = "Known scalar ABI has a non-numeric current value";
+        return;
+    }
+    if (value < minimum || value > maximum) {
+        node.rejection_code = NodeRejectionReason::ConstraintsUnverified;
+        node.rejection_reason = "Current scalar lies outside the documented runtime contract";
+        return;
+    }
+    if (!writable_attribute(node.path)) {
+        node.rejection_code = NodeRejectionReason::PermissionDenied;
+        node.rejection_reason = "Known scalar ABI is readable but write access is not established";
+        return;
+    }
+    if (!baseline_verified(node.path, node.current_value)) {
+        node.rejection_code = NodeRejectionReason::BaselineNotCaptured;
+        node.rejection_reason = "Known scalar ABI has no verified immutable OEM baseline";
+        return;
+    }
+    node.classification = KernelNodeClassification::RuntimeTunable;
+    node.state = NodeCapabilityState::MutationEligible;
+    node.rejection_code = NodeRejectionReason::None;
+    node.rejection_reason.clear();
+}
+
+std::string observation_semantic_id(std::string_view leaf) {
+    if (leaf == "max_segment_size") return "block.queue.hardware.max_segment_size";
+    if (leaf == "virt_boundary_mask") return "block.queue.hardware.virt_boundary_mask";
+    if (leaf == "zone_append_max_bytes") return "block.queue.hardware.zone_append_max_bytes";
+    if (leaf == "stable_writes") return "block.queue.test.stable_writes";
+    if (leaf == "write_cache") return "block.queue.protected.write_cache";
+    return "block.queue.attribute.observation_only";
+}
+
+bool is_virtual_block_device(std::string_view name) noexcept {
+    return name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
+           name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0 ||
+           name.rfind("md", 0) == 0 || name.rfind("nbd", 0) == 0 ||
+           name.rfind("ublkb", 0) == 0 || name.rfind("zd", 0) == 0;
+}
 } // namespace
 
 KernelNodeInventory::KernelNodeInventory(std::string sys_root, std::string proc_root)
@@ -145,9 +237,11 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
         append_unique(nodes, std::move(parent_node), maximum_nodes);
         const fs::path governor_dir = policy / governor;
         for (const auto& path : regular_children(governor_dir)) {
-            append_unique(nodes, observe(path, HardwareDomain::Cpu, ProfileSource::Sysfs,
+            auto child = observe(path, HardwareDomain::Cpu, ProfileSource::Sysfs,
                 "cpufreq.governor_tunable.unverified", policy.filename().string() + ":governor",
-                parent.string(), governor, true), maximum_nodes);
+                parent.string(), governor, true);
+            child.classification = classification_for_leaf(path.filename().string());
+            append_unique(nodes, std::move(child), maximum_nodes);
         }
     }
 
@@ -160,7 +254,10 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
         const fs::path scheduler = queue / "scheduler";
         const std::string scheduler_raw = read_value(scheduler);
         const std::string active_scheduler = active_token(scheduler_raw);
-        const std::string group = "block:" + block.filename().string();
+        const std::string device_name = block.filename().string();
+        const bool physical = CandidateSelector::is_physical_block_device(device_name) &&
+                              !is_virtual_block_device(device_name);
+        const std::string group = "block:" + device_name;
         if (!scheduler_raw.empty()) {
             NodeCapability parent_node = observe(scheduler, HardwareDomain::Storage, ProfileSource::Sysfs,
                 "block.queue.scheduler_policy", group + ":scheduler", {}, {}, false);
@@ -169,20 +266,45 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
             parent_node.state = NodeCapabilityState::SemanticsVerified;
             parent_node.unit = "scheduler_token";
             parent_node.rejection_reason = "OEM scheduler policy observed; child ABI is tied to the active token";
+            if (physical && !active_scheduler.empty() && writable_attribute(scheduler) &&
+                baseline_verified(parent_node.path, active_scheduler)) {
+                parent_node.constraints = "current token must be one of the kernel-advertised scheduler tokens";
+                parent_node.classification = KernelNodeClassification::RuntimeTunable;
+                parent_node.state = NodeCapabilityState::MutationEligible;
+                parent_node.rejection_code = NodeRejectionReason::None;
+                parent_node.rejection_reason.clear();
+            }
             append_unique(nodes, std::move(parent_node), maximum_nodes);
         }
         for (const auto& path : regular_children(queue)) {
             if (path == scheduler) continue;
-            append_unique(nodes, observe(path, HardwareDomain::Storage, ProfileSource::Sysfs,
-                "block.queue.tunable.unverified", group + ":queue", scheduler.string(),
-                active_scheduler, false), maximum_nodes);
+            const std::string leaf = path.filename().string();
+            auto child = observe(path, HardwareDomain::Storage, ProfileSource::Sysfs,
+                observation_semantic_id(leaf), group + ":queue", scheduler.string(),
+                active_scheduler, false);
+            child.classification = classification_for_leaf(leaf);
+            if (physical && leaf == "read_ahead_kb") {
+                promote_runtime_tunable(child, "KiB", "32<=value<=512", 32U, 512U);
+            } else if (physical && leaf == "nr_requests") {
+                promote_runtime_tunable(child, "requests", "32<=value<=512", 32U, 512U);
+            } else if (physical && leaf == "rq_affinity") {
+                promote_runtime_tunable(child, "mode", "0<=value<=2", 0U, 2U);
+            } else if (!physical && child.classification == KernelNodeClassification::RuntimeTunable) {
+                child.classification = KernelNodeClassification::ObservationOnly;
+            }
+            append_unique(nodes, std::move(child), maximum_nodes);
         }
         if (!active_scheduler.empty()) {
             const fs::path iosched = queue / "iosched";
             for (const auto& path : regular_children(iosched)) {
-                append_unique(nodes, observe(path, HardwareDomain::Storage, ProfileSource::Sysfs,
+                auto child = observe(path, HardwareDomain::Storage, ProfileSource::Sysfs,
                     "block.iosched.tunable.unverified", group + ":iosched", scheduler.string(),
-                    active_scheduler, true), maximum_nodes);
+                    active_scheduler, true);
+                child.classification = classification_for_leaf(path.filename().string());
+                // Scheduler-specific child controls are deliberately kept out
+                // of the runtime candidate set until their active-scheduler ABI
+                // and range have an explicit contract in DeviceProfiler.
+                append_unique(nodes, std::move(child), maximum_nodes);
             }
         }
     }
@@ -194,14 +316,31 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
     for (const auto& zram : directories(zram_root, "zram")) {
         if (nodes.size() >= maximum_nodes) break;
         for (const auto& path : regular_children(zram)) {
-            append_unique(nodes, observe(path, HardwareDomain::Memory, ProfileSource::Sysfs,
-                "zram.tunable.unverified", "zram:" + zram.filename().string(), {}, {}, false), maximum_nodes);
+            auto node = observe(path, HardwareDomain::Memory, ProfileSource::Sysfs,
+                "zram.tunable.unverified", "zram:" + zram.filename().string(), {}, {}, false);
+            node.classification = classification_for_leaf(path.filename().string());
+            append_unique(nodes, std::move(node), maximum_nodes);
         }
     }
     const fs::path vm_root = proc / "sys/vm";
     for (const auto& path : regular_children(vm_root)) {
-        append_unique(nodes, observe(path, HardwareDomain::Memory, ProfileSource::Procfs,
-            "vm.tunable.unverified", "vm", {}, {}, false), maximum_nodes);
+        const std::string leaf = path.filename().string();
+        auto node = observe(path, HardwareDomain::Memory, ProfileSource::Procfs,
+            "vm.tunable.unverified", "vm", {}, {}, false);
+        if (leaf == "page-cluster") {
+            node.semantic_id = "vm.page_cluster";
+            promote_runtime_tunable(node, "pages", "0<=value<=8", 0U, 8U);
+        } else if (leaf == "vfs_cache_pressure") {
+            node.semantic_id = "vm.vfs_cache_pressure";
+            promote_runtime_tunable(node, "ratio", "50<=value<=200", 50U, 200U);
+        } else if (leaf == "dirty_background_ratio") {
+            node.semantic_id = "vm.dirty_background_ratio";
+            promote_runtime_tunable(node, "percent", "0<=value<=10", 0U, 10U);
+        } else if (leaf == "dirty_ratio") {
+            node.semantic_id = "vm.dirty_ratio";
+            promote_runtime_tunable(node, "percent", "5<=value<=20", 5U, 20U);
+        }
+        append_unique(nodes, std::move(node), maximum_nodes);
     }
     return nodes;
 }

@@ -123,8 +123,12 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_kernel_node_inventory
         tests/test_kernel_node_inventory.cpp
         src/kernel/kernel_node_inventory.cpp
+        src/kernel/baseline_store.cpp
     )
     target_include_directories(test_kernel_node_inventory PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_kernel_node_inventory PRIVATE pthread)
+    endif()
     add_test(NAME KernelNodeInventoryCoAdaptationTest COMMAND test_kernel_node_inventory)
 
     add_executable(test_cddp
@@ -283,6 +287,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_autonomous_tuner
         tests/test_autonomous_tuner.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/kernel_node_inventory.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
         src/kernel/mount_topology.cpp
