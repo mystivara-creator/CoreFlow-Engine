@@ -363,6 +363,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/kernel_node_inventory.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
         src/kernel/mount_topology.cpp
