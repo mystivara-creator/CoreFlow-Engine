@@ -160,7 +160,7 @@ int main() {
 
         coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(
             fixture.sys.string(), fixture.proc.string());
-        RawDiscoveredEndpoint endpoint{
+        coreflow::platform::RawDiscoveredEndpoint endpoint{
             id(7), "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq",
             AccessCapability::Read, 44};
         CapabilityResolver resolver{};
