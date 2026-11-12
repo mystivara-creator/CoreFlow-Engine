@@ -108,6 +108,65 @@ int main() {
     assert(foreground_group->membership == CgroupMembershipInterface::Tasks);
     assert(!resolver.resolve_foreground_uclamp_group().has_value());
 
+    // CPU-specific targeting must ignore an equally populated cpuset mount.
+    // The two groups deliberately share a label and app membership to reproduce
+    // the old cross-controller tie; app OOM scores are positive and negative.
+    const fs::path cpu_mount = root / "cpu-controller";
+    const fs::path cpuset_mount = root / "cpuset-controller";
+    const fs::path cpu_foreground = cpu_mount / "foreground-set";
+    const fs::path cpuset_foreground = cpuset_mount / "foreground-set";
+    put(proc / "self/mountinfo",
+        "51 30 0:51 / " + mount_escape(cpu_mount.string()) +
+        " rw,nosuid,nodev - cgroup cgroup rw,cpu,cpuacct\n" +
+        "52 30 0:52 / " + mount_escape(cpuset_mount.string()) +
+        " rw,nosuid,nodev - cgroup cgroup rw,cpuset\n");
+    put(cpu_foreground / "cpu.uclamp.min", "0.00\n");
+    put(cpu_foreground / "cpu.uclamp.max", "max\n");
+    put(cpu_foreground / "tasks", "441\n442\n");
+    put(cpu_foreground / "cgroup.procs", "441\n442\n");
+    put(cpuset_foreground / "cpu.uclamp.min", "0.00\n");
+    put(cpuset_foreground / "cpu.uclamp.max", "max\n");
+    put(cpuset_foreground / "tasks", "441\n442\n");
+    put(cpuset_foreground / "cgroup.procs", "441\n442\n");
+    put(proc / "441/status", "Name:\tgame\nUid:\t10123\t10123\t10123\t10123\nTgid:\t441\n");
+    put(proc / "442/status", "Name:\tgame:worker\nUid:\t10123\t10123\t10123\t10123\nTgid:\t442\n");
+    put(proc / "441/oom_score_adj", "100\n");
+    put(proc / "442/oom_score_adj", "-800\n");
+    put(proc / "441/cgroup", "7:cpu,cpuacct:/foreground-set\n3:cpuset:/foreground-set\n");
+    put(proc / "442/cgroup", "7:cpu,cpuacct:/foreground-set\n3:cpuset:/foreground-set\n");
+    const auto ambiguous_generic = resolver.resolve_foreground_group();
+    assert(!ambiguous_generic.has_value());
+    const auto cpu_group = resolver.resolve_foreground_cpu_group();
+    assert(cpu_group.has_value());
+    assert(cpu_group->absolute_path == cpu_foreground.string());
+    assert(cpu_group->verified_user_processes == 2U);
+
+    UclampResolutionStatus uclamp_status = UclampResolutionStatus::NotEvaluated;
+    const auto cpu_uclamp = resolver.resolve_foreground_uclamp_group(&uclamp_status);
+    assert(cpu_uclamp.has_value());
+    assert(cpu_uclamp->absolute_path == cpu_foreground.string());
+    assert(cpu_uclamp->uclamp_write_open_verified);
+    assert(uclamp_status == UclampResolutionStatus::AccessVerified);
+    assert(std::string(MountTopologyResolver::uclamp_resolution_status_name(uclamp_status)) ==
+           "ACCESS_VERIFIED");
+
+    // Unified hierarchy CPU resolution requires CPU to be exposed by
+    // cgroup.controllers and verifies the exact process membership.
+    const fs::path unified_cpu = root / "unified-cpu";
+    const fs::path unified_group = unified_cpu / "nested" / "interactive";
+    put(proc / "self/mountinfo", "61 30 0:61 / " + mount_escape(unified_cpu.string()) +
+        " rw,nosuid,nodev - cgroup2 cgroup rw\n");
+    put(unified_cpu / "cgroup.controllers", "cpu cpuset memory\n");
+    put(unified_group / "cpu.uclamp.min", "0.00\n");
+    put(unified_group / "cpu.uclamp.max", "max\n");
+    put(unified_group / "cgroup.procs", "555\n");
+    put(proc / "555/status", "Name:\tgame\nUid:\t10177\t10177\t10177\t10177\nTgid:\t555\n");
+    put(proc / "555/cgroup", "0::/nested/interactive\n");
+    const auto unified_target = resolver.resolve_foreground_uclamp_group(&uclamp_status);
+    assert(unified_target.has_value());
+    assert(unified_target->absolute_path == unified_group.string());
+    assert(uclamp_status == UclampResolutionStatus::AccessVerified);
+
     fs::remove_all(root);
     std::cout << "Mount topology, cgroup ABI, process membership and UClamp encoding: PASS\n";
     return 0;

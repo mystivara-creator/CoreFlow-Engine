@@ -16,6 +16,17 @@ namespace coreflow {
 enum class CgroupFilesystem : uint8_t { V1, V2 };
 enum class CgroupMembershipInterface : uint8_t { None, Threads, Tasks, Processes };
 enum class UclampEncoding : uint8_t { Unknown, Percent, Capacity1024 };
+enum class UclampResolutionStatus : uint8_t {
+    NotEvaluated = 0,
+    NoCpuCgroupCandidate,
+    AmbiguousCpuCandidate,
+    UclampAbiUnverified,
+    BaselineCaptureFailed,
+    WriteOpenDenied,
+    SelinuxAccessDenied,
+    AccessVerified,
+    MutationEligible,
+};
 
 struct CgroupMount final {
     uint64_t mount_id{0};
@@ -42,6 +53,9 @@ struct CgroupGroupCapability final {
     CgroupMembershipInterface membership{CgroupMembershipInterface::None};
     bool has_process_membership{false};
     bool has_process_list{false};
+    uint32_t verified_user_processes{0};
+    bool uclamp_write_open_verified{false};
+    int uclamp_write_open_errno{0};
 };
 
 struct ProcessCgroupMembership final {
@@ -65,13 +79,20 @@ public:
     [[nodiscard]] const std::string& proc_root() const noexcept { return proc_root_; }
     [[nodiscard]] std::vector<CgroupMount> discover_cgroup_mounts() const;
     [[nodiscard]] std::vector<CgroupGroupCapability> discover_cgroup_groups(
-        std::size_t max_directories = 2048U, unsigned max_depth = 8U) const;
+        std::size_t max_directories = 2048U, unsigned max_depth = 8U,
+        bool cpu_only = false) const;
     [[nodiscard]] std::vector<ProcessCgroupMembership> process_memberships(
         int pid, std::size_t max_bytes = 16384U) const;
     [[nodiscard]] std::optional<ProcessCgroupMembership> resolve_process_membership(
         int pid, const CgroupMount& mount) const;
     [[nodiscard]] std::optional<CgroupGroupCapability> resolve_foreground_group() const;
-    [[nodiscard]] std::optional<CgroupGroupCapability> resolve_foreground_uclamp_group() const;
+    // CPU-only process targeting. cpuset and unrelated controller mounts are
+    // excluded before candidate ranking, and OOM score is not a membership gate.
+    [[nodiscard]] std::optional<CgroupGroupCapability> resolve_foreground_cpu_group() const;
+    [[nodiscard]] std::optional<CgroupGroupCapability> resolve_foreground_uclamp_group(
+        UclampResolutionStatus* status = nullptr) const;
+    [[nodiscard]] static const char* uclamp_resolution_status_name(
+        UclampResolutionStatus status) noexcept;
     [[nodiscard]] std::optional<CgroupGroupCapability> resolve_foreground_io_group() const;
 
     [[nodiscard]] static std::optional<ParsedUclampValue> parse_uclamp_value(

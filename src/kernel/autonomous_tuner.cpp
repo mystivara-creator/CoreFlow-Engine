@@ -52,6 +52,26 @@ bool parse_u64(const std::string& text, uint64_t& out) {
     return res.ec == std::errc{} && res.ptr == trimmed.data() + trimmed.size();
 }
 
+std::vector<std::string> enumerate_attribute_names(const fs::path& directory,
+                                                   std::size_t maximum = 128U) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    fs::directory_iterator it(directory, fs::directory_options::skip_permission_denied, ec);
+    const fs::directory_iterator end;
+    for (; !ec && it != end && names.size() < maximum; it.increment(ec)) {
+        std::error_code status_error;
+        const auto status = it->symlink_status(status_error);
+        if (status_error || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
+        names.push_back(it->path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+bool contains_name(const std::vector<std::string>& names, std::string_view target) {
+    return std::find(names.begin(), names.end(), target) != names.end();
+}
+
 bool is_physical_block_device(std::string_view name) {
     if (name.empty()) return false;
     // Exclude virtual block devices: loop*, ram*, zram*, dm-*, md*, nbd*
@@ -63,6 +83,24 @@ bool is_physical_block_device(std::string_view name) {
     return name.rfind("sd", 0) == 0 ||
            name.rfind("mmcblk", 0) == 0 ||
            name.rfind("nvme", 0) == 0;
+}
+
+double contextual_ucb_score(const CandidateStats& stats,
+                             DynamicWorkloadRegime regime,
+                             uint32_t total_samples) noexcept {
+    const auto index = static_cast<std::size_t>(regime);
+    if (index >= stats.regime_mean_utility.size()) return -1.0;
+    const uint32_t samples = stats.regime_reward_samples[index];
+    const double context_mean = samples > 0U
+        ? stats.regime_mean_utility[index] : stats.mean_utility;
+    const double blended_prior = samples > 0U
+        ? (0.35 * stats.mean_utility + 0.65 * context_mean) : stats.mean_utility;
+    const double explore = 0.25 * std::sqrt(
+        std::log(static_cast<double>(std::max<uint32_t>(1U, total_samples)) + 1.0) /
+        static_cast<double>(samples + 1U));
+    const double rollback_penalty = std::min(0.75,
+        0.15 * static_cast<double>(stats.regime_regressions[index]));
+    return blended_prior + explore - rollback_penalty;
 }
 
 bool is_virtual_block_device(std::string_view name) {
@@ -753,6 +791,9 @@ bool AutonomousTuner::is_candidate_eligible_for_context(
     std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
     const auto* c = find_candidate(id);
     if (c == nullptr || c->ownership_quarantine_ticks > 0) return false;
+    const auto regime_index = static_cast<std::size_t>(current_regime_);
+    if (regime_index < c->regime_cooldown_ticks.size() &&
+        c->regime_cooldown_ticks[regime_index] > 0U) return false;
     if (id == "vm.zram_latency_relief" && !zram_active_) return false;
     if ((id == "cpufreq.schedutil_interactive_response" || id == "thermal.schedutil_damped_pacing") &&
         cpufreq_governor_dirs_.empty()) {
@@ -825,6 +866,45 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
         return WorkloadClass::BackgroundWorkload;
     }
     return WorkloadClass::Idle;
+}
+
+DynamicWorkloadRegime AutonomousTuner::classify_regime(
+    const TunerTelemetryInput& telemetry, WorkloadClass workload) noexcept {
+    const bool thermal_constrained = telemetry.thermal_emergency || telemetry.thermal_guard_active ||
+        (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 65.0) ||
+        (telemetry.thermal_headroom >= 0.0 && telemetry.thermal_headroom <= 0.20);
+    if (thermal_constrained || workload == WorkloadClass::Gaming ||
+        workload == WorkloadClass::CpuBound || workload == WorkloadClass::GpuBound ||
+        workload == WorkloadClass::ThermalConstrained)
+        return DynamicWorkloadRegime::HeavySustained;
+
+    const double io = telemetry.io_psi_valid ? telemetry.io_psi : 0.0;
+    const double memory = telemetry.memory_psi_valid ? telemetry.memory_psi : 0.0;
+    if (io >= 4.0 || memory >= 3.0 || workload == WorkloadClass::StorageIoPressure)
+        return DynamicWorkloadRegime::BurstLoading;
+    if (io >= 1.5 || memory >= 1.5 || workload == WorkloadClass::MemoryPressure ||
+        workload == WorkloadClass::HeavyMultitasking)
+        return DynamicWorkloadRegime::ModerateLoad;
+    if (workload == WorkloadClass::GeneralInteraction ||
+        workload == WorkloadClass::ScrollingAndAnimation ||
+        (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 2.5))
+        return DynamicWorkloadRegime::Interactive;
+    if (workload == WorkloadClass::BackgroundWorkload ||
+        (telemetry.cpu_psi_valid && telemetry.cpu_psi >= 0.5))
+        return DynamicWorkloadRegime::LightLoad;
+    return DynamicWorkloadRegime::IdleDeep;
+}
+
+std::string_view AutonomousTuner::regime_name(DynamicWorkloadRegime regime) noexcept {
+    switch (regime) {
+        case DynamicWorkloadRegime::IdleDeep: return "IDLE_DEEP";
+        case DynamicWorkloadRegime::LightLoad: return "LIGHT_LOAD";
+        case DynamicWorkloadRegime::Interactive: return "INTERACTIVE";
+        case DynamicWorkloadRegime::ModerateLoad: return "MODERATE_LOAD";
+        case DynamicWorkloadRegime::BurstLoading: return "BURST_LOADING";
+        case DynamicWorkloadRegime::HeavySustained: return "HEAVY_SUSTAINED";
+    }
+    return "IDLE_DEEP";
 }
 
 BottleneckKind AutonomousTuner::diagnose_bottleneck(
@@ -902,7 +982,7 @@ std::string AutonomousTuner::compute_fingerprint() const {
 
 void AutonomousTuner::save_persisted_stats() const {
     std::ostringstream out;
-    out << "CFTS7\t" << compute_fingerprint() << "\t"
+    out << "CFTS8\t" << compute_fingerprint() << "\t"
         << total_trials_ << "\t" << total_improved_ << "\t" << total_rolled_back_ << "\t"
         << total_reward_samples_ << "\t" << total_inconclusive_ << "\t" << total_rejected_ << "\t" << noise_floor_;
     for (const double floor : evaluation_noise_floors_) out << "\t" << floor;
@@ -917,11 +997,18 @@ void AutonomousTuner::save_persisted_stats() const {
             << static_cast<uint32_t>(c.last_workload) << "\t"
             << static_cast<uint32_t>(c.last_thermal_bucket) << "\t"
             << c.ownership_loss_count << "\t" << c.ownership_quarantine_ticks << "\t"
-            << sanitize_tsv_field(c.last_rollback_reason) << "\n";
+            << static_cast<uint32_t>(c.last_regime);
+        for (std::size_t i = 0; i < c.regime_reward_samples.size(); ++i) {
+            out << "\t" << c.regime_reward_samples[i]
+                << "\t" << c.regime_mean_utility[i]
+                << "\t" << c.regime_regressions[i]
+                << "\t" << c.regime_cooldown_ticks[i];
+        }
+        out << "\t" << sanitize_tsv_field(c.last_rollback_reason) << "\n";
     }
     std::string payload = out.str();
     if (!out.good() || payload.size() > 256U * 1024U - 64U) return;
-    payload += "CFTS7_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
+    payload += "CFTS8_END\t" + std::to_string(tuner_state_checksum(payload)) + "\n";
 
     UniqueFd dir = open_state_directory(resolve_state_dir(), true);
     if (!dir.valid()) return;
@@ -965,10 +1052,13 @@ void AutonomousTuner::load_persisted_stats() {
 
     bool has_checksum = false;
     std::string checksum_footer_magic;
+    const size_t footer_pos8 = payload.rfind("CFTS8_END\t");
     const size_t footer_pos7 = payload.rfind("CFTS7_END\t");
     const size_t footer_pos6 = payload.rfind("CFTS6_END\t");
-    if (footer_pos7 != std::string::npos && footer_pos6 != std::string::npos) return;
-    const size_t footer_pos = footer_pos7 != std::string::npos ? footer_pos7 : footer_pos6;
+    if ((footer_pos8 != std::string::npos) + (footer_pos7 != std::string::npos) +
+        (footer_pos6 != std::string::npos) > 1) return;
+    const size_t footer_pos = footer_pos8 != std::string::npos ? footer_pos8 :
+        (footer_pos7 != std::string::npos ? footer_pos7 : footer_pos6);
     if (footer_pos != std::string::npos) {
         if (footer_pos > 0 && payload[footer_pos - 1] != '\n') return;
         const std::string footer = payload.substr(footer_pos);
@@ -976,7 +1066,8 @@ void AutonomousTuner::load_persisted_stats() {
         std::string extra;
         uint64_t stored_checksum = 0;
         if (!(footer_stream >> checksum_footer_magic >> stored_checksum) ||
-            (checksum_footer_magic != "CFTS7_END" && checksum_footer_magic != "CFTS6_END") ||
+            (checksum_footer_magic != "CFTS8_END" && checksum_footer_magic != "CFTS7_END" &&
+             checksum_footer_magic != "CFTS6_END") ||
             (footer_stream >> extra)) return;
         payload.resize(footer_pos);
         if (tuner_state_checksum(payload) != stored_checksum) return;
@@ -990,9 +1081,10 @@ void AutonomousTuner::load_persisted_stats() {
     std::string magic, fp, extra;
     uint32_t trials = 0, improved = 0, rolled_back = 0;
     if (!(hs >> magic >> fp >> trials >> improved >> rolled_back)) return;
-    if ((magic == "CFTS7" && (!has_checksum || checksum_footer_magic != "CFTS7_END")) ||
+    if ((magic == "CFTS8" && (!has_checksum || checksum_footer_magic != "CFTS8_END")) ||
+        (magic == "CFTS7" && (!has_checksum || checksum_footer_magic != "CFTS7_END")) ||
         (magic == "CFTS6" && (!has_checksum || checksum_footer_magic != "CFTS6_END")) ||
-        (magic != "CFTS7" && magic != "CFTS6" && has_checksum)) return;
+        (magic != "CFTS8" && magic != "CFTS7" && magic != "CFTS6" && has_checksum)) return;
 
     const std::string current_fp = compute_fingerprint();
     uint32_t persisted_reward_samples = 0;
@@ -1001,12 +1093,12 @@ void AutonomousTuner::load_persisted_stats() {
     double loaded_noise_floor = 0.05;
     std::array<double, 4> loaded_domain_floors{{0.05, 0.05, 0.05, 0.05}};
 
-    if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
+    if (magic == "CFTS8" || magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4") {
         if (fp != current_fp ||
             !(hs >> persisted_reward_samples >> loaded_inconclusive >> loaded_rejected >> loaded_noise_floor) ||
             persisted_reward_samples > trials ||
             !std::isfinite(loaded_noise_floor) || loaded_noise_floor < 0.02 || loaded_noise_floor > 0.45) return;
-        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5") {
+        if (magic == "CFTS8" || magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5") {
             for (auto& floor : loaded_domain_floors) {
                 if (!(hs >> floor) || !std::isfinite(floor) || floor < 0.02 || floor > 0.45) return;
             }
@@ -1042,6 +1134,11 @@ void AutonomousTuner::load_persisted_stats() {
         uint32_t aborted{0}, preempted{0}, recovery_required{0}, cooldown{0}, consecutive_non_improved{0};
         uint32_t inconclusive{0}, rejected{0}, workload{0}, thermal_bucket{0};
         uint32_t ownership_losses{0}, quarantine_ticks{0};
+        uint32_t last_regime{0};
+        std::array<double, 6> regime_means{};
+        std::array<uint32_t, 6> regime_samples{};
+        std::array<uint32_t, 6> regime_regressions{};
+        std::array<uint32_t, 6> regime_cooldowns{};
         std::string rollback_reason;
     };
     std::vector<ParsedCandidate> parsed;
@@ -1057,10 +1154,10 @@ void AutonomousTuner::load_persisted_stats() {
             !std::isfinite(saved.mean_utility) || saved.mean_utility < 0.05 || saved.mean_utility > 2.50 ||
             !std::isfinite(saved.mean_utility_delta)) return;
 
-        const bool current_schema = magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
+        const bool current_schema = magic == "CFTS8" || magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4";
         if (current_schema) {
             if (!(ls >> saved.reward_samples >> saved.improved >> saved.regressed >> saved.neutral >> saved.aborted)) return;
-            if (magic == "CFTS7" && !(ls >> saved.preempted)) return;
+            if ((magic == "CFTS8" || magic == "CFTS7") && !(ls >> saved.preempted)) return;
             if (!(ls >> saved.recovery_required >> saved.cooldown >> saved.consecutive_non_improved)) return;
             // Legacy CFTS3 counters were retained during the R1 migration while
             // reward_samples intentionally started at zero. Do not reinterpret those
@@ -1089,8 +1186,22 @@ void AutonomousTuner::load_persisted_stats() {
         saved.workload = std::min<uint32_t>(saved.workload, 10U);
         saved.thermal_bucket = std::min<uint32_t>(saved.thermal_bucket, 4U);
 
-        if (magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
+        if (magic == "CFTS8" || magic == "CFTS7" || magic == "CFTS6" || magic == "CFTS5" || magic == "CFTS4" || magic == "CFTS3") {
             if (!(ls >> saved.ownership_losses >> saved.quarantine_ticks)) return;
+        }
+        if (magic == "CFTS8") {
+            if (!(ls >> saved.last_regime) || saved.last_regime >= 6U) return;
+            for (std::size_t i = 0; i < saved.regime_samples.size(); ++i) {
+                if (!(ls >> saved.regime_samples[i] >> saved.regime_means[i] >>
+                      saved.regime_regressions[i] >> saved.regime_cooldowns[i])) return;
+                if (saved.regime_samples[i] > saved.reward_samples ||
+                    !std::isfinite(saved.regime_means[i]) ||
+                    (saved.regime_samples[i] > 0U &&
+                     (saved.regime_means[i] < 0.05 || saved.regime_means[i] > 2.50)) ||
+                    (saved.regime_samples[i] == 0U && saved.regime_means[i] != 0.0) ||
+                    saved.regime_regressions[i] > saved.trials ||
+                    saved.regime_cooldowns[i] > 64U) return;
+            }
         }
         if (!std::getline(ls, saved.rollback_reason)) return;
         if (!saved.rollback_reason.empty() && saved.rollback_reason.front() == '\t')
@@ -1139,6 +1250,13 @@ void AutonomousTuner::load_persisted_stats() {
             candidate->rejected_count = saved.rejected;
             candidate->last_workload = static_cast<WorkloadClass>(saved.workload);
             candidate->last_thermal_bucket = static_cast<uint8_t>(saved.thermal_bucket);
+            if (magic == "CFTS8") {
+                candidate->last_regime = static_cast<DynamicWorkloadRegime>(saved.last_regime);
+                candidate->regime_reward_samples = saved.regime_samples;
+                candidate->regime_mean_utility = saved.regime_means;
+                candidate->regime_regressions = saved.regime_regressions;
+                candidate->regime_cooldown_ticks = saved.regime_cooldowns;
+            }
             candidate->ownership_loss_count = saved.ownership_losses;
             candidate->ownership_quarantine_ticks = saved.quarantine_ticks;
             candidate->last_rollback_reason = saved.rollback_reason == "-" ? "" : saved.rollback_reason;
@@ -1290,39 +1408,29 @@ void AutonomousTuner::classify_discovered_resources() {
         const std::string pol_name = it->path().filename().string();
         if (pol_name.rfind("policy", 0) != 0) continue;
 
-        const std::string active_gov = DaemonConfig::trim(read_first_line((it->path() / "scaling_governor").string()));
-        for (const char* gov : {"schedutil", "walt"}) {
-            const fs::path gdir = it->path() / gov;
-            if (!fs::is_directory(gdir, cpu_ec) || cpu_ec) continue;
-            const std::string up_path = (gdir / "up_rate_limit_us").string();
-            const std::string down_path = (gdir / "down_rate_limit_us").string();
-            const bool gov_matches = active_gov.empty() || active_gov == gov;
-            const bool both_exist = fs::exists(up_path, cpu_ec) && fs::exists(down_path, cpu_ec);
-            const bool both_w = (::access(up_path.c_str(), R_OK | W_OK) == 0) &&
-                                (::access(down_path.c_str(), R_OK | W_OK) == 0);
-
-            ResourcePermissionClass perm = ResourcePermissionClass::VerifiedConstraints;
-            std::string reason = "Verified EAS governor rate-limit pair";
-            if (!both_exist) {
-                perm = ResourcePermissionClass::IncompleteMetadata;
-                reason = "Missing companion rate-limit node";
-            } else if (!gov_matches) {
-                perm = ResourcePermissionClass::WritableButUnsafe;
-                reason = "scaling_governor (" + active_gov + ") does not match " + gov;
-            } else if (!both_w) {
-                perm = ResourcePermissionClass::ReadOnly;
-                reason = "Governor rate-limit node is read-only";
-            }
-            discovered_resources_.push_back(DiscoveredResourceMetadata{
-                .path = up_path,
-                .domain = MutationDomain::CpuPolicy,
-                .permission_class = perm,
-                .unit = "microseconds",
-                .range_provenance = "[500..10000] relative/bounded",
-                .baseline_value = read_first_line(up_path),
-                .reason = reason,
-            });
-        }
+        const std::string active_gov = DaemonConfig::trim(
+            read_first_line((it->path() / "scaling_governor").string()));
+        if (active_gov.empty()) continue;
+        const fs::path governor_dir = it->path() / active_gov;
+        std::error_code governor_ec;
+        if (!fs::is_directory(governor_dir, governor_ec) || governor_ec) continue;
+        const std::string up_path = (governor_dir / "up_rate_limit_us").string();
+        const std::string down_path = (governor_dir / "down_rate_limit_us").string();
+        const bool both_exist = fs::is_regular_file(up_path, governor_ec) && !governor_ec &&
+                                fs::is_regular_file(down_path, governor_ec) && !governor_ec;
+        const bool both_w = both_exist && (::access(up_path.c_str(), R_OK | W_OK) == 0) &&
+                            (::access(down_path.c_str(), R_OK | W_OK) == 0);
+        discovered_resources_.push_back(DiscoveredResourceMetadata{
+            .path = up_path,
+            .domain = MutationDomain::CpuPolicy,
+            .permission_class = !both_exist ? ResourcePermissionClass::IncompleteMetadata :
+                both_w ? ResourcePermissionClass::WritableButUnsafe : ResourcePermissionClass::ReadOnly,
+            .unit = "microseconds",
+            .range_provenance = "Active governor pair; ABI-specific limits require verified contract",
+            .baseline_value = read_first_line(up_path),
+            .reason = both_w ? "Active governor pair discovered; no policy value changed during discovery" :
+                "Active governor pair incomplete or not writable",
+        });
     }
 
     }
@@ -1407,6 +1515,9 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
         parse_scheduler_line(sched_raw, surface.active_scheduler, surface.available_schedulers);
         if (surface.active_scheduler.empty()) continue;
         surface.baseline_scheduler = surface.active_scheduler;
+        surface.queue_tunables = enumerate_attribute_names(qdir);
+        surface.iosched_tunables = enumerate_attribute_names(qdir / "iosched");
+        surface.scheduler_generation = 1U;
 
         uint64_t val = 0;
         if (parse_u64(read_first_line((qdir / "read_ahead_kb").string()), val)) {
@@ -1424,7 +1535,7 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
         }
 
         const fs::path iosched = qdir / "iosched";
-        if (fs::is_directory(iosched, ec) && !ec) {
+        if (fs::is_directory(iosched, ec) && !ec && !surface.iosched_tunables.empty()) {
             surface.has_iosched_tunables = true;
             if (parse_u64(read_first_line((iosched / "read_expire").string()), val)) {
                 surface.read_expire_ms = val;
@@ -1489,24 +1600,17 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
          it.increment(cpu_ec)) {
         const std::string pol_name = it->path().filename().string();
         if (pol_name.rfind("policy", 0) != 0) continue;
-
         const fs::path scaling_gov_path = it->path() / "scaling_governor";
         const std::string active_gov = DaemonConfig::trim(read_first_line(scaling_gov_path.string()));
-
-        for (const char* gov : {"schedutil", "walt"}) {
-            if (!active_gov.empty() && active_gov != gov) {
-                continue;
-            }
-            const fs::path gdir = it->path() / gov;
-            const std::string up_path = (gdir / "up_rate_limit_us").string();
-            const std::string down_path = (gdir / "down_rate_limit_us").string();
-            if (::access(up_path.c_str(), R_OK | W_OK) == 0 &&
-                ::access(down_path.c_str(), R_OK | W_OK) == 0) {
-                (void)store.capture(up_path);
-                (void)store.capture(down_path);
-                cpufreq_governor_dirs_.push_back(gdir.string());
-                break;
-            }
+        if (active_gov.empty()) continue;
+        const fs::path governor_dir = it->path() / active_gov;
+        const std::string up_path = (governor_dir / "up_rate_limit_us").string();
+        const std::string down_path = (governor_dir / "down_rate_limit_us").string();
+        if (::access(up_path.c_str(), R_OK | W_OK) == 0 &&
+            ::access(down_path.c_str(), R_OK | W_OK) == 0) {
+            (void)store.capture(up_path);
+            (void)store.capture(down_path);
+            cpufreq_governor_dirs_.push_back(governor_dir.string());
         }
     }
     }
@@ -1528,8 +1632,17 @@ void AutonomousTuner::refresh_surface_readings() {
         std::string active;
         std::vector<std::string> avail;
         parse_scheduler_line(read_first_line(q.queue_dir + "/scheduler"), active, avail);
+        const bool parent_policy_changed = !active.empty() && active != q.active_scheduler;
         if (!active.empty()) q.active_scheduler = active;
         if (!avail.empty()) q.available_schedulers = std::move(avail);
+        if (parent_policy_changed || q.scheduler_generation == 0U) {
+            // Scheduler-specific ABI children are invalidated by a parent policy
+            // transition. Re-enumerate the currently active iosched directory now.
+            q.queue_tunables = enumerate_attribute_names(q.queue_dir);
+            q.iosched_tunables = enumerate_attribute_names(fs::path(q.queue_dir) / "iosched");
+            q.has_iosched_tunables = !q.iosched_tunables.empty();
+            ++q.scheduler_generation;
+        }
 
         uint64_t val = 0;
         if (parse_u64(read_first_line(q.queue_dir + "/read_ahead_kb"), val)) {
@@ -1987,6 +2100,7 @@ bool AutonomousTuner::apply_transaction(
         settling_ticks_remaining_ = stats->settling_ticks;
         stats->last_workload = current_workload_;
         stats->last_thermal_bucket = compute_thermal_bucket(telemetry);
+        stats->last_regime = current_regime_;
         stats->last_before_summary = std::move(before_summary);
         stats->last_after_summary = std::move(after_summary);
     } else {
@@ -2171,6 +2285,17 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_enum_ = TunerVerdict::Improved;
         ++total_improved_;
         if (stats != nullptr) {
+            const auto regime_index = static_cast<std::size_t>(stats->last_regime);
+            if (regime_index < stats->regime_reward_samples.size()) {
+                const uint32_t samples = stats->regime_reward_samples[regime_index];
+                const double reward = std::clamp(0.5 + utility_delta, 0.05, 2.50);
+                ++stats->regime_reward_samples[regime_index];
+                stats->regime_mean_utility[regime_index] = samples == 0U ? reward :
+                    (stats->regime_mean_utility[regime_index] * static_cast<double>(samples) + reward) /
+                    static_cast<double>(samples + 1U);
+                if (stats->regime_cooldown_ticks[regime_index] > 0U)
+                    stats->regime_cooldown_ticks[regime_index] = 0U;
+            }
             ++stats->improved_count;
             stats->successes = stats->improved_count;
             stats->consecutive_non_improved = 0;
@@ -2191,6 +2316,18 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_enum_ = TunerVerdict::Regressed;
         ++total_rolled_back_;
         if (stats != nullptr) {
+            const auto regime_index = static_cast<std::size_t>(stats->last_regime);
+            if (regime_index < stats->regime_reward_samples.size()) {
+                const uint32_t samples = stats->regime_reward_samples[regime_index];
+                const double reward = std::clamp(0.5 + utility_delta, 0.05, 2.50);
+                ++stats->regime_reward_samples[regime_index];
+                stats->regime_mean_utility[regime_index] = samples == 0U ? reward :
+                    (stats->regime_mean_utility[regime_index] * static_cast<double>(samples) + reward) /
+                    static_cast<double>(samples + 1U);
+                ++stats->regime_regressions[regime_index];
+                const uint32_t shift = std::min<uint32_t>(3U, stats->regime_regressions[regime_index] - 1U);
+                stats->regime_cooldown_ticks[regime_index] = std::min<uint32_t>(64U, 8U * (1U << shift));
+            }
             ++stats->regressed_count;
             stats->rollbacks = stats->regressed_count;
             ++stats->consecutive_non_improved;
@@ -2213,6 +2350,18 @@ void AutonomousTuner::evaluate_observation_window(const TunerTelemetryInput& lat
         last_verdict_enum_ = TunerVerdict::Neutral;
         ++total_rolled_back_;
         if (stats != nullptr) {
+            const auto regime_index = static_cast<std::size_t>(stats->last_regime);
+            if (regime_index < stats->regime_reward_samples.size()) {
+                const uint32_t samples = stats->regime_reward_samples[regime_index];
+                const double reward = std::clamp(0.5 + utility_delta, 0.05, 2.50);
+                ++stats->regime_reward_samples[regime_index];
+                stats->regime_mean_utility[regime_index] = samples == 0U ? reward :
+                    (stats->regime_mean_utility[regime_index] * static_cast<double>(samples) + reward) /
+                    static_cast<double>(samples + 1U);
+                const uint32_t shift = std::min<uint32_t>(3U, stats->regime_regressions[regime_index]);
+                stats->regime_cooldown_ticks[regime_index] = std::max<uint32_t>(
+                    stats->regime_cooldown_ticks[regime_index], 4U * (1U << shift));
+            }
             ++stats->neutral_count;
             ++stats->consecutive_non_improved;
             stats->adaptive_scale = std::max(0.50, stats->adaptive_scale * 0.90);
@@ -2295,6 +2444,12 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             --c.ownership_quarantine_ticks;
             cooldown_changed = true;
         }
+        for (auto& regime_cooldown : c.regime_cooldown_ticks) {
+            if (regime_cooldown > 0U) {
+                --regime_cooldown;
+                cooldown_changed = true;
+            }
+        }
     }
     if (cooldown_changed) {
         save_persisted_stats();
@@ -2302,6 +2457,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     // Update workload classification, bottleneck diagnosis, and optimization objective
     current_workload_ = classify_workload(telemetry);
+    current_regime_ = classify_regime(telemetry, current_workload_);
     if (foreground_task_resolver_) {
         const bool foreground_render_workload =
             current_workload_ == WorkloadClass::Gaming ||
@@ -2762,15 +2918,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // Priority A: I/O Latency & Queue Bottleneck -> Select highest-UCB1 eligible I/O candidate
     if (io_bottleneck && !block_queues_.empty()) {
         const auto& primary_q = block_queues_.front();
-        const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
 
         auto score_candidate = [&](std::string_view id, double domain_bonus = 0.0) -> double {
             // Strict admission gate BEFORE any UCB1 or domain bonus calculation
             if (!is_candidate_eligible_for_context(id, current_workload_, thermal_bucket)) return -1.0;
             const auto* s = find_candidate(id);
             if (s == nullptr) return -1.0;
-            const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(s->reward_samples + 1));
-            return s->mean_utility + explore + domain_bonus;
+            const double context_score = contextual_ucb_score(*s, current_regime_, total_reward_samples_);
+            return context_score + domain_bonus;
         };
 
         const bool any_mq_deadline = std::any_of(block_queues_.begin(), block_queues_.end(), [](const auto& q) {
@@ -2823,7 +2978,9 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "mq-deadline")) continue;
                 steps.push_back({q.queue_dir + "/scheduler", "mq-deadline", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                if (q.has_iosched_tunables) {
+                if (q.has_iosched_tunables && contains_name(q.iosched_tunables, "read_expire") &&
+                    contains_name(q.iosched_tunables, "writes_starved") &&
+                    contains_name(q.iosched_tunables, "fifo_batch")) {
                     const std::string read_exp_path = q.queue_dir + "/iosched/read_expire";
                     const uint64_t rel_read_expire = compute_relative_u64(read_exp_path, q.read_expire_ms, 0.50, 100, 2000, scale);
                     steps.push_back({read_exp_path, std::to_string(rel_read_expire), "Coupled-with", StepRelation::RequiredDependent});
@@ -2836,11 +2993,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                     const uint64_t rel_fifo = compute_relative_u64(fifo_path, q.fifo_batch, 0.50, 1, 64, scale);
                     steps.push_back({fifo_path, std::to_string(rel_fifo), "Coupled-with", StepRelation::RequiredDependent});
                 }
-                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
+                if (contains_name(q.queue_tunables, "rq_affinity"))
+                    steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
 
-                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
-                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
+                if (contains_name(q.queue_tunables, "read_ahead_kb")) {
+                    const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                    const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
+                    steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
+                }
             }
             (void)apply_transaction(
                 "io.mq_deadline_low_latency",
@@ -2851,6 +3011,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                     " to mq-deadline with relative 0.5x read_expire & fifo_batch scaling from OEM baseline.",
                 steps,
                 telemetry);
+            refresh_surface_readings();
             return snapshot();
         }
 
@@ -2861,14 +3022,18 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
             for (const auto& q : block_queues_) {
                 if (!contains_token(q.available_schedulers, "kyber")) continue;
                 steps.push_back({q.queue_dir + "/scheduler", "kyber", "Anchor (Required-before)", StepRelation::RequiredAnchor});
-                const std::string nr_req_path = q.queue_dir + "/nr_requests";
-                const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
-                steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
-
-                const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
-                const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 1.00, 64, 2048, scale);
-                steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
-                steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
+                if (contains_name(q.queue_tunables, "nr_requests")) {
+                    const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                    const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
+                    steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
+                }
+                if (contains_name(q.queue_tunables, "read_ahead_kb")) {
+                    const std::string readahead_path = q.queue_dir + "/read_ahead_kb";
+                    const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 1.00, 64, 2048, scale);
+                    steps.push_back({readahead_path, std::to_string(rel_readahead), "Coupled-with", StepRelation::RequiredDependent});
+                }
+                if (contains_name(q.queue_tunables, "rq_affinity"))
+                    steps.push_back({q.queue_dir + "/rq_affinity", "2", "Coupled-with", StepRelation::RequiredDependent});
             }
             (void)apply_transaction(
                 "io.kyber_token_bucket",
@@ -2879,6 +3044,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                     primary_q.active_scheduler + " to kyber token-bucket arbitration with relative baseline scaling.",
                 steps,
                 telemetry);
+            refresh_surface_readings();
             return snapshot();
         }
 
@@ -2901,6 +3067,7 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                     "%); evaluating bfq proportional-share scheduler against OEM baseline with relative read-ahead scaling.",
                 steps,
                 telemetry);
+            refresh_surface_readings();
             return snapshot();
         }
 
@@ -2913,9 +3080,11 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 const uint64_t rel_readahead = compute_relative_u64(readahead_path, q.baseline_read_ahead_kb, 2.00, 64, 2048, scale);
                 steps.push_back({readahead_path, std::to_string(rel_readahead), "Anchor (Required-before)", StepRelation::RequiredAnchor});
 
-                const std::string nr_req_path = q.queue_dir + "/nr_requests";
-                const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
-                steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
+                if (contains_name(q.queue_tunables, "nr_requests")) {
+                    const std::string nr_req_path = q.queue_dir + "/nr_requests";
+                    const uint64_t rel_nr_requests = compute_relative_u64(nr_req_path, q.baseline_nr_requests, 2.00, 32, 512, scale);
+                    steps.push_back({nr_req_path, std::to_string(rel_nr_requests), "Coupled-with", StepRelation::RequiredDependent});
+                }
             }
             (void)apply_transaction(
                 "io.queue_readahead_pacing",
@@ -2994,6 +3163,8 @@ AutonomousDecisionSnapshot AutonomousTuner::snapshot() const {
     out.active_intent = operational_ ? current_intent_ : "StartupBaselineObservation";
     out.intent = out.active_intent;
     out.workload_class = current_workload_;
+    out.workload_regime = current_regime_;
+    out.regime_name = std::string(regime_name(current_regime_));
     out.workload_name = std::string(workload_class_name(current_workload_));
     out.bottleneck = current_bottleneck_;
     out.bottleneck_name = std::string(bottleneck_kind_name(current_bottleneck_));

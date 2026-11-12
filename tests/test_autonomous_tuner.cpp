@@ -1453,8 +1453,8 @@ int main() {
     std::ifstream state_input(state_file, std::ios::binary);
     const std::string state_payload((std::istreambuf_iterator<char>(state_input)),
                                     std::istreambuf_iterator<char>());
-    assert(state_payload.rfind("CFTS7\t", 0) == 0);
-    assert(state_payload.find("CFTS7_END\t") != std::string::npos);
+    assert(state_payload.rfind("CFTS8\t", 0) == 0);
+    assert(state_payload.find("CFTS8_END\t") != std::string::npos);
 
     for (const auto& entry : fs::directory_iterator(root)) {
         assert(entry.path().filename().string().rfind("tuner_stats.state.tmp.", 0) != 0);

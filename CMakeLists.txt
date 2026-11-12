@@ -65,6 +65,7 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/input_event_source.cpp
     src/kernel/foreground_task_resolver.cpp
     src/kernel/device_profiler.cpp
+    src/kernel/kernel_node_inventory.cpp
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
     src/semantic/domain_evidence_aggregator.cpp
@@ -119,9 +120,17 @@ if(CORE_FLOW_BUILD_TESTS)
     target_include_directories(test_mount_topology PRIVATE include)
     add_test(NAME MountTopologyDynamicDiscoveryTest COMMAND test_mount_topology)
 
+    add_executable(test_kernel_node_inventory
+        tests/test_kernel_node_inventory.cpp
+        src/kernel/kernel_node_inventory.cpp
+    )
+    target_include_directories(test_kernel_node_inventory PRIVATE include)
+    add_test(NAME KernelNodeInventoryCoAdaptationTest COMMAND test_kernel_node_inventory)
+
     add_executable(test_cddp
         tests/test_cddp.cpp
         src/kernel/device_profiler.cpp
+        src/kernel/kernel_node_inventory.cpp
         src/kernel/thermal_monitor.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/autonomous_tuner.cpp
@@ -150,6 +159,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_p3_intent_actuator
         tests/test_p3_intent_actuator.cpp
         src/kernel/device_profiler.cpp
+        src/kernel/kernel_node_inventory.cpp
         src/kernel/mount_topology.cpp
         src/kernel/intent_actuator.cpp
         src/mutation/intent_actuator.cpp

@@ -2,15 +2,18 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cerrno>
 #include <cmath>
 #include <dirent.h>
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <string_view>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace coreflow {
 namespace fs = std::filesystem;
@@ -116,6 +119,8 @@ bool relevant_mount(const CgroupMount& mount) {
            has_token(mount.controllers, "cpuset");
 }
 
+bool cpu_controller_mount(const CgroupMount& mount);
+
 std::string membership_join(const CgroupMount& mount, std::string_view relative) {
     if (relative.empty()) return mount.mount_point;
     return (fs::path(mount.mount_point) / fs::path(relative)).lexically_normal().string();
@@ -166,10 +171,15 @@ std::vector<CgroupMount> MountTopologyResolver::discover_cgroup_mounts() const {
 }
 
 std::vector<CgroupGroupCapability> MountTopologyResolver::discover_cgroup_groups(
-    std::size_t max_directories, unsigned max_depth) const {
+    std::size_t max_directories, unsigned max_depth, bool cpu_only) const {
     std::vector<CgroupGroupCapability> groups;
     if (max_directories == 0U) return groups;
-    const auto mounts = discover_cgroup_mounts();
+    auto mounts = discover_cgroup_mounts();
+    if (cpu_only) {
+        mounts.erase(std::remove_if(mounts.begin(), mounts.end(), [](const CgroupMount& mount) {
+            return !cpu_controller_mount(mount);
+        }), mounts.end());
+    }
     std::size_t visited = 0;
     for (const auto& mount : mounts) {
         struct Pending { fs::path path; unsigned depth; };
@@ -277,11 +287,37 @@ std::vector<ProcessCgroupMembership> MountTopologyResolver::process_memberships(
 
 std::optional<ProcessCgroupMembership> MountTopologyResolver::resolve_process_membership(
     int pid, const CgroupMount& mount) const {
-    const auto memberships = process_memberships(pid);
-    const auto found = std::find_if(memberships.begin(), memberships.end(), [&](const auto& item) {
-        return item.mount.mount_id == mount.mount_id && item.mount.mount_point == mount.mount_point;
-    });
-    return found == memberships.end() ? std::nullopt : std::optional<ProcessCgroupMembership>(*found);
+    if (pid <= 0) return std::nullopt;
+    const auto content = read_small(fs::path(proc_root_) / std::to_string(pid) / "cgroup", 16384U);
+    if (!content) return std::nullopt;
+    std::istringstream lines(*content);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto first = line.find(':');
+        const auto second = first == std::string::npos ? std::string::npos : line.find(':', first + 1U);
+        if (first == std::string::npos || second == std::string::npos) continue;
+        const std::string_view hierarchy(line.data(), first);
+        const std::string_view controllers(line.data() + first + 1U, second - first - 1U);
+        uint64_t hierarchy_id = 0U;
+        const bool parsed_hierarchy = parse_u64(hierarchy, hierarchy_id);
+        const auto active = split(controllers, ',');
+        const bool matches = mount.filesystem == CgroupFilesystem::V2
+            ? parsed_hierarchy && hierarchy_id == 0U && controllers.empty()
+            : std::any_of(active.begin(), active.end(), [&](const std::string& token) {
+                  return has_token(mount.controllers, token);
+              });
+        if (!matches) continue;
+        std::string cgroup_path = line.substr(second + 1U);
+        if (!safe_absolute_path(cgroup_path) || !path_is_within(cgroup_path, mount.root))
+            return std::nullopt;
+        ProcessCgroupMembership item{};
+        item.mount = mount;
+        item.cgroup_path = cgroup_path;
+        item.relative_path = relative_to_root(cgroup_path, mount.root);
+        item.absolute_path = membership_join(mount, item.relative_path);
+        return item;
+    }
+    return std::nullopt;
 }
 
 std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_group() const {
@@ -361,11 +397,173 @@ std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_g
     return best->group;
 }
 
-std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_uclamp_group() const {
-    const auto foreground = resolve_foreground_group();
-    if (!foreground || !foreground->has_uclamp_min || !foreground->has_uclamp_max ||
-        foreground->uclamp_min_path.empty() || foreground->uclamp_max_path.empty()) return std::nullopt;
-    return foreground;
+namespace {
+
+bool cpu_controller_mount(const CgroupMount& mount) {
+    if (mount.filesystem == CgroupFilesystem::V1) {
+        return has_token(mount.controllers, "cpu") || has_token(mount.controllers, "cpuctl");
+    }
+    // cgroup2's mount options do not carry controller names. The controller
+    // must be advertised by the mounted hierarchy before it is considered.
+    const auto controllers = read_small(fs::path(mount.mount_point) / "cgroup.controllers", 4096U);
+    if (!controllers) return false;
+    std::istringstream input(*controllers);
+    std::string token;
+    while (input >> token) if (token == "cpu") return true;
+    return false;
+}
+
+bool read_app_identity(const std::string& proc_root, const std::string& id,
+                       uint64_t& uid) {
+    const auto status = read_small(fs::path(proc_root) / id / "status", 16384U);
+    if (!status) return false;
+    std::istringstream lines(*status);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.rfind("Uid:", 0) != 0) continue;
+        std::istringstream values(line.substr(4));
+        return static_cast<bool>(values >> uid) && uid >= 10000U;
+    }
+    return false;
+}
+
+bool probe_write_open(const std::string& path, int& error) noexcept {
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) {
+        error = errno;
+        return false;
+    }
+    (void)::close(fd);
+    error = 0;
+    return true;
+}
+
+bool group_has_verified_app_process(const MountTopologyResolver& resolver,
+                                    const CgroupGroupCapability& group,
+                                    const std::string& proc_root,
+                                    uint32_t& count) {
+    count = 0;
+    fs::path membership_file;
+    if (group.has_process_list) membership_file = fs::path(group.absolute_path) / "cgroup.procs";
+    else if (group.membership == CgroupMembershipInterface::Threads)
+        membership_file = fs::path(group.absolute_path) / "cgroup.threads";
+    else if (group.membership == CgroupMembershipInterface::Tasks)
+        membership_file = fs::path(group.absolute_path) / "tasks";
+    if (membership_file.empty()) return false;
+
+    const auto ids_text = read_small(membership_file, 32768U);
+    if (!ids_text) return false;
+    std::istringstream ids(*ids_text);
+    std::string token;
+    std::set<int> checked_ids;
+    while (ids >> token) {
+        uint64_t parsed_id = 0;
+        if (!parse_u64(token, parsed_id) || parsed_id == 0U || parsed_id > 2147483647U) continue;
+        const int id = static_cast<int>(parsed_id);
+        if (!checked_ids.insert(id).second) continue;
+        uint64_t uid = 0;
+        if (!read_app_identity(proc_root, token, uid)) continue;
+        // Verify the exact PID/TID listed in the group, not only its TGID. This
+        // matters on Android's legacy tasks ABI where individual threads move.
+        const auto membership = resolver.resolve_process_membership(id, group.mount);
+        if (!membership || membership->absolute_path != group.absolute_path) continue;
+        ++count;
+    }
+    return count > 0U;
+}
+
+} // namespace
+
+std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_cpu_group() const {
+    const auto groups = discover_cgroup_groups(4096U, 8U, true);
+    std::vector<CgroupGroupCapability> candidates;
+    for (auto group : groups) {
+        if (group.mount.read_only || !cpu_controller_mount(group.mount) ||
+            group.membership == CgroupMembershipInterface::None) continue;
+        uint32_t app_count = 0;
+        if (!group_has_verified_app_process(*this, group, proc_root_, app_count)) continue;
+        group.verified_user_processes = app_count;
+        candidates.push_back(std::move(group));
+    }
+    if (candidates.empty()) return std::nullopt;
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.verified_user_processes != rhs.verified_user_processes)
+            return lhs.verified_user_processes > rhs.verified_user_processes;
+        if (lhs.mount.mount_id != rhs.mount.mount_id) return lhs.mount.mount_id < rhs.mount.mount_id;
+        return lhs.absolute_path < rhs.absolute_path;
+    });
+    if (candidates.size() > 1U &&
+        candidates[0].verified_user_processes == candidates[1].verified_user_processes) {
+        return std::nullopt;
+    }
+    return candidates.front();
+}
+
+std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_uclamp_group(
+    UclampResolutionStatus* status) const {
+    if (status) *status = UclampResolutionStatus::NoCpuCgroupCandidate;
+    const auto groups = discover_cgroup_groups(4096U, 8U, true);
+    std::vector<CgroupGroupCapability> app_groups;
+    std::vector<CgroupGroupCapability> abi_candidates;
+    for (auto group : groups) {
+        if (group.mount.read_only || !cpu_controller_mount(group.mount) ||
+            group.membership == CgroupMembershipInterface::None) continue;
+        uint32_t app_count = 0;
+        if (!group_has_verified_app_process(*this, group, proc_root_, app_count)) continue;
+        group.verified_user_processes = app_count;
+        app_groups.push_back(group);
+        if (group.has_uclamp_min && group.has_uclamp_max &&
+            !group.uclamp_min_path.empty() && !group.uclamp_max_path.empty()) {
+            abi_candidates.push_back(std::move(group));
+        }
+    }
+    if (app_groups.empty()) return std::nullopt;
+    if (abi_candidates.empty()) {
+        if (status) *status = UclampResolutionStatus::UclampAbiUnverified;
+        return std::nullopt;
+    }
+
+    std::sort(abi_candidates.begin(), abi_candidates.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.verified_user_processes != rhs.verified_user_processes)
+            return lhs.verified_user_processes > rhs.verified_user_processes;
+        if (lhs.mount.mount_id != rhs.mount.mount_id) return lhs.mount.mount_id < rhs.mount.mount_id;
+        return lhs.absolute_path < rhs.absolute_path;
+    });
+    if (abi_candidates.size() > 1U &&
+        abi_candidates[0].verified_user_processes == abi_candidates[1].verified_user_processes) {
+        if (status) *status = UclampResolutionStatus::AmbiguousCpuCandidate;
+        return std::nullopt;
+    }
+
+    auto candidate = std::move(abi_candidates.front());
+    int min_error = 0;
+    int max_error = 0;
+    const bool min_open = probe_write_open(candidate.uclamp_min_path, min_error);
+    const bool max_open = probe_write_open(candidate.uclamp_max_path, max_error);
+    candidate.uclamp_write_open_verified = min_open && max_open;
+    candidate.uclamp_write_open_errno = !min_open ? min_error : max_error;
+    if (!candidate.uclamp_write_open_verified) {
+        if (status) *status = UclampResolutionStatus::WriteOpenDenied;
+        return std::nullopt;
+    }
+    if (status) *status = UclampResolutionStatus::AccessVerified;
+    return candidate;
+}
+
+const char* MountTopologyResolver::uclamp_resolution_status_name(
+    UclampResolutionStatus status) noexcept {
+    switch (status) {
+        case UclampResolutionStatus::NotEvaluated: return "NOT_EVALUATED";
+        case UclampResolutionStatus::NoCpuCgroupCandidate: return "NO_CPU_CGROUP_CANDIDATE";
+        case UclampResolutionStatus::AmbiguousCpuCandidate: return "AMBIGUOUS_CPU_CANDIDATE";
+        case UclampResolutionStatus::UclampAbiUnverified: return "UCLAMP_ABI_UNVERIFIED";
+        case UclampResolutionStatus::BaselineCaptureFailed: return "BASELINE_CAPTURE_FAILED";
+        case UclampResolutionStatus::WriteOpenDenied: return "WRITE_OPEN_DENIED";
+        case UclampResolutionStatus::SelinuxAccessDenied: return "SELINUX_ACCESS_DENIED";
+        case UclampResolutionStatus::AccessVerified: return "ACCESS_VERIFIED";
+        case UclampResolutionStatus::MutationEligible: return "MUTATION_ELIGIBLE";
+    }
+    return "NOT_EVALUATED";
 }
 
 std::optional<CgroupGroupCapability> MountTopologyResolver::resolve_foreground_io_group() const {

@@ -63,6 +63,15 @@ enum class ResourcePermissionClass : uint8_t {
     IncompleteMetadata = 5,
 };
 
+enum class DynamicWorkloadRegime : uint8_t {
+    IdleDeep = 0,
+    LightLoad = 1,
+    Interactive = 2,
+    ModerateLoad = 3,
+    BurstLoading = 4,
+    HeavySustained = 5,
+};
+
 enum class WorkloadClass : uint8_t {
     Idle = 0,
     GeneralInteraction = 1,
@@ -239,6 +248,9 @@ struct BlockQueueSurface {
     std::string baseline_scheduler;     // e.g. "mq-deadline" or "none"
     std::string active_scheduler;       // current active token
     std::vector<std::string> available_schedulers;
+    std::vector<std::string> queue_tunables;
+    std::vector<std::string> iosched_tunables;
+    uint64_t scheduler_generation{0};
     uint64_t baseline_read_ahead_kb{128};
     uint64_t active_read_ahead_kb{128};
     uint64_t read_ahead_kb{128};
@@ -281,6 +293,11 @@ struct CandidateStats {
     uint32_t ownership_quarantine_ticks{0};
     WorkloadClass last_workload{WorkloadClass::Idle};
     uint8_t last_thermal_bucket{0};
+    DynamicWorkloadRegime last_regime{DynamicWorkloadRegime::IdleDeep};
+    std::array<double, 6> regime_mean_utility{};
+    std::array<uint32_t, 6> regime_reward_samples{};
+    std::array<uint32_t, 6> regime_regressions{};
+    std::array<uint32_t, 6> regime_cooldown_ticks{};
     std::string last_before_summary;
     std::string last_after_summary;
     std::string last_rollback_reason;
@@ -292,6 +309,8 @@ struct AutonomousDecisionSnapshot {
     std::string active_intent{"HoldEquilibrium"};
     std::string intent{"HoldEquilibrium"};
     WorkloadClass workload_class{WorkloadClass::Idle};
+    DynamicWorkloadRegime workload_regime{DynamicWorkloadRegime::IdleDeep};
+    std::string regime_name{"IDLE_DEEP"};
     std::string workload_name{"Idle"};
     BottleneckKind bottleneck{BottleneckKind::None};
     std::string bottleneck_name{"None"};
@@ -422,6 +441,9 @@ public:
     [[nodiscard]] AutonomousDecisionSnapshot snapshot() const;
 
     [[nodiscard]] static WorkloadClass classify_workload(const TunerTelemetryInput& telemetry) noexcept;
+    [[nodiscard]] static DynamicWorkloadRegime classify_regime(
+        const TunerTelemetryInput& telemetry, WorkloadClass workload) noexcept;
+    [[nodiscard]] static std::string_view regime_name(DynamicWorkloadRegime regime) noexcept;
     [[nodiscard]] static BottleneckKind diagnose_bottleneck(const TunerTelemetryInput& telemetry,
                                                             WorkloadClass workload) noexcept;
     [[nodiscard]] static OptimizationObjective select_objective(const TunerTelemetryInput& telemetry,
@@ -559,6 +581,7 @@ private:
     uint32_t settling_ticks_remaining_{0};
 
     WorkloadClass current_workload_{WorkloadClass::Idle};
+    DynamicWorkloadRegime current_regime_{DynamicWorkloadRegime::IdleDeep};
     BottleneckKind current_bottleneck_{BottleneckKind::None};
     OptimizationObjective current_objective_{OptimizationObjective::HoldBaseline};
     std::string current_candidate_id_{"baseline"};

@@ -6,6 +6,7 @@
  */
 #pragma once
 #include "types.hpp"
+#include "coreflow/mount_topology.hpp"
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -30,6 +31,7 @@ public:
     [[nodiscard]] bool is_supported() const noexcept;
     [[nodiscard]] std::string_view target_path() const noexcept { return target_path_; }
     [[nodiscard]] std::string_view encoding_name() const noexcept;
+    [[nodiscard]] UclampResolutionStatus resolution_status() const noexcept { return resolution_status_; }
 
     bool apply_state(WorkloadState state,
                      uint32_t balanced_min,
@@ -55,6 +57,7 @@ private:
     uint64_t transaction_generation_{0};
     Encoding encoding_{Encoding::Unknown};
     bool supported_{false};
+    UclampResolutionStatus resolution_status_{UclampResolutionStatus::NotEvaluated};
     bool has_written_{false};
     uint32_t oem_min_{0};
     uint32_t oem_max_{1024};
@@ -70,7 +73,8 @@ private:
     bool rollback_transaction_locked() noexcept;
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
     bool owned_values_intact_locked();
-    bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding) const;
+    bool validate_target(const std::string& directory, MountKind kind, Encoding& encoding,
+                         UclampResolutionStatus& status) const;
     bool write_top_app(uint32_t min_val, uint32_t max_val, ControllerPriority priority);
     [[nodiscard]] std::string encode(uint32_t capacity, bool maximum) const;
     [[nodiscard]] uint32_t read_uclamp_node(const std::string& path) const;

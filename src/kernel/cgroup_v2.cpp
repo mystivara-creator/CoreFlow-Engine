@@ -387,7 +387,7 @@ CgroupV2Controller::CgroupV2Controller(
         // foreground group is accepted only when ABI controls and PID topology
         // independently corroborate the same hierarchy.
         MountTopologyResolver topology(proc_root_);
-        const auto foreground = topology.resolve_foreground_group();
+        const auto foreground = topology.resolve_foreground_cpu_group();
         if (foreground && !foreground->mount.read_only) {
             root_path_ = foreground->mount.mount_point;
             target_relative_paths_[0] = foreground->relative_path;

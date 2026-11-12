@@ -23,6 +23,18 @@ const coreflow::NodeCapability* find_cap(
 }
 int main() {
     using namespace coreflow;
+    TunerTelemetryInput idle{};
+    idle.cpu_psi_valid = idle.memory_psi_valid = idle.io_psi_valid = true;
+    assert(AutonomousTuner::classify_regime(idle, WorkloadClass::Idle) == DynamicWorkloadRegime::IdleDeep);
+    auto light = idle; light.cpu_psi = 0.7;
+    assert(AutonomousTuner::classify_regime(light, WorkloadClass::BackgroundWorkload) == DynamicWorkloadRegime::LightLoad);
+    auto interactive = idle; interactive.cpu_psi = 3.0;
+    assert(AutonomousTuner::classify_regime(interactive, WorkloadClass::GeneralInteraction) == DynamicWorkloadRegime::Interactive);
+    auto moderate = idle; moderate.memory_psi = 2.0;
+    assert(AutonomousTuner::classify_regime(moderate, WorkloadClass::MemoryPressure) == DynamicWorkloadRegime::ModerateLoad);
+    auto burst = idle; burst.io_psi = 4.2;
+    assert(AutonomousTuner::classify_regime(burst, WorkloadClass::StorageIoPressure) == DynamicWorkloadRegime::BurstLoading);
+    assert(AutonomousTuner::classify_regime(idle, WorkloadClass::Gaming) == DynamicWorkloadRegime::HeavySustained);
     std::vector<uint32_t> cpus;
     assert(DeviceProfiler::parse_cpu_list("0-3,6,8-9\n", cpus));
     assert((cpus == std::vector<uint32_t>{0,1,2,3,6,8,9}));
@@ -44,6 +56,19 @@ int main() {
     // A: profile -> classify -> baseline -> act -> readback -> restore.
     // No IMPROVED verdict is fabricated without comparable workload telemetry.
     auto a = cddp_fixture::create("A");
+    const auto policy_a = a.sys / "devices/system/cpu/cpufreq/policy0";
+    cddp_fixture::put(policy_a / "scaling_available_governors", "schedutil vendor_governor\n");
+    cddp_fixture::put(policy_a / "schedutil/vendor_adaptive_level", "2\n");
+    const auto storage_a = a.sys / "class/block/ufs0";
+    cddp_fixture::put(storage_a / "size", "2097152\n");
+    cddp_fixture::put(storage_a / "queue/nr_hw_queues", "4\n");
+    cddp_fixture::put(storage_a / "queue/rotational", "0\n");
+    cddp_fixture::put(storage_a / "queue/scheduler", "none [mq-deadline] kyber\n");
+    cddp_fixture::put(storage_a / "queue/read_ahead_kb", "128\n");
+    cddp_fixture::put(storage_a / "queue/iosched/read_expire", "500\n");
+    cddp_fixture::put(a.sys / "block/zram0/disksize", "1073741824\n");
+    cddp_fixture::put(a.sys / "block/zram0/comp_algorithm", "[lz4] lzo lzo-rle zstd\n");
+    cddp_fixture::put(a.proc / "swaps", "Filename Type Size Used Priority\n/dev/block/zram0 partition 1048576 128 0\n");
     const std::string state_dir = (a.root / "state").string();
     (void)::setenv("COREFLOW_TEST_STATE_DIR", state_dir.c_str(), 1);
     auto& baseline_store = BaselineStore::instance();
@@ -52,6 +77,24 @@ int main() {
     const auto profile_a = pa.refresh();
     assert(profile_a && profile_a->cpu_topology_valid);
     assert(profile_a->cpu_policies.size() == 1 && profile_a->cpu_policies.front().related_cpus_valid);
+    assert(profile_a->cpu_policies.front().cluster_role == "unified");
+    assert((profile_a->cpu_policies.front().available_governors ==
+            std::vector<std::string>{"schedutil", "vendor_governor"}));
+    assert(std::find(profile_a->cpu_policies.front().governor_tunables.begin(),
+                     profile_a->cpu_policies.front().governor_tunables.end(),
+                     "vendor_adaptive_level") != profile_a->cpu_policies.front().governor_tunables.end());
+    assert(profile_a->block_devices.size() == 1U);
+    assert(profile_a->block_devices.front().hardware_queues == 4U);
+    assert(profile_a->block_devices.front().capacity_bytes == 2097152ULL * 512ULL);
+    assert(profile_a->block_devices.front().rotational_valid && !profile_a->block_devices.front().rotational);
+    assert(profile_a->block_devices.front().active_scheduler == "mq-deadline");
+    assert(std::find(profile_a->block_devices.front().iosched_tunables.begin(),
+                     profile_a->block_devices.front().iosched_tunables.end(), "read_expire") !=
+           profile_a->block_devices.front().iosched_tunables.end());
+    assert(profile_a->memory_hardware.total_ram_bytes == 8192000ULL * 1024ULL);
+    assert(profile_a->memory_hardware.zram_devices.size() == 1U);
+    assert(profile_a->memory_hardware.zram_devices.front().swap_active);
+    assert(profile_a->memory_hardware.zram_devices.front().active_algorithm == "lz4");
     assert(profile_a->memory_telemetry_available && profile_a->cgroup_v2_available);
     assert(!profile_a->thermal_sensors.empty());
     const auto* cpu_max = find_cap(*profile_a, "cpufreq.scaling_max_freq");

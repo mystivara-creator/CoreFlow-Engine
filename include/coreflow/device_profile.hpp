@@ -74,8 +74,43 @@ struct CpuPolicyProfile {
     uint64_t scaling_max_freq_khz{0};
     uint64_t scaling_cur_freq_khz{0};
     std::string governor;
+    std::string cluster_role;
+    uint32_t capacity_rank{0};
+    std::vector<std::string> available_governors;
+    std::vector<std::string> governor_tunables;
     bool related_cpus_valid{false};
     bool frequency_table_valid{false};
+};
+
+
+struct BlockDeviceProfile {
+    std::string device_name;
+    std::string device_path;
+    std::string model;
+    std::string vendor;
+    std::string transport_hint;
+    std::string active_scheduler;
+    std::vector<std::string> available_schedulers;
+    std::vector<std::string> queue_tunables;
+    std::vector<std::string> iosched_tunables;
+    uint64_t capacity_bytes{0};
+    uint32_t hardware_queues{0};
+    bool rotational{false};
+    bool rotational_valid{false};
+};
+
+struct ZramDeviceProfile {
+    std::string device_name;
+    std::string device_path;
+    std::string active_algorithm;
+    std::vector<std::string> available_algorithms;
+    uint64_t disksize_bytes{0};
+    bool swap_active{false};
+};
+
+struct MemoryHardwareProfile {
+    uint64_t total_ram_bytes{0};
+    std::vector<ZramDeviceProfile> zram_devices;
 };
 
 struct GpuDomainProfile {
@@ -111,6 +146,12 @@ struct NodeCapability {
     std::string constraints;
     std::string evidence;
     std::string rejection_reason;
+    // Parent-policy relationship is descriptive; changing the parent requires
+    // re-discovering children before any dependent mutation is admitted.
+    std::string parent_policy_path;
+    std::string parent_policy_value;
+    std::string dependency_group;
+    bool rediscover_after_parent_change{false};
     NodeRejectionReason rejection_code{NodeRejectionReason::None};
 
     [[nodiscard]] bool mutation_eligible() const noexcept {
@@ -139,6 +180,8 @@ struct DeviceProfileSnapshot final {
     std::vector<uint32_t> present_cpus;
     std::vector<uint32_t> online_cpus;
     std::vector<CpuPolicyProfile> cpu_policies;
+    std::vector<BlockDeviceProfile> block_devices;
+    MemoryHardwareProfile memory_hardware;
     std::vector<GpuDomainProfile> gpu_domains;
     std::vector<ThermalSensorProfile> thermal_sensors;
     std::vector<NodeCapability> node_capabilities;

@@ -64,9 +64,13 @@ UclampGovernor::UclampGovernor(CentralMutationCoordinator& coordinator, std::str
                 return handle_preemption(domain, transaction_id);
             });
         std::cerr << "[CoreFlow][Uclamp] discovered " << target_path_
-                  << " (" << encoding_name() << ")\n";
+                  << " (" << encoding_name() << ", status="
+                  << MountTopologyResolver::uclamp_resolution_status_name(resolution_status_)
+                  << ")\n";
     } else {
-        std::cerr << "[CoreFlow][Uclamp] no writable semantic top-app UClamp target found\n";
+        std::cerr << "[CoreFlow][Uclamp] discovery rejected: "
+                  << MountTopologyResolver::uclamp_resolution_status_name(resolution_status_)
+                  << "\n";
     }
 }
 UclampGovernor::~UclampGovernor() {
@@ -232,6 +236,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
     supported_ = false;
     target_path_.clear();
     encoding_ = Encoding::Unknown;
+    resolution_status_ = UclampResolutionStatus::NoCpuCgroupCandidate;
 
     struct RootEntry { std::string path; MountKind kind; };
     std::vector<RootEntry> roots;
@@ -241,7 +246,7 @@ void UclampGovernor::discover(std::string_view explicit_root) {
         roots.push_back(RootEntry{std::string(explicit_root), MountKind::Auto});
     } else {
         MountTopologyResolver topology{};
-        const auto foreground = topology.resolve_foreground_uclamp_group();
+        const auto foreground = topology.resolve_foreground_uclamp_group(&resolution_status_);
         if (foreground) {
             roots.push_back(RootEntry{foreground->absolute_path,
                 foreground->mount.filesystem == CgroupFilesystem::V2
@@ -276,7 +281,8 @@ void UclampGovernor::discover(std::string_view explicit_root) {
             pending.pop_back();
             ++visited;
             Encoding candidate_encoding = Encoding::Unknown;
-            if (validate_target(current.path.string(), root.kind, candidate_encoding) &&
+            UclampResolutionStatus candidate_status = UclampResolutionStatus::UclampAbiUnverified;
+            if (validate_target(current.path.string(), root.kind, candidate_encoding, candidate_status) &&
                 clean_baseline(current.path.string())) {
                 target_path_ = current.path.string();
                 encoding_ = candidate_encoding;
@@ -285,9 +291,20 @@ void UclampGovernor::discover(std::string_view explicit_root) {
                 oem_max_ = get_top_app_max();
                 oem_min_raw_ = read_token(target_path_ + "/cpu.uclamp.min");
                 oem_max_raw_ = read_token(target_path_ + "/cpu.uclamp.max");
+                resolution_status_ = UclampResolutionStatus::MutationEligible;
                 return;
             }
-            if (current.depth >= kMaxDepth) continue;
+            if (candidate_status == UclampResolutionStatus::WriteOpenDenied ||
+                candidate_status == UclampResolutionStatus::UclampAbiUnverified)
+                resolution_status_ = candidate_status;
+            else if (candidate_status == UclampResolutionStatus::BaselineCaptureFailed)
+                resolution_status_ = candidate_status;
+            else if (candidate_status == UclampResolutionStatus::AccessVerified)
+                resolution_status_ = UclampResolutionStatus::BaselineCaptureFailed;
+            // Production resolution already returned one membership-verified
+            // CPU group. Do not descend into unrelated children and promote a
+            // path without its own foreground workload evidence.
+            if (explicit_root.empty() || current.depth >= kMaxDepth) continue;
             std::error_code ec;
             for (fs::directory_iterator it(current.path,
                     fs::directory_options::skip_permission_denied, ec), end;
@@ -304,37 +321,66 @@ void UclampGovernor::discover(std::string_view explicit_root) {
 
 bool UclampGovernor::validate_target(const std::string& directory,
                                      MountKind kind,
-                                     Encoding& encoding) const {
+                                     Encoding& encoding,
+                                     UclampResolutionStatus& status) const {
     (void)kind;
     if (directory.empty()) return false;
     const fs::path dir(directory);
     const fs::path min_path = dir / "cpu.uclamp.min";
     const fs::path max_path = dir / "cpu.uclamp.max";
     std::error_code ec;
-    if (fs::is_symlink(min_path, ec) || ec || fs::is_symlink(max_path, ec) || ec) return false;
-    if (!fs::exists(min_path, ec) || ec || !fs::exists(max_path, ec) || ec) return false;
-    if (::access(min_path.c_str(), R_OK | W_OK) != 0 ||
-        ::access(max_path.c_str(), R_OK | W_OK) != 0) return false;
+    if (fs::is_symlink(min_path, ec) || ec || fs::is_symlink(max_path, ec) || ec) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
+        return false;
+    }
+    if (!fs::exists(min_path, ec) || ec || !fs::exists(max_path, ec) || ec) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
+        return false;
+    }
+    const auto write_open = [](const fs::path& path) {
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0) return false;
+        (void)::close(fd);
+        return true;
+    };
+    if (!write_open(min_path) || !write_open(max_path)) {
+        status = UclampResolutionStatus::WriteOpenDenied;
+        return false;
+    }
 
     const std::string min_raw = read_token(min_path);
     const std::string max_raw = read_token(max_path);
-    if (min_raw.empty() || max_raw.empty()) return false;
+    if (min_raw.empty() || max_raw.empty()) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
+        return false;
+    }
     const auto min_value = MountTopologyResolver::parse_uclamp_value(min_raw);
     const auto max_value = MountTopologyResolver::parse_uclamp_value(max_raw);
-    if (!min_value || !max_value || min_value->is_max) return false;
+    if (!min_value || !max_value || min_value->is_max) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
+        return false;
+    }
 
     // The baseline bytes determine the ABI encoding. A literal max is an
     // unbounded ceiling sentinel and is accepted with either numeric encoding.
     if (max_value->is_max) {
         encoding = min_value->encoding == UclampEncoding::Capacity1024
             ? Encoding::Capacity1024 : Encoding::Percentage;
+        status = UclampResolutionStatus::AccessVerified;
         return true;
     }
-    if (min_value->encoding != max_value->encoding || min_value->capacity > max_value->capacity)
+    if (min_value->encoding != max_value->encoding || min_value->capacity > max_value->capacity) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
         return false;
+    }
     encoding = min_value->encoding == UclampEncoding::Capacity1024
         ? Encoding::Capacity1024 : Encoding::Percentage;
-    return encoding != Encoding::Unknown;
+    if (encoding == Encoding::Unknown) {
+        status = UclampResolutionStatus::UclampAbiUnverified;
+        return false;
+    }
+    status = UclampResolutionStatus::AccessVerified;
+    return true;
 }
 
 bool UclampGovernor::apply_state(WorkloadState state,

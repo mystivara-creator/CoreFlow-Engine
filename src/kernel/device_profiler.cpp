@@ -6,6 +6,7 @@
 #include "coreflow/device_profiler.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/mount_topology.hpp"
+#include "coreflow/kernel_node_inventory.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include <algorithm>
 #include <array>
@@ -72,6 +73,40 @@ bool parse_u64(std::string_view text, uint64_t& out) noexcept {
     out = value;
     return true;
 }
+std::vector<std::string> parse_tokens(std::string_view text) {
+    std::vector<std::string> tokens;
+    std::istringstream input{std::string(text)};
+    std::string token;
+    while (input >> token) {
+        if (token.size() > 128U) continue;
+        if (token.front() == '[' && token.back() == ']') token = token.substr(1U, token.size() - 2U);
+        if (!token.empty() && std::find(tokens.begin(), tokens.end(), token) == tokens.end())
+            tokens.push_back(std::move(token));
+    }
+    return tokens;
+}
+std::vector<std::string> regular_attribute_names(const fs::path& directory,
+                                                  size_t maximum = 192U) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    fs::directory_iterator it(directory, fs::directory_options::skip_permission_denied, ec);
+    const fs::directory_iterator end;
+    for (; !ec && it != end && names.size() < maximum; it.increment(ec)) {
+        std::error_code status_ec;
+        const auto status = it->symlink_status(status_ec);
+        if (status_ec || fs::is_symlink(status) || !fs::is_regular_file(status)) continue;
+        names.push_back(it->path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+std::string active_bracketed_token(std::string_view text) {
+    const auto open = text.find('[');
+    const auto close = open == std::string_view::npos ? std::string_view::npos : text.find(']', open + 1U);
+    if (open != std::string_view::npos && close != std::string_view::npos)
+        return std::string(text.substr(open + 1U, close - open - 1U));
+    return std::string(text);
+}
 bool parse_frequency_table(std::string_view text, std::vector<uint64_t>& out) {
     out.clear();
     std::istringstream input{std::string(text)};
@@ -130,10 +165,25 @@ std::string make_fingerprint(const DeviceProfileSnapshot& profile) {
     for (const auto cpu : profile.present_cpus) data << "r" << cpu << ',';
     for (const auto cpu : profile.online_cpus) data << "o" << cpu << ',';
     for (const auto& policy : profile.cpu_policies) {
-        data << "cpu:" << policy.policy_path << ':' << policy.governor << ':';
+        data << "cpu:" << policy.policy_path << ':' << policy.governor << ':'
+             << policy.cluster_role << ':' << policy.capacity_rank << ':';
         for (const auto cpu : policy.related_cpus) data << cpu << ',';
         data << policy.cpuinfo_min_freq_khz << ':' << policy.cpuinfo_max_freq_khz << ':';
         for (const auto freq : policy.available_frequencies_khz) data << freq << ',';
+        for (const auto& governor : policy.available_governors) data << "g=" << governor << ',';
+        for (const auto& tunable : policy.governor_tunables) data << "t=" << tunable << ',';
+    }
+    for (const auto& block : profile.block_devices) {
+        data << "blk:" << block.device_name << ':' << block.transport_hint << ':'
+             << block.capacity_bytes << ':' << block.hardware_queues << ':'
+             << block.rotational << ':' << block.active_scheduler << '|';
+        for (const auto& scheduler : block.available_schedulers) data << scheduler << ',';
+    }
+    data << "ram:" << profile.memory_hardware.total_ram_bytes << '|';
+    for (const auto& zram : profile.memory_hardware.zram_devices) {
+        data << "zram:" << zram.device_name << ':' << zram.disksize_bytes << ':'
+             << zram.active_algorithm << ':' << zram.swap_active << '|';
+        for (const auto& algorithm : zram.available_algorithms) data << algorithm << ',';
     }
     for (const auto& gpu : profile.gpu_domains) {
         data << "gpu:" << gpu.device_path << ':' << gpu.driver << ':';
@@ -341,6 +391,10 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         (void)read_u64(dir / "scaling_max_freq", policy.scaling_max_freq_khz);
         (void)read_u64(dir / "scaling_cur_freq", policy.scaling_cur_freq_khz);
         if (read_attribute(dir / "scaling_governor", raw, 128U)) policy.governor = trim(raw);
+        if (read_attribute(dir / "scaling_available_governors", raw, 4096U))
+            policy.available_governors = parse_tokens(raw);
+        if (!policy.governor.empty())
+            policy.governor_tunables = regular_attribute_names(dir / policy.governor);
         std::vector<uint64_t> table;
         if (read_attribute(dir / "scaling_available_frequencies", raw, 8192U) ||
             read_attribute(dir / "cpuinfo_available_frequencies", raw, 8192U)) {
@@ -370,28 +424,56 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         // Governor-specific rate-limit controls are observed but never promoted
         // without a verified driver-specific ABI and accepted range contract.
         if (!policy.governor.empty()) {
-            for (const char* tunable : {"up_rate_limit_us", "down_rate_limit_us"}) {
-                const fs::path path = dir / policy.governor / tunable;
+            const fs::path governor_dir = dir / policy.governor;
+            for (const auto& tunable : regular_attribute_names(governor_dir)) {
+                const fs::path path = governor_dir / tunable;
                 NodeCapability governor_cap{};
                 governor_cap.path = path.string();
                 governor_cap.domain = HardwareDomain::Cpu;
                 governor_cap.source = ProfileSource::Sysfs;
                 governor_cap.semantic_id = "cpufreq.governor_tunable.unverified";
-                governor_cap.unit = "us";
-                governor_cap.evidence = "Governor tunable observed; vendor ABI and accepted range not verified";
-                if (cddp_path_exists(path)) {
-                    governor_cap.state = NodeCapabilityState::Available;
-                    if (read_attribute(path, raw, 256U)) {
-                        governor_cap.current_value = trim(raw);
-                        governor_cap.state = NodeCapabilityState::Readable;
-                        if (writable_by_mode_and_process(path)) governor_cap.state = NodeCapabilityState::Writable;
-                    }
+                governor_cap.parent_policy_path = (dir / "scaling_governor").string();
+                governor_cap.parent_policy_value = policy.governor;
+                governor_cap.dependency_group = dir.filename().string() + ":governor";
+                governor_cap.rediscover_after_parent_change = true;
+                governor_cap.evidence = "Active governor child enumerated dynamically; driver ABI and accepted range not inferred";
+                if (read_attribute(path, raw, 256U)) {
+                    governor_cap.current_value = trim(raw);
+                    governor_cap.state = NodeCapabilityState::Readable;
+                    if (writable_by_mode_and_process(path)) governor_cap.state = NodeCapabilityState::Writable;
                 }
-                governor_cap.rejection_reason = "governor tunable constraints are unverified; observation-only";
+                governor_cap.rejection_reason = "Governor child tunable is observation-only until a driver-specific contract is verified";
+                governor_cap.rejection_code = NodeRejectionReason::SemanticsUnverified;
                 snapshot->node_capabilities.push_back(std::move(governor_cap));
             }
         }
         snapshot->cpu_policies.push_back(std::move(policy));
+    }
+
+    // Rank independently discovered cpufreq policies by their advertised maximum
+    // capacity. Names such as little/big/prime are descriptive roles, never
+    // assumptions about policy indices or SoC cluster count.
+    std::vector<std::size_t> ranked_policies;
+    ranked_policies.reserve(snapshot->cpu_policies.size());
+    for (std::size_t i = 0; i < snapshot->cpu_policies.size(); ++i) {
+        if (snapshot->cpu_policies[i].cpuinfo_max_freq_khz > 0U)
+            ranked_policies.push_back(i);
+    }
+    std::sort(ranked_policies.begin(), ranked_policies.end(), [&](std::size_t lhs, std::size_t rhs) {
+        const auto& a = snapshot->cpu_policies[lhs];
+        const auto& b = snapshot->cpu_policies[rhs];
+        if (a.cpuinfo_max_freq_khz != b.cpuinfo_max_freq_khz)
+            return a.cpuinfo_max_freq_khz < b.cpuinfo_max_freq_khz;
+        return a.policy_path < b.policy_path;
+    });
+    for (std::size_t rank = 0; rank < ranked_policies.size(); ++rank) {
+        auto& policy = snapshot->cpu_policies[ranked_policies[rank]];
+        policy.capacity_rank = static_cast<uint32_t>(rank);
+        if (ranked_policies.size() == 1U) policy.cluster_role = "unified";
+        else if (rank == 0U) policy.cluster_role = "little";
+        else if (rank + 1U == ranked_policies.size()) policy.cluster_role = "prime_or_big";
+        else if (rank == 1U) policy.cluster_role = "mid";
+        else policy.cluster_role = "big";
     }
 
     const fs::path devfreq_root = sys / "class/devfreq";
@@ -507,6 +589,76 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
             sensor.temperature_valid = true;
             snapshot->thermal_sensors.push_back(std::move(sensor));
         }
+    }
+
+    // Read-only hardware specification snapshot: storage queue topology, RAM,
+    // and active/inactive ZRAM ABI are discovered from the live kernel tree.
+    const fs::path block_class_root = sys / "class/block";
+    for (const auto& block : directory_entries(block_class_root)) {
+        BlockDeviceProfile surface{};
+        surface.device_name = block.filename().string();
+        surface.device_path = block.string();
+        const fs::path queue = block / "queue";
+        uint64_t value = 0;
+        if (read_u64(queue / "nr_hw_queues", value) && value <= UINT32_MAX)
+            surface.hardware_queues = static_cast<uint32_t>(value);
+        if (read_u64(queue / "rotational", value)) {
+            surface.rotational = value != 0U;
+            surface.rotational_valid = value <= 1U;
+        }
+        if (read_u64(block / "size", value) && value <= UINT64_MAX / 512U)
+            surface.capacity_bytes = value * 512U;
+        (void)read_attribute(block / "device/model", raw, 256U);
+        surface.model = trim(raw);
+        raw.clear();
+        (void)read_attribute(block / "device/vendor", raw, 256U);
+        surface.vendor = trim(raw);
+        std::error_code canonical_error;
+        const auto canonical = fs::weakly_canonical(block, canonical_error).string();
+        std::string identity = canonical_error ? block.string() : canonical;
+        std::transform(identity.begin(), identity.end(), identity.begin(),
+            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (identity.find("ufs") != std::string::npos) surface.transport_hint = "ufs";
+        else if (identity.find("mmc") != std::string::npos) surface.transport_hint = "emmc_or_mmc";
+        else if (surface.rotational_valid) surface.transport_hint = surface.rotational ? "rotational" : "non_rotational_flash";
+        raw.clear();
+        if (read_attribute(queue / "scheduler", raw, 4096U)) {
+            surface.active_scheduler = active_bracketed_token(raw);
+            surface.available_schedulers = parse_tokens(raw);
+        }
+        surface.queue_tunables = regular_attribute_names(queue);
+        surface.iosched_tunables = regular_attribute_names(queue / "iosched");
+        snapshot->block_devices.push_back(std::move(surface));
+    }
+
+    // MemTotal is reported in KiB by procfs; convert with overflow checking.
+    if (read_attribute(proc / "meminfo", raw, 64U * 1024U)) {
+        std::istringstream lines(raw);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.rfind("MemTotal:", 0) != 0) continue;
+            std::istringstream fields(line.substr(9));
+            uint64_t kib = 0;
+            if (fields >> kib && kib <= UINT64_MAX / 1024U)
+                snapshot->memory_hardware.total_ram_bytes = kib * 1024U;
+            break;
+        }
+    }
+    std::string swaps_text;
+    (void)read_attribute(proc / "swaps", swaps_text, 64U * 1024U);
+    const fs::path zram_root = sys / "block";
+    for (const auto& zram : directory_entries(zram_root, "zram")) {
+        ZramDeviceProfile device{};
+        device.device_name = zram.filename().string();
+        device.device_path = zram.string();
+        (void)read_u64(zram / "disksize", device.disksize_bytes);
+        raw.clear();
+        if (read_attribute(zram / "comp_algorithm", raw, 4096U)) {
+            device.active_algorithm = active_bracketed_token(raw);
+            device.available_algorithms = parse_tokens(raw);
+        }
+        device.swap_active = swaps_text.find(device.device_name) != std::string::npos;
+        snapshot->memory_hardware.zram_devices.push_back(std::move(device));
     }
 
     // Enumerate all VM and block-queue attributes from their subsystem roots.
@@ -802,6 +954,24 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         if (group.has_process_list)
             append_cgroup_node(group.absolute_path + "/cgroup.procs",
                 "cgroup.membership.process", "pid", HardwareDomain::Cgroup, false, false);
+    }
+    // Merge a bounded dynamic parent/child inventory. Existing typed contracts
+    // retain precedence; the generic inventory enriches their dependency links.
+    KernelNodeInventory inventory(sys_root_, proc_root_);
+    for (auto node : inventory.scan(512U)) {
+        const auto existing = std::find_if(snapshot->node_capabilities.begin(),
+            snapshot->node_capabilities.end(), [&](const NodeCapability& item) {
+                return item.path == node.path;
+            });
+        if (existing == snapshot->node_capabilities.end()) {
+            snapshot->node_capabilities.push_back(std::move(node));
+        } else {
+            if (existing->parent_policy_path.empty()) existing->parent_policy_path = std::move(node.parent_policy_path);
+            if (existing->parent_policy_value.empty()) existing->parent_policy_value = std::move(node.parent_policy_value);
+            if (existing->dependency_group.empty()) existing->dependency_group = std::move(node.dependency_group);
+            existing->rediscover_after_parent_change = existing->rediscover_after_parent_change ||
+                node.rediscover_after_parent_change;
+        }
     }
     snapshot->fingerprint = make_fingerprint(*snapshot);
     return snapshot;
