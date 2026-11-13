@@ -55,7 +55,8 @@ static void run_decoder_tests() {
 
     assert(!consume_touch_input_event(state, event(EV_KEY, BTN_TOUCH, 1), 1'000'000ULL, output));
     assert(consume_touch_input_event(state, event(EV_SYN, SYN_REPORT, 0), 2'000'000ULL, output));
-    assert(output.kind == FrameEventKind::TouchBurst && output.burst_duration_ms == 80U);
+    // The producer reports the touch event; RenderBooster owns configured burst duration.
+    assert(output.kind == FrameEventKind::TouchBurst && output.burst_duration_ms == 0U);
 
     assert(!consume_touch_input_event(state, event(EV_ABS, ABS_X, 100), 10'000'000ULL, output));
     assert(!consume_touch_input_event(state, event(EV_SYN, SYN_REPORT, 0), 20'000'000ULL, output));
