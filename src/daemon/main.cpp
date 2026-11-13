@@ -583,6 +583,9 @@ std::string build_status_json(
         .discovered_resources = {},
         .vm_page_cluster = {},
         .vm_vfs_cache_pressure = {},
+        .evaluated_candidates = {},
+        .active_interventions = {},
+        .decision_plan_rationale = {},
     };
     if (live_runtime) tuner = context.autonomous_tuner().snapshot();
     const VulkanCapabilitiesSnapshot vk = live_runtime ? context.vulkan_controller().snapshot() : VulkanCapabilitiesSnapshot{};

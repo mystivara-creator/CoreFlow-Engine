@@ -71,24 +71,6 @@ bool is_physical_block_device(std::string_view name) {
            name.rfind("nvme", 0) == 0;
 }
 
-double contextual_ucb_score(const CandidateStats& stats,
-                             DynamicWorkloadRegime regime,
-                             uint32_t total_samples) noexcept {
-    const auto index = static_cast<std::size_t>(regime);
-    if (index >= stats.regime_mean_utility.size()) return -1.0;
-    const uint32_t samples = stats.regime_reward_samples[index];
-    const double context_mean = samples > 0U
-        ? stats.regime_mean_utility[index] : stats.mean_utility;
-    const double blended_prior = samples > 0U
-        ? (0.35 * stats.mean_utility + 0.65 * context_mean) : stats.mean_utility;
-    const double explore = 0.25 * std::sqrt(
-        std::log(static_cast<double>(std::max<uint32_t>(1U, total_samples)) + 1.0) /
-        static_cast<double>(samples + 1U));
-    const double rollback_penalty = std::min(0.75,
-        0.15 * static_cast<double>(stats.regime_regressions[index]));
-    return blended_prior + explore - rollback_penalty;
-}
-
 bool is_virtual_block_device(std::string_view name) {
     return name.rfind("loop", 0) == 0 || name.rfind("ram", 0) == 0 ||
            name.rfind("zram", 0) == 0 || name.rfind("dm-", 0) == 0 ||
@@ -116,10 +98,6 @@ void parse_scheduler_line(
     if (active_out.empty() && available_out.size() == 1) {
         active_out = available_out.front();
     }
-}
-
-bool contains_token(const std::vector<std::string>& list, std::string_view target) {
-    return std::any_of(list.begin(), list.end(), [&](const std::string& s) { return s == target; });
 }
 
 TunerVerdict verdict_from_string(std::string_view v) noexcept {
@@ -213,37 +191,6 @@ bool check_zram_swap_active(const std::string& proc_root, const std::string& sys
     }
     std::error_code ec;
     return fs::exists(fs::path(sys_root) / "block/zram0", ec) && !ec;
-}
-
-uint64_t lookup_factory_u64(const std::string& path, uint64_t fallback_baseline) {
-    uint64_t baseline = fallback_baseline;
-    const auto audit = BaselineStore::instance().get_audit_trail();
-    for (const auto& item : audit) {
-        if (item.path == path) {
-            uint64_t parsed = 0;
-            if (parse_u64(item.factory_value, parsed) && parsed > 0) {
-                baseline = parsed;
-                break;
-            }
-        }
-    }
-    return baseline == 0 ? fallback_baseline : baseline;
-}
-
-uint64_t compute_relative_u64(
-    const std::string& path,
-    uint64_t fallback_baseline,
-    double ratio,
-    uint64_t min_bound,
-    uint64_t max_bound,
-    double adaptive_scale = 1.0) {
-    const uint64_t baseline = lookup_factory_u64(path, fallback_baseline);
-    const double clamped_scale = std::clamp(adaptive_scale, 0.25, 1.0);
-    // Blend ratio toward 1.0 when adaptive_scale < 1.0 after prior rollbacks
-    const double effective_ratio = 1.0 + (ratio - 1.0) * clamped_scale;
-    const double calc = static_cast<double>(baseline) * effective_ratio;
-    const uint64_t rounded = std::max<uint64_t>(1U, static_cast<uint64_t>(std::round(calc)));
-    return std::clamp(rounded, min_bound, max_bound);
 }
 
 std::string sanitize_tsv_field(std::string_view input) {
