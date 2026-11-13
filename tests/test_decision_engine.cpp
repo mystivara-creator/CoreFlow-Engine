@@ -104,7 +104,8 @@ int main() {
         assert(snap.active_interventions.size() == 1U);
         tuner.reset();
         assert(get(vm_dir / "page-cluster") == "3");
-        assert(get(sda_q / "scheduler") == "none");
+        // The serialized plan must not apply the lower-ranked I/O candidate.
+        assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
         put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
     }
 
