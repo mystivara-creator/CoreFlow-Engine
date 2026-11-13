@@ -774,9 +774,11 @@ InterventionPlan InterventionPlanner::plan(
         return plan;
     }
 
-    const size_t max_total_active = evidence.thermal_stabilization_required
-        ? kMaxConcurrentActiveStabilizing
-        : (evidence.remaining_thermal_headroom >= 0.35 ? kMaxConcurrentActiveNormal : kMaxConcurrentActiveTightThermal);
+    // Telemetry is currently sampled system-wide, not per actuator. Until the
+    // collector can attribute deltas to individual interventions, serialize
+    // mutation trials so UCB rewards cannot be contaminated by another domain.
+    constexpr size_t kMaxCausallyAttributableActive = 1U;
+    const size_t max_total_active = kMaxCausallyAttributableActive;
 
     if (active_reservations.size() >= max_total_active) {
         plan.planning_rationale = "Active intervention budget saturated for current thermal headroom.";

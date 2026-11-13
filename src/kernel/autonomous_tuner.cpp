@@ -2717,22 +2717,33 @@ bool AutonomousTuner::evaluate_intervention_window(
             ? (iv.sum_after_temp_vel / static_cast<double>(iv.valid_thermal_samples_in_window))
             : latest_telemetry.temperature_velocity_celsius_per_sec;
 
-        if (avg_temp_vel > 0.05) {
-            const double warming_penalty = std::min(1.5, avg_temp_vel * 1.5);
-            utility_delta = 0.40 * therm_gain - warming_penalty + 0.20 * io_gain + 0.15 * cpu_gain;
-            if (utility_delta >= 0.25) utility_delta = 0.10;
-        } else if (avg_temp_vel < -0.05) {
-            const double cooling_gain = std::min(1.2, (-avg_temp_vel) * 1.5);
-            utility_delta = 0.45 * therm_gain + cooling_gain + 0.20 * io_gain + 0.15 * cpu_gain;
-        } else {
-            const double effective_therm_gain = (therm_gain >= 2.5) ? (therm_gain * 0.40) : 0.0;
-            utility_delta = effective_therm_gain + 0.20 * io_gain + 0.15 * cpu_gain;
-        }
+        // Thermal outcomes are judged against thermal evidence first. A positive
+        // aggregate utility score must never hide a warming trend or rising pressure.
+        const bool temperature_cooling = avg_temp_vel < -0.05;
+        const bool pressure_stable = thermal_valid &&
+            (after_therm <= iv.before_thermal + 0.50) &&
+            ((iv.max_after_thermal - iv.min_after_thermal) <= 2.0);
+        const bool thermal_objective_met = temperature_cooling || pressure_stable;
 
-        if ((io_valid && io_gain < -1.5) || (cpu_valid && cpu_gain < -3.0) || (mem_valid && mem_gain < -1.5)) {
-            if (utility_delta >= 0.25) {
-                utility_delta = -0.25;
-            }
+        // Preserve workload responsiveness: reject a thermal win that materially
+        // worsens CPU/I/O contention or memory stalls during the same window.
+        const bool workload_regressed =
+            (io_valid && io_gain < -1.5) ||
+            (cpu_valid && cpu_gain < -3.0) ||
+            (mem_valid && mem_gain < -1.5);
+
+        if (temperature_cooling) {
+            const double cooling_gain = std::min(1.2, (-avg_temp_vel) * 1.5);
+            utility_delta = 0.45 * therm_gain + cooling_gain +
+                0.20 * io_gain + 0.15 * cpu_gain;
+        } else if (pressure_stable) {
+            utility_delta = std::max(0.0, therm_gain) * 0.40 +
+                0.20 * io_gain + 0.15 * cpu_gain;
+        } else {
+            utility_delta = -0.50 - std::max(0.0, avg_temp_vel) * 1.5;
+        }
+        if (!thermal_objective_met || workload_regressed) {
+            utility_delta = std::min(utility_delta, -0.25);
         }
     } else if (iv.intent == "IoLatencyRelief") {
         utility_delta = 1.40 * io_gain + (cpu_valid ? 0.35 * cpu_gain : 0.0) - 0.60 * therm_penalty;
