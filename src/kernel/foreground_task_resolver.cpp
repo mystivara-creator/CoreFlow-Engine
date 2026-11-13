@@ -23,7 +23,6 @@ namespace coreflow {
 namespace {
 
 constexpr size_t kMaxPidListBytes = 8192U;
-constexpr size_t kMaxTaskBytes = 4096U;
 constexpr size_t kMaxProcesses = 128U;
 constexpr size_t kMaxThreads = 1024U;
 constexpr uint64_t kRefreshIntervalNs = 500'000'000ULL;
