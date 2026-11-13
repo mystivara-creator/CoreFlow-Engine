@@ -13,9 +13,9 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace coreflow {
@@ -118,12 +118,15 @@ public:
 
     void shutdown() noexcept;
 
-    [[nodiscard]] size_t worker_count() const noexcept { return workers_.size(); }
-    [[nodiscard]] bool active() const noexcept {
-        return !stopping_.load(std::memory_order_acquire) && !workers_.empty();
-    }
+    [[nodiscard]] size_t worker_count() const noexcept;
+    [[nodiscard]] bool active() const noexcept;
 
 private:
+    struct WorkerContext final {
+        BoundedWorkerPool* pool{nullptr};
+        size_t index{0U};
+    };
+    static void* worker_entry(void* context) noexcept;
     void worker_loop(size_t index) noexcept;
 
     std::string thread_prefix_;
@@ -131,8 +134,11 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<std::function<void()>> queue_;
-    std::vector<std::thread> workers_;
+    std::vector<pthread_t> workers_;
+    std::vector<WorkerContext> worker_contexts_;
     std::atomic<bool> stopping_{false};
+    mutable std::mutex shutdown_mutex_;
+    bool shutdown_complete_{false};
 };
 
 // Coalescing single-worker asynchronous writer that removes flash fsync() stalls
@@ -158,7 +164,9 @@ public:
     }
 
 private:
+    static void* writer_entry(void* context) noexcept;
     void writer_loop() noexcept;
+    void drain_inline() noexcept;
 
     WriteFn writer_;
     mutable std::mutex mutex_;
@@ -166,9 +174,13 @@ private:
     std::string pending_payload_;
     bool has_pending_{false};
     bool stopping_{false};
+    bool inline_writing_{false};
+    bool worker_started_{false};
+    bool worker_joined_{false};
+    pthread_t worker_{};
+    mutable std::mutex stop_mutex_;
     std::atomic<uint64_t> completed_writes_{0U};
     std::atomic<uint64_t> failed_writes_{0U};
-    std::thread worker_;
 };
 
 } // namespace coreflow

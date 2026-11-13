@@ -347,13 +347,40 @@ BoundedWorkerPool::BoundedWorkerPool(
         ? std::clamp<size_t>(hw == 0U ? 2U : hw, 2U, 4U)
         : std::clamp<size_t>(num_threads, 1U, 8U);
     workers_.reserve(count);
+    worker_contexts_.reserve(count);
     for (size_t i = 0U; i < count; ++i) {
-        workers_.emplace_back([this, i]() noexcept { worker_loop(i); });
+        worker_contexts_.push_back(WorkerContext{.pool = this, .index = i});
+        pthread_t worker{};
+        const int result = ::pthread_create(
+            &worker, nullptr, &BoundedWorkerPool::worker_entry, &worker_contexts_.back());
+        if (result != 0) {
+            worker_contexts_.pop_back();
+            break; // Partial or zero-worker mode remains operational via inline execution.
+        }
+        workers_.push_back(worker);
     }
 }
 
 BoundedWorkerPool::~BoundedWorkerPool() noexcept {
     shutdown();
+}
+
+void* BoundedWorkerPool::worker_entry(void* context) noexcept {
+    auto* worker = static_cast<WorkerContext*>(context);
+    if (worker != nullptr && worker->pool != nullptr) {
+        worker->pool->worker_loop(worker->index);
+    }
+    return nullptr;
+}
+
+size_t BoundedWorkerPool::worker_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return workers_.size();
+}
+
+bool BoundedWorkerPool::active() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !stopping_.load(std::memory_order_acquire) && !workers_.empty();
 }
 
 void BoundedWorkerPool::worker_loop(size_t index) noexcept {
@@ -409,7 +436,7 @@ void BoundedWorkerPool::parallel_for(
     size_t count,
     const std::function<void(size_t)>& fn) noexcept {
     if (count == 0U || !fn) return;
-    if (count == 1U || stopping_.load(std::memory_order_acquire) || workers_.empty()) {
+    if (count == 1U || !active()) {
         for (size_t i = 0U; i < count; ++i) {
             fn(i);
         }
@@ -426,24 +453,33 @@ void BoundedWorkerPool::parallel_for(
 }
 
 void BoundedWorkerPool::shutdown() noexcept {
-    const bool already = stopping_.exchange(true, std::memory_order_acq_rel);
-    if (already) {
-        for (auto& w : workers_) {
-            if (w.joinable()) w.join();
-        }
-        return;
+    std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex_);
+    if (shutdown_complete_) return;
+
+    // The predicate and transition share mutex_: notify cannot race between
+    // a worker's predicate check and its condition-variable wait.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_.store(true, std::memory_order_release);
     }
     cv_.notify_all();
-    for (auto& w : workers_) {
-        if (w.joinable()) w.join();
+
+    for (const pthread_t worker : workers_) {
+        (void)::pthread_join(worker, nullptr);
     }
-    workers_.clear();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workers_.clear();
+        worker_contexts_.clear();
+    }
+    shutdown_complete_ = true;
 }
 
 AsyncSnapshotWriter::AsyncSnapshotWriter(WriteFn writer) noexcept
     : writer_(std::move(writer)) {
     if (writer_) {
-        worker_ = std::thread([this]() noexcept { writer_loop(); });
+        worker_started_ = (::pthread_create(
+            &worker_, nullptr, &AsyncSnapshotWriter::writer_entry, this) == 0);
     }
 }
 
@@ -452,13 +488,53 @@ AsyncSnapshotWriter::~AsyncSnapshotWriter() noexcept {
 }
 
 void AsyncSnapshotWriter::enqueue(std::string payload) noexcept {
+    if (!writer_) return;
+    bool run_inline = false;
+    bool run_async = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_) return;
         pending_payload_ = std::move(payload);
         has_pending_ = true;
+        if (worker_started_) {
+            run_async = true;
+        } else if (!inline_writing_) {
+            inline_writing_ = true;
+            run_inline = true;
+        }
     }
-    cv_.notify_one();
+    if (run_async) {
+        cv_.notify_one();
+    } else if (run_inline) {
+        drain_inline();
+    }
+}
+
+void* AsyncSnapshotWriter::writer_entry(void* context) noexcept {
+    auto* writer = static_cast<AsyncSnapshotWriter*>(context);
+    if (writer != nullptr) writer->writer_loop();
+    return nullptr;
+}
+
+void AsyncSnapshotWriter::drain_inline() noexcept {
+    for (;;) {
+        std::string payload;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!has_pending_) {
+                inline_writing_ = false;
+                cv_.notify_all();
+                return;
+            }
+            payload = std::move(pending_payload_);
+            has_pending_ = false;
+        }
+        if (writer_(payload)) {
+            completed_writes_.fetch_add(1U, std::memory_order_release);
+        } else {
+            failed_writes_.fetch_add(1U, std::memory_order_release);
+        }
+    }
 }
 
 void AsyncSnapshotWriter::writer_loop() noexcept {
@@ -472,26 +548,32 @@ void AsyncSnapshotWriter::writer_loop() noexcept {
             payload = std::move(pending_payload_);
             has_pending_ = false;
         }
-        if (writer_) {
-            if (writer_(payload)) {
-                completed_writes_.fetch_add(1U, std::memory_order_release);
-            } else {
-                failed_writes_.fetch_add(1U, std::memory_order_release);
-            }
+        if (writer_(payload)) {
+            completed_writes_.fetch_add(1U, std::memory_order_release);
+        } else {
+            failed_writes_.fetch_add(1U, std::memory_order_release);
         }
     }
 }
 
 void AsyncSnapshotWriter::stop() noexcept {
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (stopping_ && (!worker_started_ || worker_joined_)) return;
+        stopping_ = true;
+        cv_.notify_all();
+        if (!worker_started_) {
+            cv_.wait(lock, [this]() noexcept { return !inline_writing_; });
+            return;
+        }
+    }
+
+    (void)::pthread_join(worker_, nullptr);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stopping_) return;
-        stopping_ = true;
-    }
-    cv_.notify_all();
-    if (worker_.joinable()) {
-        worker_.join();
+        worker_joined_ = true;
+        worker_started_ = false;
     }
 }
-
 } // namespace coreflow

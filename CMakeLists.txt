@@ -115,6 +115,10 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    # Test assertions are executable checks, and some legacy tests still place
+    # fixture setup/teardown calls inside assert(). Keep them active in Release
+    # test binaries without changing production target flags or NDEBUG behavior.
+    add_compile_options(-UNDEBUG)
     add_executable(test_mount_topology
         tests/test_mount_topology.cpp
         src/kernel/mount_topology.cpp
