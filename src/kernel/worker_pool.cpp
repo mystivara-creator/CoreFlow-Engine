@@ -342,7 +342,8 @@ BoundedWorkerPool::BoundedWorkerPool(
     std::string_view thread_prefix) noexcept
     : thread_prefix_(thread_prefix.empty() ? "coreflow-w" : std::string(thread_prefix)),
       max_queue_size_(std::max<size_t>(4U, max_queue_size)) {
-    const size_t hw = static_cast<size_t>(std::thread::hardware_concurrency());
+    const long online_cpus = ::sysconf(_SC_NPROCESSORS_ONLN);
+    const size_t hw = online_cpus > 0 ? static_cast<size_t>(online_cpus) : 0U;
     const size_t count = (num_threads == 0U)
         ? std::clamp<size_t>(hw == 0U ? 2U : hw, 2U, 4U)
         : std::clamp<size_t>(num_threads, 1U, 8U);
