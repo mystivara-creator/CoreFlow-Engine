@@ -17,7 +17,24 @@ set(_rust_lib "${_cargo_dir}/${_cargo_subdir}release/libcoreflow_engine.a")
 set(_rust_env "CARGO_TARGET_DIR=${_cargo_dir}" "CXX=${CMAKE_CXX_COMPILER}")
 if(ANDROID)
     # The cxx build script compiles the bridge using the same NDK ABI/API as CMake.
-    list(APPEND _rust_env "CXXFLAGS=--target=${CMAKE_CXX_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT} -stdlib=libc++")
+    # Preserve native Termux compiler defaults when target/sysroot
+    # are not explicitly configured. Avoid passing empty compiler flags.
+    set(_rust_cxxflags)
+
+    if(CMAKE_CXX_COMPILER_TARGET)
+        list(APPEND _rust_cxxflags
+            "--target=${CMAKE_CXX_COMPILER_TARGET}")
+    endif()
+
+    if(CMAKE_SYSROOT)
+        list(APPEND _rust_cxxflags
+            "--sysroot=${CMAKE_SYSROOT}")
+    endif()
+
+    list(APPEND _rust_cxxflags "-stdlib=libc++")
+    string(JOIN " " _rust_cxxflags_string ${_rust_cxxflags})
+
+    list(APPEND _rust_env "CXXFLAGS=${_rust_cxxflags_string}")
     list(APPEND _rust_env "AR=${CMAKE_AR}")
     list(APPEND _rust_env "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${CMAKE_CXX_COMPILER}")
 endif()

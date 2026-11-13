@@ -20,6 +20,7 @@
 #include <functional>
 #include <condition_variable>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -32,6 +33,8 @@
 namespace coreflow {
 
 class BaselineStore;
+class BoundedWorkerPool;
+class GlobalDecisionEngine;
 class TransactionalFrequencyActuator;
 class ForegroundTaskResolver;
 
@@ -303,6 +306,34 @@ struct CandidateStats {
     std::string last_rollback_reason;
 };
 
+struct EvaluatedCandidateSummary {
+    std::string id;
+    std::string domain;
+    std::string intent;
+    double utility_score{0.0};
+    double empirical_score{0.5};
+    double confidence{0.0};
+    double risk_penalty{0.0};
+    double thermal_penalty{0.0};
+    bool eligible{false};
+    bool selected{false};
+    std::string rejection_reason;
+};
+
+struct ActiveInterventionSummary {
+    std::string candidate_id;
+    std::string candidate_label;
+    MutationDomain domain{MutationDomain::BlockIo};
+    EvaluationDomain evaluation_domain{EvaluationDomain::Unavailable};
+    std::string intent;
+    std::string stage{"OBSERVING"};
+    std::string verdict{"PENDING"};
+    double utility_delta{0.0};
+    uint32_t observation_tick{0};
+    uint32_t observation_window{3};
+    uint32_t settling_ticks_remaining{0};
+};
+
 struct AutonomousDecisionSnapshot {
     std::string stage{"RETAINED"};      // Transaction stage: PLANNED, SETTLING, OBSERVING, RETAINED, ROLLED_BACK, RECOVERY_REQUIRED
     std::string runtime_stage{"ACTIVE_TUNING"}; // Daemon lifecycle: STAGE_OBSERVING or STAGE_ACTIVE_TUNING
@@ -355,6 +386,9 @@ struct AutonomousDecisionSnapshot {
     std::vector<DiscoveredResourceMetadata> discovered_resources;
     std::string vm_page_cluster;
     std::string vm_vfs_cache_pressure;
+    std::vector<EvaluatedCandidateSummary> evaluated_candidates;
+    std::vector<ActiveInterventionSummary> active_interventions;
+    std::string decision_plan_rationale;
 };
 
 struct TunerTelemetryInput {
@@ -549,7 +583,66 @@ private:
     std::string controller_name_;
     std::string sys_root_;
     std::string proc_root_;
+    struct ActiveIntervention {
+        std::string candidate_id;
+        std::string candidate_label;
+        MutationDomain mutation_domain{MutationDomain::BlockIo};
+        EvaluationDomain evaluation_domain{EvaluationDomain::Unavailable};
+        std::string intent;
+        std::string rationale;
+        bool is_frequency_policy{false};
+        bool thermal_stabilization{false};
+        bool observing{false};
+        bool retained{false};
+        uint32_t settling_ticks_remaining{0};
+        uint32_t obs_ticks{0};
+        uint32_t obs_window{3};
+        uint32_t idle_streak{0};
+        uint32_t contention_backoff_ticks{0};
+        double before_io_psi{0.0};
+        double before_mem_psi{0.0};
+        double before_cpu_psi{0.0};
+        double before_thermal{0.0};
+        double before_temperature_celsius{-1.0};
+        bool before_io_valid{false};
+        bool before_mem_valid{false};
+        bool before_cpu_valid{false};
+        bool before_thermal_valid{false};
+        double sum_after_io_psi{0.0};
+        double sum_after_mem_psi{0.0};
+        double sum_after_cpu_psi{0.0};
+        double sum_after_thermal{0.0};
+        double sum_after_temp_vel{0.0};
+        uint32_t valid_thermal_samples_in_window{0};
+        uint32_t valid_io_samples_in_window{0};
+        uint32_t valid_mem_samples_in_window{0};
+        uint32_t valid_cpu_samples_in_window{0};
+        uint32_t valid_pressure_samples_in_window{0};
+        double min_after_io_psi{1e9};
+        double max_after_io_psi{-1e9};
+        double min_after_mem_psi{1e9};
+        double max_after_mem_psi{-1e9};
+        double min_after_cpu_psi{1e9};
+        double max_after_cpu_psi{-1e9};
+        double min_after_thermal{1e9};
+        double max_after_thermal{-1e9};
+        double last_utility_delta{0.0};
+        std::string verdict{"PENDING"};
+        TunerVerdict verdict_enum{TunerVerdict::Pending};
+        std::vector<MutationStep> applied_steps;
+        std::vector<std::string> resource_keys;
+    };
+
+    struct FailedRecoveryRecord {
+        MutationDomain domain{MutationDomain::BlockIo};
+        std::string candidate_id;
+        std::vector<MutationStep> failed_steps;
+        bool is_frequency_policy{false};
+    };
+
     DeviceProfileHandle device_profile_;
+    std::unique_ptr<BoundedWorkerPool> worker_pool_;
+    std::unique_ptr<GlobalDecisionEngine> decision_engine_;
     TransactionalFrequencyActuator* frequency_actuator_{nullptr};
     ForegroundTaskResolver* foreground_task_resolver_{nullptr};
     const TieredPolicyRouter* tiered_policy_router_{nullptr};
@@ -631,6 +724,10 @@ private:
     uint32_t total_rejected_{0};
 
     std::vector<MutationStep> applied_steps_;
+    std::vector<ActiveIntervention> active_interventions_;
+    std::vector<FailedRecoveryRecord> unresolved_recoveries_;
+    std::vector<EvaluatedCandidateSummary> last_evaluated_candidates_;
+    std::string last_decision_plan_rationale_;
 
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id,
                            std::string_view reason) noexcept;
@@ -642,7 +739,14 @@ private:
     void save_persisted_stats() const;
     void load_persisted_stats();
     bool verify_active_ownership() const;
+    bool verify_intervention_ownership(const ActiveIntervention& iv) const;
     bool retry_contended_ownership();
+    bool retry_contended_intervention_ownership(ActiveIntervention& iv);
+    bool rollback_intervention(ActiveIntervention& iv, std::string_view reason);
+    bool rollback_partial_steps(MutationDomain domain, std::string_view candidate_id,
+                                std::vector<MutationStep>& steps, std::string_view reason);
+    bool retry_unresolved_recoveries();
+    void sync_primary_state_from_active() noexcept;
     MutationDomain domain_for_candidate(std::string_view candidate_id) const noexcept;
     ControllerPriority priority_for_candidate(std::string_view candidate_id) const noexcept;
     bool apply_transaction(
@@ -651,8 +755,20 @@ private:
         std::string_view intent,
         std::string_view rationale,
         const std::vector<MutationStep>& steps,
-        const TunerTelemetryInput& telemetry);
+        const TunerTelemetryInput& telemetry,
+        EvaluationDomain eval_domain_override = EvaluationDomain::Unavailable,
+        const std::vector<std::string>& resource_keys = {},
+        bool replace_existing_if_any = false);
+    bool apply_frequency_proposal(
+        double requested_capacity_scale,
+        uint32_t policy_index,
+        std::string_view rationale,
+        const TunerTelemetryInput& telemetry,
+        uint64_t policy_now_ns,
+        const std::vector<std::string>& resource_keys);
     void evaluate_observation_window(const TunerTelemetryInput& latest_telemetry);
+    bool evaluate_intervention_window(ActiveIntervention& iv,
+                                      const TunerTelemetryInput& latest_telemetry);
     [[nodiscard]] std::optional<uint32_t> select_frequency_policy_index() const noexcept;
     CandidateStats* find_candidate(std::string_view id);
     const CandidateStats* find_candidate(std::string_view id) const;

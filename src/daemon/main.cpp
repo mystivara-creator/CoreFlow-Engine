@@ -21,6 +21,7 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/worker_pool.hpp"
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/semantic/capability_resolver.hpp"
 #include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
@@ -29,6 +30,7 @@
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -125,17 +127,45 @@ bool safety_halt_requested() noexcept {
 }
 
 std::optional<double> read_psi_avg10(const char* path) {
-    UniqueFd fd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (path == nullptr || *path == '\0') return std::nullopt;
+    constexpr unsigned kMaxBusyRetries = 3U;
+    UniqueFd fd;
+    for (unsigned attempt = 0; attempt <= kMaxBusyRetries;) {
+        fd = UniqueFd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (fd.valid()) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && attempt < kMaxBusyRetries) {
+            ++attempt;
+            continue;
+        }
+        return std::nullopt;
+    }
     if (!fd.valid()) return std::nullopt;
 
-    char buf[512];
-    ssize_t n = 0;
-    do {
-        n = ::read(fd.get(), buf, sizeof(buf));
-    } while (n < 0 && errno == EINTR);
-    if (n <= 0) return std::nullopt;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return std::nullopt;
 
-    std::string_view content(buf, static_cast<size_t>(n));
+    char buf[512];
+    size_t total = 0;
+    unsigned read_busy_retries = 0U;
+    while (total < sizeof(buf)) {
+        const ssize_t n = ::read(fd.get(), buf + total, sizeof(buf) - total);
+        if (n > 0) {
+            total += static_cast<size_t>(n);
+            break;
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && read_busy_retries < kMaxBusyRetries) {
+            ++read_busy_retries;
+            continue;
+        }
+        if (total == 0) return std::nullopt;
+        break;
+    }
+    if (total == 0) return std::nullopt;
+
+    std::string_view content(buf, total);
     size_t pos = 0;
     while (pos < content.size()) {
         const size_t eol = content.find('\n', pos);
@@ -156,6 +186,19 @@ std::optional<double> read_psi_avg10(const char* path) {
         }
     }
     return std::nullopt;
+}
+
+const char* mutation_domain_name(MutationDomain domain) noexcept {
+    switch (domain) {
+        case MutationDomain::CpuPolicy: return "cpu";
+        case MutationDomain::BlockIo: return "io";
+        case MutationDomain::VmMemory: return "vm";
+        case MutationDomain::UclampCgroup: return "uclamp";
+        case MutationDomain::GpuDevfreq: return "gpu";
+        case MutationDomain::PowerLongevity: return "power";
+        case MutationDomain::ThermalCore: return "thermal";
+    }
+    return "unknown";
 }
 
 const char* state_name(WorkloadState state) noexcept {
@@ -699,6 +742,41 @@ std::string build_status_json(
             << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
     }
     out << "]"
+        << ",\"tunerDecisionPlanRationale\":" << json_string(tuner.decision_plan_rationale)
+        << ",\"tunerActiveInterventions\":[";
+    bool first_iv = true;
+    for (const auto& iv : tuner.active_interventions) {
+        if (!first_iv) out << ',';
+        first_iv = false;
+        out << "{\"candidateId\":" << json_string(iv.candidate_id)
+            << ",\"candidateLabel\":" << json_string(iv.candidate_label)
+            << ",\"domain\":" << json_string(mutation_domain_name(iv.domain))
+            << ",\"intent\":" << json_string(iv.intent)
+            << ",\"stage\":" << json_string(iv.stage)
+            << ",\"verdict\":" << json_string(iv.verdict)
+            << ",\"utilityDelta\":" << safe_json_double(iv.utility_delta)
+            << ",\"observationTick\":" << iv.observation_tick
+            << ",\"observationWindow\":" << iv.observation_window
+            << ",\"settlingTicksRemaining\":" << iv.settling_ticks_remaining << '}';
+    }
+    out << "],\"tunerEvaluatedCandidates\":[";
+    bool first_eval = true;
+    for (const auto& ev : tuner.evaluated_candidates) {
+        if (!first_eval) out << ',';
+        first_eval = false;
+        out << "{\"id\":" << json_string(ev.id)
+            << ",\"domain\":" << json_string(ev.domain)
+            << ",\"intent\":" << json_string(ev.intent)
+            << ",\"utilityScore\":" << safe_json_double(ev.utility_score)
+            << ",\"empiricalScore\":" << safe_json_double(ev.empirical_score, 0.5)
+            << ",\"confidence\":" << safe_json_double(ev.confidence)
+            << ",\"riskPenalty\":" << safe_json_double(ev.risk_penalty)
+            << ",\"thermalPenalty\":" << safe_json_double(ev.thermal_penalty)
+            << ",\"eligible\":" << (ev.eligible ? "true" : "false")
+            << ",\"selected\":" << (ev.selected ? "true" : "false")
+            << ",\"rejectionReason\":" << json_string(ev.rejection_reason) << '}';
+    }
+    out << "]"
         << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
         << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
         << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
@@ -1054,8 +1132,9 @@ bool write_status_snapshot(std::string_view payload) noexcept {
     if (payload.empty() || payload.size() > 1024U * 1024U || !ensure_secure_state_dir()) return false;
     UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
-    static uint64_t nonce = 0;
-    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(++nonce);
+    static std::atomic<uint64_t> nonce{0};
+    const uint64_t seq = nonce.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(seq);
     UniqueFd temp(::openat(dir.get(), temp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
     if (!temp.valid()) return false;
     (void)::fchmod(temp.get(), 0600);
@@ -1554,6 +1633,12 @@ int main(int argc, char* argv[]) {
 
     const auto interval = std::chrono::milliseconds(
         std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+    BoundedWorkerPool daemon_pool(0U, 64U, "coreflow-d");
+    AsyncSnapshotWriter status_writer([](const std::string& payload) noexcept {
+        return write_status_snapshot(payload);
+    });
+    uint64_t prev_status_write_failures = 0U;
+
     StatusTelemetrySnapshot status_inputs{};
     status_inputs.config = config;
     std::string latest_status_payload = build_status_json(context, true);
@@ -1600,14 +1685,27 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto thermal = context.thermal_monitor().assess();
-        const auto profile = context.thermal_monitor().multi_sensor_profile();
-        const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
-        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
-        const auto io_psi = read_psi_avg10("/proc/pressure/io");
-        const float battery_temp = context.thermal_monitor().battery_celsius();
-        const float skin_temp = context.thermal_monitor().skin_celsius();
+        ThermalBundle thermal_bundle{};
+        std::optional<double> cpu_psi;
+        std::optional<double> memory_psi;
+        std::optional<double> io_psi;
+        {
+            TaskGroup telemetry_group;
+            daemon_pool.submit(telemetry_group, [&]() noexcept {
+                thermal_bundle = context.thermal_monitor().sample_bundle(true);
+            });
+            daemon_pool.submit(telemetry_group, [&]() noexcept {
+                cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+                memory_psi = read_psi_avg10("/proc/pressure/memory");
+                io_psi = read_psi_avg10("/proc/pressure/io");
+            });
+            telemetry_group.wait();
+        }
+        auto thermal = std::move(thermal_bundle.assessment);
+        const auto profile = std::move(thermal_bundle.profile);
+        const float temp = thermal_bundle.composite_celsius;
+        const float battery_temp = thermal_bundle.battery_celsius;
+        const float skin_temp = thermal_bundle.skin_celsius;
 
         const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
                                            std::optional<double> confidence = std::nullopt,
@@ -2016,7 +2114,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
-        if (!write_status_snapshot(latest_status_payload)) {
+        status_writer.enqueue(latest_status_payload);
+        const uint64_t failures = status_writer.failed_writes();
+        if (failures > prev_status_write_failures) {
+            prev_status_write_failures = failures;
             static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
             const auto now = std::chrono::steady_clock::now();
             if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
@@ -2044,6 +2145,8 @@ int main(int argc, char* argv[]) {
     input_event_source.stop();
     render_booster.disconnect_frame_source();
     workload_pipeline.stop();
+    status_writer.stop();
+    daemon_pool.shutdown();
     (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
     const bool stopped = context.Stop("Daemon shutdown");
     // CoreFlowContext teardown asks AutonomousTuner to restore its resolver journal;

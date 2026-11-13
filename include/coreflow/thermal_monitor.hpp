@@ -5,6 +5,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 
 namespace coreflow {
@@ -120,6 +121,14 @@ struct MultiSensorProfile {
     size_t total_valid_sensors{0};
 };
 
+struct ThermalBundle {
+    ThermalAssessment assessment;
+    MultiSensorProfile profile;
+    float composite_celsius{-1.0f};
+    float battery_celsius{-1.0f};
+    float skin_celsius{-1.0f};
+};
+
 [[nodiscard]] ThermalAssessment assessment_from_android_severity(int severity);
 [[nodiscard]] ThermalAssessment apply_android_headroom(ThermalAssessment base, float headroom);
 [[nodiscard]] ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAssessment sensors);
@@ -133,6 +142,7 @@ public:
     [[nodiscard]] float skin_celsius() const;
     [[nodiscard]] MultiSensorProfile multi_sensor_profile() const;
     [[nodiscard]] ThermalAssessment assess(bool headroom = true) const;
+    [[nodiscard]] ThermalBundle sample_bundle(bool headroom = true) const;
     [[nodiscard]] TemperatureVelocityReading current_temperature_velocity() const;
     void record_temperature_sample(float celsius, uint64_t timestamp_ns) const;
 private:
@@ -144,12 +154,16 @@ private:
         bool is_hwmon{false};
     };
     std::string sysfs_root_;
+    mutable std::mutex monitor_mutex_;
     mutable std::vector<Sensor> sensors_;
     mutable std::chrono::steady_clock::time_point discovery_at_{};
     mutable TemperatureTrendTracker trend_tracker_{8};
     mutable std::unordered_map<std::string, TemperatureTrendTracker> sensor_trend_trackers_;
     mutable std::unordered_map<std::string, ThermalSensorFreshnessTracker> sensor_freshness_trackers_;
-    void discover_sensors() const;
-    float hottest_category(int category) const;
+    void discover_sensors_locked() const;
+    float hottest_category_locked(int category) const;
+    float battery_celsius_locked() const;
+    MultiSensorProfile multi_sensor_profile_locked() const;
+    ThermalBundle sample_bundle_locked(bool use_headroom) const;
 };
 }

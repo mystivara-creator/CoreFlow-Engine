@@ -79,6 +79,8 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/power_bridge.cpp
     src/kernel/neural_predictor.cpp
     src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
     src/kernel/vulkan_controller.cpp
 )
 
@@ -138,6 +140,8 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/thermal_monitor.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
         src/kernel/mount_topology.cpp
@@ -287,6 +291,8 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_autonomous_tuner
         tests/test_autonomous_tuner.cpp
         src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
         src/kernel/kernel_node_inventory.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
@@ -304,6 +310,32 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_autonomous_tuner PRIVATE pthread)
     endif()
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
+
+    add_executable(test_decision_engine
+        tests/test_decision_engine.cpp
+        src/kernel/autonomous_tuner.cpp
+        src/kernel/decision_engine.cpp
+        src/kernel/worker_pool.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/platform_context.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_decision_engine PRIVATE include)
+    target_link_libraries(test_decision_engine PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_decision_engine PRIVATE pthread)
+    else()
+        target_link_libraries(test_decision_engine PRIVATE log)
+    endif()
+    add_test(NAME GlobalDecisionEngineAndConcurrencyTest COMMAND test_decision_engine)
 
     add_executable(test_feature_accountability tests/test_feature_accountability.cpp)
     target_include_directories(test_feature_accountability PRIVATE include)
@@ -363,6 +395,8 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
         src/kernel/kernel_node_inventory.cpp
         src/kernel/foreground_task_resolver.cpp
         src/kernel/cgroup_v2.cpp
@@ -447,7 +481,9 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_thermal_monitor PRIVATE include)
     target_link_libraries(test_thermal_monitor PRIVATE m)
-    if(ANDROID)
+    if(NOT ANDROID)
+        target_link_libraries(test_thermal_monitor PRIVATE pthread)
+    else()
         target_link_libraries(test_thermal_monitor PRIVATE log)
     endif()
     add_test(NAME ThermalMonitorTest COMMAND test_thermal_monitor)
