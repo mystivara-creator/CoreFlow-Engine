@@ -2717,13 +2717,16 @@ bool AutonomousTuner::evaluate_intervention_window(
             ? (iv.sum_after_temp_vel / static_cast<double>(iv.valid_thermal_samples_in_window))
             : latest_telemetry.temperature_velocity_celsius_per_sec;
 
-        // Thermal outcomes are judged against thermal evidence first. A positive
-        // aggregate utility score must never hide a warming trend or rising pressure.
+        // Thermal outcomes are judged against both independent safety signals.
+        // Neither a lower pressure reading nor a cooling trend may mask regression
+        // in the other signal.
         const bool temperature_cooling = avg_temp_vel < -0.05;
-        const bool pressure_stable = thermal_valid &&
+        const bool temperature_not_warming = avg_temp_vel <= 0.05;
+        const bool pressure_nonworsening = thermal_valid &&
             (after_therm <= iv.before_thermal + 0.50) &&
             ((iv.max_after_thermal - iv.min_after_thermal) <= 2.0);
-        const bool thermal_objective_met = temperature_cooling || pressure_stable;
+        const bool thermal_objective_met =
+            temperature_not_warming && pressure_nonworsening;
 
         // Preserve workload responsiveness: reject a thermal win that materially
         // worsens CPU/I/O contention or memory stalls during the same window.
@@ -2732,11 +2735,11 @@ bool AutonomousTuner::evaluate_intervention_window(
             (cpu_valid && cpu_gain < -3.0) ||
             (mem_valid && mem_gain < -1.5);
 
-        if (temperature_cooling) {
+        if (temperature_cooling && pressure_nonworsening) {
             const double cooling_gain = std::min(1.2, (-avg_temp_vel) * 1.5);
             utility_delta = 0.45 * therm_gain + cooling_gain +
                 0.20 * io_gain + 0.15 * cpu_gain;
-        } else if (pressure_stable) {
+        } else if (thermal_objective_met) {
             utility_delta = std::max(0.0, therm_gain) * 0.40 +
                 0.20 * io_gain + 0.15 * cpu_gain;
         } else {

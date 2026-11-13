@@ -773,6 +773,37 @@ int main() {
     assert(t4_eval.last_verdict != "IMPROVED");
     assert(t4_eval.stage == "PLANNED");
 
+    // 13.4b Cooling temperature cannot hide a worsening thermal-pressure trend.
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 5.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 46.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 5.0,
+            .thermal_pressure = 72.0,
+            .current_temperature_celsius = 43.0,
+            .temperature_velocity_celsius_per_sec = -0.35,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t4b_eval = tuner.snapshot();
+    assert(t4b_eval.last_verdict != "IMPROVED");
+    assert(t4b_eval.stage == "PLANNED");
+
     // 13.5 Sensor unavailable yields INCONCLUSIVE
     tuner.reset();
     tuner.discover(sys_root.string(), proc_root.string());
