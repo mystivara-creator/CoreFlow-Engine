@@ -28,7 +28,6 @@ constexpr size_t kEventBits = (EV_MAX + kWordBits) / kWordBits;
 constexpr size_t kPropertyBits = (INPUT_PROP_MAX + kWordBits) / kWordBits;
 constexpr size_t kKeyBits = (KEY_MAX + kWordBits) / kWordBits;
 constexpr size_t kAbsBits = (ABS_MAX + kWordBits) / kWordBits;
-constexpr uint32_t kTouchBurstMs = 80U;
 constexpr size_t kReadEvents = 32U;
 
 bool bit_is_set(const unsigned long* bits, size_t code) noexcept {
@@ -157,7 +156,7 @@ bool consume_touch_input_event(
             .vsync_timestamp_ns = now_ns,
             .frame_duration_ns = 0,
             .jank_threshold_ns = 0,
-            .burst_duration_ms = kTouchBurstMs,
+            .burst_duration_ms = 0,
         };
         state.last_emitted_ns = now_ns;
         state.pending_activity = false;

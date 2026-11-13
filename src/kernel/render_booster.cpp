@@ -17,8 +17,16 @@
 
 namespace coreflow {
 
-RenderBooster::RenderBooster(UclampGovernor& governor, EpollReactor& reactor)
-    : governor_(governor), reactor_(reactor) {
+RenderBooster::RenderBooster(
+    UclampGovernor& governor,
+    EpollReactor& reactor,
+    uint32_t touch_boost_uclamp_min,
+    uint32_t burst_boost_duration_ms)
+    : governor_(governor),
+      reactor_(reactor),
+      touch_boost_uclamp_min_(std::min(touch_boost_uclamp_min, 1024U)),
+      burst_boost_duration_(std::chrono::milliseconds(
+          std::min(burst_boost_duration_ms, 1000U))) {
     // No SurfaceFlinger/frame-timeline source is connected; never synthesize 120 FPS.
     metrics_.target_fps = 0;
     metrics_.average_frame_time_ms = 0.0;
@@ -65,9 +73,11 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
     switch (event.kind) {
         case FrameEventKind::TouchBurst: {
             in_touch_gesture_.store(true, std::memory_order_relaxed);
-            const uint32_t duration = event.burst_duration_ms >= 50U &&
-                event.burst_duration_ms <= 100U ? event.burst_duration_ms : 80U;
-            trigger_render_burst(380U, std::chrono::milliseconds(duration));
+            const auto duration = event.burst_duration_ms >= 50U &&
+                event.burst_duration_ms <= 1000U
+                    ? std::chrono::milliseconds(event.burst_duration_ms)
+                    : burst_boost_duration_;
+            trigger_render_burst(touch_boost_uclamp_min_, duration);
             return;
         }
         case FrameEventKind::FrameDropped:
@@ -107,7 +117,7 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
 
 void RenderBooster::on_touch_down() {
     in_touch_gesture_.store(true, std::memory_order_relaxed);
-    trigger_render_burst(380, std::chrono::milliseconds(120));
+    trigger_render_burst(touch_boost_uclamp_min_, burst_boost_duration_);
 }
 
 void RenderBooster::on_touch_up() {

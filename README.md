@@ -30,7 +30,7 @@ CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal pol
 
 ## Status pengembangan
 
-v3.1.0. Pekerjaan native input dan foreground render-thread pada [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) masih berstatus Draft. CI hijau bukan pengganti validasi runtime pada perangkat.
+v3.1.0. Pekerjaan native input dan foreground render-thread pada [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) masih berstatus Draft. Implementasi saat ini menyediakan touch-triggered transient top-app UClamp dengan expiry dan ownership-checked restore serta foreground-task placement yang dibatasi identitas dan admission thermal/workload. Ini belum merupakan integrasi SurfaceFlinger FrameTimeline, frame pacing end-to-end, atau kontrol refresh-rate layar. CI hijau bukan pengganti validasi runtime pada perangkat.
 
 ## Dokumentasi
 

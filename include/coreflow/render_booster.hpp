@@ -1,6 +1,7 @@
 /**
  * @file render_booster.hpp
- * @brief SurfaceFlinger 120Hz Frame Pacing & Display Refresh Controller
+ * @brief Verified input-triggered transient top-app UClamp burst actuator.
+ * SurfaceFlinger FrameTimeline and display refresh-rate control are not implemented.
  * @author mystivara-creator
  * @license Apache-2.0
  */
@@ -9,6 +10,7 @@
 
 #include <chrono>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include "coreflow/feature_accountability.hpp"
@@ -19,17 +21,22 @@
 namespace coreflow {
 
 struct FrameMetrics {
-    uint32_t target_fps{120};
-    double average_frame_time_ms{8.33};
+    // Zero/false means no trusted frame-timeline producer is connected.
+    uint32_t target_fps{0};
+    double average_frame_time_ms{0.0};
     uint32_t dropped_frames{0};
-    bool is_vsync_aligned{true};
+    bool is_vsync_aligned{false};
 };
 
 class RenderBooster {
     friend struct RenderBoosterTestAccess;
 public:
  static constexpr FeatureStatus kStatus=kRenderBoosterStatus;
-    RenderBooster(UclampGovernor& governor, EpollReactor& reactor);
+    RenderBooster(
+        UclampGovernor& governor,
+        EpollReactor& reactor,
+        uint32_t touch_boost_uclamp_min = 380U,
+        uint32_t burst_boost_duration_ms = 120U);
     ~RenderBooster();
     RenderBooster(const RenderBooster&) = delete;
     RenderBooster& operator=(const RenderBooster&) = delete;
@@ -51,6 +58,8 @@ private:
     FrameEventSource* frame_source_{nullptr};
     UclampGovernor& governor_;
     EpollReactor& reactor_;
+    const uint32_t touch_boost_uclamp_min_;
+    const std::chrono::milliseconds burst_boost_duration_;
     UniqueFd request_fd_;
     UniqueFd expiry_fd_;
     std::atomic<uint32_t> requested_min_{0};

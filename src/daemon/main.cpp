@@ -1507,7 +1507,10 @@ int main(int argc, char* argv[]) {
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
     NativeInputEventSource input_event_source(reactor);
-    RenderBooster render_booster(governor, reactor);
+    RenderBooster render_booster(
+        governor, reactor,
+        config.touch_boost_uclamp_min,
+        config.burst_boost_duration_ms);
     (void)render_booster;
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;

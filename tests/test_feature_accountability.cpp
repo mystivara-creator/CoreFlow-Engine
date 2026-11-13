@@ -9,7 +9,7 @@ static_assert(kJitAotControlStatus==FeatureStatus::NOT_IMPLEMENTED);
 static_assert(kSurfaceFlingerControlStatus==FeatureStatus::NOT_IMPLEMENTED);
 static_assert(kAngleControlStatus==FeatureStatus::NOT_IMPLEMENTED);
 static_assert(kOpenGlControlStatus==FeatureStatus::NOT_IMPLEMENTED);
-static_assert(RenderBooster::kStatus==FeatureStatus::NOT_IMPLEMENTED);
+static_assert(RenderBooster::kStatus==FeatureStatus::LIMITED_ACTUATION);
 static_assert(VulkanController::kRenderingOptimizationStatus==FeatureStatus::NOT_IMPLEMENTED);
 static_assert(VulkanController::kLayerStatus==FeatureStatus::OBSERVATION_ONLY);
 static_assert(VulkanController::kHardwareProbeStatus==FeatureStatus::OBSERVATION_ONLY);
