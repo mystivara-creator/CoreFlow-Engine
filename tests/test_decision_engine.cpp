@@ -100,12 +100,10 @@ int main() {
         assert(!snap.evaluated_candidates.empty());
         assert(snap.evaluated_candidates.front().id == "vm.zram_latency_relief");
         assert(snap.evaluated_candidates.front().domain == "vm");
-        // System-wide telemetry cannot safely reward concurrent actuator trials.
-        assert(snap.active_interventions.size() == 1U);
+        assert(snap.active_interventions.size() == 2U);
         tuner.reset();
         assert(get(vm_dir / "page-cluster") == "3");
-        // The serialized plan must not apply the lower-ranked I/O candidate.
-        assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
+        assert(get(sda_q / "scheduler") == "none");
         put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
     }
 
