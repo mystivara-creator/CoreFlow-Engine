@@ -734,12 +734,19 @@ void AutonomousTuner::init_candidates() {
 }
 
 void AutonomousTuner::update_ucb_scores() {
-    const double total_n = std::max(1.0, static_cast<double>(total_reward_samples_));
-    for (auto& c : candidates_) {
-        c.successes = c.improved_count;
-        c.rollbacks = c.regressed_count;
-        const double explore = 0.25 * std::sqrt(std::log(total_n + 1.0) / static_cast<double>(c.reward_samples + 1));
-        c.ucb_score = c.mean_utility + explore;
+    for (auto& candidate : candidates_) {
+        candidate.successes = candidate.improved_count;
+        candidate.rollbacks = candidate.regressed_count;
+        uint64_t domain_reward_samples = 0U;
+        for (const auto& peer : candidates_) {
+            if (peer.domain == candidate.domain) {
+                domain_reward_samples += static_cast<uint64_t>(peer.reward_samples);
+            }
+        }
+        const double domain_n = std::max(1.0, static_cast<double>(domain_reward_samples));
+        const double explore = 0.25 * std::sqrt(
+            std::log(domain_n + 1.0) / static_cast<double>(candidate.reward_samples + 1U));
+        candidate.ucb_score = candidate.mean_utility + explore;
     }
 }
 
@@ -1412,7 +1419,8 @@ bool AutonomousTuner::candidate_contract_eligible(std::string_view candidate_id)
                select_frequency_policy_index().has_value();
     }
     if (candidate_id == "gpu.kgsl.frame_deadline_relief") {
-        if (gpu_frequency_controller_ == nullptr || gpu_frequency_controller_->kgsl_count() == 0U || !device_profile_)
+        if (gpu_frequency_controller_ == nullptr || gpu_frequency_controller_->kgsl_count() == 0U ||
+            !gpu_frequency_controller_->gpu_frequency_observation_ready() || !device_profile_)
             return false;
         return std::any_of(device_profile_->gpu_domains.begin(), device_profile_->gpu_domains.end(),
             [&](const GpuDomainProfile& domain) {
@@ -2631,17 +2639,24 @@ bool AutonomousTuner::apply_gpu_proposal(
     constexpr std::string_view candidate_id = "gpu.kgsl.frame_deadline_relief";
     if (gpu_frequency_controller_ == nullptr || recovery_required_ ||
         !telemetry.gpu_busy_valid || !telemetry.frame_deadline_valid ||
-        telemetry.frame_deadline_window_end_ns == 0U ||
-        !std::isfinite(telemetry.gpu_busy_pct) ||
-        !std::isfinite(telemetry.frame_deadline_miss_pct)) return false;
+        !telemetry.thermal_pressure_valid || telemetry.frame_deadline_window_end_ns == 0U ||
+        !std::isfinite(telemetry.gpu_busy_pct) || telemetry.gpu_busy_pct < 70.0 ||
+        telemetry.gpu_busy_pct > 100.0 || !std::isfinite(telemetry.frame_deadline_miss_pct) ||
+        telemetry.frame_deadline_miss_pct < 0.5 || telemetry.frame_deadline_miss_pct > 100.0 ||
+        telemetry.frame_deadline_count < 2U || telemetry.frame_deadline_misses == 0U ||
+        telemetry.frame_deadline_misses > telemetry.frame_deadline_count ||
+        !std::isfinite(telemetry.thermal_pressure) || telemetry.thermal_pressure < 0.0 ||
+        telemetry.thermal_pressure > 130.0) return false;
 
     double thermal_headroom = telemetry.thermal_headroom;
-    if (thermal_headroom < 0.0 && telemetry.thermal_pressure_valid &&
-        std::isfinite(telemetry.thermal_pressure)) {
+    if (!std::isfinite(thermal_headroom) || thermal_headroom < 0.0) {
         thermal_headroom = std::clamp((88.0 - telemetry.thermal_pressure) / 46.0, 0.0, 1.0);
     }
     if (!std::isfinite(thermal_headroom) || thermal_headroom < 0.35 ||
         telemetry.thermal_guard_active || telemetry.thermal_emergency) return false;
+
+    GpuFrequencySample before_frequency{};
+    if (!gpu_frequency_controller_->read_gpu_frequency_sample(before_frequency)) return false;
 
     if (!gpu_frequency_controller_->apply_gpu_frame_policy(
             telemetry.gpu_busy_pct, telemetry.frame_deadline_miss_pct,
@@ -2658,8 +2673,19 @@ bool AutonomousTuner::apply_gpu_proposal(
         }
         return false;
     }
-    if (!gpu_frequency_controller_->gpu_frame_policy_owned_intact()) {
-        (void)gpu_frequency_controller_->restore_gpu_frame_policy();
+    GpuFrequencySample after_frequency{};
+    if (!gpu_frequency_controller_->gpu_frame_policy_owned_intact() ||
+        !gpu_frequency_controller_->read_gpu_frequency_sample(after_frequency)) {
+        if (!gpu_frequency_controller_->restore_gpu_frame_policy()) {
+            recovery_required_ = true;
+            last_verdict_ = "RECOVERY_REQUIRED";
+            last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            const bool recorded = std::any_of(unresolved_recoveries_.begin(), unresolved_recoveries_.end(),
+                [&](const FailedRecoveryRecord& rec) { return rec.is_gpu_policy && rec.candidate_id == candidate_id; });
+            if (!recorded) unresolved_recoveries_.push_back(FailedRecoveryRecord{
+                .domain = MutationDomain::GpuDevfreq, .candidate_id = std::string(candidate_id),
+                .failed_steps = {}, .is_frequency_policy = false, .is_gpu_policy = true});
+        }
         return false;
     }
 
@@ -2677,9 +2703,15 @@ bool AutonomousTuner::apply_gpu_proposal(
     iv.obs_window = obs_window_;
     iv.before_gpu_valid = true;
     iv.before_gpu_miss_pct = telemetry.frame_deadline_miss_pct;
+    iv.before_gpu_frequency_valid = true;
+    iv.before_gpu_frequency_hz = before_frequency.current_frequency_hz;
+    iv.sum_after_gpu_frequency_hz = static_cast<double>(after_frequency.current_frequency_hz);
+    iv.min_after_gpu_frequency_hz = after_frequency.current_frequency_hz;
+    iv.max_after_gpu_frequency_hz = after_frequency.current_frequency_hz;
+    iv.valid_gpu_frequency_samples = 1U;
     iv.last_frame_deadline_window_end_ns = telemetry.frame_deadline_window_end_ns;
-    iv.before_thermal_valid = telemetry.thermal_pressure_valid;
-    iv.before_thermal = telemetry.thermal_pressure_valid ? telemetry.thermal_pressure : 0.0;
+    iv.before_thermal_valid = true;
+    iv.before_thermal = telemetry.thermal_pressure;
     iv.resource_keys = resource_keys;
     if (iv.resource_keys.empty()) iv.resource_keys.emplace_back("gpu:kgsl:pwrlevel-pair");
     iv.verdict = "PENDING";
@@ -2693,7 +2725,9 @@ bool AutonomousTuner::apply_gpu_proposal(
         stats->last_thermal_bucket = compute_thermal_bucket(telemetry);
         stats->last_regime = current_regime_;
         stats->last_before_summary = "frame_deadline_miss_pct=" +
-            std::to_string(telemetry.frame_deadline_miss_pct);
+            std::to_string(telemetry.frame_deadline_miss_pct) + "; gpuclk_hz=" +
+            std::to_string(before_frequency.current_frequency_hz) + "; thermal_pressure=" +
+            std::to_string(telemetry.thermal_pressure);
     }
     active_interventions_.push_back(std::move(iv));
     last_verdict_ = "PENDING";
@@ -2822,8 +2856,11 @@ bool AutonomousTuner::evaluate_intervention_window(
         iv.evaluation_domain == EvaluationDomain::Cpu ? iv.valid_cpu_samples_in_window :
         iv.evaluation_domain == EvaluationDomain::Gpu ? iv.valid_gpu_samples_in_window :
         iv.valid_pressure_samples_in_window;
+    const bool gpu_outcome_complete = iv.evaluation_domain != EvaluationDomain::Gpu ||
+        (iv.before_gpu_frequency_valid && iv.valid_gpu_frequency_samples >= 3U &&
+         iv.before_thermal_valid && iv.valid_pressure_samples_in_window >= 2U);
 
-    if (target_samples < 2) {
+    if (target_samples < 2 || !gpu_outcome_complete) {
         last_verdict_ = "INCONCLUSIVE";
         last_verdict_enum_ = TunerVerdict::Inconclusive;
         last_utility_delta_ = 0.0;
@@ -2926,7 +2963,28 @@ bool AutonomousTuner::evaluate_intervention_window(
     } else if (iv.intent == "InteractiveCpuPacing") {
         utility_delta = 1.50 * cpu_gain + (io_valid ? 0.35 * io_gain : 0.0) - 0.65 * therm_penalty;
     } else if (iv.intent == "GpuFrameDeadlineRelief") {
-        utility_delta = gpu_valid ? 1.50 * gpu_gain - 0.65 * therm_penalty : 0.0;
+        const double mean_gpu_frequency = mean(
+            iv.sum_after_gpu_frequency_hz, iv.valid_gpu_frequency_samples);
+        const double gpu_frequency_span = iv.valid_gpu_frequency_samples >= 2U && mean_gpu_frequency > 0.0
+            ? static_cast<double>(iv.max_after_gpu_frequency_hz - iv.min_after_gpu_frequency_hz) / mean_gpu_frequency
+            : 1.0;
+        const double gpu_frequency_delta = iv.before_gpu_frequency_valid && iv.before_gpu_frequency_hz > 0U
+            ? (mean_gpu_frequency - static_cast<double>(iv.before_gpu_frequency_hz)) /
+                static_cast<double>(iv.before_gpu_frequency_hz)
+            : 0.0;
+        const double gpu_frequency_reward = 0.10 * std::clamp(gpu_frequency_delta, -0.25, 0.25);
+        const double gpu_frequency_instability_penalty =
+            std::clamp((gpu_frequency_span - 0.08) * 0.70, 0.0, 0.35);
+        const bool gpu_frequency_regressed = gpu_frequency_span > 0.50;
+        const bool gpu_thermal_regressed = thermal_valid &&
+            (after_therm > iv.before_thermal + 4.0 || iv.max_after_thermal > iv.before_thermal + 8.0);
+        utility_delta = gpu_valid && thermal_valid
+            ? 1.50 * gpu_gain + gpu_frequency_reward - 0.65 * therm_penalty -
+                gpu_frequency_instability_penalty
+            : 0.0;
+        if (gpu_frequency_regressed || gpu_thermal_regressed) {
+            utility_delta = std::min(utility_delta, -0.75);
+        }
     } else {
         utility_delta = 0.0;
     }
@@ -2993,6 +3051,19 @@ bool AutonomousTuner::evaluate_intervention_window(
             0.85 * evaluation_noise_floors_[noise_index] + 0.15 * measured_noise, 0.02, 0.45);
         noise_floor_ = evaluation_noise_floors_[noise_index];
     }
+    if (stats != nullptr && iv.evaluation_domain == EvaluationDomain::Gpu) {
+        const double mean_gpu_frequency = mean(
+            iv.sum_after_gpu_frequency_hz, iv.valid_gpu_frequency_samples);
+        const double gpu_frequency_span_pct = mean_gpu_frequency > 0.0
+            ? 100.0 * static_cast<double>(iv.max_after_gpu_frequency_hz - iv.min_after_gpu_frequency_hz) /
+                mean_gpu_frequency
+            : 0.0;
+        stats->last_after_summary = "frame_deadline_miss_pct=" + std::to_string(after_gpu_miss).substr(0, 10) +
+            "; gpuclk_mean_hz=" + std::to_string(mean_gpu_frequency).substr(0, 12) +
+            "; gpuclk_span_pct=" + std::to_string(gpu_frequency_span_pct).substr(0, 8) +
+            "; thermal_pressure=" + std::to_string(after_therm).substr(0, 8) + "; dU=" + std::to_string(utility_delta).substr(0, 8);
+    }
+
     const double improved_threshold = std::max(0.25, 2.0 * noise_floor_);
     const double regressed_threshold = -(0.20 + noise_floor_);
     const bool high_variance_inconclusive =
@@ -3291,7 +3362,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     env_input.frequency_actuator_configured =
         frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr;
     env_input.gpu_actuator_ready = gpu_frequency_controller_ != nullptr &&
-        gpu_frequency_controller_->kgsl_count() > 0U;
+        gpu_frequency_controller_->kgsl_count() > 0U &&
+        gpu_frequency_controller_->gpu_frequency_observation_ready();
     env_input.frequency_policy_index = policy_index;
     env_input.tiered_policy_decision = frequency_decision;
     env_input.tiered_policy_ready = frequency_policy_evidence_ready;
@@ -3595,6 +3667,23 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 iv.max_after_gpu_miss_pct = std::max(iv.max_after_gpu_miss_pct, telemetry.frame_deadline_miss_pct);
                 ++iv.valid_gpu_samples_in_window;
                 iv.last_frame_deadline_window_end_ns = telemetry.frame_deadline_window_end_ns;
+            }
+            if (iv.evaluation_domain == EvaluationDomain::Gpu && gpu_frequency_controller_ != nullptr) {
+                GpuFrequencySample frequency_sample{};
+                if (gpu_frequency_controller_->read_gpu_frequency_sample(frequency_sample)) {
+                    if (iv.valid_gpu_frequency_samples == 0U) {
+                        iv.min_after_gpu_frequency_hz = frequency_sample.current_frequency_hz;
+                        iv.max_after_gpu_frequency_hz = frequency_sample.current_frequency_hz;
+                    } else {
+                        iv.min_after_gpu_frequency_hz = std::min(
+                            iv.min_after_gpu_frequency_hz, frequency_sample.current_frequency_hz);
+                        iv.max_after_gpu_frequency_hz = std::max(
+                            iv.max_after_gpu_frequency_hz, frequency_sample.current_frequency_hz);
+                    }
+                    iv.sum_after_gpu_frequency_hz +=
+                        static_cast<double>(frequency_sample.current_frequency_hz);
+                    ++iv.valid_gpu_frequency_samples;
+                }
             }
             ++iv.obs_ticks;
             if (iv.obs_ticks >= iv.obs_window) {

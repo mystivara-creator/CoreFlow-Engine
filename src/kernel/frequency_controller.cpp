@@ -202,7 +202,14 @@ void FrequencyController::add(const std::string& dir, bool gpu) {
     // A pre-existing journaled mutation has no ownership relationship to this
     // newly discovered controller instance. Do not adopt it as an OEM baseline.
     if (snapshot == audit.end() || snapshot->is_modified) return;
-    domains_.push_back({max, min, ceiling, ceiling, std::move(values), gpu});
+    Domain domain{};
+    domain.maximum = max;
+    domain.minimum = min;
+    domain.baseline = ceiling;
+    domain.last = ceiling;
+    domain.frequencies = std::move(values);
+    domain.gpu = gpu;
+    domains_.push_back(std::move(domain));
 }
 
 void FrequencyController::add_kgsl(const std::string& dir) {
@@ -239,6 +246,7 @@ void FrequencyController::add_kgsl(const std::string& dir) {
     Domain domain{};
     domain.maximum = maximum;
     domain.minimum = minimum;
+    domain.current_frequency = dir + "/gpuclk";
     domain.baseline = current_max;
     domain.last = current_max;
     domain.baseline_minimum = current_min;
@@ -436,6 +444,58 @@ bool FrequencyController::gpu_frame_policy_owned_intact() const noexcept {
             !owned_endpoint(item.minimum, actual_min, item.baseline_minimum)) return false;
     }
     return observed_active_pair;
+}
+
+bool FrequencyController::read_gpu_frequency_sample(GpuFrequencySample& sample) const noexcept {
+    sample = {};
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& store = BaselineStore::instance();
+    size_t observed_domains = 0U;
+    for (const auto& item : domains_) {
+        if (!item.gpu || !item.kgsl_power_levels || item.retired) continue;
+        ++observed_domains;
+        if (observed_domains != 1U) return false; // No ambiguous multi-GPU aggregate.
+
+        uint64_t actual_max = 0U, actual_min = 0U, actual_frequency = 0U;
+        if (!number_allow_zero(item.maximum, actual_max) ||
+            !number_allow_zero(item.minimum, actual_min) ||
+            !number(item.current_frequency, actual_frequency) ||
+            actual_max != item.last || actual_min != item.last_minimum ||
+            actual_max > actual_min || actual_min > item.max_valid_level ||
+            !store.owns_expected_state(item.maximum, std::to_string(actual_max)) ||
+            !store.owns_expected_state(item.minimum, std::to_string(actual_min))) return false;
+        const auto opp = std::find(item.frequencies.begin(), item.frequencies.end(), actual_frequency);
+        if (opp == item.frequencies.end()) return false;
+        const uint64_t opp_index = static_cast<uint64_t>(std::distance(item.frequencies.begin(), opp));
+        if (opp_index < actual_max || opp_index > actual_min) return false;
+
+        if (!item.mutation_active) {
+            const auto audit = store.get_audit_trail();
+            if (!snapshot_is_oem(audit, item.maximum, actual_max) ||
+                !snapshot_is_oem(audit, item.minimum, actual_min)) return false;
+        } else {
+            const auto audit = store.get_audit_trail();
+            const auto owned_endpoint = [&](const std::string& path, uint64_t value, uint64_t baseline) {
+                const auto node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& entry) {
+                    return entry.path == path;
+                });
+                const std::string expected = std::to_string(value);
+                return node != audit.end() && node->factory_value == std::to_string(baseline) &&
+                    node->active_value == expected && node->is_modified == (value != baseline);
+            };
+            if (!owned_endpoint(item.maximum, actual_max, item.baseline) ||
+                !owned_endpoint(item.minimum, actual_min, item.baseline_minimum)) return false;
+        }
+        sample.current_frequency_hz = actual_frequency;
+        sample.max_pwrlevel = actual_max;
+        sample.min_pwrlevel = actual_min;
+    }
+    return observed_domains == 1U;
+}
+
+bool FrequencyController::gpu_frequency_observation_ready() const noexcept {
+    GpuFrequencySample sample{};
+    return read_gpu_frequency_sample(sample);
 }
 void FrequencyController::discover(bool cpu, bool gpu) {
     std::lock_guard<std::mutex> lock(mutex_);

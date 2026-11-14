@@ -107,7 +107,7 @@ struct CorrelatedEvidence final {
 struct CandidateProposal final {
     std::string id;
     std::string label;
-    std::string domain_label; // "io", "vm", "cpufreq", "thermal"
+    std::string domain_label; // "io", "vm", "cpufreq", "gpu", "thermal"
     MutationDomain mutation_domain{MutationDomain::BlockIo};
     EvaluationDomain evaluation_domain{EvaluationDomain::Unavailable};
     ControllerPriority priority{ControllerPriority::WorkloadOptimization};

@@ -1,7 +1,7 @@
 # P1 — Correct Feature Classification & Accountability Report
 
 **Audit baseline:** 2026-11-14  
-**Audited ref:** `feat/p4-native-actuators-end-to-end` at `57fd39ac505792780f62559dd89f3ecf697a5c08`
+**Audited ref:** `feat/p4-native-actuators-end-to-end` at `3491e773e3f99d0bd7897053ccbe8be156f57d5d` (pre-integration baseline for this follow-up)
 
 ## Acceptance rule
 
@@ -23,12 +23,20 @@ A class, UI toggle, config key, telemetry field, layer manifest, or documentatio
 | SkiaVK threaded renderer | `NOT_IMPLEMENTED` | No HWUI/Skia integration. Native snapshot flag hardcoded false regardless of config. |
 | Adaptive VRS | `NOT_IMPLEMENTED` | Feature discovery is not an actuator; no VRS command submission or app integration. Native flag hardcoded false. |
 | Vulkan pipeline-cache prewarming | `NOT_IMPLEMENTED` | No application pipeline-cache ownership/prewarm path. Native flag hardcoded false. |
-| Qualcomm Adreno / KGSL tuning | `DORMANT_GUARDED_ACTUATOR` | `FrequencyController::add_kgsl()` validates paired writable power-level nodes and table cardinality; `apply_gpu_frame_policy()` has ordered writes, readback and rollback. The daemon does not currently call this actuator from a GPU candidate path, so autonomous runtime remains observation-only. |
+| Qualcomm Adreno / KGSL tuning | `LIMITED_ACTUATION` | `GpuCandidateProvider` is registered in `GlobalDecisionEngine` and dispatches only with a discovered GPU domain, validated KGSL paired endpoints, live `gpuclk` matching a driver OPP, GPU-bound/gaming workload, FrameTimeline misses, valid thermal pressure, and at least 0.35 headroom. `FrequencyController` applies one bounded paired-level `GpuDevfreq` lease with `BaselineStore` ownership/readback/rollback. The GPU outcome evaluator uses only `gpu` reward samples and evaluates frame misses, clock mean/spread, and thermal pressure; insufficient evidence or regression restores the baseline. Physical ABI and sustained-device acceptance remain pending. |
 | ARM Mali GPU policy | `LIMITED_ACTUATION` | A discovered `/device/power_policy` path may be set to `coarse_demand` through BaselineStore, coordinator lease, and readback/rollback. Not general Vulkan/GPU-frequency optimization; physical acceptance remains required. |
 | Power HAL discovery | `OBSERVATION_ONLY` | Probes Binder/HwBinder access and AIDL `android.hardware.power.IPower/default` presence only. |
 | Power HAL interception / hint submission | `NOT_IMPLEMENTED` | `enable_interception()` returns an explicit unsupported error; no OEM/AOSP integration or transparent Binder interception exists. |
 
-## Current branch implementation status (2026-11-14)\n\n- SurfaceFlinger Perfetto FrameTimeline capture is implemented through `PerfettoFrameTimelineEventSource` and connected to `RenderBooster` or workload evidence after lifecycle promotion. Actual Perfetto permission and sample availability remain device-dependent.\n- KGSL paired-level transaction code is present, but no GPU candidate provider currently calls `FrequencyController::apply_gpu_frame_policy()`. Keep this mutation path dormant in production until candidate routing, thermal admission, and device ABI acceptance are complete.\n- The Vulkan layer implements pipeline-cache hooks, but `VulkanController` previously inferred interception from installed files and configured mode. That does not establish process-level loader activation. Runtime activation is therefore reported as unverified.\n- v4.0.0 metadata and CI package artifacts exist on this branch; public GitHub Release/tag publication is separate and has not occurred.\n\n## Changes in this batch
+## Current branch implementation status (2026-11-14)
+
+- SurfaceFlinger Perfetto FrameTimeline capture is implemented through `PerfettoFrameTimelineEventSource` and connected to `RenderBooster` or workload evidence after lifecycle promotion. Actual Perfetto permission and sample availability remain device-dependent.
+- KGSL has a bounded autonomous candidate route. Live `gpuclk` must match the driver-advertised OPP table and the owned paired endpoints must remain intact. Outcome evidence requires new FrameTimeline windows, at least three valid clock samples (the immediate post-apply readback plus two subsequent window samples), and at least two thermal-pressure samples. Clock spread and thermal regression reduce GPU utility; missing evidence is inconclusive and rolls back. ThermalStabilization preemption uses deterministic paired `BaselineStore` rollback.
+- GPU candidate reward/UCB exploration is domain-isolated (`gpu`); CPU/I/O/Memory reward counts do not dilute or inflate GPU exploration. The feature is limited to Qualcomm KGSL paired `max_pwrlevel` / `min_pwrlevel` control and is not a general GPU-frequency or renderer optimizer.
+- The Vulkan layer implements pipeline-cache hooks, but installed files/configuration do not prove Android application-process loader activation. Runtime activation remains unverified.
+- v4.0.0 metadata and CI package artifacts exist on this branch; public GitHub Release/tag publication is separate and has not occurred.
+
+## Changes in this batch
 
 1. Added `include/coreflow/feature_accountability.hpp` with compile-time status constants.
 2. Exposed status constants from RenderBooster, PowerBridge, and VulkanController.
@@ -41,7 +49,7 @@ A class, UI toggle, config key, telemetry field, layer manifest, or documentatio
 
 ## Acceptance boundaries
 
-- Host CI verifies statuses, inactive flags, and deterministic paths; it cannot prove Android service integration or device behavior.
+- Host CI verifies statuses, inactive flags, and deterministic paths; it cannot prove Android service integration or device behavior. Keep PR #29 Draft until `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` all pass on the target device.
 - Mali policy is limited actuation, not proven beneficial tuning. Promote only after driver semantics, target-device readback, ownership, and rollback acceptance.
 - Vulkan layer dispatch tests prove pass-through mechanics only; they do not prove higher FPS, lower frame time, reduced GPU load, or lower temperature.
 - Power HAL service presence must never be represented as interception-active.

@@ -615,17 +615,20 @@ void GpuCandidateProvider::generate(
     if (evidence.thermal_emergency || evidence.thermal_stabilization_required ||
         evidence.in_thermal_recovery || env.gpu_domain_count == 0U || !env.gpu_actuator_ready ||
         evidence.remaining_thermal_headroom < 0.35 ||
+        !telemetry.thermal_pressure_valid || !std::isfinite(telemetry.thermal_pressure) ||
+        telemetry.thermal_pressure < 0.0 || telemetry.thermal_pressure > 130.0 ||
         !telemetry.gpu_busy_valid || !telemetry.frame_deadline_valid ||
         !std::isfinite(telemetry.gpu_busy_pct) || !std::isfinite(telemetry.frame_deadline_miss_pct) ||
-        telemetry.gpu_busy_pct < 70.0 || telemetry.frame_deadline_miss_pct < 0.5 ||
+        telemetry.gpu_busy_pct < 70.0 || telemetry.gpu_busy_pct > 100.0 ||
+        telemetry.frame_deadline_miss_pct < 0.5 || telemetry.frame_deadline_miss_pct > 100.0 ||
         telemetry.frame_deadline_count < 2U || telemetry.frame_deadline_misses == 0U ||
         telemetry.frame_deadline_misses > telemetry.frame_deadline_count) return;
 
-    // Only GPU-bound/gaming windows can justify a performance-floor mutation.
-    // A large measured miss ratio is accepted as an additional independent signal.
+    // Only positively classified graphics/gaming workloads may justify a
+    // performance mutation. Frame misses on an unrelated workload are not enough.
     const bool gpu_workload = evidence.workload == WorkloadClass::GpuBound ||
         evidence.workload == WorkloadClass::Gaming;
-    if (!gpu_workload && telemetry.frame_deadline_miss_pct < 1.5) return;
+    if (!gpu_workload) return;
 
     CandidateProposal proposal{};
     proposal.id = "gpu.kgsl.frame_deadline_relief";

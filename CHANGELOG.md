@@ -2,12 +2,22 @@
 
 # CFAE System Framework Release History
 
-## Unreleased — v4.0.0 acceptance hardening (not yet device-validated)\n\n- KGSL paired-level actuator code exists but is not routed from the autonomous GPU candidate loop; it remains dormant rather than marketed as active actuation.\n- FrameTimeline capture is wired into RenderBooster/workload evidence after lifecycle promotion; actual Perfetto permission and sample availability remain device-dependent.\n- Vulkan cache hooks exist in the implicit layer, but installed/configured files do not prove Android application-process loader activation. Runtime interception remains unverified.\n- SkiaVK/HWUI, VRS, and pipeline prewarming remain inactive.\n- v4.0.0 remains an unpublished build candidate pending physical-device acceptance.\n\n## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline (build candidate; device acceptance pending)
+## Unreleased — v4.0.0 GPU integration (device acceptance required)
+
+- Route the existing `GpuCandidateProvider` through `GlobalDecisionEngine` into the bounded KGSL paired-level actuator. Admission requires a discovered GPU domain, validated writable KGSL endpoints, live `gpuclk` readback matching the driver's advertised OPP table, GPU-bound/gaming workload evidence, actual FrameTimeline deadline misses, valid thermal pressure, and at least 0.35 thermal headroom.
+- Evaluate GPU outcomes in the isolated `gpu` reward domain using FrameTimeline miss rate, live KGSL/devfreq clock mean and spread, and thermal-pressure change. Missing evidence rolls back as inconclusive; significant clock instability or thermal regression penalizes the trial and restores the captured `BaselineStore` pair.
+- `ThermalStabilization` preemption restores the GPU paired-level lease through the controller's ownership-checked `BaselineStore` rollback path. No CPU/I/O/Memory reward samples are borrowed for GPU UCB exploration.
+- KGSL is now **limited autonomous actuation**, not general GPU optimization. Only the Qualcomm paired-level path is covered; unsupported or ambiguous multi-GPU surfaces remain inactive. Physical device ABI and sustained gaming/thermal behavior remain unaccepted until `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` pass on the target device.
+- FrameTimeline capture remains dependent on Android Perfetto permission and fresh samples. Vulkan cache hooks exist in the implicit layer, but installed/configured files do not prove Android application-process loader activation. Runtime interception remains unverified.
+- SkiaVK/HWUI renderer changes, VRS, and pipeline prewarming remain inactive. v4.0.0 remains an unpublished build candidate pending physical-device acceptance.
+
+## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline (build candidate; device acceptance pending)
 
 ### Native GPU actuation
-- Add a GPU candidate provider to the global decision engine, admitted only with validated GPU utilization, actual FrameTimeline deadline misses, and sufficient thermal headroom.
-- Validate Qualcomm KGSL `num_pwrlevels` against the `gpu_available_frequencies` entry count and enforce the driver invariant `max_pwrlevel <= min_pwrlevel`.
-- Treat KGSL limits as one `GpuDevfreq` lease with paired `BaselineStore` snapshots, invariant-preserving write/rollback ordering, readback, and ownership verification.
+- Register `GpuCandidateProvider` in `GlobalDecisionEngine` and route its candidate through the autonomous tuner only for classified GPU-bound/gaming workload windows with fresh GPU utilization, actual FrameTimeline misses, valid thermal pressure, and at least 0.35 thermal headroom.
+- Validate Qualcomm KGSL `num_pwrlevels` against the `gpu_available_frequencies` entry count, enforce `max_pwrlevel <= min_pwrlevel`, and require the live `gpuclk` sample to match a driver-advertised OPP before and after mutation.
+- Treat KGSL limits as one `GpuDevfreq` lease with paired `BaselineStore` snapshots, invariant-preserving write/rollback ordering, readback, and ownership verification. A GPU-specific outcome window evaluates FrameTimeline misses, clock mean/spread, and thermal-pressure deltas; incomplete evidence or regression restores the OEM pair.
+- Keep GPU UCB rewards isolated under the `gpu` candidate domain. CI success does not replace target-device `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` acceptance; keep PR #29 Draft until all four target-device gates pass.
 
 ### Vulkan pipeline-cache persistence
 - Intercept `vkCreatePipelineCache`, `vkGetPipelineCacheData`, and `vkDestroyPipelineCache` in the existing implicit layer.

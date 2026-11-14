@@ -270,7 +270,7 @@ struct BlockQueueSurface {
 
 struct CandidateStats {
     std::string id;
-    std::string domain;                 // "io", "vm", "cpufreq", "thermal"
+    std::string domain;                 // "io", "vm", "cpufreq", "gpu", "thermal"
     std::string label;
     double mean_utility{0.5};           // Empirical utility score Q_k
     double mean_utility_delta{0.0};     // Empirical mean ΔU
@@ -621,6 +621,12 @@ private:
         bool before_thermal_valid{false};
         bool before_gpu_valid{false};
         double before_gpu_miss_pct{0.0};
+        bool before_gpu_frequency_valid{false};
+        uint64_t before_gpu_frequency_hz{0U};
+        double sum_after_gpu_frequency_hz{0.0};
+        uint64_t min_after_gpu_frequency_hz{0U};
+        uint64_t max_after_gpu_frequency_hz{0U};
+        uint32_t valid_gpu_frequency_samples{0U};
         uint64_t last_frame_deadline_window_end_ns{0};
         double sum_after_gpu_miss_pct{0.0};
         uint32_t valid_gpu_samples_in_window{0};

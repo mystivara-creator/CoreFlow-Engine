@@ -10,6 +10,12 @@ namespace coreflow {
 class CentralMutationCoordinator;
 enum class MutationDomain : uint8_t;
 // Only kernel-exposed frequency tables are accepted; never invent an operating point.
+struct GpuFrequencySample final {
+    uint64_t current_frequency_hz{0U};
+    uint64_t max_pwrlevel{0U};
+    uint64_t min_pwrlevel{0U};
+};
+
 class FrequencyController {
 public:
     explicit FrequencyController(CentralMutationCoordinator& coordinator,
@@ -23,12 +29,16 @@ public:
         bool thermal_guard = false);
     [[nodiscard]] bool restore_gpu_frame_policy() noexcept;
     [[nodiscard]] bool gpu_frame_policy_owned_intact() const noexcept;
+    // Read-only live sample: the clock must match a driver-advertised OPP and
+    // both KGSL endpoints must still match this controller's owned state.
+    [[nodiscard]] bool read_gpu_frequency_sample(GpuFrequencySample& sample) const noexcept;
+    [[nodiscard]] bool gpu_frequency_observation_ready() const noexcept;
     [[nodiscard]] size_t cpu_count() const noexcept;
     [[nodiscard]] size_t gpu_count() const noexcept;
     [[nodiscard]] size_t kgsl_count() const noexcept;
 private:
     struct Domain {
-        std::string maximum, minimum;
+        std::string maximum, minimum, current_frequency;
         uint64_t baseline, last;
         std::vector<uint64_t> frequencies;
         bool gpu, retired{false}, mutation_active{false};
