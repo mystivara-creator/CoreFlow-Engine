@@ -1576,7 +1576,6 @@ int main(int argc, char* argv[]) {
     auto& recovery_monitor = context.recovery_monitor();
 
     DaemonConfig config = DaemonConfig::load_best_available();
-                    render_booster.update_config(config.touch_boost_uclamp_min, config.burst_boost_duration_ms);
     const DeviceProfileHandle device_profile = context.device_profile();
     emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
         " fingerprint=" + device_profile->fingerprint +
@@ -1730,6 +1729,7 @@ int main(int argc, char* argv[]) {
                         continue;
                     }
                     config = DaemonConfig::load_best_available();
+                    render_booster.update_config(config.touch_boost_uclamp_min, config.burst_boost_duration_ms);
                     if (!governor.resync()) {
                         std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
