@@ -48,7 +48,7 @@ inline constexpr std::size_t kWorkloadEventDrainBatchSize = 2048U;
 struct WorkloadFeatureSnapshot final {
  uint64_t window_start_ns{0}, window_end_ns{0}, cpu_run_queue_wait_ns{0},
   wakeup_count{0}, io_bytes{0}, io_latency_ns_p95{0}, frame_deadline_misses{0},
-  frame_deadline_count{0};
+  frame_deadline_count{0}, frame_actual_duration_ns_total{0}, frame_actual_duration_count{0};
  double frame_deadline_miss_pct{0.0}, wakeup_rate_per_sec{0.0}, cpu_pressure_some_pct{0.0},
   memory_pressure_some_pct{0.0}, io_pressure_some_pct{0.0}, gpu_busy_pct{0.0};
  uint32_t valid_features{FeatureNone}, sample_count{0}, event_count{0}, gpu_busy_sample_count{0};
