@@ -227,23 +227,39 @@ bool next_proto_field(std::span<const uint8_t> bytes, size_t& offset, ProtoField
     }
 }
 
-bool parse_actual_display_frame(std::span<const uint8_t> bytes,
-                                uint64_t& frames, uint64_t& misses) noexcept {
+struct FrameTimelineParseState final {
+    struct PendingDisplayFrame final {
+        uint64_t cookie{0};
+        uint64_t start_timestamp_ns{0};
+        bool active{false};
+    };
+    uint64_t frames{0};
+    uint64_t misses{0};
+    uint64_t actual_duration_ns_total{0};
+    uint64_t actual_duration_count{0};
+    std::array<PendingDisplayFrame, 512> pending{};
+};
+
+bool parse_actual_display_frame(
+    std::span<const uint8_t> bytes,
+    uint64_t packet_timestamp_ns,
+    FrameTimelineParseState& state) noexcept {
     size_t offset = 0;
+    uint64_t cookie = 0;
     uint64_t present = 0;
     uint64_t jank = 0;
+    bool has_cookie = false;
     bool has_present = false;
     bool has_on_time = false;
     bool on_time = true;
     ProtoField field{};
     while (offset < bytes.size()) {
-        if (!next_proto_field(bytes, offset, field)) {
-            return false;
-        }
-        if (field.wire != 0) {
-            continue;
-        }
-        if (field.number == 4) {
+        if (!next_proto_field(bytes, offset, field)) return false;
+        if (field.wire != 0) continue;
+        if (field.number == 1) {
+            cookie = field.integer;
+            has_cookie = true;
+        } else if (field.number == 4) {
             present = field.integer;
             has_present = true;
         } else if (field.number == 5) {
@@ -253,50 +269,106 @@ bool parse_actual_display_frame(std::span<const uint8_t> bytes,
             jank = field.integer;
         }
     }
-    if (!has_present || present < 1 || present > 5) {
-        return true;
-    }
-    if (frames == UINT64_MAX) {
-        return false;
-    }
-    ++frames;
+    if (!has_present || present < 1U || present > 5U) return true;
+    if (state.frames == UINT64_MAX) return false;
+    ++state.frames;
+
     constexpr uint64_t kSfCpuDeadline = 16ULL;
     constexpr uint64_t kSfGpuDeadline = 32ULL;
     constexpr uint64_t kDropped = 1024ULL;
-    if (present == 2 || present == 4 || (has_on_time && !on_time) ||
-        (jank & (kSfCpuDeadline | kSfGpuDeadline | kDropped))) {
-        if (misses == UINT64_MAX) {
-            return false;
+    if (present == 2U || present == 4U || (has_on_time && !on_time) ||
+        (jank & (kSfCpuDeadline | kSfGpuDeadline | kDropped)) != 0U) {
+        if (state.misses == UINT64_MAX) return false;
+        ++state.misses;
+    }
+
+    if (has_cookie && cookie != 0U && packet_timestamp_ns != 0U) {
+        FrameTimelineParseState::PendingDisplayFrame* slot = nullptr;
+        for (auto& pending : state.pending) {
+            if (pending.active && pending.cookie == cookie) {
+                slot = &pending;
+                break;
+            }
+            if (!pending.active && slot == nullptr) slot = &pending;
         }
-        ++misses;
+        if (slot != nullptr) {
+            slot->cookie = cookie;
+            slot->start_timestamp_ns = packet_timestamp_ns;
+            slot->active = true;
+        }
     }
     return true;
 }
-bool parse_frame_timeline_event(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
- size_t offset=0;ProtoField field{};
- while(offset<bytes.size()){
-  if(!next_proto_field(bytes,offset,field))return false;
-  if (field.number == 2 && field.wire == 2) {
-   if (!parse_actual_display_frame(field.data, frames, misses)) {
-    return false;
-   }
-  }
- }
- return true;
+
+bool parse_frame_end(
+    std::span<const uint8_t> bytes,
+    uint64_t packet_timestamp_ns,
+    FrameTimelineParseState& state) noexcept {
+    size_t offset = 0;
+    uint64_t cookie = 0;
+    bool has_cookie = false;
+    ProtoField field{};
+    while (offset < bytes.size()) {
+        if (!next_proto_field(bytes, offset, field)) return false;
+        if (field.number == 1U && field.wire == 0U) {
+            cookie = field.integer;
+            has_cookie = true;
+        }
+    }
+    if (!has_cookie || packet_timestamp_ns == 0U) return true;
+    for (auto& pending : state.pending) {
+        if (!pending.active || pending.cookie != cookie) continue;
+        const uint64_t duration = packet_timestamp_ns > pending.start_timestamp_ns
+            ? packet_timestamp_ns - pending.start_timestamp_ns : 0U;
+        pending.active = false;
+        pending.cookie = 0U;
+        pending.start_timestamp_ns = 0U;
+        // Reject impossible/clock-corrupted samples instead of poisoning the mean.
+        if (duration == 0U || duration > 5'000'000'000ULL) return true;
+        if (state.actual_duration_ns_total > UINT64_MAX - duration ||
+            state.actual_duration_count == UINT64_MAX) return false;
+        state.actual_duration_ns_total += duration;
+        ++state.actual_duration_count;
+        break;
+    }
+    return true;
 }
-bool parse_trace_packet(std::span<const uint8_t> bytes,uint64_t& frames,uint64_t& misses) noexcept {
- size_t offset=0;ProtoField field{};
- while(offset<bytes.size()){
-  if(!next_proto_field(bytes,offset,field))return false;
-  if (field.number == 76 && field.wire == 2) {
-   if (!parse_frame_timeline_event(field.data, frames, misses)) {
-    return false;
-   }
-  }
- }
- return true;
+
+bool parse_frame_timeline_event(
+    std::span<const uint8_t> bytes,
+    uint64_t packet_timestamp_ns,
+    FrameTimelineParseState& state) noexcept {
+    size_t offset = 0;
+    ProtoField field{};
+    while (offset < bytes.size()) {
+        if (!next_proto_field(bytes, offset, field)) return false;
+        if (field.number == 2U && field.wire == 2U) {
+            if (!parse_actual_display_frame(field.data, packet_timestamp_ns, state)) return false;
+        } else if (field.number == 5U && field.wire == 2U) {
+            if (!parse_frame_end(field.data, packet_timestamp_ns, state)) return false;
+        }
+    }
+    return true;
 }
-struct Candidate{DetectedWorkloadClass type{DetectedWorkloadClass::Unknown};float confidence{0};uint32_t mask{FeatureNone};};
+
+bool parse_trace_packet(
+    std::span<const uint8_t> bytes,
+    FrameTimelineParseState& state) noexcept {
+    size_t offset = 0;
+    uint64_t packet_timestamp_ns = 0U;
+    std::span<const uint8_t> frame_timeline_event{};
+    ProtoField field{};
+    while (offset < bytes.size()) {
+        if (!next_proto_field(bytes, offset, field)) return false;
+        if (field.number == 8U && field.wire == 0U) {
+            packet_timestamp_ns = field.integer;
+        } else if (field.number == 76U && field.wire == 2U) {
+            frame_timeline_event = field.data;
+        }
+    }
+    return frame_timeline_event.empty() ||
+        parse_frame_timeline_event(frame_timeline_event, packet_timestamp_ns, state);
+}
 Candidate decide(const WorkloadFeatureSnapshot& f) noexcept {
  auto has=[&](uint32_t bit){return (f.valid_features&bit)!=0;};
  if(has(FeatureFrameDeadline)&&f.frame_deadline_count>0&&f.frame_deadline_miss_pct>=0.08&&
@@ -631,18 +703,27 @@ void FrameTimelineSampler::stop() noexcept {
  if(!trace_path_.empty())(void)::unlink(trace_path_.c_str());
  trace_path_.clear();
 }
-bool parse_frame_timeline_trace(std::span<const uint8_t> trace,WorkloadFeatureSnapshot& features) noexcept {
- uint64_t frames=0,misses=0;size_t offset=0;ProtoField field{};
- while(offset<trace.size()){
-  if(!next_proto_field(trace,offset,field))return false;
-  if(field.number==1&&field.wire==2)if(!parse_trace_packet(field.data,frames,misses))return false;
- }
- if(frames==0||misses>frames)return false;
- features.frame_deadline_count=frames;features.frame_deadline_misses=misses;
- features.frame_deadline_miss_pct=100.0*static_cast<double>(misses)/static_cast<double>(frames);
- features.valid_features|=FeatureFrameDeadline;return true;
+bool parse_frame_timeline_trace(
+    std::span<const uint8_t> trace,
+    WorkloadFeatureSnapshot& features) noexcept {
+    FrameTimelineParseState state{};
+    size_t offset = 0U;
+    ProtoField field{};
+    while (offset < trace.size()) {
+        if (!next_proto_field(trace, offset, field)) return false;
+        if (field.number == 1U && field.wire == 2U &&
+            !parse_trace_packet(field.data, state)) return false;
+    }
+    if (state.frames == 0U || state.misses > state.frames) return false;
+    features.frame_deadline_count = state.frames;
+    features.frame_deadline_misses = state.misses;
+    features.frame_deadline_miss_pct =
+        100.0 * static_cast<double>(state.misses) / static_cast<double>(state.frames);
+    features.frame_actual_duration_ns_total = state.actual_duration_ns_total;
+    features.frame_actual_duration_count = state.actual_duration_count;
+    features.valid_features |= FeatureFrameDeadline;
+    return true;
 }
-
 namespace {
 uint64_t frame_monotonic_now_ns() noexcept {
  timespec value{};
