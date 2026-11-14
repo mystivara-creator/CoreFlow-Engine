@@ -1,4 +1,4 @@
-// CFAE System Framework v3.1.0 — Coordinated Mutation Transaction & Preview Engine.
+// CFAE System Framework v4.0.0 — Coordinated Mutation Transaction & Preview Engine.
 // Native mode reads real daemon telemetry; this simulator models the 5-layer
 // Mutation Safety architecture + Multi-Domain Autonomous Scheduler & Tunable Evaluator for browser preview.
 
