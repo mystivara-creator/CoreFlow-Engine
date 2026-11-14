@@ -370,7 +370,7 @@ bool parse_trace_packet(
         parse_frame_timeline_event(frame_timeline_event, packet_timestamp_ns, state);
 }
 struct Candidate final {
-    DetectedWorkloadClass classification{DetectedWorkloadClass::Unknown};
+    DetectedWorkloadClass type{DetectedWorkloadClass::Unknown};
     float confidence{0.0F};
     uint32_t mask{FeatureNone};
 };
