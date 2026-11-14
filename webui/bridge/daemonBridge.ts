@@ -1,4 +1,4 @@
-// CFAE System Framework v3.1.0 Hardened KernelSU / KernelSU Next & Root Shell Bridge
+// CFAE System Framework v4.0.0 Hardened KernelSU / KernelSU Next & Root Shell Bridge
 
 export interface ShellResult {
   errno: number;

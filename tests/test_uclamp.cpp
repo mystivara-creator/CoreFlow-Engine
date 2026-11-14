@@ -142,7 +142,7 @@ int main() {
     assert(read_token(capped_top + "/cpu.uclamp.max") == "50.00");
     assert(coordinator.active_leases().empty());
 
-    // Unified cgroup v2 hierarchy identified by cgroup.controllers uses percentage.
+    // Encoding is derived from baseline bytes, not the cgroup mount kind.
     const std::string v2_ctrl_root = root + "/unified-controllers";
     const std::string v2_ctrl_top = v2_ctrl_root + "/top-app";
     std::filesystem::create_directories(v2_ctrl_top);
@@ -152,9 +152,30 @@ int main() {
 
     UclampGovernor v2_ctrl(coordinator, v2_ctrl_root);
     assert(v2_ctrl.is_supported());
-    assert(v2_ctrl.encoding_name() == "percentage");
+    assert(v2_ctrl.encoding_name() == "capacity1024");
 
     std::filesystem::remove_all(root);
+    // Android GKI legacy cpuctl uses per-thread tasks and percentage UClamp
+    // with the kernel's "max" sentinel, without a cgroup2 cpu controller file.
+    const std::string android_cpuctl = root + "/android-cpuctl";
+    const std::string android_top = android_cpuctl + "/top-app";
+    std::filesystem::create_directories(android_top);
+    write_token(android_top + "/cpu.uclamp.min", "0.00");
+    write_token(android_top + "/cpu.uclamp.max", "max");
+    write_token(android_top + "/tasks", "1234");
+    write_token(android_top + "/cgroup.procs", "1234");
+    write_token(android_top + "/cpu.uclamp.latency_sensitive", "0");
+    UclampGovernor android_legacy(coordinator, android_cpuctl);
+    assert(android_legacy.is_supported());
+    assert(android_legacy.encoding_name() == "percentage");
+    assert(android_legacy.apply_state(WorkloadState::Balanced, 380, 1024));
+    assert(read_token(android_top + "/cpu.uclamp.min") == "37.11");
+    assert(read_token(android_top + "/cpu.uclamp.max") == "max");
+    assert(android_legacy.get_top_app_min() == 380u);
+    assert(android_legacy.resync());
+    assert(read_token(android_top + "/cpu.uclamp.min") == "0.00");
+    assert(read_token(android_top + "/cpu.uclamp.max") == "max");
+
     std::cout << "Semantic UClamp discovery, encoding and restoration PASS\n";
     return 0;
 }

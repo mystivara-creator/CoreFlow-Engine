@@ -87,6 +87,7 @@ run_customize() (
   ARCH="arm64"
   API="35"
   MODPATH="$MOD_DIR"
+  COREFLOW_TEST_ALLOW_NON_ELF_BINARY=1
   ui_print() { :; }
   abort() { echo "ABORT: $*" >&2; exit 1; }
   set_perm() { chmod "$4" "$1"; }

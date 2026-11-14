@@ -71,7 +71,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
   const fullText =
     blueprint +
-    `\n\n## CFAE System Framework v3.1.0\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
+    `\n\n## CFAE System Framework v4.0.0\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
 
   const copy = async () => {
     try {
@@ -113,7 +113,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
               CFAE Architecture & Mutation Safety Studio
             </h2>
             <p className="text-xs text-[#0b57d0] dark:text-[#a8c7fa] font-mono">
-              v3.1.0 · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
+              v4.0.0 · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
             </p>
           </div>
           <button

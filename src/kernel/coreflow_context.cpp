@@ -85,6 +85,7 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     autonomous_tuner_ = std::make_unique<AutonomousTuner>(coordinator_, "/sys", "/proc", profile_);
     autonomous_tuner_->configure_frequency_actuator(
         transactional_frequency_actuator_.get(), &policy_router_, platform_context_);
+    autonomous_tuner_->configure_gpu_frequency_controller(frequency_controller_.get());
     hardware_longevity_ = std::make_unique<HardwareLongevityManager>(coordinator_);
     neural_predictor_ = std::make_unique<NeuralPredictor>();
     vulkan_controller_ = std::make_unique<VulkanController>(coordinator_);
@@ -94,7 +95,8 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
 }
 
 bool CoreFlowContext::Stop(std::string_view reason) noexcept {
-    if (state_ == State::Constructed || state_ == State::Stopped) {
+    if (state_ == State::Stopped) return true;
+    if (state_ == State::Constructed) {
         destroy_runtime_services();
         profile_.reset();
         platform_context_ = {};

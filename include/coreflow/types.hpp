@@ -1,6 +1,6 @@
 /**
  * @file types.hpp
- * @brief CFAE System Framework v3.1.0 ISO C++23 Core Type Definitions
+ * @brief CFAE System Framework v4.0.0 ISO C++23 Core Type Definitions
  *        and Coordinated Mutation Transaction Models.
  * @author mystivara-creator
  * @license MIT
@@ -42,7 +42,7 @@ inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
 }
 
 // ============================================================================
-// Coordinated Mutation Transaction & Safety Model (v3.1.0)
+// Coordinated Mutation Transaction & Safety Model (v4.0.0)
 // ============================================================================
 enum class DependencyRelation : uint8_t {
     RequiredBefore = 0, ///< Control A must be applied before Control B
@@ -168,10 +168,10 @@ struct UclampValues {
 // Cgroup v2 Migration Targets
 // ============================================================================
 enum class CgroupTarget : uint8_t {
-    TopApp,      ///< /sys/fs/cgroup/top-app
-    Foreground,  ///< /sys/fs/cgroup/foreground
-    Background,  ///< /sys/fs/cgroup/background
-    System       ///< /sys/fs/cgroup/system
+    TopApp,      ///< Semantic target resolved from runtime cgroup topology.
+    Foreground,  ///< Semantic target resolved from runtime cgroup topology.
+    Background,  ///< Semantic target resolved from runtime cgroup topology.
+    System       ///< Semantic target resolved from runtime cgroup topology.
 };
 
 // ============================================================================

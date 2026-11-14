@@ -17,6 +17,7 @@
 #endif
 
 namespace coreflow {
+namespace fs = std::filesystem;
 namespace {
 
 bool read_sysfs_line(const std::string& path, std::string& out,
@@ -24,7 +25,19 @@ bool read_sysfs_line(const std::string& path, std::string& out,
     out.clear();
     if (source_mtime_ns != nullptr) *source_mtime_ns = 0;
     if (path.empty() || path.find('\0') != std::string::npos) return false;
-    UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+
+    constexpr unsigned kMaxBusyRetries = 3U;
+    UniqueFd fd;
+    for (unsigned attempt = 0; attempt <= kMaxBusyRetries;) {
+        fd = UniqueFd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (fd.valid()) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && attempt < kMaxBusyRetries) {
+            ++attempt;
+            continue;
+        }
+        return false; // Handles ENOENT, ENODEV, ENXIO, EACCES cleanly.
+    }
     if (!fd.valid()) return false;
 
     struct stat st{};
@@ -38,14 +51,27 @@ bool read_sysfs_line(const std::string& path, std::string& out,
         }
     }
 
-    char buf[128];
-    ssize_t n = 0;
-    do {
-        n = ::read(fd.get(), buf, sizeof(buf));
-    } while (n < 0 && errno == EINTR);
-    if (n <= 0) return false;
+    char buf[256];
+    size_t total = 0;
+    unsigned read_busy_retries = 0U;
+    while (total < sizeof(buf)) {
+        const ssize_t n = ::read(fd.get(), buf + total, sizeof(buf) - total);
+        if (n > 0) {
+            total += static_cast<size_t>(n);
+            break; // Single sysfs read satisfies short kernel attributes; avoid second syscall.
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && read_busy_retries < kMaxBusyRetries) {
+            ++read_busy_retries;
+            continue;
+        }
+        if (total == 0) return false;
+        break;
+    }
+    if (total == 0) return false;
 
-    std::string_view view(buf, static_cast<size_t>(n));
+    std::string_view view(buf, total);
     const size_t first = view.find_first_not_of(" \t\r\n");
     if (first == std::string_view::npos) return false;
     const size_t last = view.find_last_not_of(" \t\r\n");
@@ -244,7 +270,7 @@ bool is_excluded_non_thermal_peripheral(std::string_view raw_type) {
            lower.find("zeroc") != std::string::npos;
 }
 
-void ThermalMonitor::discover_sensors() const {
+void ThermalMonitor::discover_sensors_locked() const {
     const auto now = std::chrono::steady_clock::now();
     if (!sensors_.empty() && now - discovery_at_ < std::chrono::seconds(30)) return;
     discovery_at_ = now;
@@ -329,19 +355,46 @@ void ThermalMonitor::discover_sensors() const {
     }
 }
 
-float ThermalMonitor::hottest_category(int category) const {
-    discover_sensors();
-    float hottest = -1;
+float ThermalMonitor::hottest_category_locked(int category) const {
+    discover_sensors_locked();
+    float hottest = -1.0f;
     for (const auto& sensor : sensors_) {
         if (sensor.category != category) continue;
-        std::string raw; float value;
-        if (read_sysfs_line(sensor.temp_path, raw) && parse_celsius(raw, value)) hottest = std::max(hottest, value);
+        std::string raw;
+        float value = -1.0f;
+        if (read_sysfs_line(sensor.temp_path, raw) && parse_celsius(raw, value)) {
+            hottest = std::max(hottest, value);
+        }
     }
     return hottest;
 }
 
-MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
-    discover_sensors();
+float ThermalMonitor::battery_celsius_locked() const {
+    const float tz_batt = hottest_category_locked(2);
+    if (tz_batt >= 0.0f) return tz_batt;
+    const fs::path supply_root = fs::path(sysfs_root_).parent_path().parent_path() / "power_supply";
+    std::error_code ec;
+    float observed = -1.0f;
+    unsigned battery_count = 0;
+    for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        std::error_code type_ec;
+        const auto status = it->symlink_status(type_ec);
+        if (type_ec || fs::is_symlink(status) || !fs::is_directory(status)) continue;
+        std::string type;
+        if (!read_sysfs_line((it->path() / "type").string(), type) || type != "Battery") continue;
+        ++battery_count;
+        std::string raw;
+        double tenths = 0.0;
+        if (!read_sysfs_line((it->path() / "temp").string(), raw) ||
+            !parse_ascii_double(raw, tenths) || tenths <= 0.0 || tenths > 800.0) return -1.0f;
+        observed = static_cast<float>(tenths / 10.0);
+    }
+    return battery_count == 1U ? observed : -1.0f;
+}
+
+MultiSensorProfile ThermalMonitor::multi_sensor_profile_locked() const {
+    discover_sensors_locked();
     MultiSensorProfile profile;
     std::vector<float> cpu_readings;
     std::vector<float> gpu_readings;
@@ -385,7 +438,7 @@ MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
     }
 
     if (profile.battery < 0.0f) {
-        profile.battery = battery_celsius();
+        profile.battery = battery_celsius_locked();
     }
 
     profile.total_valid_sensors = cpu_readings.size() + gpu_readings.size() + board_readings.size();
@@ -427,26 +480,31 @@ MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
     return profile;
 }
 
-float ThermalMonitor::composite_celsius() const {
-    const auto prof = multi_sensor_profile();
-    return prof.composite_soc >= 0.0f ? prof.composite_soc : hottest_celsius();
+MultiSensorProfile ThermalMonitor::multi_sensor_profile() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return multi_sensor_profile_locked();
 }
 
-float ThermalMonitor::hottest_celsius() const { return hottest_category(1); }
-float ThermalMonitor::battery_celsius() const {
-    const float tz_batt = hottest_category(2);
-    if (tz_batt >= 0.0f) return tz_batt;
-    if (sysfs_root_ == "/sys/class/thermal") {
-        std::string raw;
-        double tenths = 0.0;
-        if (read_sysfs_line("/sys/class/power_supply/battery/temp", raw) &&
-            parse_ascii_double(raw, tenths) && tenths > 0.0 && tenths <= 800.0) {
-            return static_cast<float>(tenths / 10.0);
-        }
-    }
-    return -1.0f;
+float ThermalMonitor::composite_celsius() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    const auto prof = multi_sensor_profile_locked();
+    return prof.composite_soc >= 0.0f ? prof.composite_soc : hottest_category_locked(1);
 }
-float ThermalMonitor::skin_celsius() const { return hottest_category(3); }
+
+float ThermalMonitor::hottest_celsius() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return hottest_category_locked(1);
+}
+
+float ThermalMonitor::battery_celsius() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return battery_celsius_locked();
+}
+
+float ThermalMonitor::skin_celsius() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return hottest_category_locked(3);
+}
 
 ThermalAssessment assessment_from_android_severity(int severity) {
     if (severity < 0 || severity > 6) return {};
@@ -515,7 +573,7 @@ ThermalAssessment fuse_thermal_assessments(ThermalAssessment platform, ThermalAs
     return result;
 }
 
-ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
+ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     ThermalAssessment platform;
 
 #ifdef __ANDROID__
@@ -536,11 +594,17 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             if (severity >= 0 && severity <= 6) {
                 auto result = assessment_from_android_severity(severity);
                 if (use_headroom && headroom) {
+                    // The cache is shared by every ThermalMonitor instance; protect it
+                    // with a process-wide function-local mutex, not the per-instance
+                    // monitor_mutex_.
+                    static std::mutex headroom_cache_mutex;
                     static auto last = std::chrono::steady_clock::time_point::min();
                     static float cached = -1;
+                    std::lock_guard<std::mutex> cache_lock(headroom_cache_mutex);
                     const auto now = std::chrono::steady_clock::now();
                     if (last == std::chrono::steady_clock::time_point::min() || now - last >= std::chrono::seconds(10)) {
-                        cached = headroom(manager, 0); last = now;
+                        cached = headroom(manager, 0);
+                        last = now;
                     }
                     result = apply_android_headroom(std::move(result), cached);
                 }
@@ -551,13 +615,22 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
 #else
     (void)use_headroom;
 #endif
-    discover_sensors();
+    discover_sensors_locked();
     ThermalAssessment result;
+    MultiSensorProfile profile;
+    std::vector<float> cpu_readings;
+    std::vector<float> gpu_readings;
+    std::vector<float> board_readings;
+    float max_cpu = -1.0f;
+    float max_temp = -1.0f;
+    float hottest_compute = -1.0f;
+    float hottest_skin = -1.0f;
+
     const uint64_t sample_timestamp_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
     for (const auto& sensor : sensors_) {
-        std::string raw; float temp;
+        std::string raw; float temp = -1.0f;
         uint64_t source_mtime_ns = 0;
         const bool valid_temperature =
             read_sysfs_line(sensor.temp_path, raw, &source_mtime_ns) && parse_celsius(raw, temp);
@@ -635,6 +708,41 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             // Diagnostic-only sensor (category 0): record reading without driving compute policy
             continue;
         }
+
+        if (sensor.category == 1) {
+            hottest_compute = std::max(hottest_compute, temp);
+        } else if (sensor.category == 3) {
+            hottest_skin = std::max(hottest_skin, temp);
+        }
+
+        if (temp > 0.0f) {
+            max_temp = std::max(max_temp, temp);
+            std::string lower = sensor.type;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (sensor.category == 1) {
+                if (lower.find("gpu") != std::string::npos || lower.find("gpuss") != std::string::npos ||
+                    lower.find("kgsl") != std::string::npos || lower.find("adreno") != std::string::npos ||
+                    lower.find("mali") != std::string::npos || lower.find("xclipse") != std::string::npos ||
+                    lower.find("sgpu") != std::string::npos || lower.find("g3d") != std::string::npos) {
+                    gpu_readings.push_back(temp);
+                } else if (lower.find("cpu") != std::string::npos || lower.find("apss") != std::string::npos ||
+                           lower.find("cluster") != std::string::npos || lower.find("tsens") != std::string::npos ||
+                           lower == "big" || lower == "mid" || lower == "little") {
+                    cpu_readings.push_back(temp);
+                    max_cpu = std::max(max_cpu, temp);
+                } else {
+                    board_readings.push_back(temp);
+                }
+            } else if (sensor.category == 2) {
+                if (profile.battery < 0.0f || temp > profile.battery) profile.battery = temp;
+            } else if (sensor.category == 3) {
+                if (profile.skin < 0.0f || temp > profile.skin) profile.skin = temp;
+            } else if (sensor.category == 4) {
+                board_readings.push_back(temp);
+            }
+        }
+
         if (critical > 0 && temp >= critical) {
             result.emergency = true; result.available = true; result.sysfs_trip_policy_valid = true;
             result.pressure = 130;
@@ -664,16 +772,72 @@ ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
             result.source = "sysfs-oem-trips"; result.sensor = sensor.type;
         }
     }
+
+    if (profile.battery < 0.0f) {
+        profile.battery = battery_celsius_locked();
+    }
+    profile.total_valid_sensors = cpu_readings.size() + gpu_readings.size() + board_readings.size();
+    profile.valid_cpu_count = cpu_readings.size();
+    profile.valid_gpu_count = gpu_readings.size();
+
+    if (!cpu_readings.empty()) {
+        double sum = 0.0;
+        for (float v : cpu_readings) sum += v;
+        profile.cpu_average = static_cast<float>(sum / cpu_readings.size());
+        profile.cpu_peak = max_cpu;
+    }
+    if (!gpu_readings.empty()) {
+        double sum = 0.0;
+        for (float v : gpu_readings) sum += v;
+        profile.gpu_average = static_cast<float>(sum / gpu_readings.size());
+    }
+    if (!board_readings.empty()) {
+        double sum = 0.0;
+        for (float v : board_readings) sum += v;
+        profile.board_average = static_cast<float>(sum / board_readings.size());
+    }
+
+    if (profile.cpu_average >= 0.0f) {
+        if (profile.gpu_average >= 0.0f && profile.board_average >= 0.0f) {
+            profile.composite_soc = 0.50f * profile.cpu_average + 0.25f * profile.cpu_peak +
+                                    0.15f * profile.gpu_average + 0.10f * profile.board_average;
+        } else if (profile.gpu_average >= 0.0f) {
+            profile.composite_soc = 0.60f * profile.cpu_average + 0.25f * profile.cpu_peak +
+                                    0.15f * profile.gpu_average;
+        } else {
+            profile.composite_soc = 0.70f * profile.cpu_average + 0.30f * profile.cpu_peak;
+        }
+    } else if (max_temp >= 0.0f) {
+        profile.composite_soc = max_temp;
+    }
+
     auto fused = fuse_thermal_assessments(std::move(platform), std::move(result));
-    const float comp = composite_celsius();
+    const float comp = profile.composite_soc >= 0.0f ? profile.composite_soc : hottest_compute;
     if (comp >= 0.0f) {
         const auto now_ns = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count());
-        record_temperature_sample(comp, now_ns);
+        trend_tracker_.record_sample(comp, now_ns);
     }
-    fused.temperature_velocity = current_temperature_velocity();
-    return fused;
+    fused.temperature_velocity = trend_tracker_.evaluate_velocity();
+
+    ThermalBundle bundle{};
+    bundle.assessment = std::move(fused);
+    bundle.profile = std::move(profile);
+    bundle.composite_celsius = comp;
+    bundle.battery_celsius = bundle.profile.battery;
+    bundle.skin_celsius = hottest_skin;
+    return bundle;
+}
+
+ThermalAssessment ThermalMonitor::assess(bool use_headroom) const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return sample_bundle_locked(use_headroom).assessment;
+}
+
+ThermalBundle ThermalMonitor::sample_bundle(bool use_headroom) const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
+    return sample_bundle_locked(use_headroom);
 }
 
 TemperatureTrendTracker::TemperatureTrendTracker(size_t capacity) noexcept
@@ -767,10 +931,12 @@ void TemperatureTrendTracker::reset() noexcept {
 }
 
 TemperatureVelocityReading ThermalMonitor::current_temperature_velocity() const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
     return trend_tracker_.evaluate_velocity();
 }
 
 void ThermalMonitor::record_temperature_sample(float celsius, uint64_t timestamp_ns) const {
+    std::lock_guard<std::mutex> lock(monitor_mutex_);
     trend_tracker_.record_sample(celsius, timestamp_ns);
 }
 

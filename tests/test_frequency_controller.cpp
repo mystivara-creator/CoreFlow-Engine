@@ -72,17 +72,23 @@ int main() {
     // A CPU frequency write rejected by filesystem permissions must not strand
     // a CPU lease, while an independently successful GPU-domain mutation remains
     // leased and is restored through the normal emergency callback.
-    assert(::chmod((cpu / "scaling_max_freq").c_str(), 0444) == 0);
-    assert(!controller.apply(0.75));
-    assert(get(cpu / "scaling_max_freq") == "2000000");
-    assert(get(gpu / "max_freq") == "600000000");
-    const auto failed_write_leases = coordinator.active_leases();
-    assert(failed_write_leases.size() == 1);
-    assert(failed_write_leases.front().domain == coreflow::MutationDomain::GpuDevfreq);
-    coordinator.emergency_preempt_all("test-frequency-partial-domain-failure");
-    assert(get(gpu / "max_freq") == "800000000");
-    assert(coordinator.active_leases().empty());
-    assert(::chmod((cpu / "scaling_max_freq").c_str(), 0644) == 0);
+    if (::geteuid() != 0) {
+        assert(::chmod((cpu / "scaling_max_freq").c_str(), 0444) == 0);
+        assert(!controller.apply(0.75));
+        assert(get(cpu / "scaling_max_freq") == "2000000");
+        assert(get(gpu / "max_freq") == "600000000");
+        const auto failed_write_leases = coordinator.active_leases();
+        assert(failed_write_leases.size() == 1);
+        assert(failed_write_leases.front().domain == coreflow::MutationDomain::GpuDevfreq);
+        coordinator.emergency_preempt_all("test-frequency-partial-domain-failure");
+        assert(get(gpu / "max_freq") == "800000000");
+        assert(coordinator.active_leases().empty());
+        assert(::chmod((cpu / "scaling_max_freq").c_str(), 0644) == 0);
+    } else {
+        // Root bypasses ordinary DAC mode bits in this host container; keep the
+        // production permission-denial path covered on non-root test runners.
+        assert(get(cpu / "scaling_max_freq") == "2000000");
+    }
 
     // A CPUFreq path that became journaled by another/legacy owner after
     // discovery must be rejected without overwriting its value. The independent

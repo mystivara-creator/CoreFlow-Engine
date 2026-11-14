@@ -28,11 +28,32 @@ inline bool put(const fs::path& path, const std::string& value, mode_t mode = 06
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
     if (ec) return false;
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out.write(value.data(), static_cast<std::streamsize>(value.size()));
-    out.close();
-    return out.good() && ::chmod(path.c_str(), mode) == 0;
+
+    // Replace fixture attributes atomically. Tests intentionally model read-only
+    // sysfs nodes (0444) and later need to simulate a hardware value changing.
+    // Opening the original with std::ios::trunc fails for non-root CI runners.
+    const fs::path temporary = path.string() + ".fixture.tmp." + std::to_string(::getpid());
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(value.data(), static_cast<std::streamsize>(value.size()));
+        out.close();
+        if (!out.good()) {
+            fs::remove(temporary, ec);
+            return false;
+        }
+    }
+
+    if (::chmod(temporary.c_str(), mode) != 0) {
+        fs::remove(temporary, ec);
+        return false;
+    }
+    fs::rename(temporary, path, ec);
+    if (ec) {
+        fs::remove(temporary, ec);
+        return false;
+    }
+    return true;
 }
 inline Fixture create(const std::string& id) {
     Fixture f;
@@ -55,9 +76,14 @@ inline Fixture create(const std::string& id) {
         put(f.proc / "sys/kernel/osrelease", "6.1.0-cddp-fixture\n");
         put(f.proc / "meminfo", "MemTotal: 8192000 kB\nMemAvailable: 4096000 kB\n");
         put(f.proc / "pressure/cpu", "some avg10=1.00 avg60=1.00 avg300=1.00 total=10\n");
-        put(f.proc / "self/mountinfo", "31 20 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n");
-        put(f.sys / "fs/cgroup/cgroup.controllers", "cpu cpuset memory io\n");
-        put(f.sys / "fs/cgroup/top-app/cpu.uclamp.min", "0\n");
+        const auto cgroup_mount = f.sys / "fs/cgroup";
+        put(f.proc / "self/mountinfo", "31 20 0:28 / " + cgroup_mount.string() + " rw - cgroup2 cgroup rw\n");
+        put(cgroup_mount / "cgroup.controllers", "cpu cpuset memory io\n");
+        const auto foreground_group = cgroup_mount / "interactive-session";
+        put(foreground_group / "cpu.uclamp.min", "0.00\n");
+        put(foreground_group / "cpu.uclamp.max", "max\n");
+        put(foreground_group / "cgroup.threads", "");
+        put(foreground_group / "cgroup.procs", "");
         put(f.sys / "class/thermal/thermal_zone0/type", "soc-thermal\n");
         put(f.sys / "class/thermal/thermal_zone0/temp", "42000\n");
         put(f.sys / "devices/soc0/machine", "Synthetic SoC A\n");

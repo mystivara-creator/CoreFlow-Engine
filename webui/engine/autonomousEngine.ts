@@ -1,4 +1,4 @@
-// CFAE System Framework v3.1.0 — Coordinated Mutation Transaction & Preview Engine.
+// CFAE System Framework v4.0.0 — Coordinated Mutation Transaction & Preview Engine.
 // Native mode reads real daemon telemetry; this simulator models the 5-layer
 // Mutation Safety architecture + Multi-Domain Autonomous Scheduler & Tunable Evaluator for browser preview.
 
@@ -58,11 +58,26 @@ export interface TunerCandidateTelemetry {
   label: string;
   domain: string;
   trials: number;
+  rewardSamples?: number;
   successes: number;
   rollbacks: number;
   meanDelta: number;
   ucbScore: number;
   cooldownTicks: number;
+}
+
+export interface TunerEvaluatedCandidateTelemetry {
+  id: string;
+  domain: string;
+  intent: string;
+  utilityScore: number;
+  empiricalScore: number;
+  confidence: number;
+  riskPenalty: number;
+  thermalPenalty: number;
+  eligible: boolean;
+  selected: boolean;
+  rejectionReason: string;
 }
 
 export type VulkanLayerMode = 'safe_hardware' | 'full_capability_override' | 'disabled';
@@ -475,6 +490,10 @@ export interface AutonomousTelemetry {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
+  uclampPolicyMin?: number;
+  uclampPolicyMax?: number;
+  uclampTargetPath?: string;
+  uclampEncoding?: string;
   socTempCelsius: number;
   socCompositeCelsius?: number;
   cpuAverageCelsius?: number;
@@ -522,6 +541,7 @@ export interface AutonomousTelemetry {
   tunerRolledBack?: number;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   vulkan?: VulkanTelemetry;
   timestamp: number;
 }

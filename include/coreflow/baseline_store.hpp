@@ -51,6 +51,10 @@ public:
         const std::string& transaction_id, const std::string& endpoint,
         const std::string& verified_value);
     [[nodiscard]] std::vector<RetainedPerformanceBaseline> performance_baselines() const;
+    /// True only when a persisted retained-performance record and the live inode/value
+    /// prove that the current non-OEM value is still owned by CoreFlow.
+    [[nodiscard]] bool owns_retained_performance_value(
+        const std::string& endpoint, const std::string& verified_value) const;
 
     /// Roll back a specific node to factory value
     bool rollback(const std::string& path);

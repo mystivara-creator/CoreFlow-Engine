@@ -7,6 +7,7 @@
 
 #include "coreflow/render_booster.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/unique_fd.hpp"
 #include <algorithm>
 #include <cerrno>
@@ -17,8 +18,16 @@
 
 namespace coreflow {
 
-RenderBooster::RenderBooster(UclampGovernor& governor, EpollReactor& reactor)
-    : governor_(governor), reactor_(reactor) {
+RenderBooster::RenderBooster(
+    UclampGovernor& governor,
+    EpollReactor& reactor,
+    uint32_t touch_boost_uclamp_min,
+    uint32_t burst_boost_duration_ms)
+    : governor_(governor),
+      reactor_(reactor),
+      touch_boost_uclamp_min_(std::min(touch_boost_uclamp_min, 1024U)),
+      burst_boost_duration_(std::chrono::milliseconds(
+          std::min(burst_boost_duration_ms, 1000U))) {
     // No SurfaceFlinger/frame-timeline source is connected; never synthesize 120 FPS.
     metrics_.target_fps = 0;
     metrics_.average_frame_time_ms = 0.0;
@@ -47,25 +56,53 @@ RenderBooster::~RenderBooster() {
 }
 
 bool RenderBooster::connect_frame_source(FrameEventSource& source) noexcept {
-    disconnect_frame_source();
+    for (const auto* connected : frame_sources_) {
+        if (connected == &source) return true;
+    }
+    const auto free_slot = std::find(frame_sources_.begin(), frame_sources_.end(), nullptr);
+    if (free_slot == frame_sources_.end()) return false;
     if (!source.start([this](const FrameEvent& event) { on_frame_event(event); })) return false;
-    frame_source_ = &source;
+    *free_slot = &source;
     return true;
 }
 
 void RenderBooster::disconnect_frame_source() noexcept {
-    if (frame_source_ != nullptr) {
-        frame_source_->stop();
-        frame_source_ = nullptr;
+    for (auto*& source : frame_sources_) {
+        if (source == nullptr) continue;
+        source->stop();
+        source = nullptr;
     }
+}
+
+void RenderBooster::set_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept {
+    if (foreground_task_resolver_ == resolver) return;
+    restore_foreground_tasks();
+    foreground_task_resolver_ = resolver;
+}
+
+void RenderBooster::set_thermal_guard(bool active) noexcept {
+    const bool previous = thermal_guard_.exchange(active, std::memory_order_acq_rel);
+    if (previous == active || !request_fd_.valid()) return;
+    // Wake the reactor so an already-running burst is restored immediately when
+    // thermal admission closes; no kernel mutation occurs on the thermal thread.
+    const uint64_t one = 1;
+    ssize_t written;
+    do { written = ::write(request_fd_.get(), &one, sizeof(one)); }
+    while (written < 0 && errno == EINTR);
 }
 
 void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
     bool trigger_burst = false;
     switch (event.kind) {
-        case FrameEventKind::TouchBurst:
-            on_touch_down();
+        case FrameEventKind::TouchBurst: {
+            in_touch_gesture_.store(true, std::memory_order_relaxed);
+            const auto duration = event.burst_duration_ms >= 50U &&
+                event.burst_duration_ms <= 1000U
+                    ? std::chrono::milliseconds(event.burst_duration_ms)
+                    : burst_boost_duration_;
+            trigger_render_burst(touch_boost_uclamp_min_, duration);
             return;
+        }
         case FrameEventKind::FrameDropped:
             if (event.frame_duration_ns > event.jank_threshold_ns) {
                 {
@@ -77,6 +114,35 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
                 trigger_burst = hitches >= 2;
             }
             break;
+        case FrameEventKind::FrameTimelineWindow: {
+            if (event.frame_count == 0 || event.missed_frames > event.frame_count) return;
+            {
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                const uint64_t total = static_cast<uint64_t>(metrics_.dropped_frames) +
+                    event.missed_frames;
+                metrics_.dropped_frames = static_cast<uint32_t>(
+                    std::min<uint64_t>(total, UINT32_MAX));
+            }
+            if (event.frame_duration_ns > 0U) {
+                const double duration_ms =
+                    static_cast<double>(event.frame_duration_ns) / 1'000'000.0;
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                metrics_.average_frame_time_ms =
+                    metrics_.average_frame_time_ms == 0.0
+                        ? duration_ms
+                        : 0.9 * metrics_.average_frame_time_ms + 0.1 * duration_ms;
+            }
+            if (event.missed_frames == 0) {
+                consecutive_hitches_.store(0, std::memory_order_relaxed);
+            } else {
+                const uint32_t increment = static_cast<uint32_t>(
+                    std::min<uint64_t>(event.missed_frames, UINT32_MAX));
+                const uint32_t previous =
+                    consecutive_hitches_.fetch_add(increment, std::memory_order_relaxed);
+                trigger_burst = previous < 2U && previous + increment >= 2U;
+            }
+            break;
+        }
         case FrameEventKind::FramePresented:
             if (event.frame_duration_ns > 0) {
                 const double duration_ms =
@@ -103,7 +169,7 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
 
 void RenderBooster::on_touch_down() {
     in_touch_gesture_.store(true, std::memory_order_relaxed);
-    trigger_render_burst(380, std::chrono::milliseconds(120));
+    trigger_render_burst(touch_boost_uclamp_min_, burst_boost_duration_);
 }
 
 void RenderBooster::on_touch_up() {
@@ -165,6 +231,12 @@ void RenderBooster::handle_request(uint32_t) noexcept {
     uint64_t signals = 0;
     while (::read(request_fd_.get(), &signals, sizeof(signals)) ==
            static_cast<ssize_t>(sizeof(signals))) {}
+    if (thermal_guard_.load(std::memory_order_acquire)) {
+        requested_min_.store(0, std::memory_order_release);
+        requested_duration_ms_.store(0, std::memory_order_release);
+        restore_burst();
+        return;
+    }
     const uint32_t requested_min = requested_min_.exchange(0, std::memory_order_acq_rel);
     const int64_t duration_ms = requested_duration_ms_.exchange(0, std::memory_order_acq_rel);
     if (duration_ms <= 0 || requested_min == 0) return;
@@ -174,7 +246,18 @@ void RenderBooster::handle_request(uint32_t) noexcept {
         itimerspec disarm{};
         (void)::timerfd_settime(expiry_fd_.get(), 0, &disarm, nullptr);
         burst_active_ = false;
+        restore_foreground_tasks();
         return;
+    }
+
+    // PID/TID identity checks and cgroup migration run on the reactor thread,
+    // never from the evdev producer callback.
+    if (foreground_task_resolver_ && !foreground_tasks_active_) {
+        if (!foreground_task_resolver_->refresh(true)) {
+            (void)foreground_task_resolver_->restore_all();
+            return;
+        }
+        foreground_tasks_active_ = true;
     }
 
     if (!burst_active_) {
@@ -183,7 +266,7 @@ void RenderBooster::handle_request(uint32_t) noexcept {
     }
     if (!governor_.apply_state(WorkloadState::Balanced, requested_min,
                                governor_.get_top_app_max())) {
-        if (burst_active_) revert_burst();
+        revert_burst();
         return;
     }
     burst_active_ = true;
@@ -211,16 +294,22 @@ void RenderBooster::restore_burst() noexcept {
     revert_burst();
 }
 
+void RenderBooster::restore_foreground_tasks() noexcept {
+    if (!foreground_tasks_active_ || foreground_task_resolver_ == nullptr) return;
+    (void)foreground_task_resolver_->restore_all();
+    foreground_tasks_active_ = false;
+}
+
 void RenderBooster::revert_burst() noexcept {
-    if (!burst_active_) return;
-    // OWNERSHIP_LOST is a handoff: do not overwrite the value that replaced ours.
-    if (governor_.owned_values_intact()) {
-        // Restore the exact pre-burst governor state. UclampGovernor uses the
-        // captured OEM raw encoding when the pair returns to its factory values.
-        (void)governor_.apply_state(
-            WorkloadState::Balanced, baseline_min_, baseline_max_);
+    if (burst_active_) {
+        // OWNERSHIP_LOST is a handoff: do not overwrite the value that replaced ours.
+        if (governor_.owned_values_intact()) {
+            (void)governor_.apply_state(
+                WorkloadState::Balanced, baseline_min_, baseline_max_);
+        }
+        burst_active_ = false;
     }
-    burst_active_ = false;
+    restore_foreground_tasks();
 }
 
 } // namespace coreflow

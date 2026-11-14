@@ -2,6 +2,34 @@
 
 # CFAE System Framework Release History
 
+## Unreleased — v4.0.0 GPU integration (device acceptance required)
+
+- Route the existing `GpuCandidateProvider` through `GlobalDecisionEngine` into the bounded KGSL paired-level actuator. Admission requires a discovered GPU domain, validated writable KGSL endpoints, live `gpuclk` readback matching the driver's advertised OPP table, GPU-bound/gaming workload evidence, actual FrameTimeline deadline misses, valid thermal pressure, and at least 0.35 thermal headroom.
+- Evaluate GPU outcomes in the isolated `gpu` reward domain using FrameTimeline miss rate, live KGSL/devfreq clock mean and spread, and thermal-pressure change. Missing evidence rolls back as inconclusive; significant clock instability or thermal regression penalizes the trial and restores the captured `BaselineStore` pair.
+- `ThermalStabilization` preemption restores the GPU paired-level lease through the controller's ownership-checked `BaselineStore` rollback path. No CPU/I/O/Memory reward samples are borrowed for GPU UCB exploration.
+- KGSL is now **limited autonomous actuation**, not general GPU optimization. Only the Qualcomm paired-level path is covered; unsupported or ambiguous multi-GPU surfaces remain inactive. Physical device ABI and sustained gaming/thermal behavior remain unaccepted until `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` pass on the target device.
+- FrameTimeline capture remains dependent on Android Perfetto permission and fresh samples. Vulkan cache hooks exist in the implicit layer, but installed/configured files do not prove Android application-process loader activation. Runtime interception remains unverified.
+- SkiaVK/HWUI renderer changes, VRS, and pipeline prewarming remain inactive. v4.0.0 remains an unpublished build candidate pending physical-device acceptance.
+
+## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline (build candidate; device acceptance pending)
+
+### Native GPU actuation
+- Register `GpuCandidateProvider` in `GlobalDecisionEngine` and route its candidate through the autonomous tuner only for classified GPU-bound/gaming workload windows with fresh GPU utilization, actual FrameTimeline misses, valid thermal pressure, and at least 0.35 thermal headroom.
+- Validate Qualcomm KGSL `num_pwrlevels` against the `gpu_available_frequencies` entry count, enforce `max_pwrlevel <= min_pwrlevel`, and require the live `gpuclk` sample to match a driver-advertised OPP before and after mutation.
+- Treat KGSL limits as one `GpuDevfreq` lease with paired `BaselineStore` snapshots, invariant-preserving write/rollback ordering, readback, and ownership verification. A GPU-specific outcome window evaluates FrameTimeline misses, clock mean/spread, and thermal-pressure deltas; incomplete evidence or regression restores the OEM pair.
+- Keep GPU UCB rewards isolated under the `gpu` candidate domain. CI success does not replace target-device `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` acceptance; keep PR #29 Draft until all four target-device gates pass.
+
+### Vulkan pipeline-cache persistence
+- Intercept `vkCreatePipelineCache`, `vkGetPipelineCacheData`, and `vkDestroyPipelineCache` in the existing implicit layer.
+- Validate the Vulkan v1 cache header, vendor/device identity, and `pipelineCacheUUID`; isolate cache files in app-private storage and use bounded, exclusive temporary writes with `fsync` and `renameat`.
+- Report cache persistence interception separately from pipeline prewarming; SkiaVK/HWUI renderer changes and VRS remain inactive.
+
+### FrameTimeline and release integrity
+- Consume Perfetto FrameTimeline captures on a dedicated worker and connect them to RenderBooster/workload evidence after lifecycle promotion; actual trace permissions and fresh samples remain device-dependent.
+- RenderBooster can trigger bounded UClamp bursts from validated input/frame events, with thermal admission and deterministic lease restoration. Display refresh-rate control is not implemented.
+- Align CMake, C++, Rust, module, configuration, and WebUI package metadata to `4.0.0`.
+
+
 ## v3.1.0 — Smart Multi-Domain Scheduler Tuning, Predictive AI Backend & Full-Tree Hardening
 
 ### Smart Multi-Domain Scheduler & Tunable Evaluator (`AutonomousTuner`)

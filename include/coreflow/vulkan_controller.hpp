@@ -29,7 +29,7 @@ enum class VulkanLayerMode : uint8_t {
 
 enum class GpuVendor : uint8_t {
     Unknown = 0,
-    QualcommAdreno = 1,     ///< Vendor ID 0x5143 (KGSL /sys/class/kgsl/kgsl-3d0)
+    QualcommAdreno = 1,     ///< Vendor ID 0x5143 (KGSL ABI)
     ArmMali = 2,            ///< Vendor ID 0x13B5 (Mali / Immortalis devfreq)
     SamsungXclipse = 3,     ///< Vendor ID 0x1002 / 0x144D (AMD RDNA Xclipse)
     ImaginationPowerVR = 4, ///< Vendor ID 0x1010 (PowerVR rogue/devfreq)
@@ -154,6 +154,9 @@ struct VulkanCapabilitiesSnapshot {
     // Runtime Pipeline Acceleration Flags
     bool skiavk_active{false};
     bool adaptive_vrs_active{false};
+    // True when the installed implicit layer has its VkPipelineCache persistence interceptors enabled.
+    bool pipeline_cache_interception_active{false};
+    // Prewarming is a distinct feature and remains false until pipeline creation is explicitly prewarmed.
     bool pipeline_cache_prewarm_active{false};
 
     GpuKernelSurface gpu_surface{};

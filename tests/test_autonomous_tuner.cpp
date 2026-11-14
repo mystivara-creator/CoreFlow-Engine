@@ -43,8 +43,8 @@ int main() {
 
     const fs::path sys_root = root / "sys";
     const fs::path proc_root = root / "proc";
-    const fs::path sda_q = sys_root / "block/sda/queue";
-    const fs::path zram_q = sys_root / "block/zram0/queue";
+    const fs::path sda_q = sys_root / "class/block/sda/queue";
+    const fs::path zram_q = sys_root / "class/block/zram0/queue";
 
     put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
     put(sda_q / "read_ahead_kb", "128");
@@ -251,29 +251,31 @@ int main() {
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(sda_q / "scheduler") == "[none] mq-deadline kyber bfq");
 
-    // 1b. TUNER-01 All-or-Nothing Preflight: if a required dependent node is unwritable,
-    // no partial mutation of the anchor (scheduler) may occur!
+    // 1b. Contract admission is fail-closed: if a required queue node is not
+    // writable, neither the scheduler anchor nor any other queue node is actuated.
     if (::geteuid() != 0) {
-        assert(::chmod((sda_q / "iosched/read_expire").c_str(), 0444) == 0);
+        assert(::chmod((sda_q / "read_ahead_kb").c_str(), 0444) == 0);
         // Temporarily restrict available schedulers to mq-deadline so it tests mq-deadline preflight directly
         put(sda_q / "scheduler", "[none] mq-deadline");
         tuner.discover(sys_root.string(), proc_root.string());
         tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
         assert(tuner.snapshot().stage == "PLANNED");
         assert(get(sda_q / "scheduler") == "[none] mq-deadline");
-        assert(::chmod((sda_q / "iosched/read_expire").c_str(), 0644) == 0);
+        assert(::chmod((sda_q / "read_ahead_kb").c_str(), 0644) == 0);
         put(sda_q / "scheduler", "[none] mq-deadline kyber bfq");
         tuner.discover(sys_root.string(), proc_root.string());
     }
 
-    // 2. Elevated I/O PSI -> Autonomously selects mq-deadline + coupled iosched tunables
+    // 2. Elevated I/O PSI -> mq-deadline and only ABI-verified queue tunables.
     tuner.step({.cpu_psi = 6.0, .memory_psi = 0.5, .io_psi = 7.5, .thermal_pressure = 48.0});
     const auto observing1 = tuner.snapshot();
     assert(observing1.stage == "OBSERVING");
     assert(observing1.active_candidate_id == "io.mq_deadline_low_latency");
     assert(get(sda_q / "scheduler") == "mq-deadline");
-    assert(get(sda_q / "iosched/read_expire") == "250");
-    assert(get(sda_q / "iosched/fifo_batch") == "8");
+    // Scheduler-specific iosched attributes remain OBSERVATION_ONLY until an
+    // explicit active-scheduler ABI/range contract is added.
+    assert(get(sda_q / "iosched/read_expire") == "500");
+    assert(get(sda_q / "iosched/fifo_batch") == "16");
     assert(get(sda_q / "read_ahead_kb") == "256");
 
     // 3. Simulate regression during 3-tick observation window (io_psi worsens from 7.5 to 11.0)
@@ -421,14 +423,15 @@ int main() {
     assert(tuner.snapshot().stage == "PLANNED");
     assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
 
-    // Now set scaling_governor to schedutil -> eligible and applied!
+    // Even after selecting schedutil, its vendor-specific rate-limit children
+    // remain observation-only until an explicit ABI/range contract is verified.
     put(policy0_dir / "scaling_governor", "schedutil");
     tuner.discover(sys_root.string(), proc_root.string());
     const auto cpu_obs = tuner.step({.cpu_psi = 12.5, .memory_psi = 0.2, .io_psi = 0.4, .thermal_pressure = 44.0});
-    assert(cpu_obs.stage == "OBSERVING");
-    assert(cpu_obs.active_candidate_id == "cpufreq.schedutil_interactive_response");
-    assert(get(schedutil_dir / "up_rate_limit_us") == "500");
-    assert(get(schedutil_dir / "down_rate_limit_us") == "10000");
+    assert(cpu_obs.stage == "PLANNED");
+    assert(cpu_obs.active_candidate_id == "baseline");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
 
     tuner.reset();
     assert(tuner.snapshot().stage == "PLANNED");
@@ -456,7 +459,7 @@ int main() {
     tuner.reset();
 
     // 9. Section 13.1: Resource Permission Classification (VerifiedConstraints vs WritableButUnsafe vs UnknownSemantic)
-    put(sys_root / "block/custom0/queue/scheduler", "mystery_token");
+    put(sys_root / "class/block/custom0/queue/scheduler", "mystery_token");
     tuner.discover(sys_root.string(), proc_root.string());
     bool found_sda_verified = false;
     bool found_zram_unsafe = false;
@@ -518,10 +521,12 @@ int main() {
     assert(therm_stab.workload_class == coreflow::WorkloadClass::ThermalConstrained);
     assert(therm_stab.objective == coreflow::OptimizationObjective::ThermalStabilization);
     assert(therm_stab.intent == "ThermalStabilization");
-    assert(therm_stab.active_candidate_id == "thermal.schedutil_damped_pacing");
+    assert(therm_stab.active_candidate_id == "thermal.io_burst_pacing");
     assert(therm_stab.thermal_stabilization_active);
-    assert(get(schedutil_dir / "up_rate_limit_us") == "4000");
-    assert(get(schedutil_dir / "down_rate_limit_us") == "500");
+    assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
+    assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
+    assert(get(sda_q / "read_ahead_kb") == "64");
+    assert(get(sda_q / "nr_requests") == "48");
 
     // Emergency thermal spike must request preemption from every live domain owner
     // before the tuner attempts to roll back its own transaction.
@@ -543,6 +548,8 @@ int main() {
     assert(therm_emerg.stage == "PLANNED");
     assert(get(schedutil_dir / "up_rate_limit_us") == "2000");
     assert(get(schedutil_dir / "down_rate_limit_us") == "1000");
+    assert(get(sda_q / "read_ahead_kb") == "128");
+    assert(get(sda_q / "nr_requests") == "64");
     const auto emergency_leases = emergency_coord.active_leases();
     assert(emergency_leases.size() == 1);
     assert(emergency_leases[0].owner_controller == "ExternalUclampController");
@@ -555,21 +562,22 @@ int main() {
     const auto recovery_start = tuner.step({
         .cpu_psi = 11.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .thermal_guard_active = true,
     });
     assert(recovery_start.thermal_stabilization_active);
-    const fs::path up_rate_path = schedutil_dir / "up_rate_limit_us";
-    assert(get(up_rate_path) == "4000");
-    assert(std::filesystem::remove(up_rate_path));
+    assert(recovery_start.active_candidate_id == "thermal.io_burst_pacing");
+    const fs::path read_ahead_path = sda_q / "read_ahead_kb";
+    assert(get(read_ahead_path) == "64");
+    assert(std::filesystem::remove(read_ahead_path));
     tuner.reset(); // rollback of the missing node must fail closed
     const auto recovery_snapshot = tuner.snapshot();
     assert(recovery_snapshot.recovery_required);
     const auto recovery_leases = coordinator.active_leases();
     assert(recovery_leases.size() == 1);
     assert(recovery_leases[0].owner_controller.rfind("AutonomousTuner@", 0) == 0);
-    assert(recovery_leases[0].domain == coreflow::MutationDomain::CpuPolicy);
+    assert(recovery_leases[0].domain == coreflow::MutationDomain::BlockIo);
 
     // Emergency must still preempt other owners even when the recovery retry fails early.
     auto& recovery_coord = coordinator;
@@ -596,11 +604,11 @@ int main() {
         coreflow::MutationDomain::GpuDevfreq, "ExternalGpuController", "tx-gpu-during-recovery");
 
     // Recreated path has a new inode and already contains OEM baseline; adopt it safely.
-    put(up_rate_path, "2000");
+    put(read_ahead_path, "128");
     tuner.reset();
     assert(!tuner.snapshot().recovery_required);
     assert(coordinator.active_leases().empty());
-    assert(get(up_rate_path) == "2000");
+    assert(get(read_ahead_path) == "128");
 
     // 12. Section 13.5: Central Mutation Coordinator Conflict Detection & Priority Arbitration
     tuner.reset();
@@ -708,7 +716,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 46.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -720,7 +728,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 67.0,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = -0.35,
@@ -739,7 +747,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 44.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -752,7 +760,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 64.0,
             .current_temperature_celsius = 45.5,
             .temperature_velocity_celsius_per_sec = 0.40,
@@ -765,13 +773,44 @@ int main() {
     assert(t4_eval.last_verdict != "IMPROVED");
     assert(t4_eval.stage == "PLANNED");
 
+    // 13.4b Cooling temperature cannot hide a worsening thermal-pressure trend.
+    tuner.reset();
+    tuner.discover(sys_root.string(), proc_root.string());
+    tuner.step({
+        .cpu_psi = 10.0,
+        .memory_psi = 0.5,
+        .io_psi = 5.0,
+        .thermal_pressure = 68.0,
+        .current_temperature_celsius = 46.0,
+        .temperature_velocity_celsius_per_sec = 0.9,
+        .temperature_velocity_valid = true,
+        .temperature_samples_count = 3,
+        .thermal_guard_active = true,
+    });
+    for (int i = 0; i < 3; ++i) {
+        tuner.step({
+            .cpu_psi = 10.0,
+            .memory_psi = 0.5,
+            .io_psi = 5.0,
+            .thermal_pressure = 72.0,
+            .current_temperature_celsius = 43.0,
+            .temperature_velocity_celsius_per_sec = -0.35,
+            .temperature_velocity_valid = true,
+            .temperature_samples_count = 3,
+            .thermal_guard_active = true,
+        });
+    }
+    const auto t4b_eval = tuner.snapshot();
+    assert(t4b_eval.last_verdict != "IMPROVED");
+    assert(t4b_eval.stage == "PLANNED");
+
     // 13.5 Sensor unavailable yields INCONCLUSIVE
     tuner.reset();
     tuner.discover(sys_root.string(), proc_root.string());
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -783,7 +822,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 67.0,
             .current_temperature_celsius = -1.0, // Sensor unavailable
             .temperature_velocity_celsius_per_sec = 0.0,
@@ -811,7 +850,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -823,7 +862,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 67.0,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = -0.20,
@@ -842,7 +881,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -855,7 +894,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 68.0,
             .thermal_pressure_velocity = -2.5,
             .current_temperature_celsius = 45.5,
@@ -875,7 +914,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 45.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -888,7 +927,7 @@ int main() {
         tuner.step({
             .cpu_psi = 10.0,
             .memory_psi = 0.5,
-            .io_psi = 1.0,
+            .io_psi = 5.0,
             .thermal_pressure = 67.5,
             .current_temperature_celsius = 45.0,
             .temperature_velocity_celsius_per_sec = -0.02,
@@ -907,7 +946,7 @@ int main() {
     tuner.step({
         .cpu_psi = 10.0,
         .memory_psi = 0.5,
-        .io_psi = 1.0,
+        .io_psi = 5.0,
         .thermal_pressure = 68.0,
         .current_temperature_celsius = 46.0,
         .temperature_velocity_celsius_per_sec = 0.9,
@@ -916,7 +955,7 @@ int main() {
         .thermal_guard_active = true,
     });
     // Thermal pressure dropped significantly (60.0) and cooling (-0.30 °C/s),
-    // but io_psi spiked from 1.0 to 12.0 (massive stall)
+    // but io_psi spiked from 5.0 to 12.0 (massive stall)
     for (int i = 0; i < 3; ++i) {
         tuner.step({
             .cpu_psi = 10.0,
@@ -1364,7 +1403,7 @@ int main() {
     coordinator.reset();
     const fs::path teardown_sys = root / "teardown_sys";
     const fs::path teardown_proc = root / "teardown_proc";
-    const fs::path teardown_queue = teardown_sys / "block/sdb/queue";
+    const fs::path teardown_queue = teardown_sys / "class/block/sdb/queue";
     put(teardown_queue / "scheduler", "[none] mq-deadline kyber bfq");
     put(teardown_queue / "read_ahead_kb", "128");
     put(teardown_queue / "nr_requests", "64");
@@ -1453,8 +1492,8 @@ int main() {
     std::ifstream state_input(state_file, std::ios::binary);
     const std::string state_payload((std::istreambuf_iterator<char>(state_input)),
                                     std::istreambuf_iterator<char>());
-    assert(state_payload.rfind("CFTS7\t", 0) == 0);
-    assert(state_payload.find("CFTS7_END\t") != std::string::npos);
+    assert(state_payload.rfind("CFTS8\t", 0) == 0);
+    assert(state_payload.find("CFTS8_END\t") != std::string::npos);
 
     for (const auto& entry : fs::directory_iterator(root)) {
         assert(entry.path().filename().string().rfind("tuner_stats.state.tmp.", 0) != 0);
@@ -1521,7 +1560,7 @@ int main() {
 
     const fs::path preflight_sys = root / "preflight-sys";
     const fs::path preflight_proc = root / "preflight-proc";
-    const fs::path preflight_queue = preflight_sys / "block/sda/queue";
+    const fs::path preflight_queue = preflight_sys / "class/block/sda/queue";
     put(preflight_queue / "scheduler", "[none] mq-deadline");
     put(preflight_queue / "read_ahead_kb", "128");
     put(preflight_queue / "nr_requests", "64");

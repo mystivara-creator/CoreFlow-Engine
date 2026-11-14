@@ -1,7 +1,7 @@
 # P1 — Correct Feature Classification & Accountability Report
 
-**Audit baseline:** 2026-11-09  
-**Audited ref:** `main` at `249dc0f0c6f15c73c8ddbbc6c7879e43d312c2b9`
+**Audit baseline:** 2026-11-14  
+**Audited ref:** `feat/p4-native-actuators-end-to-end` at `3491e773e3f99d0bd7897053ccbe8be156f57d5d` (pre-integration baseline for this follow-up)
 
 ## Acceptance rule
 
@@ -15,18 +15,26 @@ A class, UI toggle, config key, telemetry field, layer manifest, or documentatio
 | DEX2OAT compiler tuning | `NOT_IMPLEMENTED` | No dex2oat invocation, ART service interface, compiler-filter/threads actuator, or verified compiler configuration path. Historical v3.0.1 claim is superseded. |
 | JIT/AOT policy control | `NOT_IMPLEMENTED` | No JIT runtime control, compilation daemon interface, or AOT profile actuator. |
 | SurfaceFlinger refresh/frame control | `NOT_IMPLEMENTED` | No SurfaceFlinger service integration or display-mode actuator. |
-| RenderBooster / touch burst | `NOT_IMPLEMENTED` | `trigger_render_burst()` performs no write; no trusted frame-event source or central mutation request exists. Synthetic 120 FPS / 8.33 ms / vsync-aligned defaults removed. |
+| RenderBooster / touch burst | `LIMITED_ACTUATION` | Verified evdev touch events request bounded UClamp bursts; actual FrameTimeline windows feed jank response through a worker source. Physical Perfetto availability and device effects remain unverified. No display refresh-rate actuation. |
 | ANGLE backend selection/tuning | `NOT_IMPLEMENTED` | No ANGLE service/property/backend integration or verified mutation path. |
 | OpenGL / GLES optimization | `NOT_IMPLEMENTED` | No EGL/GLES interception, driver control, or application rendering actuator. |
 | Vulkan ICD / physical-device probing | `OBSERVATION_ONLY` | Native ICD probing reads hardware capabilities; it does not alter the ICD or application rendering. |
-| Vulkan implicit layer | `OBSERVATION_ONLY` | Transparent dispatch forwarding only; no shader, command-buffer, frame pacing, or renderer optimization. |
+| Vulkan implicit layer | `LIMITED_ACTUATION` | Transparent dispatch forwarding and VkPipelineCache lifecycle persistence hooks exist. Android process-level implicit-layer loading and persistent reuse are not proven by daemon layer-file detection. No shader, command-buffer, frame pacing, or renderer optimization. |
 | SkiaVK threaded renderer | `NOT_IMPLEMENTED` | No HWUI/Skia integration. Native snapshot flag hardcoded false regardless of config. |
 | Adaptive VRS | `NOT_IMPLEMENTED` | Feature discovery is not an actuator; no VRS command submission or app integration. Native flag hardcoded false. |
 | Vulkan pipeline-cache prewarming | `NOT_IMPLEMENTED` | No application pipeline-cache ownership/prewarm path. Native flag hardcoded false. |
-| Qualcomm Adreno / KGSL tuning | `OBSERVATION_ONLY` | Code deliberately does not write `adrenoboost`, `bus_split`, or `throttling`; telemetry only pending driver ABI/semantic validation. |
+| Qualcomm Adreno / KGSL tuning | `LIMITED_ACTUATION` | `GpuCandidateProvider` is registered in `GlobalDecisionEngine` and dispatches only with a discovered GPU domain, validated KGSL paired endpoints, live `gpuclk` matching a driver OPP, GPU-bound/gaming workload, FrameTimeline misses, valid thermal pressure, and at least 0.35 headroom. `FrequencyController` applies one bounded paired-level `GpuDevfreq` lease with `BaselineStore` ownership/readback/rollback. The GPU outcome evaluator uses only `gpu` reward samples and evaluates frame misses, clock mean/spread, and thermal pressure; insufficient evidence or regression restores the baseline. Physical ABI and sustained-device acceptance remain pending. |
 | ARM Mali GPU policy | `LIMITED_ACTUATION` | A discovered `/device/power_policy` path may be set to `coarse_demand` through BaselineStore, coordinator lease, and readback/rollback. Not general Vulkan/GPU-frequency optimization; physical acceptance remains required. |
 | Power HAL discovery | `OBSERVATION_ONLY` | Probes Binder/HwBinder access and AIDL `android.hardware.power.IPower/default` presence only. |
 | Power HAL interception / hint submission | `NOT_IMPLEMENTED` | `enable_interception()` returns an explicit unsupported error; no OEM/AOSP integration or transparent Binder interception exists. |
+
+## Current branch implementation status (2026-11-14)
+
+- SurfaceFlinger Perfetto FrameTimeline capture is implemented through `PerfettoFrameTimelineEventSource` and connected to `RenderBooster` or workload evidence after lifecycle promotion. Actual Perfetto permission and sample availability remain device-dependent.
+- KGSL has a bounded autonomous candidate route. Live `gpuclk` must match the driver-advertised OPP table and the owned paired endpoints must remain intact. Outcome evidence requires new FrameTimeline windows, at least three valid clock samples (the immediate post-apply readback plus two subsequent window samples), and at least two thermal-pressure samples. Clock spread and thermal regression reduce GPU utility; missing evidence is inconclusive and rolls back. ThermalStabilization preemption uses deterministic paired `BaselineStore` rollback.
+- GPU candidate reward/UCB exploration is domain-isolated (`gpu`); CPU/I/O/Memory reward counts do not dilute or inflate GPU exploration. The feature is limited to Qualcomm KGSL paired `max_pwrlevel` / `min_pwrlevel` control and is not a general GPU-frequency or renderer optimizer.
+- The Vulkan layer implements pipeline-cache hooks, but installed files/configuration do not prove Android application-process loader activation. Runtime activation remains unverified.
+- v4.0.0 metadata and CI package artifacts exist on this branch; public GitHub Release/tag publication is separate and has not occurred.
 
 ## Changes in this batch
 
@@ -41,7 +49,7 @@ A class, UI toggle, config key, telemetry field, layer manifest, or documentatio
 
 ## Acceptance boundaries
 
-- Host CI verifies statuses, inactive flags, and deterministic paths; it cannot prove Android service integration or device behavior.
+- Host CI verifies statuses, inactive flags, and deterministic paths; it cannot prove Android service integration or device behavior. Keep PR #29 Draft until `BOOT_STABILITY`, `GAMING_LOAD`, `THERMAL_RECOVERY`, and `ROLLBACK_RECOVERY` all pass on the target device.
 - Mali policy is limited actuation, not proven beneficial tuning. Promote only after driver semantics, target-device readback, ownership, and rollback acceptance.
 - Vulkan layer dispatch tests prove pass-through mechanics only; they do not prove higher FPS, lower frame time, reduced GPU load, or lower temperature.
 - Power HAL service presence must never be represented as interception-active.

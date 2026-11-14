@@ -8,6 +8,7 @@
 #pragma once
 
 #include <string>
+#include <chrono>
 #include <mutex>
 #include <vector>
 #include <cstdint>
@@ -30,7 +31,8 @@ struct LongevityConfig {
 
 class HardwareLongevityManager {
 public:
-    explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys");
+    explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys",
+                                      std::string proc_root = "/proc");
     ~HardwareLongevityManager();
     HardwareLongevityManager(const HardwareLongevityManager&) = delete;
     HardwareLongevityManager& operator=(const HardwareLongevityManager&) = delete;
@@ -54,16 +56,20 @@ public:
 private:
     CentralMutationCoordinator& coordinator_;
     std::string root_;
+    std::string proc_root_;
     std::string controller_name_;
     mutable std::mutex mutex_;
 
     LongevityConfig config_;
     std::string battery_node_;
+    std::string battery_temp_node_;
+    std::string battery_status_node_;
     bool battery_stepped_{false};
     bool storage_paced_{false};
     uint64_t charge_baseline_ua_{0};
     uint64_t last_charge_ua_{0};
     bool battery_mutation_active_{false};
+    std::chrono::steady_clock::time_point next_storage_probe_{};
     std::string battery_transaction_id_;
     std::string storage_transaction_id_;
     uint64_t transaction_generation_{0};

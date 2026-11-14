@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <new>
 #include <sstream>
 #include <string_view>
 #include <sys/stat.h>
@@ -156,15 +157,27 @@ bool path_safe(const std::string& path) {
     if (path.rfind("/sys/", 0) == 0 || path.rfind("/proc/sys/", 0) == 0 ||
         is_thread_cgroup_snapshot_path(path)) return true;
 
-    // Android can mount the CPU controller under /dev (for example /dev/cpuctl).
-    // Authorize only the semantic top-app UClamp leaf discovered by the engine,
-    // not arbitrary /dev nodes.
+    // A cgroup controller mounted below /dev is authorized by its discovered
+    // ABI contract, never by a hierarchy/group basename. Require the paired
+    // UClamp controls and at least one membership interface in the same group.
     if (path.rfind("/dev/", 0) == 0) {
-        const std::filesystem::path p(path);
-        const auto leaf = p.filename().string();
-        const auto parent = p.parent_path().filename().string();
-        if (parent == "top-app" && (leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max")) {
-            return true;
+        const std::filesystem::path node(path);
+        const auto leaf = node.filename().string();
+        const bool clamp_leaf = leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max" ||
+                                leaf == "io.weight";
+        if (clamp_leaf) {
+            const auto group = node.parent_path();
+            const auto regular_nofollow = [](const std::filesystem::path& candidate) {
+                struct stat st{};
+                return ::lstat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+                       !S_ISLNK(st.st_mode);
+            };
+            const bool clamp_pair = regular_nofollow(group / "cpu.uclamp.min") &&
+                                    regular_nofollow(group / "cpu.uclamp.max");
+            const bool membership = regular_nofollow(group / "cgroup.threads") ||
+                                    regular_nofollow(group / "tasks") ||
+                                    regular_nofollow(group / "cgroup.procs");
+            if (clamp_pair && membership && regular_nofollow(node)) return true;
         }
     }
 
@@ -299,8 +312,13 @@ void BaselineStore::reinitialize() {
 }
 
 BaselineStore& BaselineStore::instance() {
-    static BaselineStore store;
-    return store;
+    // This store is reachable from short-lived read-only CLI inspection paths.
+    // Keep its mutex alive through static deinitialization without a heap leak:
+    // placement construction in static storage deliberately omits destruction.
+    alignas(BaselineStore) static unsigned char storage[sizeof(BaselineStore)];
+    static BaselineStore* const store =
+        ::new (static_cast<void*>(storage)) BaselineStore();
+    return *store;
 }
 
 bool BaselineStore::identity_unavailable() const noexcept {
@@ -441,6 +459,27 @@ std::vector<RetainedPerformanceBaseline> BaselineStore::performance_baselines() 
     records.reserve(performance_store_.size());
     for (const auto& [_, record] : performance_store_) records.push_back(record);
     return records;
+}
+
+bool BaselineStore::owns_retained_performance_value(
+    const std::string& endpoint, const std::string& verified_value) const {
+    if (endpoint.empty() || verified_value.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recovery_checked_ || identity_unavailable_) return false;
+    const auto node = store_.find(endpoint);
+    if (node == store_.end() || !node->second.is_modified ||
+        node->second.active_value != verified_value) return false;
+    uint64_t dev = 0, ino = 0;
+    const std::string actual = read_raw_node(endpoint, &dev, &ino);
+    if (actual != verified_value ||
+        (node->second.ino != 0 &&
+         (node->second.dev != dev || node->second.ino != ino))) return false;
+    return std::any_of(performance_store_.begin(), performance_store_.end(),
+        [&](const auto& item) {
+            const auto& retained = item.second;
+            return retained.endpoint == endpoint &&
+                   retained.verified_value == verified_value;
+        });
 }
 
 bool BaselineStore::persist_performance_locked() {

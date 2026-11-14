@@ -57,6 +57,7 @@ int main(int argc, char* argv[]) {
     capability.domain = coreflow::HardwareDomain::Cpu;
     capability.source = coreflow::ProfileSource::Sysfs;
     capability.state = coreflow::NodeCapabilityState::MutationEligible;
+    capability.classification = coreflow::KernelNodeClassification::RuntimeTunable;
     capability.semantic_id = "cpufreq.scaling_max_freq";
     capability.unit = "kHz";
     capability.constraints = "verified range and frequency table";

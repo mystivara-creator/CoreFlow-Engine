@@ -4,6 +4,11 @@
 #include "coreflow/stability_policy.hpp"
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
+#include "coreflow/input_event_source.hpp"
+#include "coreflow/workload_intelligence.hpp"
+#include "coreflow/cgroup_v2.hpp"
+#include "coreflow/mount_topology.hpp"
+#include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/recovery_monitor.hpp"
@@ -17,6 +22,7 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/worker_pool.hpp"
 #include "coreflow/vulkan_controller.hpp"
 #include "coreflow/semantic/capability_resolver.hpp"
 #include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
@@ -25,6 +31,7 @@
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -83,12 +90,56 @@ void emit_log(bool is_error, const std::string& message) {
 #endif
 }
 
-// Fatal signal handlers cannot lock mutexes, perform stream I/O, or allocate.
+// Fatal handlers use only async-signal-safe operations. The previous Android
+// disposition is restored before re-raising so debuggerd can capture the fault.
+constexpr int kFatalSignalSlots = 128;
+struct sigaction old_sigaction[kFatalSignalSlots]{};
+sigset_t fatal_unblock_sets[kFatalSignalSlots]{};
+volatile sig_atomic_t old_sigaction_valid[kFatalSignalSlots]{};
+
 void on_fatal_signal(int signum) {
-    constexpr char line[] = "[CoreFlow] Fatal signal. Next start will recover journal.\n";
-    const ssize_t emitted = ::write(STDERR_FILENO, line, sizeof(line) - 1);
-    (void)emitted;
+    char message[128];
+    size_t length = 0;
+    constexpr char prefix[] = "[CoreFlow] Fatal signal ";
+    constexpr char suffix[] = "; handing off to Android debuggerd; next start will recover journal.\n";
+    for (size_t i = 0; i < sizeof(prefix) - 1U; ++i) message[length++] = prefix[i];
+
+    unsigned value = signum > 0 ? static_cast<unsigned>(signum) : 0U;
+    char digits[16];
+    size_t digit_count = 0;
+    do {
+        digits[digit_count++] = static_cast<char>('0' + (value % 10U));
+        value /= 10U;
+    } while (value != 0U && digit_count < sizeof(digits));
+    while (digit_count > 0U) message[length++] = digits[--digit_count];
+    for (size_t i = 0; i < sizeof(suffix) - 1U; ++i) message[length++] = suffix[i];
+    (void)::write(STDERR_FILENO, message, length);
+
+    if (signum <= 0 || signum >= kFatalSignalSlots ||
+        old_sigaction_valid[signum] == 0) {
+        ::_exit(128 + signum);
+    }
+    if (::sigaction(signum, &old_sigaction[signum], nullptr) != 0) {
+        ::_exit(128 + signum);
+    }
+    if (::sigprocmask(SIG_UNBLOCK, &fatal_unblock_sets[signum], nullptr) != 0) {
+        ::_exit(128 + signum);
+    }
+    if (::raise(signum) != 0) {
+        ::_exit(128 + signum);
+    }
     ::_exit(128 + signum);
+}
+
+void install_fatal_signal_action(int signum, const struct sigaction& action) noexcept {
+    if (signum <= 0 || signum >= kFatalSignalSlots) return;
+    sigset_t unblock_set{};
+    if (::sigemptyset(&unblock_set) != 0 || ::sigaddset(&unblock_set, signum) != 0) return;
+    fatal_unblock_sets[signum] = unblock_set;
+    old_sigaction_valid[signum] = 0;
+    if (::sigaction(signum, &action, &old_sigaction[signum]) == 0) {
+        old_sigaction_valid[signum] = 1;
+    }
 }
 
 void install_signal_hardening() noexcept {
@@ -100,12 +151,14 @@ void install_signal_hardening() noexcept {
     struct sigaction fatal_sa{};
     fatal_sa.sa_handler = on_fatal_signal;
     sigemptyset(&fatal_sa.sa_mask);
-    fatal_sa.sa_flags = SA_RESETHAND;
-    (void)::sigaction(SIGSEGV, &fatal_sa, nullptr);
-    (void)::sigaction(SIGBUS, &fatal_sa, nullptr);
-    (void)::sigaction(SIGABRT, &fatal_sa, nullptr);
-    (void)::sigaction(SIGILL, &fatal_sa, nullptr);
-    (void)::sigaction(SIGFPE, &fatal_sa, nullptr);
+    fatal_sa.sa_flags = 0;
+    install_fatal_signal_action(SIGSEGV, fatal_sa);
+    install_fatal_signal_action(SIGABRT, fatal_sa);
+    install_fatal_signal_action(SIGBUS, fatal_sa);
+    install_fatal_signal_action(SIGFPE, fatal_sa);
+    install_fatal_signal_action(SIGILL, fatal_sa);
+    install_fatal_signal_action(SIGTRAP, fatal_sa);
+    install_fatal_signal_action(SIGSYS, fatal_sa);
 }
 
 bool marker(const char* path) noexcept {
@@ -121,17 +174,45 @@ bool safety_halt_requested() noexcept {
 }
 
 std::optional<double> read_psi_avg10(const char* path) {
-    UniqueFd fd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (path == nullptr || *path == '\0') return std::nullopt;
+    constexpr unsigned kMaxBusyRetries = 3U;
+    UniqueFd fd;
+    for (unsigned attempt = 0; attempt <= kMaxBusyRetries;) {
+        fd = UniqueFd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (fd.valid()) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && attempt < kMaxBusyRetries) {
+            ++attempt;
+            continue;
+        }
+        return std::nullopt;
+    }
     if (!fd.valid()) return std::nullopt;
 
-    char buf[512];
-    ssize_t n = 0;
-    do {
-        n = ::read(fd.get(), buf, sizeof(buf));
-    } while (n < 0 && errno == EINTR);
-    if (n <= 0) return std::nullopt;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return std::nullopt;
 
-    std::string_view content(buf, static_cast<size_t>(n));
+    char buf[512];
+    size_t total = 0;
+    unsigned read_busy_retries = 0U;
+    while (total < sizeof(buf)) {
+        const ssize_t n = ::read(fd.get(), buf + total, sizeof(buf) - total);
+        if (n > 0) {
+            total += static_cast<size_t>(n);
+            break;
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && read_busy_retries < kMaxBusyRetries) {
+            ++read_busy_retries;
+            continue;
+        }
+        if (total == 0) return std::nullopt;
+        break;
+    }
+    if (total == 0) return std::nullopt;
+
+    std::string_view content(buf, total);
     size_t pos = 0;
     while (pos < content.size()) {
         const size_t eol = content.find('\n', pos);
@@ -152,6 +233,19 @@ std::optional<double> read_psi_avg10(const char* path) {
         }
     }
     return std::nullopt;
+}
+
+const char* mutation_domain_name(MutationDomain domain) noexcept {
+    switch (domain) {
+        case MutationDomain::CpuPolicy: return "cpu";
+        case MutationDomain::BlockIo: return "io";
+        case MutationDomain::VmMemory: return "vm";
+        case MutationDomain::UclampCgroup: return "uclamp";
+        case MutationDomain::GpuDevfreq: return "gpu";
+        case MutationDomain::PowerLongevity: return "power";
+        case MutationDomain::ThermalCore: return "thermal";
+    }
+    return "unknown";
 }
 
 const char* state_name(WorkloadState state) noexcept {
@@ -185,6 +279,39 @@ bool process_matches(pid_t pid) {
     const size_t slash = argv0.find_last_of('/');
     const std::string_view base = slash == std::string_view::npos ? argv0 : argv0.substr(slash + 1);
     return base == "coreflowd";
+}
+
+bool service_launcher_authorized() {
+    const pid_t parent = ::getppid();
+    if (parent <= 1) return false;
+
+    UniqueFd state_dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!state_dir.valid()) return false;
+    UniqueFd service_lock(::openat(state_dir.get(), "service.lock",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!service_lock.valid()) return false;
+    UniqueFd owner_fd(::openat(service_lock.get(), "owner.pid",
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!owner_fd.valid()) return false;
+
+    struct stat owner_stat{};
+    if (::fstat(owner_fd.get(), &owner_stat) != 0 || !S_ISREG(owner_stat.st_mode)) return false;
+    char owner_text[32];
+    ssize_t count = 0;
+    do {
+        count = ::read(owner_fd.get(), owner_text, sizeof(owner_text));
+    } while (count < 0 && errno == EINTR);
+    if (count <= 0) return false;
+
+    const std::string owner_value = DaemonConfig::trim(
+        std::string(owner_text, static_cast<size_t>(count)));
+    long owner_pid = 0;
+    const auto parsed = std::from_chars(
+        owner_value.data(), owner_value.data() + owner_value.size(), owner_pid);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != owner_value.data() + owner_value.size() ||
+        owner_pid != static_cast<long>(parent)) return false;
+    return ::kill(parent, 0) == 0 || errno == EPERM;
 }
 
 pid_t daemon_pid() {
@@ -303,6 +430,90 @@ int stop_daemon() {
 
 std::string json_string(std::string_view text);
 
+const char* node_capability_state_name(NodeCapabilityState state) noexcept {
+    switch (state) {
+        case NodeCapabilityState::Discovered: return "DISCOVERED";
+        case NodeCapabilityState::Readable: return "READABLE";
+        case NodeCapabilityState::AccessChecked: return "ACCESS_CHECKED";
+        case NodeCapabilityState::SemanticsVerified: return "SEMANTICS_VERIFIED";
+        case NodeCapabilityState::ConstraintsVerified: return "CONSTRAINTS_VERIFIED";
+        case NodeCapabilityState::MutationEligible: return "MUTATION_ELIGIBLE";
+    }
+    return "UNKNOWN";
+}
+
+const char* node_rejection_reason_name(NodeRejectionReason reason) noexcept {
+    switch (reason) {
+        case NodeRejectionReason::None: return "NONE";
+        case NodeRejectionReason::EaccesSelinux: return "EACCES_SELINUX";
+        case NodeRejectionReason::NodeMissing: return "ENOENT";
+        case NodeRejectionReason::FormatMismatch: return "FORMAT_MISMATCH";
+        case NodeRejectionReason::BaselineCaptureFailed: return "BASELINE_CAPTURE_FAILED";
+        case NodeRejectionReason::BaselineNotCaptured: return "BASELINE_NOT_CAPTURED";
+        case NodeRejectionReason::ReadbackMismatch: return "READBACK_MISMATCH";
+        case NodeRejectionReason::PermissionDenied: return "PERMISSION_DENIED";
+        case NodeRejectionReason::SemanticsUnverified: return "SEMANTICS_UNVERIFIED";
+        case NodeRejectionReason::ConstraintsUnverified: return "CONSTRAINTS_UNVERIFIED";
+        case NodeRejectionReason::AmbiguousTarget: return "AMBIGUOUS_TARGET";
+        case NodeRejectionReason::IoError: return "IO_ERROR";
+    }
+    return "UNKNOWN";
+}
+
+const char* node_domain_name(HardwareDomain domain) noexcept {
+    switch (domain) {
+        case HardwareDomain::Cpu: return "cpu";
+        case HardwareDomain::Gpu: return "gpu";
+        case HardwareDomain::Thermal: return "thermal";
+        case HardwareDomain::Memory: return "memory";
+        case HardwareDomain::Storage: return "storage";
+        case HardwareDomain::Cgroup: return "cgroup";
+        case HardwareDomain::AndroidRuntime: return "android_runtime";
+        case HardwareDomain::Graphics: return "graphics";
+        case HardwareDomain::Power: return "power";
+        case HardwareDomain::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+const char* node_source_name(ProfileSource source) noexcept {
+    switch (source) {
+        case ProfileSource::Sysfs: return "sysfs";
+        case ProfileSource::Procfs: return "procfs";
+        case ProfileSource::DeviceTree: return "device_tree";
+        case ProfileSource::AndroidProperty: return "android_property";
+        case ProfileSource::KernelApi: return "kernel_api";
+        case ProfileSource::Unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+std::string serialize_node_capabilities(const DeviceProfileSnapshot& profile) {
+    std::ostringstream out;
+    out << '[';
+    const std::size_t count = std::min<std::size_t>(profile.node_capabilities.size(), 2048U);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& node = profile.node_capabilities[i];
+        if (i != 0U) out << ',';
+        out << "{\"path\":" << json_string(node.path)
+            << ",\"domain\":" << json_string(node_domain_name(node.domain))
+            << ",\"source\":" << json_string(node_source_name(node.source))
+            << ",\"state\":" << json_string(node_capability_state_name(node.state))
+            << ",\"classification\":" << json_string(kernel_node_classification_name(node.classification))
+            << ",\"semanticId\":" << json_string(node.semantic_id)
+            << ",\"unit\":" << json_string(node.unit)
+            << ",\"currentValue\":" << json_string(node.current_value)
+            << ",\"acceptedValues\":" << json_string(node.accepted_values)
+            << ",\"constraints\":" << json_string(node.constraints)
+            << ",\"evidence\":" << json_string(node.evidence)
+            << ",\"rejectionReason\":" << json_string(node_rejection_reason_name(node.rejection_code))
+            << ",\"rejectionDetail\":" << json_string(node.rejection_reason)
+            << ",\"mutationEligible\":" << (node.mutation_eligible() ? "true" : "false") << '}';
+    }
+    out << ']';
+    return out.str();
+}
+
 std::uint64_t monotonic_now_ns() noexcept {
     timespec ts{};
     if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0U;
@@ -400,6 +611,10 @@ std::string build_status_json(
     const bool uclamp_supported = live_runtime && context.uclamp_governor().is_supported();
     const uint32_t uclamp_min = uclamp_supported ? context.uclamp_governor().get_top_app_min() : 0U;
     const uint32_t uclamp_max = uclamp_supported ? context.uclamp_governor().get_top_app_max() : 0U;
+    const std::string uclamp_target_path = uclamp_supported
+        ? std::string(context.uclamp_governor().target_path()) : std::string{};
+    const std::string uclamp_encoding = uclamp_supported
+        ? std::string(context.uclamp_governor().encoding_name()) : std::string{"unavailable"};
     // Read-only status does not train models or create mutation-capable owners.
     const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
     AutonomousDecisionSnapshot tuner{
@@ -452,6 +667,9 @@ std::string build_status_json(
         .discovered_resources = {},
         .vm_page_cluster = {},
         .vm_vfs_cache_pressure = {},
+        .evaluated_candidates = {},
+        .active_interventions = {},
+        .decision_plan_rationale = {},
     };
     if (live_runtime) tuner = context.autonomous_tuner().snapshot();
     const VulkanCapabilitiesSnapshot vk = live_runtime ? context.vulkan_controller().snapshot() : VulkanCapabilitiesSnapshot{};
@@ -462,6 +680,8 @@ std::string build_status_json(
     const std::string semantic_evidence_json = live_runtime
         ? collect_semantic_evidence_json_cached()
         : collect_semantic_evidence_json();
+    const auto device_inventory = context.device_profiler().profile();
+    const std::string node_inventory_json = serialize_node_capabilities(*device_inventory);
 
     // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
     std::ostringstream out;
@@ -469,8 +689,12 @@ std::string build_status_json(
         << ",\"pid\":" << pid
         << ",\"uclampMin\":" << uclamp_min
         << ",\"uclampMax\":" << uclamp_max
+        << ",\"uclampPolicyMin\":" << cfg_status.top_app_interactive_min
+        << ",\"uclampPolicyMax\":" << cfg_status.top_app_interactive_max
+        << ",\"uclampTargetPath\":" << json_string(uclamp_target_path)
+        << ",\"uclampEncoding\":" << json_string(uclamp_encoding)
         << ",\"uclampSupported\":" << (uclamp_supported ? "true" : "false")
-        << ",\"uclampProbeSkipped\":true"
+        << ",\"uclampProbeSkipped\":" << (live_runtime ? "false" : "true")
         << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
         << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
         << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
@@ -599,6 +823,7 @@ std::string build_status_json(
             << ",\"label\":" << json_string(c.label)
             << ",\"domain\":" << json_string(c.domain)
             << ",\"trials\":" << c.trials
+            << ",\"rewardSamples\":" << c.reward_samples
             << ",\"successes\":" << c.successes
             << ",\"rollbacks\":" << c.rollbacks
             << ",\"inconclusive\":" << c.inconclusive_count
@@ -607,6 +832,41 @@ std::string build_status_json(
             << ",\"meanDelta\":" << safe_json_double(c.mean_utility_delta)
             << ",\"ucbScore\":" << safe_json_double(c.ucb_score)
             << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
+    }
+    out << "]"
+        << ",\"tunerDecisionPlanRationale\":" << json_string(tuner.decision_plan_rationale)
+        << ",\"tunerActiveInterventions\":[";
+    bool first_iv = true;
+    for (const auto& iv : tuner.active_interventions) {
+        if (!first_iv) out << ',';
+        first_iv = false;
+        out << "{\"candidateId\":" << json_string(iv.candidate_id)
+            << ",\"candidateLabel\":" << json_string(iv.candidate_label)
+            << ",\"domain\":" << json_string(mutation_domain_name(iv.domain))
+            << ",\"intent\":" << json_string(iv.intent)
+            << ",\"stage\":" << json_string(iv.stage)
+            << ",\"verdict\":" << json_string(iv.verdict)
+            << ",\"utilityDelta\":" << safe_json_double(iv.utility_delta)
+            << ",\"observationTick\":" << iv.observation_tick
+            << ",\"observationWindow\":" << iv.observation_window
+            << ",\"settlingTicksRemaining\":" << iv.settling_ticks_remaining << '}';
+    }
+    out << "],\"tunerEvaluatedCandidates\":[";
+    bool first_eval = true;
+    for (const auto& ev : tuner.evaluated_candidates) {
+        if (!first_eval) out << ',';
+        first_eval = false;
+        out << "{\"id\":" << json_string(ev.id)
+            << ",\"domain\":" << json_string(ev.domain)
+            << ",\"intent\":" << json_string(ev.intent)
+            << ",\"utilityScore\":" << safe_json_double(ev.utility_score)
+            << ",\"empiricalScore\":" << safe_json_double(ev.empirical_score, 0.5)
+            << ",\"confidence\":" << safe_json_double(ev.confidence)
+            << ",\"riskPenalty\":" << safe_json_double(ev.risk_penalty)
+            << ",\"thermalPenalty\":" << safe_json_double(ev.thermal_penalty)
+            << ",\"eligible\":" << (ev.eligible ? "true" : "false")
+            << ",\"selected\":" << (ev.selected ? "true" : "false")
+            << ",\"rejectionReason\":" << json_string(ev.rejection_reason) << '}';
     }
     out << "]"
         << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
@@ -674,6 +934,7 @@ std::string build_status_json(
         << ",\"hwGraphicsPipelineLibrary\":" << (vk.hw_graphics_pipeline_library ? "true" : "false")
         << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
         << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
+        << ",\"pipelineCachePersistenceInterceptionActive\":" << (vk.pipeline_cache_interception_active ? "true" : "false")
         << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
         << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
         << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
@@ -682,7 +943,9 @@ std::string build_status_json(
         << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
         << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
         << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
-        << ",\"semanticEvidence\":" << semantic_evidence_json << "}";
+        << ",\"semanticEvidence\":" << semantic_evidence_json
+        << ",\"node_capabilities\":" << node_inventory_json
+        << ",\"nodeCapabilityGeneration\":" << device_inventory->generation << "}";
 
     return out.str();
 }
@@ -703,8 +966,9 @@ std::string json_string(std::string_view text) {
 
 void print_capabilities(CoreFlowContext& context) {
     const auto topology = context.device_profiler().probe();
+    const auto profile = context.device_profiler().profile();
     const auto power = PowerBridge{}.probe();
-    // Capabilities is a passive probe: no online learning, layer setup, or actuators.
+    // The profile includes an actual read-only cgroup/UClamp ABI scan.
     const NeuralPrediction ai{.backend = "not_started"};
     const VulkanCapabilitiesSnapshot vk{};
     std::ostringstream out;
@@ -717,6 +981,11 @@ void print_capabilities(CoreFlowContext& context) {
         << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
         << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
         << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true"
+        << ",\"uclampProbeSkipped\":false"
+        << ",\"uclampInterfaceAvailable\":" << (profile->uclamp_interface_available ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (profile->cgroup_v2_available ? "true" : "false")
+        << ",\"nodeCapabilityGeneration\":" << profile->generation
+        << ",\"node_capabilities\":" << serialize_node_capabilities(*profile)
         << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
         << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
     std::cout << "\n" << out.str() << "\n" << std::flush;
@@ -903,6 +1172,11 @@ int run_workload_probe() {
         << ",\"frameDeadlineCount\":" << features.frame_deadline_count
         << ",\"frameDeadlineMissCount\":" << features.frame_deadline_misses
         << ",\"frameTimelineSource\":\"" << ((features.valid_features & FeatureFrameDeadline) ? "perfetto-surfaceflinger" : "unavailable") << "\""
+        << ",\"frameActualDurationSamples\":" << features.frame_actual_duration_count
+        << ",\"frameActualAverageDurationMs\":" << (features.frame_actual_duration_count > 0U
+            ? std::to_string(static_cast<double>(features.frame_actual_duration_ns_total) /
+                static_cast<double>(features.frame_actual_duration_count) / 1'000'000.0)
+            : "null")
         << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
         << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
         << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
@@ -956,8 +1230,9 @@ bool write_status_snapshot(std::string_view payload) noexcept {
     if (payload.empty() || payload.size() > 1024U * 1024U || !ensure_secure_state_dir()) return false;
     UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
-    static uint64_t nonce = 0;
-    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(++nonce);
+    static std::atomic<uint64_t> nonce{0};
+    const uint64_t seq = nonce.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(seq);
     UniqueFd temp(::openat(dir.get(), temp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
     if (!temp.valid()) return false;
     (void)::fchmod(temp.get(), 0600);
@@ -974,6 +1249,15 @@ bool write_status_snapshot(std::string_view payload) noexcept {
     }
     (void)::fsync(dir.get());
     return true;
+}
+
+// Refreshes the status file mtime without rewriting identical content. The
+// live-status reader accepts only files modified within 3 s, so an unchanged
+// payload still needs a periodic heartbeat, but not an fsync'd data write.
+bool touch_status_snapshot() noexcept {
+    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    return ::utimensat(dir.get(), "status.json", nullptr, AT_SYMLINK_NOFOLLOW) == 0;
 }
 
 bool print_live_status_snapshot(pid_t expected_pid) {
@@ -1000,16 +1284,35 @@ bool print_live_status_snapshot(pid_t expected_pid) {
     return true;
 }
 
-bool is_allowlisted_lifecycle_target(std::string_view path) noexcept {
-    constexpr std::string_view kAllowed[] = {
-        "/sys/fs/cgroup/cgroup.procs",
-        "/dev/cg2_bpf/cgroup.procs",
-        "/acct/cgroup.procs",
-        "/dev/cpuset/system-background/cgroup.procs",
-        "/dev/cpuset/system-background/tasks",
-        "/proc/self/oom_score_adj",
-    };
-    return std::find(std::begin(kAllowed), std::end(kAllowed), path) != std::end(kAllowed);
+std::vector<std::string> discover_lifecycle_membership_targets() {
+    // Lifecycle placement is resolved from the active mount topology. The
+    // controller ABI file is selected by presence, never by a vendor mount path.
+    MountTopologyResolver topology{};
+    std::vector<std::string> targets;
+    for (const auto& mount : topology.discover_cgroup_mounts()) {
+        const std::string process_path = mount.mount_point + "/cgroup.procs";
+        const std::string task_path = mount.mount_point + "/tasks";
+        struct stat st{};
+        const std::string* selected = nullptr;
+        if (::lstat(process_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            selected = &process_path;
+        } else if (::lstat(task_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            selected = &task_path;
+        }
+        if (selected != nullptr &&
+            std::find(targets.begin(), targets.end(), *selected) == targets.end())
+            targets.push_back(*selected);
+    }
+    return targets;
+}
+
+bool is_allowlisted_lifecycle_target(
+    std::string_view path, const std::vector<std::string>& discovered_targets) noexcept {
+    if (std::find(discovered_targets.begin(), discovered_targets.end(), path) != discovered_targets.end())
+        return true;
+    // This is the current process's standardized OOM admission control, not a
+    // cgroup endpoint. Keep it separate from discovered cgroup membership files.
+    return path == "/proc/self/oom_score_adj";
 }
 
 bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
@@ -1043,8 +1346,9 @@ bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
 bool write_sys_node_verified(
     std::string_view path,
     std::string_view content,
-    std::string_view expected_readback_line) {
-    if (!is_allowlisted_lifecycle_target(path) || content.empty() ||
+    std::string_view expected_readback_line,
+    const std::vector<std::string>& discovered_targets) {
+    if (!is_allowlisted_lifecycle_target(path, discovered_targets) || content.empty() ||
         expected_readback_line.empty()) {
         return false;
     }
@@ -1074,17 +1378,10 @@ void escape_app_cgroups_and_protect_oom() {
     // domains. Every target is explicitly allowlisted and must pass readback.
     const std::string pid_token = std::to_string(::getpid());
     const std::string pid_command = pid_token + "\n";
-    constexpr const char* kRootCgroups[] = {
-        "/sys/fs/cgroup/cgroup.procs",
-        "/dev/cg2_bpf/cgroup.procs",
-        "/acct/cgroup.procs",
-        "/dev/cpuset/system-background/cgroup.procs",
-        "/dev/cpuset/system-background/tasks",
-    };
-
+    const auto membership_targets = discover_lifecycle_membership_targets();
     size_t verified_memberships = 0;
-    for (const char* cg : kRootCgroups) {
-        if (write_sys_node_verified(cg, pid_command, pid_token)) {
+    for (const auto& cg : membership_targets) {
+        if (write_sys_node_verified(cg, pid_command, pid_token, membership_targets)) {
             ++verified_memberships;
         }
     }
@@ -1092,7 +1389,7 @@ void escape_app_cgroups_and_protect_oom() {
         emit_log(true, "[CoreFlow][Lifecycle] No allowlisted cgroup membership write passed readback; inherited membership remains in effect.");
     }
 
-    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900")) {
+    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900", membership_targets)) {
         emit_log(true, "[CoreFlow][Lifecycle] oom_score_adj write was not verified; retaining the kernel-provided value.");
     }
 }
@@ -1232,9 +1529,14 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    // If another live coreflowd instance already holds the PID file, exit cleanly.
+    // Existing daemon ownership is authoritative; do not spawn a second instance.
     if (daemon_pid() > 0) {
         return 0;
+    }
+    // service.sh is the sole launcher: it must own service.lock and be our parent.
+    if (!service_launcher_authorized()) {
+        emit_log(true, "[CoreFlow] Daemon launch rejected: service.sh must hold service.lock.");
+        return 2;
     }
 
     if (fork_daemon) {
@@ -1256,6 +1558,10 @@ int main(int argc, char* argv[]) {
 
     UniqueFd pid_lock;
     if (!write_pid(pid_lock)) {
+        const int lock_error = errno;
+        // A held flock means another daemon owns this PID inode. The failed
+        // contender has not truncated or rewritten the active owner's PID file.
+        if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) return 0;
         emit_log(true, "[CoreFlow] Unable to acquire daemon singleton lock.");
         return 1;
     }
@@ -1280,7 +1586,13 @@ int main(int argc, char* argv[]) {
     // CPU scaling_max_freq ownership is delegated exclusively to the tiered,
     // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
     frequencies.discover(false, config.enable_gpu_frequency_control);
+    CgroupV2Controller cgroup_controller(context.mutation_coordinator());
+    ForegroundTaskResolver foreground_task_resolver(
+        cgroup_controller);
     auto& autonomous_tuner = context.autonomous_tuner();
+    if (config.enable_cgroups_v2 && cgroup_controller.is_supported()) {
+        autonomous_tuner.configure_foreground_task_resolver(&foreground_task_resolver);
+    }
     autonomous_tuner.set_operational(false);
     emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, CPU/GPU frequency, and PSI baselines; grace=12s.");
     const auto daemon_started_at = std::chrono::steady_clock::now();
@@ -1296,7 +1608,22 @@ int main(int argc, char* argv[]) {
             std::string(workload_pipeline.backend() == TelemetryBackend::Ebpf ? "eBPF" : "sysfs/procfs") +
             "; tiered CPU admission requires fresh stable CPU-bound windows.");
     }
-    auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
+    const auto pid_target_pressure = [&config](bool generic_fallback) noexcept {
+        // Generic fallback pressure is defined by the same configured recovery/trip
+        // normalization used by ThermalMonitor's daemon fallback path. OEM severity
+        // and OEM trip pressure are not Celsius-convertible, so they retain index 70.
+        if (!generic_fallback) return 70.0;
+        const double recovery = static_cast<double>(config.thermal_recover_celsius);
+        const double trip = static_cast<double>(config.thermal_trip_celsius);
+        const double span = std::max(1.0, trip - recovery);
+        const double normalized = std::clamp(
+            (static_cast<double>(config.pid_target_celsius) - recovery) / span, 0.0, 3.0);
+        return std::clamp(65.0 + normalized * 20.0, 0.0, 130.0);
+    };
+    bool pid_target_initialized = false;
+    bool pid_target_fallback = false;
+    auto controller = engine::new_controller({
+        config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(false)});
     context.hardware_longevity().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
@@ -1307,8 +1634,13 @@ int main(int argc, char* argv[]) {
         " Power HAL detected=" + std::to_string(power.aidl_power_service) +
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
-    RenderBooster render_booster(governor, reactor);
-    (void)render_booster;
+    NativeInputEventSource input_event_source(reactor);
+    PerfettoFrameTimelineEventSource frame_timeline_source;
+    RenderBooster render_booster(
+        governor, reactor,
+        config.touch_boost_uclamp_min,
+        config.burst_boost_duration_ms);
+    render_booster.set_foreground_task_resolver(&foreground_task_resolver);
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
     if (create_dvs_listener(dvs_listener)) {
@@ -1398,7 +1730,8 @@ int main(int argc, char* argv[]) {
                     if (!governor.resync()) {
                         std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
-                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
+                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
+                    pid_target_initialized = false;
                     frequencies.discover(false, config.enable_gpu_frequency_control);
                     workload_classification = {};
                     context.hardware_longevity().initialize({
@@ -1436,6 +1769,12 @@ int main(int argc, char* argv[]) {
 
     const auto interval = std::chrono::milliseconds(
         std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+    BoundedWorkerPool daemon_pool(0U, 64U, "coreflow-d");
+    AsyncSnapshotWriter status_writer([](const std::string& payload) noexcept {
+        return write_status_snapshot(payload);
+    });
+    uint64_t prev_status_write_failures = 0U;
+
     StatusTelemetrySnapshot status_inputs{};
     status_inputs.config = config;
     std::string latest_status_payload = build_status_json(context, true);
@@ -1482,14 +1821,27 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto thermal = context.thermal_monitor().assess();
-        const auto profile = context.thermal_monitor().multi_sensor_profile();
-        const float temp = profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius();
-        const auto cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-        const auto memory_psi = read_psi_avg10("/proc/pressure/memory");
-        const auto io_psi = read_psi_avg10("/proc/pressure/io");
-        const float battery_temp = context.thermal_monitor().battery_celsius();
-        const float skin_temp = context.thermal_monitor().skin_celsius();
+        ThermalBundle thermal_bundle{};
+        std::optional<double> cpu_psi;
+        std::optional<double> memory_psi;
+        std::optional<double> io_psi;
+        {
+            TaskGroup telemetry_group;
+            daemon_pool.submit(telemetry_group, [&]() noexcept {
+                thermal_bundle = context.thermal_monitor().sample_bundle(true);
+            });
+            daemon_pool.submit(telemetry_group, [&]() noexcept {
+                cpu_psi = read_psi_avg10("/proc/pressure/cpu");
+                memory_psi = read_psi_avg10("/proc/pressure/memory");
+                io_psi = read_psi_avg10("/proc/pressure/io");
+            });
+            telemetry_group.wait();
+        }
+        auto thermal = std::move(thermal_bundle.assessment);
+        const auto profile = std::move(thermal_bundle.profile);
+        const float temp = thermal_bundle.composite_celsius;
+        const float battery_temp = thermal_bundle.battery_celsius;
+        const float skin_temp = thermal_bundle.skin_celsius;
 
         const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
                                            std::optional<double> confidence = std::nullopt,
@@ -1544,6 +1896,14 @@ int main(int argc, char* argv[]) {
             if (temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
                 thermal.emergency = true;
             }
+        }
+
+        if (!pid_target_initialized || pid_target_fallback != thermal.fallback_active) {
+            pid_target_fallback = thermal.fallback_active;
+            controller = engine::new_controller({
+                config.pid_kp, config.pid_ki, config.pid_kd,
+                pid_target_pressure(pid_target_fallback)});
+            pid_target_initialized = true;
         }
 
         status_inputs.config = config;
@@ -1662,6 +2022,24 @@ int main(int argc, char* argv[]) {
                 autonomous_tuner.set_operational(false);
             } else {
                 lifecycle_promoted = true;
+                if (config.enable_uclamp) {
+                    if (!render_booster.connect_frame_source(input_event_source)) {
+                        emit_log(true, "[CoreFlow][Input] No verified touchscreen evdev source is available; RenderBooster remains idle.");
+                    } else {
+                        emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
+                    }
+                    if (render_booster.connect_frame_source(frame_timeline_source)) {
+                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto FrameTimeline consumer started on a worker thread; only validated actual-display-frame windows are forwarded.");
+                    } else {
+                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; jank telemetry remains unavailable.");
+                    }
+                } else if (config.enable_tuner) {
+                    if (frame_timeline_source.start([](const FrameEvent&) {})) {
+                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto consumer started for GPU outcome attribution; RenderBooster UClamp is disabled by configuration.");
+                    } else {
+                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; GPU/frame outcome evidence remains unavailable.");
+                    }
+                }
                 autonomous_tuner.set_operational(config.enable_tuner);
                 context.vulkan_controller().initialize({
                     .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
@@ -1725,6 +2103,11 @@ int main(int argc, char* argv[]) {
             : (thermal.emergency || temp >= config.thermal_trip_celsius ||
                (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
         const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
+        const bool render_thermal_guard = thermal_limit_hit || thermal.emergency ||
+            (thermal.available && temp_vel.valid &&
+             temp_vel.velocity_celsius_per_sec >= 1.0 &&
+             temp >= config.pid_target_celsius - 1.0f);
+        render_booster.set_thermal_guard(render_thermal_guard);
         double active_capacity_scale = decision.capacity_scale;
         if (ai_pred.valid && ai_pred.confidence >= 0.60 && ai_pred.predicted_pressure_10s >= 80.0) {
             // Advisory pre-cooling bound: never raises capacity above deterministic safety policy
@@ -1753,8 +2136,10 @@ int main(int argc, char* argv[]) {
             freq_resync_ticks = 0;
         }
 
-        // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
-        if (!frequencies.apply(active_capacity_scale)) {
+        // The Rust budget is a system capacity signal. FrequencyController
+        // excludes paired KGSL power-level domains from this generic path; they
+        // require apply_gpu_frame_policy() with fresh GPU + FrameTimeline evidence.
+        if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
         (void)context.hardware_longevity().apply_storage_pacing();
@@ -1775,9 +2160,18 @@ int main(int argc, char* argv[]) {
         if (workload_pipeline_ready) {
             workload_features = workload_pipeline.sample(
                 workload_window_start_ns, workload_now_ns);
-            workload_classification = workload_classifier.classify(
-                workload_features, workload_classification, workload_now_ns);
         }
+        WorkloadFeatureSnapshot frame_timeline_features{};
+        if (frame_timeline_source.latest_snapshot(frame_timeline_features) &&
+            frame_timeline_features.window_end_ns <= workload_now_ns &&
+            workload_now_ns - frame_timeline_features.window_end_ns <= 3'000'000'000ULL) {
+            workload_features.frame_deadline_count = frame_timeline_features.frame_deadline_count;
+            workload_features.frame_deadline_misses = frame_timeline_features.frame_deadline_misses;
+            workload_features.frame_deadline_miss_pct = frame_timeline_features.frame_deadline_miss_pct;
+            workload_features.valid_features |= FeatureFrameDeadline;
+        }
+        workload_classification = workload_classifier.classify(
+            workload_features, workload_classification, workload_now_ns);
         PolicyEvidence frequency_policy_evidence{};
         frequency_policy_evidence.telemetry = workload_features;
         frequency_policy_evidence.classification = workload_classification;
@@ -1829,6 +2223,18 @@ int main(int argc, char* argv[]) {
             .frequency_policy_evidence = frequency_policy_evidence,
             .frequency_policy_evidence_valid =
                 config.enable_cpu_frequency_control && workload_pipeline_ready,
+            .gpu_busy_pct = workload_features.gpu_busy_pct,
+            .gpu_busy_valid = (workload_features.valid_features & FeatureGpuBusy) != 0U &&
+                workload_features.gpu_busy_sample_count > 0U && std::isfinite(workload_features.gpu_busy_pct),
+            .frame_deadline_miss_pct = workload_features.frame_deadline_miss_pct,
+            .frame_deadline_count = workload_features.frame_deadline_count,
+            .frame_deadline_misses = workload_features.frame_deadline_misses,
+            .frame_deadline_window_end_ns = frame_timeline_features.window_end_ns,
+            .frame_deadline_valid = (workload_features.valid_features & FeatureFrameDeadline) != 0U &&
+                frame_timeline_features.window_end_ns != 0U &&
+                workload_features.frame_deadline_count > 0U &&
+                workload_features.frame_deadline_misses <= workload_features.frame_deadline_count &&
+                std::isfinite(workload_features.frame_deadline_miss_pct),
         }) : autonomous_tuner.snapshot();
         record_dvs_sample(
             ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
@@ -1890,8 +2296,15 @@ int main(int argc, char* argv[]) {
         clear_pid(pid_lock);
         return 1;
     }
+    // The payload changes only on control ticks (default 1 s), so rewriting it
+    // every 500 ms caused two identical fsync'd atomic writes per second.
+    std::string last_enqueued_payload;
     const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
-        if (!write_status_snapshot(latest_status_payload)) {
+        const uint64_t failures = status_writer.failed_writes();
+        if (failures > prev_status_write_failures) {
+            prev_status_write_failures = failures;
+            // A failed atomic write must be retried, so forget what was last written.
+            last_enqueued_payload.clear();
             static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
             const auto now = std::chrono::steady_clock::now();
             if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
@@ -1899,6 +2312,12 @@ int main(int argc, char* argv[]) {
                 emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
                 last_status_write_warning = now;
             }
+        }
+        if (latest_status_payload != last_enqueued_payload) {
+            status_writer.enqueue(latest_status_payload);
+            last_enqueued_payload = latest_status_payload;
+        } else {
+            (void)touch_status_snapshot();
         }
     });
     (void)status_timer_fd;
@@ -1916,10 +2335,22 @@ int main(int argc, char* argv[]) {
     }
     dvs_listener.reset();
     (void)::unlink(kDvsSocketPath);
+    input_event_source.stop();
+    render_booster.disconnect_frame_source();
     workload_pipeline.stop();
+    status_writer.stop();
+    daemon_pool.shutdown();
     (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
     const bool stopped = context.Stop("Daemon shutdown");
-    const bool restored = stopped && !baseline.has_active_mutations() && journal_clear();
+    // CoreFlowContext teardown asks AutonomousTuner to restore its resolver journal;
+    // verify the external controller has no remaining thread placements before exit.
+    const bool foreground_restored = foreground_task_resolver.restore_all();
+    const bool thread_journal_clear = cgroup_controller.pending_thread_migrations() == 0U;
+    if (!foreground_restored || !thread_journal_clear) {
+        emit_log(true, "[CoreFlow][CgroupV2] Foreground thread rollback remains pending at daemon shutdown.");
+    }
+    const bool restored = stopped && foreground_restored && thread_journal_clear &&
+        !baseline.has_active_mutations() && journal_clear();
     clear_pid(pid_lock);
     return restored ? 0 : 1;
 }

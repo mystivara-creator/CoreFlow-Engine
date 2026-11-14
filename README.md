@@ -1,86 +1,61 @@
-<p align="center">
-  <img src="docs/assets/coreflow-banner.svg" width="680" alt="CFAE System Framework">
-</p>
+# CFAE System Framework
 
-<p align="center">
-  <a href="https://t.me/VaraProjects"><img src="https://img.shields.io/badge/Channel-Telegram-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Channel"></a>
-  <a href="https://t.me/VaraProjectsDiscussion"><img src="https://img.shields.io/badge/Discussion-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Discussion"></a>
-  <a href="https://instagram.com/mystivara"><img src="https://img.shields.io/badge/Instagram-mystivara-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram"></a>
-  <a href="https://github.com/mystivara-creator/CoreFlow-Engine/releases"><img src="https://img.shields.io/badge/Version-v3.1.0-0b57d0?style=for-the-badge&logo=github&logoColor=white" alt="Latest Version"></a>
-  <img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License">
-</p>
+**CFAE System Framework (CoreFlow Engine)** adalah framework optimasi sistem Android berbasis kapabilitas perangkat. CoreFlow mengevaluasi workload, tekanan sistem, dan kondisi termal sebelum menerapkan perubahan kernel yang terukur.
 
-## About CFAE System Framework
+> OEM baseline is a reference, not an authority ceiling. CoreFlow earns operational authority through capability discovery, controlled actuation, and verified outcomes.
 
-**CFAE System Framework** (formerly CoreFlow Engine) is an autonomous, mutation-safe Android system optimization framework engineered across **ISO C++23**, **Rust 2024**, and **Kotlin 2.1**. Rather than applying blind single-parameter tweaks or fragile device-specific overrides, CFAE coordinates changes through **Mutation Transactions**—combining optimization intent, dependency provenance, multi-dimensional risk budgets, immediate readback verification, and OEM ownership guards.
+## Prinsip inti
 
-Every mutation is journaled prior to execution, verified on readback, and 100% reversible to factory OEM baselines.
+- **Discover before actuation:** kenali semantik, batas, dan kemampuan interface perangkat.
+- **Coordinate mutations:** controller berbagi ownership dan prioritas melalui transaction coordinator.
+- **Verify every change:** journal, readback, settling, dan evaluasi hasil mendahului retensi.
+- **Protect OEM ownership:** perubahan eksternal tidak ditimpa; recovery tetap menghormati baseline dan journal.
 
----
+## Engine
 
-## Programming Language Architecture
+| Komponen | Tanggung jawab |
+|---|---|
+| C++23 | Native daemon, device profiling, kernel discovery, controller, transaction dan recovery |
+| Rust 2024 | Thermal/pressure state machine, hysteresis, dan slew-bounded PID |
+| Kotlin 2.1 | Integrasi Android, Quick Settings dan thermal receiver |
+| TypeScript / React | WebUI dan native daemon bridge |
 
-- **ISO C++23 (`src/`, `include/`)**: Zero-polling `epoll`/`timerfd`/`signalfd` daemon runtime, semantic `cgroup v2` & `sysfs` capability discovery, `O_NOFOLLOW` + `fstat` object identity verification, and durable write-ahead journal (`CFJ3`).
-- **Rust 2024 (`rust/`)**: Memory-safe thermal PID equilibrium controller, hysteresis state machine, and PSI contention arbitration bridged via `cxx`.
-- **Kotlin 2.1 (`android/`)**: Native Android 15 (API 35) Quick Settings `TileService` and thermal broadcast receiver.
-- **Material Design 3 WebUI (`webui/`, `module/webroot/`)**: Minimalist Google Material You interface with frosted soft-blur tonal surfaces, real-time transaction lifecycle telemetry, and Architecture Studio.
+CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal policy, serta hardware-longevity controls sesuai bukti dan dukungan kernel. GPU KGSL dapat diaktuasikan melalui kandidat GPU yang lolos admission thermal dan transaksi pasangan pwrlevel tervalidasi; GPU/Power HAL yang hanya terdeteksi tetap observation-only.
 
----
+## Instalasi dan kompatibilitas
 
-## Highlights & Capabilities
+- Android 15+ (API 35+), ARM64, dan akses root.
+- Paket flashable tersedia melalui [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
+- Dukungan controller ditentukan ulang saat runtime; fitur yang tidak lolos validasi akan tetap nonaktif.
 
-- **5-Layer Coordinated Mutation Safety**: Reasoning Engine → Dependency Analyzer → Mutation Planner → Safety Admission Gate & Transaction Coordinator → Outcome Evaluator & Learning.
-- **12 Non-Negotiable Safety Invariants**: Enforces valid baselines before every write, immediate readback verification, external OEM ownership protection (`OWNERSHIP_LOST` safe release), and idempotent crash recovery.
-- **Semantic UClamp 2.0 Discovery**: Dynamic discovery of top-app cgroups across `/sys/fs/cgroup` and `/dev/cpuctl` with automatic capacity encoding detection (`0..1024` vs percentage).
-- **Multi-Sensor Thermal Matrix & PSI Guard**: Evaluates compute, battery, skin, and board thermal zones alongside Android NDK thermal severity and Linux `/proc/pressure` (CPU, Memory, I/O).
-- **Hardware Longevity**: Bounded battery step-charging ceiling reduction during elevated temperatures and cgroup v2 relative I/O weighting.
+## Status pengembangan
 
----
+v4.0.0. [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) tetap Draft sampai pengujian perangkat fisik. Implementasi mencakup GPU CandidateProvider dan KGSL pwrlevel-pair transaction, persistent Vulkan pipeline-cache interception, serta Perfetto SurfaceFlinger FrameTimeline jank windows yang menggerakkan RenderBooster secara non-blocking. HWUI/SkiaVK renderer switching, VRS, dan refresh-rate panel tetap nonaktif sampai memiliki backend dan bukti runtime tersendiri. CI hijau bukan pengganti validasi runtime pada perangkat.
 
-## Supported Root Managers
+## Dokumentasi
 
-- **[KernelSU](https://github.com/tiann/KernelSU)** & **[KernelSU Next](https://github.com/rifsxd/KernelSU-Next)** (Native WebUI support)
-- **[APatch](https://github.com/bmax121/APatch)** (Native WebUI support)
-- **[Magisk](https://github.com/topjohnwu/Magisk)** *(Full daemon optimization; WebUI via standalone providers)*
+README ini sengaja ringkas. Penjelasan arsitektur, alur transaksi, controller, konfigurasi, lifecycle, serta sejarah refactor sejak PR #7 dipusatkan pada:
 
-### WebUI Providers & Standalone Viewers
-- **[KsuWebUI](https://github.com/5ec1cff/KsuWebUIStandalone)**
-- **[WebUI-X](https://github.com/MMRLApp/WebUI-X-Portable)**
-- **[MMRL](https://github.com/MMRLApp/MMRL)**
+- [CoreFlow — Website & Overview](https://github.com/mystivara-creator/CoreFlow-Engine/blob/website/cfae-landing-page/docs/index.html)
+- [Engineering Reference](https://github.com/mystivara-creator/CoreFlow-Engine/blob/website/cfae-landing-page/docs/reference.html)
 
----
+## Operasional
 
-## Runtime & Control
+Jalankan sebagai root:
 
-Default runtime directories on device:
-- **Configuration**: `/data/adb/coreflow/coreflow.conf`
-- **OEM Recovery Journal**: `/data/adb/coreflow/baseline.journal`
-- **Daemon Log**: `/data/adb/coreflow/logs/coreflowd.log`
-- **Safety Trip / Kill Switch**: `/data/adb/coreflow/DISABLE` or `/data/adb/modules/cfae_framework/disable`
+- `coreflowd --status` — status daemon.
+- `coreflowd --capabilities` — inspeksi kapabilitas read-only.
+- `coreflowd --stop` — hentikan daemon.
+- `coreflowd --rollback-baseline` — hentikan dan pulihkan baseline terverifikasi.
 
-Direct shell control commands:
-```bash
-# Check daemon status and active state
-su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --status'
+Kill switch: `/data/adb/coreflow/DISABLE` atau nonaktifkan modul melalui root manager. Jangan menghapus `baseline.journal` secara manual untuk melewati recovery.
 
-# Inspect discovered kernel capabilities & UClamp nodes
-su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --capabilities'
+## Komunitas
 
-# Gracefully stop daemon and restore OEM baseline values
-su -c '/data/adb/modules/cfae_framework/system/bin/coreflowd --rollback-baseline'
-```
+- [Telegram Channel](https://t.me/VaraProjects)
+- [Telegram Discussion](https://t.me/VaraProjectsDiscussion)
+- [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues)
 
----
+## Lisensi
 
-## Community & Support
-
-- **Telegram Channel**: [@VaraProjects](https://t.me/VaraProjects) — Official releases, announcements, and news
-- **Telegram Discussion Group**: [@VaraProjectsDiscussion](https://t.me/VaraProjectsDiscussion) — Community support, testing, and feedback
-- **Instagram**: [@mystivara](https://instagram.com/mystivara) — Project creator and developer profile
-- **Issue Tracker**: [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues) — Report bugs or submit feature suggestions
-
----
-
-## License
-
-CFAE System Framework is open-source software licensed under the **[MIT License](LICENSE)**.
+[MIT License](LICENSE).
