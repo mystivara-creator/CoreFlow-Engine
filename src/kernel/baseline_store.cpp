@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <new>
 #include <sstream>
 #include <string_view>
 #include <sys/stat.h>
@@ -312,9 +313,11 @@ void BaselineStore::reinitialize() {
 
 BaselineStore& BaselineStore::instance() {
     // This store is reachable from short-lived read-only CLI inspection paths.
-    // Keep its process-wide mutex alive through static deinitialization; the
-    // operating system reclaims this bounded singleton when the process exits.
-    static BaselineStore* const store = new BaselineStore();
+    // Keep its mutex alive through static deinitialization without a heap leak:
+    // placement construction in static storage deliberately omits destruction.
+    alignas(BaselineStore) static unsigned char storage[sizeof(BaselineStore)];
+    static BaselineStore* const store =
+        ::new (static_cast<void*>(storage)) BaselineStore();
     return *store;
 }
 
