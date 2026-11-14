@@ -3031,20 +3031,9 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
     current_workload_ = classify_workload(telemetry);
     current_regime_ = classify_regime(telemetry, current_workload_);
-    if (foreground_task_resolver_) {
-        const bool foreground_render_workload =
-            current_workload_ == WorkloadClass::Gaming ||
-            current_workload_ == WorkloadClass::ScrollingAndAnimation ||
-            current_workload_ == WorkloadClass::GeneralInteraction;
-        const bool thermal_admitted = !telemetry.thermal_guard_active &&
-            !telemetry.thermal_emergency && telemetry.thermal_pressure_valid &&
-            std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure < 78.0;
-        if (foreground_render_workload && thermal_admitted) {
-            (void)foreground_task_resolver_->refresh();
-        } else {
-            (void)foreground_task_resolver_->restore_all();
-        }
-    }
+    // Foreground render-thread migration is scoped to RenderBooster's reactor-owned
+    // burst lease. timerfd expiry and thermal admission perform deterministic restore;
+    // workload classification alone must not keep app threads migrated.
 
     if (emergency_boundary) {
         current_objective_ = OptimizationObjective::EmergencyMitigation;
