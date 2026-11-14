@@ -1,7 +1,6 @@
 /**
  * @file render_booster.hpp
- * @brief Verified input-triggered transient top-app UClamp burst actuator.
- * SurfaceFlinger FrameTimeline and display refresh-rate control are not implemented.
+ * @brief Verified touch- and Perfetto FrameTimeline-triggered transient UClamp actuator.
  * @author mystivara-creator
  * @license Apache-2.0
  */
@@ -24,7 +23,7 @@ namespace coreflow {
 class ForegroundTaskResolver;
 
 struct FrameMetrics {
-    // Zero/false means no trusted frame-timeline producer is connected.
+    // Zero/false means no trusted FrameTimeline producer is connected.
     uint32_t target_fps{0};
     double average_frame_time_ms{0.0};
     uint32_t dropped_frames{0};

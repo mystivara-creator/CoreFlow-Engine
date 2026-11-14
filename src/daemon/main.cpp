@@ -1921,6 +1921,12 @@ int main(int argc, char* argv[]) {
                     } else {
                         emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; jank telemetry remains unavailable.");
                     }
+                } else if (config.enable_tuner) {
+                    if (frame_timeline_source.start([](const FrameEvent&) {})) {
+                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto consumer started for GPU outcome attribution; RenderBooster UClamp is disabled by configuration.");
+                    } else {
+                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; GPU/frame outcome evidence remains unavailable.");
+                    }
                 }
                 autonomous_tuner.set_operational(config.enable_tuner);
                 context.vulkan_controller().initialize({

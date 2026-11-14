@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <string_view>

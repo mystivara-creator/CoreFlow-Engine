@@ -33,7 +33,7 @@ public:
 protected:
     FrameEventSource() = default;
 };
-// Public-kernel/Android adapters normalize SurfaceFlinger FrameTimeline and
+// Public Android adapters normalize Perfetto/SurfaceFlinger FrameTimeline and
 // input events, then submit them here. No vendor ABI, guessed node, or mutation
 // permission is used. Missing upstream events remain unavailable, never inferred.
 class AndroidFrameEventBridge final : public FrameEventSource {

@@ -894,6 +894,14 @@ WorkloadClass AutonomousTuner::classify_workload(const TunerTelemetryInput& tele
         (telemetry.thermal_pressure_valid && telemetry.thermal_pressure >= 56.0 && rapid_temp_rise)) {
         return WorkloadClass::ThermalConstrained;
     }
+    if (telemetry.gpu_busy_valid && telemetry.frame_deadline_valid &&
+        telemetry.frame_deadline_count >= 2U && telemetry.frame_deadline_misses > 0U &&
+        telemetry.frame_deadline_misses <= telemetry.frame_deadline_count &&
+        std::isfinite(telemetry.gpu_busy_pct) && telemetry.gpu_busy_pct >= 70.0 &&
+        std::isfinite(telemetry.frame_deadline_miss_pct) &&
+        telemetry.frame_deadline_miss_pct >= 0.5) {
+        return WorkloadClass::GpuBound;
+    }
     if (telemetry.memory_psi_valid && telemetry.io_psi_valid && telemetry.memory_psi >= 3.5 && telemetry.io_psi >= 3.0) {
         return WorkloadClass::HeavyMultitasking;
     }
