@@ -20,6 +20,8 @@
 
 namespace coreflow {
 
+class ForegroundTaskResolver;
+
 struct FrameMetrics {
     // Zero/false means no trusted frame-timeline producer is connected.
     uint32_t target_fps{0};
@@ -47,6 +49,7 @@ public:
     [[nodiscard]] bool connect_frame_source(FrameEventSource& source) noexcept;
     void disconnect_frame_source() noexcept;
     void set_thermal_guard(bool active) noexcept;
+    void set_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept;
 
     bool unlock_display_refresh_limits();
     [[nodiscard]] FrameMetrics get_metrics() const;
@@ -60,6 +63,8 @@ private:
     FrameEventSource* frame_source_{nullptr};
     UclampGovernor& governor_;
     EpollReactor& reactor_;
+    ForegroundTaskResolver* foreground_task_resolver_{nullptr};
+    bool foreground_tasks_active_{false}; // Reactor-thread confined.
     const uint32_t touch_boost_uclamp_min_;
     const std::chrono::milliseconds burst_boost_duration_;
     UniqueFd request_fd_;
@@ -76,6 +81,7 @@ private:
     void handle_expiry(uint32_t events) noexcept;
     void restore_burst() noexcept;
     void revert_burst() noexcept;
+    void restore_foreground_tasks() noexcept;
 };
 
 } // namespace coreflow
