@@ -206,40 +206,6 @@ void FrequencyController::add_kgsl(const std::string& dir) {
     domains_.push_back(std::move(domain));
 }
 
-bool FrequencyController::rollback_kgsl_domains_locked() noexcept {
-    auto& store = BaselineStore::instance();
-    bool ok = true;
-    for (auto& item : domains_) {
-        if (!item.gpu || !item.kgsl_power_levels || !item.mutation_active) continue;
-        if (!store.rollback(item.minimum) || !store.rollback(item.maximum)) {
-            ok = false;
-            continue;
-        }
-        uint64_t actual_max = 0U, actual_min = 0U;
-        if (!number_allow_zero(item.maximum, actual_max) ||
-            !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
-            actual_min > item.max_valid_level) {
-            ok = false;
-            continue;
-        }
-        const auto audit = store.get_audit_trail();
-        if (!snapshot_is_oem(audit, item.maximum, actual_max) ||
-            !snapshot_is_oem(audit, item.minimum, actual_min)) {
-            ok = false;
-            continue;
-        }
-        if (actual_max != item.baseline || actual_min != item.baseline_minimum) {
-            item.baseline = actual_max;
-            item.baseline_minimum = actual_min;
-            item.retired = true;
-        }
-        item.last = actual_max;
-        item.last_minimum = actual_min;
-        item.mutation_active = false;
-    }
-    return ok;
-}
-
 bool FrequencyController::apply_gpu_frame_policy(
     double gpu_busy_pct, double frame_miss_pct, double thermal_headroom,
     bool thermal_guard) {
@@ -259,7 +225,6 @@ bool FrequencyController::apply_gpu_frame_policy(
 
     const uint64_t step = gpu_busy_pct >= 90.0 && frame_miss_pct >= 5.0 &&
         thermal_headroom >= 0.55 ? 2U : 1U;
-    bool changed = false;
     auto& store = BaselineStore::instance();
     for (auto& item : domains_) {
         if (!item.gpu || !item.kgsl_power_levels || item.retired) continue;
@@ -269,7 +234,7 @@ bool FrequencyController::apply_gpu_frame_policy(
             actual_min > item.max_valid_level || actual_max != item.last ||
             actual_min != item.last_minimum) {
             item.retired = true;
-            if (item.mutation_active && !rollback_kgsl_domains_locked()) return false;
+            if (item.mutation_active && !rollback_domain(true)) return false;
             continue;
         }
         const auto audit = store.get_audit_trail();
@@ -310,7 +275,6 @@ bool FrequencyController::apply_gpu_frame_policy(
         item.last = read_max;
         item.last_minimum = read_min;
         item.mutation_active = true;
-        changed = true;
     }
     const bool active = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
         return item.gpu && item.kgsl_power_levels && item.mutation_active;

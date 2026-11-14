@@ -199,7 +199,10 @@ CorrelatedEvidence EvidenceCorrelator::correlate(
     ev.thermal_bucket = AutonomousTuner::compute_thermal_bucket(telemetry);
     ev.in_thermal_recovery = in_thermal_recovery;
 
-    ev.psi_complete = telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid;
+    ev.psi_complete = (telemetry.cpu_psi_valid && telemetry.memory_psi_valid && telemetry.io_psi_valid) ||
+        (telemetry.gpu_busy_valid && telemetry.frame_deadline_valid &&
+         telemetry.frame_deadline_count > 0U &&
+         telemetry.frame_deadline_misses <= telemetry.frame_deadline_count);
     ev.thermal_emergency = telemetry.thermal_emergency ||
         (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) &&
          telemetry.thermal_pressure >= 88.0);

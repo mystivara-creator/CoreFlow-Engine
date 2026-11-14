@@ -50,6 +50,5 @@ private:
     void release_domain_lease(bool gpu) noexcept;
     void add(const std::string& dir, bool gpu);
     void add_kgsl(const std::string& dir);
-    bool rollback_kgsl_domains_locked() noexcept;
 };
 }
