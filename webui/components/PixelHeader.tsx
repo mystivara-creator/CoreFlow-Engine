@@ -27,7 +27,7 @@ export const PixelHeader: React.FC<Props> = ({
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100 sm:text-base">CFAE System Framework</span>
-            <span className="rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-white/[0.07] dark:text-slate-300">v3.1.0</span>
+            <span className="rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-white/[0.07] dark:text-slate-300">v4.0.0</span>
             <span className={'inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ' + (nativeMode && nativeConnected ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300' : 'bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200')}>
               <span className={'h-1.5 w-1.5 rounded-full ' + (nativeMode && nativeConnected ? 'bg-emerald-500' : 'bg-amber-500')} />
               {nativeMode ? (nativeConnected ? 'DAEMON CONNECTED' : 'AWAITING DATA') : 'PREVIEW MODE'}
