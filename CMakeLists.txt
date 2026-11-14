@@ -401,6 +401,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/frequency_controller.cpp
     src/kernel/decision_engine.cpp
     src/kernel/worker_pool.cpp
         src/kernel/kernel_node_inventory.cpp
