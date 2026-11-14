@@ -226,7 +226,8 @@ void RenderBooster::handle_request(uint32_t) noexcept {
         foreground_tasks_active_ = true;
     }
 
-    if (!burst_active_)        baseline_min_ = governor_.get_top_app_min();
+    if (!burst_active_) {
+        baseline_min_ = governor_.get_top_app_min();
         baseline_max_ = governor_.get_top_app_max();
     }
     if (!governor_.apply_state(WorkloadState::Balanced, requested_min,
