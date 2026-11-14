@@ -1576,6 +1576,7 @@ int main(int argc, char* argv[]) {
     auto& recovery_monitor = context.recovery_monitor();
 
     DaemonConfig config = DaemonConfig::load_best_available();
+                    render_booster.update_config(config.touch_boost_uclamp_min, config.burst_boost_duration_ms);
     const DeviceProfileHandle device_profile = context.device_profile();
     emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
         " fingerprint=" + device_profile->fingerprint +
@@ -1700,6 +1701,7 @@ int main(int argc, char* argv[]) {
 
     int timer_fd = -1;
     auto last_tick = std::chrono::steady_clock::now();
+    uint64_t last_workload_sample_ns = 0U;
     bool applied = false;
     CoolingFeedback cooling_feedback;
     TemperatureTrendTracker temp_tracker(8);
@@ -1720,6 +1722,7 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) ==
                    static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
+                    render_booster.cancel_active_burst();
                     const auto recovery = coordinated_rollback(context.mutation_coordinator(), baseline, "Configuration reload on SIGHUP");
                     if (!recovery.recovered()) {
                         emit_log(true, "[CoreFlow] SIGHUP reload deferred; recovery status=" +
@@ -1734,12 +1737,14 @@ int main(int argc, char* argv[]) {
                     pid_target_initialized = false;
                     frequencies.discover(false, config.enable_gpu_frequency_control);
                     workload_classification = {};
+                    last_workload_sample_ns = 0U;
                     context.hardware_longevity().initialize({
                         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
                         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
                         config.top_app_io_weight, config.background_io_weight});
                     context.neural_predictor().initialize("/data/adb/coreflow/models");
                     context.autonomous_tuner().discover();
+                    if (lifecycle_promoted) context.autonomous_tuner().set_operational(!config.inspection_mode && config.enable_tuner);
                     context.vulkan_controller().configure({
                         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
                         .enable_skiavk_threaded = config.enable_skiavk_threaded,
@@ -1806,6 +1811,7 @@ int main(int argc, char* argv[]) {
             cooling_feedback.reset();
             temp_tracker.reset();
             last_tick = std::chrono::steady_clock::now();
+            last_workload_sample_ns = 0U;
             return; // Re-enter normal policy only on a fresh telemetry tick.
         }
 
@@ -1945,7 +1951,7 @@ int main(int argc, char* argv[]) {
             return;
         }
         if (!thermal_ready) {
-            frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+            frequencies.discover(false, config.enable_gpu_frequency_control);
             controller->reset();
             thermal_ready = true; unavailable_reported = false;
         }
@@ -2140,7 +2146,7 @@ int main(int argc, char* argv[]) {
         // excludes paired KGSL power-level domains from this generic path; they
         // require apply_gpu_frame_policy() with fresh GPU + FrameTimeline evidence.
         if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
-            frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
+            frequencies.discover(false, config.enable_gpu_frequency_control);
         }
         (void)context.hardware_longevity().apply_storage_pacing();
         context.hardware_longevity().monitor_battery_thermals(temp);
@@ -2153,13 +2159,12 @@ int main(int argc, char* argv[]) {
         const uint64_t workload_now_ns = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count());
-        const uint64_t workload_window_start_ns =
-            workload_now_ns > 1'000'000'000ULL
-                ? workload_now_ns - 1'000'000'000ULL : 1ULL;
+        const uint64_t fallback_start_ns = workload_now_ns > 1'000'000'000ULL ? workload_now_ns - 1'000'000'000ULL : 1ULL;
+        const uint64_t workload_window_start_ns = (last_workload_sample_ns != 0U && last_workload_sample_ns < workload_now_ns && workload_now_ns - last_workload_sample_ns <= 3'000'000'000ULL) ? last_workload_sample_ns : fallback_start_ns;
         WorkloadFeatureSnapshot workload_features{};
         if (workload_pipeline_ready) {
-            workload_features = workload_pipeline.sample(
-                workload_window_start_ns, workload_now_ns);
+            workload_features = workload_pipeline.sample(workload_window_start_ns, workload_now_ns);
+            last_workload_sample_ns = workload_now_ns;
         }
         WorkloadFeatureSnapshot frame_timeline_features{};
         if (frame_timeline_source.latest_snapshot(frame_timeline_features) &&
