@@ -37,6 +37,7 @@ class BoundedWorkerPool;
 class GlobalDecisionEngine;
 class TransactionalFrequencyActuator;
 class ForegroundTaskResolver;
+class FrequencyController;
 
 enum class TunerVerdict : uint8_t {
     Pending = 0,
@@ -114,7 +115,7 @@ enum class MutationDomain : uint8_t {
     CpuPolicy = 0, BlockIo = 1, VmMemory = 2, UclampCgroup = 3,
     GpuDevfreq = 4, PowerLongevity = 5, ThermalCore = 6,
 };
-enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Unavailable = 255 };
+enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Gpu = 4, Unavailable = 255 };
 
 enum class ControllerPriority : uint8_t {
     BackgroundEfficiency = 20,
@@ -428,6 +429,14 @@ struct TunerTelemetryInput {
     // trigger an autonomous frequency transaction.
     PolicyEvidence frequency_policy_evidence{};
     bool frequency_policy_evidence_valid{false};
+
+    double gpu_busy_pct{0.0};
+    bool gpu_busy_valid{false};
+    double frame_deadline_miss_pct{0.0};
+    uint64_t frame_deadline_count{0};
+    uint64_t frame_deadline_misses{0};
+    uint64_t frame_deadline_window_end_ns{0};
+    bool frame_deadline_valid{false};
 };
 
 class AutonomousTuner {
@@ -444,6 +453,7 @@ public:
     // Disables candidate execution during the daemon startup baseline grace period.
     void set_operational(bool enabled) noexcept;
     void configure_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept;
+    void configure_gpu_frequency_controller(FrequencyController* controller) noexcept;
     // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
     void set_device_profile(DeviceProfileHandle profile);
     void configure_frequency_actuator(
@@ -591,6 +601,7 @@ private:
         std::string intent;
         std::string rationale;
         bool is_frequency_policy{false};
+        bool is_gpu_policy{false};
         bool thermal_stabilization{false};
         bool observing{false};
         bool retained{false};
@@ -608,6 +619,13 @@ private:
         bool before_mem_valid{false};
         bool before_cpu_valid{false};
         bool before_thermal_valid{false};
+        bool before_gpu_valid{false};
+        double before_gpu_miss_pct{0.0};
+        uint64_t last_frame_deadline_window_end_ns{0};
+        double sum_after_gpu_miss_pct{0.0};
+        uint32_t valid_gpu_samples_in_window{0};
+        double min_after_gpu_miss_pct{1e9};
+        double max_after_gpu_miss_pct{-1e9};
         double sum_after_io_psi{0.0};
         double sum_after_mem_psi{0.0};
         double sum_after_cpu_psi{0.0};
@@ -638,12 +656,14 @@ private:
         std::string candidate_id;
         std::vector<MutationStep> failed_steps;
         bool is_frequency_policy{false};
+        bool is_gpu_policy{false};
     };
 
     DeviceProfileHandle device_profile_;
     std::unique_ptr<BoundedWorkerPool> worker_pool_;
     std::unique_ptr<GlobalDecisionEngine> decision_engine_;
     TransactionalFrequencyActuator* frequency_actuator_{nullptr};
+    FrequencyController* gpu_frequency_controller_{nullptr};
     ForegroundTaskResolver* foreground_task_resolver_{nullptr};
     const TieredPolicyRouter* tiered_policy_router_{nullptr};
     PlatformContextSnapshot platform_context_{};
@@ -759,6 +779,9 @@ private:
         EvaluationDomain eval_domain_override = EvaluationDomain::Unavailable,
         const std::vector<std::string>& resource_keys = {},
         bool replace_existing_if_any = false);
+    bool apply_gpu_proposal(
+        std::string_view rationale, const TunerTelemetryInput& telemetry,
+        const std::vector<std::string>& resource_keys);
     bool apply_frequency_proposal(
         double requested_capacity_scale,
         uint32_t policy_index,

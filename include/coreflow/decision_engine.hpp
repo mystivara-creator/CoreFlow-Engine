@@ -23,6 +23,7 @@ class BoundedWorkerPool;
 enum class CandidateActionKind : uint8_t {
     SysfsTransaction = 0,
     TieredFrequencyPolicy = 1,
+    GpuFrequencyPolicy = 2,
 };
 
 struct PlannedMutationStep final {
@@ -43,6 +44,7 @@ struct EnvironmentDiscoveryInput final {
     const std::vector<NodeCapability>* kernel_node_capabilities{nullptr};
     DeviceProfileHandle device_profile;
     bool frequency_actuator_configured{false};
+    bool gpu_actuator_ready{false};
     std::optional<uint32_t> frequency_policy_index;
     PolicyDecision tiered_policy_decision{};
     bool tiered_policy_ready{false};
@@ -60,6 +62,7 @@ struct EnvironmentCapabilities final {
     size_t gpu_domain_count{0U};
     size_t thermal_sensor_count{0U};
     bool frequency_actuator_ready{false};
+    bool gpu_actuator_ready{false};
     std::optional<uint32_t> frequency_policy_index;
     PolicyDecision tiered_policy_decision{};
     bool tiered_policy_ready{false};
@@ -83,6 +86,7 @@ struct CorrelatedEvidence final {
     double memory_severity{0.0};
     double io_severity{0.0};
     double thermal_severity{0.0};
+    double gpu_severity{0.0};
 
     // Cross-domain evidence correlations [0.0 .. 1.0]
     double concurrent_cpu_io{0.0};
@@ -217,6 +221,15 @@ public:
         const CorrelatedEvidence& evidence,
         const std::vector<CandidateStats>& stats,
         std::vector<CandidateProposal>& out) const override;
+};
+
+class GpuCandidateProvider final : public ICandidateProvider {
+public:
+    [[nodiscard]] std::string_view provider_name() const noexcept override {
+        return "GpuCandidateProvider";
+    }
+    void generate(const EnvironmentCapabilities& env, const CorrelatedEvidence& evidence,
+        const std::vector<CandidateStats>& stats, std::vector<CandidateProposal>& out) const override;
 };
 
 class ThermalStabilizationCandidateProvider final : public ICandidateProvider {

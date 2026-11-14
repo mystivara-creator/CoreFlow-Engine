@@ -179,6 +179,7 @@ EnvironmentCapabilities EnvironmentDiscovery::discover(const EnvironmentDiscover
         env.thermal_sensor_count = input.device_profile->thermal_sensors.size();
     }
     env.frequency_actuator_ready = input.frequency_actuator_configured;
+    env.gpu_actuator_ready = input.gpu_actuator_ready;
     env.frequency_policy_index = input.frequency_policy_index;
     env.tiered_policy_decision = input.tiered_policy_decision;
     env.tiered_policy_ready = input.tiered_policy_ready;
@@ -235,6 +236,10 @@ CorrelatedEvidence EvidenceCorrelator::correlate(
     if (telemetry.thermal_pressure_valid && std::isfinite(telemetry.thermal_pressure) && telemetry.thermal_pressure >= 0.0) {
         ev.thermal_severity = std::clamp((telemetry.thermal_pressure - 42.0) / 46.0, 0.0, 1.0);
     }
+    if (telemetry.gpu_busy_valid && std::isfinite(telemetry.gpu_busy_pct) &&
+        telemetry.gpu_busy_pct >= 0.0 && telemetry.gpu_busy_pct <= 100.0) {
+        ev.gpu_severity = std::clamp((telemetry.gpu_busy_pct - 55.0) / 45.0, 0.0, 1.0);
+    }
 
     if (telemetry.cpu_psi_valid && telemetry.io_psi_valid &&
         telemetry.cpu_psi >= 8.0 && telemetry.io_psi >= 3.5) {
@@ -274,7 +279,9 @@ CorrelatedEvidence EvidenceCorrelator::correlate(
     if (telemetry.io_psi_valid) ++valid_signals;
     if (telemetry.thermal_pressure_valid) ++valid_signals;
     if (telemetry.temperature_velocity_valid && telemetry.temperature_samples_count >= 2U) ++valid_signals;
-    ev.evidence_confidence = std::clamp(static_cast<double>(valid_signals) / 5.0, 0.10, 1.0);
+    if (telemetry.gpu_busy_valid) ++valid_signals;
+    if (telemetry.frame_deadline_valid && telemetry.frame_deadline_count > 0U) ++valid_signals;
+    ev.evidence_confidence = std::clamp(static_cast<double>(valid_signals) / 7.0, 0.10, 1.0);
 
     // Global, non-prioritized bottleneck diagnosis via normalized severity comparison
     if (ev.thermal_emergency) {
@@ -596,6 +603,52 @@ void TieredFrequencyCandidateProvider::generate(
     out.push_back(std::move(p));
 }
 
+void GpuCandidateProvider::generate(
+    const EnvironmentCapabilities& env,
+    const CorrelatedEvidence& evidence,
+    const std::vector<CandidateStats>&,
+    std::vector<CandidateProposal>& out) const {
+    const auto& telemetry = evidence.telemetry;
+    if (evidence.thermal_emergency || evidence.thermal_stabilization_required ||
+        evidence.in_thermal_recovery || env.gpu_domain_count == 0U || !env.gpu_actuator_ready ||
+        evidence.remaining_thermal_headroom < 0.35 ||
+        !telemetry.gpu_busy_valid || !telemetry.frame_deadline_valid ||
+        !std::isfinite(telemetry.gpu_busy_pct) || !std::isfinite(telemetry.frame_deadline_miss_pct) ||
+        telemetry.gpu_busy_pct < 70.0 || telemetry.frame_deadline_miss_pct < 0.5 ||
+        telemetry.frame_deadline_count < 2U || telemetry.frame_deadline_misses == 0U ||
+        telemetry.frame_deadline_misses > telemetry.frame_deadline_count) return;
+
+    // Only GPU-bound/gaming windows can justify a performance-floor mutation.
+    // A large measured miss ratio is accepted as an additional independent signal.
+    const bool gpu_workload = evidence.workload == WorkloadClass::GpuBound ||
+        evidence.workload == WorkloadClass::Gaming;
+    if (!gpu_workload && telemetry.frame_deadline_miss_pct < 1.5) return;
+
+    CandidateProposal proposal{};
+    proposal.id = "gpu.kgsl.frame_deadline_relief";
+    proposal.label = "Qualcomm KGSL Frame-Deadline Recovery";
+    proposal.domain_label = "gpu";
+    proposal.mutation_domain = MutationDomain::GpuDevfreq;
+    proposal.evaluation_domain = EvaluationDomain::Gpu;
+    proposal.priority = ControllerPriority::WorkloadOptimization;
+    proposal.action_kind = CandidateActionKind::GpuFrequencyPolicy;
+    proposal.intent = "GpuFrameDeadlineRelief";
+    proposal.rationale =
+        "Measured GPU busy=" + format_metric(telemetry.gpu_busy_pct) +
+        "% and actual FrameTimeline deadline misses=" + format_metric(telemetry.frame_deadline_miss_pct) +
+        "%; thermal headroom=" + format_metric(evidence.remaining_thermal_headroom) +
+        ". Requesting one bounded KGSL pwrlevel step.";
+    proposal.resource_keys.emplace_back("gpu:kgsl:pwrlevel-pair");
+    proposal.relevance = std::clamp(
+        0.45 + 0.25 * evidence.gpu_severity +
+        0.30 * std::clamp(telemetry.frame_deadline_miss_pct / 8.0, 0.0, 1.0),
+        0.0, 1.0);
+    proposal.inherent_risk = 0.24;
+    proposal.thermal_cost = 0.34;
+    proposal.stabilizing = false;
+    out.push_back(std::move(proposal));
+}
+
 void ThermalStabilizationCandidateProvider::generate(
     const EnvironmentCapabilities& env,
     const CorrelatedEvidence& evidence,
@@ -847,6 +900,7 @@ GlobalDecisionEngine::GlobalDecisionEngine() {
     providers_.push_back(std::make_unique<MemoryVmCandidateProvider>());
     providers_.push_back(std::make_unique<CpuGovernorCandidateProvider>());
     providers_.push_back(std::make_unique<TieredFrequencyCandidateProvider>());
+    providers_.push_back(std::make_unique<GpuCandidateProvider>());
     providers_.push_back(std::make_unique<ThermalStabilizationCandidateProvider>());
 }
 
