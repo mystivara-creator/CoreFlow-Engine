@@ -8,6 +8,7 @@
 #include "coreflow/config.hpp"
 #include "coreflow/decision_engine.hpp"
 #include "coreflow/foreground_task_resolver.hpp"
+#include "coreflow/frequency_controller.hpp"
 #include "coreflow/kernel_node_inventory.hpp"
 #include "coreflow/transactional_frequency_actuator.hpp"
 #include "coreflow/unique_fd.hpp"
@@ -289,6 +290,12 @@ void AutonomousTuner::set_device_profile(DeviceProfileHandle profile) {
     }
     device_profile_ = std::move(profile);
     discover(sys_root_, proc_root_);
+}
+
+void AutonomousTuner::configure_gpu_frequency_controller(FrequencyController* controller) noexcept {
+    std::lock_guard<std::recursive_mutex> lock(tuner_mutex_);
+    if (!active_interventions_.empty() || recovery_required_) return;
+    gpu_frequency_controller_ = controller;
 }
 
 void AutonomousTuner::configure_frequency_actuator(
@@ -691,6 +698,37 @@ void AutonomousTuner::init_candidates() {
             .last_after_summary = {},
             .last_rollback_reason = {},
         },
+        CandidateStats{
+            .id = "gpu.kgsl.frame_deadline_relief",
+            .domain = "gpu",
+            .label = "Qualcomm KGSL Frame-Deadline Recovery",
+            .mean_utility = 0.58,
+            .mean_utility_delta = 0.0,
+            .ucb_score = 0.79,
+            .adaptive_scale = 1.0,
+            .settling_ticks = 1,
+            .trials = 0,
+            .reward_samples = 0,
+            .improved_count = 0,
+            .successes = 0,
+            .regressed_count = 0,
+            .rollbacks = 0,
+            .inconclusive_count = 0,
+            .neutral_count = 0,
+            .aborted_count = 0,
+            .preempted_count = 0,
+            .recovery_required_count = 0,
+            .rejected_count = 0,
+            .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
+            .ownership_loss_count = 0,
+            .ownership_quarantine_ticks = 0,
+            .last_workload = WorkloadClass::Idle,
+            .last_thermal_bucket = 0,
+            .last_before_summary = {},
+            .last_after_summary = {},
+            .last_rollback_reason = {},
+        },
     };
     update_ucb_scores();
 }
@@ -761,6 +799,7 @@ MutationDomain AutonomousTuner::domain_for_candidate(std::string_view candidate_
     if (candidate_id.rfind("vm.", 0) == 0) {
         return MutationDomain::VmMemory;
     }
+    if (candidate_id.rfind("gpu.", 0) == 0) return MutationDomain::GpuDevfreq;
     if (candidate_id.rfind("cpufreq.", 0) == 0 ||
         candidate_id == "cpu.frequency.tiered" ||
         candidate_id == "thermal.schedutil_damped_pacing") {
@@ -1364,6 +1403,16 @@ bool AutonomousTuner::candidate_contract_eligible(std::string_view candidate_id)
         return frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr &&
                select_frequency_policy_index().has_value();
     }
+    if (candidate_id == "gpu.kgsl.frame_deadline_relief") {
+        if (gpu_frequency_controller_ == nullptr || gpu_frequency_controller_->kgsl_count() == 0U || !device_profile_)
+            return false;
+        return std::any_of(device_profile_->gpu_domains.begin(), device_profile_->gpu_domains.end(),
+            [&](const GpuDomainProfile& domain) {
+                if (domain.device_path.find("/class/kgsl/") == std::string::npos) return false;
+                return has_runtime_node(domain.device_path + "/max_pwrlevel") &&
+                       has_runtime_node(domain.device_path + "/min_pwrlevel");
+            });
+    }
     return true;
 }
 
@@ -1774,6 +1823,10 @@ void AutonomousTuner::refresh_surface_readings() {
 }
 
 bool AutonomousTuner::verify_intervention_ownership(const ActiveIntervention& iv) const {
+    if (iv.is_gpu_policy) {
+        return gpu_frequency_controller_ != nullptr &&
+               gpu_frequency_controller_->gpu_frame_policy_owned_intact();
+    }
     if (iv.is_frequency_policy) {
         return frequency_actuator_ != nullptr && frequency_actuator_->mutation_active();
     }
@@ -1982,6 +2035,22 @@ bool AutonomousTuner::rollback_partial_steps(
 }
 
 bool AutonomousTuner::rollback_intervention(ActiveIntervention& iv, std::string_view reason) {
+    if (iv.is_gpu_policy) {
+        if (gpu_frequency_controller_ == nullptr ||
+            !gpu_frequency_controller_->restore_gpu_frame_policy()) {
+            const bool already_recorded = std::any_of(unresolved_recoveries_.begin(), unresolved_recoveries_.end(),
+                [&](const FailedRecoveryRecord& rec) { return rec.is_gpu_policy && rec.candidate_id == iv.candidate_id; });
+            if (!already_recorded) unresolved_recoveries_.push_back(FailedRecoveryRecord{
+                .domain = MutationDomain::GpuDevfreq, .candidate_id = iv.candidate_id,
+                .failed_steps = {}, .is_frequency_policy = false, .is_gpu_policy = true});
+            recovery_required_ = true;
+            last_verdict_ = "RECOVERY_REQUIRED";
+            last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            current_rationale_ = std::string(reason) + " [KGSL pair rollback unresolved; GpuDevfreq lease retained]";
+            return false;
+        }
+        return true;
+    }
     if (iv.is_frequency_policy) {
         if (frequency_actuator_ &&
             (frequency_mutation_active_ || frequency_actuator_->mutation_active() ||
@@ -2069,6 +2138,16 @@ bool AutonomousTuner::retry_unresolved_recoveries() {
     auto& store = BaselineStore::instance();
     bool all_ok = true;
     for (auto it = unresolved_recoveries_.begin(); it != unresolved_recoveries_.end();) {
+        if (it->is_gpu_policy) {
+            if (gpu_frequency_controller_ == nullptr ||
+                !gpu_frequency_controller_->restore_gpu_frame_policy()) {
+                all_ok = false;
+                ++it;
+                continue;
+            }
+            it = unresolved_recoveries_.erase(it);
+            continue;
+        }
         if (it->is_frequency_policy) {
             if (frequency_actuator_ &&
                 (frequency_actuator_->mutation_active() ||
@@ -2537,6 +2616,86 @@ bool AutonomousTuner::apply_transaction(
     return true;
 }
 
+bool AutonomousTuner::apply_gpu_proposal(
+    std::string_view rationale,
+    const TunerTelemetryInput& telemetry,
+    const std::vector<std::string>& resource_keys) {
+    constexpr std::string_view candidate_id = "gpu.kgsl.frame_deadline_relief";
+    if (gpu_frequency_controller_ == nullptr || recovery_required_ ||
+        !telemetry.gpu_busy_valid || !telemetry.frame_deadline_valid ||
+        telemetry.frame_deadline_window_end_ns == 0U ||
+        !std::isfinite(telemetry.gpu_busy_pct) ||
+        !std::isfinite(telemetry.frame_deadline_miss_pct)) return false;
+
+    double thermal_headroom = telemetry.thermal_headroom;
+    if (thermal_headroom < 0.0 && telemetry.thermal_pressure_valid &&
+        std::isfinite(telemetry.thermal_pressure)) {
+        thermal_headroom = std::clamp((88.0 - telemetry.thermal_pressure) / 46.0, 0.0, 1.0);
+    }
+    if (!std::isfinite(thermal_headroom) || thermal_headroom < 0.35 ||
+        telemetry.thermal_guard_active || telemetry.thermal_emergency) return false;
+
+    if (!gpu_frequency_controller_->apply_gpu_frame_policy(
+            telemetry.gpu_busy_pct, telemetry.frame_deadline_miss_pct,
+            thermal_headroom, false)) {
+        if (!gpu_frequency_controller_->restore_gpu_frame_policy()) {
+            recovery_required_ = true;
+            last_verdict_ = "RECOVERY_REQUIRED";
+            last_verdict_enum_ = TunerVerdict::RecoveryRequired;
+            const bool recorded = std::any_of(unresolved_recoveries_.begin(), unresolved_recoveries_.end(),
+                [&](const FailedRecoveryRecord& rec) { return rec.is_gpu_policy && rec.candidate_id == candidate_id; });
+            if (!recorded) unresolved_recoveries_.push_back(FailedRecoveryRecord{
+                .domain = MutationDomain::GpuDevfreq, .candidate_id = std::string(candidate_id),
+                .failed_steps = {}, .is_frequency_policy = false, .is_gpu_policy = true});
+        }
+        return false;
+    }
+    if (!gpu_frequency_controller_->gpu_frame_policy_owned_intact()) {
+        (void)gpu_frequency_controller_->restore_gpu_frame_policy();
+        return false;
+    }
+
+    ActiveIntervention iv{};
+    iv.candidate_id = std::string(candidate_id);
+    iv.candidate_label = "Qualcomm KGSL Frame-Deadline Recovery";
+    iv.mutation_domain = MutationDomain::GpuDevfreq;
+    iv.evaluation_domain = EvaluationDomain::Gpu;
+    iv.intent = "GpuFrameDeadlineRelief";
+    iv.rationale = std::string(rationale);
+    iv.is_gpu_policy = true;
+    iv.observing = true;
+    iv.retained = false;
+    iv.obs_ticks = 0;
+    iv.obs_window = obs_window_;
+    iv.before_gpu_valid = true;
+    iv.before_gpu_miss_pct = telemetry.frame_deadline_miss_pct;
+    iv.last_frame_deadline_window_end_ns = telemetry.frame_deadline_window_end_ns;
+    iv.before_thermal_valid = telemetry.thermal_pressure_valid;
+    iv.before_thermal = telemetry.thermal_pressure_valid ? telemetry.thermal_pressure : 0.0;
+    iv.resource_keys = resource_keys;
+    if (iv.resource_keys.empty()) iv.resource_keys.emplace_back("gpu:kgsl:pwrlevel-pair");
+    iv.verdict = "PENDING";
+    iv.verdict_enum = TunerVerdict::Pending;
+    iv.settling_ticks_remaining = 1;
+
+    ++total_trials_;
+    if (auto* stats = find_candidate(candidate_id)) {
+        ++stats->trials;
+        stats->last_workload = current_workload_;
+        stats->last_thermal_bucket = compute_thermal_bucket(telemetry);
+        stats->last_regime = current_regime_;
+        stats->last_before_summary = "frame_deadline_miss_pct=" +
+            std::to_string(telemetry.frame_deadline_miss_pct);
+    }
+    active_interventions_.push_back(std::move(iv));
+    last_verdict_ = "PENDING";
+    last_verdict_enum_ = TunerVerdict::Pending;
+    last_utility_delta_ = 0.0;
+    sync_primary_state_from_active();
+    save_persisted_stats();
+    return true;
+}
+
 bool AutonomousTuner::apply_frequency_proposal(
     double requested_capacity_scale,
     uint32_t policy_index,
@@ -2633,6 +2792,7 @@ bool AutonomousTuner::evaluate_intervention_window(
     const double after_mem = mean(iv.sum_after_mem_psi, iv.valid_mem_samples_in_window);
     const double after_cpu = mean(iv.sum_after_cpu_psi, iv.valid_cpu_samples_in_window);
     const double after_therm = mean(iv.sum_after_thermal, iv.valid_pressure_samples_in_window);
+    const double after_gpu_miss = mean(iv.sum_after_gpu_miss_pct, iv.valid_gpu_samples_in_window);
 
     if (!verify_intervention_ownership(iv)) {
         if (retry_contended_intervention_ownership(iv)) {
@@ -2652,6 +2812,7 @@ bool AutonomousTuner::evaluate_intervention_window(
         iv.evaluation_domain == EvaluationDomain::Io ? iv.valid_io_samples_in_window :
         iv.evaluation_domain == EvaluationDomain::Memory ? iv.valid_mem_samples_in_window :
         iv.evaluation_domain == EvaluationDomain::Cpu ? iv.valid_cpu_samples_in_window :
+        iv.evaluation_domain == EvaluationDomain::Gpu ? iv.valid_gpu_samples_in_window :
         iv.valid_pressure_samples_in_window;
 
     if (target_samples < 2) {
@@ -2677,6 +2838,8 @@ bool AutonomousTuner::evaluate_intervention_window(
     const bool mem_valid = iv.before_mem_valid && iv.valid_mem_samples_in_window >= 2;
     const bool cpu_valid = iv.before_cpu_valid && iv.valid_cpu_samples_in_window >= 2;
     const bool thermal_valid = iv.before_thermal_valid && iv.valid_pressure_samples_in_window >= 2;
+    const bool gpu_valid = iv.before_gpu_valid && iv.valid_gpu_samples_in_window >= 2;
+    const double gpu_gain = gpu_valid ? iv.before_gpu_miss_pct - after_gpu_miss : 0.0;
     const double io_gain = io_valid ? iv.before_io_psi - after_io : 0.0;
     const double mem_gain = mem_valid ? iv.before_mem_psi - after_mem : 0.0;
     const double cpu_gain = cpu_valid ? iv.before_cpu_psi - after_cpu : 0.0;
@@ -2754,6 +2917,8 @@ bool AutonomousTuner::evaluate_intervention_window(
         utility_delta = 1.60 * mem_gain + (io_valid ? 0.45 * io_gain : 0.0) - 0.60 * therm_penalty;
     } else if (iv.intent == "InteractiveCpuPacing") {
         utility_delta = 1.50 * cpu_gain + (io_valid ? 0.35 * io_gain : 0.0) - 0.65 * therm_penalty;
+    } else if (iv.intent == "GpuFrameDeadlineRelief") {
+        utility_delta = gpu_valid ? 1.50 * gpu_gain - 0.65 * therm_penalty : 0.0;
     } else {
         utility_delta = 0.0;
     }
@@ -2797,18 +2962,29 @@ bool AutonomousTuner::evaluate_intervention_window(
             target_metric = "thermal_pressure";
             noise_index = 3;
             break;
+        case EvaluationDomain::Gpu:
+            target_spread = iv.max_after_gpu_miss_pct - iv.min_after_gpu_miss_pct;
+            target_baseline = iv.before_gpu_miss_pct;
+            target_after = after_gpu_miss;
+            target_metric = "frame_deadline_miss_pct";
+            noise_index = 0;
+            break;
         default:
             break;
     }
 
-    const double domain_weight =
+    const double domain_weight = iv.evaluation_domain == EvaluationDomain::Gpu ? 0.08 :
         iv.evaluation_domain == EvaluationDomain::Io ? 0.07 :
         iv.evaluation_domain == EvaluationDomain::Memory ? 0.08 :
         iv.evaluation_domain == EvaluationDomain::Cpu ? 0.075 : 0.0225;
     const double measured_noise = std::clamp(target_spread * domain_weight, 0.02, 0.45);
-    evaluation_noise_floors_[noise_index] = std::clamp(
-        0.85 * evaluation_noise_floors_[noise_index] + 0.15 * measured_noise, 0.02, 0.45);
-    noise_floor_ = evaluation_noise_floors_[noise_index];
+    if (iv.evaluation_domain == EvaluationDomain::Gpu) {
+        noise_floor_ = measured_noise;
+    } else {
+        evaluation_noise_floors_[noise_index] = std::clamp(
+            0.85 * evaluation_noise_floors_[noise_index] + 0.15 * measured_noise, 0.02, 0.45);
+        noise_floor_ = evaluation_noise_floors_[noise_index];
+    }
     const double improved_threshold = std::max(0.25, 2.0 * noise_floor_);
     const double regressed_threshold = -(0.20 + noise_floor_);
     const bool high_variance_inconclusive =
@@ -3106,6 +3282,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     env_input.device_profile = device_profile_;
     env_input.frequency_actuator_configured =
         frequency_actuator_ != nullptr && tiered_policy_router_ != nullptr;
+    env_input.gpu_actuator_ready = gpu_frequency_controller_ != nullptr &&
+        gpu_frequency_controller_->kgsl_count() > 0U;
     env_input.frequency_policy_index = policy_index;
     env_input.tiered_policy_decision = frequency_decision;
     env_input.tiered_policy_ready = frequency_policy_evidence_ready;
@@ -3189,7 +3367,8 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 : ((iv.evaluation_domain == EvaluationDomain::Io && telemetry.io_psi_valid) ||
                    (iv.evaluation_domain == EvaluationDomain::Memory && telemetry.memory_psi_valid) ||
                    (iv.evaluation_domain == EvaluationDomain::Cpu && telemetry.cpu_psi_valid) ||
-                   (iv.evaluation_domain == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid));
+                   (iv.evaluation_domain == EvaluationDomain::Thermal && telemetry.thermal_pressure_valid) ||
+                   (iv.evaluation_domain == EvaluationDomain::Gpu && telemetry.gpu_busy_valid && telemetry.frame_deadline_valid));
             if (!domain_evidence_ok) {
                 any_evidence_dropped = true;
                 last_verdict_ = "INCONCLUSIVE";
@@ -3398,6 +3577,17 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                 iv.sum_after_temp_vel += telemetry.temperature_velocity_celsius_per_sec;
                 ++iv.valid_thermal_samples_in_window;
             }
+            if (iv.evaluation_domain == EvaluationDomain::Gpu && telemetry.frame_deadline_valid &&
+                telemetry.frame_deadline_window_end_ns != 0U &&
+                telemetry.frame_deadline_window_end_ns > iv.last_frame_deadline_window_end_ns &&
+                std::isfinite(telemetry.frame_deadline_miss_pct) &&
+                telemetry.frame_deadline_miss_pct >= 0.0 && telemetry.frame_deadline_miss_pct <= 100.0) {
+                iv.sum_after_gpu_miss_pct += telemetry.frame_deadline_miss_pct;
+                iv.min_after_gpu_miss_pct = std::min(iv.min_after_gpu_miss_pct, telemetry.frame_deadline_miss_pct);
+                iv.max_after_gpu_miss_pct = std::max(iv.max_after_gpu_miss_pct, telemetry.frame_deadline_miss_pct);
+                ++iv.valid_gpu_samples_in_window;
+                iv.last_frame_deadline_window_end_ns = telemetry.frame_deadline_window_end_ns;
+            }
             ++iv.obs_ticks;
             if (iv.obs_ticks >= iv.obs_window) {
                 if (!evaluate_intervention_window(iv, telemetry)) {
@@ -3463,6 +3653,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
                         if (!domain_regressed && telemetry.temperature_velocity_valid) {
                             domain_regressed = telemetry.temperature_velocity_celsius_per_sec > 0.05;
                         }
+                        break;
+                    case EvaluationDomain::Gpu:
+                        domain_regressed = telemetry.frame_deadline_valid && iv.before_gpu_valid &&
+                            telemetry.frame_deadline_miss_pct > iv.before_gpu_miss_pct + 1.0;
                         break;
                     default:
                         break;
@@ -3556,7 +3750,10 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
 
         if (!plan.selected.empty()) {
             for (const auto& chosen : plan.selected) {
-                if (chosen.proposal.action_kind == CandidateActionKind::TieredFrequencyPolicy) {
+                if (chosen.proposal.action_kind == CandidateActionKind::GpuFrequencyPolicy) {
+                    (void)apply_gpu_proposal(
+                        chosen.proposal.rationale, telemetry, chosen.proposal.resource_keys);
+                } else if (chosen.proposal.action_kind == CandidateActionKind::TieredFrequencyPolicy) {
                     (void)apply_frequency_proposal(
                         chosen.proposal.requested_capacity_scale,
                         chosen.proposal.frequency_policy_index,

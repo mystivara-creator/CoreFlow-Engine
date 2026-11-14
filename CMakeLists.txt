@@ -308,6 +308,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/platform_context.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
+        src/kernel/frequency_controller.cpp
     )
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     if(NOT ANDROID)
@@ -331,6 +332,7 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/platform_context.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
+        src/kernel/frequency_controller.cpp
     )
     target_include_directories(test_decision_engine PRIVATE include)
     target_link_libraries(test_decision_engine PRIVATE m)

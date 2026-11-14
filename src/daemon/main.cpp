@@ -2103,6 +2103,18 @@ int main(int argc, char* argv[]) {
             .frequency_policy_evidence = frequency_policy_evidence,
             .frequency_policy_evidence_valid =
                 config.enable_cpu_frequency_control && workload_pipeline_ready,
+            .gpu_busy_pct = workload_features.gpu_busy_pct,
+            .gpu_busy_valid = (workload_features.valid_features & FeatureGpuBusy) != 0U &&
+                workload_features.gpu_busy_sample_count > 0U && std::isfinite(workload_features.gpu_busy_pct),
+            .frame_deadline_miss_pct = workload_features.frame_deadline_miss_pct,
+            .frame_deadline_count = workload_features.frame_deadline_count,
+            .frame_deadline_misses = workload_features.frame_deadline_misses,
+            .frame_deadline_window_end_ns = frame_timeline_features.window_end_ns,
+            .frame_deadline_valid = (workload_features.valid_features & FeatureFrameDeadline) != 0U &&
+                frame_timeline_features.window_end_ns != 0U &&
+                workload_features.frame_deadline_count > 0U &&
+                workload_features.frame_deadline_misses <= workload_features.frame_deadline_count &&
+                std::isfinite(workload_features.frame_deadline_miss_pct),
         }) : autonomous_tuner.snapshot();
         record_dvs_sample(
             ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
