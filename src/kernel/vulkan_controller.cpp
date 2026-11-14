@@ -935,12 +935,12 @@ void VulkanController::recompute_effective_capabilities() noexcept {
             : config_.mode;
     snap_.active_mode = mode;
     snap_.layer_active = (mode != VulkanLayerMode::Disabled) && snap_.layer_installed;
-    // HWUI/Skia and VRS are not exposed as active. The implicit layer's
-    // VkPipelineCache lifecycle interceptors are enabled with the layer; this
-    // is persistence interception, not pipeline prewarming.
+    // Installed layer files and configured mode do not prove Android's
+    // per-process Vulkan loader actually loaded this implicit layer. Keep
+    // process-level interception false until a trusted runtime handshake exists.
     snap_.skiavk_active = false;
     snap_.adaptive_vrs_active = false;
-    snap_.pipeline_cache_interception_active = snap_.layer_active;
+    snap_.pipeline_cache_interception_active = false;
     snap_.pipeline_cache_prewarm_active = false;
 
     missing_safe_exts_ = 0;
