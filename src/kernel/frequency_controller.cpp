@@ -242,25 +242,20 @@ bool FrequencyController::rollback_kgsl_domains_locked() noexcept {
 
 bool FrequencyController::apply_gpu_frame_policy(
     double gpu_busy_pct, double frame_miss_pct, double thermal_headroom,
-    std::string_view lease_owner, std::string_view transaction_id) {
+    bool thermal_guard) {
     if (!std::isfinite(gpu_busy_pct) || gpu_busy_pct < 0.0 || gpu_busy_pct > 100.0 ||
         !std::isfinite(frame_miss_pct) || frame_miss_pct < 0.0 || frame_miss_pct > 100.0 ||
-        !std::isfinite(thermal_headroom) || thermal_headroom < 0.0 || thermal_headroom > 1.0 ||
-        lease_owner.empty() || transaction_id.empty()) return false;
+        !std::isfinite(thermal_headroom) || thermal_headroom < 0.0 || thermal_headroom > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     const bool has_kgsl = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
         return item.gpu && item.kgsl_power_levels && !item.retired;
     });
     if (!has_kgsl) return false;
 
-    if (thermal_headroom < 0.35 || gpu_busy_pct < 70.0 || frame_miss_pct < 0.5) {
-        if (!rollback_kgsl_domains_locked()) return false;
-        coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
-        return true;
+    if (thermal_guard || thermal_headroom < 0.35 || gpu_busy_pct < 70.0 || frame_miss_pct < 0.5) {
+        return rollback_domain(true);
     }
-    if (!coordinator_.acquire_lease(MutationDomain::GpuDevfreq, std::string(lease_owner),
-                                    std::string(transaction_id),
-                                    ControllerPriority::WorkloadOptimization)) return false;
+    if (!acquire_domain_lease(true, false)) return false;
 
     const uint64_t step = gpu_busy_pct >= 90.0 && frame_miss_pct >= 5.0 &&
         thermal_headroom >= 0.55 ? 2U : 1U;
@@ -308,13 +303,9 @@ bool FrequencyController::apply_gpu_frame_policy(
         const bool owned = after_min != after_audit.end() && after_min->is_modified &&
             store.owns_expected_state(item.minimum, after_min->active_value);
         if (!applied || !readback || !owned) {
-            if (!store.rollback(item.minimum)) return false;
-            uint64_t restored_min = 0U;
-            if (!number_allow_zero(item.minimum, restored_min) ||
-                restored_min != item.baseline_minimum) return false;
-            item.last_minimum = restored_min;
-            item.mutation_active = false;
-            continue;
+            item.mutation_active = true;
+            if (!rollback_domain(true)) return false;
+            return false;
         }
         item.last = read_max;
         item.last_minimum = read_min;
@@ -324,22 +315,21 @@ bool FrequencyController::apply_gpu_frame_policy(
     const bool active = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
         return item.gpu && item.kgsl_power_levels && item.mutation_active;
     });
-    if (!active) coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
-    return changed;
+    if (!active) release_domain_lease(true);
+    return active;
 }
 
-bool FrequencyController::restore_gpu_frame_policy(
-    std::string_view lease_owner, std::string_view transaction_id) noexcept {
+bool FrequencyController::restore_gpu_frame_policy() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!rollback_kgsl_domains_locked()) return false;
-    coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
-    return true;
+    return rollback_domain(true);
 }
 
 bool FrequencyController::gpu_frame_policy_owned_intact() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool observed_active_pair = false;
     for (const auto& item : domains_) {
         if (!item.gpu || !item.kgsl_power_levels || !item.mutation_active) continue;
+        observed_active_pair = true;
         uint64_t actual_max = 0U, actual_min = 0U;
         if (!number_allow_zero(item.maximum, actual_max) ||
             !number_allow_zero(item.minimum, actual_min) || actual_max != item.last ||
@@ -352,7 +342,7 @@ bool FrequencyController::gpu_frame_policy_owned_intact() const noexcept {
         if (min_node == audit.end() || !min_node->is_modified ||
             !BaselineStore::instance().owns_expected_state(item.minimum, min_node->active_value)) return false;
     }
-    return true;
+    return observed_active_pair;
 }
 
 void FrequencyController::discover(bool cpu, bool gpu) {
@@ -423,7 +413,7 @@ bool FrequencyController::apply(double scale, bool thermal_guard) {
     // 0.2 is the emergency thermal floor; hardware policy floors still apply per domain.
     if (!std::isfinite(scale) || scale < 0.2 || scale > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (thermal_guard && !rollback_kgsl_domains_locked()) return false;
+    if (thermal_guard && !rollback_domain(true)) return false;
     auto& store = BaselineStore::instance();
     bool ok = true;
     const auto restore_owned_domain = [&](Domain& domain) {

@@ -20,9 +20,8 @@ public:
     bool apply(double capacity_scale, bool thermal_guard = false);
     [[nodiscard]] bool apply_gpu_frame_policy(
         double gpu_busy_pct, double frame_miss_pct, double thermal_headroom,
-        std::string_view lease_owner, std::string_view transaction_id);
-    [[nodiscard]] bool restore_gpu_frame_policy(
-        std::string_view lease_owner, std::string_view transaction_id) noexcept;
+        bool thermal_guard = false);
+    [[nodiscard]] bool restore_gpu_frame_policy() noexcept;
     [[nodiscard]] bool gpu_frame_policy_owned_intact() const noexcept;
     [[nodiscard]] size_t cpu_count() const noexcept;
     [[nodiscard]] size_t gpu_count() const noexcept;
