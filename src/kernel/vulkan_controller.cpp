@@ -935,11 +935,12 @@ void VulkanController::recompute_effective_capabilities() noexcept {
             : config_.mode;
     snap_.active_mode = mode;
     snap_.layer_active = (mode != VulkanLayerMode::Disabled) && snap_.layer_installed;
-    // Config placeholders are not actuators; no HWUI/Skia, VRS submission,
-    // or pipeline-cache prewarm backend exists in this build.
+    // HWUI/Skia and VRS are still not exposed as active. The implicit layer now
+    // owns persistent VkPipelineCache lifecycle interception and enables it
+    // whenever the CoreFlow Vulkan layer is active.
     snap_.skiavk_active = false;
     snap_.adaptive_vrs_active = false;
-    snap_.pipeline_cache_prewarm_active = false;
+    snap_.pipeline_cache_prewarm_active = snap_.layer_active;
 
     missing_safe_exts_ = 0;
     missing_override_exts_ = 0;
