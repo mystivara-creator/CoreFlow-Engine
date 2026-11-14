@@ -1526,7 +1526,7 @@ int main(int argc, char* argv[]) {
         governor, reactor,
         config.touch_boost_uclamp_min,
         config.burst_boost_duration_ms);
-    (void)render_booster;
+    render_booster.set_foreground_task_resolver(&foreground_task_resolver);
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
     if (create_dvs_listener(dvs_listener)) {
