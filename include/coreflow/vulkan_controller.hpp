@@ -154,6 +154,9 @@ struct VulkanCapabilitiesSnapshot {
     // Runtime Pipeline Acceleration Flags
     bool skiavk_active{false};
     bool adaptive_vrs_active{false};
+    // True when the installed implicit layer has its VkPipelineCache persistence interceptors enabled.
+    bool pipeline_cache_interception_active{false};
+    // Prewarming is a distinct feature and remains false until pipeline creation is explicitly prewarmed.
     bool pipeline_cache_prewarm_active{false};
 
     GpuKernelSurface gpu_surface{};
