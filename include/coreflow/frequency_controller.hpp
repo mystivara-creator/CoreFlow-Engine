@@ -17,7 +17,7 @@ public:
                                  DeviceProfileHandle profile = {});
     ~FrequencyController();
     void discover(bool cpu, bool gpu);
-    bool apply(double capacity_scale);
+    bool apply(double capacity_scale, bool thermal_guard = false);
     [[nodiscard]] size_t cpu_count() const noexcept;
     [[nodiscard]] size_t gpu_count() const noexcept;
 private:
@@ -36,7 +36,7 @@ private:
     std::string cpu_transaction_id_;
     std::string gpu_transaction_id_;
     uint64_t lease_generation_{0};
-    bool acquire_domain_lease(bool gpu);
+    bool acquire_domain_lease(bool gpu, bool thermal_guard);
     bool rollback_domain(bool gpu);
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
     void release_domain_lease(bool gpu) noexcept;
