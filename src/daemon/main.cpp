@@ -846,6 +846,7 @@ std::string build_status_json(
         << ",\"hwGraphicsPipelineLibrary\":" << (vk.hw_graphics_pipeline_library ? "true" : "false")
         << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
         << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
+        << ",\"pipelineCachePersistenceInterceptionActive\":" << (vk.pipeline_cache_interception_active ? "true" : "false")
         << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
         << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
         << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
