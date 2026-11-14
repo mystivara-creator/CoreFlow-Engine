@@ -1251,6 +1251,15 @@ bool write_status_snapshot(std::string_view payload) noexcept {
     return true;
 }
 
+// Refreshes the status file mtime without rewriting identical content. The
+// live-status reader accepts only files modified within 3 s, so an unchanged
+// payload still needs a periodic heartbeat, but not an fsync'd data write.
+bool touch_status_snapshot() noexcept {
+    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    return ::utimensat(dir.get(), "status.json", nullptr, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
 bool print_live_status_snapshot(pid_t expected_pid) {
     if (expected_pid <= 0) return false;
     UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
@@ -2287,11 +2296,15 @@ int main(int argc, char* argv[]) {
         clear_pid(pid_lock);
         return 1;
     }
+    // The payload changes only on control ticks (default 1 s), so rewriting it
+    // every 500 ms caused two identical fsync'd atomic writes per second.
+    std::string last_enqueued_payload;
     const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
-        status_writer.enqueue(latest_status_payload);
         const uint64_t failures = status_writer.failed_writes();
         if (failures > prev_status_write_failures) {
             prev_status_write_failures = failures;
+            // A failed atomic write must be retried, so forget what was last written.
+            last_enqueued_payload.clear();
             static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
             const auto now = std::chrono::steady_clock::now();
             if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
@@ -2299,6 +2312,12 @@ int main(int argc, char* argv[]) {
                 emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
                 last_status_write_warning = now;
             }
+        }
+        if (latest_status_payload != last_enqueued_payload) {
+            status_writer.enqueue(latest_status_payload);
+            last_enqueued_payload = latest_status_payload;
+        } else {
+            (void)touch_status_snapshot();
         }
     });
     (void)status_timer_fd;
