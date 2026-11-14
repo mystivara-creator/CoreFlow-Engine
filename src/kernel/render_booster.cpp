@@ -68,6 +68,17 @@ void RenderBooster::disconnect_frame_source() noexcept {
     }
 }
 
+void RenderBooster::set_thermal_guard(bool active) noexcept {
+    const bool previous = thermal_guard_.exchange(active, std::memory_order_acq_rel);
+    if (previous == active || !request_fd_.valid()) return;
+    // Wake the reactor so an already-running burst is restored immediately when
+    // thermal admission closes; no kernel mutation occurs on the thermal thread.
+    const uint64_t one = 1;
+    ssize_t written;
+    do { written = ::write(request_fd_.get(), &one, sizeof(one)); }
+    while (written < 0 && errno == EINTR);
+}
+
 void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
     bool trigger_burst = false;
     switch (event.kind) {
@@ -179,6 +190,12 @@ void RenderBooster::handle_request(uint32_t) noexcept {
     uint64_t signals = 0;
     while (::read(request_fd_.get(), &signals, sizeof(signals)) ==
            static_cast<ssize_t>(sizeof(signals))) {}
+    if (thermal_guard_.load(std::memory_order_acquire)) {
+        requested_min_.store(0, std::memory_order_release);
+        requested_duration_ms_.store(0, std::memory_order_release);
+        restore_burst();
+        return;
+    }
     const uint32_t requested_min = requested_min_.exchange(0, std::memory_order_acq_rel);
     const int64_t duration_ms = requested_duration_ms_.exchange(0, std::memory_order_acq_rel);
     if (duration_ms <= 0 || requested_min == 0) return;
