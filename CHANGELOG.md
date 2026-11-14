@@ -2,6 +2,24 @@
 
 # CFAE System Framework Release History
 
+## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline
+
+### Native GPU actuation
+- Add a GPU candidate provider to the global decision engine, admitted only with validated GPU utilization, actual FrameTimeline deadline misses, and sufficient thermal headroom.
+- Validate Qualcomm KGSL `num_pwrlevels` against the `gpu_available_frequencies` entry count and enforce the driver invariant `max_pwrlevel <= min_pwrlevel`.
+- Treat KGSL limits as one `GpuDevfreq` lease with paired `BaselineStore` snapshots, invariant-preserving write/rollback ordering, readback, and ownership verification.
+
+### Vulkan pipeline-cache persistence
+- Intercept `vkCreatePipelineCache`, `vkGetPipelineCacheData`, and `vkDestroyPipelineCache` in the existing implicit layer.
+- Validate the Vulkan v1 cache header, vendor/device identity, and `pipelineCacheUUID`; isolate cache files in app-private storage and use bounded, exclusive temporary writes with `fsync` and `renameat`.
+- Report cache persistence interception separately from pipeline prewarming; SkiaVK/HWUI renderer changes and VRS remain inactive.
+
+### FrameTimeline and release integrity
+- Consume actual SurfaceFlinger FrameTimeline captures on a dedicated worker and forward validated deadline-miss windows to RenderBooster without blocking the reactor.
+- Trigger UClamp burst and foreground-thread migration from actual jank evidence, with thermal admission and deterministic lease restoration.
+- Align CMake, C++, Rust, module, configuration, and WebUI package metadata to `4.0.0`.
+
+
 ## v3.1.0 — Smart Multi-Domain Scheduler Tuning, Predictive AI Backend & Full-Tree Hardening
 
 ### Smart Multi-Domain Scheduler & Tunable Evaluator (`AutonomousTuner`)
