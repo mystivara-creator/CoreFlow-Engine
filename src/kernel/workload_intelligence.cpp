@@ -369,6 +369,12 @@ bool parse_trace_packet(
     return frame_timeline_event.empty() ||
         parse_frame_timeline_event(frame_timeline_event, packet_timestamp_ns, state);
 }
+struct Candidate final {
+    DetectedWorkloadClass classification{DetectedWorkloadClass::Unknown};
+    float confidence{0.0F};
+    uint32_t mask{FeatureNone};
+};
+
 Candidate decide(const WorkloadFeatureSnapshot& f) noexcept {
  auto has=[&](uint32_t bit){return (f.valid_features&bit)!=0;};
  if(has(FeatureFrameDeadline)&&f.frame_deadline_count>0&&f.frame_deadline_miss_pct>=0.08&&
