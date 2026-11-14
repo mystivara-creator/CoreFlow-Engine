@@ -731,7 +731,7 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
         json_escape(manufacturer) + "\",\"model\":\"" + json_escape(model) +
         "\",\"android_api\":" + std::to_string(api_level) + ",\"build_fingerprint_hash\":null}},\n"
         "\"profile\":\"" + profile_ + "\",\n"
-        "\"build\":{\"version\":\"3.1.0\",\"commit\":\"" + build_commit() + "\"},\n"
+        "\"build\":{\"version\":\"4.0.0\",\"commit\":\"" + build_commit() + "\"},\n"
         "\"device_profile\":" + device_profile_json_ + ",\n"
         "\"metrics\":{\n"
         "\"cpu_psi_avg10\":" + metric_json(latest_.cpu_psi, "%", "procfs.psi.cpu", ended_at, "CPU PSI unavailable") + ",\n"
