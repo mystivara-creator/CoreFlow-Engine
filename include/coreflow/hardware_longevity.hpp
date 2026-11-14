@@ -8,6 +8,7 @@
 #pragma once
 
 #include <string>
+#include <chrono>
 #include <mutex>
 #include <vector>
 #include <cstdint>
@@ -68,6 +69,7 @@ private:
     uint64_t charge_baseline_ua_{0};
     uint64_t last_charge_ua_{0};
     bool battery_mutation_active_{false};
+    std::chrono::steady_clock::time_point next_storage_probe_{};
     std::string battery_transaction_id_;
     std::string storage_transaction_id_;
     uint64_t transaction_generation_{0};

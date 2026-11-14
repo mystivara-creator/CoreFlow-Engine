@@ -116,6 +116,7 @@ bool HardwareLongevityManager::rollback_storage_locked() noexcept {
     }
     storage_mutation_paths_.clear();
     storage_paced_ = false;
+    next_storage_probe_ = {};
     release_lease_locked(MutationDomain::BlockIo, storage_transaction_id_);
     return true;
 }
@@ -144,6 +145,7 @@ void HardwareLongevityManager::initialize(const LongevityConfig& config) {
     battery_stepped_ = false;
     storage_paced_ = false;
     battery_mutation_active_ = false;
+    next_storage_probe_ = {};
     discover_battery_node();
 }
 
@@ -283,6 +285,15 @@ bool HardwareLongevityManager::apply_storage_pacing() {
         }
     }
     if (storage_paced_) return true;
+    // Foreground I/O discovery walks mountinfo and up to 4096 cgroup
+    // directories, then inspects process membership. Negative discovery must
+    // not repeat on every control tick when this device exposes no eligible
+    // io.weight actuator. Active transactions bypass this cooldown so their
+    // ownership checks and rollback path above remain live on every tick.
+    const auto now = std::chrono::steady_clock::now();
+    if (storage_transaction_id_.empty() && now < next_storage_probe_) return true;
+    next_storage_probe_ = now + std::chrono::seconds(30);
+
     bool available = false;
     // Resolve the actual foreground hierarchy from mountinfo + process cgroup
     // membership and require the co-located I/O weight ABI. No group name or
