@@ -20,7 +20,7 @@
 | Kotlin 2.1 | Integrasi Android, Quick Settings dan thermal receiver |
 | TypeScript / React | WebUI dan native daemon bridge |
 
-CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal policy, serta hardware-longevity controls sesuai bukti dan dukungan kernel. GPU/Power HAL yang hanya terdeteksi tetap berstatus observation-only; keberadaan interface tidak otomatis memberi kewenangan mutasi.
+CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal policy, serta hardware-longevity controls sesuai bukti dan dukungan kernel. GPU KGSL dapat diaktuasikan melalui kandidat GPU yang lolos admission thermal dan transaksi pasangan pwrlevel tervalidasi; GPU/Power HAL yang hanya terdeteksi tetap observation-only.
 
 ## Instalasi dan kompatibilitas
 
@@ -30,7 +30,7 @@ CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal pol
 
 ## Status pengembangan
 
-v3.1.0. Pekerjaan native input dan foreground render-thread pada [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) masih berstatus Draft. Implementasi saat ini menyediakan touch-triggered transient top-app UClamp dengan expiry dan ownership-checked restore serta foreground-task placement yang dibatasi identitas dan admission thermal/workload. Ini belum merupakan integrasi SurfaceFlinger FrameTimeline, frame pacing end-to-end, atau kontrol refresh-rate layar. CI hijau bukan pengganti validasi runtime pada perangkat.
+v4.0.0. [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) tetap Draft sampai pengujian perangkat fisik. Implementasi mencakup GPU CandidateProvider dan KGSL pwrlevel-pair transaction, persistent Vulkan pipeline-cache interception, serta Perfetto SurfaceFlinger FrameTimeline jank windows yang menggerakkan RenderBooster secara non-blocking. HWUI/SkiaVK renderer switching, VRS, dan refresh-rate panel tetap nonaktif sampai memiliki backend dan bukti runtime tersendiri. CI hijau bukan pengganti validasi runtime pada perangkat.
 
 ## Dokumentasi
 
