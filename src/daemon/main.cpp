@@ -1084,6 +1084,11 @@ int run_workload_probe() {
         << ",\"frameDeadlineCount\":" << features.frame_deadline_count
         << ",\"frameDeadlineMissCount\":" << features.frame_deadline_misses
         << ",\"frameTimelineSource\":\"" << ((features.valid_features & FeatureFrameDeadline) ? "perfetto-surfaceflinger" : "unavailable") << "\""
+        << ",\"frameActualDurationSamples\":" << features.frame_actual_duration_count
+        << ",\"frameActualAverageDurationMs\":" << (features.frame_actual_duration_count > 0U
+            ? std::to_string(static_cast<double>(features.frame_actual_duration_ns_total) /
+                static_cast<double>(features.frame_actual_duration_count) / 1'000'000.0)
+            : "null")
         << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
         << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
         << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
