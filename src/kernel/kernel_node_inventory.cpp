@@ -332,7 +332,7 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
             levels.push_back(frequency);
         }
         const uint64_t last = levels.empty() ? 0U : static_cast<uint64_t>(levels.size() - 1U);
-        const bool count_valid = !levels.empty() && (reported == levels.size() || reported == last);
+        const bool count_valid = !levels.empty() && reported == levels.size();
         const bool increasing = levels.size() >= 2U &&
             std::adjacent_find(levels.begin(), levels.end(), [](uint64_t a, uint64_t b) { return b <= a; }) == levels.end();
         const bool decreasing = levels.size() >= 2U &&
