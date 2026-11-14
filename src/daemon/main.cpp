@@ -1495,7 +1495,22 @@ int main(int argc, char* argv[]) {
             std::string(workload_pipeline.backend() == TelemetryBackend::Ebpf ? "eBPF" : "sysfs/procfs") +
             "; tiered CPU admission requires fresh stable CPU-bound windows.");
     }
-    auto controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
+    const auto pid_target_pressure = [&config](bool generic_fallback) noexcept {
+        // Generic fallback pressure is defined by the same configured recovery/trip
+        // normalization used by ThermalMonitor's daemon fallback path. OEM severity
+        // and OEM trip pressure are not Celsius-convertible, so they retain index 70.
+        if (!generic_fallback) return 70.0;
+        const double recovery = static_cast<double>(config.thermal_recover_celsius);
+        const double trip = static_cast<double>(config.thermal_trip_celsius);
+        const double span = std::max(1.0, trip - recovery);
+        const double normalized = std::clamp(
+            (static_cast<double>(config.pid_target_celsius) - recovery) / span, 0.0, 3.0);
+        return std::clamp(65.0 + normalized * 20.0, 0.0, 130.0);
+    };
+    bool pid_target_initialized = false;
+    bool pid_target_fallback = false;
+    auto controller = engine::new_controller({
+        config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(false)});
     context.hardware_longevity().initialize({
         config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
         config.battery_step_temp_threshold, config.stepped_charge_current_ma,
@@ -1601,7 +1616,8 @@ int main(int argc, char* argv[]) {
                     if (!governor.resync()) {
                         std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
                     }
-                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, 70.0});
+                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
+                    pid_target_initialized = false;
                     frequencies.discover(false, config.enable_gpu_frequency_control);
                     workload_classification = {};
                     context.hardware_longevity().initialize({
@@ -1766,6 +1782,14 @@ int main(int argc, char* argv[]) {
             if (temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
                 thermal.emergency = true;
             }
+        }
+
+        if (!pid_target_initialized || pid_target_fallback != thermal.fallback_active) {
+            pid_target_fallback = thermal.fallback_active;
+            controller = engine::new_controller({
+                config.pid_kp, config.pid_ki, config.pid_kd,
+                pid_target_pressure(pid_target_fallback)});
+            pid_target_initialized = true;
         }
 
         status_inputs.config = config;
@@ -1954,6 +1978,11 @@ int main(int argc, char* argv[]) {
             : (thermal.emergency || temp >= config.thermal_trip_celsius ||
                (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
         const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
+        const bool render_thermal_guard = thermal_limit_hit || thermal.emergency ||
+            (thermal.available && temp_vel.valid &&
+             temp_vel.velocity_celsius_per_sec >= 1.0 &&
+             temp >= config.pid_target_celsius - 1.0f);
+        render_booster.set_thermal_guard(render_thermal_guard);
         double active_capacity_scale = decision.capacity_scale;
         if (ai_pred.valid && ai_pred.confidence >= 0.60 && ai_pred.predicted_pressure_10s >= 80.0) {
             // Advisory pre-cooling bound: never raises capacity above deterministic safety policy
@@ -1983,7 +2012,7 @@ int main(int argc, char* argv[]) {
         }
 
         // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
-        if (!frequencies.apply(active_capacity_scale)) {
+        if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
         (void)context.hardware_longevity().apply_storage_pacing();
