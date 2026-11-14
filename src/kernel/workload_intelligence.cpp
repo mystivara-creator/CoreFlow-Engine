@@ -798,6 +798,10 @@ void PerfettoFrameTimelineEventSource::run() noexcept {
    event.vsync_timestamp_ns = features.window_end_ns;
    event.frame_count = features.frame_deadline_count;
    event.missed_frames = features.frame_deadline_misses;
+   if (features.frame_actual_duration_count > 0U) {
+    event.frame_duration_ns =
+        features.frame_actual_duration_ns_total / features.frame_actual_duration_count;
+   }
    FrameEventListener listener;
    {
     std::lock_guard<std::mutex> lock(event_mutex_);
