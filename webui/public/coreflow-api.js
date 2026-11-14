@@ -1,5 +1,5 @@
 /**
- * CFAE System Framework v3.1.0 JavaScript RPC Bridge for KernelSU & APatch
+ * CFAE System Framework v4.0.0 JavaScript RPC Bridge for KernelSU & APatch
  * @license MIT
  */
 (function (global) {
