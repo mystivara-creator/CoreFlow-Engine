@@ -935,12 +935,13 @@ void VulkanController::recompute_effective_capabilities() noexcept {
             : config_.mode;
     snap_.active_mode = mode;
     snap_.layer_active = (mode != VulkanLayerMode::Disabled) && snap_.layer_installed;
-    // HWUI/Skia and VRS are still not exposed as active. The implicit layer now
-    // owns persistent VkPipelineCache lifecycle interception and enables it
-    // whenever the CoreFlow Vulkan layer is active.
+    // HWUI/Skia and VRS are not exposed as active. The implicit layer's
+    // VkPipelineCache lifecycle interceptors are enabled with the layer; this
+    // is persistence interception, not pipeline prewarming.
     snap_.skiavk_active = false;
     snap_.adaptive_vrs_active = false;
-    snap_.pipeline_cache_prewarm_active = snap_.layer_active;
+    snap_.pipeline_cache_interception_active = snap_.layer_active;
+    snap_.pipeline_cache_prewarm_active = false;
 
     missing_safe_exts_ = 0;
     missing_override_exts_ = 0;
@@ -990,6 +991,7 @@ void VulkanController::sync_layer_state_file() const noexcept {
     oss << "mode=" << mode_name(snap_.active_mode) << "\n"
         << "skiavk=" << (snap_.skiavk_active ? 1 : 0) << "\n"
         << "adaptive_vrs=" << (snap_.adaptive_vrs_active ? 1 : 0) << "\n"
+        << "pipeline_cache_interception=" << (snap_.pipeline_cache_interception_active ? 1 : 0) << "\n"
         << "pipeline_cache_prewarm=" << (snap_.pipeline_cache_prewarm_active ? 1 : 0) << "\n"
         << "max_push_descriptors=" << snap_.hw_max_push_descriptors << "\n";
     const std::string payload = oss.str();
