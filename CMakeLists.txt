@@ -512,6 +512,9 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/frame_bridge.cpp
         src/daemon/reactor.cpp
         src/kernel/uclamp.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/frequency_controller.cpp
         src/kernel/mount_topology.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
