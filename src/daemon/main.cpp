@@ -2030,7 +2030,9 @@ int main(int argc, char* argv[]) {
             freq_resync_ticks = 0;
         }
 
-        // The Rust budget drives real CPU/GPU caps and the scheduler ceiling.
+        // The Rust budget is a system capacity signal. FrequencyController
+        // excludes paired KGSL power-level domains from this generic path; they
+        // require apply_gpu_frame_policy() with fresh GPU + FrameTimeline evidence.
         if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
             frequencies.discover(config.enable_cpu_frequency_control, config.enable_gpu_frequency_control);
         }
