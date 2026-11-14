@@ -686,6 +686,7 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
     const CandidateEligibilityFn& eligibility_check) {
     std::vector<EvaluatedCandidate> evaluated;
     evaluated.reserve(proposals.size());
+    (void)total_reward_samples; // Global count is intentionally not used for domain UCB.
 
     for (auto& proposal : proposals) {
         EvaluatedCandidate item{};
