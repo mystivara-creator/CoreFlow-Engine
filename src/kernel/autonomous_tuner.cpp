@@ -423,9 +423,9 @@ void AutonomousTuner::init_candidates() {
             .id = "io.mq_deadline_low_latency",
             .domain = "io",
             .label = "mq-deadline + Low-Latency Read Expiry (0.5x OEM baseline / batch 0.5x)",
-            .mean_utility = 0.65,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.86,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -454,9 +454,9 @@ void AutonomousTuner::init_candidates() {
             .id = "io.kyber_token_bucket",
             .domain = "io",
             .label = "kyber Token-Bucket Low-Latency I/O Scheduler",
-            .mean_utility = 0.62,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.83,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -485,9 +485,9 @@ void AutonomousTuner::init_candidates() {
             .id = "io.bfq_interactive_fairness",
             .domain = "io",
             .label = "bfq Proportional-Share Interactive I/O Scheduler",
-            .mean_utility = 0.55,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.76,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -518,7 +518,7 @@ void AutonomousTuner::init_candidates() {
             .label = "Adaptive Block Queue Read-Ahead & Request Depth (2.0x OEM baseline)",
             .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.71,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -547,9 +547,9 @@ void AutonomousTuner::init_candidates() {
             .id = "vm.zram_latency_relief",
             .domain = "vm",
             .label = "VM Page-Cluster Zero-Latency & VFS Dentry Preservation",
-            .mean_utility = 0.60,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.81,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -578,9 +578,9 @@ void AutonomousTuner::init_candidates() {
             .id = "cpufreq.schedutil_interactive_response",
             .domain = "cpufreq",
             .label = "EAS Governor Rate-Limit Pacing (500us up / 10000us down)",
-            .mean_utility = 0.58,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.79,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -609,9 +609,9 @@ void AutonomousTuner::init_candidates() {
             .id = "thermal.schedutil_damped_pacing",
             .domain = "thermal",
             .label = "Thermal Stabilization Governor Damping (2.0x up / 0.5x down rate-limit)",
-            .mean_utility = 0.64,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.85,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -640,9 +640,9 @@ void AutonomousTuner::init_candidates() {
             .id = "thermal.io_burst_pacing",
             .domain = "thermal",
             .label = "Thermal Stabilization Block Queue Burst Pacing (0.5x read-ahead / 0.75x depth)",
-            .mean_utility = 0.59,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.80,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -671,9 +671,9 @@ void AutonomousTuner::init_candidates() {
             .id = "cpu.frequency.tiered",
             .domain = "cpufreq",
             .label = "Tiered CPU Frequency OPP",
-            .mean_utility = 0.62,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.84,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -702,9 +702,9 @@ void AutonomousTuner::init_candidates() {
             .id = "gpu.kgsl.frame_deadline_relief",
             .domain = "gpu",
             .label = "Qualcomm KGSL Frame-Deadline Recovery",
-            .mean_utility = 0.58,
+            .mean_utility = 0.50,
             .mean_utility_delta = 0.0,
-            .ucb_score = 0.79,
+            .ucb_score = 0.50,
             .adaptive_scale = 1.0,
             .settling_ticks = 1,
             .trials = 0,
@@ -734,18 +734,19 @@ void AutonomousTuner::init_candidates() {
 }
 
 void AutonomousTuner::update_ucb_scores() {
+    // All candidate arms share one exploration population. Domain labels are
+    // descriptive metadata; they never partition or weight the bandit.
+    uint64_t pooled_reward_samples = 0U;
+    for (const auto& candidate : candidates_) {
+        pooled_reward_samples += static_cast<uint64_t>(candidate.reward_samples);
+    }
+    const double pooled_n = std::max(1.0, static_cast<double>(pooled_reward_samples));
+
     for (auto& candidate : candidates_) {
         candidate.successes = candidate.improved_count;
         candidate.rollbacks = candidate.regressed_count;
-        uint64_t domain_reward_samples = 0U;
-        for (const auto& peer : candidates_) {
-            if (peer.domain == candidate.domain) {
-                domain_reward_samples += static_cast<uint64_t>(peer.reward_samples);
-            }
-        }
-        const double domain_n = std::max(1.0, static_cast<double>(domain_reward_samples));
         const double explore = 0.25 * std::sqrt(
-            std::log(domain_n + 1.0) / static_cast<double>(candidate.reward_samples + 1U));
+            std::log(pooled_n + 1.0) / static_cast<double>(candidate.reward_samples + 1U));
         candidate.ucb_score = candidate.mean_utility + explore;
     }
 }
@@ -1311,7 +1312,8 @@ void AutonomousTuner::load_persisted_stats() {
 
     for (const auto& saved : parsed) {
         if (auto* candidate = find_candidate(saved.id)) {
-            candidate->mean_utility = saved.mean_utility;
+            candidate->mean_utility = saved.reward_samples > 0U
+                ? saved.mean_utility : 0.50;
             candidate->mean_utility_delta = saved.mean_utility_delta;
             candidate->adaptive_scale = saved.adaptive_scale;
             candidate->trials = saved.trials;

@@ -28,6 +28,7 @@ import {
   stepAutonomousSimulation,
   ThermalSensorDetail,
   TunerCandidateTelemetry,
+  TunerEvaluatedCandidateTelemetry,
   VulkanEngineConfig,
   VulkanLayerMode,
   VulkanTelemetry,
@@ -50,6 +51,10 @@ interface NativeStatus {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
+  uclampPolicyMin?: number;
+  uclampPolicyMax?: number;
+  uclampTargetPath?: string;
+  uclampEncoding?: string;
   cpuPressurePct?: number | null;
   memoryPressurePct?: number | null;
   ioPressurePct?: number | null;
@@ -95,6 +100,7 @@ interface NativeStatus {
   tunerRolledBack?: number;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   vulkan?: VulkanTelemetry;
   semanticEvidence?: SemanticEvidence;
 }
@@ -135,6 +141,10 @@ const checkedNativeStatus = (raw: string): NativeStatus => {
     typeof status.uclampMin !== 'number' ||
     typeof status.uclampMax !== 'number' ||
     typeof status.uclampSupported !== 'boolean' ||
+    (status.uclampPolicyMin !== undefined && typeof status.uclampPolicyMin !== 'number') ||
+    (status.uclampPolicyMax !== undefined && typeof status.uclampPolicyMax !== 'number') ||
+    (status.uclampTargetPath !== undefined && typeof status.uclampTargetPath !== 'string') ||
+    (status.uclampEncoding !== undefined && typeof status.uclampEncoding !== 'string') ||
     (typeof status.socTempCelsius !== 'number' && status.socTempCelsius !== null) ||
     typeof status.recoveryPending !== 'boolean'
   ) {
@@ -272,6 +282,10 @@ export const App: React.FC = () => {
       uclampMin: status.uclampMin,
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
+      uclampPolicyMin: status.uclampPolicyMin ?? old.uclampPolicyMin,
+      uclampPolicyMax: status.uclampPolicyMax ?? old.uclampPolicyMax,
+      uclampTargetPath: status.uclampTargetPath ?? old.uclampTargetPath,
+      uclampEncoding: status.uclampEncoding ?? old.uclampEncoding,
       // Null pressure is unavailable telemetry, not a request to retain stale values.
       cpuPressurePct: status.cpuPressurePct ?? 0,
       memoryPressurePct: status.memoryPressurePct ?? 0,
@@ -315,6 +329,7 @@ export const App: React.FC = () => {
       tunerRolledBack: status.tunerRolledBack ?? old.tunerRolledBack,
       blockQueues: status.blockQueues ?? old.blockQueues,
       tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
+      tunerEvaluatedCandidates: status.tunerEvaluatedCandidates ?? old.tunerEvaluatedCandidates,
       vulkan: status.vulkan ?? old.vulkan,
       baselineStatus: status.recoveryPending ? 'protected' : 'restored',
       transactionStage: status.running
@@ -586,7 +601,7 @@ export const App: React.FC = () => {
         {/* Material Design 3 Navigation Pill Bar (Unified Monochromatic Tonal Indicator) */}
         <nav
           aria-label="Primary sections"
-          className="flex items-center gap-1.5 p-1.5 rounded-full bg-white/75 dark:bg-[#181c24]/75 backdrop-blur-2xl border border-slate-900/[0.06] dark:border-white/[0.07] overflow-x-auto no-scrollbar w-fit max-w-full"
+          className="pixel-nav flex items-center gap-1.5 overflow-x-auto no-scrollbar max-w-full"
         >
           {navItems.map(({ id, label, Icon }) => {
             const active = activeTab === id;
@@ -595,13 +610,11 @@ export const App: React.FC = () => {
                 key={id}
                 onClick={() => setActiveTab(id)}
                 className={
-                  'px-4 py-2 rounded-full text-xs font-medium transition-all flex items-center gap-2 whitespace-nowrap select-none ' +
-                  (active
-                    ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-900/[0.04] dark:hover:bg-white/[0.04]')
+                  'pixel-nav-item flex items-center gap-2 whitespace-nowrap select-none ' +
+                  (active ? 'is-active' : '')
                 }
               >
-                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <Icon className="w-4 h-4 shrink-0" />
                 <span>{label}</span>
               </button>
             );
@@ -613,9 +626,9 @@ export const App: React.FC = () => {
             <section className="space-y-3" aria-label="Autonomous runtime state">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">Autonomous operations</p>
-                  <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">System equilibrium</h1>
-                  <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-600 dark:text-slate-400">CoreFlow observes system pressure, discovers trustworthy kernel contracts, and owns adaptation. This dashboard explains runtime decisions; it does not steer tuning policy.</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">CFAE · Autonomous system optimization</p>
+                  <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 sm:text-3xl">Live operating state</h1>
+                  <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-600 dark:text-slate-400">Capability discovery, evidence-led tuning, and verified actuator ownership. The dashboard reflects native daemon state; selection remains autonomous and safety-gated.</p>
                 </div>
                 <div className="inline-flex w-fit items-center gap-2 rounded-full border border-slate-900/[0.07] bg-white/70 px-3 py-2 text-[11px] font-semibold text-slate-600 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300">
                   <span className={'h-2 w-2 rounded-full ' + (telemetry.engineActive ? 'bg-emerald-500' : 'bg-slate-400')} />

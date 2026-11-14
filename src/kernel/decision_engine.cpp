@@ -102,13 +102,17 @@ void collect_step_resource_keys(CandidateProposal& proposal) {
         ? (0.35 * stats->mean_utility + 0.65 * context_mean)
         : stats->mean_utility;
 
-    // Normalize Q_k [0.05 .. 2.50] into [0.0 .. 1.0] so all domains share one scale.
+    // All unobserved candidate arms begin at the same neutral prior.
+    const bool has_empirical_evidence = stats->reward_samples > 0U || regime_samples > 0U;
     const double normalized_mean = std::clamp((blended_prior - 0.05) / 2.45, 0.0, 1.0);
-    // Shrink unvisited/low-sample empirical prior smoothly toward 0.50 neutral baseline.
     const double maturity = std::min(1.0, static_cast<double>(regime_samples + stats->reward_samples) / 4.0);
-    const double calibrated_mean = (0.45 * (1.0 - maturity) * 0.50) +
-                                   (1.0 - 0.45 * (1.0 - maturity)) * normalized_mean;
+    const double calibrated_mean = has_empirical_evidence
+        ? (0.45 * (1.0 - maturity) * 0.50) +
+          (1.0 - 0.45 * (1.0 - maturity)) * normalized_mean
+        : 0.50;
 
+    // Every arm shares the pooled reward count; only its contextual
+    // evidence remains local in the exploration denominator.
     const double total_n = static_cast<double>(std::max<uint32_t>(1U, total_reward_samples));
     const double explore = std::min(
         0.22,
@@ -745,7 +749,17 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
     const CandidateEligibilityFn& eligibility_check) {
     std::vector<EvaluatedCandidate> evaluated;
     evaluated.reserve(proposals.size());
-    (void)total_reward_samples; // Global count is intentionally not used for domain UCB.
+
+    // One pooled reward population drives exploration for every candidate arm.
+    uint64_t candidate_reward_samples = 0U;
+    for (const auto& candidate_stats : stats) {
+        candidate_reward_samples += static_cast<uint64_t>(candidate_stats.reward_samples);
+    }
+    const uint64_t pooled_reward_samples = std::max(
+        static_cast<uint64_t>(total_reward_samples), candidate_reward_samples);
+    const uint32_t global_reward_samples = static_cast<uint32_t>(
+        std::min<uint64_t>(pooled_reward_samples,
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
 
     for (auto& proposal : proposals) {
         EvaluatedCandidate item{};
@@ -764,18 +778,9 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
         }
 
         const CandidateStats* st = find_stats(stats, proposal.id);
-        // UCB exploration must be causal within the candidate's own subsystem.
-        // CPU/IO samples must not suppress exploration of another domain.
-        uint32_t domain_reward_samples = 0U;
-        for (const auto& domain_stats : stats) {
-            if (domain_stats.domain == proposal.domain_label) {
-                const uint32_t remaining =
-                    std::numeric_limits<uint32_t>::max() - domain_reward_samples;
-                domain_reward_samples += std::min(remaining, domain_stats.reward_samples);
-            }
-        }
+        // Global UCB: each eligible arm receives the same pooled exploration count.
         const double empirical = normalize_ucb_empirical(
-            st, evidence.regime, domain_reward_samples);
+            st, evidence.regime, global_reward_samples);
         const double sample_maturity = (st == nullptr)
             ? 0.20
             : std::min(1.0, static_cast<double>(st->reward_samples + 1U) / 6.0);
@@ -812,10 +817,19 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
         evaluated.push_back(std::move(item));
     }
 
-    // Strict global ranking: utility -> confidence -> lowest risk -> deterministic ID.
-    // Never rank by domain identity!
+    // Utility, confidence, and risk drive global rank; domain identity is not
+    // scored or used as a tie-break. Rotate exact ties by a neutral arm hash.
+    const auto neutral_tie_rank = [global_reward_samples](std::string_view id) noexcept {
+        uint64_t hash = 1469598103934665603ULL ^ static_cast<uint64_t>(global_reward_samples);
+        for (const char raw_byte : id) {
+            const auto byte = static_cast<unsigned char>(raw_byte);
+            hash ^= static_cast<uint64_t>(byte);
+            hash *= 1099511628211ULL;
+        }
+        return hash;
+    };
     std::sort(evaluated.begin(), evaluated.end(),
-        [](const EvaluatedCandidate& a, const EvaluatedCandidate& b) noexcept {
+        [&](const EvaluatedCandidate& a, const EvaluatedCandidate& b) noexcept {
             if (a.eligible != b.eligible) return a.eligible > b.eligible;
             if (std::abs(a.utility_score - b.utility_score) > 1e-6) {
                 return a.utility_score > b.utility_score;
@@ -826,6 +840,9 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
             if (std::abs(a.risk_penalty - b.risk_penalty) > 1e-6) {
                 return a.risk_penalty < b.risk_penalty;
             }
+            const uint64_t rank_a = neutral_tie_rank(a.proposal.id);
+            const uint64_t rank_b = neutral_tie_rank(b.proposal.id);
+            if (rank_a != rank_b) return rank_a < rank_b;
             return a.proposal.id < b.proposal.id;
         });
 

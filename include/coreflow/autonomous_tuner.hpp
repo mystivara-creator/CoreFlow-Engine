@@ -274,7 +274,7 @@ struct CandidateStats {
     std::string label;
     double mean_utility{0.5};           // Empirical utility score Q_k
     double mean_utility_delta{0.0};     // Empirical mean ΔU
-    double ucb_score{0.65};             // Upper Confidence Bound (UCB1) score
+    double ucb_score{0.50};             // Neutral, evidence-driven UCB1 score
     double adaptive_scale{1.0};         // Step-sizing factor [0.25..1.0] reduced on rollback
     uint32_t settling_ticks{1};         // Domain-specific post-mutation settling ticks
     // Attempts are not empirical rewards.

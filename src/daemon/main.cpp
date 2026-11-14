@@ -532,6 +532,10 @@ std::string build_status_json(
     const bool uclamp_supported = live_runtime && context.uclamp_governor().is_supported();
     const uint32_t uclamp_min = uclamp_supported ? context.uclamp_governor().get_top_app_min() : 0U;
     const uint32_t uclamp_max = uclamp_supported ? context.uclamp_governor().get_top_app_max() : 0U;
+    const std::string uclamp_target_path = uclamp_supported
+        ? std::string(context.uclamp_governor().target_path()) : std::string{};
+    const std::string uclamp_encoding = uclamp_supported
+        ? std::string(context.uclamp_governor().encoding_name()) : std::string{"unavailable"};
     // Read-only status does not train models or create mutation-capable owners.
     const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
     AutonomousDecisionSnapshot tuner{
@@ -606,6 +610,10 @@ std::string build_status_json(
         << ",\"pid\":" << pid
         << ",\"uclampMin\":" << uclamp_min
         << ",\"uclampMax\":" << uclamp_max
+        << ",\"uclampPolicyMin\":" << cfg_status.top_app_interactive_min
+        << ",\"uclampPolicyMax\":" << cfg_status.top_app_interactive_max
+        << ",\"uclampTargetPath\":" << json_string(uclamp_target_path)
+        << ",\"uclampEncoding\":" << json_string(uclamp_encoding)
         << ",\"uclampSupported\":" << (uclamp_supported ? "true" : "false")
         << ",\"uclampProbeSkipped\":" << (live_runtime ? "false" : "true")
         << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
@@ -736,6 +744,7 @@ std::string build_status_json(
             << ",\"label\":" << json_string(c.label)
             << ",\"domain\":" << json_string(c.domain)
             << ",\"trials\":" << c.trials
+            << ",\"rewardSamples\":" << c.reward_samples
             << ",\"successes\":" << c.successes
             << ",\"rollbacks\":" << c.rollbacks
             << ",\"inconclusive\":" << c.inconclusive_count

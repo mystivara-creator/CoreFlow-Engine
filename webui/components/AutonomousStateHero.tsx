@@ -31,7 +31,14 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
   const primaryQueue = telemetry.blockQueues?.[0];
   const candidates = telemetry.tunerCandidates ?? [];
+  const evaluatedCandidates = telemetry.tunerEvaluatedCandidates ?? [];
+  const rankedEvaluations = [...evaluatedCandidates].sort(
+    (a, b) => b.utilityScore - a.utilityScore || b.confidence - a.confidence
+  );
+  const rankedArms = [...candidates].sort((a, b) => b.ucbScore - a.ucbScore);
   const utilityDelta = telemetry.tunerUtilityDelta ?? 0;
+  const configuredUclampMin = telemetry.uclampPolicyMin ?? telemetry.uclampMin;
+  const configuredUclampMax = telemetry.uclampPolicyMax ?? telemetry.uclampMax;
 
   return (
     <div className="m3-card p-6 sm:p-8 relative overflow-hidden">
@@ -116,17 +123,38 @@ export const AutonomousStateHero: React.FC<Props> = ({
 
       {/* 4-Column Metric Grid with Block Alignment */}
       <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-6">
-        <div className="m3-tonal-block p-4 flex flex-col justify-between">
+        <div className="m3-tonal-block p-4 flex flex-col justify-between pixel-uclamp-card">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-2">
-            <span className="font-medium">Top-App UClamp{!nativeMode ? ' (sim)' : ''}</span>
+            <span className="font-medium">Foreground UClamp · Kernel Readback</span>
             <Zap className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
           </div>
           <div className="text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
-            {telemetry.uclampMin}
-            <span className="text-xs font-normal text-slate-500 dark:text-slate-400"> / {telemetry.uclampMax}</span>
+            {telemetry.uclampSupported ? telemetry.uclampMin : '—'}
+            <span className="text-xs font-normal text-slate-500 dark:text-slate-400"> / {telemetry.uclampSupported ? telemetry.uclampMax : '—'}</span>
           </div>
-          <div className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-normal">
-            {telemetry.uclampSupported ? 'Semantic cgroup v2 verified' : 'Capability unavailable'}
+          <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-900/[0.06] dark:border-white/[0.07] pt-3 text-[11px]">
+            <div>
+              <div className="text-slate-500 dark:text-slate-400">Configured base</div>
+              <div className="mt-0.5 font-mono font-semibold text-slate-800 dark:text-slate-200">
+                {configuredUclampMin} / {configuredUclampMax}
+              </div>
+            </div>
+            <div>
+              <div className="text-slate-500 dark:text-slate-400">ABI encoding</div>
+              <div className="mt-0.5 font-mono font-semibold text-slate-800 dark:text-slate-200">
+                {telemetry.uclampEncoding ?? 'unknown'}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 truncate text-[10px] font-mono text-slate-500 dark:text-slate-400" title={telemetry.uclampTargetPath ?? ''}>
+            {telemetry.uclampSupported
+              ? (telemetry.uclampTargetPath || 'Verified foreground cgroup')
+              : 'Foreground cgroup capability unavailable'}
+          </div>
+          <div className="mt-1 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+            {telemetry.uclampSupported
+              ? 'Live values are read back from the resolved cgroup. Workload, pressure, and thermal budgets may change them from the configured base.'
+              : 'No verified writable UClamp target; no mutation is claimed.'}
           </div>
         </div>
 
@@ -281,27 +309,65 @@ export const AutonomousStateHero: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white/70 dark:bg-slate-900/40 p-3.5 border border-slate-900/[0.05] dark:border-white/[0.05] space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-slate-700 dark:text-slate-200">
-                UCB1 Empirical Bandit Candidate Memory{!nativeMode ? ' (sim)' : ''}
-              </span>
-              <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                Active: {telemetry.tunerCandidateId ?? 'oem_baseline'}
-              </span>
+          <div className="rounded-2xl bg-white/70 dark:bg-slate-900/40 p-3.5 border border-slate-900/[0.05] dark:border-white/[0.05] space-y-3 pixel-ranking-card">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold text-slate-800 dark:text-slate-100">Global Adaptive Candidate Ranking</span>
+              <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Active: {telemetry.tunerCandidateId ?? 'none'}</span>
             </div>
-            <div className="space-y-1.5">
-              {candidates.slice(0, 3).map((c) => (
-                <div
-                  key={c.id}
-                  className="flex items-center justify-between gap-2 text-xs py-1 border-b last:border-b-0 border-slate-900/[0.04] dark:border-white/[0.04]"
-                >
-                  <span className="truncate text-slate-700 dark:text-slate-300 font-medium">
-                    {c.label}
-                  </span>
-                  <span className="shrink-0 font-mono tabular-nums text-[11px] text-slate-500 dark:text-slate-400">
-                    wins {c.successes}/{c.trials} · ΔU {c.meanDelta >= 0 ? `+${c.meanDelta.toFixed(1)}` : c.meanDelta.toFixed(1)}
-                  </span>
+            <p className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+              One pooled UCB population across all candidates. Domain is metadata only; workload relevance, empirical evidence, eligibility, and safety determine the decision.
+            </p>
+            <div className="max-h-[360px] space-y-1.5 overflow-y-auto pr-1">
+              {rankedEvaluations.length > 0 ? rankedEvaluations.map((candidate, index) => {
+                const arm = candidates.find((item) => item.id === candidate.id);
+                const isActive = candidate.selected || candidate.id === telemetry.tunerCandidateId;
+                return (
+                  <div
+                    key={candidate.id}
+                    className={'rounded-xl border px-3 py-2.5 ' +
+                      (isActive
+                        ? 'border-[#0b57d0]/30 bg-[#d3e3fd]/55 dark:border-[#a8c7fa]/30 dark:bg-[#0842a0]/20'
+                        : 'border-slate-900/[0.05] bg-white/55 dark:border-white/[0.06] dark:bg-white/[0.025]')}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                          <span className="text-slate-400">#{index + 1}</span>
+                          <span className="text-slate-500 dark:text-slate-400">{candidate.domain}</span>
+                          {isActive && <span className="rounded-full bg-[#0b57d0] px-1.5 py-0.5 text-white dark:bg-[#a8c7fa] dark:text-[#062e6f]">ACTIVE</span>}
+                          {!candidate.eligible && <span className="text-amber-700 dark:text-amber-300">INELIGIBLE</span>}
+                        </div>
+                        <div className="mt-1 break-all text-[11px] font-semibold text-slate-800 dark:text-slate-100">{candidate.id}</div>
+                      </div>
+                      <div className="shrink-0 text-right font-mono tabular-nums">
+                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{candidate.utilityScore.toFixed(1)}</div>
+                        <div className="text-[9px] text-slate-500 dark:text-slate-400">global utility</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                      <span>UCB {candidate.empiricalScore.toFixed(3)}</span>
+                      <span>confidence {Math.round(candidate.confidence * 100)}%</span>
+                      {arm && <span>evidence {arm.rewardSamples ?? 0}</span>}
+                      {arm && <span>retained {arm.successes}</span>}
+                      {arm && <span>rollback {arm.rollbacks}</span>}
+                      {arm && <span>attempts {arm.trials}</span>}
+                    </div>
+                    {!candidate.eligible && candidate.rejectionReason && (
+                      <div className="mt-1 break-words text-[10px] text-amber-700 dark:text-amber-300">{candidate.rejectionReason}</div>
+                    )}
+                  </div>
+                );
+              }) : rankedArms.map((arm, index) => (
+                <div key={arm.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-900/[0.05] px-3 py-2 dark:border-white/[0.06]">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">#{index + 1} · {arm.domain}</div>
+                    <div className="truncate text-[11px] font-semibold text-slate-800 dark:text-slate-100">{arm.id}</div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">evidence {arm.rewardSamples ?? 0} · retained {arm.successes} · rollback {arm.rollbacks}</div>
+                  </div>
+                  <div className="shrink-0 text-right font-mono">
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{arm.ucbScore.toFixed(3)}</div>
+                    <div className="text-[9px] text-slate-500 dark:text-slate-400">UCB1</div>
+                  </div>
                 </div>
               ))}
             </div>
