@@ -2,7 +2,7 @@
 
 # CFAE System Framework Release History
 
-## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline
+## Unreleased — v4.0.0 acceptance hardening (not yet device-validated)\n\n- KGSL paired-level actuator code exists but is not routed from the autonomous GPU candidate loop; it remains dormant rather than marketed as active actuation.\n- FrameTimeline capture is wired into RenderBooster/workload evidence after lifecycle promotion; actual Perfetto permission and sample availability remain device-dependent.\n- Vulkan cache hooks exist in the implicit layer, but installed/configured files do not prove Android application-process loader activation. Runtime interception remains unverified.\n- SkiaVK/HWUI, VRS, and pipeline prewarming remain inactive.\n- v4.0.0 remains an unpublished build candidate pending physical-device acceptance.\n\n## v4.0.0 — Transactional GPU, Vulkan Cache Persistence & FrameTimeline (build candidate; device acceptance pending)
 
 ### Native GPU actuation
 - Add a GPU candidate provider to the global decision engine, admitted only with validated GPU utilization, actual FrameTimeline deadline misses, and sufficient thermal headroom.
