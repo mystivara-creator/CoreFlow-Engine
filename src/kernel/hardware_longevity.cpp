@@ -301,7 +301,7 @@ bool HardwareLongevityManager::apply_storage_pacing() {
     const auto foreground = topology.resolve_foreground_io_group();
     if (!foreground) {
         if (storage_transaction_id_.empty())
-            next_storage_probe_ = now + std::chrono::seconds(30);
+            next_storage_probe_ = now + std::chrono::seconds(5);
         storage_paced_ = false;
         return true; // Unsupported/ambiguous I/O ABI remains observation-only.
     }
