@@ -716,7 +716,7 @@ export const App: React.FC = () => {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              CFAE System Framework v3.1.0
+              CFAE System Framework v4.0.0
             </span>
             {' · '}Autonomous Mutation Safety & Coordinated Optimization
           </div>
