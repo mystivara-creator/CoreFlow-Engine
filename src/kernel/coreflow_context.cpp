@@ -95,7 +95,8 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
 }
 
 bool CoreFlowContext::Stop(std::string_view reason) noexcept {
-    if (state_ == State::Constructed || state_ == State::Stopped) {
+    if (state_ == State::Stopped) return true;
+    if (state_ == State::Constructed) {
         destroy_runtime_services();
         profile_.reset();
         platform_context_ = {};

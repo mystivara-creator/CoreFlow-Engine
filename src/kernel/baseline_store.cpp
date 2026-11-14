@@ -311,8 +311,11 @@ void BaselineStore::reinitialize() {
 }
 
 BaselineStore& BaselineStore::instance() {
-    static BaselineStore store;
-    return store;
+    // This store is reachable from short-lived read-only CLI inspection paths.
+    // Keep its process-wide mutex alive through static deinitialization; the
+    // operating system reclaims this bounded singleton when the process exits.
+    static BaselineStore* const store = new BaselineStore();
+    return *store;
 }
 
 bool BaselineStore::identity_unavailable() const noexcept {

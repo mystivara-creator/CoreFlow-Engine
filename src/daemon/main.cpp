@@ -90,12 +90,56 @@ void emit_log(bool is_error, const std::string& message) {
 #endif
 }
 
-// Fatal signal handlers cannot lock mutexes, perform stream I/O, or allocate.
+// Fatal handlers use only async-signal-safe operations. The previous Android
+// disposition is restored before re-raising so debuggerd can capture the fault.
+constexpr int kFatalSignalSlots = 128;
+struct sigaction old_sigaction[kFatalSignalSlots]{};
+sigset_t fatal_unblock_sets[kFatalSignalSlots]{};
+volatile sig_atomic_t old_sigaction_valid[kFatalSignalSlots]{};
+
 void on_fatal_signal(int signum) {
-    constexpr char line[] = "[CoreFlow] Fatal signal. Next start will recover journal.\n";
-    const ssize_t emitted = ::write(STDERR_FILENO, line, sizeof(line) - 1);
-    (void)emitted;
+    char message[128];
+    size_t length = 0;
+    constexpr char prefix[] = "[CoreFlow] Fatal signal ";
+    constexpr char suffix[] = "; handing off to Android debuggerd; next start will recover journal.\n";
+    for (size_t i = 0; i < sizeof(prefix) - 1U; ++i) message[length++] = prefix[i];
+
+    unsigned value = signum > 0 ? static_cast<unsigned>(signum) : 0U;
+    char digits[16];
+    size_t digit_count = 0;
+    do {
+        digits[digit_count++] = static_cast<char>('0' + (value % 10U));
+        value /= 10U;
+    } while (value != 0U && digit_count < sizeof(digits));
+    while (digit_count > 0U) message[length++] = digits[--digit_count];
+    for (size_t i = 0; i < sizeof(suffix) - 1U; ++i) message[length++] = suffix[i];
+    (void)::write(STDERR_FILENO, message, length);
+
+    if (signum <= 0 || signum >= kFatalSignalSlots ||
+        old_sigaction_valid[signum] == 0) {
+        ::_exit(128 + signum);
+    }
+    if (::sigaction(signum, &old_sigaction[signum], nullptr) != 0) {
+        ::_exit(128 + signum);
+    }
+    if (::sigprocmask(SIG_UNBLOCK, &fatal_unblock_sets[signum], nullptr) != 0) {
+        ::_exit(128 + signum);
+    }
+    if (::raise(signum) != 0) {
+        ::_exit(128 + signum);
+    }
     ::_exit(128 + signum);
+}
+
+void install_fatal_signal_action(int signum, const struct sigaction& action) noexcept {
+    if (signum <= 0 || signum >= kFatalSignalSlots) return;
+    sigset_t unblock_set{};
+    if (::sigemptyset(&unblock_set) != 0 || ::sigaddset(&unblock_set, signum) != 0) return;
+    fatal_unblock_sets[signum] = unblock_set;
+    old_sigaction_valid[signum] = 0;
+    if (::sigaction(signum, &action, &old_sigaction[signum]) == 0) {
+        old_sigaction_valid[signum] = 1;
+    }
 }
 
 void install_signal_hardening() noexcept {
@@ -107,12 +151,14 @@ void install_signal_hardening() noexcept {
     struct sigaction fatal_sa{};
     fatal_sa.sa_handler = on_fatal_signal;
     sigemptyset(&fatal_sa.sa_mask);
-    fatal_sa.sa_flags = SA_RESETHAND;
-    (void)::sigaction(SIGSEGV, &fatal_sa, nullptr);
-    (void)::sigaction(SIGBUS, &fatal_sa, nullptr);
-    (void)::sigaction(SIGABRT, &fatal_sa, nullptr);
-    (void)::sigaction(SIGILL, &fatal_sa, nullptr);
-    (void)::sigaction(SIGFPE, &fatal_sa, nullptr);
+    fatal_sa.sa_flags = 0;
+    install_fatal_signal_action(SIGSEGV, fatal_sa);
+    install_fatal_signal_action(SIGABRT, fatal_sa);
+    install_fatal_signal_action(SIGBUS, fatal_sa);
+    install_fatal_signal_action(SIGFPE, fatal_sa);
+    install_fatal_signal_action(SIGILL, fatal_sa);
+    install_fatal_signal_action(SIGTRAP, fatal_sa);
+    install_fatal_signal_action(SIGSYS, fatal_sa);
 }
 
 bool marker(const char* path) noexcept {
@@ -233,6 +279,39 @@ bool process_matches(pid_t pid) {
     const size_t slash = argv0.find_last_of('/');
     const std::string_view base = slash == std::string_view::npos ? argv0 : argv0.substr(slash + 1);
     return base == "coreflowd";
+}
+
+bool service_launcher_authorized() {
+    const pid_t parent = ::getppid();
+    if (parent <= 1) return false;
+
+    UniqueFd state_dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!state_dir.valid()) return false;
+    UniqueFd service_lock(::openat(state_dir.get(), "service.lock",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!service_lock.valid()) return false;
+    UniqueFd owner_fd(::openat(service_lock.get(), "owner.pid",
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!owner_fd.valid()) return false;
+
+    struct stat owner_stat{};
+    if (::fstat(owner_fd.get(), &owner_stat) != 0 || !S_ISREG(owner_stat.st_mode)) return false;
+    char owner_text[32];
+    ssize_t count = 0;
+    do {
+        count = ::read(owner_fd.get(), owner_text, sizeof(owner_text));
+    } while (count < 0 && errno == EINTR);
+    if (count <= 0) return false;
+
+    const std::string owner_value = DaemonConfig::trim(
+        std::string(owner_text, static_cast<size_t>(count)));
+    long owner_pid = 0;
+    const auto parsed = std::from_chars(
+        owner_value.data(), owner_value.data() + owner_value.size(), owner_pid);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != owner_value.data() + owner_value.size() ||
+        owner_pid != static_cast<long>(parent)) return false;
+    return ::kill(parent, 0) == 0 || errno == EPERM;
 }
 
 pid_t daemon_pid() {
@@ -1441,9 +1520,14 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    // If another live coreflowd instance already holds the PID file, exit cleanly.
+    // Existing daemon ownership is authoritative; do not spawn a second instance.
     if (daemon_pid() > 0) {
         return 0;
+    }
+    // service.sh is the sole launcher: it must own service.lock and be our parent.
+    if (!service_launcher_authorized()) {
+        emit_log(true, "[CoreFlow] Daemon launch rejected: service.sh must hold service.lock.");
+        return 2;
     }
 
     if (fork_daemon) {
@@ -1465,6 +1549,10 @@ int main(int argc, char* argv[]) {
 
     UniqueFd pid_lock;
     if (!write_pid(pid_lock)) {
+        const int lock_error = errno;
+        // A held flock means another daemon owns this PID inode. The failed
+        // contender has not truncated or rewritten the active owner's PID file.
+        if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) return 0;
         emit_log(true, "[CoreFlow] Unable to acquire daemon singleton lock.");
         return 1;
     }

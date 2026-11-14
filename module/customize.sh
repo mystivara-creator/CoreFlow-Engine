@@ -461,8 +461,12 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
         else
             mkdir -p "$STATE_DIR/logs" 2>/dev/null || true
             LIVE_LOG="$STATE_DIR/logs/coreflowd.log"
-            if [ ! -L "$LIVE_LOG" ] &&
-               "$LIVE_BIN" --daemon >> "$LIVE_LOG" 2>&1 </dev/null; then
+            LIVE_SERVICE="$LIVE_MOD/service.sh"
+            if [ -f "$LIVE_SERVICE" ] && [ ! -L "$LIVE_SERVICE" ] && [ ! -L "$LIVE_LOG" ]; then
+                chmod 0755 "$LIVE_SERVICE" 2>/dev/null || true
+                # Delegate daemon startup to the serialized post-boot entrypoint.
+                COREFLOW_STATE_DIR="$STATE_DIR" COREFLOW_SKIP_BOOT_WAIT=1 \
+                    "$LIVE_SERVICE" >/dev/null 2>&1 || true
                 START_ATTEMPT=0
                 DAEMON_READY=0
                 while [ "$START_ATTEMPT" -lt 20 ]; do
@@ -476,11 +480,10 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                 if [ "$DAEMON_READY" -eq 1 ]; then
                     ui "- Live daemon restart confirmed by native --status."
                 else
-                    ui "! Live daemon restart was not confirmed; reboot before relying on the new package."
+                    ui "! Live daemon restart was not confirmed by service.sh; reboot before relying on the new package."
                 fi
             else
-                ui "! Live daemon start was not confirmed; reboot before relying on the new package."
-            fi
+                ui "! Live service.sh entrypoint is unavailable; reboot before relying on the new package."
         fi
     fi
 else
