@@ -466,7 +466,7 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                 chmod 0755 "$LIVE_SERVICE" 2>/dev/null || true
                 # Delegate daemon startup to the serialized post-boot entrypoint.
                 COREFLOW_STATE_DIR="$STATE_DIR" COREFLOW_SKIP_BOOT_WAIT=1 \
-                    "$LIVE_SERVICE" >/dev/null 2>&1 || true
+                    sh "$LIVE_SERVICE" >/dev/null 2>&1 || true
                 START_ATTEMPT=0
                 DAEMON_READY=0
                 while [ "$START_ATTEMPT" -lt 20 ]; do
