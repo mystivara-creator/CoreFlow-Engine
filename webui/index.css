@@ -302,3 +302,89 @@ html[data-theme="dark"] .pixel-nav-item { color: #a4adbd; }
   .m3-card { border-radius: 21px; }
   .m3-tonal-block { border-radius: 17px; }
 }
+
+
+/* Cohesive Pixel page hierarchy shared by every operational section. */
+.pixel-main {
+  max-width: 74rem;
+  min-width: 0;
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom));
+}
+.pixel-page {
+  min-width: 0;
+  animation: pixel-page-enter 180ms ease-out both;
+}
+.pixel-page-heading {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 1.15rem 1.25rem 1.2rem;
+  border: 1px solid var(--m3-outline);
+  border-radius: 22px;
+  background: linear-gradient(125deg, var(--m3-surface-container), var(--m3-surface-tonal));
+}
+.pixel-page-heading::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  width: 8rem;
+  height: 8rem;
+  right: -2.5rem;
+  top: -3.5rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--m3-primary) 10%, transparent);
+}
+.pixel-page-eyebrow {
+  margin: 0;
+  color: var(--m3-primary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.pixel-page-title {
+  margin-top: .35rem;
+  color: inherit;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 4.6vw, 1.9rem);
+  font-weight: 750;
+  letter-spacing: -.035em;
+  line-height: 1.16;
+}
+.pixel-page-description {
+  max-width: 54rem;
+  margin-top: .55rem;
+  color: #6b7485;
+  font-size: .82rem;
+  line-height: 1.55;
+}
+html[data-theme="dark"] .pixel-page-description { color: #a4adbd; }
+.pixel-metric {
+  min-height: 5.5rem;
+  align-items: center;
+  border-radius: 20px;
+}
+.pixel-metric > div:first-child {
+  border-radius: 13px;
+}
+.pixel-footer {
+  border-top: 1px solid var(--m3-outline);
+  background: var(--m3-surface-container);
+  padding: 1.1rem 0 calc(1.1rem + env(safe-area-inset-bottom));
+}
+@keyframes pixel-page-enter {
+  from { opacity: .82; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 640px) {
+  .pixel-page-heading {
+    padding: 1rem 1rem 1.05rem;
+    border-radius: 19px;
+  }
+  .pixel-page-description { font-size: .76rem; }
+  .pixel-page { animation: none; }
+  .pixel-metric { min-height: 5rem; padding: .85rem !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pixel-page { animation: none; }
+}

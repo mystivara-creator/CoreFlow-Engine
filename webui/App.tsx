@@ -597,7 +597,7 @@ export const App: React.FC = () => {
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
       />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+      <main className="pixel-main flex-1 w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
         {/* Material Design 3 Navigation Pill Bar (Unified Monochromatic Tonal Indicator) */}
         <nav
           aria-label="Primary sections"
@@ -622,7 +622,7 @@ export const App: React.FC = () => {
         </nav>
 
         {activeTab === 'dashboard' && (
-          <div className="space-y-6 m3-stage">
+          <div className="pixel-page space-y-6 m3-stage">
             <section className="space-y-3" aria-label="Autonomous runtime state">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -639,9 +639,9 @@ export const App: React.FC = () => {
             </section>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><Thermometer className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Thermal headroom</div><div className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{telemetry.thermalHeadroomValid && telemetry.thermalHeadroom != null ? `${Math.round(telemetry.thermalHeadroom * 100)}%` : 'Unavailable'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">{telemetry.thermalGuardActive ? 'Thermal guard engaged' : 'OEM thermal policy respected'}</div></div></div>
-              <div className="m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><Gauge className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Resource pressure</div><div className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{telemetry.cpuPressureValid || telemetry.memoryPressureValid || telemetry.ioPressureValid ? `${Math.max(telemetry.cpuPressureValid ? telemetry.cpuPressurePct : 0, telemetry.memoryPressureValid ? telemetry.memoryPressurePct : 0, telemetry.ioPressureValid ? telemetry.ioPressurePct : 0).toFixed(1)}%` : 'Unavailable'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Highest available PSI avg10</div></div></div>
-              <div className="m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><LockKeyhole className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Mutation ownership</div><div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{telemetry.baselineStatus === 'protected' ? 'Journal armed' : 'Guarded'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Baseline + readback protection</div></div></div>
+              <div className="pixel-metric m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><Thermometer className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Thermal headroom</div><div className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{telemetry.thermalHeadroomValid && telemetry.thermalHeadroom != null ? `${Math.round(telemetry.thermalHeadroom * 100)}%` : 'Unavailable'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">{telemetry.thermalGuardActive ? 'Thermal guard engaged' : 'OEM thermal policy respected'}</div></div></div>
+              <div className="pixel-metric m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><Gauge className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Resource pressure</div><div className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{telemetry.cpuPressureValid || telemetry.memoryPressureValid || telemetry.ioPressureValid ? `${Math.max(telemetry.cpuPressureValid ? telemetry.cpuPressurePct : 0, telemetry.memoryPressureValid ? telemetry.memoryPressurePct : 0, telemetry.ioPressureValid ? telemetry.ioPressurePct : 0).toFixed(1)}%` : 'Unavailable'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Highest available PSI avg10</div></div></div>
+              <div className="pixel-metric m3-card flex items-start gap-3 p-4"><div className="rounded-xl bg-[#d3e3fd] p-2.5 text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"><LockKeyhole className="h-4 w-4"/></div><div className="min-w-0"><div className="text-[11px] text-slate-500 dark:text-slate-400">Mutation ownership</div><div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{telemetry.baselineStatus === 'protected' ? 'Journal armed' : 'Guarded'}</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Baseline + readback protection</div></div></div>
             </div>
 
             <SemanticEvidencePanel evidence={semanticEvidence} nativeConnected={nativeConnected} simulationMode={!isNativeBridge} />
@@ -651,16 +651,16 @@ export const App: React.FC = () => {
         )}
 
         {activeTab === 'thermal' && (
-          <div className="space-y-6 m3-stage">
-            <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">Protection domain</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Thermal intelligence</h1><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Sensor evidence and OEM thermal constraints are displayed for transparency. The daemon selects mitigation automatically.</p></div>
+          <div className="pixel-page space-y-6 m3-stage">
+            <header className="pixel-page-heading"><p className="pixel-page-eyebrow">Protection domain</p><h1 className="pixel-page-title">Thermal intelligence</h1><p className="pixel-page-description">Sensor evidence and OEM thermal constraints are displayed for transparency. The daemon selects mitigation automatically.</p></header>
             <ThermalMatrixCard telemetry={telemetry} nativeMode={isNativeBridge} thermalTripCelsius={thermalTripCelsius} />
             <LiveReactionStream logs={logs.filter((event) => event.type === 'THERMAL' || event.tag.toLowerCase().includes('thermal'))} nativeMode={isNativeBridge} />
           </div>
         )}
 
         {activeTab === 'hardware' && (
-          <div className="space-y-6 m3-stage">
-            <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">Capability discovery</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Hardware & resource profile</h1><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Detected hardware is evidence, not automatic mutation authority. CoreFlow adapts only through validated operational contracts.</p></div>
+          <div className="pixel-page space-y-6 m3-stage">
+            <header className="pixel-page-heading"><p className="pixel-page-eyebrow">Capability discovery</p><h1 className="pixel-page-title">Hardware & resource profile</h1><p className="pixel-page-description">Detected hardware is evidence, not automatic mutation authority. CoreFlow adapts only through validated operational contracts.</p></header>
             <section className="m3-card space-y-4 p-5 sm:p-7">
               <div className="flex items-center gap-2"><Cpu className="h-4 w-4 text-[#0b57d0] dark:text-[#a8c7fa]"/><h2 className="font-semibold">Device identity</h2></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -696,24 +696,24 @@ export const App: React.FC = () => {
         )}
 
         {activeTab === 'vulkan' && (
-          <div className="space-y-6 m3-stage">
-            <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">User opt-in subsystem</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Vulkan diagnostics & layer</h1><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Vulkan layer activation is the only manual feature switch. All system optimization domains remain autonomous.</p></div>
+          <div className="pixel-page space-y-6 m3-stage">
+            <header className="pixel-page-heading"><p className="pixel-page-eyebrow">User opt-in subsystem</p><h1 className="pixel-page-title">Vulkan diagnostics & layer</h1><p className="pixel-page-description">Vulkan layer activation is the only manual feature switch. All system optimization domains remain autonomous.</p></header>
             <VulkanCapabilitiesCard vulkanTelemetry={telemetry.vulkan} vulkanConfig={vulkanConfig} nativeMode={isNativeBridge} onSaveVulkanConfig={handleSaveVulkanConfig} isSaving={isSaving} saveMessage={vulkanSaveMessage} />
             <LiveReactionStream logs={logs.filter((event) => event.tag.toLowerCase().includes('vulkan'))} nativeMode={isNativeBridge} />
           </div>
         )}
 
         {activeTab === 'console' && (
-          <div className="space-y-6 m3-stage">
-            <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">Runtime transparency</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Audit & diagnostics</h1><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Read-only runtime evidence, decisions, and diagnostic output.</p></div>
+          <div className="pixel-page space-y-6 m3-stage">
+            <header className="pixel-page-heading"><p className="pixel-page-eyebrow">Runtime transparency</p><h1 className="pixel-page-title">Audit & diagnostics</h1><p className="pixel-page-description">Read-only runtime evidence, decisions, and diagnostic output.</p></header>
             <DeveloperConsoleCard nativeMode={isNativeBridge} onRefreshTelemetry={async () => { await refreshNative(); }} />
             <LiveReactionStream logs={logs} nativeMode={isNativeBridge} />
           </div>
         )}
 
         {activeTab === 'validation' && (
-          <div className="space-y-6 m3-stage">
-            <div><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0b57d0] dark:text-[#a8c7fa]">Evidence, not assumptions</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Device validation</h1><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">Inspect the live validation contract and native subsystem readiness.</p></div>
+          <div className="pixel-page space-y-6 m3-stage">
+            <header className="pixel-page-heading"><p className="pixel-page-eyebrow">Evidence, not assumptions</p><h1 className="pixel-page-title">Device validation</h1><p className="pixel-page-description">Inspect the live validation contract and native subsystem readiness.</p></header>
             <DeviceValidationSuiteCard nativeMode={isNativeBridge} />
           </div>
         )}
@@ -725,7 +725,7 @@ export const App: React.FC = () => {
         {...hardwareInfo}
       />
 
-      <footer className="border-t border-slate-900/[0.06] dark:border-white/[0.06] bg-white/50 dark:bg-[#0e1117]/60 backdrop-blur-xl py-6 text-xs text-slate-500 dark:text-slate-400">
+      <footer className="pixel-footer text-xs text-slate-500 dark:text-slate-400">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
             <span className="font-semibold text-slate-700 dark:text-slate-300">
