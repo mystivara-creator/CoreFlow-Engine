@@ -123,6 +123,15 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
                 metrics_.dropped_frames = static_cast<uint32_t>(
                     std::min<uint64_t>(total, UINT32_MAX));
             }
+            if (event.frame_duration_ns > 0U) {
+                const double duration_ms =
+                    static_cast<double>(event.frame_duration_ns) / 1'000'000.0;
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                metrics_.average_frame_time_ms =
+                    metrics_.average_frame_time_ms == 0.0
+                        ? duration_ms
+                        : 0.9 * metrics_.average_frame_time_ms + 0.1 * duration_ms;
+            }
             if (event.missed_frames == 0) {
                 consecutive_hitches_.store(0, std::memory_order_relaxed);
             } else {
