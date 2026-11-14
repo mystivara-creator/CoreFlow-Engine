@@ -46,6 +46,7 @@ public:
     void on_frame_presented(double frame_time_ms);
     [[nodiscard]] bool connect_frame_source(FrameEventSource& source) noexcept;
     void disconnect_frame_source() noexcept;
+    void set_thermal_guard(bool active) noexcept;
 
     bool unlock_display_refresh_limits();
     [[nodiscard]] FrameMetrics get_metrics() const;
@@ -54,6 +55,7 @@ private:
     mutable std::mutex metrics_mutex_;
     FrameMetrics metrics_;
     std::atomic<bool> in_touch_gesture_{false};
+    std::atomic<bool> thermal_guard_{false};
     std::atomic<uint32_t> consecutive_hitches_{0};
     FrameEventSource* frame_source_{nullptr};
     UclampGovernor& governor_;
