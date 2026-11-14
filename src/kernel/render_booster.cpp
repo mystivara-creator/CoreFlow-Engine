@@ -7,6 +7,7 @@
 
 #include "coreflow/render_booster.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/unique_fd.hpp"
 #include <algorithm>
 #include <cerrno>
@@ -66,6 +67,12 @@ void RenderBooster::disconnect_frame_source() noexcept {
         frame_source_->stop();
         frame_source_ = nullptr;
     }
+}
+
+void RenderBooster::set_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept {
+    if (foreground_task_resolver_ == resolver) return;
+    restore_foreground_tasks();
+    foreground_task_resolver_ = resolver;
 }
 
 void RenderBooster::set_thermal_guard(bool active) noexcept {
@@ -205,16 +212,26 @@ void RenderBooster::handle_request(uint32_t) noexcept {
         itimerspec disarm{};
         (void)::timerfd_settime(expiry_fd_.get(), 0, &disarm, nullptr);
         burst_active_ = false;
+        restore_foreground_tasks();
         return;
     }
 
-    if (!burst_active_) {
-        baseline_min_ = governor_.get_top_app_min();
+    // PID/TID identity checks and cgroup migration run on the reactor thread,
+    // never from the evdev producer callback.
+    if (foreground_task_resolver_ && !foreground_tasks_active_) {
+        if (!foreground_task_resolver_->refresh(true)) {
+            (void)foreground_task_resolver_->restore_all();
+            return;
+        }
+        foreground_tasks_active_ = true;
+    }
+
+    if (!burst_active_)        baseline_min_ = governor_.get_top_app_min();
         baseline_max_ = governor_.get_top_app_max();
     }
     if (!governor_.apply_state(WorkloadState::Balanced, requested_min,
                                governor_.get_top_app_max())) {
-        if (burst_active_) revert_burst();
+        revert_burst();
         return;
     }
     burst_active_ = true;
@@ -242,16 +259,22 @@ void RenderBooster::restore_burst() noexcept {
     revert_burst();
 }
 
+void RenderBooster::restore_foreground_tasks() noexcept {
+    if (!foreground_tasks_active_ || foreground_task_resolver_ == nullptr) return;
+    (void)foreground_task_resolver_->restore_all();
+    foreground_tasks_active_ = false;
+}
+
 void RenderBooster::revert_burst() noexcept {
-    if (!burst_active_) return;
-    // OWNERSHIP_LOST is a handoff: do not overwrite the value that replaced ours.
-    if (governor_.owned_values_intact()) {
-        // Restore the exact pre-burst governor state. UclampGovernor uses the
-        // captured OEM raw encoding when the pair returns to its factory values.
-        (void)governor_.apply_state(
-            WorkloadState::Balanced, baseline_min_, baseline_max_);
+    if (burst_active_) {
+        // OWNERSHIP_LOST is a handoff: do not overwrite the value that replaced ours.
+        if (governor_.owned_values_intact()) {
+            (void)governor_.apply_state(
+                WorkloadState::Balanced, baseline_min_, baseline_max_);
+        }
+        burst_active_ = false;
     }
-    burst_active_ = false;
+    restore_foreground_tasks();
 }
 
 } // namespace coreflow
