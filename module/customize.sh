@@ -484,6 +484,7 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                 fi
             else
                 ui "! Live service.sh entrypoint is unavailable; reboot before relying on the new package."
+            fi
         fi
     fi
 else
