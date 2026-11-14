@@ -56,16 +56,21 @@ RenderBooster::~RenderBooster() {
 }
 
 bool RenderBooster::connect_frame_source(FrameEventSource& source) noexcept {
-    disconnect_frame_source();
+    for (const auto* connected : frame_sources_) {
+        if (connected == &source) return true;
+    }
+    const auto free_slot = std::find(frame_sources_.begin(), frame_sources_.end(), nullptr);
+    if (free_slot == frame_sources_.end()) return false;
     if (!source.start([this](const FrameEvent& event) { on_frame_event(event); })) return false;
-    frame_source_ = &source;
+    *free_slot = &source;
     return true;
 }
 
 void RenderBooster::disconnect_frame_source() noexcept {
-    if (frame_source_ != nullptr) {
-        frame_source_->stop();
-        frame_source_ = nullptr;
+    for (auto*& source : frame_sources_) {
+        if (source == nullptr) continue;
+        source->stop();
+        source = nullptr;
     }
 }
 
@@ -109,6 +114,26 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
                 trigger_burst = hitches >= 2;
             }
             break;
+        case FrameEventKind::FrameTimelineWindow: {
+            if (event.frame_count == 0 || event.missed_frames > event.frame_count) return;
+            {
+                std::lock_guard<std::mutex> lock(metrics_mutex_);
+                const uint64_t total = static_cast<uint64_t>(metrics_.dropped_frames) +
+                    event.missed_frames;
+                metrics_.dropped_frames = static_cast<uint32_t>(
+                    std::min<uint64_t>(total, UINT32_MAX));
+            }
+            if (event.missed_frames == 0) {
+                consecutive_hitches_.store(0, std::memory_order_relaxed);
+            } else {
+                const uint32_t increment = static_cast<uint32_t>(
+                    std::min<uint64_t>(event.missed_frames, UINT32_MAX));
+                const uint32_t previous =
+                    consecutive_hitches_.fetch_add(increment, std::memory_order_relaxed);
+                trigger_burst = previous < 2U && previous + increment >= 2U;
+            }
+            break;
+        }
         case FrameEventKind::FramePresented:
             if (event.frame_duration_ns > 0) {
                 const double duration_ms =

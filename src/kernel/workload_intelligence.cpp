@@ -9,6 +9,7 @@
 #include <spawn.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <algorithm>
 #include <array>
@@ -640,6 +641,92 @@ bool parse_frame_timeline_trace(std::span<const uint8_t> trace,WorkloadFeatureSn
  features.frame_deadline_count=frames;features.frame_deadline_misses=misses;
  features.frame_deadline_miss_pct=100.0*static_cast<double>(misses)/static_cast<double>(frames);
  features.valid_features|=FeatureFrameDeadline;return true;
+}
+
+namespace {
+uint64_t frame_monotonic_now_ns() noexcept {
+ timespec value{};
+ if (::clock_gettime(CLOCK_MONOTONIC, &value) != 0 || value.tv_sec < 0 || value.tv_nsec < 0) return 0;
+ return static_cast<uint64_t>(value.tv_sec) * 1'000'000'000ULL + static_cast<uint64_t>(value.tv_nsec);
+}
+}
+
+bool PerfettoFrameTimelineEventSource::start(FrameEventListener listener) noexcept {
+ if (!listener) return false;
+ std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+ if (worker_started_) return true;
+ {
+  std::lock_guard<std::mutex> event_lock(event_mutex_);
+  listener_ = std::move(listener);
+ }
+ running_.store(true, std::memory_order_release);
+ if (::pthread_create(&worker_, nullptr, &PerfettoFrameTimelineEventSource::thread_entry, this) != 0) {
+  running_.store(false, std::memory_order_release);
+  std::lock_guard<std::mutex> event_lock(event_mutex_);
+  listener_ = {};
+  return false;
+ }
+ worker_started_ = true;
+ return true;
+}
+
+void PerfettoFrameTimelineEventSource::stop() noexcept {
+ std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+ if (worker_started_) {
+  running_.store(false, std::memory_order_release);
+  (void)::pthread_join(worker_, nullptr);
+  worker_started_ = false;
+ }
+ std::lock_guard<std::mutex> event_lock(event_mutex_);
+ listener_ = {};
+}
+
+bool PerfettoFrameTimelineEventSource::latest_snapshot(WorkloadFeatureSnapshot& out) const noexcept {
+ std::lock_guard<std::mutex> lock(snapshot_mutex_);
+ if ((latest_.valid_features & FeatureFrameDeadline) == 0U || latest_.frame_deadline_count == 0U) return false;
+ out = latest_;
+ return true;
+}
+
+void* PerfettoFrameTimelineEventSource::thread_entry(void* context) noexcept {
+ if (context != nullptr) static_cast<PerfettoFrameTimelineEventSource*>(context)->run();
+ return nullptr;
+}
+
+void PerfettoFrameTimelineEventSource::run() noexcept {
+ FrameTimelineSampler sampler;
+ while (running_.load(std::memory_order_acquire)) {
+  WorkloadFeatureSnapshot features{};
+  bool captured = sampler.start(750U) && sampler.finish(features) &&
+      (features.valid_features & FeatureFrameDeadline) != 0U &&
+      features.frame_deadline_count > 0U &&
+      features.frame_deadline_misses <= features.frame_deadline_count;
+  if (captured) {
+   {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    latest_ = features;
+   }
+   FrameEvent event{};
+   event.kind = FrameEventKind::FrameTimelineWindow;
+   event.vsync_timestamp_ns = frame_monotonic_now_ns();
+   event.frame_count = features.frame_deadline_count;
+   event.missed_frames = features.frame_deadline_misses;
+   FrameEventListener listener;
+   {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    listener = listener_;
+   }
+   if (listener && running_.load(std::memory_order_acquire)) listener(event);
+  } else {
+   sampler.stop();
+  }
+  if (!running_.load(std::memory_order_acquire)) break;
+  if (!captured) {
+   const timespec retry{0, 200'000'000L};
+   (void)::nanosleep(&retry, nullptr);
+  }
+ }
+ sampler.stop();
 }
 
 

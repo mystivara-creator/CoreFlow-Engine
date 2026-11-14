@@ -1,9 +1,13 @@
 #pragma once
+#include "coreflow/frame_bridge.hpp"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
+#include <pthread.h>
+#include <mutex>
 namespace coreflow {
 enum class TelemetryBackend : uint8_t { Unavailable, SysfsProcfs, Ebpf };
 enum class DetectedWorkloadClass : uint8_t { Unknown, Gaming, IoHeavy, JankSensitive, CpuBound, GpuBound, MemoryPressure, Mixed };
@@ -137,6 +141,30 @@ private:
 };
 [[nodiscard]] bool parse_frame_timeline_trace(std::span<const uint8_t> trace,
                                                WorkloadFeatureSnapshot& features) noexcept;
+
+// Continuous low-priority consumer: bounded Perfetto captures run on a worker
+// pthread, and only validated frame-count/miss windows cross into the reactor.
+class PerfettoFrameTimelineEventSource final : public FrameEventSource {
+public:
+ [[nodiscard]] bool start(FrameEventListener listener) noexcept override;
+ void stop() noexcept override;
+ [[nodiscard]] bool latest_snapshot(WorkloadFeatureSnapshot& out) const noexcept;
+ ~PerfettoFrameTimelineEventSource() override { stop(); }
+ PerfettoFrameTimelineEventSource() = default;
+ PerfettoFrameTimelineEventSource(const PerfettoFrameTimelineEventSource&) = delete;
+ PerfettoFrameTimelineEventSource& operator=(const PerfettoFrameTimelineEventSource&) = delete;
+private:
+ static void* thread_entry(void* context) noexcept;
+ void run() noexcept;
+ mutable std::mutex lifecycle_mutex_;
+ mutable std::mutex event_mutex_;
+ mutable std::mutex snapshot_mutex_;
+ FrameEventListener listener_{};
+ WorkloadFeatureSnapshot latest_{};
+ pthread_t worker_{};
+ std::atomic<bool> running_{false};
+ bool worker_started_{false};
+};
 
 class WorkloadTelemetryPipeline final {
 public:

@@ -5,6 +5,7 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/render_booster.hpp"
 #include "coreflow/input_event_source.hpp"
+#include "coreflow/workload_intelligence.hpp"
 #include "coreflow/cgroup_v2.hpp"
 #include "coreflow/mount_topology.hpp"
 #include "coreflow/foreground_task_resolver.hpp"
@@ -1522,6 +1523,7 @@ int main(int argc, char* argv[]) {
         "; CPU scaling_max_freq writes are not shared with FrequencyController.");
     EpollReactor reactor;
     NativeInputEventSource input_event_source(reactor);
+    PerfettoFrameTimelineEventSource frame_timeline_source;
     RenderBooster render_booster(
         governor, reactor,
         config.touch_boost_uclamp_min,
@@ -1914,6 +1916,11 @@ int main(int argc, char* argv[]) {
                     } else {
                         emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
                     }
+                    if (render_booster.connect_frame_source(frame_timeline_source)) {
+                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto FrameTimeline consumer started on a worker thread; only validated actual-display-frame windows are forwarded.");
+                    } else {
+                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; jank telemetry remains unavailable.");
+                    }
                 }
                 autonomous_tuner.set_operational(config.enable_tuner);
                 context.vulkan_controller().initialize({
@@ -2033,9 +2040,18 @@ int main(int argc, char* argv[]) {
         if (workload_pipeline_ready) {
             workload_features = workload_pipeline.sample(
                 workload_window_start_ns, workload_now_ns);
-            workload_classification = workload_classifier.classify(
-                workload_features, workload_classification, workload_now_ns);
         }
+        WorkloadFeatureSnapshot frame_timeline_features{};
+        if (frame_timeline_source.latest_snapshot(frame_timeline_features) &&
+            frame_timeline_features.window_end_ns <= workload_now_ns &&
+            workload_now_ns - frame_timeline_features.window_end_ns <= 3'000'000'000ULL) {
+            workload_features.frame_deadline_count = frame_timeline_features.frame_deadline_count;
+            workload_features.frame_deadline_misses = frame_timeline_features.frame_deadline_misses;
+            workload_features.frame_deadline_miss_pct = frame_timeline_features.frame_deadline_miss_pct;
+            workload_features.valid_features |= FeatureFrameDeadline;
+        }
+        workload_classification = workload_classifier.classify(
+            workload_features, workload_classification, workload_now_ns);
         PolicyEvidence frequency_policy_evidence{};
         frequency_policy_evidence.telemetry = workload_features;
         frequency_policy_evidence.classification = workload_classification;

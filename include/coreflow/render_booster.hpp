@@ -9,6 +9,7 @@
 #pragma once
 
 #include <chrono>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -60,7 +61,7 @@ private:
     std::atomic<bool> in_touch_gesture_{false};
     std::atomic<bool> thermal_guard_{false};
     std::atomic<uint32_t> consecutive_hitches_{0};
-    FrameEventSource* frame_source_{nullptr};
+    std::array<FrameEventSource*, 2> frame_sources_{};
     UclampGovernor& governor_;
     EpollReactor& reactor_;
     ForegroundTaskResolver* foreground_task_resolver_{nullptr};
