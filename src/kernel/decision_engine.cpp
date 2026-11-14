@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <unordered_set>
 
 namespace coreflow {
@@ -703,7 +704,18 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
         }
 
         const CandidateStats* st = find_stats(stats, proposal.id);
-        const double empirical = normalize_ucb_empirical(st, evidence.regime, total_reward_samples);
+        // UCB exploration must be causal within the candidate's own subsystem.
+        // CPU/IO samples must not suppress exploration of another domain.
+        uint32_t domain_reward_samples = 0U;
+        for (const auto& domain_stats : stats) {
+            if (domain_stats.domain == proposal.domain_label) {
+                const uint32_t remaining =
+                    std::numeric_limits<uint32_t>::max() - domain_reward_samples;
+                domain_reward_samples += std::min(remaining, domain_stats.reward_samples);
+            }
+        }
+        const double empirical = normalize_ucb_empirical(
+            st, evidence.regime, domain_reward_samples);
         const double sample_maturity = (st == nullptr)
             ? 0.20
             : std::min(1.0, static_cast<double>(st->reward_samples + 1U) / 6.0);
