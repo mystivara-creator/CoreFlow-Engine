@@ -697,10 +697,16 @@ void PerfettoFrameTimelineEventSource::run() noexcept {
  FrameTimelineSampler sampler;
  while (running_.load(std::memory_order_acquire)) {
   WorkloadFeatureSnapshot features{};
+  const uint64_t capture_start_ns = frame_monotonic_now_ns();
   bool captured = sampler.start(750U) && sampler.finish(features) &&
       (features.valid_features & FeatureFrameDeadline) != 0U &&
       features.frame_deadline_count > 0U &&
       features.frame_deadline_misses <= features.frame_deadline_count;
+  if (captured) {
+   features.window_start_ns = capture_start_ns;
+   features.window_end_ns = frame_monotonic_now_ns();
+   if (features.window_end_ns <= features.window_start_ns) captured = false;
+  }
   if (captured) {
    {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -708,7 +714,7 @@ void PerfettoFrameTimelineEventSource::run() noexcept {
    }
    FrameEvent event{};
    event.kind = FrameEventKind::FrameTimelineWindow;
-   event.vsync_timestamp_ns = frame_monotonic_now_ns();
+   event.vsync_timestamp_ns = features.window_end_ns;
    event.frame_count = features.frame_deadline_count;
    event.missed_frames = features.frame_deadline_misses;
    FrameEventListener listener;

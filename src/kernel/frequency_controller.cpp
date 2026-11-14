@@ -8,17 +8,34 @@
 #include <fstream>
 #include <set>
 #include <string_view>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace coreflow {
 namespace fs = std::filesystem;
 namespace {
-bool number(const std::string& path, uint64_t& value) {
+bool number_allow_zero(const std::string& path, uint64_t& value) {
     std::ifstream file(path);
     std::string text;
     if (!(file >> text)) return false;
     auto result = std::from_chars(text.data(), text.data() + text.size(), value);
-    return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value > 0;
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+bool number(const std::string& path, uint64_t& value) {
+    return number_allow_zero(path, value) && value > 0U;
+}
+bool verified_regular_writable(const std::string& path) noexcept {
+    struct stat st{};
+    return ::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode) &&
+        (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 && ::access(path.c_str(), W_OK) == 0;
+}
+bool snapshot_is_oem(const std::vector<NodeSnapshot>& audit, const std::string& path,
+                     uint64_t value) {
+    const auto found = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+        return node.path == path;
+    });
+    return found != audit.end() && !found->is_modified &&
+        found->factory_value == std::to_string(value);
 }
 }
 FrequencyController::FrequencyController(CentralMutationCoordinator& coordinator, std::string root, DeviceProfileHandle profile)
@@ -70,6 +87,25 @@ bool FrequencyController::rollback_domain(bool gpu) {
     auto& store = BaselineStore::instance();
     for (auto& item : domains_) {
         if (item.gpu != gpu || !item.mutation_active) continue;
+        if (item.kgsl_power_levels) {
+            if (!store.rollback(item.minimum) || !store.rollback(item.maximum)) return false;
+            uint64_t actual_max = 0U, actual_min = 0U;
+            if (!number_allow_zero(item.maximum, actual_max) ||
+                !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
+                actual_min > item.max_valid_level) return false;
+            const auto audit = store.get_audit_trail();
+            if (!snapshot_is_oem(audit, item.maximum, actual_max) ||
+                !snapshot_is_oem(audit, item.minimum, actual_min)) return false;
+            if (actual_max != item.baseline || actual_min != item.baseline_minimum) {
+                item.baseline = actual_max;
+                item.baseline_minimum = actual_min;
+                item.retired = true;
+            }
+            item.last = actual_max;
+            item.last_minimum = actual_min;
+            item.mutation_active = false;
+            continue;
+        }
         if (!store.rollback(item.maximum)) return false;
         uint64_t actual = 0;
         if (!number(item.maximum, actual)) return false;
@@ -80,8 +116,6 @@ bool FrequencyController::rollback_domain(bool gpu) {
         if (snapshot == audit.end() || snapshot->is_modified ||
             snapshot->factory_value != std::to_string(actual)) return false;
         if (actual != item.baseline) {
-            // OEM/kernel ownership changed while the lease was active. Preserve the
-            // adopted external value and retire this discovered domain until rescan.
             item.baseline = actual;
             item.retired = true;
         }
@@ -126,6 +160,201 @@ void FrequencyController::add(const std::string& dir, bool gpu) {
     if (snapshot == audit.end() || snapshot->is_modified) return;
     domains_.push_back({max, min, ceiling, ceiling, std::move(values), gpu});
 }
+
+void FrequencyController::add_kgsl(const std::string& dir) {
+    const std::string maximum = dir + "/max_pwrlevel";
+    const std::string minimum = dir + "/min_pwrlevel";
+    const std::string count_path = dir + "/num_pwrlevels";
+    const std::string table_path = dir + "/gpu_available_frequencies";
+    uint64_t current_max = 0U, current_min = 0U, reported_levels = 0U;
+    if (!number_allow_zero(maximum, current_max) || !number_allow_zero(minimum, current_min) ||
+        !number_allow_zero(count_path, reported_levels) ||
+        !verified_regular_writable(maximum) || !verified_regular_writable(minimum)) return;
+    std::ifstream table(table_path);
+    std::vector<uint64_t> frequencies;
+    uint64_t frequency = 0U;
+    while (table >> frequency) {
+        if (frequency == 0U || frequencies.size() >= 512U) return;
+        frequencies.push_back(frequency);
+    }
+    if (!table.eof() || frequencies.size() < 2U) return;
+    const uint64_t table_last = static_cast<uint64_t>(frequencies.size() - 1U);
+    if (reported_levels != frequencies.size() && reported_levels != table_last) return;
+    if (current_max > current_min || current_min > table_last) return;
+    const bool increasing = std::adjacent_find(frequencies.begin(), frequencies.end(),
+        [](uint64_t a, uint64_t b) { return b <= a; }) == frequencies.end();
+    const bool decreasing = std::adjacent_find(frequencies.begin(), frequencies.end(),
+        [](uint64_t a, uint64_t b) { return b >= a; }) == frequencies.end();
+    if (!increasing && !decreasing) return;
+
+    auto& store = BaselineStore::instance();
+    if (!store.capture(maximum) || !store.capture(minimum)) return;
+    const auto audit = store.get_audit_trail();
+    if (!snapshot_is_oem(audit, maximum, current_max) ||
+        !snapshot_is_oem(audit, minimum, current_min)) return;
+    Domain domain{};
+    domain.maximum = maximum;
+    domain.minimum = minimum;
+    domain.baseline = current_max;
+    domain.last = current_max;
+    domain.baseline_minimum = current_min;
+    domain.last_minimum = current_min;
+    domain.max_valid_level = table_last;
+    domain.frequencies = std::move(frequencies);
+    domain.gpu = true;
+    domain.kgsl_power_levels = true;
+    domains_.push_back(std::move(domain));
+}
+
+bool FrequencyController::rollback_kgsl_domains_locked() noexcept {
+    auto& store = BaselineStore::instance();
+    bool ok = true;
+    for (auto& item : domains_) {
+        if (!item.gpu || !item.kgsl_power_levels || !item.mutation_active) continue;
+        if (!store.rollback(item.minimum) || !store.rollback(item.maximum)) {
+            ok = false;
+            continue;
+        }
+        uint64_t actual_max = 0U, actual_min = 0U;
+        if (!number_allow_zero(item.maximum, actual_max) ||
+            !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
+            actual_min > item.max_valid_level) {
+            ok = false;
+            continue;
+        }
+        const auto audit = store.get_audit_trail();
+        if (!snapshot_is_oem(audit, item.maximum, actual_max) ||
+            !snapshot_is_oem(audit, item.minimum, actual_min)) {
+            ok = false;
+            continue;
+        }
+        if (actual_max != item.baseline || actual_min != item.baseline_minimum) {
+            item.baseline = actual_max;
+            item.baseline_minimum = actual_min;
+            item.retired = true;
+        }
+        item.last = actual_max;
+        item.last_minimum = actual_min;
+        item.mutation_active = false;
+    }
+    return ok;
+}
+
+bool FrequencyController::apply_gpu_frame_policy(
+    double gpu_busy_pct, double frame_miss_pct, double thermal_headroom,
+    std::string_view lease_owner, std::string_view transaction_id) {
+    if (!std::isfinite(gpu_busy_pct) || gpu_busy_pct < 0.0 || gpu_busy_pct > 100.0 ||
+        !std::isfinite(frame_miss_pct) || frame_miss_pct < 0.0 || frame_miss_pct > 100.0 ||
+        !std::isfinite(thermal_headroom) || thermal_headroom < 0.0 || thermal_headroom > 1.0 ||
+        lease_owner.empty() || transaction_id.empty()) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool has_kgsl = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
+        return item.gpu && item.kgsl_power_levels && !item.retired;
+    });
+    if (!has_kgsl) return false;
+
+    if (thermal_headroom < 0.35 || gpu_busy_pct < 70.0 || frame_miss_pct < 0.5) {
+        if (!rollback_kgsl_domains_locked()) return false;
+        coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
+        return true;
+    }
+    if (!coordinator_.acquire_lease(MutationDomain::GpuDevfreq, std::string(lease_owner),
+                                    std::string(transaction_id),
+                                    ControllerPriority::WorkloadOptimization)) return false;
+
+    const uint64_t step = gpu_busy_pct >= 90.0 && frame_miss_pct >= 5.0 &&
+        thermal_headroom >= 0.55 ? 2U : 1U;
+    bool changed = false;
+    auto& store = BaselineStore::instance();
+    for (auto& item : domains_) {
+        if (!item.gpu || !item.kgsl_power_levels || item.retired) continue;
+        uint64_t actual_max = 0U, actual_min = 0U;
+        if (!number_allow_zero(item.maximum, actual_max) ||
+            !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
+            actual_min > item.max_valid_level || actual_max != item.last ||
+            actual_min != item.last_minimum) {
+            item.retired = true;
+            if (item.mutation_active && !rollback_kgsl_domains_locked()) return false;
+            continue;
+        }
+        const auto audit = store.get_audit_trail();
+        const auto max_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.maximum;
+        });
+        const auto min_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.minimum;
+        });
+        if (max_node == audit.end() || min_node == audit.end() ||
+            (max_node->is_modified && !item.mutation_active) ||
+            (min_node->is_modified && !item.mutation_active)) {
+            item.retired = true;
+            continue;
+        }
+        const uint64_t reducible = item.baseline_minimum > item.baseline
+            ? item.baseline_minimum - item.baseline : 0U;
+        const uint64_t target_min = std::max(item.baseline,
+            item.baseline_minimum - std::min(step, reducible));
+        if (target_min == actual_min) continue;
+
+        const bool applied = store.apply_mutation(item.minimum, std::to_string(target_min));
+        uint64_t read_max = 0U, read_min = 0U;
+        const bool readback = number_allow_zero(item.maximum, read_max) &&
+            number_allow_zero(item.minimum, read_min) && read_max == item.baseline &&
+            read_min == target_min && read_max <= read_min && read_min <= item.max_valid_level;
+        const auto after_audit = store.get_audit_trail();
+        const auto after_min = std::find_if(after_audit.begin(), after_audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.minimum;
+        });
+        const bool owned = after_min != after_audit.end() && after_min->is_modified &&
+            store.owns_expected_state(item.minimum, after_min->active_value);
+        if (!applied || !readback || !owned) {
+            if (!store.rollback(item.minimum)) return false;
+            uint64_t restored_min = 0U;
+            if (!number_allow_zero(item.minimum, restored_min) ||
+                restored_min != item.baseline_minimum) return false;
+            item.last_minimum = restored_min;
+            item.mutation_active = false;
+            continue;
+        }
+        item.last = read_max;
+        item.last_minimum = read_min;
+        item.mutation_active = true;
+        changed = true;
+    }
+    const bool active = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
+        return item.gpu && item.kgsl_power_levels && item.mutation_active;
+    });
+    if (!active) coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
+    return changed;
+}
+
+bool FrequencyController::restore_gpu_frame_policy(
+    std::string_view lease_owner, std::string_view transaction_id) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!rollback_kgsl_domains_locked()) return false;
+    coordinator_.release_lease(MutationDomain::GpuDevfreq, lease_owner, transaction_id);
+    return true;
+}
+
+bool FrequencyController::gpu_frame_policy_owned_intact() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& item : domains_) {
+        if (!item.gpu || !item.kgsl_power_levels || !item.mutation_active) continue;
+        uint64_t actual_max = 0U, actual_min = 0U;
+        if (!number_allow_zero(item.maximum, actual_max) ||
+            !number_allow_zero(item.minimum, actual_min) || actual_max != item.last ||
+            actual_min != item.last_minimum || actual_max > actual_min ||
+            actual_min > item.max_valid_level) return false;
+        const auto audit = BaselineStore::instance().get_audit_trail();
+        const auto min_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
+            return node.path == item.minimum;
+        });
+        if (min_node == audit.end() || !min_node->is_modified ||
+            !BaselineStore::instance().owns_expected_state(item.minimum, min_node->active_value)) return false;
+    }
+    return true;
+}
+
 void FrequencyController::discover(bool cpu, bool gpu) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Never discard in-memory ownership metadata while a mutation is active.
@@ -147,9 +376,17 @@ void FrequencyController::discover(bool cpu, bool gpu) {
         }
         if (gpu) {
             for (const auto& domain : profile_->gpu_domains) {
+                if (domain.device_path.find("/class/kgsl/") != std::string::npos) {
+                    add_kgsl(domain.device_path);
+                    continue;
+                }
                 const std::string max_path = domain.device_path + "/max_freq";
                 if (eligible(max_path, "devfreq.max_freq")) add(domain.device_path, true);
             }
+            if (std::none_of(profile_->gpu_domains.begin(), profile_->gpu_domains.end(),
+                    [](const GpuDomainProfile& domain) {
+                        return domain.device_path.find("/class/kgsl/") != std::string::npos;
+                    })) add_kgsl(root_ + "/class/kgsl/kgsl-3d0");
         }
         // An injected profile is authoritative for CPU/GPU actuator admission.
         // Do not run a second independent scan when a subsystem was not admitted.
@@ -177,12 +414,16 @@ void FrequencyController::discover(bool cpu, bool gpu) {
         }
     };
     if (cpu) scan(root_ + "/devices/system/cpu/cpufreq", false);
-    if (gpu) scan(root_ + "/class/devfreq", true);
+    if (gpu) {
+        scan(root_ + "/class/devfreq", true);
+        add_kgsl(root_ + "/class/kgsl/kgsl-3d0");
+    }
 }
 bool FrequencyController::apply(double scale, bool thermal_guard) {
     // 0.2 is the emergency thermal floor; hardware policy floors still apply per domain.
     if (!std::isfinite(scale) || scale < 0.2 || scale > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (thermal_guard && !rollback_kgsl_domains_locked()) return false;
     auto& store = BaselineStore::instance();
     bool ok = true;
     const auto restore_owned_domain = [&](Domain& domain) {
@@ -199,7 +440,7 @@ bool FrequencyController::apply(double scale, bool thermal_guard) {
     // First determine whether each domain actually needs a write, then acquire the
     // corresponding exclusive lease before the first mutation in that domain.
     for (auto& domain : domains_) {
-        if (domain.retired) continue;
+        if (domain.retired || domain.kgsl_power_levels) continue;
         uint64_t actual = 0, floor = 0;
         if (!number(domain.maximum, actual) || !number(domain.minimum, floor)) {
             domain.retired = true;
@@ -264,7 +505,7 @@ bool FrequencyController::apply(double scale, bool thermal_guard) {
     }
 
     for (auto& domain : domains_) {
-        if (domain.retired) continue;
+        if (domain.retired || domain.kgsl_power_levels) continue;
         uint64_t actual = 0, floor = 0;
         if (!number(domain.maximum, actual) || !number(domain.minimum, floor) || actual != domain.last) {
             domain.retired = true;
@@ -373,5 +614,10 @@ size_t FrequencyController::cpu_count() const noexcept {
 }
 size_t FrequencyController::gpu_count() const noexcept {
     return std::count_if(domains_.begin(), domains_.end(), [](const auto& d) { return d.gpu && !d.retired; });
+}
+size_t FrequencyController::kgsl_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::count_if(domains_.begin(), domains_.end(),
+        [](const Domain& d) { return d.gpu && d.kgsl_power_levels && !d.retired; });
 }
 }

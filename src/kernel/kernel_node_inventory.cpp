@@ -309,6 +309,71 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
         }
     }
 
+    // Qualcomm KGSL pwrlevels are a single paired ABI, not independent tunables.
+    const fs::path kgsl_root = sys / "class/kgsl";
+    for (const auto& kgsl : directories(kgsl_root)) {
+        if (nodes.size() + 2U > maximum_nodes) break;
+        const fs::path max_path = kgsl / "max_pwrlevel";
+        const fs::path min_path = kgsl / "min_pwrlevel";
+        const fs::path count_path = kgsl / "num_pwrlevels";
+        const fs::path table_path = kgsl / "gpu_available_frequencies";
+        const std::string max_text = read_value(max_path);
+        const std::string min_text = read_value(min_path);
+        const std::string count_text = read_value(count_path);
+        const std::string table_text = read_value(table_path);
+        uint64_t current_max = 0U, current_min = 0U, reported = 0U;
+        const bool scalar_valid = parse_u64(max_text, current_max) &&
+            parse_u64(min_text, current_min) && parse_u64(count_text, reported);
+        std::istringstream table_stream(table_text);
+        std::vector<uint64_t> levels;
+        uint64_t frequency = 0U;
+        while (table_stream >> frequency) {
+            if (frequency == 0U || levels.size() >= 512U) { levels.clear(); break; }
+            levels.push_back(frequency);
+        }
+        const uint64_t last = levels.empty() ? 0U : static_cast<uint64_t>(levels.size() - 1U);
+        const bool count_valid = !levels.empty() && (reported == levels.size() || reported == last);
+        const bool increasing = levels.size() >= 2U &&
+            std::adjacent_find(levels.begin(), levels.end(), [](uint64_t a, uint64_t b) { return b <= a; }) == levels.end();
+        const bool decreasing = levels.size() >= 2U &&
+            std::adjacent_find(levels.begin(), levels.end(), [](uint64_t a, uint64_t b) { return b >= a; }) == levels.end();
+        const bool pair_valid = scalar_valid && count_valid && (increasing || decreasing) &&
+            current_max <= current_min && current_min <= last &&
+            writable_attribute(max_path) && writable_attribute(min_path);
+        auto max_node = observe(max_path, HardwareDomain::Gpu, ProfileSource::Sysfs,
+            "kgsl.max_pwrlevel", "kgsl:" + kgsl.filename().string() + ":pwrlevel-pair", {}, {}, false);
+        auto min_node = observe(min_path, HardwareDomain::Gpu, ProfileSource::Sysfs,
+            "kgsl.min_pwrlevel", "kgsl:" + kgsl.filename().string() + ":pwrlevel-pair", {}, {}, false);
+        max_node.unit = "level_index"; min_node.unit = "level_index";
+        const std::string constraint = "0<=max_pwrlevel<=min_pwrlevel<=" + std::to_string(last) +
+            ";num_pwrlevels agrees with gpu_available_frequencies";
+        max_node.constraints = constraint; min_node.constraints = constraint;
+        max_node.accepted_values = constraint; min_node.accepted_values = constraint;
+        max_node.dependency_group = "kgsl:" + kgsl.filename().string() + ":pwrlevel-pair";
+        min_node.dependency_group = max_node.dependency_group;
+        auto& baseline = BaselineStore::instance();
+        const bool baseline_ok = pair_valid && baseline.capture(max_path.string()) &&
+            baseline.capture(min_path.string()) && baseline_verified(max_path.string(), max_text) &&
+            baseline_verified(min_path.string(), min_text);
+        if (baseline_ok) {
+            for (NodeCapability* node : {&max_node, &min_node}) {
+                node->classification = KernelNodeClassification::RuntimeTunable;
+                node->state = NodeCapabilityState::MutationEligible;
+                node->rejection_code = NodeRejectionReason::None;
+                node->rejection_reason.clear();
+                node->evidence = "Paired KGSL ABI and frequency table validated; OEM baseline captured";
+            }
+        } else {
+            for (NodeCapability* node : {&max_node, &min_node}) {
+                node->classification = KernelNodeClassification::ObservationOnly;
+                node->rejection_code = NodeRejectionReason::ConstraintsUnverified;
+                node->rejection_reason = "KGSL pair ABI, table, writability, or OEM baseline did not validate";
+            }
+        }
+        append_unique(nodes, std::move(max_node), maximum_nodes);
+        append_unique(nodes, std::move(min_node), maximum_nodes);
+    }
+
     // ZRAM exposed controls and VM tunables are inventory evidence only. Active
     // swap state is captured by DeviceProfiler; unsafe busy-state nodes are not
     // promoted by this generic scanner.
