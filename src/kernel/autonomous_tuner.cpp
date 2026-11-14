@@ -734,19 +734,19 @@ void AutonomousTuner::init_candidates() {
 }
 
 void AutonomousTuner::update_ucb_scores() {
-    // All candidate arms share one exploration population. Domain labels are
-    // descriptive metadata; they never partition or weight the bandit.
-    uint64_t pooled_reward_samples = 0U;
+    uint64_t non_gpu_reward_samples = 0U;
+    uint64_t gpu_reward_samples = 0U;
     for (const auto& candidate : candidates_) {
-        pooled_reward_samples += static_cast<uint64_t>(candidate.reward_samples);
+        if (candidate.domain == "gpu") gpu_reward_samples += static_cast<uint64_t>(candidate.reward_samples);
+        else non_gpu_reward_samples += static_cast<uint64_t>(candidate.reward_samples);
     }
-    const double pooled_n = std::max(1.0, static_cast<double>(pooled_reward_samples));
-
+    const double non_gpu_n = std::max(1.0, static_cast<double>(non_gpu_reward_samples));
+    const double gpu_n = std::max(1.0, static_cast<double>(gpu_reward_samples));
     for (auto& candidate : candidates_) {
         candidate.successes = candidate.improved_count;
         candidate.rollbacks = candidate.regressed_count;
-        const double explore = 0.25 * std::sqrt(
-            std::log(pooled_n + 1.0) / static_cast<double>(candidate.reward_samples + 1U));
+        const double pool_n = (candidate.domain == "gpu") ? gpu_n : non_gpu_n;
+        const double explore = 0.25 * std::sqrt(std::log(pool_n + 1.0) / static_cast<double>(candidate.reward_samples + 1U));
         candidate.ucb_score = candidate.mean_utility + explore;
     }
 }

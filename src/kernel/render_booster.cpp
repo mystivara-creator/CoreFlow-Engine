@@ -26,8 +26,7 @@ RenderBooster::RenderBooster(
     : governor_(governor),
       reactor_(reactor),
       touch_boost_uclamp_min_(std::min(touch_boost_uclamp_min, 1024U)),
-      burst_boost_duration_(std::chrono::milliseconds(
-          std::min(burst_boost_duration_ms, 1000U))) {
+      burst_boost_duration_ms_(std::clamp(burst_boost_duration_ms, 50U, 1000U)) {
     // No SurfaceFlinger/frame-timeline source is connected; never synthesize 120 FPS.
     metrics_.target_fps = 0;
     metrics_.average_frame_time_ms = 0.0;
@@ -80,6 +79,17 @@ void RenderBooster::set_foreground_task_resolver(ForegroundTaskResolver* resolve
     foreground_task_resolver_ = resolver;
 }
 
+void RenderBooster::update_config(uint32_t touch_boost_uclamp_min, uint32_t burst_boost_duration_ms) noexcept {
+    touch_boost_uclamp_min_.store(std::min(touch_boost_uclamp_min, 1024U), std::memory_order_relaxed);
+    burst_boost_duration_ms_.store(std::clamp(burst_boost_duration_ms, 50U, 1000U), std::memory_order_relaxed);
+}
+
+void RenderBooster::cancel_active_burst() noexcept {
+    requested_min_.store(0U, std::memory_order_release);
+    requested_duration_ms_.store(0, std::memory_order_release);
+    restore_burst();
+}
+
 void RenderBooster::set_thermal_guard(bool active) noexcept {
     const bool previous = thermal_guard_.exchange(active, std::memory_order_acq_rel);
     if (previous == active || !request_fd_.valid()) return;
@@ -99,8 +109,8 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
             const auto duration = event.burst_duration_ms >= 50U &&
                 event.burst_duration_ms <= 1000U
                     ? std::chrono::milliseconds(event.burst_duration_ms)
-                    : burst_boost_duration_;
-            trigger_render_burst(touch_boost_uclamp_min_, duration);
+                    : std::chrono::milliseconds(burst_boost_duration_ms_.load(std::memory_order_relaxed));
+            trigger_render_burst(touch_boost_uclamp_min_.load(std::memory_order_relaxed), duration);
             return;
         }
         case FrameEventKind::FrameDropped:
@@ -169,7 +179,8 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
 
 void RenderBooster::on_touch_down() {
     in_touch_gesture_.store(true, std::memory_order_relaxed);
-    trigger_render_burst(touch_boost_uclamp_min_, burst_boost_duration_);
+    trigger_render_burst(touch_boost_uclamp_min_.load(std::memory_order_relaxed),
+        std::chrono::milliseconds(burst_boost_duration_ms_.load(std::memory_order_relaxed)));
 }
 
 void RenderBooster::on_touch_up() {

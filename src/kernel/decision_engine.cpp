@@ -751,15 +751,19 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
     evaluated.reserve(proposals.size());
 
     // One pooled reward population drives exploration for every candidate arm.
-    uint64_t candidate_reward_samples = 0U;
+    uint64_t non_gpu_reward_samples = 0U;
+    uint64_t gpu_reward_samples = 0U;
     for (const auto& candidate_stats : stats) {
-        candidate_reward_samples += static_cast<uint64_t>(candidate_stats.reward_samples);
+        if (candidate_stats.domain == "gpu") gpu_reward_samples += static_cast<uint64_t>(candidate_stats.reward_samples);
+        else non_gpu_reward_samples += static_cast<uint64_t>(candidate_stats.reward_samples);
     }
-    const uint64_t pooled_reward_samples = std::max(
-        static_cast<uint64_t>(total_reward_samples), candidate_reward_samples);
-    const uint32_t global_reward_samples = static_cast<uint32_t>(
-        std::min<uint64_t>(pooled_reward_samples,
-            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
+    const uint64_t total_non_gpu_fallback = total_reward_samples > gpu_reward_samples
+        ? static_cast<uint64_t>(total_reward_samples) - gpu_reward_samples : 0U;
+    const uint32_t global_reward_samples = static_cast<uint32_t>(std::min<uint64_t>(
+        std::max(total_non_gpu_fallback, non_gpu_reward_samples),
+        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
+    const uint32_t isolated_gpu_reward_samples = static_cast<uint32_t>(std::min<uint64_t>(
+        gpu_reward_samples, static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())));
 
     for (auto& proposal : proposals) {
         EvaluatedCandidate item{};
@@ -779,8 +783,9 @@ std::vector<EvaluatedCandidate> GlobalCandidateEvaluator::evaluate_all(
 
         const CandidateStats* st = find_stats(stats, proposal.id);
         // Global UCB: each eligible arm receives the same pooled exploration count.
+        const bool is_gpu_domain = (proposal.domain_label == "gpu" || proposal.evaluation_domain == EvaluationDomain::Gpu);
         const double empirical = normalize_ucb_empirical(
-            st, evidence.regime, global_reward_samples);
+            st, evidence.regime, is_gpu_domain ? isolated_gpu_reward_samples : global_reward_samples);
         const double sample_maturity = (st == nullptr)
             ? 0.20
             : std::min(1.0, static_cast<double>(st->reward_samples + 1U) / 6.0);
