@@ -38,19 +38,21 @@ FrequencyController::~FrequencyController() {
     }
     coordinator_.unregister_preemption_handler(controller_name_);
 }
-bool FrequencyController::acquire_domain_lease(bool gpu) {
+bool FrequencyController::acquire_domain_lease(bool gpu, bool thermal_guard) {
     auto& transaction_id = gpu ? gpu_transaction_id_ : cpu_transaction_id_;
     const auto domain = gpu ? MutationDomain::GpuDevfreq : MutationDomain::CpuPolicy;
     if (!transaction_id.empty()) {
         return coordinator_.acquire_lease(
             domain, controller_name_, transaction_id,
-            ControllerPriority::WorkloadOptimization);
+            thermal_guard ? ControllerPriority::ThermalStabilization
+                          : ControllerPriority::WorkloadOptimization);
     }
     transaction_id = "frequency-" + std::string(gpu ? "gpu-" : "cpu-") +
                      std::to_string(++lease_generation_);
     if (!coordinator_.acquire_lease(
             domain, controller_name_, transaction_id,
-            ControllerPriority::WorkloadOptimization)) {
+            thermal_guard ? ControllerPriority::ThermalStabilization
+                          : ControllerPriority::WorkloadOptimization)) {
         transaction_id.clear();
         return false;
     }
@@ -177,7 +179,7 @@ void FrequencyController::discover(bool cpu, bool gpu) {
     if (cpu) scan(root_ + "/devices/system/cpu/cpufreq", false);
     if (gpu) scan(root_ + "/class/devfreq", true);
 }
-bool FrequencyController::apply(double scale) {
+bool FrequencyController::apply(double scale, bool thermal_guard) {
     // 0.2 is the emergency thermal floor; hardware policy floors still apply per domain.
     if (!std::isfinite(scale) || scale < 0.2 || scale > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -251,8 +253,8 @@ bool FrequencyController::apply(double scale) {
         else cpu_needs_lease = true;
     }
 
-    if (cpu_needs_lease && !acquire_domain_lease(false)) return false;
-    if (gpu_needs_lease && !acquire_domain_lease(true)) {
+    if (cpu_needs_lease && !acquire_domain_lease(false, thermal_guard)) return false;
+    if (gpu_needs_lease && !acquire_domain_lease(true, thermal_guard)) {
         if (!cpu_transaction_id_.empty()) {
             const bool cpu_active = std::any_of(domains_.begin(), domains_.end(),
                 [](const Domain& d) { return !d.gpu && d.mutation_active; });
