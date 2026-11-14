@@ -1,7 +1,7 @@
 id=cfae_framework
 name=CFAE System Framework
-version=v3.1.0
-versionCode=31000
+version=v4.0.0
+versionCode=40000
 author=mystivara-creator
 description=Capability-driven Android system optimization with coordinated kernel tuning, thermal and pressure control, verified mutations, and OEM baseline recovery.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json
