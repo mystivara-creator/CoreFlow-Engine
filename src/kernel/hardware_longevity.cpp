@@ -286,13 +286,12 @@ bool HardwareLongevityManager::apply_storage_pacing() {
     }
     if (storage_paced_) return true;
     // Foreground I/O discovery walks mountinfo and up to 4096 cgroup
-    // directories, then inspects process membership. Negative discovery must
-    // not repeat on every control tick when this device exposes no eligible
-    // io.weight actuator. Active transactions bypass this cooldown so their
-    // ownership checks and rollback path above remain live on every tick.
+    // directories, then inspects process membership. Back off only when the
+    // resolver cannot find an eligible foreground io.weight target. If a
+    // group is found, keep evaluating its live ownership and access state on
+    // the next tick; active transactions always bypass the negative cache.
     const auto now = std::chrono::steady_clock::now();
     if (storage_transaction_id_.empty() && now < next_storage_probe_) return true;
-    next_storage_probe_ = now + std::chrono::seconds(30);
 
     bool available = false;
     // Resolve the actual foreground hierarchy from mountinfo + process cgroup
@@ -301,9 +300,12 @@ bool HardwareLongevityManager::apply_storage_pacing() {
     MountTopologyResolver topology(proc_root_);
     const auto foreground = topology.resolve_foreground_io_group();
     if (!foreground) {
+        if (storage_transaction_id_.empty())
+            next_storage_probe_ = now + std::chrono::seconds(30);
         storage_paced_ = false;
         return true; // Unsupported/ambiguous I/O ABI remains observation-only.
     }
+    next_storage_probe_ = {};
     for (const auto& io_target : {std::pair{foreground->io_weight_path, config_.top_app_io_weight}}) {
         const std::string& path = io_target.first;
         const uint32_t weight = io_target.second;
