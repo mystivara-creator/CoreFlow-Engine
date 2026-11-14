@@ -50,6 +50,8 @@ public:
     void disconnect_frame_source() noexcept;
     void set_thermal_guard(bool active) noexcept;
     void set_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept;
+    void update_config(uint32_t touch_boost_uclamp_min, uint32_t burst_boost_duration_ms) noexcept;
+    void cancel_active_burst() noexcept;
 
     bool unlock_display_refresh_limits();
     [[nodiscard]] FrameMetrics get_metrics() const;
@@ -65,8 +67,8 @@ private:
     EpollReactor& reactor_;
     ForegroundTaskResolver* foreground_task_resolver_{nullptr};
     bool foreground_tasks_active_{false}; // Reactor-thread confined.
-    const uint32_t touch_boost_uclamp_min_;
-    const std::chrono::milliseconds burst_boost_duration_;
+    std::atomic<uint32_t> touch_boost_uclamp_min_;
+    std::atomic<uint32_t> burst_boost_duration_ms_;
     UniqueFd request_fd_;
     UniqueFd expiry_fd_;
     std::atomic<uint32_t> requested_min_{0};
