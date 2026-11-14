@@ -88,21 +88,65 @@ bool FrequencyController::rollback_domain(bool gpu) {
     for (auto& item : domains_) {
         if (item.gpu != gpu || !item.mutation_active) continue;
         if (item.kgsl_power_levels) {
-            if (!store.rollback(item.minimum) || !store.rollback(item.maximum)) return false;
             uint64_t actual_max = 0U, actual_min = 0U;
+            const std::string expected_max = std::to_string(item.last);
+            const std::string expected_min = std::to_string(item.last_minimum);
             if (!number_allow_zero(item.maximum, actual_max) ||
-                !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
-                actual_min > item.max_valid_level) return false;
-            const auto audit = store.get_audit_trail();
-            if (!snapshot_is_oem(audit, item.maximum, actual_max) ||
-                !snapshot_is_oem(audit, item.minimum, actual_min)) return false;
-            if (actual_max != item.baseline || actual_min != item.baseline_minimum) {
-                item.baseline = actual_max;
-                item.baseline_minimum = actual_min;
-                item.retired = true;
+                !number_allow_zero(item.minimum, actual_min) ||
+                actual_max != item.last || actual_min != item.last_minimum ||
+                actual_max > actual_min || actual_min > item.max_valid_level ||
+                !store.owns_expected_state(item.maximum, expected_max) ||
+                !store.owns_expected_state(item.minimum, expected_min)) {
+                // A changed inode/value is an ownership handoff. Never overwrite
+                // a foreign KGSL limit while trying to release our paired lease.
+                return false;
             }
-            item.last = actual_max;
-            item.last_minimum = actual_min;
+
+            const auto rollback_pair_node = [&](const std::string& path,
+                                                uint64_t expected_value,
+                                                uint64_t other_value) {
+                if (!store.rollback(path)) return false;
+                uint64_t read_max = 0U, read_min = 0U;
+                if (!number_allow_zero(item.maximum, read_max) ||
+                    !number_allow_zero(item.minimum, read_min) ||
+                    read_max > read_min || read_min > item.max_valid_level) return false;
+                if (path == item.maximum) {
+                    return read_max == expected_value && read_min == other_value;
+                }
+                return read_min == expected_value && read_max == other_value;
+            };
+
+            // Both endpoints are restored in an order that preserves the KGSL
+            // invariant after each individual sysfs write. A two-node sysfs pair
+            // cannot be physically atomic, so the coordinator lease + WAL +
+            // intermediate readback form the transactional boundary.
+            if (item.baseline <= actual_min) {
+                if (!rollback_pair_node(item.maximum, item.baseline, actual_min) ||
+                    !rollback_pair_node(item.minimum, item.baseline_minimum, item.baseline)) {
+                    return false;
+                }
+            } else if (actual_max <= item.baseline_minimum) {
+                if (!rollback_pair_node(item.minimum, item.baseline_minimum, actual_max) ||
+                    !rollback_pair_node(item.maximum, item.baseline, item.baseline_minimum)) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+
+            uint64_t restored_max = 0U, restored_min = 0U;
+            if (!number_allow_zero(item.maximum, restored_max) ||
+                !number_allow_zero(item.minimum, restored_min) ||
+                restored_max != item.baseline ||
+                restored_min != item.baseline_minimum ||
+                restored_max > restored_min || restored_min > item.max_valid_level) return false;
+            const auto audit = store.get_audit_trail();
+            if (!snapshot_is_oem(audit, item.maximum, restored_max) ||
+                !snapshot_is_oem(audit, item.minimum, restored_min) ||
+                !store.owns_expected_state(item.maximum, std::to_string(restored_max)) ||
+                !store.owns_expected_state(item.minimum, std::to_string(restored_min))) return false;
+            item.last = restored_max;
+            item.last_minimum = restored_min;
             item.mutation_active = false;
             continue;
         }
@@ -177,9 +221,9 @@ void FrequencyController::add_kgsl(const std::string& dir) {
         if (frequency == 0U || frequencies.size() >= 512U) return;
         frequencies.push_back(frequency);
     }
-    if (!table.eof() || frequencies.size() < 2U) return;
+    if (!table.eof() || frequencies.size() < 2U || reported_levels != frequencies.size()) return;
     const uint64_t table_last = static_cast<uint64_t>(frequencies.size() - 1U);
-    if (reported_levels != frequencies.size() && reported_levels != table_last) return;
+    if (reported_levels != frequencies.size()) return;
     if (current_max > current_min || current_min > table_last) return;
     const bool increasing = std::adjacent_find(frequencies.begin(), frequencies.end(),
         [](uint64_t a, uint64_t b) { return b <= a; }) == frequencies.end();
@@ -232,11 +276,14 @@ bool FrequencyController::apply_gpu_frame_policy(
         if (!number_allow_zero(item.maximum, actual_max) ||
             !number_allow_zero(item.minimum, actual_min) || actual_max > actual_min ||
             actual_min > item.max_valid_level || actual_max != item.last ||
-            actual_min != item.last_minimum) {
+            actual_min != item.last_minimum ||
+            !store.owns_expected_state(item.maximum, std::to_string(actual_max)) ||
+            !store.owns_expected_state(item.minimum, std::to_string(actual_min))) {
             item.retired = true;
             if (item.mutation_active && !rollback_domain(true)) return false;
             continue;
         }
+
         const auto audit = store.get_audit_trail();
         const auto max_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
             return node.path == item.maximum;
@@ -244,37 +291,111 @@ bool FrequencyController::apply_gpu_frame_policy(
         const auto min_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
             return node.path == item.minimum;
         });
-        if (max_node == audit.end() || min_node == audit.end() ||
-            (max_node->is_modified && !item.mutation_active) ||
-            (min_node->is_modified && !item.mutation_active)) {
+        const bool baseline_pair_valid =
+            max_node != audit.end() && min_node != audit.end() &&
+            max_node->factory_value == std::to_string(item.baseline) &&
+            min_node->factory_value == std::to_string(item.baseline_minimum) &&
+            (item.mutation_active ||
+             (!max_node->is_modified && !min_node->is_modified));
+        if (!baseline_pair_valid) {
             item.retired = true;
+            if (item.mutation_active && !rollback_domain(true)) return false;
             continue;
         }
+
         const uint64_t reducible = item.baseline_minimum > item.baseline
             ? item.baseline_minimum - item.baseline : 0U;
+        const uint64_t target_max = item.baseline;
         const uint64_t target_min = std::max(item.baseline,
             item.baseline_minimum - std::min(step, reducible));
-        if (target_min == actual_min) continue;
+        if (target_max > target_min || target_min > item.max_valid_level) {
+            item.retired = true;
+            if (item.mutation_active && !rollback_domain(true)) return false;
+            continue;
+        }
+        if (target_max == actual_max && target_min == actual_min) continue;
 
-        const bool applied = store.apply_mutation(item.minimum, std::to_string(target_min));
+        // The max/min pair shares one GpuDevfreq lease and two durable baseline
+        // records. Mark the pair active before the first endpoint write so any
+        // partial failure routes through the same deterministic pair rollback.
+        item.mutation_active = true;
+        uint64_t working_max = actual_max;
+        uint64_t working_min = actual_min;
+        const auto write_max = [&]() {
+            if (working_max == target_max) return true;
+            if (target_max > working_min) return false;
+            if (!store.apply_mutation(item.maximum, std::to_string(target_max))) return false;
+            uint64_t read_max = 0U, read_min = 0U;
+            if (!number_allow_zero(item.maximum, read_max) ||
+                !number_allow_zero(item.minimum, read_min) ||
+                read_max != target_max || read_min != working_min ||
+                read_max > read_min || read_min > item.max_valid_level) return false;
+            working_max = read_max;
+            item.last = read_max;
+            item.last_minimum = read_min;
+            return true;
+        };
+        const auto write_min = [&]() {
+            if (working_min == target_min) return true;
+            if (working_max > target_min) return false;
+            if (!store.apply_mutation(item.minimum, std::to_string(target_min))) return false;
+            uint64_t read_max = 0U, read_min = 0U;
+            if (!number_allow_zero(item.maximum, read_max) ||
+                !number_allow_zero(item.minimum, read_min) ||
+                read_max != working_max || read_min != target_min ||
+                read_max > read_min || read_min > item.max_valid_level) return false;
+            working_max = read_max;
+            working_min = read_min;
+            item.last = read_max;
+            item.last_minimum = read_min;
+            return true;
+        };
+
+        // If tightening max first would cross the current min, lower min first.
+        // Otherwise max can be committed first. In either order the ABI invariant
+        // remains true between writes.
+        bool applied = true;
+        if (target_max != working_max && target_max > working_min) {
+            applied = write_min();
+        }
+        if (applied && target_max != working_max) applied = write_max();
+        if (applied && target_min != working_min) applied = write_min();
+
         uint64_t read_max = 0U, read_min = 0U;
-        const bool readback = number_allow_zero(item.maximum, read_max) &&
-            number_allow_zero(item.minimum, read_min) && read_max == item.baseline &&
-            read_min == target_min && read_max <= read_min && read_min <= item.max_valid_level;
+        const bool readback = applied &&
+            number_allow_zero(item.maximum, read_max) &&
+            number_allow_zero(item.minimum, read_min) &&
+            read_max == target_max && read_min == target_min &&
+            read_max <= read_min && read_min <= item.max_valid_level;
         const auto after_audit = store.get_audit_trail();
-        const auto after_min = std::find_if(after_audit.begin(), after_audit.end(), [&](const NodeSnapshot& node) {
-            return node.path == item.minimum;
-        });
-        const bool owned = after_min != after_audit.end() && after_min->is_modified &&
-            store.owns_expected_state(item.minimum, after_min->active_value);
-        if (!applied || !readback || !owned) {
-            item.mutation_active = true;
+        const auto owns_endpoint = [&](const std::string& path, uint64_t value, uint64_t baseline) {
+            const auto node = std::find_if(after_audit.begin(), after_audit.end(), [&](const NodeSnapshot& entry) {
+                return entry.path == path;
+            });
+            const std::string expected = std::to_string(value);
+            return node != after_audit.end() &&
+                node->factory_value == std::to_string(baseline) &&
+                node->active_value == expected &&
+                node->is_modified == (value != baseline) &&
+                store.owns_expected_state(path, expected);
+        };
+        const bool owned = readback &&
+            owns_endpoint(item.maximum, read_max, item.baseline) &&
+            owns_endpoint(item.minimum, read_min, item.baseline_minimum);
+        if (!owned) {
+            // Keep the latest verified pair for the ownership-aware rollback path.
+            uint64_t observed_max = 0U, observed_min = 0U;
+            if (number_allow_zero(item.maximum, observed_max) &&
+                number_allow_zero(item.minimum, observed_min) &&
+                observed_max <= observed_min && observed_min <= item.max_valid_level) {
+                item.last = observed_max;
+                item.last_minimum = observed_min;
+            }
             if (!rollback_domain(true)) return false;
             return false;
         }
         item.last = read_max;
         item.last_minimum = read_min;
-        item.mutation_active = true;
     }
     const bool active = std::any_of(domains_.begin(), domains_.end(), [](const Domain& item) {
         return item.gpu && item.kgsl_power_levels && item.mutation_active;
@@ -282,7 +403,6 @@ bool FrequencyController::apply_gpu_frame_policy(
     if (!active) release_domain_lease(true);
     return active;
 }
-
 bool FrequencyController::restore_gpu_frame_policy() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return rollback_domain(true);
@@ -291,24 +411,32 @@ bool FrequencyController::restore_gpu_frame_policy() noexcept {
 bool FrequencyController::gpu_frame_policy_owned_intact() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     bool observed_active_pair = false;
+    const auto& store = BaselineStore::instance();
     for (const auto& item : domains_) {
         if (!item.gpu || !item.kgsl_power_levels || !item.mutation_active) continue;
         observed_active_pair = true;
         uint64_t actual_max = 0U, actual_min = 0U;
         if (!number_allow_zero(item.maximum, actual_max) ||
-            !number_allow_zero(item.minimum, actual_min) || actual_max != item.last ||
-            actual_min != item.last_minimum || actual_max > actual_min ||
-            actual_min > item.max_valid_level) return false;
-        const auto audit = BaselineStore::instance().get_audit_trail();
-        const auto min_node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& node) {
-            return node.path == item.minimum;
-        });
-        if (min_node == audit.end() || !min_node->is_modified ||
-            !BaselineStore::instance().owns_expected_state(item.minimum, min_node->active_value)) return false;
+            !number_allow_zero(item.minimum, actual_min) ||
+            actual_max != item.last || actual_min != item.last_minimum ||
+            actual_max > actual_min || actual_min > item.max_valid_level) return false;
+        const auto audit = store.get_audit_trail();
+        const auto owned_endpoint = [&](const std::string& path, uint64_t value, uint64_t baseline) {
+            const auto node = std::find_if(audit.begin(), audit.end(), [&](const NodeSnapshot& entry) {
+                return entry.path == path;
+            });
+            const std::string expected = std::to_string(value);
+            return node != audit.end() &&
+                node->factory_value == std::to_string(baseline) &&
+                node->active_value == expected &&
+                node->is_modified == (value != baseline) &&
+                store.owns_expected_state(path, expected);
+        };
+        if (!owned_endpoint(item.maximum, actual_max, item.baseline) ||
+            !owned_endpoint(item.minimum, actual_min, item.baseline_minimum)) return false;
     }
     return observed_active_pair;
 }
-
 void FrequencyController::discover(bool cpu, bool gpu) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Never discard in-memory ownership metadata while a mutation is active.
