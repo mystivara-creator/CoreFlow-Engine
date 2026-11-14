@@ -149,7 +149,7 @@ count_input_nodes() {
 
 ui ""
 ui "+==================================================+"
-ui "|          CFAE SYSTEM FRAMEWORK  v3.1.0            |"
+ui "|          CFAE SYSTEM FRAMEWORK  v4.0.0            |"
 ui "|          DEVICE PREFLIGHT & INSTALLER             |"
 ui "|          by mystivara-creator                     |"
 ui "+==================================================+"
@@ -167,7 +167,7 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CFAE System Framework v3.1.0 — read-only installer preflight"
+PREFLIGHT_REPORT="CFAE System Framework v4.0.0 — read-only installer preflight"
 section "01 / DEVICE & PLATFORM"
 report "Preflight: package and platform identity"
 
