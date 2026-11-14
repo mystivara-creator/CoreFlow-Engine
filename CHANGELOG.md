@@ -15,8 +15,8 @@
 - Report cache persistence interception separately from pipeline prewarming; SkiaVK/HWUI renderer changes and VRS remain inactive.
 
 ### FrameTimeline and release integrity
-- Consume actual SurfaceFlinger FrameTimeline captures on a dedicated worker and forward validated deadline-miss windows to RenderBooster without blocking the reactor.
-- Trigger UClamp burst and foreground-thread migration from actual jank evidence, with thermal admission and deterministic lease restoration.
+- Consume Perfetto FrameTimeline captures on a dedicated worker and connect them to RenderBooster/workload evidence after lifecycle promotion; actual trace permissions and fresh samples remain device-dependent.
+- RenderBooster can trigger bounded UClamp bursts from validated input/frame events, with thermal admission and deterministic lease restoration. Display refresh-rate control is not implemented.
 - Align CMake, C++, Rust, module, configuration, and WebUI package metadata to `4.0.0`.
 
 
