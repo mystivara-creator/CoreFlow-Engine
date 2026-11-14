@@ -502,6 +502,11 @@ void FrequencyController::discover(bool cpu, bool gpu) {
     }
 }
 bool FrequencyController::apply(double scale, bool thermal_guard) {
+    // The generic Rust capacity budget is a CPU/system capacity signal, not a
+    // GPU-specific performance objective. Never route it into KGSL power-level
+    // writes. Qualcomm's paired actuator is deliberately callable only through
+    // apply_gpu_frame_policy(), which requires fresh measured GPU + frame evidence
+    // and thermal headroom. This prevents a second, unmeasured GPU authority.
     // 0.2 is the emergency thermal floor; hardware policy floors still apply per domain.
     if (!std::isfinite(scale) || scale < 0.2 || scale > 1.0) return false;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -522,6 +527,7 @@ bool FrequencyController::apply(double scale, bool thermal_guard) {
     // First determine whether each domain actually needs a write, then acquire the
     // corresponding exclusive lease before the first mutation in that domain.
     for (auto& domain : domains_) {
+        // Paired KGSL power levels must never be driven by the generic capacity scale.
         if (domain.retired || domain.kgsl_power_levels) continue;
         uint64_t actual = 0, floor = 0;
         if (!number(domain.maximum, actual) || !number(domain.minimum, floor)) {
