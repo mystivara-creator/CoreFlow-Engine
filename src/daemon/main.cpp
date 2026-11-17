@@ -11,6 +11,7 @@
 #include "coreflow/foreground_task_resolver.hpp"
 #include "coreflow/uclamp.hpp"
 #include "coreflow/baseline_store.hpp"
+#include "coreflow/direct_adaptive_runtime.hpp"
 #include "coreflow/recovery_monitor.hpp"
 #include "coreflow/thermal_monitor.hpp"
 #include "coreflow/cooling_feedback.hpp"
@@ -567,6 +568,7 @@ struct StatusTelemetrySnapshot final {
     std::optional<double> cpu_psi{};
     std::optional<double> memory_psi{};
     std::optional<double> io_psi{};
+    std::string direct_adaptive_json{"{\"active\":false,\"mode\":\"READ_ONLY\"}"};
 };
 
 std::string build_status_json(
@@ -945,7 +947,11 @@ std::string build_status_json(
         << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
         << ",\"semanticEvidence\":" << semantic_evidence_json
         << ",\"node_capabilities\":" << node_inventory_json
-        << ",\"nodeCapabilityGeneration\":" << device_inventory->generation << "}";
+        << ",\"nodeCapabilityGeneration\":" << device_inventory->generation
+        << ",\"directAdaptive\":" << (cached == nullptr || cached->direct_adaptive_json.empty()
+            ? std::string{"{\"active\":false,\"mode\":\"READ_ONLY\"}"}
+            : cached->direct_adaptive_json)
+        << "}";
 
     return out.str();
 }
@@ -962,6 +968,27 @@ std::string json_string(std::string_view text) {
         else out.push_back('?');
     }
     return out + "\"";
+}
+
+void print_journal(BaselineStore& baseline) {
+    const auto entries = baseline.get_audit_trail();
+    std::ostringstream out;
+    out << "{\"format\":\"CFJ4\",\"entryCount\":" << entries.size()
+        << ",\"entries\":[";
+    bool first = true;
+    for (const auto& entry : entries) {
+        if (!first) out << ',';
+        first = false;
+        out << "{\"path\":" << json_string(entry.path)
+            << ",\"factoryValue\":" << json_string(entry.factory_value)
+            << ",\"priorValue\":" << json_string(entry.prior_value)
+            << ",\"activeValue\":" << json_string(entry.active_value)
+            << ",\"modified\":" << (entry.is_modified ? "true" : "false")
+            << ",\"device\":" << entry.dev
+            << ",\"inode\":" << entry.ino << '}';
+    }
+    out << "]}";
+    std::cout << out.str() << "\n" << std::flush;
 }
 
 void print_capabilities(CoreFlowContext& context) {
@@ -1510,17 +1537,24 @@ int main(int argc, char* argv[]) {
             (void)context.Stop("Read-only status inspection complete");
             return 0;
         }
+        if (command == "--journal") {
+            CoreFlowContext context;
+            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
+            print_journal(context.baseline_store());
+            (void)context.Stop("Read-only mutation journal inspection complete");
+            return 0;
+        }
         if (command == "--stop" || command == "--rollback-baseline") {
             return stop_daemon();
         }
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -1576,6 +1610,14 @@ int main(int argc, char* argv[]) {
     auto& recovery_monitor = context.recovery_monitor();
 
     DaemonConfig config = DaemonConfig::load_best_available();
+    coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);
+    direct_runtime.set_mutation_enabled(!config.inspection_mode);
+    const bool direct_runtime_ready = direct_runtime.start();
+    if (direct_runtime_ready) {
+        emit_log(false, "[CoreFlow][DirectAdaptive] Production composition ready: topology, telemetry, sweet-spot, durable WAL actuator and epoll/timerfd event path connected.");
+    } else {
+        emit_log(true, "[CoreFlow][DirectAdaptive] Discovery or durable baseline preparation incomplete; daemon remains alive and direct actuators are skipped.");
+    }
     const DeviceProfileHandle device_profile = context.device_profile();
     emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
         " fingerprint=" + device_profile->fingerprint +
@@ -1585,7 +1627,7 @@ int main(int argc, char* argv[]) {
     auto& frequencies = context.frequency_controller();
     // CPU scaling_max_freq ownership is delegated exclusively to the tiered,
     // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
-    frequencies.discover(false, config.enable_gpu_frequency_control);
+    frequencies.discover(false, false);
     CgroupV2Controller cgroup_controller(context.mutation_coordinator());
     ForegroundTaskResolver foreground_task_resolver(
         cgroup_controller);
@@ -1596,7 +1638,7 @@ int main(int argc, char* argv[]) {
     // V5 baseline activation is independent of optional workload/PSI telemetry.
     // Journal recovery has already completed in CoreFlowContext::Start(); the
     // first control tick may therefore enter the balanced operating profile.
-    autonomous_tuner.set_operational(!config.inspection_mode && config.enable_tuner);
+    autonomous_tuner.set_operational(false);
     emit_log(false, "[CoreFlow][Lifecycle] DIRECT_BASELINE: topology and journal recovery complete; adaptive policy enabled without startup quorum.");
     bool lifecycle_promoted = true;
     WorkloadTelemetryPipeline workload_pipeline;
@@ -1604,7 +1646,7 @@ int main(int argc, char* argv[]) {
     WorkloadClassifier workload_classifier;
     WorkloadClassification workload_classification{};
     if (!workload_pipeline_ready) {
-        emit_log(true, "[CoreFlow][Workload] Telemetry pipeline unavailable; autonomous CPU frequency admission remains disabled.");
+        emit_log(true, "[CoreFlow][Workload] Optional eBPF workload stream unavailable; DirectAdaptiveRuntime continues from procfs/sysfs telemetry and timerfd cadence.");
     } else {
         emit_log(false, "[CoreFlow][Workload] Telemetry backend=" +
             std::string(workload_pipeline.backend() == TelemetryBackend::Ebpf ? "eBPF" : "sysfs/procfs") +
@@ -1755,7 +1797,7 @@ int main(int argc, char* argv[]) {
                     }
                     controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
                     pid_target_initialized = false;
-                    frequencies.discover(false, config.enable_gpu_frequency_control);
+                    frequencies.discover(false, false);
                     workload_classification = {};
                     last_workload_sample_ns = 0U;
                     context.hardware_longevity().initialize({
@@ -1764,7 +1806,9 @@ int main(int argc, char* argv[]) {
                         config.top_app_io_weight, config.background_io_weight});
                     context.neural_predictor().initialize("/data/adb/coreflow/models");
                     context.autonomous_tuner().discover();
-                    if (lifecycle_promoted) context.autonomous_tuner().set_operational(!config.inspection_mode && config.enable_tuner);
+                    if (lifecycle_promoted) context.autonomous_tuner().set_operational(false);
+                    direct_runtime.refresh();
+                    direct_runtime.set_mutation_enabled(!config.inspection_mode);
                     context.vulkan_controller().configure({
                         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
                         .enable_skiavk_threaded = config.enable_skiavk_threaded,
@@ -1802,8 +1846,10 @@ int main(int argc, char* argv[]) {
 
     StatusTelemetrySnapshot status_inputs{};
     status_inputs.config = config;
-    std::string latest_status_payload = build_status_json(context, true);
+    status_inputs.direct_adaptive_json = direct_runtime.status_json();
+    std::string latest_status_payload = build_status_json(context, true, true, &status_inputs);
     const auto refresh_status_payload = [&]() {
+        status_inputs.direct_adaptive_json = direct_runtime.status_json();
         latest_status_payload = build_status_json(context, true, true, &status_inputs);
     };
 
@@ -1960,6 +2006,10 @@ int main(int argc, char* argv[]) {
             thermal_ready = true; unavailable_reported = false;
         }
 
+        // Direct Adaptive consumes the same thermal sample when available, but
+        // optional OEM thermal/PSI sources never gate CPU, GPU, VM or storage policy.
+        direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency);
+
         // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
         const float batt = battery_temp;
         if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
@@ -2108,7 +2158,7 @@ int main(int argc, char* argv[]) {
         if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
             frequencies.discover(false, config.enable_gpu_frequency_control);
         }
-        (void)context.hardware_longevity().apply_storage_pacing();
+        // Storage tuning ownership belongs to DirectAdaptiveRuntime; legacy pacing is disabled to avoid dual actuators.
         context.hardware_longevity().monitor_battery_thermals(temp);
         if (lifecycle_promoted) {
             (void)context.vulkan_controller().apply_workload_policy(
@@ -2288,7 +2338,7 @@ int main(int argc, char* argv[]) {
     (void)status_timer_fd;
     (void)write_status_snapshot(latest_status_payload);
 
-    emit_log(false, "[CoreFlow] C++23 / Rust 2024 equilibrium active; verified baseline recovery armed.");
+    emit_log(false, "[CoreFlow] C++23 / Rust 2024 reactor active; Direct Baseline and OEM rollback ledger armed.");
     reactor.run();
     if (dvs_recorder.active()) {
         std::string bundle, error;

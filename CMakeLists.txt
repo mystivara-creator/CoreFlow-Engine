@@ -100,6 +100,7 @@ add_executable(coreflowd
     src/daemon/main.cpp
     src/daemon/reactor.cpp
     src/daemon/device_validation.cpp
+    src/daemon/direct_adaptive_runtime.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
 target_link_libraries(coreflowd PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
@@ -122,6 +123,17 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_runtime_mutation_faults tests/test_runtime_mutation_faults.cpp)
     target_include_directories(test_runtime_mutation_faults PRIVATE include)
     add_test(NAME RuntimeMutationFaultInjectionTest COMMAND test_runtime_mutation_faults)
+
+    add_executable(test_direct_adaptive_policy
+        tests/test_direct_adaptive_policy.cpp
+        src/daemon/direct_adaptive_runtime.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_direct_adaptive_policy PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_direct_adaptive_policy PRIVATE pthread)
+    endif()
+    add_test(NAME DirectAdaptiveSweetSpotPolicyTest COMMAND test_direct_adaptive_policy)
 
     add_executable(test_mount_topology
         tests/test_mount_topology.cpp

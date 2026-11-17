@@ -726,6 +726,45 @@ bool BaselineStore::capture(const std::string& path) {
     return true;
 }
 
+bool BaselineStore::capture_durable(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recovery_checked_ || identity_unavailable_ || !path_safe(path)) return false;
+
+    auto it = store_.find(path);
+    if (it == store_.end()) {
+        uint64_t dev = 0;
+        uint64_t ino = 0;
+        const std::string before = read_raw_node(path, &dev, &ino);
+        if (before.empty()) return false;
+        it = store_.emplace(path,
+            NodeSnapshot{path, before, before, false, before, dev, ino}).first;
+    } else {
+        uint64_t dev = 0;
+        uint64_t ino = 0;
+        const std::string actual = read_raw_node(path, &dev, &ino);
+        if (actual.empty()) return false;
+        const bool identity_changed = it->second.ino != 0 &&
+            (dev != it->second.dev || ino != it->second.ino);
+        if (it->second.is_modified) {
+            // A durable pre-batch capture must never adopt or overwrite a value
+            // while a prior CoreFlow mutation is still active or ownership changed.
+            if (identity_changed ||
+                !readback_matches(path, it->second.active_value, actual)) return false;
+        } else if (identity_changed || actual != it->second.factory_value) {
+            // For an unmodified entry, a replaced kernel node is a new OEM baseline.
+            it->second.factory_value = actual;
+            it->second.active_value = actual;
+            it->second.prior_value = actual;
+            it->second.dev = dev;
+            it->second.ino = ino;
+        }
+    }
+    // The complete eligible batch calls this for every node before its first
+    // write. This fsyncs the OEM values and inode identities as a durable WAL base.
+    return persist_locked();
+}
+
+
 bool BaselineStore::rollback_path_locked(const std::string& path) {
     auto it = store_.find(path);
     if (it == store_.end() || !it->second.is_modified) return true;

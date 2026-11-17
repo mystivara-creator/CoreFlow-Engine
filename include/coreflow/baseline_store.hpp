@@ -41,6 +41,8 @@ public:
 
     /// Snapshot a sysfs / proc node before modifying it
     bool capture(const std::string& path);
+    // Capture and fsync an OEM snapshot before a multi-node mutation batch is admitted.
+    bool capture_durable(const std::string& path);
 
     /// Record a planned mutation; returns false if node wasn't snapshotted or write failed
     bool apply_mutation(const std::string& path, const std::string& new_value);
