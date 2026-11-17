@@ -433,17 +433,17 @@ public:
         INodeMutationPort& node_port, IOutcomeVerifier& verifier,
         IActuatorHealthSink& health_sink, const AlgorithmConstants& algorithm) noexcept {
         MutationBatchResult report;
-        if (!algorithm.valid()) {
-            report.policy_rejected = true;
+        if (journal_fault_latched_) {
+            report.journal_status = JournalStatus::JournalFault;
+            report.global_mutation_stop = true;
             for (const auto& request : requests) {
                 report.nodes.push_back({request.node_id, ActuatorHealth::Quarantined, false});
                 health_sink.record(request.node_id, ActuatorHealth::Quarantined);
             }
             return report;
         }
-        if (journal_fault_latched_) {
-            report.journal_status = JournalStatus::JournalFault;
-            report.global_mutation_stop = true;
+        if (!algorithm.valid()) {
+            report.policy_rejected = true;
             for (const auto& request : requests) {
                 report.nodes.push_back({request.node_id, ActuatorHealth::Quarantined, false});
                 health_sink.record(request.node_id, ActuatorHealth::Quarantined);
