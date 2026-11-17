@@ -48,13 +48,36 @@ assert "write_status_snapshot" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "print_live_status_snapshot(live_pid)" in source
 assert "std::chrono::milliseconds(500)" in source
-assert "kStartupGrace = std::chrono::seconds(12)" in source
-assert "STAGE_OBSERVING -> STAGE_ACTIVE_TUNING" in source
+
+# V5 lifecycle contract: baseline recovery is the activation boundary. Optional
+# workload telemetry gates only evidence-dependent CPU frequency admission;
+# it must not hold back independent optimization domains or daemon startup.
+lifecycle_start = source.index(
+    "autonomous_tuner.set_operational(!config.inspection_mode && config.enable_tuner);"
+)
+lifecycle_end = source.index("const auto pid_target_pressure", lifecycle_start)
+lifecycle = source[lifecycle_start:lifecycle_end]
+assert "DIRECT_BASELINE: topology and journal recovery complete" in lifecycle
+assert "bool lifecycle_promoted = true;" in lifecycle
+assert "const bool workload_pipeline_ready = workload_pipeline.start();" in lifecycle
+assert "if (!workload_pipeline_ready)" in lifecycle
+assert "autonomous CPU frequency admission remains disabled" in lifecycle
+assert "kStartupGrace" not in source
+assert "STAGE_OBSERVING" not in source
+assert "STAGE_ACTIVE_TUNING" in source
 assert "set_operational(false)" in source
-assert "thermal.pressure <= 65.0" in source
-admission_start = source.index("if (!lifecycle_promoted)")
-admission_end = source.index("// Real-time Hybrid ONNX", admission_start)
-assert "return;" not in source[admission_start:admission_end]
+
+# OEM thermal severity is authoritative when available. Celsius trip points are
+# consulted only for the explicit generic-fallback path.
+thermal_start = source.index("const bool thermal_limit_hit")
+thermal_end = source.index("const WorkloadState desired", thermal_start)
+thermal_policy = source[thermal_start:thermal_end]
+assert "thermal.severity >= 3" in thermal_policy
+assert "thermal.pressure >= 85.0" in thermal_policy
+assert "thermal.pressure > 65.0" in thermal_policy
+assert "temp >= config.thermal_trip_celsius" in thermal_policy
+assert "thermal.fallback_active" in thermal_policy
+
 status_timer_start = source.index("const int status_timer_fd")
 status_timer_end = source.index('emit_log(false, "[CoreFlow] C++23', status_timer_start)
 assert "build_status_json" not in source[status_timer_start:status_timer_end]

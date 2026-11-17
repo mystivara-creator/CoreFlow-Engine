@@ -5,7 +5,7 @@ on:
     branches: [main, 'feat/*', 'hardening/*', 'fix/*']
     tags: ['v*']
   pull_request:
-    branches: [main, feat/p3-dynamic-infrastructure]
+    branches: [main, feat/p3-dynamic-infrastructure, feat/p4-native-actuators-end-to-end, 'fix/*']
   workflow_dispatch:
     inputs:
       android_min_api:
@@ -305,6 +305,24 @@ jobs:
           ZIP_NAME="CFAE-System-Framework-${VERSION}-arm64.zip"
           mkdir -p artifacts
           (cd "${MODULE_DIR}" && zip -qr9 "../${ZIP_NAME}" .)
+          PACKAGE_ZIP="artifacts/${ZIP_NAME}"
+          unzip -tq "${PACKAGE_ZIP}"
+          PACKAGE_ENTRIES="$(unzip -Z1 "${PACKAGE_ZIP}")"
+          for required in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh sepolicy.rule system/bin/coreflowd system/etc/coreflow/default.conf webroot/index.html; do
+            if ! grep -Fxq "${required}" <<< "${PACKAGE_ENTRIES}"; then
+              echo "::error::KernelSU-compatible module entry is missing: ${required}"
+              exit 1
+            fi
+          done
+          if ! unzip -p "${PACKAGE_ZIP}" module.prop | grep -Fxq "id=cfae_framework"; then
+            echo "::error::Unexpected module identity in packaged module.prop"
+            exit 1
+          fi
+          if grep -q '^CFAE-System-Framework/' <<< "${PACKAGE_ENTRIES}"; then
+            echo "::error::Package contains an extra parent directory; module files must be at ZIP root"
+            exit 1
+          fi
+          echo "Validated flashable KernelSU / KernelSU-Next module: ${ZIP_NAME}"
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
       - name: Upload flashable package for inspection
         uses: actions/upload-artifact@v7
