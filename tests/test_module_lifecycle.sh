@@ -184,7 +184,27 @@ fi
   exit 1
 }
 
-# 8. Successful uninstall must use the module-local binary, then clean volatile state.
+# 8. Missing daemon binary must block uninstall and preserve recovery state.
+mv "$MOD_DIR/system/bin/coreflowd" "$MOD_DIR/system/bin/coreflowd.missing"
+if sh "$MOD_DIR/uninstall.sh"; then
+  echo "FAIL: uninstall proceeded without a rollback-capable daemon"
+  exit 1
+else
+  MISSING_BIN_RESULT=$?
+fi
+[ "$MISSING_BIN_RESULT" -eq 1 ] || {
+  echo "FAIL: missing daemon did not return a hard failure"
+  exit 1
+}
+[ -f "$STATE_DIR/direct-adaptive.wal" ] &&
+[ -f "$STATE_DIR/coreflowd.pid" ] &&
+[ -f "$STATE_DIR/status.json" ] || {
+  echo "FAIL: uninstall removed state when daemon binary was missing"
+  exit 1
+}
+mv "$MOD_DIR/system/bin/coreflowd.missing" "$MOD_DIR/system/bin/coreflowd"
+
+# 9. Successful uninstall must use the module-local binary, then clean volatile state.
 export COREFLOW_MOCK_ROLLBACK_RESULT=0
 sh "$MOD_DIR/uninstall.sh"
 [ ! -e "$STATE_DIR/direct-adaptive.wal" ] &&
