@@ -9,7 +9,7 @@ BIN="$MODDIR/system/bin/coreflowd"
 [ -f "$BIN" ] || BIN="/system/bin/coreflowd"
 [ -x "$BIN" ] || { echo "CoreFlow daemon binary is unavailable."; exit 1; }
 
-case "\${1:-status}" in
+case "${1:-status}" in
   status) "$BIN" --status ;;
   journal) "$BIN" --journal ;;
   rollback)

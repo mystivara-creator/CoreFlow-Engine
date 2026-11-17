@@ -145,6 +145,11 @@ sh "$MOD_DIR/service.sh"
 
 
 # 6. KernelSU action menu must resolve its own module directory and dispatch commands.
+sh "$MOD_DIR/action.sh" > "$TMP_ROOT/action-default-status.out"
+grep -q '"running":true' "$TMP_ROOT/action-default-status.out" || {
+  echo "FAIL: action.sh default command did not resolve to status"
+  exit 1
+}
 sh "$MOD_DIR/action.sh" status > "$TMP_ROOT/action-status.out"
 grep -q '"running":true' "$TMP_ROOT/action-status.out" || {
   echo "FAIL: action.sh status did not invoke the module-local daemon"
