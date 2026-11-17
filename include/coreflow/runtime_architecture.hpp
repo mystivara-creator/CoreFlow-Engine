@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -277,6 +278,7 @@ struct AlgorithmConstants final {
                hysteresis_ratio < 1.0 &&
                std::isfinite(ewma_smoothing_factor) &&
                ewma_smoothing_factor > 0.0 && ewma_smoothing_factor <= 1.0 &&
+               maximum_mutations_per_batch != 0U &&
                maximum_node_read_bytes != 0U;
     }
 };
@@ -360,8 +362,11 @@ public:
 class INodeMutationPort {
 public:
     virtual ~INodeMutationPort() = default;
+    // Implementations must re-check the pinned node identity and expected current
+    // value immediately before writing. A changed value/owner returns Contended.
     [[nodiscard]] virtual NodeIoResult write(
-        const NodeDescriptor& node, const NodeValue& value,
+        const NodeDescriptor& node, const NodeValue& expected_current_value,
+        const NodeValue& target_value,
         const FileIdentity& expected_identity) noexcept = 0;
     [[nodiscard]] virtual NodeIoResult read(
         const NodeDescriptor& node) noexcept = 0;
@@ -411,6 +416,7 @@ struct MutationNodeResult final {
 struct MutationBatchResult final {
     JournalStatus journal_status{JournalStatus::Committed};
     bool global_mutation_stop{}; // True only for JournalFault.
+    bool policy_rejected{};      // Invalid algorithm bounds prevent the entire batch.
     std::vector<MutationNodeResult> nodes;
 };
 
@@ -427,6 +433,14 @@ public:
         INodeMutationPort& node_port, IOutcomeVerifier& verifier,
         IActuatorHealthSink& health_sink, const AlgorithmConstants& algorithm) noexcept {
         MutationBatchResult report;
+        if (!algorithm.valid()) {
+            report.policy_rejected = true;
+            for (const auto& request : requests) {
+                report.nodes.push_back({request.node_id, ActuatorHealth::Quarantined, false});
+                health_sink.record(request.node_id, ActuatorHealth::Quarantined);
+            }
+            return report;
+        }
         if (journal_fault_latched_) {
             report.journal_status = JournalStatus::JournalFault;
             report.global_mutation_stop = true;
@@ -439,6 +453,8 @@ public:
 
         std::vector<const MutationRequest*> eligible;
         eligible.reserve(requests.size());
+        std::unordered_set<NodeId> seen_nodes;
+        seen_nodes.reserve(requests.size());
         for (const auto& request : requests) {
             const NodeDescriptor* node = manifest.find(request.node_id);
             bool rejected = node == nullptr || node->access != AccessState::Writable ||
@@ -446,11 +462,22 @@ public:
             ActuatorHealth rejection = node != nullptr &&
                 node->write_probe == ProbeState::PermissionDenied
                     ? ActuatorHealth::PermissionDenied : ActuatorHealth::SkippedUnavailable;
-            if (node != nullptr && request.expected_identity.valid() && node->identity.valid() &&
-                (request.expected_identity.device != node->identity.device ||
-                 request.expected_identity.inode != node->identity.inode)) {
+            if (!seen_nodes.insert(request.node_id).second) {
+                rejected = true;
+                rejection = ActuatorHealth::OemContention;
+            }
+            if (node != nullptr && (!request.expected_identity.valid() || !node->identity.valid() ||
+                request.expected_identity.device != node->identity.device ||
+                request.expected_identity.inode != node->identity.inode)) {
                 rejected = true;
                 rejection = ActuatorHealth::IdentityLost;
+            }
+            if (node != nullptr &&
+                (std::holds_alternative<std::monostate>(request.expected_current_value) ||
+                 std::holds_alternative<std::monostate>(node->observed_value) ||
+                 node->observed_value != request.expected_current_value)) {
+                rejected = true;
+                rejection = ActuatorHealth::OemContention;
             }
             if (rejected) {
                 report.nodes.push_back({request.node_id, rejection, false});
@@ -489,7 +516,8 @@ public:
                 continue;
             }
             const NodeIoResult write_result = node_port.write(
-                *node, request->target_value, request->expected_identity);
+                *node, request->expected_current_value, request->target_value,
+                request->expected_identity);
             if (write_result.status != NodeIoStatus::Ok) {
                 ActuatorHealth health = ActuatorHealth::WriteFailed;
                 switch (write_result.status) {
