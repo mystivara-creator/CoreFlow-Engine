@@ -49,23 +49,25 @@ assert "O_EXCL" in source and "renameat" in source
 assert "print_live_status_snapshot(live_pid)" in source
 assert "std::chrono::milliseconds(500)" in source
 
-# V5 lifecycle contract: baseline recovery is the activation boundary. Optional
-# workload telemetry gates only evidence-dependent CPU frequency admission;
-# it must not hold back independent optimization domains or daemon startup.
-lifecycle_start = source.index(
-    "autonomous_tuner.set_operational(!config.inspection_mode && config.enable_tuner);"
-)
-lifecycle_end = source.index("const auto pid_target_pressure", lifecycle_start)
-lifecycle = source[lifecycle_start:lifecycle_end]
-assert "DIRECT_BASELINE: topology and journal recovery complete" in lifecycle
-assert "bool lifecycle_promoted = true;" in lifecycle
-assert "const bool workload_pipeline_ready = workload_pipeline.start();" in lifecycle
-assert "if (!workload_pipeline_ready)" in lifecycle
-assert "autonomous CPU frequency admission remains disabled" in lifecycle
+# Direct Adaptive is the production composition root and starts after
+# CoreFlowContext has completed durable OEM journal recovery. Optional workload
+# telemetry never gates its independently discovered actuator domains.
+runtime_start = source.index("coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);")
+runtime_end = source.index("const auto pid_target_pressure", runtime_start)
+runtime = source[runtime_start:runtime_end]
+assert "direct_runtime.set_mutation_enabled" in runtime
+assert "const bool direct_runtime_ready = direct_runtime.start();" in runtime
+assert "Production composition ready" in runtime
+assert "daemon remains alive and direct actuators are skipped" in runtime
+assert "DIRECT_BASELINE: topology and journal recovery complete" in runtime
+assert "bool lifecycle_promoted = true;" in runtime
+assert "const bool workload_pipeline_ready = workload_pipeline.start();" in runtime
+assert "if (!workload_pipeline_ready)" in runtime
+assert "DirectAdaptiveRuntime continues from procfs/sysfs telemetry and timerfd cadence" in runtime
+assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency);" in source
+assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
 assert "kStartupGrace" not in source
 assert "STAGE_OBSERVING" not in source
-assert "STAGE_ACTIVE_TUNING" in source
-assert "set_operational(false)" in source
 
 # OEM thermal severity is authoritative when available. Celsius trip points are
 # consulted only for the explicit generic-fallback path.
