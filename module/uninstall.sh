@@ -20,7 +20,7 @@ if [ "$RESULT" -ne 0 ]; then
   exit "$RESULT"
 fi
 
-STATE="/data/adb/coreflow"
+STATE="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
 [ ! -L "$STATE" ] || exit 1
 # Remove only volatile state after verified rollback. Retain user config and logs.
 rm -f "$STATE/direct-adaptive.wal" "$STATE/coreflowd.pid" "$STATE/status.json" \

@@ -2,6 +2,8 @@
 # KernelSU action menu entry: read-only inspection or an explicit OEM restore.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
 umask 077
+STATE="${COREFLOW_STATE_DIR:-/data/adb/coreflow}"
+[ ! -L "$STATE" ] || { echo "CoreFlow state path is unsafe." >&2; exit 1; }
 MODDIR="${0%/*}"
 BIN="$MODDIR/system/bin/coreflowd"
 [ -f "$BIN" ] || BIN="$MODDIR/coreflowd"
@@ -16,7 +18,7 @@ case "${1:-status}" in
     "$BIN" --rollback-baseline
     RESULT=$?
     if [ "$RESULT" -eq 0 ]; then
-      rm -f /data/adb/coreflow/direct-adaptive.wal
+      rm -f "$STATE/direct-adaptive.wal"
     else
       echo "OEM rollback incomplete; preserve /data/adb/coreflow/baseline.journal" >&2
     fi
