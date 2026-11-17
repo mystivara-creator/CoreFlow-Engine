@@ -419,19 +419,13 @@ struct MutationBatchResult final {
 // from being attempted. JournalFault prevents every write in the batch.
 class UnifiedMutationEngine final {
 public:
-    [[nodiscard]] bool mutation_blocked() const noexcept {
-        return journal_fault_latched_;
-    }
+    [[nodiscard]] bool mutation_blocked() const noexcept { return journal_fault_latched_; }
 
     [[nodiscard]] MutationBatchResult execute(
-        const DeviceManifest& manifest,
-        const OemBaseline& baseline,
-        std::span<const MutationRequest> requests,
-        IWriteAheadJournal& journal,
-        INodeMutationPort& node_port,
-        IOutcomeVerifier& verifier,
-        IActuatorHealthSink& health_sink,
-        const AlgorithmConstants& algorithm) noexcept {
+        const DeviceManifest& manifest, const OemBaseline& baseline,
+        std::span<const MutationRequest> requests, IWriteAheadJournal& journal,
+        INodeMutationPort& node_port, IOutcomeVerifier& verifier,
+        IActuatorHealthSink& health_sink, const AlgorithmConstants& algorithm) noexcept {
         MutationBatchResult report;
         if (journal_fault_latched_) {
             report.journal_status = JournalStatus::JournalFault;
@@ -445,40 +439,37 @@ public:
 
         std::vector<const MutationRequest*> eligible;
         eligible.reserve(requests.size());
-
         for (const auto& request : requests) {
             const NodeDescriptor* node = manifest.find(request.node_id);
-            if (node == nullptr || node->access != AccessState::Writable ||
-                node->write_probe != ProbeState::Available ||
-                node->value_kind == ValueKind::Unknown ||
-                (request.expected_identity.valid() &&
-                 node->identity.valid() &&
-                 (request.expected_identity.device != node->identity.device ||
-                  request.expected_identity.inode != node->identity.inode))) {
-                report.nodes.push_back({request.node_id,
-                    node != nullptr && node->write_probe == ProbeState::PermissionDenied
-                        ? ActuatorHealth::PermissionDenied
-                        : ActuatorHealth::SkippedUnavailable, false});
-                health_sink.record(request.node_id, report.nodes.back().health);
+            bool rejected = node == nullptr || node->access != AccessState::Writable ||
+                node->write_probe != ProbeState::Available || node->value_kind == ValueKind::Unknown;
+            ActuatorHealth rejection = node != nullptr &&
+                node->write_probe == ProbeState::PermissionDenied
+                    ? ActuatorHealth::PermissionDenied : ActuatorHealth::SkippedUnavailable;
+            if (node != nullptr && request.expected_identity.valid() && node->identity.valid() &&
+                (request.expected_identity.device != node->identity.device ||
+                 request.expected_identity.inode != node->identity.inode)) {
+                rejected = true;
+                rejection = ActuatorHealth::IdentityLost;
+            }
+            if (rejected) {
+                report.nodes.push_back({request.node_id, rejection, false});
+                health_sink.record(request.node_id, rejection);
                 continue;
             }
             if (algorithm.maximum_mutations_per_batch != 0U &&
                 eligible.size() >= algorithm.maximum_mutations_per_batch) {
                 report.nodes.push_back({request.node_id, ActuatorHealth::SkippedUnavailable, false});
-                health_sink.record(request.node_id, report.nodes.back().health);
+                health_sink.record(request.node_id, ActuatorHealth::SkippedUnavailable);
                 continue;
             }
             eligible.push_back(&request);
         }
-
         if (eligible.empty()) return report;
 
         std::vector<MutationRequest> write_ahead_records;
         write_ahead_records.reserve(eligible.size());
-        for (const MutationRequest* request : eligible) {
-            write_ahead_records.push_back(*request);
-        }
-
+        for (const MutationRequest* request : eligible) write_ahead_records.push_back(*request);
         report.journal_status = journal.append_and_sync(write_ahead_records);
         if (report.journal_status == JournalStatus::JournalFault) {
             journal_fault_latched_ = true;
@@ -487,7 +478,7 @@ public:
                 report.nodes.push_back({request->node_id, ActuatorHealth::Quarantined, false});
                 health_sink.record(request->node_id, ActuatorHealth::Quarantined);
             }
-            return report; // Strictly no actuator write after a journal fault.
+            return report;
         }
 
         for (const MutationRequest* request : eligible) {
@@ -497,19 +488,17 @@ public:
                 health_sink.record(request->node_id, ActuatorHealth::SkippedUnavailable);
                 continue;
             }
-
             const NodeIoResult write_result = node_port.write(
                 *node, request->target_value, request->expected_identity);
             if (write_result.status != NodeIoStatus::Ok) {
                 ActuatorHealth health = ActuatorHealth::WriteFailed;
-                if (write_result.status == NodeIoStatus::PermissionDenied)
-                    health = ActuatorHealth::PermissionDenied;
-                else if (write_result.status == NodeIoStatus::Contended)
-                    health = ActuatorHealth::OemContention;
-                else if (write_result.status == NodeIoStatus::IdentityChanged)
-                    health = ActuatorHealth::IdentityLost;
-                else if (write_result.status == NodeIoStatus::Missing)
-                    health = ActuatorHealth::SkippedUnavailable;
+                switch (write_result.status) {
+                    case NodeIoStatus::Missing: health = ActuatorHealth::SkippedUnavailable; break;
+                    case NodeIoStatus::PermissionDenied: health = ActuatorHealth::PermissionDenied; break;
+                    case NodeIoStatus::IdentityChanged: health = ActuatorHealth::IdentityLost; break;
+                    case NodeIoStatus::Contended: health = ActuatorHealth::OemContention; break;
+                    default: break;
+                }
                 report.nodes.push_back({request->node_id, health, true});
                 health_sink.record(request->node_id, health);
                 continue;
@@ -517,12 +506,12 @@ public:
 
             const NodeIoResult readback = node_port.read(*node);
             const OemBaselineEntry* baseline_entry = baseline.find(request->node_id);
-            const VerificationResult verification = verifier.verify(
-                *node, *request, readback, baseline_entry);
-            const ActuatorHealth health =
-                verification.accepted || verification.health != ActuatorHealth::Healthy
-                    ? verification.health
-                    : ActuatorHealth::ValueMismatch;
+            const VerificationResult verification =
+                verifier.verify(*node, *request, readback, baseline_entry);
+            const ActuatorHealth health = verification.accepted
+                ? ActuatorHealth::Healthy
+                : (verification.health == ActuatorHealth::Healthy
+                    ? ActuatorHealth::ValueMismatch : verification.health);
             report.nodes.push_back({request->node_id, health, true});
             health_sink.record(request->node_id, health);
         }
@@ -530,9 +519,7 @@ public:
     }
 
 private:
-    // Latched for the daemon lifetime. The composition root may construct a new
-    // engine only after BaselineStore recovery has been verified on a new start.
+    // Latched for this daemon lifetime. Reconstruct only after durable recovery.
     bool journal_fault_latched_{};
 };
-
 } // namespace coreflow::runtime
