@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Stop coreflowd and restore its captured OEM values before module removal.
-export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
+export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:${PATH:-/usr/bin:/bin}"
 umask 077
 MODDIR="${0%/*}"
 BIN="$MODDIR/system/bin/coreflowd"
