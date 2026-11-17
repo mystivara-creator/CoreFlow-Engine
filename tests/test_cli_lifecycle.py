@@ -9,7 +9,7 @@ context = (Path(__file__).resolve().parents[1] / "src/kernel/coreflow_context.cp
 assert "finish_cli_process" not in source
 assert "::_exit(status);" not in source
 assert "CoreFlowContext context;" in source
-assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 2
+assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 3
 
 for command, printer in (
     ('if (command == "--status")', "print_status(context);"),

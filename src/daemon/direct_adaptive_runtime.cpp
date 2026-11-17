@@ -339,8 +339,10 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
             values.reserve(node->advertised_values.size());
             for (const auto& advertised : node->advertised_values) {
                 long double value = 0.0L;
-                if (numeric_value(advertised, value) && value > 0.0L)
+                if (numeric_value(advertised, value) &&
+                    (kgsl_reverse ? value >= 0.0L : value > 0.0L)) {
                     values.push_back(static_cast<std::uint64_t>(value));
+                }
             }
             if (values.empty()) return std::nullopt;
             if (kgsl_reverse) {
