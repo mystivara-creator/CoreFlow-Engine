@@ -59,3 +59,12 @@ Kill switch: `/data/adb/coreflow/DISABLE` atau nonaktifkan modul melalui root ma
 ## Lisensi
 
 [MIT License](LICENSE).
+
+
+## Direct Adaptive runtime (V5)
+
+The production daemon composes TopologyScanner, Telemetry, SweetSpotEngine, KernelActuator and the existing Linux epoll/timerfd reactor through DirectAdaptiveRuntime. Only semantically discovered nodes with a durable OEM snapshot, known identity, writable access and verified readback are eligible for mutation. Missing optional PSI, refresh-rate or FrameTimeline evidence is reported as unavailable and does not suppress independent CPU, GPU, VM or storage capabilities.
+
+The directAdaptive object in /data/adb/coreflow/status.json publishes the selected operating mode, discovered CPU OPP clusters, resource topology, current values, OEM baseline values and ownership/readback health. coreflowd --journal prints a read-only baseline journal; coreflowd --rollback-baseline stops the daemon and restores CoreFlow-owned changes. KernelSU action.sh exposes status, journal and rollback commands.
+
+The production CI artifact is named CFAE-System-Framework-package.zip.

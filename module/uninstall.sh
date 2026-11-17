@@ -1,9 +1,8 @@
 #!/system/bin/sh
-# Stop the daemon and verify OEM restore before removing the module.
+# Stop coreflowd and restore its captured OEM values before module removal.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
 umask 077
-
-MODDIR="${0%/*}"
+MODDIR="\${0%/*}"
 BIN="$MODDIR/system/bin/coreflowd"
 [ -f "$BIN" ] || BIN="$MODDIR/coreflowd"
 [ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"
@@ -15,6 +14,14 @@ if [ -x "$BIN" ] || [ -f "$BIN" ]; then
   RESULT=$?
   if [ "$RESULT" -ne 0 ]; then
     echo "CoreFlow: OEM recovery incomplete. Preserve /data/adb/coreflow/baseline.journal" >&2
+    exit "$RESULT"
   fi
 fi
-# Keep user configuration and crash journal for diagnostics and reinstall.
+
+STATE="/data/adb/coreflow"
+[ ! -L "$STATE" ] || exit 1
+# Remove only volatile state after verified rollback. Retain user config and logs.
+rm -f "$STATE/direct-adaptive.wal" "$STATE/coreflowd.pid" "$STATE/status.json" \
+  "$STATE/status.json.tmp" "$STATE"/status.json.tmp.*
+rm -f "$STATE"/coreflowd.pid.tmp.* "$STATE"/direct-adaptive.wal.tmp.*
+exit 0

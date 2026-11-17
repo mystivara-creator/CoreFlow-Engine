@@ -482,6 +482,83 @@ export function mergeConfigText(
   return outLines.join('\n') + '\n';
 }
 
+export interface DirectAdaptiveCpuCluster {
+  id: string;
+  opps: string[];
+}
+
+export interface DirectAdaptiveAppliedValue {
+  semantic: string;
+  domain: string;
+  path: string;
+  current: string;
+  oemBaseline: string;
+  target: string;
+  modified: boolean;
+  owned: boolean;
+  health: string;
+}
+
+export interface DirectAdaptiveStatus {
+  active: boolean;
+  discoveryComplete: boolean;
+  mode: string;
+  screenState: string;
+  thermalGuard: boolean;
+  cpuUtilizationPct: number;
+  thermalPressure: number;
+  ramBytes: number;
+  zramBytes: number;
+  refreshHz: number;
+  gpuModel: string;
+  storageType: string;
+  discoveredNodes: number;
+  baselineNodes: number;
+  verifiedMutations: number;
+  skippedNodes: number;
+  ownershipLosses: number;
+  journalFault: boolean;
+  cpuClusters: DirectAdaptiveCpuCluster[];
+  appliedValues: DirectAdaptiveAppliedValue[];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export function isDirectAdaptiveStatus(value: unknown): value is DirectAdaptiveStatus {
+  if (!isRecord(value)) return false;
+  const numberKeys = [
+    'cpuUtilizationPct', 'thermalPressure', 'ramBytes', 'zramBytes', 'refreshHz',
+    'discoveredNodes', 'baselineNodes', 'verifiedMutations', 'skippedNodes', 'ownershipLosses',
+  ] as const;
+  const stringKeys = ['mode', 'screenState', 'gpuModel', 'storageType'] as const;
+  if (
+    typeof value.active !== 'boolean' ||
+    typeof value.discoveryComplete !== 'boolean' ||
+    typeof value.thermalGuard !== 'boolean' ||
+    typeof value.journalFault !== 'boolean' ||
+    !numberKeys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key])) ||
+    !stringKeys.every((key) => typeof value[key] === 'string') ||
+    !Array.isArray(value.cpuClusters) ||
+    !value.cpuClusters.every((item) =>
+      isRecord(item) &&
+      typeof item.id === 'string' &&
+      Array.isArray(item.opps) &&
+      item.opps.every((opp) => typeof opp === 'string')
+    ) ||
+    !Array.isArray(value.appliedValues) ||
+    !value.appliedValues.every((item) =>
+      isRecord(item) &&
+      ['semantic', 'domain', 'path', 'current', 'oemBaseline', 'target', 'health'].every(
+        (key) => typeof item[key] === 'string'
+      ) &&
+      typeof item.modified === 'boolean' &&
+      typeof item.owned === 'boolean'
+    )
+  ) return false;
+  return true;
+}
+
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
   modeLabel: string;
@@ -543,6 +620,7 @@ export interface AutonomousTelemetry {
   tunerCandidates?: TunerCandidateTelemetry[];
   tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   vulkan?: VulkanTelemetry;
+  directAdaptive?: DirectAdaptiveStatus;
   timestamp: number;
 }
 

@@ -399,7 +399,7 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
                 numeric_target = static_cast<long double>(*selected);
                 has_target = true;
             }
- else if (semantic == "gpu.kgsl.min_pwrlevel") {
+        } else if (semantic == "gpu.kgsl.min_pwrlevel") {
             const double tier = intent.mode == OperatingMode::Idle ? 0.72 :
                 intent.mode == OperatingMode::HighLoad ? 0.20 :
                 intent.mode == OperatingMode::ThermalGuard ? 0.80 : 0.35;
@@ -1036,16 +1036,20 @@ struct DirectAdaptiveRuntime::Impl final {
             << ",\"journalFault\":" << (snapshot.journal_fault ? "true" : "false")
             << ",\"cpuClusters\":[";
 
-        std::set<std::string> cluster_names;
-        bool first = true;
+                std::map<std::string, std::vector<NodeValue>> clusters;
         for (const auto& node : manifest.nodes) {
-            if (node.domain != NodeDomain::Cpu) continue;
-            if (!cluster_names.insert(node.domain_id).second) continue;
+            if (node.domain == NodeDomain::Cpu && !node.advertised_values.empty()) {
+                auto& opps = clusters[node.domain_id];
+                if (opps.empty()) opps = node.advertised_values;
+            }
+        }
+        bool first = true;
+        for (const auto& [cluster_id, opps] : clusters) {
             if (!first) out << ',';
             first = false;
-            out << "{\"id\":" << json_escape(node.domain_id) << ",\"opps\":[";
+            out << "{\"id\":" << json_escape(cluster_id) << ",\"opps\":[";
             bool first_opp = true;
-            for (const auto& candidate : node.advertised_values) {
+            for (const auto& candidate : opps) {
                 if (!first_opp) out << ',';
                 first_opp = false;
                 out << json_escape(node_value_text(candidate));
@@ -1086,6 +1090,8 @@ struct DirectAdaptiveRuntime::Impl final {
         // after that verified recovery may an interrupted intent WAL be retired.
         if (!clear_direct_adaptive_wal()) {
             snapshot.journal_fault = true;
+            snapshot.mode = OperatingMode::Unknown;
+            build_json();
             return;
         }
         const auto discovery = scanner.discover({"/sys", "/proc"});

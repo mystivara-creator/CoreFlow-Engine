@@ -28,6 +28,10 @@ struct DaemonConfig {
     bool inspection_mode{false};
     bool enable_tuner{true};
 
+    // [direct_adaptive] Capability-derived Direct Baseline + Sweet-Spot runtime.
+    bool enable_direct_adaptive{true};
+    std::string direct_adaptive_policy{"auto"};
+
     // [device_adaptation]
     std::string tier_override{"auto"};
     bool unlock_vendor_clamping{false};
@@ -133,6 +137,9 @@ struct DaemonConfig {
             key == "enable_tuner") {
             return "general";
         }
+        if (key == "enable_direct_adaptive" || key == "direct_adaptive_policy") {
+            return "direct_adaptive";
+        }
         if (key == "tier_override" || key == "unlock_vendor_clamping" ||
             key == "force_120hz_rendering" || key == "enable_cpu_frequency_control" ||
             key == "enable_gpu_frequency_control") {
@@ -230,6 +237,14 @@ struct DaemonConfig {
             else if (key == "force_120hz_rendering") cfg.force_120hz_rendering = parse_bool(val);
             else if (key == "enable_cpu_frequency_control") cfg.enable_cpu_frequency_control = parse_bool(val);
             else if (key == "enable_gpu_frequency_control") cfg.enable_gpu_frequency_control = parse_bool(val);
+
+            // [direct_adaptive]
+            else if (key == "enable_direct_adaptive") cfg.enable_direct_adaptive = parse_bool(val);
+            else if (key == "direct_adaptive_policy") {
+                const auto policy = to_lower_ascii(val);
+                cfg.direct_adaptive_policy =
+                    (policy == "auto" || policy == "disabled") ? policy : "auto";
+            }
 
             // [uclamp_tuning]
             else if (key == "top_app_interactive_min") {

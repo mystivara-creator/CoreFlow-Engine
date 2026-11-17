@@ -4,6 +4,7 @@ import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
 import { BaselineGuardianCard } from './components/BaselineGuardianCard';
+import { DirectAdaptiveCard } from './components/DirectAdaptiveCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import { ArchitectureStudioModal } from './components/ArchitectureStudioModal';
@@ -15,6 +16,8 @@ import { SemanticEvidencePanel } from './components/SemanticEvidencePanel';
 import { isSemanticEvidence, SemanticEvidence } from './semanticEvidence';
 import {
   AutonomousTelemetry,
+  DirectAdaptiveStatus,
+  isDirectAdaptiveStatus,
   BlockQueueTelemetry,
   computeVulkanTelemetry,
   createInitialAutonomousTelemetry,
@@ -103,6 +106,7 @@ interface NativeStatus {
   tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   vulkan?: VulkanTelemetry;
   semanticEvidence?: SemanticEvidence;
+  directAdaptive?: DirectAdaptiveStatus;
 }
 
 const extractJsonObject = (raw: string): unknown => {
@@ -153,6 +157,9 @@ const checkedNativeStatus = (raw: string): NativeStatus => {
   if (status.semanticEvidence !== undefined && !isSemanticEvidence(status.semanticEvidence)) {
     throw new Error('Unexpected semanticEvidence schema; expected native schemaVersion 1');
   }
+  if (status.directAdaptive !== undefined && !isDirectAdaptiveStatus(status.directAdaptive)) {
+    throw new Error('Unexpected directAdaptive status schema');
+  }
   return status as NativeStatus;
 };
 
@@ -168,6 +175,8 @@ export const App: React.FC = () => {
   const [appearance, setAppearance] = useState(() => readAppearance());
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [semanticEvidence, setSemanticEvidence] = useState<SemanticEvidence | null>(null);
+  const [journalOutput, setJournalOutput] = useState<string | null>(null);
+  const [restoringBaseline, setRestoringBaseline] = useState(false);
   const [nativeStatusAvailable, setNativeStatusAvailable] = useState(false);
   const nativeConnected = isNativeBridge && nativeStatusAvailable;
   const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
@@ -272,13 +281,25 @@ export const App: React.FC = () => {
       setNativeStatusAvailable(status.semanticEvidence?.status === 'available');
     const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
     const isThermalThrottling =
+      status.directAdaptive?.thermalGuard ??
       status.thermalGuardActive ??
       (status.thermalFallbackActive
         ? effectiveTemp >= thermalTripCelsius
         : (status.thermalSeverity ?? 0) >= 3);
+    const adaptiveMode = status.directAdaptive?.mode;
+    const adaptiveModeLabel = adaptiveMode
+      ? ({
+          SCREEN_OFF: 'Screen Off / Deep Idle',
+          BALANCED_SWEET_SPOT: 'Balanced Sweet-Spot',
+          ACTIVE_LOAD: 'Active Load / Gaming',
+          THERMAL_GUARD: 'Thermal Guard',
+          DISCOVERY: 'Capability Discovery',
+        } as Record<string, string>)[adaptiveMode] ?? adaptiveMode
+      : undefined;
     setTelemetry((old) => ({
       ...old,
-      engineActive: status.running,
+      engineActive: status.running && (status.directAdaptive?.active ?? true),
+      directAdaptive: status.directAdaptive,
       uclampMin: status.uclampMin,
       uclampMax: status.uclampMax,
       uclampSupported: status.uclampSupported,
@@ -331,29 +352,28 @@ export const App: React.FC = () => {
       tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
       tunerEvaluatedCandidates: status.tunerEvaluatedCandidates ?? old.tunerEvaluatedCandidates,
       vulkan: status.vulkan ?? old.vulkan,
-      baselineStatus: status.recoveryPending ? 'protected' : 'restored',
+      baselineStatus: status.recoveryPending ||
+        (status.directAdaptive?.active === true && status.directAdaptive.baselineNodes > 0)
+          ? 'protected'
+          : 'restored',
       transactionStage: status.running
         ? status.recoveryPending
           ? 'RETAINED'
           : 'VERIFIED'
         : 'PLANNED',
       modeLabel: status.running
-        ? isThermalThrottling
-          ? 'ThermalGuard Active · Pacing Demand'
-          : status.uclampSupported
-          ? 'Coordinated Stability Policy Active'
-          : 'Daemon Active · Multi-Sensor Equilibrium'
+        ? adaptiveModeLabel ?? (isThermalThrottling
+          ? 'Thermal Guard'
+          : 'Direct Adaptive runtime active')
         : 'Daemon Stopped',
       modeDescription: status.running
-        ? isThermalThrottling
-          ? status.uclampSupported
-            ? 'Thermal guard active: applying supported clock and UClamp mitigation paths'
-            : 'Thermal guard active: UClamp is unavailable; mitigation is limited to other validated actuator paths'
-          : status.recoveryPending
-            ? `Thermal source: ${status.thermalSource ?? 'oem_policy'}; write-ahead CFJ4 journal armed`
-            : status.uclampSupported
-              ? 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
-              : 'Daemon active; UClamp capability unavailable. Other controls remain capability-gated and independently verified.'
+        ? status.directAdaptive?.journalFault
+          ? 'Journal fault latched; all further Direct Adaptive mutations are halted until baseline recovery.'
+          : status.directAdaptive?.ownershipLosses
+            ? 'OEM contention isolated at affected nodes; independent capabilities continue.'
+            : status.directAdaptive?.active
+              ? 'Direct Baseline with capability-derived Sweet-Spot policy and verified readback.'
+              : 'Daemon is running; Direct Adaptive discovery or baseline preparation is unavailable.'
         : 'OEM baseline restored',
       timestamp: Date.now(),
     }));
@@ -362,6 +382,7 @@ export const App: React.FC = () => {
     } catch (error) {
       setNativeStatusAvailable(false);
       setSemanticEvidence(null);
+      setTelemetry((old) => ({ ...old, directAdaptive: undefined }));
       throw error;
     }
   }, [thermalTripCelsius]);
@@ -539,11 +560,36 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleViewJournal = useCallback(async () => {
+    try {
+      const raw = await execChecked(`${RESOLVE_BIN}; "$BIN" --journal`);
+      const parsed = extractJsonObject(raw);
+      setJournalOutput(JSON.stringify(parsed, null, 2));
+      setNativeError(null);
+    } catch (error) {
+      setNativeError('Unable to read the mutation journal: ' + String(error));
+    }
+  }, []);
+
+  const handleRestoreBaseline = useCallback(async () => {
+    if (!window.confirm('Restore every CoreFlow-owned node to its captured OEM baseline and stop coreflowd?')) return;
+    setRestoringBaseline(true);
+    try {
+      await execChecked(`${RESOLVE_BIN}; "$BIN" --rollback-baseline`);
+      setJournalOutput(null);
+      await refreshNative();
+      addLog('BASELINE', 'Baseline', 'OEM baseline rollback requested from the Direct Adaptive audit panel.');
+    } catch (error) {
+      setNativeError('OEM baseline restore failed: ' + String(error));
+    } finally {
+      setRestoringBaseline(false);
+    }
+  }, [addLog, refreshNative]);
+
   const navItems: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
     { id: 'dashboard', label: 'Overview', Icon: Activity },
     { id: 'thermal', label: 'Thermal', Icon: Flame },
     { id: 'hardware', label: 'Hardware', Icon: HardDrive },
-    { id: 'vulkan', label: 'Vulkan', Icon: Layers },
     { id: 'console', label: 'Audit & Diagnostics', Icon: Terminal },
     { id: 'validation', label: 'Validation', Icon: ClipboardCheck },
   ];
@@ -635,7 +681,19 @@ export const App: React.FC = () => {
                   {telemetry.engineActive ? 'Daemon operating autonomously' : 'Daemon standby'}
                 </div>
               </div>
-              <AutonomousStateHero telemetry={telemetry} nativeMode={isNativeBridge} thermalTripCelsius={thermalTripCelsius} />
+              {!isNativeBridge && (
+                <AutonomousStateHero telemetry={telemetry} nativeMode={false} thermalTripCelsius={thermalTripCelsius} />
+              )}
+              {isNativeBridge && (
+                <DirectAdaptiveCard
+                  status={telemetry.directAdaptive}
+                  nativeMode={true}
+                  journalOutput={journalOutput}
+                  restoringBaseline={restoringBaseline}
+                  onViewJournal={handleViewJournal}
+                  onRestoreBaseline={handleRestoreBaseline}
+                />
+              )}
             </section>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -645,7 +703,7 @@ export const App: React.FC = () => {
             </div>
 
             <SemanticEvidencePanel evidence={semanticEvidence} nativeConnected={nativeConnected} simulationMode={!isNativeBridge} />
-            <BaselineGuardianCard nodesSnapshotted={telemetry.baselineNodesSnapshotted} nativeMode={isNativeBridge} baselineStatus={telemetry.baselineStatus} />
+            {!isNativeBridge && <BaselineGuardianCard nodesSnapshotted={telemetry.baselineNodesSnapshotted} nativeMode={false} baselineStatus={telemetry.baselineStatus} />}
             <LiveReactionStream logs={logs} nativeMode={isNativeBridge} />
           </div>
         )}

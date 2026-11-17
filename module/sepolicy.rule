@@ -1,2 +1,6 @@
-# CFAE System Framework v4.0.0: no SELinux allow-all or permissive rules.
-# Add a narrowly scoped rule only after verifying an actual AVC denial.
+# CFAE System Framework v4.0.0 — KernelSU capability policy notes.
+# No permissive mode or broad sysfs allow rule is installed.
+# The root-manager su domain supplies the authority used by coreflowd.
+# Nodes denied by the active SELinux policy are reported as per-actuator
+# PermissionDenied capabilities and skipped without blocking independent domains.
+# Do not add wildcard allow rules for sysfs, procfs, thermal, backlight or DRM.

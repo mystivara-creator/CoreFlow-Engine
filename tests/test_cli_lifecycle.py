@@ -110,3 +110,16 @@ assert "gpu_busy_sum" in probe
 assert "frameDeadlineMissCount" in probe
 assert "pipeline.stop();" in probe
 assert "MutationCoordinator" not in probe
+
+
+# Direct Adaptive is the production runtime authority, not a detached unit-test-only contract.
+assert '#include "coreflow/direct_adaptive_runtime.hpp"' in source
+assert "coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);" in source
+assert "const bool direct_runtime_ready = direct_runtime.start();" in source
+assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency);" in source
+assert "directAdaptive" in source
+assert "if (!BaselineStore::instance().recover_pending()) return 1;" in source
+assert "context.autonomous_tuner().set_operational(false);" in source
+assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
+assert "apply_storage_pacing();" not in source
+assert 'if (command == "--journal")' in source

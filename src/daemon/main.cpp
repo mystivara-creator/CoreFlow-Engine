@@ -425,7 +425,13 @@ int stop_daemon() {
         if (process_matches(pid)) return 1;
     }
     // If the daemon died before receiving SIGTERM, recover its durable journal.
+    // The secondary batch-intent WAL is retired only after OEM recovery succeeds.
     if (!BaselineStore::instance().recover_pending()) return 1;
+    UniqueFd state_dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (state_dir.valid()) {
+        if (::unlinkat(state_dir.get(), "direct-adaptive.wal", 0) != 0 && errno != ENOENT) return 1;
+        if (::fsync(state_dir.get()) != 0) return 1;
+    }
     return journal_clear() ? 0 : 1;
 }
 
@@ -568,7 +574,7 @@ struct StatusTelemetrySnapshot final {
     std::optional<double> cpu_psi{};
     std::optional<double> memory_psi{};
     std::optional<double> io_psi{};
-    std::string direct_adaptive_json{"{\"active\":false,\"mode\":\"READ_ONLY\"}"};
+    std::string direct_adaptive_json{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"};
 };
 
 std::string build_status_json(
@@ -949,7 +955,7 @@ std::string build_status_json(
         << ",\"node_capabilities\":" << node_inventory_json
         << ",\"nodeCapabilityGeneration\":" << device_inventory->generation
         << ",\"directAdaptive\":" << (cached == nullptr || cached->direct_adaptive_json.empty()
-            ? std::string{"{\"active\":false,\"mode\":\"READ_ONLY\"}"}
+            ? std::string{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"}
             : cached->direct_adaptive_json)
         << "}";
 
@@ -1611,7 +1617,7 @@ int main(int argc, char* argv[]) {
 
     DaemonConfig config = DaemonConfig::load_best_available();
     coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);
-    direct_runtime.set_mutation_enabled(!config.inspection_mode);
+    direct_runtime.set_mutation_enabled(!config.inspection_mode && config.enable_direct_adaptive && config.direct_adaptive_policy != "disabled");
     const bool direct_runtime_ready = direct_runtime.start();
     if (direct_runtime_ready) {
         emit_log(false, "[CoreFlow][DirectAdaptive] Production composition ready: topology, telemetry, sweet-spot, durable WAL actuator and epoll/timerfd event path connected.");
@@ -1806,9 +1812,10 @@ int main(int argc, char* argv[]) {
                         config.top_app_io_weight, config.background_io_weight});
                     context.neural_predictor().initialize("/data/adb/coreflow/models");
                     context.autonomous_tuner().discover();
-                    if (lifecycle_promoted) context.autonomous_tuner().set_operational(false);
+                    context.autonomous_tuner().set_operational(false);
+                    direct_runtime.set_mutation_enabled(!config.inspection_mode &&
+                        config.enable_direct_adaptive && config.direct_adaptive_policy != "disabled");
                     direct_runtime.refresh();
-                    direct_runtime.set_mutation_enabled(!config.inspection_mode);
                     context.vulkan_controller().configure({
                         .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
                         .enable_skiavk_threaded = config.enable_skiavk_threaded,
@@ -2001,7 +2008,7 @@ int main(int argc, char* argv[]) {
             cooling_feedback.reset();
             temp_tracker.reset();
         } else if (!thermal_ready) {
-            frequencies.discover(false, config.enable_gpu_frequency_control);
+            frequencies.discover(false, false);
             controller->reset();
             thermal_ready = true; unavailable_reported = false;
         }
@@ -2146,7 +2153,7 @@ int main(int argc, char* argv[]) {
         if (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0) {
             if (++freq_resync_ticks >= 5) {
                 freq_resync_ticks = 0;
-                frequencies.discover(false, config.enable_gpu_frequency_control);
+                frequencies.discover(false, false);
             }
         } else {
             freq_resync_ticks = 0;
@@ -2156,7 +2163,7 @@ int main(int argc, char* argv[]) {
         // excludes paired KGSL power-level domains from this generic path; they
         // require apply_gpu_frame_policy() with fresh GPU + FrameTimeline evidence.
         if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
-            frequencies.discover(false, config.enable_gpu_frequency_control);
+            frequencies.discover(false, false);
         }
         // Storage tuning ownership belongs to DirectAdaptiveRuntime; legacy pacing is disabled to avoid dual actuators.
         context.hardware_longevity().monitor_battery_thermals(temp);
