@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Flame, Layers, Terminal, ClipboardCheck, HardDrive, Thermometer, Cpu, Gauge, LockKeyhole } from 'lucide-react';
+import { Activity, Flame, Terminal, ClipboardCheck, HardDrive, Thermometer, Cpu, Gauge, LockKeyhole } from 'lucide-react';
 import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
