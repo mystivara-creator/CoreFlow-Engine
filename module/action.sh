@@ -2,7 +2,7 @@
 # KernelSU action menu entry: read-only inspection or an explicit OEM restore.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin"
 umask 077
-MODDIR="\${0%/*}"
+MODDIR="${0%/*}"
 BIN="$MODDIR/system/bin/coreflowd"
 [ -f "$BIN" ] || BIN="$MODDIR/coreflowd"
 [ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"

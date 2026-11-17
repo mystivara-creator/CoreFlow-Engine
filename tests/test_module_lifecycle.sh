@@ -25,8 +25,9 @@ cp "$(dirname "$0")/../module/post-fs-data.sh" "$MOD_DIR/post-fs-data.sh"
 cp "$(dirname "$0")/../module/service.sh" "$MOD_DIR/service.sh"
 cp "$(dirname "$0")/../module/customize.sh" "$MOD_DIR/customize.sh"
 cp "$(dirname "$0")/../module/uninstall.sh" "$MOD_DIR/uninstall.sh"
+cp "$(dirname "$0")/../module/action.sh" "$MOD_DIR/action.sh"
 cp "$(dirname "$0")/../module/system/etc/coreflow/default.conf" "$MOD_DIR/system/etc/coreflow/default.conf"
-chmod +x "$MOD_DIR/post-fs-data.sh" "$MOD_DIR/service.sh" "$MOD_DIR/customize.sh" "$MOD_DIR/uninstall.sh"
+chmod +x "$MOD_DIR/post-fs-data.sh" "$MOD_DIR/service.sh" "$MOD_DIR/customize.sh" "$MOD_DIR/uninstall.sh" "$MOD_DIR/action.sh"
 
 # Create a mock coreflowd binary that supports --daemon, --status, and --stop
 cat <<'EOF' > "$MOD_DIR/system/bin/coreflowd"
@@ -44,12 +45,22 @@ case "${1:-}" in
     exit 0
     ;;
   --status)
+    printf '%s\n' --status >> "$COREFLOW_DAEMON_COMMAND_LOG"
     if [ -f "$PID_FILE" ]; then
       echo '{"running":true,"pid":1234}'
     else
       echo '{"running":false,"pid":0}'
     fi
     exit 0
+    ;;
+  --journal)
+    printf '%s\n' --journal >> "$COREFLOW_DAEMON_COMMAND_LOG"
+    echo '{"journal":"available"}'
+    exit 0
+    ;;
+  --rollback-baseline)
+    printf '%s\n' --rollback-baseline >> "$COREFLOW_DAEMON_COMMAND_LOG"
+    exit "${COREFLOW_MOCK_ROLLBACK_RESULT:-0}"
     ;;
 esac
 exit 0
@@ -60,6 +71,9 @@ export COREFLOW_STATE_DIR="$STATE_DIR"
 export COREFLOW_LIVE_MOD_DIR="$LIVE_MOD"
 export COREFLOW_LAUNCH_LOG="$TMP_ROOT/daemon-launches.log"
 : > "$COREFLOW_LAUNCH_LOG"
+export COREFLOW_DAEMON_COMMAND_LOG="$TMP_ROOT/daemon-commands.log"
+: > "$COREFLOW_DAEMON_COMMAND_LOG"
+export COREFLOW_MOCK_ROLLBACK_RESULT=0
 
 # 1. Test post-fs-data.sh boot_epoch generation & boot_attempts escalation
 sh "$MOD_DIR/post-fs-data.sh"
@@ -128,5 +142,60 @@ sh "$MOD_DIR/service.sh"
   exit 1
 }
 [ ! -e "$STATE_DIR/service.lock" ] || { echo "FAIL: service lock was not released"; exit 1; }
+
+
+# 6. KernelSU action menu must resolve its own module directory and dispatch commands.
+sh "$MOD_DIR/action.sh" status > "$TMP_ROOT/action-status.out"
+grep -q '"running":true' "$TMP_ROOT/action-status.out" || {
+  echo "FAIL: action.sh status did not invoke the module-local daemon"
+  exit 1
+}
+sh "$MOD_DIR/action.sh" journal > "$TMP_ROOT/action-journal.out"
+grep -q '"journal":"available"' "$TMP_ROOT/action-journal.out" || {
+  echo "FAIL: action.sh journal did not invoke the module-local daemon"
+  exit 1
+}
+printf 'wal\n' > "$STATE_DIR/direct-adaptive.wal"
+sh "$MOD_DIR/action.sh" rollback
+[ ! -e "$STATE_DIR/direct-adaptive.wal" ] || {
+  echo "FAIL: action.sh did not clear WAL after verified rollback"
+  exit 1
+}
+
+# 7. Uninstall must stop on failed rollback and preserve recovery state.
+printf 'wal\n' > "$STATE_DIR/direct-adaptive.wal"
+printf 'pid\n' > "$STATE_DIR/coreflowd.pid"
+printf 'status\n' > "$STATE_DIR/status.json"
+export COREFLOW_MOCK_ROLLBACK_RESULT=23
+if sh "$MOD_DIR/uninstall.sh"; then
+  echo "FAIL: uninstall accepted a failed baseline rollback"
+  exit 1
+else
+  UNINSTALL_RESULT=$?
+fi
+[ "$UNINSTALL_RESULT" -eq 23 ] || {
+  echo "FAIL: uninstall did not propagate rollback failure"
+  exit 1
+}
+[ -f "$STATE_DIR/direct-adaptive.wal" ] &&
+[ -f "$STATE_DIR/coreflowd.pid" ] &&
+[ -f "$STATE_DIR/status.json" ] || {
+  echo "FAIL: uninstall removed recovery state after rollback failure"
+  exit 1
+}
+
+# 8. Successful uninstall must use the module-local binary, then clean volatile state.
+export COREFLOW_MOCK_ROLLBACK_RESULT=0
+sh "$MOD_DIR/uninstall.sh"
+[ ! -e "$STATE_DIR/direct-adaptive.wal" ] &&
+[ ! -e "$STATE_DIR/coreflowd.pid" ] &&
+[ ! -e "$STATE_DIR/status.json" ] || {
+  echo "FAIL: uninstall did not clean volatile state after verified rollback"
+  exit 1
+}
+[ "$(grep -c -- '--rollback-baseline' "$COREFLOW_DAEMON_COMMAND_LOG")" -eq 3 ] || {
+  echo "FAIL: action/uninstall did not invoke the expected rollback commands"
+  exit 1
+}
 
 echo "Module lifecycle scripts PASS"
