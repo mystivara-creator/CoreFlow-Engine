@@ -1593,10 +1593,12 @@ int main(int argc, char* argv[]) {
     if (config.enable_cgroups_v2 && cgroup_controller.is_supported()) {
         autonomous_tuner.configure_foreground_task_resolver(&foreground_task_resolver);
     }
-    autonomous_tuner.set_operational(false);
-    emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING: collecting OEM thermal, CPU/GPU frequency, and PSI baselines; grace=12s.");
-    const auto daemon_started_at = std::chrono::steady_clock::now();
-    bool lifecycle_promoted = false;
+    // V5 baseline activation is independent of optional workload/PSI telemetry.
+    // Journal recovery has already completed in CoreFlowContext::Start(); the
+    // first control tick may therefore enter the balanced operating profile.
+    autonomous_tuner.set_operational(!config.inspection_mode && config.enable_tuner);
+    emit_log(false, "[CoreFlow][Lifecycle] DIRECT_BASELINE: topology and journal recovery complete; adaptive policy enabled without startup quorum.");
+    bool lifecycle_promoted = true;
     WorkloadTelemetryPipeline workload_pipeline;
     const bool workload_pipeline_ready = workload_pipeline.start();
     WorkloadClassifier workload_classifier;
@@ -1641,6 +1643,24 @@ int main(int argc, char* argv[]) {
         config.touch_boost_uclamp_min,
         config.burst_boost_duration_ms);
     render_booster.set_foreground_task_resolver(&foreground_task_resolver);
+    if (!config.inspection_mode) {
+        if (config.enable_uclamp) {
+            if (!render_booster.connect_frame_source(input_event_source)) {
+                emit_log(true, "[CoreFlow][GracefulSkip] Touchscreen input source unavailable; RenderBooster input node skipped.");
+            }
+            if (!render_booster.connect_frame_source(frame_timeline_source)) {
+                emit_log(true, "[CoreFlow][GracefulSkip] FrameTimeline unavailable; frame-attributed boost node skipped.");
+            }
+        } else if (config.enable_tuner && !frame_timeline_source.start([](const FrameEvent&) {})) {
+            emit_log(true, "[CoreFlow][GracefulSkip] FrameTimeline unavailable; GPU/frame outcome attribution skipped.");
+        }
+        context.vulkan_controller().initialize({
+            .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+            .enable_skiavk_threaded = config.enable_skiavk_threaded,
+            .enable_adaptive_vrs = config.enable_adaptive_vrs,
+            .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+        });
+    }
     DeviceValidationRecorder dvs_recorder;
     UniqueFd dvs_listener;
     if (create_dvs_listener(dvs_listener)) {
@@ -1923,34 +1943,18 @@ int main(int argc, char* argv[]) {
         status_inputs.io_psi = io_psi;
 
         if (!thermal.available) {
-            last_tick = std::chrono::steady_clock::now();
+            // A missing/SELinux-denied thermal source is an isolated capability
+            // loss, not a daemon-wide stop condition. Thermal-dependent frequency
+            // admission remains unavailable in ThermalSafetyAuthority; independent
+            // CPU scheduling, memory, storage and other supported nodes continue.
             if (!unavailable_reported) {
-                emit_log(true, "[CoreFlow][Thermal] OEM thermal policy unavailable; retaining baseline without synthetic thresholds.");
+                emit_log(true, "[CoreFlow][GracefulSkip] Thermal telemetry unavailable; skipping thermal-dependent nodes while independent policy continues.");
                 unavailable_reported = true;
             }
             thermal_ready = false;
             cooling_feedback.reset();
             temp_tracker.reset();
-            // Sensor-policy loss is a fail-safe condition for the autonomous tuner too;
-            // do not rely on the unrelated PID applied flag to decide whether it rolls back.
-            const auto recovery = coordinated_rollback(
-                context.mutation_coordinator(), baseline, "Thermal telemetry unavailable; restore OEM baseline.");
-            if (!recovery.recovered()) {
-                emit_log(true, "[CoreFlow][Safety] Thermal rollback pending; status=" +
-                         std::string(recovery_status_name(recovery.status)));
-                record_dvs_sample(std::nullopt, std::nullopt, std::nullopt, true);
-                return;
-            }
-            if (applied) {
-                applied = false;
-                controller->reset();
-                (void)governor.resync();
-                frequencies.discover(false, false);
-            }
-            record_dvs_sample();
-            return;
-        }
-        if (!thermal_ready) {
+        } else if (!thermal_ready) {
             frequencies.discover(false, config.enable_gpu_frequency_control);
             controller->reset();
             thermal_ready = true; unavailable_reported = false;
@@ -2012,50 +2016,6 @@ int main(int argc, char* argv[]) {
             autonomous_tuner.set_operational(false);
             record_dvs_sample();
             return;
-        }
-        if (!lifecycle_promoted) {
-            constexpr auto kStartupGrace = std::chrono::seconds(12);
-            const auto observed_for = now_tick - daemon_started_at;
-            const bool psi_stable =
-                cpu_psi.has_value() && memory_psi.has_value() && io_psi.has_value() &&
-                *cpu_psi <= 25.0 && *memory_psi <= 20.0 && *io_psi <= 20.0;
-            const bool thermal_stable =
-                thermal.available && !thermal.emergency && thermal.pressure <= 65.0 &&
-                temp_vel.valid && std::abs(temp_vel.velocity_celsius_per_sec) <= 0.5;
-            if (observed_for < kStartupGrace || !psi_stable || !thermal_stable) {
-                // Keep tuner candidate execution closed without starving independent
-                // PID, frequency, UClamp, and thermal-mitigation paths below.
-                autonomous_tuner.set_operational(false);
-            } else {
-                lifecycle_promoted = true;
-                if (config.enable_uclamp) {
-                    if (!render_booster.connect_frame_source(input_event_source)) {
-                        emit_log(true, "[CoreFlow][Input] No verified touchscreen evdev source is available; RenderBooster remains idle.");
-                    } else {
-                        emit_log(false, "[CoreFlow][Input] Native touchscreen event source attached to RenderBooster.");
-                    }
-                    if (render_booster.connect_frame_source(frame_timeline_source)) {
-                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto FrameTimeline consumer started on a worker thread; only validated actual-display-frame windows are forwarded.");
-                    } else {
-                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; jank telemetry remains unavailable.");
-                    }
-                } else if (config.enable_tuner) {
-                    if (frame_timeline_source.start([](const FrameEvent&) {})) {
-                        emit_log(false, "[CoreFlow][FrameTimeline] Perfetto consumer started for GPU outcome attribution; RenderBooster UClamp is disabled by configuration.");
-                    } else {
-                        emit_log(true, "[CoreFlow][FrameTimeline] Worker creation failed; GPU/frame outcome evidence remains unavailable.");
-                    }
-                }
-                autonomous_tuner.set_operational(config.enable_tuner);
-                context.vulkan_controller().initialize({
-                    .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-                    .enable_skiavk_threaded = config.enable_skiavk_threaded,
-                    .enable_adaptive_vrs = config.enable_adaptive_vrs,
-                    .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-                });
-                emit_log(false, "[CoreFlow][Lifecycle] STAGE_OBSERVING -> STAGE_ACTIVE_TUNING; " +
-                    std::to_string(profile.total_valid_sensors) + " thermal sensors valid; thermal/PSI stability verified.");
-            }
         }
 
         // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
