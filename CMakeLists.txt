@@ -119,6 +119,10 @@ if(CORE_FLOW_BUILD_TESTS)
     # fixture setup/teardown calls inside assert(). Keep them active in Release
     # test binaries without changing production target flags or NDEBUG behavior.
     add_compile_options(-UNDEBUG)
+    add_executable(test_runtime_mutation_faults tests/test_runtime_mutation_faults.cpp)
+    target_include_directories(test_runtime_mutation_faults PRIVATE include)
+    add_test(NAME RuntimeMutationFaultInjectionTest COMMAND test_runtime_mutation_faults)
+
     add_executable(test_mount_topology
         tests/test_mount_topology.cpp
         src/kernel/mount_topology.cpp
