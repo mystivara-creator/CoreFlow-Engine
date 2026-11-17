@@ -2,7 +2,7 @@ name: CoreFlow Engine CI
 
 on:
   push:
-    branches: [main, 'feat/*', 'hardening/*']
+    branches: [main, 'feat/*', 'hardening/*', 'fix/*']
     tags: ['v*']
   pull_request:
     branches: [main, feat/p3-dynamic-infrastructure]
