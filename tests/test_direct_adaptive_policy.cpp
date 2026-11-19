@@ -175,6 +175,35 @@ int main() {
         assert(kgsl_max && std::get<std::int64_t>(kgsl_max->target_value) == 2);
         assert(kgsl_min && std::get<std::int64_t>(kgsl_min->target_value) == 5);
         assert(mali && std::get<std::int64_t>(mali->target_value) >= 800000);
+        std::size_t max_position = intent.actions.size();
+        std::size_t min_position = intent.actions.size();
+        for (std::size_t i = 0; i < intent.actions.size(); ++i) {
+            if (intent.actions[i].node_id == "kgsl-max") max_position = i;
+            if (intent.actions[i].node_id == "kgsl-min") min_position = i;
+        }
+        assert(max_position < min_position); // Existing min bound already permits the ceiling.
+
+        // If the target ceiling is outside the current lower bound, widen the
+        // lower bound first so the KGSL max setter cannot clamp its target.
+        DeviceManifest expanding;
+        expanding.nodes.push_back(numeric_node("expand-max", "gpu.kgsl.max_pwrlevel",
+            "gpu.kgsl:Adreno", 0, {0.0L, 6.0L, 1.0L}, levels));
+        expanding.nodes.back().domain = NodeDomain::Gpu;
+        expanding.nodes.push_back(numeric_node("expand-min", "gpu.kgsl.min_pwrlevel",
+            "gpu.kgsl:Adreno", 1, {0.0L, 6.0L, 1.0L}, levels));
+        expanding.nodes.back().domain = NodeDomain::Gpu;
+        OemBaseline expanding_baseline;
+        for (const auto& node : expanding.nodes) {
+            expanding_baseline.entries.push_back({node.id, node.observed_value, node.identity, Clock::now()});
+        }
+        const auto expansion = run_policy(expanding, expanding_baseline, state);
+        std::size_t expand_max_position = expansion.actions.size();
+        std::size_t expand_min_position = expansion.actions.size();
+        for (std::size_t i = 0; i < expansion.actions.size(); ++i) {
+            if (expansion.actions[i].node_id == "expand-max") expand_max_position = i;
+            if (expansion.actions[i].node_id == "expand-min") expand_min_position = i;
+        }
+        assert(expand_min_position < expand_max_position);
 
         DeviceManifest unpaired;
         unpaired.nodes.push_back(numeric_node("kgsl-only-min", "gpu.kgsl.min_pwrlevel",
