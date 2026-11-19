@@ -68,6 +68,28 @@ std::string read_text(const fs::path& path) {
     return trim(std::move(value));
 }
 
+std::string read_text_bounded(const fs::path& path, std::size_t limit) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return {};
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        (void)::close(fd);
+        return {};
+    }
+    std::string value;
+    value.reserve(std::min<std::size_t>(
+        static_cast<std::size_t>(std::max<off_t>(0, st.st_size)), limit));
+    char buffer[2048];
+    while (value.size() < limit) {
+        const ssize_t count = ::read(fd, buffer, std::min(sizeof(buffer), limit - value.size()));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+        value.append(buffer, static_cast<std::size_t>(count));
+    }
+    (void)::close(fd);
+    return value;
+}
+
 bool parse_i64(std::string_view text, std::int64_t& value) noexcept {
     if (text.empty() || text.size() > 32U) return false;
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -837,26 +859,60 @@ TelemetrySnapshot Telemetry::sample(
         });
     };
 
-    const std::string stat = read_text("/proc/stat");
+    const std::string stat = read_text_bounded("/proc/stat", 64U * 1024U);
     std::istringstream cpu_stream(stat);
-    std::string label;
-    std::uint64_t user = 0, nice = 0, system = 0, idle = 0, iowait = 0;
-    std::uint64_t irq = 0, softirq = 0, steal = 0;
+    std::string line;
     bool cpu_valid = false;
-    if (cpu_stream >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal && label == "cpu") {
+    bool max_core_valid = false;
+    double max_core_utilization = 0.0;
+    std::set<unsigned> seen_cpus;
+    while (std::getline(cpu_stream, line)) {
+        std::istringstream fields(line);
+        std::string label;
+        std::uint64_t user = 0U, nice = 0U, system = 0U, idle = 0U, iowait = 0U;
+        std::uint64_t irq = 0U, softirq = 0U, steal = 0U;
+        if (!(fields >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal)) {
+            continue;
+        }
         const std::uint64_t total = user + nice + system + idle + iowait + irq + softirq + steal;
         const std::uint64_t idle_total = idle + iowait;
-        if (previous_cpu_total_ != 0U && total > previous_cpu_total_ && idle_total >= previous_cpu_idle_) {
-            const auto total_delta = total - previous_cpu_total_;
-            const auto idle_delta = idle_total - previous_cpu_idle_;
-            cpu_utilization = std::clamp(
-                1.0 - static_cast<double>(idle_delta) / static_cast<double>(total_delta), 0.0, 1.0);
-            cpu_valid = true;
+        if (label == "cpu") {
+            if (previous_cpu_total_ != 0U && total > previous_cpu_total_ &&
+                idle_total >= previous_cpu_idle_) {
+                const auto total_delta = total - previous_cpu_total_;
+                const auto idle_delta = idle_total - previous_cpu_idle_;
+                cpu_utilization = std::clamp(
+                    1.0 - static_cast<double>(idle_delta) / static_cast<double>(total_delta), 0.0, 1.0);
+                cpu_valid = true;
+            }
+            previous_cpu_total_ = total;
+            previous_cpu_idle_ = idle_total;
+            continue;
         }
-        previous_cpu_total_ = total;
-        previous_cpu_idle_ = idle_total;
+        if (label.size() < 4U || label.compare(0U, 3U, "cpu") != 0) continue;
+        std::uint64_t cpu_id = 0U;
+        if (!parse_u64(std::string_view(label).substr(3U), cpu_id) || cpu_id > 4095U) continue;
+        const auto id = static_cast<unsigned>(cpu_id);
+        seen_cpus.insert(id);
+        const auto previous = previous_cpu_counters_.find(id);
+        if (previous != previous_cpu_counters_.end() &&
+            total > previous->second.total && idle_total >= previous->second.idle) {
+            const auto total_delta = total - previous->second.total;
+            const auto idle_delta = idle_total - previous->second.idle;
+            const double utilization = std::clamp(
+                1.0 - static_cast<double>(idle_delta) / static_cast<double>(total_delta), 0.0, 1.0);
+            max_core_utilization = max_core_valid
+                ? std::max(max_core_utilization, utilization) : utilization;
+            max_core_valid = true;
+        }
+        previous_cpu_counters_[id] = {total, idle_total};
+    }
+    for (auto it = previous_cpu_counters_.begin(); it != previous_cpu_counters_.end();) {
+        if (!seen_cpus.contains(it->first)) it = previous_cpu_counters_.erase(it);
+        else ++it;
     }
     add("cpu.util", cpu_utilization, 0.0, 1.0, cpu_valid);
+    add("cpu.max_core_util", max_core_utilization, 0.0, 1.0, max_core_valid);
 
     const std::string meminfo = read_text("/proc/meminfo");
     std::istringstream mem_stream(meminfo);
