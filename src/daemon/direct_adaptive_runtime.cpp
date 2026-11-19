@@ -316,7 +316,7 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
 
     const auto* refresh_metric = metric(state, "display.refresh_hz");
     const bool refresh_valid = refresh_metric != nullptr && refresh_metric->well_formed();
-    const double refresh_hz = refresh_valid ? refresh_metric->value * 240.0 : 0.0;
+    const double refresh_hz = refresh_valid ? refresh_metric->value * 1000.0 : 0.0;
     const double frame_us = refresh_hz > 0.0 ? 1000000.0 / refresh_hz : 0.0;
     const bool ram_ge_6gb = metric_value(state, "device.ram_ge_6gb") >= 0.5;
     const bool zram_active = metric_value(state, "device.zram_active") >= 0.5;
@@ -806,7 +806,7 @@ TelemetrySnapshot Telemetry::sample(
         }
         if (refresh_hz != 0U) break;
     }
-    add("display.refresh_hz", static_cast<double>(refresh_hz), 0.0, 240.0, refresh_hz > 0U);
+    add("display.refresh_hz", static_cast<double>(refresh_hz), 0.0, 1000.0, refresh_hz > 0U);
 
     for (const auto& [id, path] : std::array<std::pair<std::string_view, fs::path>, 3>{
             std::pair{"cpu.pressure", fs::path("/proc/pressure/cpu")},
