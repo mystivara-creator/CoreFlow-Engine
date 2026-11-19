@@ -144,6 +144,33 @@ int main() {
         assert(mali && std::get<std::int64_t>(mali->target_value) >= 800000);
     }
 
+    // Thermal safety must outrank screen-off idle, and recovery must return
+    // to the idle envelope rather than retaining the thermal target.
+    {
+        DeviceManifest manifest;
+        manifest.nodes.push_back(numeric_node("cpu-hispeed", "cpu.hispeed_freq",
+            "cpu.little", 300000, {300000.0L, 1800000.0L, std::nullopt},
+            {std::int64_t{300000}, std::int64_t{600000}, std::int64_t{900000},
+             std::int64_t{1200000}, std::int64_t{1500000}, std::int64_t{1800000}}));
+        OemBaseline baseline;
+        baseline.entries.push_back({"cpu-hispeed", std::int64_t{300000},
+            manifest.nodes.front().identity, Clock::now()});
+
+        auto hot_screen_off = state_with(120.0, 0.0, true, 0.90, true);
+        const auto thermal_intent = run_policy(manifest, baseline, hot_screen_off);
+        assert(thermal_intent.mode == OperatingMode::ThermalGuard);
+        const auto* thermal_target = find_action(thermal_intent, "cpu-hispeed");
+        assert(thermal_target);
+        assert(std::get<std::int64_t>(thermal_target->target_value) == 1200000);
+
+        auto recovered_screen_off = state_with(120.0, 0.0, true);
+        const auto idle_intent = run_policy(manifest, baseline, recovered_screen_off);
+        assert(idle_intent.mode == OperatingMode::Idle);
+        const auto* idle_target = find_action(idle_intent, "cpu-hispeed");
+        assert(idle_target);
+        assert(std::get<std::int64_t>(idle_target->target_value) == 900000);
+    }
+
     // Storage values are scoped to discovered media semantics, not device names.
     {
         DeviceManifest manifest;
