@@ -2013,9 +2013,17 @@ int main(int argc, char* argv[]) {
             thermal_ready = true; unavailable_reported = false;
         }
 
-        // Direct Adaptive consumes the same thermal sample when available, but
-        // optional OEM thermal/PSI sources never gate CPU, GPU, VM or storage policy.
-        direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency);
+        // Use the daemon's fused OEM/fallback thermal decision so severity-based
+        // thermal protection is identical across legacy and Direct Adaptive actuators.
+        const bool thermal_limit_hit = !thermal.fallback_active
+            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
+               (current == WorkloadState::ThermalGuard && thermal.pressure > 65.0))
+            : (thermal.emergency || temp >= config.thermal_trip_celsius ||
+               (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
+
+        // Direct Adaptive consumes the same fused thermal decision; optional
+        // OEM thermal/PSI sources still never gate independent policy domains.
+        direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);
 
         // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
         const float batt = battery_temp;
@@ -2116,15 +2124,6 @@ int main(int argc, char* argv[]) {
             return;
         }
 
-        // Active Thermal Mitigation:
-        // When OEM/Android thermal policy is available (!thermal.fallback_active),
-        // honor OEM/Android severity and normalized pressure rather than a generic 44.0°C cutoff.
-        // Only use config.thermal_trip_celsius when operating in explicit generic_fallback mode.
-        const bool thermal_limit_hit = !thermal.fallback_active
-            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
-               (current == WorkloadState::ThermalGuard && thermal.pressure > 65.0))
-            : (thermal.emergency || temp >= config.thermal_trip_celsius ||
-               (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
         const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
         const bool render_thermal_guard = thermal_limit_hit || thermal.emergency ||
             (thermal.available && temp_vel.valid &&
