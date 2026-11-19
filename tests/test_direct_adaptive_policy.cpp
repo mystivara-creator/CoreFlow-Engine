@@ -256,17 +256,41 @@ int main() {
         write_file(policy / "interactive/hispeed_freq", "600000\n");
         write_file(policy / "interactive/hispeed_load", "85\n");
 
+        const fs::path kgsl = root / "sys/class/kgsl/kgsl-3d0";
+        fs::create_directories(kgsl);
+        write_file(kgsl / "gpu_available_frequencies", "710000000 600000000 500000000\n");
+        write_file(kgsl / "num_pwrlevels", "3\n");
+        write_file(kgsl / "gpu_model", "Adreno\n");
+        write_file(kgsl / "default_pwrlevel", "1\n");
+        write_file(kgsl / "max_pwrlevel", "0\n");
+        write_file(kgsl / "min_pwrlevel", "1\n");
+
+        const fs::path unpaired_kgsl = root / "sys/class/kgsl/kgsl-unpaired";
+        fs::create_directories(unpaired_kgsl);
+        write_file(unpaired_kgsl / "gpu_available_frequencies", "710000000 600000000 500000000\n");
+        write_file(unpaired_kgsl / "num_pwrlevels", "3\n");
+        write_file(unpaired_kgsl / "min_pwrlevel", "1\n");
+
         TopologyScanner scanner;
         const auto discovery = scanner.discover({root / "sys", root / "proc"});
         assert(discovery.enumeration_completed);
         std::size_t hispeed_freq_nodes = 0U;
         std::size_t hispeed_load_nodes = 0U;
+        std::size_t kgsl_max_nodes = 0U;
+        std::size_t kgsl_min_nodes = 0U;
+        std::size_t kgsl_default_nodes = 0U;
         for (const auto& node : discovery.manifest.nodes) {
             if (node.semantic == "cpu.hispeed_freq") ++hispeed_freq_nodes;
             if (node.semantic == "cpu.hispeed_load") ++hispeed_load_nodes;
+            if (node.semantic == "gpu.kgsl.max_pwrlevel") ++kgsl_max_nodes;
+            if (node.semantic == "gpu.kgsl.min_pwrlevel") ++kgsl_min_nodes;
+            if (node.semantic == "gpu.kgsl.default_pwrlevel") ++kgsl_default_nodes;
         }
         assert(hispeed_freq_nodes == 1U);
         assert(hispeed_load_nodes == 1U);
+        assert(kgsl_max_nodes == 1U);
+        assert(kgsl_min_nodes == 1U);
+        assert(kgsl_default_nodes == 0U);
         fs::remove_all(root);
     }
 
