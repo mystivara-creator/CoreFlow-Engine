@@ -524,7 +524,9 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
         const bool little = max_policy != 0U && info.opps.back() < max_policy;
         info.domain = little ? "cpu.little" : "cpu.big";
         const auto governor = read_text(info.path / "scaling_governor");
-        if (governor != "walt" && governor != "schedutil") continue;
+        // Interactive is common on Qualcomm Android kernels. Only its tunables
+        // that are actually discovered below are admitted to the policy.
+        if (governor != "walt" && governor != "schedutil" && governor != "interactive") continue;
         const auto files = find_tunables(info.path);
         for (const auto& candidate : files) {
             const auto leaf = candidate.filename().string();
