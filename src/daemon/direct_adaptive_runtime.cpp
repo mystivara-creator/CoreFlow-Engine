@@ -1014,6 +1014,9 @@ struct DirectAdaptiveRuntime::Impl final {
     std::unordered_map<NodeId, NodeValue> last_targets;
     std::unordered_map<NodeId, NodeValue> last_observed;
     Timestamp last_evaluation{};
+    // Remember the last mode that passed through the mutation-enabled policy
+    // path. Screen-off throttling must not hide a thermal transition or recovery.
+    OperatingMode last_evaluated_mode{OperatingMode::Unknown};
     bool mutation_enabled{true};
 
     void build_json() {
@@ -1169,14 +1172,20 @@ struct DirectAdaptiveRuntime::Impl final {
         snapshot.cpu_utilization = cpu_util;
         snapshot.thermal_pressure = thermal_valid ? thermal_pressure : 0.0;
         snapshot.thermal_guard = thermal_emergency || (thermal_valid && thermal_pressure >= 85.0);
-        snapshot.mode = screen_off ? OperatingMode::Idle :
-            snapshot.thermal_guard ? OperatingMode::ThermalGuard :
+        // Thermal safety always outranks display-idle policy. A screen-off
+        // device can still overheat (charging, background work, or a hot SoC).
+        snapshot.mode = snapshot.thermal_guard ? OperatingMode::ThermalGuard :
+            screen_off ? OperatingMode::Idle :
             cpu_util >= 0.70 ? OperatingMode::HighLoad : OperatingMode::Balanced;
 
-        // Screen-off entry applies an idle envelope once. While the display
-        // remains off we avoid repeating policy/discovery work; timerfd status
-        // heartbeat continues independently in the daemon EventReactor.
-        if (screen_off && last_evaluation != Timestamp{} && snapshot.mode == OperatingMode::Idle) {
+        // Apply the screen-off envelope once, then suppress redundant idle
+        // evaluations. Do not suppress thermal entry or the transition back to
+        // idle after thermal recovery.
+        const bool idle_policy_already_applied =
+            screen_off && !snapshot.thermal_guard &&
+            last_evaluation != Timestamp{} &&
+            last_evaluated_mode == OperatingMode::Idle;
+        if (idle_policy_already_applied) {
             build_json();
             return;
         }
@@ -1207,6 +1216,7 @@ struct DirectAdaptiveRuntime::Impl final {
             for (const auto& action : intent.actions) last_targets[action.node_id] = action.target_value;
         }
         last_evaluation = now;
+        last_evaluated_mode = snapshot.mode;
         build_json();
     }
 };
