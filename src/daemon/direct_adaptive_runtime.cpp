@@ -248,13 +248,13 @@ std::vector<unsigned> parse_cpu_list(std::string_view raw) {
     std::vector<unsigned> cpus;
     std::size_t position = 0U;
     while (position < raw.size()) {
-        while (position < raw.size() && (raw[position] == ' ' || raw[position] == '\\t' || raw[position] == ',')) ++position;
+        while (position < raw.size() && (raw[position] == ' ' || raw[position] == '\t' || raw[position] == ',')) ++position;
         if (position == raw.size()) break;
         const std::size_t token_end = raw.find(',', position);
         std::string_view token = raw.substr(position,
             token_end == std::string_view::npos ? raw.size() - position : token_end - position);
-        while (!token.empty() && (token.front() == ' ' || token.front() == '\\t')) token.remove_prefix(1U);
-        while (!token.empty() && (token.back() == ' ' || token.back() == '\\t')) token.remove_suffix(1U);
+        while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.remove_prefix(1U);
+        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.remove_suffix(1U);
         const std::size_t dash = token.find('-');
         std::uint64_t first = 0U, last = 0U;
         if (dash == std::string_view::npos) {
@@ -691,8 +691,6 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
         "hispeed_freq", "hispeed_load", "up_rate_limit_us",
         "down_rate_limit_us", "boost"};
     for (auto& info : cpu_infos) {
-        const bool little = max_policy != 0U && info.opps.back() < max_policy;
-        info.domain = little ? "cpu.little" : "cpu.big";
         const auto governor = read_text(info.path / "scaling_governor");
         // Interactive is common on Qualcomm Android kernels. Only its tunables
         // that are actually discovered below are admitted to the policy.
