@@ -578,6 +578,28 @@ export function isDirectAdaptiveStatus(value: unknown): value is DirectAdaptiveS
   return true;
 }
 
+export interface TunerActiveInterventionTelemetry {
+  candidateId: string;
+  candidateLabel: string;
+  domain: string;
+  intent: string;
+  stage: string;
+  verdict: string;
+  utilityDelta: number;
+  observationTick: number;
+  observationWindow: number;
+  settlingTicksRemaining: number;
+}
+
+export interface SystemHealthSummary {
+  equilibriumScore: number;
+  thermalTone: 'optimal' | 'elevated' | 'guard';
+  pressureTone: 'calm' | 'contended' | 'critical';
+  ownershipTone: 'intact' | 'contended' | 'fault';
+  headline: string;
+  activeDomains: string[];
+}
+
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
   modeLabel: string;
@@ -590,6 +612,15 @@ export interface AutonomousTelemetry {
   uclampPolicyMax?: number;
   uclampTargetPath?: string;
   uclampEncoding?: string;
+  platformVendor?: string;
+  osFamily?: string;
+  osMajor?: number;
+  executionTier?: string;
+  policyFamily?: string;
+  identityConfidence?: string;
+  tier1Eligible?: boolean;
+  inspectionMode?: boolean;
+  mutationRuntimeStarted?: boolean;
   socTempCelsius: number;
   socCompositeCelsius?: number;
   cpuAverageCelsius?: number;
@@ -603,7 +634,9 @@ export interface AutonomousTelemetry {
   thermalHeadroomValid?: boolean;
   thermalHeadroom?: number | null;
   thermalSource?: string;
+  thermalSensor?: string;
   thermalSeverity?: number;
+  thermalPressure?: number;
   thermalSensors?: ThermalSensorDetail[];
   cpuPressurePct: number;
   memoryPressurePct: number;
@@ -627,17 +660,28 @@ export interface AutonomousTelemetry {
   tunerRuntimeStage?: string;
   tunerStage?: string;
   tunerIntent?: string;
+  tunerWorkload?: string;
+  tunerBottleneck?: string;
+  tunerObjective?: string;
+  tunerCapabilityFingerprint?: string;
   tunerCandidateId?: string;
   tunerCandidateLabel?: string;
   tunerRationale?: string;
+  tunerDecisionPlanRationale?: string;
   tunerVerdict?: string;
   tunerUtilityDelta?: number;
+  tunerNoiseFloor?: number;
   tunerTrials?: number;
   tunerImproved?: number;
   tunerRolledBack?: number;
+  tunerInconclusive?: number;
+  tunerRejected?: number;
+  tunerThermalStabilization?: boolean;
+  tunerThermalRecovery?: boolean;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
   tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
+  tunerActiveInterventions?: TunerActiveInterventionTelemetry[];
   vulkan?: VulkanTelemetry;
   directAdaptive?: DirectAdaptiveStatus;
   timestamp: number;
@@ -729,6 +773,19 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     uclampMin: 320,
     uclampMax: 1024,
     uclampSupported: true,
+    uclampPolicyMin: 320,
+    uclampPolicyMax: 1024,
+    uclampTargetPath: '/dev/cpuctl/top-app',
+    uclampEncoding: 'percentage',
+    platformVendor: 'Universal Android',
+    osFamily: 'Android AOSP / GKI',
+    osMajor: 15,
+    executionTier: 'UniversalFallback',
+    policyFamily: 'CoreFlowBase',
+    identityConfidence: 'High',
+    tier1Eligible: true,
+    inspectionMode: false,
+    mutationRuntimeStarted: true,
     socTempCelsius: 38.6,
     socCompositeCelsius: 38.6,
     cpuAverageCelsius: 38.2,
@@ -736,15 +793,19 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     gpuTempCelsius: 36.8,
     batteryTempCelsius: 33.4,
     skinTempCelsius: 35.1,
+    thermalSource: 'android+sysfs-oem-trips',
+    thermalSensor: 'SoC-Composite (CPU+GPU)',
+    thermalSeverity: 0,
+    thermalPressure: 44.0,
     thermalSensors: [
-      { id: 'tz0', type: 'cpu-0-0', category: 1, celsius: 37.8, valid: true, policyAvailable: true },
-      { id: 'tz1', type: 'cpu-0-1', category: 1, celsius: 38.0, valid: true, policyAvailable: true },
-      { id: 'tz2', type: 'cpu-1-0', category: 1, celsius: 39.4, valid: true, policyAvailable: true },
-      { id: 'tz3', type: 'cpu-1-2', category: 1, celsius: 41.5, valid: true, policyAvailable: true },
-      { id: 'tz4', type: 'gpuss-0', category: 1, celsius: 36.8, valid: true, policyAvailable: true },
-      { id: 'tz5', type: 'quiet_therm', category: 3, celsius: 35.1, valid: true, policyAvailable: true },
-      { id: 'tz6', type: 'battery', category: 2, celsius: 33.4, valid: true, policyAvailable: true },
-      { id: 'tz7', type: 'ap_therm', category: 4, celsius: 37.0, valid: true, policyAvailable: true },
+      { id: 'tz0', type: 'cpu-0-0', category: 1, celsius: 37.8, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.02 },
+      { id: 'tz1', type: 'cpu-0-1', category: 1, celsius: 38.0, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.01 },
+      { id: 'tz2', type: 'cpu-1-0', category: 1, celsius: 39.4, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.04 },
+      { id: 'tz3', type: 'cpu-1-2', category: 1, celsius: 41.5, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.05 },
+      { id: 'tz4', type: 'gpuss-0', category: 1, celsius: 36.8, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: -0.02 },
+      { id: 'tz5', type: 'quiet_therm', category: 3, celsius: 35.1, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.00 },
+      { id: 'tz6', type: 'battery', category: 2, celsius: 33.4, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.00 },
+      { id: 'tz7', type: 'ap_therm', category: 4, celsius: 37.0, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.01 },
     ],
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
@@ -765,16 +826,27 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     aiRecommendedScale: 0.94,
     aiConfidence: 0.86,
     aiSamples: 12,
+    tunerRuntimeStage: 'STAGE_ACTIVE_TUNING',
     tunerStage: 'RETAINED',
     tunerIntent: 'HoldEquilibrium',
+    tunerWorkload: 'GeneralInteraction',
+    tunerBottleneck: 'None',
+    tunerObjective: 'HoldBaseline',
+    tunerCapabilityFingerprint: 'cddp-v4:8f4e2b91c073a612',
     tunerCandidateId: 'baseline',
     tunerCandidateLabel: 'OEM Verified Baseline',
     tunerRationale: 'System in equilibrium (I/O & memory PSI low); retaining OEM block scheduler without unnecessary mutation.',
+    tunerDecisionPlanRationale: 'Global candidate pool evaluated; equilibrium held with zero conflict rejections.',
     tunerVerdict: 'IMPROVED',
     tunerUtilityDelta: 0.0,
+    tunerNoiseFloor: 0.05,
     tunerTrials: 3,
     tunerImproved: 2,
     tunerRolledBack: 1,
+    tunerInconclusive: 0,
+    tunerRejected: 0,
+    tunerThermalStabilization: false,
+    tunerThermalRecovery: false,
     blockQueues: [
       {
         device: 'sda',
@@ -1576,3 +1648,98 @@ export class CentralMutationCoordinatorModel {
     return priority <= existing.priority;
   }
 }
+
+export function computeSystemHealthSummary(
+  telemetry: AutonomousTelemetry,
+  thermalTripCelsius = DEFAULT_AUTONOMOUS_CONFIG.thermalTripCelsius
+): SystemHealthSummary {
+  const safeTrip = Number.isFinite(thermalTripCelsius) && thermalTripCelsius > 25 ? thermalTripCelsius : 44.0;
+  const temp = Number.isFinite(telemetry.socTempCelsius) ? telemetry.socTempCelsius : -1;
+  const cpuPsi = telemetry.cpuPressureValid !== false && Number.isFinite(telemetry.cpuPressurePct)
+    ? Math.max(0, telemetry.cpuPressurePct)
+    : 0;
+  const memPsi = telemetry.memoryPressureValid !== false && Number.isFinite(telemetry.memoryPressurePct)
+    ? Math.max(0, telemetry.memoryPressurePct)
+    : 0;
+  const ioPsi = telemetry.ioPressureValid !== false && Number.isFinite(telemetry.ioPressurePct)
+    ? Math.max(0, telemetry.ioPressurePct)
+    : 0;
+
+  const isThermalGuard =
+    Boolean(telemetry.thermalGuardActive) ||
+    Boolean(telemetry.directAdaptive?.thermalGuard) ||
+    telemetry.mode === 'thermal_guard' ||
+    (temp > 0 && temp >= safeTrip);
+  const isThermalElevated =
+    !isThermalGuard &&
+    ((temp > 0 && temp >= safeTrip - 2.5) ||
+      (typeof telemetry.thermalPressure === 'number' &&
+        Number.isFinite(telemetry.thermalPressure) &&
+        telemetry.thermalPressure >= 60));
+
+  const thermalTone: SystemHealthSummary['thermalTone'] = isThermalGuard
+    ? 'guard'
+    : isThermalElevated
+      ? 'elevated'
+      : 'optimal';
+
+  const maxPsi = Math.max(cpuPsi * 0.65, memPsi * 1.8, ioPsi * 1.4);
+  const pressureTone: SystemHealthSummary['pressureTone'] =
+    maxPsi >= 10 || memPsi >= 5 || ioPsi >= 8
+      ? 'critical'
+      : maxPsi >= 4 || memPsi >= 2.2 || ioPsi >= 3.5
+        ? 'contended'
+        : 'calm';
+
+  const journalFault = Boolean(telemetry.directAdaptive?.journalFault);
+  const ownershipLosses = telemetry.directAdaptive?.ownershipLosses ?? 0;
+  const ownershipTone: SystemHealthSummary['ownershipTone'] = journalFault
+    ? 'fault'
+    : telemetry.ownershipIntact === false || ownershipLosses > 0
+      ? 'contended'
+      : 'intact';
+
+  let score = 100;
+  if (!telemetry.engineActive) score -= 12;
+  if (thermalTone === 'guard') score -= 24;
+  else if (thermalTone === 'elevated') score -= 10;
+  if (temp > 36) score -= Math.min(14, Math.round((temp - 36) * 1.4));
+  score -= Math.min(24, Math.round(cpuPsi * 0.7 + memPsi * 2.1 + ioPsi * 1.5));
+  if (ownershipTone === 'fault') score -= 35;
+  else if (ownershipTone === 'contended') score -= 14;
+
+  const equilibriumScore = Math.max(15, Math.min(100, score));
+
+  const activeDomainsSet = new Set<string>();
+  if (telemetry.uclampSupported) activeDomainsSet.add('UClamp');
+  if (telemetry.directAdaptive?.active) activeDomainsSet.add('DirectAdaptive');
+  if (telemetry.tunerActiveInterventions && telemetry.tunerActiveInterventions.length > 0) {
+    for (const iv of telemetry.tunerActiveInterventions) {
+      if (iv.domain) activeDomainsSet.add(iv.domain);
+    }
+  } else if (telemetry.tunerCandidateId && telemetry.tunerCandidateId !== 'baseline') {
+    const prefix = telemetry.tunerCandidateId.split('.')[0];
+    if (prefix) activeDomainsSet.add(prefix.toUpperCase());
+  }
+  if (telemetry.vulkan?.layerActive) activeDomainsSet.add('VulkanLayer');
+
+  const headline = journalFault
+    ? 'Journal fault latched — mutations halted while OEM recovery remains protected.'
+    : thermalTone === 'guard'
+      ? 'Thermal Guard engaged — pacing SoC demand within OEM thermal boundaries.'
+      : pressureTone === 'critical'
+        ? 'Resource contention detected — coordinated relief transaction active.'
+        : telemetry.engineActive
+          ? 'System in verified equilibrium — readback-checked policies active.'
+          : 'Runtime in standby — OEM baseline values intact.';
+
+  return {
+    equilibriumScore,
+    thermalTone,
+    pressureTone,
+    ownershipTone,
+    headline,
+    activeDomains: Array.from(activeDomainsSet),
+  };
+}
+

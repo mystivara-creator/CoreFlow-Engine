@@ -1,11 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal, Copy, Check, Search } from 'lucide-react';
+import { Check, Copy, Search, Terminal } from 'lucide-react';
 import { ReactionLogEvent } from '../engine/autonomousEngine';
 
 interface LiveReactionStreamProps {
   logs: ReactionLogEvent[];
   nativeMode?: boolean;
 }
+
+const FILTER_CHIPS: { id: string; label: string }[] = [
+  { id: 'ALL', label: 'All Events' },
+  { id: 'BOOST', label: 'Sustained Load' },
+  { id: 'THERMAL', label: 'Thermal Gate' },
+  { id: 'BASELINE', label: 'Journal & Recovery' },
+  { id: 'INFO', label: 'Admission & Info' },
+];
 
 export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
   logs,
@@ -50,39 +58,65 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
         copyTimerRef.current = null;
       }, 2000);
     } catch {
-      // ignore
+      // clipboard unavailable in restricted WebView context
+    }
+  };
+
+  const badgeClassForType = (type: ReactionLogEvent['type']): string => {
+    switch (type) {
+      case 'THERMAL':
+        return 'md3-badge md3-badge-warning';
+      case 'BASELINE':
+        return 'md3-badge md3-badge-success';
+      case 'BOOST':
+        return 'md3-badge md3-badge-primary';
+      default:
+        return 'md3-badge md3-badge-neutral';
     }
   };
 
   return (
-    <div className="m3-card p-6 sm:p-8">
-      {/* Header and Controls */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 mb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+    <section className="md3-card-elevated p-6 sm:p-7 space-y-5" aria-label="Observability and audit trail">
+      {/* Header Row */}
+      <div
+        className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5"
+        style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+      >
         <div className="flex items-start gap-3.5">
-          <div className="w-10 h-10 rounded-2xl bg-[#d3e3fd] dark:bg-[#0842a0] text-[#041e49] dark:text-[#d3e3fd] flex items-center justify-center shrink-0">
-            <Terminal className="w-4 h-4" />
+          <div
+            className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"
+            style={{
+              backgroundColor: 'var(--md-sys-color-primary-container)',
+              color: 'var(--md-sys-color-on-primary-container)',
+            }}
+          >
+            <Terminal className="w-5 h-5" />
           </div>
           <div className="space-y-1">
-            <h3 className="font-semibold text-base sm:text-lg text-slate-900 dark:text-slate-100">
-              Observability & Audit Trail
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-bold text-base sm:text-lg">
+                Observability &amp; Audit Trail
+              </h3>
+              <span className="md3-badge md3-badge-neutral font-mono">
+                {filteredLogs.length} events
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
               {nativeMode
-                ? 'Live daemon transaction audit stream from runtime stdout/stderr.'
+                ? 'Live daemon transaction audit stream from runtime log ring.'
                 : 'Preview transaction trace showing admission, readback verification, and outcome learning.'}
             </p>
           </div>
         </div>
 
-        {/* Action Buttons */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={handleCopyLogs}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-xs font-medium text-slate-700 dark:text-slate-200"
+            onClick={() => void handleCopyLogs()}
+            className="md3-btn-outlined"
           >
             {copied ? (
-              <Check className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
+              <Check className="w-3.5 h-3.5" style={{ color: 'var(--md-sys-color-primary)' }} />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
@@ -91,15 +125,10 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-4">
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          {[
-            { id: 'ALL', label: 'All Events' },
-            { id: 'BOOST', label: 'Sustained Load' },
-            { id: 'THERMAL', label: 'Thermal Gate' },
-            { id: 'BASELINE', label: 'Journal & Recovery' },
-          ].map((chip) => {
+      {/* Material 3 Filter Chips & Search Input */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {FILTER_CHIPS.map((chip) => {
             const active = filterType === chip.id;
             return (
               <button
@@ -107,12 +136,7 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
                 type="button"
                 aria-pressed={active}
                 onClick={() => setFilterType(chip.id)}
-                className={
-                  'px-3.5 py-1.5 rounded-full font-medium transition-all ' +
-                  (active
-                    ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
-                    : 'bg-slate-900/[0.04] hover:bg-slate-900/[0.08] dark:bg-white/[0.05] dark:hover:bg-white/[0.09] text-slate-600 dark:text-slate-400')
-                }
+                className={'md3-chip ' + (active ? 'is-selected' : '')}
               >
                 {chip.label}
               </button>
@@ -121,46 +145,67 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
         </div>
 
         <div className="relative">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Search
+            className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          />
           <input
             type="text"
             aria-label="Filter audit trail"
             placeholder="Filter audit trail..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full sm:w-56 pl-9 pr-4 py-1.5 text-xs rounded-full bg-slate-900/[0.04] dark:bg-white/[0.05] border border-slate-900/[0.06] dark:border-white/[0.06] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#0b57d0] dark:focus:border-[#a8c7fa]"
+            className="w-full sm:w-60 pl-9 pr-4 py-2 text-xs rounded-full focus:outline-none"
+            style={{
+              backgroundColor: 'var(--md-sys-color-surface-container)',
+              border: '1px solid var(--md-sys-color-outline-variant)',
+              color: 'var(--md-sys-color-on-surface)',
+            }}
           />
         </div>
       </div>
 
       {/* Block-Aligned Log Stream */}
-      <div role="log" aria-label="Audit trail" className="m3-tonal-block p-4 max-h-72 overflow-y-auto font-mono text-xs divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
+      <div
+        role="log"
+        aria-label="Audit trail"
+        className="md3-card-filled p-3.5 max-h-80 overflow-y-auto font-mono text-xs divide-y"
+        style={{ borderColor: 'var(--md-sys-color-outline-variant)' }}
+      >
         {filteredLogs.length === 0 ? (
-          <div className="text-center py-8 text-slate-500 dark:text-slate-400 font-sans text-xs">
+          <div
+            className="text-center py-8 font-sans text-xs"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
             No audit events match the current filter.
           </div>
         ) : (
           filteredLogs.map((log) => (
             <div
               key={log.id}
-              className="grid grid-cols-1 sm:grid-cols-[76px_88px_110px_1fr] items-baseline gap-2 py-2 px-2 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03] rounded-xl transition-colors"
+              className="grid grid-cols-1 sm:grid-cols-[78px_98px_124px_1fr] items-baseline gap-2 py-2.5 px-2.5 rounded-xl transition-colors"
+              style={{ borderColor: 'var(--md-sys-color-outline-variant)' }}
             >
-              <span className="text-slate-400 dark:text-slate-500 tabular-nums">
+              <span
+                className="tabular-nums text-[11px]"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 {log.timestamp}
               </span>
-              <span className="text-[11px] font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
-                {log.type}
+              <span>
+                <span className={badgeClassForType(log.type)}>{log.type}</span>
               </span>
-              <span className="text-slate-700 dark:text-slate-300 font-medium truncate">
-                {log.tag}
-              </span>
-              <span className="text-slate-600 dark:text-slate-300 break-words leading-relaxed">
+              <span className="font-semibold truncate">{log.tag}</span>
+              <span
+                className="break-words leading-relaxed"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 {log.message}
               </span>
             </div>
           ))
         )}
       </div>
-    </div>
+    </section>
   );
 };

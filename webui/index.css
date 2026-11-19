@@ -4,50 +4,233 @@
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 @theme {
-  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-sans: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-@layer base {
-  :root {
-    --m3-easing-standard: cubic-bezier(0.2, 0, 0, 1);
-    --m3-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
-    --m3-surface: #f7f9fc;
-    --m3-surface-container: rgba(255, 255, 255, 0.76);
-    --m3-surface-tonal: rgba(238, 243, 251, 0.78);
-    --m3-outline: rgba(15, 23, 42, 0.08);
-    --m3-primary: #0b57d0;
-    --m3-on-primary: #ffffff;
-    --m3-primary-container: #d3e3fd;
-    --m3-on-primary-container: #041e49;
-    color-scheme: light;
-    background-color: var(--m3-surface);
-  }
+/* ============================================================================
+   Material Design 3 (M3 Expressive) System Tokens & Dynamic Seed Palettes
+   Crafted for CFAE System Framework v4.0.0 — Android 15/16 & WebView 120Hz
+   ============================================================================ */
 
-  html[data-theme="dark"] {
-    --m3-surface: #0e1117;
-    --m3-surface-container: rgba(24, 28, 36, 0.74);
-    --m3-surface-tonal: rgba(32, 38, 49, 0.72);
-    --m3-outline: rgba(255, 255, 255, 0.08);
-    --m3-primary: #a8c7fa;
-    --m3-on-primary: #062e6f;
-    --m3-primary-container: #0842a0;
-    --m3-on-primary-container: #d3e3fd;
-    color-scheme: dark;
-    background-color: var(--m3-surface);
+:root {
+  /* Motion & Shape Tokens */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-shape-corner-xs: 6px;
+  --md-sys-shape-corner-sm: 10px;
+  --md-sys-shape-corner-md: 14px;
+  --md-sys-shape-corner-lg: 20px;
+  --md-sys-shape-corner-xl: 28px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* Default Seed: Ocean Blue (Light) */
+  --md-sys-color-primary: #0b57d0;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #d3e3fd;
+  --md-sys-color-on-primary-container: #041e49;
+
+  --md-sys-color-secondary: #3b608f;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #d5e3ff;
+  --md-sys-color-on-secondary-container: #001c3b;
+
+  --md-sys-color-tertiary: #006874;
+  --md-sys-color-on-tertiary: #ffffff;
+  --md-sys-color-tertiary-container: #9eeffd;
+  --md-sys-color-on-tertiary-container: #001f24;
+
+  /* Neutral & Tonal Surface Hierarchy (5-Level M3 Container Scale) */
+  --md-sys-color-background: #f6f8fc;
+  --md-sys-color-on-background: #181c22;
+  --md-sys-color-surface: #f6f8fc;
+  --md-sys-color-surface-dim: #d7dae0;
+  --md-sys-color-surface-bright: #ffffff;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-low: #f0f4fa;
+  --md-sys-color-surface-container: #eaeef6;
+  --md-sys-color-surface-container-high: #e3e8f1;
+  --md-sys-color-surface-container-highest: #dce2ec;
+
+  --md-sys-color-on-surface: #181c22;
+  --md-sys-color-on-surface-variant: #43474f;
+  --md-sys-color-outline: #737780;
+  --md-sys-color-outline-variant: rgba(24, 28, 34, 0.10);
+
+  /* Semantic Status Containers (Light) */
+  --md-sys-color-success: #0d6e42;
+  --md-sys-color-on-success: #ffffff;
+  --md-sys-color-success-container: #c7f2da;
+  --md-sys-color-on-success-container: #05311b;
+
+  --md-sys-color-warning: #8f5400;
+  --md-sys-color-on-warning: #ffffff;
+  --md-sys-color-warning-container: #ffddb6;
+  --md-sys-color-on-warning-container: #2d1600;
+
+  --md-sys-color-error: #ba1a1a;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #ffdad6;
+  --md-sys-color-on-error-container: #410002;
+
+  /* Legacy alias bindings for compatibility */
+  --m3-surface: var(--md-sys-color-surface);
+  --m3-surface-container: var(--md-sys-color-surface-container-lowest);
+  --m3-surface-tonal: var(--md-sys-color-surface-container);
+  --m3-outline: var(--md-sys-color-outline-variant);
+  --m3-primary: var(--md-sys-color-primary);
+  --m3-on-primary: var(--md-sys-color-on-primary);
+  --m3-primary-container: var(--md-sys-color-primary-container);
+  --m3-on-primary-container: var(--md-sys-color-on-primary-container);
+
+  color-scheme: light;
+}
+
+/* Dynamic Seed: Emerald Silicon (Light) */
+html[data-accent="emerald"] {
+  --md-sys-color-primary: #006c4c;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #89f8c7;
+  --md-sys-color-on-primary-container: #002114;
+  --md-sys-color-secondary: #2e6353;
+  --md-sys-color-secondary-container: #b1e8d4;
+  --md-sys-color-on-secondary-container: #002017;
+  --md-sys-color-surface: #f4f9f6;
+  --md-sys-color-background: #f4f9f6;
+  --md-sys-color-surface-container-low: #ecf4f0;
+  --md-sys-color-surface-container: #e5efe9;
+  --md-sys-color-surface-container-high: #dee9e3;
+  --md-sys-color-surface-container-highest: #d7e3dd;
+}
+
+/* Dynamic Seed: Amber Gold (Light) */
+html[data-accent="amber"] {
+  --md-sys-color-primary: #7d5700;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #ffdeac;
+  --md-sys-color-on-primary-container: #271900;
+  --md-sys-color-secondary: #6e5c3f;
+  --md-sys-color-secondary-container: #f8dfbb;
+  --md-sys-color-on-secondary-container: #261904;
+  --md-sys-color-surface: #fbf8f3;
+  --md-sys-color-background: #fbf8f3;
+  --md-sys-color-surface-container-low: #f5f1ea;
+  --md-sys-color-surface-container: #efeae2;
+  --md-sys-color-surface-container-high: #e9e4dc;
+  --md-sys-color-surface-container-highest: #e3ded6;
+}
+
+/* Dark Theme: Ocean Blue Default */
+html[data-theme="dark"] {
+  --md-sys-color-primary: #a8c7fa;
+  --md-sys-color-on-primary: #062e6f;
+  --md-sys-color-primary-container: #0842a0;
+  --md-sys-color-on-primary-container: #d3e3fd;
+
+  --md-sys-color-secondary: #a4c9fe;
+  --md-sys-color-on-secondary: #02325e;
+  --md-sys-color-secondary-container: #214876;
+  --md-sys-color-on-secondary-container: #d5e3ff;
+
+  --md-sys-color-tertiary: #4fd8eb;
+  --md-sys-color-on-tertiary: #00363d;
+  --md-sys-color-tertiary-container: #004f58;
+  --md-sys-color-on-tertiary-container: #9eeffd;
+
+  --md-sys-color-background: #0d1117;
+  --md-sys-color-on-background: #e2e6ee;
+  --md-sys-color-surface: #0d1117;
+  --md-sys-color-surface-dim: #0d1117;
+  --md-sys-color-surface-bright: #333841;
+  --md-sys-color-surface-container-lowest: #090c11;
+  --md-sys-color-surface-container-low: #151a22;
+  --md-sys-color-surface-container: #1a2029;
+  --md-sys-color-surface-container-high: #232a35;
+  --md-sys-color-surface-container-highest: #2d3542;
+
+  --md-sys-color-on-surface: #e2e6ee;
+  --md-sys-color-on-surface-variant: #c2c7d1;
+  --md-sys-color-outline: #8c919b;
+  --md-sys-color-outline-variant: rgba(226, 230, 238, 0.10);
+
+  --md-sys-color-success: #6dd59c;
+  --md-sys-color-on-success: #00391f;
+  --md-sys-color-success-container: #00522f;
+  --md-sys-color-on-success-container: #c7f2da;
+
+  --md-sys-color-warning: #ffb95f;
+  --md-sys-color-on-warning: #4a2800;
+  --md-sys-color-warning-container: #6a3c00;
+  --md-sys-color-on-warning-container: #ffddb6;
+
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-on-error: #690005;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+
+  --m3-surface: var(--md-sys-color-surface);
+  --m3-surface-container: var(--md-sys-color-surface-container-low);
+  --m3-surface-tonal: var(--md-sys-color-surface-container);
+  --m3-outline: var(--md-sys-color-outline-variant);
+
+  color-scheme: dark;
+}
+
+/* Dark Theme: Emerald Silicon Seed */
+html[data-theme="dark"][data-accent="emerald"] {
+  --md-sys-color-primary: #6cdbAC;
+  --md-sys-color-on-primary: #003826;
+  --md-sys-color-primary-container: #005138;
+  --md-sys-color-on-primary-container: #89f8c7;
+  --md-sys-color-secondary: #96ccb8;
+  --md-sys-color-secondary-container: #154b3c;
+  --md-sys-color-on-secondary-container: #b1e8d4;
+  --md-sys-color-background: #0c1210;
+  --md-sys-color-surface: #0c1210;
+  --md-sys-color-surface-container-lowest: #070c0a;
+  --md-sys-color-surface-container-low: #131c19;
+  --md-sys-color-surface-container: #18231f;
+  --md-sys-color-surface-container-high: #212e29;
+  --md-sys-color-surface-container-highest: #2b3a34;
+}
+
+/* Dark Theme: Amber Gold Seed */
+html[data-theme="dark"][data-accent="amber"] {
+  --md-sys-color-primary: #fbbd48;
+  --md-sys-color-on-primary: #422c00;
+  --md-sys-color-primary-container: #5f4100;
+  --md-sys-color-on-primary-container: #ffdeac;
+  --md-sys-color-secondary: #dbc3a1;
+  --md-sys-color-secondary-container: #54442a;
+  --md-sys-color-on-secondary-container: #f8dfbb;
+  --md-sys-color-background: #13110d;
+  --md-sys-color-surface: #13110d;
+  --md-sys-color-surface-container-lowest: #0d0b08;
+  --md-sys-color-surface-container-low: #1b1813;
+  --md-sys-color-surface-container: #211e18;
+  --md-sys-color-surface-container-high: #2b2720;
+  --md-sys-color-surface-container-highest: #363229;
+}
+
+@layer base {
+  html, body, #root {
+    min-height: 100%;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: var(--m3-surface);
+    background-color: var(--md-sys-color-background);
+    color: var(--md-sys-color-on-surface);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    margin: 0;
   }
 
   h1, h2, h3, h4 {
     font-family: var(--font-display);
     text-wrap: balance;
+    letter-spacing: -0.02em;
   }
 
   p {
@@ -57,127 +240,56 @@
   button, input, select, summary, a {
     -webkit-tap-highlight-color: transparent;
     transition:
-      background-color 200ms var(--m3-easing-standard),
-      color 200ms var(--m3-easing-standard),
-      border-color 200ms var(--m3-easing-standard),
-      box-shadow 220ms var(--m3-easing-standard),
-      opacity 180ms var(--m3-easing-standard),
-      transform 200ms var(--m3-easing-emphasized);
+      background-color 180ms var(--md-sys-motion-easing-standard),
+      color 180ms var(--md-sys-motion-easing-standard),
+      border-color 180ms var(--md-sys-motion-easing-standard),
+      box-shadow 200ms var(--md-sys-motion-easing-standard),
+      transform 180ms var(--md-sys-motion-easing-emphasized);
   }
 
   button:enabled:active {
-    transform: scale(0.98);
+    transform: scale(0.985);
   }
 
   button:disabled {
     cursor: not-allowed;
+    opacity: 0.52;
   }
 
   :focus-visible {
-    outline: 2px solid var(--m3-primary);
+    outline: 2px solid var(--md-sys-color-primary);
     outline-offset: 2px;
   }
 
-  details > summary {
-    list-style: none;
-  }
-  details > summary::-webkit-details-marker {
-    display: none;
-  }
-  details[open] > :not(summary) {
-    animation: m3-fade-in 240ms var(--m3-easing-emphasized) both;
-  }
-
-  /* Material Design 3 Slider */
+  /* Material Design 3 Range Slider */
   input[type="range"] {
     -webkit-appearance: none;
     appearance: none;
-    height: 8px;
-    border-radius: 9999px;
-    background: rgba(11, 87, 208, 0.14);
+    height: 10px;
+    border-radius: var(--md-sys-shape-corner-full);
+    background: var(--md-sys-color-surface-container-highest);
     cursor: pointer;
-  }
-
-  html[data-theme="dark"] input[type="range"] {
-    background: rgba(168, 199, 250, 0.16);
   }
 
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 20px;
-    height: 20px;
-    border-radius: 9999px;
-    background: var(--m3-primary);
-    border: 3px solid #ffffff;
-    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
-    transition: transform 200ms var(--m3-easing-emphasized), box-shadow 200ms var(--m3-easing-standard);
-  }
-
-  html[data-theme="dark"] input[type="range"]::-webkit-slider-thumb {
-    background: var(--m3-primary);
-    border-color: #0e1117;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--md-sys-shape-corner-full);
+    background: var(--md-sys-color-primary);
+    border: 3px solid var(--md-sys-color-surface-container-lowest);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    transition: transform 180ms var(--md-sys-motion-easing-emphasized);
   }
 
   input[type="range"]:enabled:hover::-webkit-slider-thumb {
-    transform: scale(1.12);
-    box-shadow: 0 0 0 6px rgba(11, 87, 208, 0.14);
-  }
-
-  html[data-theme="dark"] input[type="range"]:enabled:hover::-webkit-slider-thumb {
-    box-shadow: 0 0 0 6px rgba(168, 199, 250, 0.16);
-  }
-
-  input[type="range"]::-moz-range-thumb {
-    width: 20px;
-    height: 20px;
-    border-radius: 9999px;
-    background: var(--m3-primary);
-    border: 3px solid #ffffff;
-    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
-    transition: transform 200ms var(--m3-easing-emphasized);
+    transform: scale(1.1);
   }
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
-}
-
-@keyframes m3-fade-in {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 6px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
-.m3-stage {
-  animation: m3-fade-in 260ms var(--m3-easing-emphasized) both;
-}
-
-/* Material Design 3 Elevated & Tonal Frosted Blur Surfaces */
-.m3-card {
-  background-color: var(--m3-surface-container);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
-  border: 1px solid var(--m3-outline);
-  border-radius: 28px;
-  box-shadow: 0 2px 16px -4px rgba(15, 23, 42, 0.04);
-  transition:
-    background-color 240ms var(--m3-easing-standard),
-    border-color 240ms var(--m3-easing-standard),
-    box-shadow 240ms var(--m3-easing-standard);
-}
-
-.m3-tonal-block {
-  background-color: var(--m3-surface-tonal);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--m3-outline);
-  border-radius: 20px;
 }
 
 .no-scrollbar::-webkit-scrollbar {
@@ -188,203 +300,320 @@
   scrollbar-width: none;
 }
 
+/* ============================================================================
+   Material Design 3 Structural Surfaces & Elevation Containers
+   ============================================================================ */
+
+/* M3 Elevated Card (Surface Container Low + Subtle Elevation) */
+.md3-card-elevated,
+.m3-card {
+  background-color: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-xl);
+  box-shadow:
+    0 1px 3px rgba(12, 18, 28, 0.04),
+    0 10px 28px -22px rgba(12, 18, 28, 0.18);
+}
+
+html[data-theme="dark"] .md3-card-elevated,
+html[data-theme="dark"] .m3-card {
+  background-color: var(--md-sys-color-surface-container-low);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.22),
+    0 12px 28px -20px rgba(0, 0, 0, 0.48);
+}
+
+/* M3 Filled Tonal Card (Surface Container) */
+.md3-card-filled,
+.m3-tonal-block {
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-lg);
+}
+
+/* M3 High-Emphasis Container */
+.md3-card-high {
+  background-color: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-lg);
+}
+
+/* M3 Outlined Card */
+.md3-card-outlined {
+  background-color: transparent;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-lg);
+}
+
+/* M3 Primary Hero Banner Surface */
+.md3-hero-container {
+  background: linear-gradient(
+    135deg,
+    var(--md-sys-color-surface-container-lowest) 0%,
+    var(--md-sys-color-surface-container) 100%
+  );
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-xl);
+}
+
+html[data-theme="dark"] .md3-hero-container {
+  background: linear-gradient(
+    135deg,
+    var(--md-sys-color-surface-container-low) 0%,
+    var(--md-sys-color-surface-container-high) 100%
+  );
+}
+
+/* ============================================================================
+   Material Design 3 Navigation Architecture (Rail + Top App Bar + Bottom Bar)
+   ============================================================================ */
+
+.md3-top-app-bar {
+  background-color: color-mix(in srgb, var(--md-sys-color-surface) 92%, transparent);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.md3-nav-rail {
+  width: 5.75rem;
+  background-color: var(--md-sys-color-surface-container-low);
+  border-right: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.md3-rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.45rem 0.25rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--md-sys-shape-corner-md);
+}
+
+.md3-rail-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 2rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  transition:
+    background-color 200ms var(--md-sys-motion-easing-emphasized),
+    color 200ms var(--md-sys-motion-easing-standard);
+}
+
+.md3-rail-btn:hover .md3-rail-pill {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+
+.md3-rail-btn.is-active {
+  color: var(--md-sys-color-on-surface);
+  font-weight: 700;
+}
+
+.md3-rail-btn.is-active .md3-rail-pill {
+  background-color: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.md3-bottom-nav {
+  background-color: var(--md-sys-color-surface-container-low);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ============================================================================
+   Material Design 3 Buttons, Chips, Badges & Segmented Controls
+   ============================================================================ */
+
+.md3-btn-filled {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0 1.15rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.md3-btn-filled:hover:enabled {
+  filter: brightness(1.06);
+}
+
+.md3-btn-tonal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+  padding: 0 1.05rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  font-size: 0.76rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.md3-btn-tonal:hover:enabled {
+  filter: brightness(0.97);
+}
+
+.md3-btn-outlined {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+  padding: 0 1.05rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  font-size: 0.76rem;
+  font-weight: 600;
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+.md3-btn-outlined:hover:enabled {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+
+.md3-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface-variant);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+.md3-icon-btn:hover:enabled {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+
+/* M3 Filter & Assist Chips */
+.md3-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2rem;
+  padding: 0 0.85rem;
+  border-radius: var(--md-sys-shape-corner-sm);
+  background-color: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface-variant);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+.md3-chip:hover:enabled {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+.md3-chip.is-selected {
+  background-color: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  border-color: transparent;
+}
+
+/* M3 Tonal Status Badges */
+.md3-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.68rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.md3-badge-primary {
+  background-color: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.md3-badge-secondary {
+  background-color: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.md3-badge-tertiary {
+  background-color: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+.md3-badge-success {
+  background-color: var(--md-sys-color-success-container);
+  color: var(--md-sys-color-on-success-container);
+}
+.md3-badge-warning {
+  background-color: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-warning-container);
+}
+.md3-badge-error {
+  background-color: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+.md3-badge-neutral {
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* M3 Progress Indicator */
+.md3-progress-track {
+  width: 100%;
+  height: 0.55rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-surface-container-highest);
+  overflow: hidden;
+}
+.md3-progress-bar {
+  height: 100%;
+  border-radius: var(--md-sys-shape-corner-full);
+  background-color: var(--md-sys-color-primary);
+  transition: width 320ms var(--md-sys-motion-easing-emphasized);
+}
+
+/* M3 Page Entrance Animation */
+@keyframes md3-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.md3-page-stage,
+.m3-stage {
+  animation: md3-enter 220ms var(--md-sys-motion-easing-emphasized) both;
+}
+
+@media (max-width: 768px) {
+  .md3-top-app-bar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: var(--md-sys-color-surface);
+  }
+  .md3-page-stage,
+  .m3-stage {
+    animation: none;
+  }
+  button:enabled:active {
+    transform: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
-}
-
-
-/* Embedded Android WebView performance profile.
-   Frosted-glass blur across many scrolling cards is expensive on mobile GPUs.
-   Keep Material 3 tonal surfaces, but render them without backdrop filters. */
-.m3-card {
-  background-color: var(--m3-surface-container);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-.m3-tonal-block {
-  background-color: var(--m3-surface-tonal);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-@media (max-width: 768px) {
-  .m3-card,
-  .m3-tonal-block {
-    -webkit-backdrop-filter: none !important;
-    backdrop-filter: none !important;
-    box-shadow: none;
-  }
-  .m3-stage { animation: none; }
-  button, input, select, summary, a {
-    transition:
-      background-color 120ms ease,
-      color 120ms ease,
-      border-color 120ms ease,
-      opacity 120ms ease;
-  }
-  button:enabled:active { transform: none; }
-}
-
-
-/* Pixel / Material You surface system for the native Android WebView. */
-:root {
-  --m3-surface: #f3f5fa;
-  --m3-surface-container: #ffffff;
-  --m3-surface-tonal: #e9eef8;
-  --m3-outline: rgba(38, 50, 72, 0.10);
-  --m3-primary: #315fbd;
-  --m3-on-primary: #ffffff;
-  --m3-primary-container: #dce7ff;
-  --m3-on-primary-container: #102d62;
-}
-html[data-theme="dark"] {
-  --m3-surface: #101319;
-  --m3-surface-container: #191e27;
-  --m3-surface-tonal: #202734;
-  --m3-outline: rgba(220, 230, 247, 0.09);
-  --m3-primary: #a9c5ff;
-  --m3-on-primary: #102c5d;
-  --m3-primary-container: #26477f;
-  --m3-on-primary-container: #dce7ff;
-}
-html, body, #root { min-height: 100%; }
-body { background: var(--m3-surface); color: #202531; }
-html[data-theme="dark"] body { color: #e5e9f2; }
-.m3-card {
-  background: var(--m3-surface-container);
-  border: 1px solid var(--m3-outline);
-  border-radius: 24px;
-  box-shadow: 0 1px 2px rgba(12, 20, 34, 0.035), 0 12px 32px -28px rgba(12, 20, 34, 0.28);
-}
-.m3-tonal-block {
-  background: var(--m3-surface-tonal);
-  border: 1px solid var(--m3-outline);
-  border-radius: 20px;
-}
-.pixel-header {
-  background: color-mix(in srgb, var(--m3-surface) 92%, transparent);
-  border-bottom: 1px solid var(--m3-outline);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-}
-.pixel-header-inner { min-height: 68px; }
-.pixel-brandmark { color: var(--m3-on-primary-container); background: var(--m3-primary-container); }
-.pixel-connection { border: 1px solid var(--m3-outline); }
-.pixel-connection.is-connected { color: #16734a; background: #e2f5e9; }
-.pixel-connection.is-pending { color: #8a5a12; background: #fff2d9; }
-html[data-theme="dark"] .pixel-connection.is-connected { color: #9fe0b9; background: rgba(31, 112, 76, 0.22); }
-html[data-theme="dark"] .pixel-connection.is-pending { color: #f1cd8a; background: rgba(145, 98, 24, 0.20); }
-.pixel-autonomous { color: var(--m3-primary); border: 1px solid var(--m3-outline); background: var(--m3-surface-container); }
-.pixel-studio { color: var(--m3-on-primary-container); background: var(--m3-primary-container); border: 1px solid transparent; }
-.pixel-studio:hover { filter: brightness(0.97); }
-.pixel-theme-toggle { color: inherit; border: 1px solid var(--m3-outline); background: var(--m3-surface-container); }
-.pixel-nav {
-  width: fit-content; max-width: 100%; padding: 5px;
-  border: 1px solid var(--m3-outline); border-radius: 18px;
-  background: var(--m3-surface-container); box-shadow: 0 8px 24px -22px rgba(12, 20, 34, 0.4);
-}
-.pixel-nav-item {
-  min-height: 40px; padding: 0 14px; border-radius: 13px;
-  color: #697386; font-size: 12px; font-weight: 600;
-  transition: color 160ms ease, background 160ms ease;
-}
-html[data-theme="dark"] .pixel-nav-item { color: #a4adbd; }
-.pixel-nav-item.is-active { color: var(--m3-on-primary-container); background: var(--m3-primary-container); }
-.pixel-uclamp-card { border-color: color-mix(in srgb, var(--m3-primary) 18%, var(--m3-outline)); }
-.pixel-ranking-card { border-radius: 20px; }
-@media (max-width: 640px) {
-  .pixel-header-inner { min-height: 62px; padding-top: 8px; padding-bottom: 8px; }
-  .pixel-nav { width: 100%; border-radius: 16px; }
-  .pixel-nav-item { flex: 0 0 auto; min-height: 38px; padding: 0 11px; font-size: 11px; }
-  main { padding-top: 18px !important; padding-bottom: 26px !important; }
-  .m3-card { border-radius: 21px; }
-  .m3-tonal-block { border-radius: 17px; }
-}
-
-
-/* Cohesive Pixel page hierarchy shared by every operational section. */
-.pixel-main {
-  max-width: 74rem;
-  min-width: 0;
-  padding-bottom: calc(2rem + env(safe-area-inset-bottom));
-}
-.pixel-page {
-  min-width: 0;
-  animation: pixel-page-enter 180ms ease-out both;
-}
-.pixel-page-heading {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  padding: 1.15rem 1.25rem 1.2rem;
-  border: 1px solid var(--m3-outline);
-  border-radius: 22px;
-  background: linear-gradient(125deg, var(--m3-surface-container), var(--m3-surface-tonal));
-}
-.pixel-page-heading::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  width: 8rem;
-  height: 8rem;
-  right: -2.5rem;
-  top: -3.5rem;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--m3-primary) 10%, transparent);
-}
-.pixel-page-eyebrow {
-  margin: 0;
-  color: var(--m3-primary);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .16em;
-  text-transform: uppercase;
-}
-.pixel-page-title {
-  margin-top: .35rem;
-  color: inherit;
-  font-family: var(--font-display);
-  font-size: clamp(1.35rem, 4.6vw, 1.9rem);
-  font-weight: 750;
-  letter-spacing: -.035em;
-  line-height: 1.16;
-}
-.pixel-page-description {
-  max-width: 54rem;
-  margin-top: .55rem;
-  color: #6b7485;
-  font-size: .82rem;
-  line-height: 1.55;
-}
-html[data-theme="dark"] .pixel-page-description { color: #a4adbd; }
-.pixel-metric {
-  min-height: 5.5rem;
-  align-items: center;
-  border-radius: 20px;
-}
-.pixel-metric > div:first-child {
-  border-radius: 13px;
-}
-.pixel-footer {
-  border-top: 1px solid var(--m3-outline);
-  background: var(--m3-surface-container);
-  padding: 1.1rem 0 calc(1.1rem + env(safe-area-inset-bottom));
-}
-@keyframes pixel-page-enter {
-  from { opacity: .82; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@media (max-width: 640px) {
-  .pixel-page-heading {
-    padding: 1rem 1rem 1.05rem;
-    border-radius: 19px;
-  }
-  .pixel-page-description { font-size: .76rem; }
-  .pixel-page { animation: none; }
-  .pixel-metric { min-height: 5rem; padding: .85rem !important; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .pixel-page { animation: none; }
 }

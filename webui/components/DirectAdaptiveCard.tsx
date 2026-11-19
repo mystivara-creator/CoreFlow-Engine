@@ -46,7 +46,7 @@ const formatBytes = (bytes: number): string => {
 const formatOpp = (raw: string): string => {
   const value = Number(raw);
   if (!Number.isFinite(value)) return raw;
-  return value >= 100000 ? String(Math.round(value / 1000)) + ' MHz' : raw;
+  return value >= 100000 ? `${Math.round(value / 1000)} MHz` : raw;
 };
 
 export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
@@ -59,14 +59,17 @@ export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
 }) => {
   if (!nativeMode) {
     return (
-      <section className="m3-card space-y-3 p-5 sm:p-7">
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-          <h2 className="font-semibold">Direct Adaptive runtime</h2>
+      <section className="md3-card-elevated space-y-3 p-6 sm:p-7">
+        <div className="flex items-center gap-2.5">
+          <Activity className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+          <h2 className="font-bold text-base">Direct Adaptive Runtime</h2>
+          <span className="md3-badge md3-badge-neutral">NATIVE ONLY</span>
         </div>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
-          Live topology, actuator ownership and OEM baseline values are available only from the native daemon.
-          Browser preview does not synthesize kernel audit evidence.
+        <p
+          className="text-xs sm:text-sm leading-relaxed"
+          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+        >
+          Live topology discovery, actuator ownership, and OEM baseline values are queried directly from <code className="font-mono">coreflowd</code>. Browser preview does not synthesize kernel audit evidence.
         </p>
       </section>
     );
@@ -74,12 +77,15 @@ export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
 
   if (!status || !status.active) {
     return (
-      <section className="m3-card space-y-3 p-5 sm:p-7">
-        <div className="flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-300" />
-          <h2 className="font-semibold">Direct Adaptive runtime</h2>
+      <section className="md3-card-elevated space-y-3 p-6 sm:p-7">
+        <div className="flex items-center gap-2.5">
+          <ShieldAlert className="h-4 w-4" style={{ color: 'var(--md-sys-color-warning)' }} />
+          <h2 className="font-bold text-base">Direct Adaptive Runtime</h2>
         </div>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
+        <p
+          className="text-xs sm:text-sm leading-relaxed"
+          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+        >
           {status?.mode === 'READ_ONLY'
             ? 'Daemon is stopped. The last OEM baseline remains available for recovery.'
             : 'Runtime discovery or durable baseline preparation is unavailable. Independent daemon status remains accessible.'}
@@ -90,85 +96,146 @@ export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
 
   const ownedCount = status.appliedValues.filter((item) => item.owned).length;
   const modifiedCount = status.appliedValues.filter((item) => item.modified).length;
-  const hasOwnershipIssue = status.ownershipLosses > 0 ||
+  const hasOwnershipIssue =
+    status.ownershipLosses > 0 ||
     status.appliedValues.some((item) => !item.owned && item.modified);
 
+  const badgeClass = status.journalFault
+    ? 'md3-badge md3-badge-error'
+    : status.thermalGuard
+      ? 'md3-badge md3-badge-warning'
+      : 'md3-badge md3-badge-success';
+
   return (
-    <section className="m3-card space-y-5 p-5 sm:p-7" aria-label="Direct Adaptive runtime and actuator audit">
+    <section
+      className="md3-card-elevated space-y-5 p-6 sm:p-7"
+      aria-label="Direct Adaptive runtime and actuator audit"
+    >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            <h2 className="font-semibold">Direct Adaptive · Current runtime</h2>
+            <Activity className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+            <h2 className="font-bold text-base sm:text-lg">
+              Direct Adaptive · Production Composition Root
+            </h2>
           </div>
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            Topology-derived policy and readback-verified sysfs ownership. Optional PSI/FrameTimeline evidence does not gate this runtime.
+          <p
+            className="mt-1 text-xs sm:text-sm leading-relaxed"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            Topology-derived Sweet-Spot policy and readback-verified sysfs ownership. Optional PSI/FrameTimeline evidence never blocks independently discovered domains.
           </p>
         </div>
-        <span className={
-          'inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ' +
-          (status.journalFault
-            ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200'
-            : status.thermalGuard
-              ? 'bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200'
-              : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200')
-        }>
-          {status.journalFault ? <ShieldAlert className="h-3.5 w-3.5" /> :
-            status.thermalGuard ? <Gauge className="h-3.5 w-3.5" /> :
-              <ShieldCheck className="h-3.5 w-3.5" />}
-          {status.journalFault ? 'Journal fault · mutations halted' :
-            MODE_LABELS[status.mode] ?? status.mode}
+
+        <span className={badgeClass}>
+          {status.journalFault ? (
+            <ShieldAlert className="h-3.5 w-3.5" />
+          ) : status.thermalGuard ? (
+            <Gauge className="h-3.5 w-3.5" />
+          ) : (
+            <ShieldCheck className="h-3.5 w-3.5" />
+          )}
+          {status.journalFault
+            ? 'Journal fault · mutations halted'
+            : MODE_LABELS[status.mode] ?? status.mode}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="m3-tonal-block p-3">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"><Cpu className="h-3.5 w-3.5" /> CPU utilization</div>
-          <div className="mt-1 font-mono text-lg font-semibold tabular-nums">{status.cpuUtilizationPct.toFixed(1)}%</div>
+        <div className="md3-card-filled p-3.5">
+          <div
+            className="flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            <Cpu className="h-3.5 w-3.5" /> CPU utilization
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold tabular-nums">
+            {status.cpuUtilizationPct.toFixed(1)}%
+          </div>
         </div>
-        <div className="m3-tonal-block p-3">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"><HardDrive className="h-3.5 w-3.5" /> RAM / ZRAM</div>
-          <div className="mt-1 font-mono text-sm font-semibold">{formatBytes(status.ramBytes)}</div>
-          <div className="text-[11px] text-slate-500 dark:text-slate-400">ZRAM {formatBytes(status.zramBytes)}</div>
+        <div className="md3-card-filled p-3.5">
+          <div
+            className="flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            <HardDrive className="h-3.5 w-3.5" /> RAM / ZRAM
+          </div>
+          <div className="mt-1 font-mono text-sm font-bold">{formatBytes(status.ramBytes)}</div>
+          <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            ZRAM {formatBytes(status.zramBytes)}
+          </div>
         </div>
-        <div className="m3-tonal-block p-3">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"><MonitorSmartphone className="h-3.5 w-3.5" /> Display</div>
-          <div className="mt-1 font-mono text-lg font-semibold">{status.refreshHz > 0 ? String(status.refreshHz) + ' Hz' : 'Auto'}</div>
-          <div className="text-[11px] text-slate-500 dark:text-slate-400">Screen {status.screenState === 'OFF' ? 'off' : 'on / unknown'}</div>
+        <div className="md3-card-filled p-3.5">
+          <div
+            className="flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            <MonitorSmartphone className="h-3.5 w-3.5" /> Display
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold">
+            {status.refreshHz > 0 ? `${status.refreshHz} Hz` : 'Auto'}
+          </div>
+          <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            Screen {status.screenState === 'OFF' ? 'off' : 'on / active'}
+          </div>
         </div>
-        <div className="m3-tonal-block p-3">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"><Gauge className="h-3.5 w-3.5" /> Actuator audit</div>
-          <div className="mt-1 font-mono text-lg font-semibold">{status.verifiedMutations}</div>
-          <div className="text-[11px] text-slate-500 dark:text-slate-400">{status.skippedNodes} skipped · {status.ownershipLosses} ownership losses</div>
+        <div className="md3-card-filled p-3.5">
+          <div
+            className="flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            <Gauge className="h-3.5 w-3.5" /> Actuator audit
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold">{status.verifiedMutations}</div>
+          <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            {status.skippedNodes} skipped · {status.ownershipLosses} ownership losses
+          </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="m3-tonal-block p-4">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">GPU discovered</div>
-          <div className="mt-1 break-words font-mono text-sm font-semibold">{status.gpuModel}</div>
+        <div className="md3-card-filled p-4">
+          <div
+            className="text-[11px] font-bold uppercase tracking-wide"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            GPU Discovered
+          </div>
+          <div className="mt-1 break-words font-mono text-sm font-bold">{status.gpuModel}</div>
         </div>
-        <div className="m3-tonal-block p-4">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Storage topology</div>
-          <div className="mt-1 break-words font-mono text-sm font-semibold">{status.storageType}</div>
+        <div className="md3-card-filled p-4">
+          <div
+            className="text-[11px] font-bold uppercase tracking-wide"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            Storage Topology
+          </div>
+          <div className="mt-1 break-words font-mono text-sm font-bold">{status.storageType}</div>
         </div>
       </div>
 
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">CPU topology & discovered OPP</h3>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400">{status.cpuClusters.length} clusters · {status.discoveredNodes} nodes</span>
+          <h3 className="text-sm font-bold">CPU Topology &amp; Discovered OPP</h3>
+          <span className="text-xs font-mono" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            {status.cpuClusters.length} clusters · {status.discoveredNodes} nodes
+          </span>
         </div>
         {status.cpuClusters.length === 0 ? (
-          <p className="m3-tonal-block p-3 text-xs text-slate-500 dark:text-slate-400">CPUFreq OPP table unavailable; CPU actuation is skipped independently.</p>
+          <p className="md3-card-filled p-3.5 text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            CPUFreq OPP table unavailable; CPU actuation is skipped independently.
+          </p>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {status.cpuClusters.map((cluster) => (
-              <div key={cluster.id} className="m3-tonal-block min-w-0 p-3">
-                <div className="text-xs font-semibold">{cluster.id}</div>
+              <div key={cluster.id} className="md3-card-filled min-w-0 p-3.5">
+                <div className="text-xs font-bold">{cluster.id}</div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {cluster.opps.map((opp) => (
-                    <span key={cluster.id + '-' + opp} className="rounded-md bg-white/70 px-2 py-1 font-mono text-[10px] text-slate-700 dark:bg-white/[0.06] dark:text-slate-200">
+                    <span
+                      key={`${cluster.id}-${opp}`}
+                      className="md3-badge md3-badge-neutral font-mono"
+                    >
                       {formatOpp(opp)}
                     </span>
                   ))}
@@ -181,36 +248,57 @@ export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
 
       <div className="space-y-3">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-          <h3 className="text-sm font-semibold">Current applied values vs OEM baseline</h3>
-          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+          <h3 className="text-sm font-bold">Current Applied Values vs OEM Baseline</h3>
+          <span className="text-xs font-mono" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
             {modifiedCount} modified · {ownedCount}/{status.appliedValues.length} owned
           </span>
         </div>
         {status.appliedValues.length === 0 ? (
-          <p className="m3-tonal-block p-3 text-xs text-slate-500 dark:text-slate-400">No writable semantic control nodes were captured.</p>
+          <p className="md3-card-filled p-3.5 text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+            No writable semantic control nodes were captured.
+          </p>
         ) : (
           <div className="space-y-2">
             {status.appliedValues.slice(0, 24).map((item) => (
-              <div key={item.path} className="m3-tonal-block space-y-2 p-3">
+              <div key={item.path} className="md3-card-filled space-y-2 p-3.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="break-all font-mono text-xs font-semibold">{item.semantic}</div>
-                    <div className="break-all text-[10px] text-slate-500 dark:text-slate-400">{item.domain}</div>
+                    <div className="break-all font-mono text-xs font-bold">{item.semantic}</div>
+                    <div
+                      className="break-all text-[10px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      {item.domain}
+                    </div>
                   </div>
-                  <span className={
-                    'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold ' +
-                    (item.owned
-                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200'
-                      : 'bg-amber-100 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200')
-                  }>
-                    {item.owned ? <CheckCircle2 className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
+                  <span
+                    className={
+                      item.owned
+                        ? 'md3-badge md3-badge-success'
+                        : 'md3-badge md3-badge-warning'
+                    }
+                  >
+                    {item.owned ? (
+                      <CheckCircle2 className="h-3 w-3" />
+                    ) : (
+                      <ShieldAlert className="h-3 w-3" />
+                    )}
                     {item.owned ? 'Owned / readback OK' : item.health}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-[10px]">
-                  <div><div className="text-slate-500 dark:text-slate-400">Current</div><div className="mt-0.5 break-all font-mono font-semibold">{item.current}</div></div>
-                  <div><div className="text-slate-500 dark:text-slate-400">OEM</div><div className="mt-0.5 break-all font-mono font-semibold">{item.oemBaseline}</div></div>
-                  <div><div className="text-slate-500 dark:text-slate-400">Policy target</div><div className="mt-0.5 break-all font-mono font-semibold">{item.target}</div></div>
+                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                  <div>
+                    <div style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Current</div>
+                    <div className="mt-0.5 break-all font-mono font-bold">{item.current}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>OEM</div>
+                    <div className="mt-0.5 break-all font-mono font-bold">{item.oemBaseline}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Policy target</div>
+                    <div className="mt-0.5 break-all font-mono font-bold">{item.target}</div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -219,28 +307,56 @@ export const DirectAdaptiveCard: React.FC<DirectAdaptiveCardProps> = ({
       </div>
 
       {hasOwnershipIssue && (
-        <div role="status" className="rounded-xl border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <div
+          role="status"
+          className="rounded-2xl px-4 py-3 text-xs"
+          style={{
+            backgroundColor: 'var(--md-sys-color-warning-container)',
+            color: 'var(--md-sys-color-on-warning-container)',
+          }}
+        >
           One or more nodes lost mutation ownership or readback agreement. Those actuators are isolated; unrelated domains continue.
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={onViewJournal} className="inline-flex items-center gap-2 rounded-full bg-[#d3e3fd] px-4 py-2.5 text-xs font-semibold text-[#041e49] hover:bg-[#b8d3f7] dark:bg-[#0842a0] dark:text-[#d3e3fd]">
-          <FileText className="h-3.5 w-3.5" /> View mutation journal
+      <div className="flex flex-wrap gap-2.5">
+        <button type="button" onClick={onViewJournal} className="md3-btn-tonal">
+          <FileText className="h-3.5 w-3.5" /> View Mutation Journal
         </button>
-        <button type="button" onClick={onRestoreBaseline} disabled={restoringBaseline} className="inline-flex items-center gap-2 rounded-full border border-rose-300/70 px-4 py-2.5 text-xs font-semibold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-200 dark:hover:bg-rose-950/30">
-          <RotateCcw className="h-3.5 w-3.5" /> {restoringBaseline ? 'Restoring OEM baseline…' : 'Restore OEM baseline & stop'}
+        <button
+          type="button"
+          onClick={onRestoreBaseline}
+          disabled={restoringBaseline}
+          className="md3-btn-outlined"
+          style={{
+            borderColor: 'var(--md-sys-color-error)',
+            color: 'var(--md-sys-color-error)',
+          }}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          {restoringBaseline ? 'Restoring OEM baseline…' : 'Restore OEM Baseline & Stop'}
         </button>
       </div>
 
       {journalOutput !== null && (
         <div className="space-y-2">
-          <div className="text-xs font-semibold">Baseline journal · read-only</div>
-          <pre className="max-h-64 overflow-auto rounded-xl bg-slate-950 p-3 text-[10px] leading-relaxed text-emerald-200">{journalOutput}</pre>
+          <div className="text-xs font-bold">Baseline Journal · Read-Only</div>
+          <pre
+            className="max-h-64 overflow-auto rounded-2xl p-4 text-[11px] font-mono leading-relaxed"
+            style={{
+              backgroundColor: 'var(--md-sys-color-surface-container-highest)',
+              color: 'var(--md-sys-color-on-surface)',
+            }}
+          >
+            {journalOutput}
+          </pre>
         </div>
       )}
 
-      <div className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+      <div
+        className="text-[11px] leading-relaxed font-mono"
+        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+      >
         OEM snapshot entries: {status.baselineNodes} · thermal pressure: {status.thermalPressure.toFixed(1)} · journal state: {status.journalFault ? 'fault-latched' : 'healthy'}
       </div>
     </section>

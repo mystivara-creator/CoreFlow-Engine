@@ -1,5 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, Play, Copy, Check, RefreshCw, Code2, ShieldAlert } from 'lucide-react';
+import {
+  Activity,
+  Check,
+  Code2,
+  Copy,
+  Play,
+  RefreshCw,
+  ShieldAlert,
+  Terminal,
+} from 'lucide-react';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from '../bridge/daemonBridge';
 
 interface Props {
@@ -12,8 +21,9 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   onRefreshTelemetry,
 }) => {
   const [output, setOutput] = useState<string>(
-    'Select an inspection action above to query coreflowd runtime JSON or recovery journal.'
+    'Select an inspection action above to query coreflowd runtime JSON, capabilities, recovery journal, or CF-DVS state.'
   );
+  const [activeActionTitle, setActiveActionTitle] = useState<string>('Ready');
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
@@ -44,7 +54,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
         try {
           return JSON.parse(lines[i]);
         } catch {
-          // continue
+          // continue scanning
         }
       }
     }
@@ -58,6 +68,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
 
   const runCommand = async (cmd: string, title: string) => {
     setIsRunning(true);
+    setActiveActionTitle(title);
     try {
       if (!hasNativeKernelSuBridge()) {
         if (cmd.includes('--status')) {
@@ -69,6 +80,10 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
                 uclampMin: 320,
                 uclampMax: 1024,
                 uclampSupported: true,
+                platformVendor: 'Universal Android',
+                osFamily: 'Android AOSP / GKI',
+                executionTier: 'UniversalFallback',
+                policyFamily: 'CoreFlowBase',
                 cpuPressurePct: 1.2,
                 memoryPressurePct: 0.3,
                 ioPressurePct: 0.4,
@@ -85,7 +100,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
                 thermalSource: 'multi-sensor-composite',
                 thermalSensor: 'SoC-Composite (8 CPU cores, 1 GPU domain)',
                 thermalSeverity: 0,
-                thermalPressure: 65.0,
+                thermalPressure: 44.0,
                 aiBackend: 'embedded-rls-mlp',
                 aiOnnxActive: false,
                 aiPredictedPressure10s: 46.2,
@@ -106,7 +121,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
             JSON.stringify(
               {
                 socModel: 'Preview SoC Profile',
-                kernelVersion: 'Linux 6.1-android14',
+                kernelVersion: 'Linux 6.1-android15-gki',
                 onlineCpus: '0-7',
                 gpuType: 'Universal Multi-Vendor GPU',
                 rustEngine: true,
@@ -121,6 +136,21 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
               2
             )
           );
+        } else if (cmd.includes('--journal')) {
+          setOutput(
+            JSON.stringify(
+              {
+                format: 'CFJ4',
+                bootId: 'preview-boot-epoch-v4',
+                recoveryPending: false,
+                entries: [],
+              },
+              null,
+              2
+            )
+          );
+        } else if (cmd.includes('--dvs-status')) {
+          setOutput('OK INACTIVE (Preview Simulation)');
         } else {
           setOutput(`[${title}]\nStatus: OK (Preview Sandbox)\nExit code: 0`);
         }
@@ -153,7 +183,6 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   };
 
   const copyToClipboard = async () => {
-    // navigator.clipboard is absent in non-secure WebView contexts; never throw from a handler.
     try {
       await navigator.clipboard.writeText(output);
     } catch {
@@ -168,32 +197,47 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   };
 
   return (
-    <div className="m3-card p-6 sm:p-8 space-y-5">
+    <div className="md3-card-elevated p-6 sm:p-8 space-y-5">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+      <div
+        className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5"
+        style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+      >
         <div className="space-y-1.5 max-w-2xl">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <Terminal className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            <span className="text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-100">
-              Runtime RPC & Diagnostic Console
+          <div className="flex flex-wrap items-center gap-2">
+            <Terminal className="w-4 h-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+            <h2 className="text-base sm:text-lg font-bold">
+              Runtime RPC &amp; Diagnostic Console
+            </h2>
+            <span className="md3-badge md3-badge-neutral font-mono">
+              coreflow-api.js
             </span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono">coreflow-api.js</span>
-            <span aria-hidden="true">·</span>
-            <span>{nativeMode ? 'KernelSU Bridge Active' : 'Preview Simulator'}</span>
+            <span
+              className={
+                nativeMode
+                  ? 'md3-badge md3-badge-success'
+                  : 'md3-badge md3-badge-warning'
+              }
+            >
+              {nativeMode ? 'KernelSU Bridge Active' : 'Preview Simulator'}
+            </span>
           </div>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            Inspect raw JSON telemetry, discovered hardware capabilities, and durable journal state directly from `coreflowd`.
+          <p
+            className="text-xs sm:text-sm leading-relaxed"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            Inspect raw JSON telemetry, discovered hardware capabilities, CFJ4 journal records, and CF-DVS capture status directly from <code className="font-mono">coreflowd</code>.
           </p>
         </div>
 
         <button
           type="button"
+          id="btn-copy-console-output"
           onClick={() => void copyToClipboard()}
-          className="px-4 py-2 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-2 self-start"
+          className="md3-btn-outlined self-start shrink-0"
         >
           {copied ? (
-            <Check className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa]" />
+            <Check className="w-3.5 h-3.5" style={{ color: 'var(--md-sys-color-primary)' }} />
           ) : (
             <Copy className="w-3.5 h-3.5" />
           )}
@@ -217,11 +261,16 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
             Icon: Code2,
           },
           {
-            label: 'Inspect Recovery Journal',
-            // baseline.journal is a binary CFJ4 write-ahead log; the daemon decodes it.
+            label: 'Inspect Journal (--journal)',
             cmd: `${RESOLVE_BIN}; "$BIN" --journal`,
             title: 'Recovery Journal',
             Icon: RefreshCw,
+          },
+          {
+            label: 'CF-DVS Status (--dvs-status)',
+            cmd: `${RESOLVE_BIN}; "$BIN" --dvs-status`,
+            title: 'CF-DVS Session Status',
+            Icon: Activity,
           },
           {
             label: 'Inspect coreflow.conf',
@@ -229,22 +278,35 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
             title: 'Configuration File',
             Icon: ShieldAlert,
           },
-        ].map(({ label, cmd, title, Icon }) => (
-          <button
-            key={title}
-            type="button"
-            onClick={() => void runCommand(cmd, title)}
-            disabled={isRunning}
-            className="px-4 py-2 rounded-full bg-[#d3e3fd]/70 hover:bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0]/60 dark:hover:bg-[#0842a0] dark:text-[#d3e3fd] text-xs font-medium transition-all inline-flex items-center gap-2 disabled:opacity-50"
-          >
-            <Icon className="w-3.5 h-3.5" />
-            <span>{label}</span>
-          </button>
-        ))}
+        ].map(({ label, cmd, title, Icon }) => {
+          const isSelected = activeActionTitle === title;
+          return (
+            <button
+              key={title}
+              type="button"
+              onClick={() => void runCommand(cmd, title)}
+              disabled={isRunning}
+              className={'md3-chip ' + (isSelected ? 'is-selected' : '')}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Terminal Output */}
-      <div className="m3-tonal-block p-5 font-mono text-xs text-slate-800 dark:text-slate-200 overflow-x-auto max-h-80">
+      <div className="md3-card-filled p-5 font-mono text-xs overflow-x-auto max-h-80">
+        <div
+          className="flex items-center justify-between pb-2.5 mb-2.5 text-[11px]"
+          style={{
+            borderBottom: '1px solid var(--md-sys-color-outline-variant)',
+            color: 'var(--md-sys-color-on-surface-variant)',
+          }}
+        >
+          <span>Inspector Output · {activeActionTitle}</span>
+          <span>{isRunning ? 'Executing query…' : 'Read-only RPC'}</span>
+        </div>
         <pre className="whitespace-pre leading-relaxed">{output}</pre>
       </div>
     </div>

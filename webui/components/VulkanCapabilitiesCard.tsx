@@ -23,24 +23,41 @@ interface CapabilityRowProps {
   note?: string;
 }
 
-const CapabilityRow: React.FC<CapabilityRowProps> = ({ label, value, note, simulated = false }) => {
+const CapabilityRow: React.FC<CapabilityRowProps> = ({
+  label,
+  value,
+  note,
+  simulated = false,
+}) => {
   const isBool = typeof value === 'boolean';
   return (
-    <div className="flex items-center justify-between py-2.5 border-b border-slate-900/[0.05] dark:border-white/[0.05] last:border-b-0 text-xs">
-      <div className="text-slate-600 dark:text-slate-300 pr-3">
-        <span>{label}{simulated ? ' (sim)' : ''}</span>
+    <div
+      className="flex items-center justify-between py-2.5 last:border-b-0 text-xs"
+      style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+    >
+      <div className="pr-3">
+        <span>
+          {label}
+          {simulated ? ' (sim)' : ''}
+        </span>
         {note && (
-          <span className="text-[11px] text-slate-400 dark:text-slate-500"> · {note}</span>
+          <span
+            className="text-[11px]"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            {' '}
+            · {note}
+          </span>
         )}
       </div>
       {isBool ? (
         <div
-          className={
-            'inline-flex items-center gap-1.5 font-semibold font-mono tabular-nums shrink-0 ' +
-            (value
-              ? 'text-emerald-700 dark:text-emerald-400'
-              : 'text-slate-500 dark:text-slate-400')
-          }
+          className="inline-flex items-center gap-1.5 font-bold font-mono tabular-nums shrink-0"
+          style={{
+            color: value
+              ? 'var(--md-sys-color-success)'
+              : 'var(--md-sys-color-on-surface-variant)',
+          }}
         >
           {value ? (
             <>
@@ -55,9 +72,7 @@ const CapabilityRow: React.FC<CapabilityRowProps> = ({ label, value, note, simul
           )}
         </div>
       ) : (
-        <span className="font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100 shrink-0">
-          {value}
-        </span>
+        <span className="font-bold font-mono tabular-nums shrink-0">{value}</span>
       )}
     </div>
   );
@@ -72,319 +87,400 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
   saveMessage,
 }) => {
   const vk = computeVulkanTelemetry(vulkanConfig, vulkanTelemetry);
-  const badgeFor = (active: boolean, hwSupported?: boolean, _isOverrideOnly = false): string | undefined => {
+  const badgeFor = (active: boolean, hwSupported?: boolean): string | undefined => {
     if (!active) return undefined;
     return hwSupported ? 'HW Native' : undefined;
   };
 
   const handleSelectMode = async (mode: VulkanLayerMode) => {
-    const normalizedMode: VulkanLayerMode = mode === 'disabled' ? 'disabled' : 'safe_hardware';
+    const normalizedMode: VulkanLayerMode =
+      mode === 'disabled' ? 'disabled' : 'safe_hardware';
     const updated: VulkanEngineConfig = { ...vulkanConfig, mode: normalizedMode };
     await onSaveVulkanConfig(updated);
   };
 
-
-
   return (
     <div className="space-y-6">
       {/* Primary Policy Control Surface */}
-      <div className="rounded-[28px] bg-white dark:bg-[#161a22] border border-slate-900/[0.06] dark:border-white/[0.07] p-6 sm:p-8 space-y-6">
+      <div className="md3-card-elevated p-6 sm:p-8 space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div className="space-y-1.5 max-w-2xl">
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              <span>Universal Multi-Vendor GPU & Truthful Vulkan Diagnostics{!nativeMode ? ' (sim)' : ''}</span>
-              <span aria-hidden="true"> · </span>
-              <span>{vk.deviceName}</span>
-              <span aria-hidden="true"> · </span>
-              <span>{nativeMode ? 'Live Device ICD Probe' : 'Hardware Pass-Through Model'}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="md3-badge md3-badge-primary">
+                {nativeMode ? 'LIVE DEVICE ICD PROBE' : 'HARDWARE PASS-THROUGH MODEL (SIM)'}
+              </span>
+              <span className="md3-badge md3-badge-neutral font-mono">
+                {vk.deviceName}
+              </span>
             </div>
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Vulkan Capabilities & Truthful Hardware Pass-Through{!nativeMode ? ' (sim)' : ''}
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight">
+              Vulkan Capabilities &amp; Truthful Hardware Pass-Through{!nativeMode ? ' (sim)' : ''}
             </h2>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-              Dynamically probes the active device&apos;s physical GPU ICD (Qualcomm Adreno KGSL, ARM Mali /
-              Immortalis, Samsung Xclipse, PowerVR) and reports genuine hardware capabilities without
-              fabricating unsupported extensions, feature flags, or API versions. Opt-in diagnostic layer{' '}
+            <p
+              className="text-xs sm:text-sm leading-relaxed"
+              style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+            >
+              Dynamically probes the active device&apos;s physical GPU ICD (Qualcomm Adreno KGSL, ARM Mali / Immortalis, Samsung Xclipse, PowerVR) and reports genuine hardware capabilities without fabricating unsupported extensions, feature flags, or API versions. Opt-in diagnostic layer{' '}
               <code className="font-mono text-xs">libVkLayer_coreflow.so</code> requires{' '}
               <code className="font-mono text-xs">ENABLE_COREFLOW_VULKAN_LAYER=1</code>.
             </p>
           </div>
 
-          <div className="text-left lg:text-right font-mono tabular-nums text-xs text-slate-600 dark:text-slate-400 shrink-0 space-y-1">
+          <div className="md3-card-filled px-4 py-3 text-left lg:text-right font-mono tabular-nums text-xs shrink-0 space-y-1">
             <div>
-              Hardware API:{' '}
-              <span className="font-semibold text-slate-900 dark:text-slate-100">
-                Vulkan {vk.apiVersion}
-              </span>
+              <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Hardware API: </span>
+              <span className="font-bold">Vulkan {vk.apiVersion}</span>
             </div>
             <div>
-              Device Extensions:{' '}
-              <span className="font-semibold text-slate-900 dark:text-slate-100">
-                {vk.deviceExtensions}
+              <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Device Extensions: </span>
+              <span className="font-bold">{vk.deviceExtensions}</span>
+              <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                {' '}· Instance: {vk.instanceExtensions}
               </span>
-              {' · '}Instance: {vk.instanceExtensions}
             </div>
           </div>
         </div>
 
-        {/* Mode Selector (Disabled vs Safe Hardware Pass-Through) */}
+        {/* M3 Mode Selector Cards */}
         <div className="space-y-3">
-          <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-            Select Vulkan Layer Mode
-          </div>
+          <div className="text-xs font-bold">Select Vulkan Layer Mode</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <button
               type="button"
+              id="btn-vulkan-mode-disabled"
               disabled={isSaving}
               aria-pressed={vulkanConfig.mode === 'disabled'}
               onClick={() => void handleSelectMode('disabled')}
-              className={
-                'text-left p-4 rounded-2xl border transition-colors ' +
-                (vulkanConfig.mode === 'disabled'
-                  ? 'bg-[#d3e3fd]/45 dark:bg-[#0842a0]/30 border-[#0842a0]/40 dark:border-[#d3e3fd]/40 text-slate-900 dark:text-slate-100'
-                  : 'bg-slate-50/70 dark:bg-[#1b202a] border-slate-900/[0.06] dark:border-white/[0.06] text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-[#202632]')
-              }
+              className="text-left p-4 rounded-2xl transition-all"
+              style={{
+                backgroundColor:
+                  vulkanConfig.mode === 'disabled'
+                    ? 'var(--md-sys-color-primary-container)'
+                    : 'var(--md-sys-color-surface-container)',
+                color:
+                  vulkanConfig.mode === 'disabled'
+                    ? 'var(--md-sys-color-on-primary-container)'
+                    : 'var(--md-sys-color-on-surface)',
+                border: '1px solid var(--md-sys-color-outline-variant)',
+              }}
             >
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs font-bold whitespace-nowrap">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-xs font-bold">
                   Default · Implicit Layer Disabled (Recommended)
                 </span>
-                <Cpu className="w-4 h-4 shrink-0 text-slate-500" />
+                <Cpu className="w-4 h-4 shrink-0" />
               </div>
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Keeps <code className="font-mono">VK_LAYER_COREFLOW_universal_bridge</code>{' '}
-                inactive for normal applications while still reading native GPU devfreq and physical ICD
-                capabilities.
+              <p className="text-[11px] leading-relaxed opacity-85">
+                Keeps <code className="font-mono">VK_LAYER_COREFLOW_universal_bridge</code> inactive for normal applications while still reading native GPU devfreq and physical ICD capabilities.
               </p>
             </button>
 
             <button
               type="button"
+              id="btn-vulkan-mode-passthrough"
               disabled={isSaving}
               aria-pressed={vulkanConfig.mode !== 'disabled'}
               onClick={() => void handleSelectMode('safe_hardware')}
-              className={
-                'text-left p-4 rounded-2xl border transition-colors ' +
-                (vulkanConfig.mode !== 'disabled'
-                  ? 'bg-[#d3e3fd]/45 dark:bg-[#0842a0]/30 border-[#0842a0]/40 dark:border-[#d3e3fd]/40 text-slate-900 dark:text-slate-100'
-                  : 'bg-slate-50/70 dark:bg-[#1b202a] border-slate-900/[0.06] dark:border-white/[0.06] text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-[#202632]')
-              }
+              className="text-left p-4 rounded-2xl transition-all"
+              style={{
+                backgroundColor:
+                  vulkanConfig.mode !== 'disabled'
+                    ? 'var(--md-sys-color-primary-container)'
+                    : 'var(--md-sys-color-surface-container)',
+                color:
+                  vulkanConfig.mode !== 'disabled'
+                    ? 'var(--md-sys-color-on-primary-container)'
+                    : 'var(--md-sys-color-on-surface)',
+                border: '1px solid var(--md-sys-color-outline-variant)',
+              }}
             >
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs font-bold whitespace-nowrap">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-xs font-bold">
                   Truthful Hardware Pass-Through
                 </span>
-                <Shield className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" />
+                <Shield className="w-4 h-4 shrink-0" />
               </div>
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                Uses per-handle Vulkan dispatch and forwards 100% authentic ICD capabilities without
-                spoofing API versions, injecting extensions, or stripping <code className="font-mono">vkCreateDevice</code>{' '}
-                requests.
+              <p className="text-[11px] leading-relaxed opacity-85">
+                Uses per-handle 64-bit aligned Vulkan dispatch and forwards 100% authentic ICD capabilities without spoofing API versions, injecting extensions, or stripping <code className="font-mono">vkCreateDevice</code> requests.
               </p>
             </button>
           </div>
         </div>
 
-        {/* The only manual mutation surface in this dashboard is Vulkan layer opt-in. */}
-        <div className="flex flex-col gap-3 border-t border-slate-900/[0.06] pt-4 dark:border-white/[0.06] sm:flex-row sm:items-center sm:justify-between">
-          <div className="max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-400">
-            <p className="font-semibold text-slate-800 dark:text-slate-200">Manual Vulkan diagnostic layer</p>
-            <p className="mt-1">This opt-in controls only the Vulkan diagnostic / pass-through layer. It does not enable rendering optimizers or fabricate hardware capabilities. All CPU, memory, storage and thermal policies remain daemon-owned.</p>
+        <div
+          className="flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between"
+          style={{ borderTop: '1px solid var(--md-sys-color-outline-variant)' }}
+        >
+          <div
+            className="max-w-2xl text-xs leading-relaxed"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            <p className="font-bold" style={{ color: 'var(--md-sys-color-on-surface)' }}>
+              Manual Vulkan Diagnostic Layer
+            </p>
+            <p className="mt-0.5">
+              This opt-in controls only the Vulkan diagnostic / pass-through layer. All CPU, memory, storage, and thermal policies remain daemon-owned.
+            </p>
           </div>
-          <div className="flex shrink-0 items-center gap-3">
-            {isSaving ? <span className="text-xs text-slate-600 dark:text-slate-400">Applying Vulkan mode…</span> : saveMessage && <span className="text-xs text-slate-600 dark:text-slate-400">{saveMessage}</span>}
-            <span className="rounded-full bg-slate-900/[0.05] px-3 py-2 text-[11px] font-semibold text-slate-700 dark:bg-white/[0.07] dark:text-slate-200">{vulkanConfig.mode === 'disabled' ? 'Layer disabled' : 'Layer enabled'}</span>
+          <div className="flex shrink-0 items-center gap-2.5">
+            {isSaving ? (
+              <span className="text-xs font-semibold">Applying Vulkan mode…</span>
+            ) : (
+              saveMessage && (
+                <span
+                  className="text-xs"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  {saveMessage}
+                </span>
+              )
+            )}
+            <span
+              className={
+                vulkanConfig.mode === 'disabled'
+                  ? 'md3-badge md3-badge-neutral'
+                  : 'md3-badge md3-badge-primary'
+              }
+            >
+              {vulkanConfig.mode === 'disabled' ? 'Layer Disabled' : 'Layer Enabled'}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* DevCheck-Aligned Capability Grid */}
+      {/* Capability Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Column 1: Capabilities & Core Features */}
-        <div className="rounded-[24px] bg-white dark:bg-[#161a22] border border-slate-900/[0.06] dark:border-white/[0.07] p-6 space-y-5">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Capabilities
-            </h3>
-            <div className="divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
-              <CapabilityRow simulated={!nativeMode}
-                label="Ray tracing"
-                value={vk.rayTracing}
-                note={badgeFor(vk.rayTracing, vk.hwRayTracing, true)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Mesh shaders"
-                value={vk.meshShaders}
-                note={badgeFor(vk.meshShaders, vk.hwMeshShaders, true)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Variable rate shading"
-                value={vk.variableRateShading}
-                note={badgeFor(vk.variableRateShading, vk.hwVariableRateShading)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Cooperative matrix"
-                value={vk.cooperativeMatrix}
-                note={badgeFor(vk.cooperativeMatrix, vk.hwCooperativeMatrix, true)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="RT pipeline"
-                value={vk.rtPipeline}
-                note={badgeFor(vk.rtPipeline, vk.hwRtPipeline, true)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Ray query"
-                value={vk.rayQuery}
-                note={badgeFor(vk.rayQuery, vk.hwRayQuery, true)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Acceleration structure"
-                value={vk.accelerationStructure}
-                note={badgeFor(vk.accelerationStructure, vk.hwAccelerationStructure, true)}
-              />
-              <CapabilityRow simulated={!nativeMode} label="Portability subset" value={vk.portabilitySubset} />
-            </div>
+        {/* Card 1: Capabilities & Device Identity */}
+        <div className="md3-card-elevated p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold">Capabilities &amp; Identity</h3>
+            <span className="md3-badge md3-badge-primary font-mono">{vk.vendor}</span>
           </div>
-
-          <div className="pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Core Features
-            </h3>
-            <div>
-              <CapabilityRow simulated={!nativeMode} label="Robust buffer access" value={vk.robustBufferAccess} />
-              <CapabilityRow simulated={!nativeMode} label="Sampler anisotropy" value={vk.samplerAnisotropy} />
-              <CapabilityRow simulated={!nativeMode} label="Shader Int16" value={vk.shaderInt16} />
-              <CapabilityRow simulated={!nativeMode}
-                label="Shader Float64"
-                value={vk.shaderFloat64}
-                note={badgeFor(vk.shaderFloat64, vk.hwShaderFloat64, true)}
-              />
+          <div>
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Ray Tracing"
+              value={vk.rayTracing}
+              note={badgeFor(vk.rayTracing, vk.hwRayTracing)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Mesh Shaders"
+              value={vk.meshShaders}
+              note={badgeFor(vk.meshShaders, vk.hwMeshShaders)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Variable Rate Shading"
+              value={vk.variableRateShading}
+              note={badgeFor(vk.variableRateShading, vk.hwVariableRateShading)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Cooperative Matrix"
+              value={vk.cooperativeMatrix}
+              note={badgeFor(vk.cooperativeMatrix, vk.hwCooperativeMatrix)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="RT Pipeline"
+              value={vk.rtPipeline}
+              note={badgeFor(vk.rtPipeline, vk.hwRtPipeline)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Ray Query"
+              value={vk.rayQuery}
+              note={badgeFor(vk.rayQuery, vk.hwRayQuery)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Acceleration Structure"
+              value={vk.accelerationStructure}
+              note={badgeFor(vk.accelerationStructure, vk.hwAccelerationStructure)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Portability Subset"
+              value={vk.portabilitySubset}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Device Extensions"
+              value={vk.deviceExtensions}
+              note="HW Native ICD"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Instance Extensions"
+              value={vk.instanceExtensions}
+            />
+          </div>
+          <div
+            className="pt-2 space-y-1.5 text-[11px] font-mono"
+            style={{
+              borderTop: '1px solid var(--md-sys-color-outline-variant)',
+              color: 'var(--md-sys-color-on-surface-variant)',
+            }}
+          >
+            <div className="truncate" title={vk.deviceUuid}>
+              Device UUID: {vk.deviceUuid}
+            </div>
+            <div className="truncate" title={vk.driverUuid}>
+              Driver UUID: {vk.driverUuid}
+            </div>
+            <div className="truncate" title={vk.pipelineCacheUuid}>
+              Cache UUID: {vk.pipelineCacheUuid}
             </div>
           </div>
         </div>
 
-        {/* Column 2: Vulkan 1.1, 1.2, 1.3 & 1.4 */}
-        <div className="rounded-[24px] bg-white dark:bg-[#161a22] border border-slate-900/[0.06] dark:border-white/[0.07] p-6 space-y-5">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Vulkan 1.1 · 1.2 · 1.3
-            </h3>
-            <div>
-              <CapabilityRow simulated={!nativeMode} label="Protected memory" value={vk.protectedMemory} note="1.1" />
-              <CapabilityRow simulated={!nativeMode} label="Timeline semaphore" value={vk.timelineSemaphore} note="1.2" />
-              <CapabilityRow simulated={!nativeMode} label="Descriptor indexing" value={vk.descriptorIndexing} note="1.2" />
-              <CapabilityRow simulated={!nativeMode} label="Buffer device address" value={vk.bufferDeviceAddress} note="1.2" />
-              <CapabilityRow simulated={!nativeMode} label="Dynamic rendering" value={vk.dynamicRendering} note="1.3" />
-              <CapabilityRow simulated={!nativeMode} label="Synchronization2" value={vk.synchronization2} note="1.3" />
-            </div>
+        {/* Card 2: Core Features & Vulkan 1.1 / 1.2 / 1.3 */}
+        <div className="md3-card-elevated p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold">Core &amp; Vulkan 1.1–1.3</h3>
+            <span
+              className="text-xs font-mono"
+              style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+            >
+              Spec Matrix
+            </span>
           </div>
-
-          <div className="pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Vulkan 1.4
-            </h3>
-            <div>
-              <CapabilityRow simulated={!nativeMode}
-                label="Index type UINT8"
-                value={vk.indexTypeUint8}
-                note={badgeFor(vk.indexTypeUint8, vk.hwIndexTypeUint8)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Line rasterization"
-                value={vk.lineRasterization}
-                note={badgeFor(vk.lineRasterization, vk.hwLineRasterization)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Push descriptors"
-                value={vk.pushDescriptors}
-                note={badgeFor(vk.pushDescriptors, vk.hwPushDescriptors)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Global priority query"
-                value={vk.globalPriorityQuery}
-                note={badgeFor(vk.globalPriorityQuery, vk.hwGlobalPriorityQuery)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Shader float controls 2"
-                value={vk.shaderFloatControls2}
-                note={badgeFor(vk.shaderFloatControls2, vk.hwShaderFloatControls2)}
-              />
-              <CapabilityRow simulated={!nativeMode} label="Max push descriptors" value={vk.maxPushDescriptors} />
-            </div>
+          <div>
+            <CapabilityRow simulated={!nativeMode} label="Robust Buffer Access" value={vk.robustBufferAccess} />
+            <CapabilityRow simulated={!nativeMode} label="Sampler Anisotropy" value={vk.samplerAnisotropy} />
+            <CapabilityRow simulated={!nativeMode} label="16-Bit Integers" value={vk.shaderInt16} />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="64-Bit Floats (FP64)"
+              value={vk.shaderFloat64}
+              note={badgeFor(vk.shaderFloat64, vk.hwShaderFloat64)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Protected Memory"
+              value={vk.protectedMemory}
+              note="Vulkan 1.1"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Timeline Semaphore"
+              value={vk.timelineSemaphore}
+              note="Vulkan 1.2"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Descriptor Indexing"
+              value={vk.descriptorIndexing}
+              note="Vulkan 1.2"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Buffer Device Address"
+              value={vk.bufferDeviceAddress}
+              note="Vulkan 1.2"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Dynamic Rendering"
+              value={vk.dynamicRendering}
+              note="Vulkan 1.3"
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Synchronization2"
+              value={vk.synchronization2}
+              note="Vulkan 1.3"
+            />
           </div>
         </div>
 
-        {/* Column 3: Highlights, Universal GPU Surface & UUIDs */}
-        <div className="rounded-[24px] bg-white dark:bg-[#161a22] border border-slate-900/[0.06] dark:border-white/[0.07] p-6 space-y-5">
+        {/* Card 3: Vulkan 1.4, Highlights & GPU Kernel Surface */}
+        <div className="md3-card-elevated p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold">Vulkan 1.4 &amp; GPU Surface</h3>
+            <span className="md3-badge md3-badge-secondary font-mono">
+              API {vk.apiVersion}
+            </span>
+          </div>
           <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Highlights
-            </h3>
-            <div>
-              <CapabilityRow simulated={!nativeMode}
-                label="Maintenance5"
-                value={vk.maintenance5}
-                note={badgeFor(vk.maintenance5, vk.hwMaintenance5)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Maintenance6"
-                value={vk.maintenance6}
-                note={badgeFor(vk.maintenance6, vk.hwMaintenance6)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Maintenance7"
-                value={vk.maintenance7}
-                note={badgeFor(vk.maintenance7, vk.hwMaintenance7)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Descriptor buffer"
-                value={vk.descriptorBuffer}
-                note={badgeFor(vk.descriptorBuffer, vk.hwDescriptorBuffer)}
-              />
-              <CapabilityRow simulated={!nativeMode}
-                label="Graphics pipeline library"
-                value={vk.graphicsPipelineLibrary}
-                note={badgeFor(vk.graphicsPipelineLibrary, vk.hwGraphicsPipelineLibrary)}
-              />
-            </div>
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="8-Bit Indices (indexTypeUint8)"
+              value={vk.indexTypeUint8}
+              note={badgeFor(vk.indexTypeUint8, vk.hwIndexTypeUint8)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Line Rasterization"
+              value={vk.lineRasterization}
+              note={badgeFor(vk.lineRasterization, vk.hwLineRasterization)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Push Descriptors"
+              value={vk.pushDescriptors}
+              note={badgeFor(vk.pushDescriptors, vk.hwPushDescriptors)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Global Priority Query"
+              value={vk.globalPriorityQuery}
+              note={badgeFor(vk.globalPriorityQuery, vk.hwGlobalPriorityQuery)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Shader Float Controls 2"
+              value={vk.shaderFloatControls2}
+              note={badgeFor(vk.shaderFloatControls2, vk.hwShaderFloatControls2)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Max Push Descriptors"
+              value={vk.maxPushDescriptors}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Maintenance 5 / 6 / 7"
+              value={`${vk.maintenance5 ? 'M5' : '—'} · ${vk.maintenance6 ? 'M6' : '—'} · ${vk.maintenance7 ? 'M7' : '—'}`}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Descriptor Buffer"
+              value={vk.descriptorBuffer}
+              note={badgeFor(vk.descriptorBuffer, vk.hwDescriptorBuffer)}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Graphics Pipeline Library"
+              value={vk.graphicsPipelineLibrary}
+              note={badgeFor(vk.graphicsPipelineLibrary, vk.hwGraphicsPipelineLibrary)}
+            />
           </div>
 
-          <div className="pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">
-              Universal Multi-Vendor GPU Surface
-            </h3>
-            <div>
-              <CapabilityRow simulated={!nativeMode} label="Detected GPU" value={vk.deviceName} />
-              <CapabilityRow simulated={!nativeMode} label="Vendor Domain" value={vk.vendor} />
-              <CapabilityRow simulated={!nativeMode} label="Active Governor" value={vk.gpuGovernor} />
-              <CapabilityRow simulated={!nativeMode}
-                label="Clock Window"
-                value={`${vk.gpuCurrentFreqMhz} / ${vk.gpuMaxFreqMhz} MHz`}
-              />
-              <CapabilityRow simulated={!nativeMode} label="Adrenoboost / Pacing" value={`Level ${vk.adrenoboostLevel}`} />
+          {/* Multi-Vendor GPU Kernel Surface */}
+          <div
+            className="pt-3 space-y-1.5"
+            style={{ borderTop: '1px solid var(--md-sys-color-outline-variant)' }}
+          >
+            <div className="text-xs font-bold">
+              Multi-Vendor GPU Kernel Surface ({vk.gpuKernelLabel})
             </div>
-          </div>
-
-          <div className="pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.06] space-y-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-              Hardware & Cache UUIDs
-            </h3>
-            <div className="space-y-1.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-400">
-              <div className="flex flex-col">
-                <span className="text-slate-400 dark:text-slate-500">Device UUID</span>
-                <span className="text-slate-800 dark:text-slate-200 break-all">{vk.deviceUuid}</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-slate-400 dark:text-slate-500">Driver UUID</span>
-                <span className="text-slate-800 dark:text-slate-200 break-all">{vk.driverUuid}</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-slate-400 dark:text-slate-500">PipelineCache UUID</span>
-                <span className="text-slate-800 dark:text-slate-200 break-all">
-                  {vk.pipelineCacheUuid}
-                </span>
-              </div>
-            </div>
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Active Governor"
+              value={vk.gpuGovernor}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="GPU Clock (Cur / Max)"
+              value={`${vk.gpuCurrentFreqMhz} / ${vk.gpuMaxFreqMhz} MHz`}
+            />
+            <CapabilityRow
+              simulated={!nativeMode}
+              label="Adrenoboost / Pacing"
+              value={`Level ${vk.adrenoboostLevel}`}
+            />
           </div>
         </div>
       </div>

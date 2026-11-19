@@ -7,6 +7,7 @@ import {
   classifyResourcePermission,
   classifyWorkload,
   computeRelativeTunableValue,
+  computeSystemHealthSummary,
   computeVulkanTelemetry,
   ControllerPriority,
   DEFAULT_VULKAN_CONFIG,
@@ -434,3 +435,31 @@ test('stepAutonomousSimulation exercises memory relief for a forced memory trial
   assert.ok(Number.isFinite(corrupted.next.uclampMin));
   assert.ok(corrupted.next.uclampMin >= 0 && corrupted.next.uclampMin <= 1024);
 });
+
+test('computeSystemHealthSummary produces bounded equilibrium scores and accurate thermal/pressure/ownership tones', () => {
+  const initial = createInitialAutonomousTelemetry();
+  const calm = computeSystemHealthSummary(initial, 44.0);
+  assert.ok(calm.equilibriumScore >= 85 && calm.equilibriumScore <= 100);
+  assert.equal(calm.thermalTone, 'optimal');
+  assert.equal(calm.pressureTone, 'calm');
+  assert.equal(calm.ownershipTone, 'intact');
+  assert.ok(calm.activeDomains.includes('UClamp'));
+
+  const guarded = computeSystemHealthSummary(
+    {
+      ...initial,
+      mode: 'thermal_guard',
+      socTempCelsius: 46.5,
+      thermalGuardActive: true,
+      ioPressurePct: 9.5,
+      ownershipIntact: false,
+    },
+    44.0
+  );
+  assert.equal(guarded.thermalTone, 'guard');
+  assert.equal(guarded.pressureTone, 'critical');
+  assert.equal(guarded.ownershipTone, 'contended');
+  assert.ok(guarded.equilibriumScore < calm.equilibriumScore);
+  assert.ok(guarded.equilibriumScore >= 15);
+});
+
