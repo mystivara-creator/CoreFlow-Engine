@@ -51,6 +51,17 @@ int main() {
     assert(coordinator.active_leases().empty());
 
     assert(stepped.monitor_battery_thermals(44));
+    put(other_node.parent_path() / "current_now", "2500000");
+    put(other_node.parent_path() / "voltage_now", "4100000");
+    const auto batt_telemetry = stepped.sample_battery_telemetry();
+    assert(batt_telemetry.available);
+    assert(batt_telemetry.charging);
+    assert(batt_telemetry.fast_charging);
+    assert(batt_telemetry.thermal_step_active);
+    assert(batt_telemetry.current_ma >= 2499.0 && batt_telemetry.current_ma <= 2501.0);
+    assert(batt_telemetry.voltage_mv >= 4099.0 && batt_telemetry.voltage_mv <= 4101.0);
+    assert(batt_telemetry.charge_limit_ua == 1500000U);
+    assert(batt_telemetry.oem_baseline_ua == 2000000U);
     put(other_node, "700000"); // A newer OEM thermal limit wins.
     assert(!stepped.monitor_battery_thermals(44));
     assert(get(other_node) == "700000");

@@ -463,9 +463,12 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
         if (!has_writable_kgsl_pair()) continue;
 
         if (semantic == "cpu.hispeed_freq") {
+            const bool is_big = node->domain_id == "cpu.big";
+            const bool is_mid = node->domain_id == "cpu.mid";
             const double tier = intent.mode == OperatingMode::Idle ? 0.35 :
-                intent.mode == OperatingMode::HighLoad ? 0.78 :
-                intent.mode == OperatingMode::ThermalGuard ? 0.58 : 0.70;
+                intent.mode == OperatingMode::HighLoad ? (is_big ? 0.80 : 0.78) :
+                intent.mode == OperatingMode::ThermalGuard ? (is_big ? 0.52 : is_mid ? 0.58 : 0.62) :
+                (is_big ? 0.65 : is_mid ? 0.68 : 0.70);
             if (const auto selected = choose_opp(tier)) {
                 numeric_target = static_cast<long double>(*selected);
                 has_target = true;
@@ -536,6 +539,12 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
             has_target = true;
         } else if (semantic == "vm.page_cluster") {
             numeric_target = 0.0L;
+            has_target = true;
+        } else if (semantic == "vm.lru_gen_min_ttl_ms") {
+            // MGLRU working-set thrash guard: protect active pages for 1000 ms under
+            // interactive/high load, 750 ms in balanced sweet-spot, and 0 ms in deep idle.
+            numeric_target = intent.mode == OperatingMode::Idle ? 0.0L :
+                intent.mode == OperatingMode::HighLoad ? 1000.0L : 750.0L;
             has_target = true;
         } else if (semantic == "storage.read_ahead_kb") {
             if (node->domain_id.find("ufs") != std::string::npos ||
@@ -782,6 +791,8 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
              "vm.swappiness", NumericRange{0.0L, 200.0L, 1.0L});
     add_node(vm_root / "page-cluster", NodeDomain::Memory, "vm",
              "vm.page_cluster", NumericRange{0.0L, 8.0L, 1.0L});
+    add_node(roots.sysfs_root / "kernel/mm/lru_gen/min_ttl_ms", NodeDomain::Memory, "vm.mglru",
+             "vm.lru_gen_min_ttl_ms", NumericRange{0.0L, 5000.0L, 1.0L});
 
     // Physical storage is identified through resolved device topology. Virtual
     // disks (dm, loop, ram and zram) are deliberately excluded.

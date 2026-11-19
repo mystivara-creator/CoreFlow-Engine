@@ -36,7 +36,9 @@ import { SemanticEvidencePanel } from './components/SemanticEvidencePanel';
 import { isSemanticEvidence, SemanticEvidence } from './semanticEvidence';
 import {
   AutonomousTelemetry,
+  BatteryPowerTelemetry,
   DirectAdaptiveStatus,
+  FlightRecorderSampleTelemetry,
   isDirectAdaptiveStatus,
   BlockQueueTelemetry,
   computeSystemHealthSummary,
@@ -142,6 +144,8 @@ interface NativeStatus {
   tunerCandidates?: TunerCandidateTelemetry[];
   tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   tunerActiveInterventions?: TunerActiveInterventionTelemetry[];
+  batteryPower?: BatteryPowerTelemetry;
+  flightRecorder?: FlightRecorderSampleTelemetry[];
   vulkan?: VulkanTelemetry;
   semanticEvidence?: SemanticEvidence;
   directAdaptive?: DirectAdaptiveStatus;
@@ -299,8 +303,13 @@ const OPTIONAL_ARRAY_GUARDS: Record<string, (item: unknown) => boolean> = {
     hasBooleans(item, ['eligible', 'selected']),
   tunerActiveInterventions: (item) =>
     isRecord(item) &&
-    hasStrings(item, ['id', 'domain', 'intent', 'stage', 'rationale']) &&
-    hasNumbers(item, ['remainingTicks']),
+    hasStrings(item, ['candidateId', 'candidateLabel', 'domain', 'intent', 'stage', 'verdict']) &&
+    hasNumbers(item, ['utilityDelta', 'observationTick', 'observationWindow', 'settlingTicksRemaining']),
+  flightRecorder: (item) =>
+    isRecord(item) &&
+    (item.temp === null || isFiniteNum(item.temp)) &&
+    hasNumbers(item, ['ts', 'pressure', 'cpuPsi', 'memPsi', 'ioPsi', 'scale']) &&
+    hasStrings(item, ['stage', 'candidate', 'verdict']),
 };
 
 // Required fields are enforced by checkedNativeStatus. Optional telemetry that is
@@ -320,6 +329,14 @@ const dropMalformedOptionalTelemetry = (status: Record<string, unknown>): void =
     drop(key, Array.isArray(value) && value.every(guard));
   }
   drop('vulkan', isRecord(status.vulkan));
+  drop(
+    'batteryPower',
+    isRecord(status.batteryPower) &&
+      hasBooleans(status.batteryPower, ['available', 'charging', 'fastCharging', 'thermalStepActive']) &&
+      (status.batteryPower.temperatureCelsius === null || isFiniteNum(status.batteryPower.temperatureCelsius)) &&
+      hasNumbers(status.batteryPower, ['currentMa', 'voltageMv', 'powerMw', 'chargeLimitUa', 'oemBaselineUa']) &&
+      hasStrings(status.batteryPower, ['status'])
+  );
 };
 
 const checkedNativeStatus = (raw: string): NativeStatus => {
@@ -567,6 +584,8 @@ export const App: React.FC = () => {
         tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
         tunerEvaluatedCandidates: status.tunerEvaluatedCandidates ?? old.tunerEvaluatedCandidates,
         tunerActiveInterventions: status.tunerActiveInterventions ?? old.tunerActiveInterventions,
+        batteryPower: status.batteryPower ?? old.batteryPower,
+        flightRecorder: status.flightRecorder ?? old.flightRecorder,
         vulkan: status.vulkan ?? old.vulkan,
         baselineStatus:
           status.recoveryPending ||
@@ -1488,29 +1507,51 @@ export const App: React.FC = () => {
                 </div>
               </section>
 
-              {/* Autonomous Hardware Preservation */}
+              {/* Autonomous Hardware Preservation & Power-Supply Telemetry */}
               <section className="md3-card-elevated space-y-4 p-5 sm:p-7">
-                <div className="flex items-center gap-2">
-                  <HardDrive
-                    className="h-4 w-4"
-                    style={{ color: 'var(--md-sys-color-primary)' }}
-                  />
-                  <h2
-                    className="font-semibold text-base"
-                    style={{ color: 'var(--md-sys-color-on-surface)' }}
-                  >
-                    Autonomous Hardware Preservation
-                  </h2>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <HardDrive
+                      className="h-4 w-4"
+                      style={{ color: 'var(--md-sys-color-primary)' }}
+                    />
+                    <h2
+                      className="font-semibold text-base"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      Autonomous Hardware Preservation & Power-Supply Guard
+                    </h2>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {telemetry.batteryPower?.fastCharging && (
+                      <span className="md3-badge md3-badge-warning font-mono">
+                        FAST CHARGING DETECTED
+                      </span>
+                    )}
+                    <span
+                      className={
+                        'md3-badge font-mono ' +
+                        (telemetry.batteryPower?.thermalStepActive
+                          ? 'md3-badge-warning'
+                          : 'md3-badge-success')
+                      }
+                    >
+                      {telemetry.batteryPower?.thermalStepActive
+                        ? 'STEP-CHARGE GUARD ACTIVE'
+                        : 'OEM CHARGE CEILING INTACT'}
+                    </span>
+                  </div>
                 </div>
                 <p
                   className="text-xs sm:text-sm leading-relaxed"
                   style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
                 >
-                  Battery, storage, and I/O protection are evaluated from live workload and device
-                  evidence. No manual thresholds or scheduler presets are exposed here; unsupported
-                  nodes remain observation-only until they earn mutation authority.
+                  Battery thermal step-charging, MGLRU working-set protection, and block I/O
+                  preservation are evaluated from live power-supply and workload evidence. No manual
+                  thresholds or scheduler presets are exposed here; unsupported nodes remain
+                  observation-only until they earn mutation authority.
                 </p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   <div className="md3-card-filled p-4">
                     <div
                       className="text-[11px]"
@@ -1524,7 +1565,56 @@ export const App: React.FC = () => {
                     >
                       {telemetry.batteryTempCelsius != null && telemetry.batteryTempCelsius >= 0
                         ? `${telemetry.batteryTempCelsius.toFixed(1)} °C`
+                        : telemetry.batteryPower?.temperatureCelsius != null &&
+                            telemetry.batteryPower.temperatureCelsius >= 0
+                          ? `${telemetry.batteryPower.temperatureCelsius.toFixed(1)} °C`
+                          : 'N/A'}
+                    </div>
+                  </div>
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Power-Supply Status
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.batteryPower?.status ?? 'Unknown'}
+                    </div>
+                  </div>
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Current / Power Draw
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.batteryPower?.available
+                        ? `${Math.round(telemetry.batteryPower.currentMa)} mA · ${(telemetry.batteryPower.powerMw / 1000).toFixed(1)} W`
                         : 'N/A'}
+                    </div>
+                  </div>
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Charge Limit / OEM Baseline
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-sm font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.batteryPower && telemetry.batteryPower.oemBaselineUa > 0
+                        ? `${Math.round(telemetry.batteryPower.chargeLimitUa / 1000)} / ${Math.round(telemetry.batteryPower.oemBaselineUa / 1000)} mA`
+                        : 'Read-Only / OEM Managed'}
                     </div>
                   </div>
                   <div className="md3-card-filled p-4">

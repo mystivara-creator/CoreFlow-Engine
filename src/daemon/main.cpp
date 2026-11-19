@@ -563,6 +563,19 @@ std::string collect_semantic_evidence_json_cached() {
     return cached;
 }
 
+struct FlightRecorderSample final {
+    uint64_t timestamp_ms{0U};
+    double soc_temp_celsius{-1.0};
+    double thermal_pressure{0.0};
+    double cpu_psi{0.0};
+    double memory_psi{0.0};
+    double io_psi{0.0};
+    double capacity_scale{1.0};
+    std::string stage{"PLANNED"};
+    std::string candidate{"baseline"};
+    std::string verdict{"HOLD"};
+};
+
 struct StatusTelemetrySnapshot final {
     DaemonConfig config{};
     MultiSensorProfile profile{};
@@ -573,6 +586,8 @@ struct StatusTelemetrySnapshot final {
     std::optional<double> cpu_psi{};
     std::optional<double> memory_psi{};
     std::optional<double> io_psi{};
+    BatteryPowerTelemetry battery_power{};
+    std::vector<FlightRecorderSample> flight_recorder{};
     std::string direct_adaptive_json{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"};
 };
 
@@ -948,11 +963,44 @@ std::string build_status_json(
         << ",\"gpuGovernor\":" << json_string(vk.gpu_surface.active_governor)
         << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
         << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
-        << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
-        << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
+        << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}";
+    const BatteryPowerTelemetry live_batt = cached != nullptr
+        ? cached->battery_power
+        : context.hardware_longevity().sample_battery_telemetry();
+    out << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
         << ",\"semanticEvidence\":" << semantic_evidence_json
         << ",\"node_capabilities\":" << node_inventory_json
         << ",\"nodeCapabilityGeneration\":" << device_inventory->generation
+        << ",\"batteryPower\":{\"available\":" << (live_batt.available ? "true" : "false")
+        << ",\"charging\":" << (live_batt.charging ? "true" : "false")
+        << ",\"fastCharging\":" << (live_batt.fast_charging ? "true" : "false")
+        << ",\"thermalStepActive\":" << (live_batt.thermal_step_active ? "true" : "false")
+        << ",\"temperatureCelsius\":" << (live_batt.temperature_celsius >= 0.0 ? std::to_string(safe_json_double(live_batt.temperature_celsius)) : "null")
+        << ",\"currentMa\":" << safe_json_double(live_batt.current_ma)
+        << ",\"voltageMv\":" << safe_json_double(live_batt.voltage_mv)
+        << ",\"powerMw\":" << safe_json_double(live_batt.power_mw)
+        << ",\"chargeLimitUa\":" << live_batt.charge_limit_ua
+        << ",\"oemBaselineUa\":" << live_batt.oem_baseline_ua
+        << ",\"status\":" << json_string(live_batt.status) << '}'
+        << ",\"flightRecorder\":[";
+    if (cached != nullptr) {
+        bool first_sample = true;
+        for (const auto& sample : cached->flight_recorder) {
+            if (!first_sample) out << ',';
+            first_sample = false;
+            out << "{\"ts\":" << sample.timestamp_ms
+                << ",\"temp\":" << (sample.soc_temp_celsius >= 0.0 ? std::to_string(safe_json_double(sample.soc_temp_celsius)) : "null")
+                << ",\"pressure\":" << safe_json_double(sample.thermal_pressure)
+                << ",\"cpuPsi\":" << safe_json_double(sample.cpu_psi)
+                << ",\"memPsi\":" << safe_json_double(sample.memory_psi)
+                << ",\"ioPsi\":" << safe_json_double(sample.io_psi)
+                << ",\"scale\":" << safe_json_double(sample.capacity_scale, 1.0)
+                << ",\"stage\":" << json_string(sample.stage)
+                << ",\"candidate\":" << json_string(sample.candidate)
+                << ",\"verdict\":" << json_string(sample.verdict) << '}';
+        }
+    }
+    out << "]"
         << ",\"directAdaptive\":" << (cached == nullptr || cached->direct_adaptive_json.empty()
             ? std::string{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"}
             : cached->direct_adaptive_json)
@@ -1533,6 +1581,12 @@ int main(int argc, char* argv[]) {
             (void)context.Stop("Read-only capabilities inspection complete");
             return 0;
         }
+        if (command == "--flight-recorder") {
+            const pid_t live_pid = daemon_pid();
+            if (live_pid > 0 && print_live_status_snapshot(live_pid)) return 0;
+            std::cout << "{\"flightRecorder\":[]}\n" << std::flush;
+            return 0;
+        }
         if (command == "--status") {
             const pid_t live_pid = daemon_pid();
             if (live_pid > 0 && print_live_status_snapshot(live_pid)) return 0;
@@ -1555,11 +1609,11 @@ int main(int argc, char* argv[]) {
         if (command == "--daemon" || command == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--flight-recorder|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--flight-recorder|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -2292,6 +2346,26 @@ int main(int argc, char* argv[]) {
                 " requested_capacity=" + std::to_string(decision.capacity_scale) +
                 " applied_capacity=" + std::to_string(active_capacity_scale));
         }
+        status_inputs.battery_power = context.hardware_longevity().sample_battery_telemetry();
+        const uint64_t now_epoch_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        status_inputs.flight_recorder.push_back(FlightRecorderSample{
+            .timestamp_ms = now_epoch_ms,
+            .soc_temp_celsius = std::isfinite(temp) && temp >= 0.0f ? static_cast<double>(temp) : -1.0,
+            .thermal_pressure = std::isfinite(thermal.pressure) ? thermal.pressure : 0.0,
+            .cpu_psi = pressure.cpu,
+            .memory_psi = pressure.memory,
+            .io_psi = pressure.io,
+            .capacity_scale = active_capacity_scale,
+            .stage = std::string(AutonomousTuner::stage_name(tuner_snap.stage)),
+            .candidate = tuner_snap.active_candidate_id,
+            .verdict = std::string(AutonomousTuner::verdict_name(tuner_snap.verdict)),
+        });
+        if (status_inputs.flight_recorder.size() > 60U) {
+            status_inputs.flight_recorder.erase(status_inputs.flight_recorder.begin());
+        }
+
         if (!applied || current != desired) {
             {
                 current = desired;

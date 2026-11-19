@@ -847,6 +847,105 @@ export const AutonomousStateHero: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* Flight-Recorder Ring Buffer Time-Series Sparkline Matrix */}
+      {telemetry.flightRecorder && telemetry.flightRecorder.length >= 2 && (() => {
+        const samples = telemetry.flightRecorder.slice(-30);
+        const buildSparkPoints = (values: number[], minVal: number, maxVal: number) => {
+          const span = Math.max(1e-3, maxVal - minVal);
+          return values
+            .map((v, idx) => {
+              const x = (idx / Math.max(1, values.length - 1)) * 220;
+              const clamped = Math.max(minVal, Math.min(maxVal, Number.isFinite(v) ? v : minVal));
+              const y = 44 - ((clamped - minVal) / span) * 38;
+              return `${x.toFixed(1)},${y.toFixed(1)}`;
+            })
+            .join(' ');
+        };
+        const tempSeries = samples.map((s) => (s.temp != null && s.temp >= 0 ? s.temp : 36));
+        const cpuPsiSeries = samples.map((s) => s.cpuPsi);
+        const memIoSeries = samples.map((s) => Math.max(s.memPsi, s.ioPsi));
+        const lastSample = samples[samples.length - 1];
+
+        return (
+          <div className="md3-card-filled p-4 sm:p-5 space-y-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+                <span className="font-bold text-sm">
+                  Flight-Recorder Telemetry Ring Buffer{!nativeMode ? ' (sim)' : ''}
+                </span>
+                <span className="md3-badge md3-badge-neutral font-mono">
+                  {samples.length} samples · 60s window
+                </span>
+              </div>
+              <span
+                className="font-mono text-[11px]"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
+                Scale: {Math.round((lastSample?.scale ?? 1) * 100)}% · Stage: {lastSample?.stage ?? 'RETAINED'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="md3-card-elevated p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>SoC Thermal Trajectory</span>
+                  <span className="font-mono font-bold">
+                    {lastSample?.temp != null && lastSample.temp >= 0 ? `${lastSample.temp.toFixed(1)} °C` : 'N/A'}
+                  </span>
+                </div>
+                <svg viewBox="0 0 220 48" className="w-full h-12 overflow-visible" aria-label="SoC thermal sparkline">
+                  <polyline
+                    fill="none"
+                    stroke="var(--md-sys-color-primary)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={buildSparkPoints(tempSeries, 28, 55)}
+                  />
+                </svg>
+              </div>
+
+              <div className="md3-card-elevated p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>CPU PSI Contention</span>
+                  <span className="font-mono font-bold">{(lastSample?.cpuPsi ?? 0).toFixed(1)}%</span>
+                </div>
+                <svg viewBox="0 0 220 48" className="w-full h-12 overflow-visible" aria-label="CPU PSI sparkline">
+                  <polyline
+                    fill="none"
+                    stroke="var(--md-sys-color-secondary)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={buildSparkPoints(cpuPsiSeries, 0, 25)}
+                  />
+                </svg>
+              </div>
+
+              <div className="md3-card-elevated p-3.5 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Peak Memory / I/O PSI</span>
+                  <span className="font-mono font-bold">
+                    {Math.max(lastSample?.memPsi ?? 0, lastSample?.ioPsi ?? 0).toFixed(1)}%
+                  </span>
+                </div>
+                <svg viewBox="0 0 220 48" className="w-full h-12 overflow-visible" aria-label="Memory and IO PSI sparkline">
+                  <polyline
+                    fill="none"
+                    stroke="var(--md-sys-color-tertiary)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={buildSparkPoints(memIoSeries, 0, 18)}
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

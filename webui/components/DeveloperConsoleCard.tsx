@@ -149,6 +149,42 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
               2
             )
           );
+        } else if (cmd.includes('--flight-recorder')) {
+          setOutput(
+            JSON.stringify(
+              {
+                windowSeconds: 60,
+                samples: [
+                  {
+                    ts: Date.now() - 5000,
+                    temp: 38.2,
+                    pressure: 43.1,
+                    cpuPsi: 2.1,
+                    memPsi: 0.4,
+                    ioPsi: 0.9,
+                    scale: 0.94,
+                    stage: 'RETAINED',
+                    candidate: 'io.mq_deadline_low_latency',
+                    verdict: 'IMPROVED',
+                  },
+                  {
+                    ts: Date.now(),
+                    temp: 38.6,
+                    pressure: 44.0,
+                    cpuPsi: 1.2,
+                    memPsi: 0.3,
+                    ioPsi: 0.4,
+                    scale: 0.94,
+                    stage: 'RETAINED',
+                    candidate: 'io.mq_deadline_low_latency',
+                    verdict: 'IMPROVED',
+                  },
+                ],
+              },
+              null,
+              2
+            )
+          );
         } else if (cmd.includes('--dvs-status')) {
           setOutput('OK INACTIVE (Preview Simulation)');
         } else {
@@ -167,7 +203,21 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
       } else {
         try {
           const parsed = extractJson(result.stdout);
-          setOutput(failure + JSON.stringify(parsed, null, 2));
+          if (cmd.includes('--flight-recorder') && typeof parsed === 'object' && parsed !== null && 'flightRecorder' in parsed) {
+            setOutput(
+              failure +
+                JSON.stringify(
+                  {
+                    flightRecorder: (parsed as Record<string, unknown>).flightRecorder,
+                    batteryPower: (parsed as Record<string, unknown>).batteryPower,
+                  },
+                  null,
+                  2
+                )
+            );
+          } else {
+            setOutput(failure + JSON.stringify(parsed, null, 2));
+          }
         } catch {
           setOutput(failure + result.stdout);
         }
@@ -226,7 +276,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
             className="text-xs sm:text-sm leading-relaxed"
             style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
           >
-            Inspect raw JSON telemetry, discovered hardware capabilities, CFJ4 journal records, and CF-DVS capture status directly from <code className="font-mono">coreflowd</code>.
+            Inspect raw JSON telemetry, discovered hardware capabilities, CFJ4 journal records, Flight-Recorder traces, and CF-DVS capture status directly from <code className="font-mono">coreflowd</code>.
           </p>
         </div>
 
@@ -253,6 +303,12 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
             cmd: `${RESOLVE_BIN}; "$BIN" --status`,
             title: 'Daemon Status',
             Icon: Play,
+          },
+          {
+            label: 'Flight Recorder (--flight-recorder)',
+            cmd: `${RESOLVE_BIN}; "$BIN" --flight-recorder`,
+            title: 'Flight Recorder Trace',
+            Icon: Activity,
           },
           {
             label: 'Capabilities (--capabilities)',

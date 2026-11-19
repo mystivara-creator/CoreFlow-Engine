@@ -575,6 +575,37 @@ void AutonomousTuner::init_candidates() {
             .last_rollback_reason = {},
         },
         CandidateStats{
+            .id = "vm.mglru_thrash_guard",
+            .domain = "vm",
+            .label = "MGLRU Working-Set Thrash Guard (min_ttl_ms=1000ms)",
+            .mean_utility = 0.50,
+            .mean_utility_delta = 0.0,
+            .ucb_score = 0.50,
+            .adaptive_scale = 1.0,
+            .settling_ticks = 1,
+            .trials = 0,
+            .reward_samples = 0,
+            .improved_count = 0,
+            .successes = 0,
+            .regressed_count = 0,
+            .rollbacks = 0,
+            .inconclusive_count = 0,
+            .neutral_count = 0,
+            .aborted_count = 0,
+            .preempted_count = 0,
+            .recovery_required_count = 0,
+            .rejected_count = 0,
+            .cooldown_ticks = 0,
+            .consecutive_non_improved = 0,
+            .ownership_loss_count = 0,
+            .ownership_quarantine_ticks = 0,
+            .last_workload = WorkloadClass::Idle,
+            .last_thermal_bucket = 0,
+            .last_before_summary = {},
+            .last_after_summary = {},
+            .last_rollback_reason = {},
+        },
+        CandidateStats{
             .id = "cpufreq.schedutil_interactive_response",
             .domain = "cpufreq",
             .label = "EAS Governor Rate-Limit Pacing (500us up / 10000us down)",
@@ -1352,9 +1383,19 @@ std::string AutonomousTuner::resolve_vm_node_path(std::string_view semantic_id) 
         const auto found = std::find_if(device_profile_->node_capabilities.begin(),
             device_profile_->node_capabilities.end(), [&](const NodeCapability& node) {
                 return node.semantic_id == semantic_id && node.domain == HardwareDomain::Memory &&
-                       node.source == ProfileSource::Procfs;
+                       (node.source == ProfileSource::Procfs || node.source == ProfileSource::Sysfs);
             });
         if (found != device_profile_->node_capabilities.end()) return found->path;
+    }
+
+    if (semantic_id == "vm.lru_gen_min_ttl_ms") {
+        const fs::path min_ttl = fs::path(sys_root_) / "kernel/mm/lru_gen/min_ttl_ms";
+        std::error_code ec;
+        const auto status = fs::symlink_status(min_ttl, ec);
+        if (!ec && !fs::is_symlink(status) && fs::is_regular_file(status)) {
+            return min_ttl.string();
+        }
+        return {};
     }
 
     // Compatibility path for standalone/tests without a pinned CDDP profile:
@@ -1406,6 +1447,11 @@ bool AutonomousTuner::candidate_contract_eligible(std::string_view candidate_id)
         const auto cache_pressure = resolve_vm_node_path("vm.vfs_cache_pressure");
         return !page_cluster.empty() && !cache_pressure.empty() &&
                has_runtime_node(page_cluster) && has_runtime_node(cache_pressure);
+    }
+
+    if (candidate_id == "vm.mglru_thrash_guard") {
+        const auto mglru_ttl = resolve_vm_node_path("vm.lru_gen_min_ttl_ms");
+        return !mglru_ttl.empty() && has_runtime_node(mglru_ttl);
     }
 
     if (candidate_id == "cpufreq.schedutil_interactive_response" ||
@@ -1772,8 +1818,10 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
     // Capture VM baseline nodes if accessible
     const auto page_cluster_path = resolve_vm_node_path("vm.page_cluster");
     const auto cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
+    const auto mglru_ttl_path = resolve_vm_node_path("vm.lru_gen_min_ttl_ms");
     if (!page_cluster_path.empty()) (void)store.capture(page_cluster_path);
     if (!cache_pressure_path.empty()) (void)store.capture(cache_pressure_path);
+    if (!mglru_ttl_path.empty()) (void)store.capture(mglru_ttl_path);
 
     // Pin the semantic inventory used by every candidate admission and
     // transaction preflight.  A profile is authoritative when supplied;
@@ -3363,12 +3411,14 @@ AutonomousDecisionSnapshot AutonomousTuner::step(const TunerTelemetryInput& raw_
     // 1. Global Environment Discovery & 2. Global Evidence Correlation
     const std::string vm_page_cluster_path = resolve_vm_node_path("vm.page_cluster");
     const std::string vm_cache_pressure_path = resolve_vm_node_path("vm.vfs_cache_pressure");
+    const std::string vm_mglru_min_ttl_path = resolve_vm_node_path("vm.lru_gen_min_ttl_ms");
     EnvironmentDiscoveryInput env_input{};
     env_input.sys_root = sys_root_;
     env_input.proc_root = proc_root_;
     env_input.zram_active = zram_active_;
     env_input.vm_page_cluster_path = vm_page_cluster_path;
     env_input.vm_vfs_cache_pressure_path = vm_cache_pressure_path;
+    env_input.vm_mglru_min_ttl_path = vm_mglru_min_ttl_path;
     env_input.block_queues = &block_queues_;
     env_input.cpufreq_governor_dirs = &cpufreq_governor_dirs_;
     env_input.kernel_node_capabilities = &kernel_node_capabilities_;

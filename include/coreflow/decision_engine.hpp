@@ -41,6 +41,7 @@ struct EnvironmentDiscoveryInput final {
     bool zram_active{false};
     std::string vm_page_cluster_path;
     std::string vm_vfs_cache_pressure_path;
+    std::string vm_mglru_min_ttl_path;
     const std::vector<BlockQueueSurface>* block_queues{nullptr};
     const std::vector<std::string>* cpufreq_governor_dirs{nullptr};
     const std::vector<NodeCapability>* kernel_node_capabilities{nullptr};
@@ -58,6 +59,7 @@ struct EnvironmentCapabilities final {
     bool zram_active{false};
     std::string vm_page_cluster_path;
     std::string vm_vfs_cache_pressure_path;
+    std::string vm_mglru_min_ttl_path;
     std::vector<BlockQueueSurface> block_queues;
     std::vector<std::string> cpufreq_governor_dirs;
     std::vector<NodeCapability> runtime_tunable_nodes;

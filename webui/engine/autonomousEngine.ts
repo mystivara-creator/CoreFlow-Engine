@@ -591,6 +591,33 @@ export interface TunerActiveInterventionTelemetry {
   settlingTicksRemaining: number;
 }
 
+export interface FlightRecorderSampleTelemetry {
+  ts: number;
+  temp: number | null;
+  pressure: number;
+  cpuPsi: number;
+  memPsi: number;
+  ioPsi: number;
+  scale: number;
+  stage: string;
+  candidate: string;
+  verdict: string;
+}
+
+export interface BatteryPowerTelemetry {
+  available: boolean;
+  charging: boolean;
+  fastCharging: boolean;
+  thermalStepActive: boolean;
+  temperatureCelsius: number | null;
+  currentMa: number;
+  voltageMv: number;
+  powerMw: number;
+  chargeLimitUa: number;
+  oemBaselineUa: number;
+  status: string;
+}
+
 export interface SystemHealthSummary {
   equilibriumScore: number;
   thermalTone: 'optimal' | 'elevated' | 'guard';
@@ -682,6 +709,8 @@ export interface AutonomousTelemetry {
   tunerCandidates?: TunerCandidateTelemetry[];
   tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
   tunerActiveInterventions?: TunerActiveInterventionTelemetry[];
+  batteryPower?: BatteryPowerTelemetry;
+  flightRecorder?: FlightRecorderSampleTelemetry[];
   vulkan?: VulkanTelemetry;
   directAdaptive?: DirectAdaptiveStatus;
   timestamp: number;
@@ -906,7 +935,43 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
         ucbScore: 5.15,
         cooldownTicks: 0,
       },
+      {
+        id: 'vm.mglru_thrash_guard',
+        label: 'MGLRU Working-Set Thrash Guard (min_ttl_ms=1000ms)',
+        domain: 'vm',
+        trials: 2,
+        successes: 2,
+        rollbacks: 0,
+        meanDelta: 5.8,
+        ucbScore: 6.74,
+        cooldownTicks: 0,
+      },
     ],
+    batteryPower: {
+      available: true,
+      charging: false,
+      fastCharging: false,
+      thermalStepActive: false,
+      temperatureCelsius: 33.4,
+      currentMa: -480,
+      voltageMv: 4120,
+      powerMw: 1977.6,
+      chargeLimitUa: 3000000,
+      oemBaselineUa: 3000000,
+      status: 'Discharging',
+    },
+    flightRecorder: Array.from({ length: 16 }, (_, idx) => ({
+      ts: Date.now() - (15 - idx) * 2500,
+      temp: Number((37.4 + Math.sin(idx * 0.45) * 1.1).toFixed(1)),
+      pressure: Number((42 + Math.sin(idx * 0.45) * 5.5).toFixed(1)),
+      cpuPsi: Number((1.4 + Math.abs(Math.cos(idx * 0.5)) * 3.8).toFixed(1)),
+      memPsi: Number((0.4 + Math.abs(Math.sin(idx * 0.35)) * 1.2).toFixed(1)),
+      ioPsi: Number((0.6 + Math.abs(Math.sin(idx * 0.6)) * 2.1).toFixed(1)),
+      scale: 0.94,
+      stage: 'RETAINED',
+      candidate: 'io.mq_deadline_low_latency',
+      verdict: 'IMPROVED',
+    })),
     vulkan: computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG, {
       available: true,
       layerInstalled: true,
@@ -1122,6 +1187,21 @@ export function stepAutonomousSimulation(
       `CPU PSI=${cpu.toFixed(1)}% with thermal headroom; paced EAS schedutil governor rate limits (up=500us, down=10000us) | Before/After ΔU=+${tunerUtilityDelta} -> RETAINED.`;
   }
 
+  const nowMs = Date.now();
+  const nextSample: FlightRecorderSampleTelemetry = {
+    ts: nowMs,
+    temp: Number(nextTemp.toFixed(1)),
+    pressure: Number(predictedPressure.toFixed(1)),
+    cpuPsi: Number(cpu.toFixed(1)),
+    memPsi: Number(memory.toFixed(1)),
+    ioPsi: Number(io.toFixed(1)),
+    scale: recScale,
+    stage: tunerStage,
+    candidate: tunerCandidateId,
+    verdict: tunerVerdict,
+  };
+  const nextFlightRecorder = [...(current.flightRecorder ?? []), nextSample].slice(-60);
+
   const next: AutonomousTelemetry = {
     ...current,
     mode,
@@ -1156,7 +1236,8 @@ export function stepAutonomousSimulation(
     tunerRolledBack,
     blockQueues: updatedQueues,
     tunerCandidates: prevCandidates,
-    timestamp: Date.now(),
+    flightRecorder: nextFlightRecorder,
+    timestamp: nowMs,
   };
 
   if (mode === current.mode && !forced) return { next };

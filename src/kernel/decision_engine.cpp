@@ -173,6 +173,7 @@ EnvironmentCapabilities EnvironmentDiscovery::discover(const EnvironmentDiscover
     env.zram_active = input.zram_active;
     env.vm_page_cluster_path = input.vm_page_cluster_path;
     env.vm_vfs_cache_pressure_path = input.vm_vfs_cache_pressure_path;
+    env.vm_mglru_min_ttl_path = input.vm_mglru_min_ttl_path;
     if (input.block_queues != nullptr) {
         env.block_queues = *input.block_queues;
     }
@@ -494,35 +495,63 @@ void MemoryVmCandidateProvider::generate(
     const std::vector<CandidateStats>&,
     std::vector<CandidateProposal>& out) const {
     if (evidence.thermal_emergency || evidence.thermal_stabilization_required) return;
-    if (!env.zram_active || !evidence.telemetry.memory_psi_valid ||
-        evidence.telemetry.memory_psi < 2.0) {
+    if (!evidence.telemetry.memory_psi_valid || evidence.telemetry.memory_psi < 2.0) {
         return;
     }
-    if (env.vm_page_cluster_path.empty() || env.vm_vfs_cache_pressure_path.empty()) return;
 
-    CandidateProposal p{};
-    p.id = "vm.zram_latency_relief";
-    p.label = "VM Page-Cluster Zero-Latency & VFS Dentry Preservation";
-    p.domain_label = "vm";
-    p.mutation_domain = MutationDomain::VmMemory;
-    p.evaluation_domain = EvaluationDomain::Memory;
-    p.priority = ControllerPriority::PressureGuard;
-    p.action_kind = CandidateActionKind::SysfsTransaction;
-    p.intent = "MemoryStallRelief";
-    p.rationale = "Memory PSI stall (" + format_metric(evidence.telemetry.memory_psi) +
-        "%) detected with active zram swap; setting vm.page-cluster=0 and vfs_cache_pressure=80.";
-    p.steps = {
-        {env.vm_page_cluster_path, "0", "Anchor (Required-before)", StepRelation::RequiredAnchor},
-        {env.vm_vfs_cache_pressure_path, "80", "Coupled-with", StepRelation::RequiredDependent},
-    };
-    collect_step_resource_keys(p);
-    p.relevance = std::clamp(
-        0.44 + 0.54 * evidence.memory_severity + 0.12 * evidence.swap_io_thrash,
-        0.0, 1.0);
-    p.inherent_risk = 0.16;
-    p.thermal_cost = 0.05;
-    p.stabilizing = false;
-    out.push_back(std::move(p));
+    if (env.zram_active && !env.vm_page_cluster_path.empty() && !env.vm_vfs_cache_pressure_path.empty()) {
+        CandidateProposal p{};
+        p.id = "vm.zram_latency_relief";
+        p.label = "VM Page-Cluster Zero-Latency & VFS Dentry Preservation";
+        p.domain_label = "vm";
+        p.mutation_domain = MutationDomain::VmMemory;
+        p.evaluation_domain = EvaluationDomain::Memory;
+        p.priority = ControllerPriority::PressureGuard;
+        p.action_kind = CandidateActionKind::SysfsTransaction;
+        p.intent = "MemoryStallRelief";
+        p.rationale = "Memory PSI stall (" + format_metric(evidence.telemetry.memory_psi) +
+            "%) detected with active zram swap; setting vm.page-cluster=0 and vfs_cache_pressure=80.";
+        p.steps = {
+            {env.vm_page_cluster_path, "0", "Anchor (Required-before)", StepRelation::RequiredAnchor},
+            {env.vm_vfs_cache_pressure_path, "80", "Coupled-with", StepRelation::RequiredDependent},
+        };
+        collect_step_resource_keys(p);
+        p.relevance = std::clamp(
+            0.44 + 0.54 * evidence.memory_severity + 0.12 * evidence.swap_io_thrash,
+            0.0, 1.0);
+        p.inherent_risk = 0.16;
+        p.thermal_cost = 0.05;
+        p.stabilizing = false;
+        out.push_back(std::move(p));
+    }
+
+    if (!env.vm_mglru_min_ttl_path.empty() && env.has_runtime_node(env.vm_mglru_min_ttl_path)) {
+        CandidateProposal mglru{};
+        mglru.id = "vm.mglru_thrash_guard";
+        mglru.label = "MGLRU Working-Set Thrash Guard (min_ttl_ms=1000ms)";
+        mglru.domain_label = "vm";
+        mglru.mutation_domain = MutationDomain::VmMemory;
+        mglru.evaluation_domain = EvaluationDomain::Memory;
+        mglru.priority = ControllerPriority::PressureGuard;
+        mglru.action_kind = CandidateActionKind::SysfsTransaction;
+        mglru.intent = "MemoryStallRelief";
+        mglru.rationale = "Memory PSI stall (" + format_metric(evidence.telemetry.memory_psi) +
+            "%); protecting active working set via Multi-Gen LRU min_ttl_ms=1000ms.";
+        mglru.steps = {
+            {env.vm_mglru_min_ttl_path, "1000", "Anchor (Required-before)", StepRelation::RequiredAnchor},
+        };
+        if (env.zram_active && !env.vm_page_cluster_path.empty() && env.has_runtime_node(env.vm_page_cluster_path)) {
+            mglru.steps.push_back({env.vm_page_cluster_path, "0", "Coupled-with", StepRelation::OptionalIndependent});
+        }
+        collect_step_resource_keys(mglru);
+        mglru.relevance = std::clamp(
+            0.46 + 0.52 * evidence.memory_severity + 0.14 * evidence.swap_io_thrash,
+            0.0, 1.0);
+        mglru.inherent_risk = 0.14;
+        mglru.thermal_cost = 0.04;
+        mglru.stabilizing = false;
+        out.push_back(std::move(mglru));
+    }
 }
 
 void CpuGovernorCandidateProvider::generate(

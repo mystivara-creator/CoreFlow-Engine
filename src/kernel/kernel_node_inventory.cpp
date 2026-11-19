@@ -411,6 +411,17 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
         }
         append_unique(nodes, std::move(node), maximum_nodes);
     }
+
+    // MGLRU (Multi-Gen LRU) working-set protection TTL (/sys/kernel/mm/lru_gen/min_ttl_ms).
+    const fs::path lru_gen_root = sys / "kernel/mm/lru_gen";
+    const fs::path min_ttl_path = lru_gen_root / "min_ttl_ms";
+    std::error_code lru_ec;
+    if (fs::is_regular_file(min_ttl_path, lru_ec) && !lru_ec) {
+        auto ttl_node = observe(min_ttl_path, HardwareDomain::Memory, ProfileSource::Sysfs,
+            "vm.lru_gen_min_ttl_ms", "mm:lru_gen", {}, {}, false);
+        promote_runtime_tunable(ttl_node, "ms", "0<=value<=5000", 0U, 5000U);
+        append_unique(nodes, std::move(ttl_node), maximum_nodes);
+    }
     return nodes;
 }
 
