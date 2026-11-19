@@ -57,11 +57,23 @@ int main(int argc, char* argv[]) {
     capability.domain = coreflow::HardwareDomain::Cpu;
     capability.source = coreflow::ProfileSource::Sysfs;
     capability.state = coreflow::NodeCapabilityState::MutationEligible;
+    capability.classification = coreflow::KernelNodeClassification::RuntimeTunable;
     capability.semantic_id = "cpufreq.scaling_max_freq";
     capability.unit = "kHz";
     capability.constraints = "verified range and frequency table";
     capability.evidence = "synthetic CDDP fixture";
     profile->node_capabilities.push_back(capability);
+
+    coreflow::NodeCapability obs_capability;
+    obs_capability.path = "/sys/class/kgsl/kgsl-3d0/max_gpuclk";
+    obs_capability.domain = coreflow::HardwareDomain::Gpu;
+    obs_capability.source = coreflow::ProfileSource::Sysfs;
+    obs_capability.state = coreflow::NodeCapabilityState::AccessChecked;
+    obs_capability.classification = coreflow::KernelNodeClassification::ObservationOnly;
+    obs_capability.semantic_id = "kgsl.vendor_control.unverified";
+    obs_capability.unit = "Hz";
+    obs_capability.rejection_reason = "Observation-only vendor surface";
+    profile->node_capabilities.push_back(obs_capability);
     coreflow::DeviceProfileHandle profile_handle = profile;
 
     coreflow::DeviceValidationRecorder recorder(root.string());
@@ -69,6 +81,25 @@ int main(int argc, char* argv[]) {
     assert(!recorder.start("NOT_A_PROFILE", profile_handle, &error));
     assert(!recorder.active());
     assert(!recorder.start("INTERACTIVE_CPU", {}, &error));
+
+    // A session stopped with 0 telemetry samples must fail closed (never PASS).
+    {
+        const auto zero_sample_root = root / "zero-sample";
+        std::filesystem::create_directories(zero_sample_root);
+        coreflow::DeviceValidationRecorder empty_recorder(zero_sample_root.string());
+        std::string empty_bundle;
+        assert(empty_recorder.start("INTERACTIVE_CPU", profile_handle, &error));
+        assert(empty_recorder.stop(&empty_bundle, &error));
+        std::ifstream empty_in(std::filesystem::path(empty_bundle) / "report.json");
+        std::stringstream empty_buf;
+        empty_buf << empty_in.rdbuf();
+        const std::string empty_report = empty_buf.str();
+        assert(empty_report.find("\"verdict\":\"PASS\"") == std::string::npos);
+        assert(empty_report.find("\"verdict\":\"RECOVERY_REQUIRED\"") != std::string::npos);
+        assert(empty_report.find("Samples recorded: 0") != std::string::npos);
+        std::filesystem::remove_all(zero_sample_root);
+    }
+
     assert(recorder.start("INTERACTIVE_CPU", profile_handle, &error));
     assert(recorder.active());
     assert(!recorder.start("GAMING_LOAD", profile_handle, &error));
@@ -121,6 +152,10 @@ int main(int argc, char* argv[]) {
     assert(report.find("\"related_cpus\":[0,1,2,3]") != std::string::npos);
     assert(report.find("\"frequency_table_khz\":[300000,600000,1200000,1800000]") != std::string::npos);
     assert(report.find("MUTATION_ELIGIBLE") != std::string::npos);
+    assert(report.find("\"state\":\"ACCESS_CHECKED\"") != std::string::npos);
+    assert(report.find("\"classification\":\"RUNTIME_TUNABLE\"") != std::string::npos);
+    assert(report.find("\"classification\":\"OBSERVATION_ONLY\"") != std::string::npos);
+    assert(report.find("\"rejection_code\":\"NONE\"") != std::string::npos);
 
     std::ifstream events_in(std::filesystem::path(bundle) / "events.jsonl");
     std::string first_event;

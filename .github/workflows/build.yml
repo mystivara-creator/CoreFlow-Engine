@@ -2,10 +2,10 @@ name: CoreFlow Engine CI
 
 on:
   push:
-    branches: [main, 'feat/*', 'hardening/*']
+    branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [main, feat/p3-dynamic-infrastructure]
+    branches: [main]
   workflow_dispatch:
     inputs:
       android_min_api:
@@ -284,39 +284,56 @@ jobs:
             "${MODULE_DIR}/system/etc/coreflow" \
             "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d"
           cp "$BINARY" "${MODULE_DIR}/system/bin/coreflowd"
-          if [ -n "$VK_LAYER_SO" ] && [ -f "$VK_LAYER_SO" ]; then
-            cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
-            chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
-          fi
+          test -n "$VK_LAYER_SO" && test -f "$VK_LAYER_SO"
+          cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
+          chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
           cp module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/"
           cp module/module.prop module/customize.sh module/service.sh module/post-fs-data.sh \
-            module/uninstall.sh module/sepolicy.rule "${MODULE_DIR}/"
+            module/uninstall.sh module/action.sh module/sepolicy.rule "${MODULE_DIR}/"
           cp module/system/etc/coreflow/default.conf "${MODULE_DIR}/system/etc/coreflow/"
           cp -R module/webroot "${MODULE_DIR}/webroot"
           chmod 0755 "${MODULE_DIR}/system/bin/coreflowd" "${MODULE_DIR}/customize.sh" \
-            "${MODULE_DIR}/service.sh" "${MODULE_DIR}/post-fs-data.sh" "${MODULE_DIR}/uninstall.sh"
+            "${MODULE_DIR}/service.sh" "${MODULE_DIR}/post-fs-data.sh" "${MODULE_DIR}/uninstall.sh" "${MODULE_DIR}/action.sh"
           chmod 0644 "${MODULE_DIR}/sepolicy.rule" "${MODULE_DIR}/module.prop" \
             "${MODULE_DIR}/system/etc/coreflow/default.conf" \
             "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
           find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
           test -s "${MODULE_DIR}/system/bin/coreflowd"
+          test -s "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
           test -s "${MODULE_DIR}/webroot/index.html"
-          VERSION="${{ steps.version_info.outputs.version }}"
-          ZIP_NAME="CFAE-System-Framework-${VERSION}-arm64.zip"
+          ZIP_NAME="CFAE-System-Framework-package.zip"
           mkdir -p artifacts
           (cd "${MODULE_DIR}" && zip -qr9 "../${ZIP_NAME}" .)
+          PACKAGE_ZIP="artifacts/${ZIP_NAME}"
+          unzip -tq "${PACKAGE_ZIP}"
+          PACKAGE_ENTRIES="$(unzip -Z1 "${PACKAGE_ZIP}")"
+          for required in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh action.sh sepolicy.rule system/bin/coreflowd system/lib64/libVkLayer_coreflow.so system/etc/coreflow/default.conf system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json webroot/index.html; do
+            if ! grep -Fxq "${required}" <<< "${PACKAGE_ENTRIES}"; then
+              echo "::error::KernelSU-compatible module entry is missing: ${required}"
+              exit 1
+            fi
+          done
+          if ! unzip -p "${PACKAGE_ZIP}" module.prop | grep -Fxq "id=cfae_framework"; then
+            echo "::error::Unexpected module identity in packaged module.prop"
+            exit 1
+          fi
+          if grep -q '^CFAE-System-Framework/' <<< "${PACKAGE_ENTRIES}"; then
+            echo "::error::Package contains an extra parent directory; module files must be at ZIP root"
+            exit 1
+          fi
+          echo "Validated flashable KernelSU / KernelSU-Next module: ${ZIP_NAME}"
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
       - name: Upload flashable package for inspection
         uses: actions/upload-artifact@v7
         with:
-          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-package
-          path: artifacts/CFAE-System-Framework-*-arm64.zip
+          name: CFAE-System-Framework-package
+          path: artifacts/CFAE-System-Framework-package.zip
           if-no-files-found: error
           retention-days: 30
       - name: Upload unpacked module
         uses: actions/upload-artifact@v7
         with:
-          name: CFAE-System-Framework-${{ steps.version_info.outputs.version }}-unpacked
+          name: CFAE-System-Framework-package-unpacked
           path: artifacts/CFAE-System-Framework/
           if-no-files-found: error
           retention-days: 30

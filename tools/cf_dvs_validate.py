@@ -22,6 +22,31 @@ CHECK_STATUS = {"pass", "fail", "warning", "inconclusive", "not_applicable"}
 VERDICTS = {"PASS", "PASS_WITH_WARNINGS", "INCONCLUSIVE", "FAIL", "RECOVERY_REQUIRED"}
 
 
+CAPABILITY_DOMAINS = {"cpu", "gpu", "thermal", "memory", "storage", "cgroup", "android_runtime", "graphics", "power", "unknown"}
+CAPABILITY_SOURCES = {"sysfs", "procfs", "device_tree", "android_property", "kernel_api", "unknown"}
+CAPABILITY_STATES = {
+    "AVAILABLE", "DISCOVERED", "READABLE", "WRITABLE", "ACCESS_CHECKED",
+    "SEMANTICS_VERIFIED", "CONSTRAINTS_VERIFIED", "MUTATION_ELIGIBLE", "UNKNOWN",
+}
+CAPABILITY_CLASSIFICATIONS = {"RUNTIME_TUNABLE", "OBSERVATION_ONLY", "TEST_ONLY", "PROTECTED"}
+CAPABILITY_REJECTION_CODES = {
+    "NONE", "EACCES_SELINUX", "ENOENT", "FORMAT_MISMATCH", "BASELINE_CAPTURE_FAILED",
+    "BASELINE_NOT_CAPTURED", "READBACK_MISMATCH", "PERMISSION_DENIED",
+    "SEMANTICS_UNVERIFIED", "CONSTRAINTS_UNVERIFIED", "AMBIGUOUS_TARGET", "IO_ERROR", "UNKNOWN",
+}
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _is_utc_rfc3339(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.utcoffset() is not None
+    except ValueError:
+        return False
+
+
 class ValidationError(Exception):
     pass
 
@@ -75,21 +100,31 @@ def _validate_report(report: Any) -> list[str]:
     if not isinstance(report["profile"], str) or report["profile"] not in PROFILES: errors.append("unknown profile")
     if not isinstance(report["verdict"], str) or report["verdict"] not in VERDICTS: errors.append("unknown verdict")
     session, build, metrics, checks, recovery = (report[k] for k in ("session", "build", "metrics", "checks", "recovery"))
-    if not isinstance(session, dict) or not re.fullmatch(r"[0-9a-fA-F-]{36}", str(session.get("id", ""))):
+    if not isinstance(session, dict) or not isinstance(session.get("id"), str) or not UUID_RE.fullmatch(session["id"]):
         errors.append("session.id must be a UUID")
     else:
         for field in ("started_at", "ended_at"):
-            try:
-                stamp = str(session[field])
-                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-                if not stamp.endswith("Z") or parsed.utcoffset() is None: raise ValueError("timestamp must be UTC")
-            except (KeyError, ValueError):
+            if not _is_utc_rfc3339(session.get(field)):
                 errors.append(f"session.{field} must be an RFC 3339 UTC timestamp ending in Z")
         device = session.get("device")
-        if not isinstance(device, dict) or not isinstance(device.get("manufacturer"), str) or not isinstance(device.get("model"), str) or not isinstance(device.get("android_api"), int) or isinstance(device.get("android_api"), bool):
-            errors.append("session.device requires manufacturer, model, and android_api")
-    if not isinstance(build, dict) or not re.fullmatch(r"(?:[a-f0-9]{7,40}|unknown)", str(build.get("commit", ""))):
-        errors.append("build.commit must be a hexadecimal commit id")
+        if (
+            not isinstance(device, dict)
+            or not isinstance(device.get("manufacturer"), str)
+            or not device.get("manufacturer")
+            or not isinstance(device.get("model"), str)
+            or not device.get("model")
+            or not isinstance(device.get("android_api"), int)
+            or isinstance(device.get("android_api"), bool)
+            or device.get("android_api") < 29
+        ):
+            errors.append("session.device requires non-empty manufacturer, model, and android_api >= 29")
+    if not isinstance(build, dict):
+        errors.append("build must be an object")
+    else:
+        if not isinstance(build.get("version"), str) or not build.get("version"):
+            errors.append("build.version must be a non-empty string")
+        if not isinstance(build.get("commit"), str) or not re.fullmatch(r"(?:[a-f0-9]{7,40}|unknown)", build["commit"]):
+            errors.append("build.commit must be a hexadecimal commit id")
     if not isinstance(metrics, dict):
         errors.append("metrics must be an object")
     else:
@@ -99,13 +134,19 @@ def _validate_report(report: Any) -> list[str]:
                 continue
             for key in ("value", "unit", "validity", "source", "observed_at"):
                 if key not in metric: errors.append(f"metric {name}: missing {key}")
+            if "unit" in metric and metric["unit"] is not None and not isinstance(metric["unit"], str):
+                errors.append(f"metric {name}: unit must be string or null")
             if not isinstance(metric.get("validity"), str) or metric.get("validity") not in VALIDITY: errors.append(f"metric {name}: invalid validity")
-            if metric.get("value") is None and not metric.get("reason"):
+            if "reason" in metric and not isinstance(metric["reason"], str):
+                errors.append(f"metric {name}: reason must be string")
+            if metric.get("value") is None and not (isinstance(metric.get("reason"), str) and metric["reason"]):
                 errors.append(f"metric {name}: null value requires reason")
             value = metric.get("value")
             if value is not None and not isinstance(value, (int, float, str, bool)): errors.append(f"metric {name}: value must be scalar or null")
             if isinstance(value, (int, float)) and not isinstance(value, bool) and not math.isfinite(value): errors.append(f"metric {name}: non-finite value")
             if not isinstance(metric.get("source"), str) or not metric.get("source"): errors.append(f"metric {name}: source must be non-empty")
+            if "observed_at" in metric and not _is_utc_rfc3339(metric.get("observed_at")):
+                errors.append(f"metric {name}: observed_at must be an RFC 3339 UTC timestamp ending in Z")
     if not isinstance(checks, list):
         errors.append("checks must be an array")
     else:
@@ -165,10 +206,20 @@ def _validate_report(report: Any) -> list[str]:
                 if not isinstance(dp.get(field), list):
                     errors.append(f"device_profile.{field} must be an array")
             if isinstance(dp.get("capabilities"), list):
-                states = {"AVAILABLE", "READABLE", "WRITABLE", "SEMANTICS_VERIFIED", "CONSTRAINTS_VERIFIED", "MUTATION_ELIGIBLE", "UNKNOWN"}
                 for index, capability in enumerate(dp["capabilities"]):
-                    if not isinstance(capability, dict) or capability.get("state") not in states:
+                    if not isinstance(capability, dict):
+                        errors.append(f"device_profile.capabilities[{index}] must be an object")
+                        continue
+                    if capability.get("domain") not in CAPABILITY_DOMAINS:
+                        errors.append(f"device_profile.capabilities[{index}] has an invalid capability domain")
+                    if capability.get("source") not in CAPABILITY_SOURCES:
+                        errors.append(f"device_profile.capabilities[{index}] has an invalid capability source")
+                    if capability.get("state") not in CAPABILITY_STATES:
                         errors.append(f"device_profile.capabilities[{index}] has an invalid capability state")
+                    if "classification" in capability and capability["classification"] not in CAPABILITY_CLASSIFICATIONS:
+                        errors.append(f"device_profile.capabilities[{index}] has an invalid capability classification")
+                    if "rejection_code" in capability and capability["rejection_code"] not in CAPABILITY_REJECTION_CODES:
+                        errors.append(f"device_profile.capabilities[{index}] has an invalid capability rejection_code")
             for field in ("memory_telemetry_available", "cgroup_v2_available", "uclamp_interface_available"):
                 if not isinstance(dp.get(field), bool):
                     errors.append(f"device_profile.{field} must be boolean")
@@ -204,7 +255,9 @@ def validate_bundle(bundle: Path) -> tuple[bool, list[str]]:
             size = path.stat().st_size
             total += size
             if size > MAX_FILE_BYTES: raise ValidationError(f"file too large: {rel}")
-            if entry.get("size_bytes") != size: raise ValidationError(f"size mismatch: {rel}")
+            size_bytes = entry.get("size_bytes")
+            if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes != size:
+                raise ValidationError(f"size mismatch: {rel}")
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if entry.get("sha256") != digest: raise ValidationError(f"SHA-256 mismatch: {rel}")
         if total > MAX_TOTAL_BYTES: raise ValidationError("bundle exceeds total size limit")

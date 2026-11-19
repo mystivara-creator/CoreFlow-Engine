@@ -31,14 +31,20 @@ int main() {
     const fs::path vm = proc / "sys/vm";
     const fs::path cache_pressure = vm / "vfs_cache_pressure";
     const fs::path page_cluster = vm / "page-cluster";
-    const fs::path read_ahead = sys / "block/mmcblk0/queue/read_ahead_kb";
+    const fs::path read_ahead = sys / "class/block/mmcblk0/queue/read_ahead_kb";
     put(proc / "sys/kernel/osrelease", "test-kernel");
     put(proc / "meminfo", "MemTotal: 4096 kB\nMemAvailable: 2048 kB");
     put(proc / "self/mountinfo", "1 0 0:1 / / rw - rootfs rootfs rw");
     put(cache_pressure, "100", true);
     put(page_cluster, "3", true);
     put(read_ahead, "128", true);
+    put(sys / "class/block/mmcblk0/queue/scheduler", "none mq-deadline", true);
+    put(sys / "class/block/mmcblk0/queue/nr_requests", "64", true);
+    put(sys / "class/block/mmcblk0/queue/rq_affinity", "1", true);
 
+    (void)::setenv("COREFLOW_TEST_STATE_DIR", state.c_str(), 1);
+    BaselineStore& store = BaselineStore::instance();
+    assert(store.recover_pending());
     DeviceProfiler profiler(sys.string(), proc.string());
     const auto profile = profiler.refresh();
     assert(profile && profile->infrastructure_nodes_scanned >= 5U);
@@ -51,11 +57,9 @@ int main() {
     }
     assert(cache_cap && cache_cap->mutation_eligible());
     assert(io_cap && io_cap->mutation_eligible());
+    assert(cache_cap->classification == KernelNodeClassification::RuntimeTunable);
+    assert(io_cap->classification == KernelNodeClassification::RuntimeTunable);
 
-    (void)::setenv("COREFLOW_TEST_STATE_DIR", state.c_str(), 1);
-    BaselineStore& store = BaselineStore::instance();
-    store.reinitialize();
-    assert(store.recover_pending());
     CentralMutationCoordinator coordinator;
     {
         IntentActuator actuator(coordinator, store, proc.string());
@@ -102,11 +106,37 @@ int main() {
             outcome.transaction_id, cache_pressure.string(), "120"));
         assert(!store.retain_performance_baseline(
             outcome.transaction_id, cache_pressure.string(), "130"));
+
+        // Higher-priority ownership must be granted only after the actuator
+        // acknowledges preemption by restoring the OEM factory baseline.
+        // Retained performance records do not replace the recovery baseline.
+        const auto preemption_profile = profiler.refresh();
+        const uint64_t preemption_start = now_ns();
+        InfrastructurePsiSample preemption_admission{
+            .monotonic_ns=preemption_start,.memory_some_avg10=8.0,.io_some_avg10=0.0,
+            .memory_valid=true,.io_valid=true
+        };
+        IntentActuator preemptible(coordinator, store, proc.string());
+        assert(preemptible.begin(
+            preemption_profile, "vm.vfs_cache_pressure", "140", preemption_admission));
+        std::string preempted_value;
+        assert(!coordinator.acquire_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx",
+            ControllerPriority::EmergencySafety));
+        assert(preemptible.snapshot().state == IntentActuatorState::RolledBack);
+        { std::ifstream in(cache_pressure); in >> preempted_value; }
+        assert(preempted_value == "100");
+        assert(coordinator.active_leases().empty());
+        assert(coordinator.acquire_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx",
+            ControllerPriority::EmergencySafety));
+        coordinator.release_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx");
     }
     {
         std::string retained_value;
         { std::ifstream in(cache_pressure); in >> retained_value; }
-        assert(retained_value == "130");
+        assert(retained_value == "100");
         assert(store.rollback(cache_pressure.string()));
         { std::ifstream in(cache_pressure); in >> retained_value; }
         assert(retained_value == "100");

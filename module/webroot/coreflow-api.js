@@ -1,5 +1,6 @@
 /**
- * CFAE System Framework v3.1.0 JavaScript RPC Bridge for KernelSU & APatch
+ * CFAE System Framework v4.0.0 JavaScript RPC Bridge for KernelSU & APatch
+ * Read-only diagnostic surface for native daemon status, capabilities, journal, and CF-DVS state.
  * @license MIT
  */
 (function (global) {
@@ -12,8 +13,7 @@
     '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
     '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
-    'chmod 755 "$BIN" 2>/dev/null';
+    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
 
   function parseCleanJson(raw) {
     var trimmed = String(raw || '').trim();
@@ -31,97 +31,81 @@
     return JSON.parse(lines[lines.length - 1] || '{}');
   }
 
-  var CoreFlow = {
-    /**
-     * Check if KernelSU JavaScript root bridge is present
-     * @returns {boolean}
-     */
-    hasBridge: function () {
-      return typeof window !== 'undefined' && typeof window.ksu?.exec === 'function';
-    },
+  function hasBridge() {
+    return typeof window !== 'undefined' && typeof window.ksu?.exec === 'function';
+  }
 
-    /**
-     * Execute shell command via KernelSU bridge
-     * @param {string} cmd
-     * @returns {Promise<{errno: number, stdout: string, stderr: string}>}
-     */
-    exec: function (cmd) {
-      if (!this.hasBridge()) {
-        return Promise.reject(new Error('KernelSU bridge not available'));
+  var EXEC_TIMEOUT_MS = 10000;
+  var callbackSeq = 0;
+
+  // Private implementation detail: never expose arbitrary root shell execution
+  // to page scripts. The public API below is intentionally read-only.
+  function execCommand(cmd) {
+    if (!hasBridge()) {
+      return Promise.reject(new Error('KernelSU bridge not available'));
+    }
+    return new Promise(function (resolve) {
+      var settled = false;
+      var timer = null;
+      callbackSeq += 1;
+      var callbackName = '__cf_js_' + Date.now() + '_' + callbackSeq;
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+        resolve(result);
       }
-      return new Promise(function (resolve) {
-        var callbackName = '__cf_js_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
-        window[callbackName] = function (errno, stdout, stderr) {
-          delete window[callbackName];
-          resolve({
-            errno: typeof errno === 'number' ? errno : 0,
-            stdout: String(stdout || ''),
-            stderr: String(stderr || '')
-          });
-        };
+
+      // A bridge that never calls back must not leave the UI waiting forever.
+      timer = setTimeout(function () {
+        finish({ errno: -1, stdout: '', stderr: 'Native command timed out after ' + EXEC_TIMEOUT_MS + 'ms' });
+      }, EXEC_TIMEOUT_MS);
+
+      window[callbackName] = function (errno, stdout, stderr) {
+        finish({
+          errno: typeof errno === 'number' && isFinite(errno) ? errno : 0,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
+        });
+      };
+
+      try {
+        window.ksu.exec(cmd, '{}', callbackName);
+      } catch (e) {
         try {
-          window.ksu.exec(cmd, '{}', callbackName);
-        } catch (e) {
-          try {
-            var direct = window.ksu.exec(cmd);
-            resolve({ errno: 0, stdout: String(direct || ''), stderr: '' });
-          } catch (err) {
-            resolve({ errno: -1, stdout: '', stderr: String(err) });
-          }
+          var direct = window.ksu.exec(cmd);
+          finish({ errno: 0, stdout: String(direct || ''), stderr: '' });
+        } catch (err) {
+          finish({ errno: -1, stdout: '', stderr: String(err) });
         }
-      });
-    },
+      }
+    });
+  }
 
-    /**
-     * Query CFAE daemon status
-     * @returns {Promise<Object>}
-     */
+  var CoreFlow = {
+    version: '4.0.0',
+    hasBridge: hasBridge,
     getStatus: async function () {
-      var res = await this.exec(RESOLVE_BIN + '; "$BIN" --status');
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --status');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return parseCleanJson(res.stdout);
     },
-
-    /**
-     * Query hardware capabilities
-     * @returns {Promise<Object>}
-     */
     getCapabilities: async function () {
-      var res = await this.exec(RESOLVE_BIN + '; "$BIN" --capabilities');
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --capabilities');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return parseCleanJson(res.stdout);
     },
-
-    /**
-     * Set adaptive bias (battery, balanced, responsiveness)
-     * @param {'battery'|'balanced'|'responsiveness'} bias
-     */
-    setBias: async function (bias) {
-      var conf = '/data/adb/coreflow/coreflow.conf';
-      var cmd = 'sed -i "s/^ui_adaptive_bias[[:space:]]*=.*/ui_adaptive_bias = ' + bias + '/" ' + conf + '; ' +
-                RESOLVE_BIN + '; killall -HUP coreflowd 2>/dev/null || true';
-      var res = await this.exec(cmd);
-      return res.errno === 0;
+    getJournal: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --journal');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      return parseCleanJson(res.stdout);
     },
-
-    /**
-     * Start the daemon in detached background session mode
-     */
-    startDaemon: async function () {
-      var log = '/data/adb/coreflow/logs/coreflowd.log';
-      var cmd = 'rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE 2>/dev/null; ' +
-                'mkdir -p /data/adb/coreflow/logs 2>/dev/null; ' +
-                RESOLVE_BIN + '; "$BIN" --daemon >> "' + log + '" 2>&1 </dev/null';
-      var res = await this.exec(cmd);
-      return res.errno === 0;
-    },
-
-    /**
-     * Rollback all mutations to factory baseline
-     */
-    rollbackBaseline: async function () {
-      var res = await this.exec(RESOLVE_BIN + '; "$BIN" --rollback-baseline');
-      return res.errno === 0;
+    getDvsStatus: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --dvs-status');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      return String(res.stdout || '').trim();
     }
   };
 

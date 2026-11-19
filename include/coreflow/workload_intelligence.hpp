@@ -1,9 +1,13 @@
 #pragma once
+#include "coreflow/frame_bridge.hpp"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
+#include <pthread.h>
+#include <mutex>
 namespace coreflow {
 enum class TelemetryBackend : uint8_t { Unavailable, SysfsProcfs, Ebpf };
 enum class DetectedWorkloadClass : uint8_t { Unknown, Gaming, IoHeavy, JankSensitive, CpuBound, GpuBound, MemoryPressure, Mixed };
@@ -44,7 +48,7 @@ inline constexpr std::size_t kWorkloadEventDrainBatchSize = 2048U;
 struct WorkloadFeatureSnapshot final {
  uint64_t window_start_ns{0}, window_end_ns{0}, cpu_run_queue_wait_ns{0},
   wakeup_count{0}, io_bytes{0}, io_latency_ns_p95{0}, frame_deadline_misses{0},
-  frame_deadline_count{0};
+  frame_deadline_count{0}, frame_actual_duration_ns_total{0}, frame_actual_duration_count{0};
  double frame_deadline_miss_pct{0.0}, wakeup_rate_per_sec{0.0}, cpu_pressure_some_pct{0.0},
   memory_pressure_some_pct{0.0}, io_pressure_some_pct{0.0}, gpu_busy_pct{0.0};
  uint32_t valid_features{FeatureNone}, sample_count{0}, event_count{0}, gpu_busy_sample_count{0};
@@ -137,6 +141,30 @@ private:
 };
 [[nodiscard]] bool parse_frame_timeline_trace(std::span<const uint8_t> trace,
                                                WorkloadFeatureSnapshot& features) noexcept;
+
+// Continuous low-priority consumer: bounded Perfetto captures run on a worker
+// pthread, and only validated frame-count/miss windows cross into the reactor.
+class PerfettoFrameTimelineEventSource final : public FrameEventSource {
+public:
+ [[nodiscard]] bool start(FrameEventListener listener) noexcept override;
+ void stop() noexcept override;
+ [[nodiscard]] bool latest_snapshot(WorkloadFeatureSnapshot& out) const noexcept;
+ ~PerfettoFrameTimelineEventSource() override { stop(); }
+ PerfettoFrameTimelineEventSource() = default;
+ PerfettoFrameTimelineEventSource(const PerfettoFrameTimelineEventSource&) = delete;
+ PerfettoFrameTimelineEventSource& operator=(const PerfettoFrameTimelineEventSource&) = delete;
+private:
+ static void* thread_entry(void* context) noexcept;
+ void run() noexcept;
+ mutable std::mutex lifecycle_mutex_;
+ mutable std::mutex event_mutex_;
+ mutable std::mutex snapshot_mutex_;
+ FrameEventListener listener_{};
+ WorkloadFeatureSnapshot latest_{};
+ pthread_t worker_{};
+ std::atomic<bool> running_{false};
+ bool worker_started_{false};
+};
 
 class WorkloadTelemetryPipeline final {
 public:

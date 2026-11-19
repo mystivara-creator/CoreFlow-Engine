@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 3.1.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 4.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,13 +55,17 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/transactional_frequency_actuator.cpp
     src/kernel/memory_warmup_controller.cpp
     src/kernel/cgroup_v2.cpp
+    src/kernel/mount_topology.cpp
     src/kernel/uclamp.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
     src/kernel/recovery_monitor.cpp
     src/kernel/render_booster.cpp
     src/kernel/frame_bridge.cpp
+    src/kernel/input_event_source.cpp
+    src/kernel/foreground_task_resolver.cpp
     src/kernel/device_profiler.cpp
+    src/kernel/kernel_node_inventory.cpp
     src/kernel/intent_actuator.cpp
     src/mutation/intent_actuator.cpp
     src/semantic/domain_evidence_aggregator.cpp
@@ -75,6 +79,8 @@ set(COREFLOW_KERNEL_SOURCES
     src/kernel/power_bridge.cpp
     src/kernel/neural_predictor.cpp
     src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
     src/kernel/vulkan_controller.cpp
 )
 
@@ -94,6 +100,7 @@ add_executable(coreflowd
     src/daemon/main.cpp
     src/daemon/reactor.cpp
     src/daemon/device_validation.cpp
+    src/daemon/direct_adaptive_runtime.cpp
     ${COREFLOW_KERNEL_SOURCES}
 )
 target_link_libraries(coreflowd PRIVATE coreflow_rust ${CMAKE_DL_LIBS} m)
@@ -109,12 +116,55 @@ endif()
 # Unit Test Target
 if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
+    # Test assertions are executable checks, and some legacy tests still place
+    # fixture setup/teardown calls inside assert(). Keep them active in Release
+    # test binaries without changing production target flags or NDEBUG behavior.
+    add_compile_options(-UNDEBUG)
+    add_executable(test_runtime_mutation_faults tests/test_runtime_mutation_faults.cpp)
+    target_include_directories(test_runtime_mutation_faults PRIVATE include)
+    add_test(NAME RuntimeMutationFaultInjectionTest COMMAND test_runtime_mutation_faults)
+
+    add_executable(test_direct_adaptive_policy
+        tests/test_direct_adaptive_policy.cpp
+        src/daemon/direct_adaptive_runtime.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_direct_adaptive_policy PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_direct_adaptive_policy PRIVATE pthread)
+    endif()
+    add_test(NAME DirectAdaptiveSweetSpotPolicyTest COMMAND test_direct_adaptive_policy)
+
+    add_executable(test_mount_topology
+        tests/test_mount_topology.cpp
+        src/kernel/mount_topology.cpp
+    )
+    target_include_directories(test_mount_topology PRIVATE include)
+    add_test(NAME MountTopologyDynamicDiscoveryTest COMMAND test_mount_topology)
+
+    add_executable(test_kernel_node_inventory
+        tests/test_kernel_node_inventory.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_kernel_node_inventory PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_kernel_node_inventory PRIVATE pthread)
+    endif()
+    add_test(NAME KernelNodeInventoryCoAdaptationTest COMMAND test_kernel_node_inventory)
+
     add_executable(test_cddp
         tests/test_cddp.cpp
         src/kernel/device_profiler.cpp
+        src/kernel/kernel_node_inventory.cpp
         src/kernel/thermal_monitor.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/tiered_policy.cpp
@@ -124,9 +174,6 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_cddp PRIVATE include tests)
     target_link_libraries(test_cddp PRIVATE m)
-    if(NOT ANDROID)
-        target_link_libraries(test_cddp PRIVATE pthread)
-    endif()
     if(ANDROID)
         target_link_libraries(test_cddp PRIVATE log)
     else()
@@ -137,6 +184,8 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_p3_intent_actuator
         tests/test_p3_intent_actuator.cpp
         src/kernel/device_profiler.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/intent_actuator.cpp
         src/mutation/intent_actuator.cpp
         src/kernel/thermal_monitor.cpp
@@ -168,6 +217,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_linux_sysfs_discovery_adapter
         tests/semantic/test_linux_sysfs_discovery_adapter.cpp
         src/semantic/linux_sysfs_discovery_adapter.cpp
+        src/kernel/mount_topology.cpp
         src/semantic/capability_resolver.cpp
         src/platform/discovery_adapter.cpp
         src/semantic/domain_evidence_aggregator.cpp
@@ -201,6 +251,9 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/workload_intelligence.cpp
     )
     target_include_directories(test_platform_context PRIVATE include)
+    if(NOT ANDROID)
+        target_link_libraries(test_platform_context PRIVATE pthread)
+    endif()
     add_test(NAME PlatformContextTierDetectionTest COMMAND test_platform_context)
 
     add_executable(test_p2d_policy
@@ -258,6 +311,12 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_autonomous_tuner
         tests/test_autonomous_tuner.cpp
         src/kernel/autonomous_tuner.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
@@ -265,12 +324,40 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/platform_context.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
+        src/kernel/frequency_controller.cpp
     )
     target_link_libraries(test_autonomous_tuner PRIVATE m)
     if(NOT ANDROID)
         target_link_libraries(test_autonomous_tuner PRIVATE pthread)
     endif()
     add_test(NAME AutonomousTunerTest COMMAND test_autonomous_tuner)
+
+    add_executable(test_decision_engine
+        tests/test_decision_engine.cpp
+        src/kernel/autonomous_tuner.cpp
+        src/kernel/decision_engine.cpp
+        src/kernel/worker_pool.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
+        src/kernel/transactional_frequency_actuator.cpp
+        src/kernel/frequency_target_planner.cpp
+        src/kernel/thermal_monitor.cpp
+        src/kernel/tiered_policy.cpp
+        src/kernel/platform_context.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+        src/kernel/frequency_controller.cpp
+    )
+    target_include_directories(test_decision_engine PRIVATE include)
+    target_link_libraries(test_decision_engine PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_decision_engine PRIVATE pthread)
+    else()
+        target_link_libraries(test_decision_engine PRIVATE log)
+    endif()
+    add_test(NAME GlobalDecisionEngineAndConcurrencyTest COMMAND test_decision_engine)
 
     add_executable(test_feature_accountability tests/test_feature_accountability.cpp)
     target_include_directories(test_feature_accountability PRIVATE include)
@@ -291,6 +378,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_cgroup_v2
         tests/test_cgroup_v2.cpp
         src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/frequency_controller.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
@@ -302,7 +390,25 @@ if(CORE_FLOW_BUILD_TESTS)
     endif()
     add_test(NAME CgroupV2OwnershipTest COMMAND test_cgroup_v2)
 
-    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
+    add_executable(test_foreground_task_resolver
+        tests/test_foreground_task_resolver.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_foreground_task_resolver PRIVATE include)
+    target_link_libraries(test_foreground_task_resolver PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_foreground_task_resolver PRIVATE pthread)
+    else()
+        target_link_libraries(test_foreground_task_resolver PRIVATE log)
+    endif()
+    add_test(NAME ForegroundTaskResolverTest COMMAND test_foreground_task_resolver)
+
+    add_executable(test_longevity tests/test_longevity.cpp src/kernel/hardware_longevity.cpp src/kernel/mount_topology.cpp src/kernel/mutation_coordinator.cpp src/kernel/baseline_store.cpp)
     target_link_libraries(test_longevity PRIVATE m)
     add_test(NAME ChargingOwnershipTest COMMAND test_longevity)
 
@@ -311,6 +417,13 @@ if(CORE_FLOW_BUILD_TESTS)
         src/daemon/reactor.cpp
         src/kernel/recovery_monitor.cpp
         src/kernel/autonomous_tuner.cpp
+        src/kernel/frequency_controller.cpp
+    src/kernel/decision_engine.cpp
+    src/kernel/worker_pool.cpp
+        src/kernel/kernel_node_inventory.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/transactional_frequency_actuator.cpp
         src/kernel/frequency_target_planner.cpp
         src/kernel/thermal_monitor.cpp
@@ -391,7 +504,9 @@ if(CORE_FLOW_BUILD_TESTS)
     )
     target_include_directories(test_thermal_monitor PRIVATE include)
     target_link_libraries(test_thermal_monitor PRIVATE m)
-    if(ANDROID)
+    if(NOT ANDROID)
+        target_link_libraries(test_thermal_monitor PRIVATE pthread)
+    else()
         target_link_libraries(test_thermal_monitor PRIVATE log)
     endif()
     add_test(NAME ThermalMonitorTest COMMAND test_thermal_monitor)
@@ -399,6 +514,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_uclamp
         tests/test_uclamp.cpp
         src/kernel/uclamp.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
@@ -415,6 +531,10 @@ if(CORE_FLOW_BUILD_TESTS)
         src/kernel/frame_bridge.cpp
         src/daemon/reactor.cpp
         src/kernel/uclamp.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/mutation_coordinator.cpp
         src/kernel/baseline_store.cpp
     )
@@ -427,6 +547,26 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_render_booster PRIVATE log)
     endif()
     add_test(NAME RenderBoosterOwnershipAndExpiryTest COMMAND test_render_booster)
+
+    add_executable(test_input_event_source
+        tests/test_input_event_source.cpp
+        src/kernel/input_event_source.cpp
+        src/daemon/reactor.cpp
+        src/kernel/foreground_task_resolver.cpp
+        src/kernel/cgroup_v2.cpp
+        src/kernel/mount_topology.cpp
+        src/kernel/frequency_controller.cpp
+        src/kernel/mutation_coordinator.cpp
+        src/kernel/baseline_store.cpp
+    )
+    target_include_directories(test_input_event_source PRIVATE include)
+    target_link_libraries(test_input_event_source PRIVATE m)
+    if(NOT ANDROID)
+        target_link_libraries(test_input_event_source PRIVATE pthread)
+    else()
+        target_link_libraries(test_input_event_source PRIVATE log)
+    endif()
+    add_test(NAME NativeInputEventSourceTest COMMAND test_input_event_source)
 
     if(NOT ANDROID)
         find_package(Python3 COMPONENTS Interpreter QUIET)

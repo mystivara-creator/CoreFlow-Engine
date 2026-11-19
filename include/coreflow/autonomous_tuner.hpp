@@ -6,7 +6,7 @@
  * Extends CFAE beyond UClamp to autonomously discover, classify, plan, coordinate, apply, and
  * empirically evaluate kernel transactions across:
  *   1. Block I/O Schedulers (mq-deadline, kyber, bfq, none) & iosched/<tunable> queue tunables
- *   2. VM / Memory Subsystem (/proc/sys/vm/page-cluster, vfs_cache_pressure, watermark_scale_factor)
+ *   2. VM / Memory Subsystem (dynamically enumerated /proc/sys/vm ABI)
  *   3. CPUFreq Governor & rate-limit tunables (schedutil/walt up_rate_limit_us / down_rate_limit_us)
  *   4. Active Thermal Stabilization & Hysteresis Recovery (damped governor & I/O burst pacing)
  */
@@ -20,6 +20,7 @@
 #include <functional>
 #include <condition_variable>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -32,7 +33,11 @@
 namespace coreflow {
 
 class BaselineStore;
+class BoundedWorkerPool;
+class GlobalDecisionEngine;
 class TransactionalFrequencyActuator;
+class ForegroundTaskResolver;
+class FrequencyController;
 
 enum class TunerVerdict : uint8_t {
     Pending = 0,
@@ -60,6 +65,15 @@ enum class ResourcePermissionClass : uint8_t {
     UnknownSemantic = 3,
     VerifiedConstraints = 4,
     IncompleteMetadata = 5,
+};
+
+enum class DynamicWorkloadRegime : uint8_t {
+    IdleDeep = 0,
+    LightLoad = 1,
+    Interactive = 2,
+    ModerateLoad = 3,
+    BurstLoading = 4,
+    HeavySustained = 5,
 };
 
 enum class WorkloadClass : uint8_t {
@@ -101,7 +115,7 @@ enum class MutationDomain : uint8_t {
     CpuPolicy = 0, BlockIo = 1, VmMemory = 2, UclampCgroup = 3,
     GpuDevfreq = 4, PowerLongevity = 5, ThermalCore = 6,
 };
-enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Unavailable = 255 };
+enum class EvaluationDomain : uint8_t { Io = 0, Memory = 1, Cpu = 2, Thermal = 3, Gpu = 4, Unavailable = 255 };
 
 enum class ControllerPriority : uint8_t {
     BackgroundEfficiency = 20,
@@ -234,10 +248,13 @@ private:
 
 struct BlockQueueSurface {
     std::string device_name;            // e.g. "sda", "mmcblk0"
-    std::string queue_dir;              // e.g. "/sys/block/sda/queue"
+    std::string queue_dir;              // dynamically resolved block queue directory
     std::string baseline_scheduler;     // e.g. "mq-deadline" or "none"
     std::string active_scheduler;       // current active token
     std::vector<std::string> available_schedulers;
+    std::vector<std::string> queue_tunables;
+    std::vector<std::string> iosched_tunables;
+    uint64_t scheduler_generation{0};
     uint64_t baseline_read_ahead_kb{128};
     uint64_t active_read_ahead_kb{128};
     uint64_t read_ahead_kb{128};
@@ -253,11 +270,11 @@ struct BlockQueueSurface {
 
 struct CandidateStats {
     std::string id;
-    std::string domain;                 // "io", "vm", "cpufreq", "thermal"
+    std::string domain;                 // "io", "vm", "cpufreq", "gpu", "thermal"
     std::string label;
     double mean_utility{0.5};           // Empirical utility score Q_k
     double mean_utility_delta{0.0};     // Empirical mean ΔU
-    double ucb_score{0.65};             // Upper Confidence Bound (UCB1) score
+    double ucb_score{0.50};             // Neutral, evidence-driven UCB1 score
     double adaptive_scale{1.0};         // Step-sizing factor [0.25..1.0] reduced on rollback
     uint32_t settling_ticks{1};         // Domain-specific post-mutation settling ticks
     // Attempts are not empirical rewards.
@@ -280,9 +297,42 @@ struct CandidateStats {
     uint32_t ownership_quarantine_ticks{0};
     WorkloadClass last_workload{WorkloadClass::Idle};
     uint8_t last_thermal_bucket{0};
+    DynamicWorkloadRegime last_regime{DynamicWorkloadRegime::IdleDeep};
+    std::array<double, 6> regime_mean_utility{};
+    std::array<uint32_t, 6> regime_reward_samples{};
+    std::array<uint32_t, 6> regime_regressions{};
+    std::array<uint32_t, 6> regime_cooldown_ticks{};
     std::string last_before_summary;
     std::string last_after_summary;
     std::string last_rollback_reason;
+};
+
+struct EvaluatedCandidateSummary {
+    std::string id;
+    std::string domain;
+    std::string intent;
+    double utility_score{0.0};
+    double empirical_score{0.5};
+    double confidence{0.0};
+    double risk_penalty{0.0};
+    double thermal_penalty{0.0};
+    bool eligible{false};
+    bool selected{false};
+    std::string rejection_reason;
+};
+
+struct ActiveInterventionSummary {
+    std::string candidate_id;
+    std::string candidate_label;
+    MutationDomain domain{MutationDomain::BlockIo};
+    EvaluationDomain evaluation_domain{EvaluationDomain::Unavailable};
+    std::string intent;
+    std::string stage{"OBSERVING"};
+    std::string verdict{"PENDING"};
+    double utility_delta{0.0};
+    uint32_t observation_tick{0};
+    uint32_t observation_window{3};
+    uint32_t settling_ticks_remaining{0};
 };
 
 struct AutonomousDecisionSnapshot {
@@ -291,6 +341,8 @@ struct AutonomousDecisionSnapshot {
     std::string active_intent{"HoldEquilibrium"};
     std::string intent{"HoldEquilibrium"};
     WorkloadClass workload_class{WorkloadClass::Idle};
+    DynamicWorkloadRegime workload_regime{DynamicWorkloadRegime::IdleDeep};
+    std::string regime_name{"IDLE_DEEP"};
     std::string workload_name{"Idle"};
     BottleneckKind bottleneck{BottleneckKind::None};
     std::string bottleneck_name{"None"};
@@ -335,6 +387,9 @@ struct AutonomousDecisionSnapshot {
     std::vector<DiscoveredResourceMetadata> discovered_resources;
     std::string vm_page_cluster;
     std::string vm_vfs_cache_pressure;
+    std::vector<EvaluatedCandidateSummary> evaluated_candidates;
+    std::vector<ActiveInterventionSummary> active_interventions;
+    std::string decision_plan_rationale;
 };
 
 struct TunerTelemetryInput {
@@ -374,6 +429,14 @@ struct TunerTelemetryInput {
     // trigger an autonomous frequency transaction.
     PolicyEvidence frequency_policy_evidence{};
     bool frequency_policy_evidence_valid{false};
+
+    double gpu_busy_pct{0.0};
+    bool gpu_busy_valid{false};
+    double frame_deadline_miss_pct{0.0};
+    uint64_t frame_deadline_count{0};
+    uint64_t frame_deadline_misses{0};
+    uint64_t frame_deadline_window_end_ns{0};
+    bool frame_deadline_valid{false};
 };
 
 class AutonomousTuner {
@@ -389,6 +452,8 @@ public:
     void discover(std::string_view sys_root = "/sys", std::string_view proc_root = "/proc");
     // Disables candidate execution during the daemon startup baseline grace period.
     void set_operational(bool enabled) noexcept;
+    void configure_foreground_task_resolver(ForegroundTaskResolver* resolver) noexcept;
+    void configure_gpu_frequency_controller(FrequencyController* controller) noexcept;
     // Pins one immutable CDDP generation; CPU/GPU admission then comes only from this profile.
     void set_device_profile(DeviceProfileHandle profile);
     void configure_frequency_actuator(
@@ -420,6 +485,9 @@ public:
     [[nodiscard]] AutonomousDecisionSnapshot snapshot() const;
 
     [[nodiscard]] static WorkloadClass classify_workload(const TunerTelemetryInput& telemetry) noexcept;
+    [[nodiscard]] static DynamicWorkloadRegime classify_regime(
+        const TunerTelemetryInput& telemetry, WorkloadClass workload) noexcept;
+    [[nodiscard]] static std::string_view regime_name(DynamicWorkloadRegime regime) noexcept;
     [[nodiscard]] static BottleneckKind diagnose_bottleneck(const TunerTelemetryInput& telemetry,
                                                             WorkloadClass workload) noexcept;
     [[nodiscard]] static OptimizationObjective select_objective(const TunerTelemetryInput& telemetry,
@@ -525,8 +593,84 @@ private:
     std::string controller_name_;
     std::string sys_root_;
     std::string proc_root_;
+    struct ActiveIntervention {
+        std::string candidate_id;
+        std::string candidate_label;
+        MutationDomain mutation_domain{MutationDomain::BlockIo};
+        EvaluationDomain evaluation_domain{EvaluationDomain::Unavailable};
+        std::string intent;
+        std::string rationale;
+        bool is_frequency_policy{false};
+        bool is_gpu_policy{false};
+        bool thermal_stabilization{false};
+        bool observing{false};
+        bool retained{false};
+        uint32_t settling_ticks_remaining{0};
+        uint32_t obs_ticks{0};
+        uint32_t obs_window{3};
+        uint32_t idle_streak{0};
+        uint32_t contention_backoff_ticks{0};
+        double before_io_psi{0.0};
+        double before_mem_psi{0.0};
+        double before_cpu_psi{0.0};
+        double before_thermal{0.0};
+        double before_temperature_celsius{-1.0};
+        bool before_io_valid{false};
+        bool before_mem_valid{false};
+        bool before_cpu_valid{false};
+        bool before_thermal_valid{false};
+        bool before_gpu_valid{false};
+        double before_gpu_miss_pct{0.0};
+        bool before_gpu_frequency_valid{false};
+        uint64_t before_gpu_frequency_hz{0U};
+        double sum_after_gpu_frequency_hz{0.0};
+        uint64_t min_after_gpu_frequency_hz{0U};
+        uint64_t max_after_gpu_frequency_hz{0U};
+        uint32_t valid_gpu_frequency_samples{0U};
+        uint64_t last_frame_deadline_window_end_ns{0};
+        double sum_after_gpu_miss_pct{0.0};
+        uint32_t valid_gpu_samples_in_window{0};
+        double min_after_gpu_miss_pct{1e9};
+        double max_after_gpu_miss_pct{-1e9};
+        double sum_after_io_psi{0.0};
+        double sum_after_mem_psi{0.0};
+        double sum_after_cpu_psi{0.0};
+        double sum_after_thermal{0.0};
+        double sum_after_temp_vel{0.0};
+        uint32_t valid_thermal_samples_in_window{0};
+        uint32_t valid_io_samples_in_window{0};
+        uint32_t valid_mem_samples_in_window{0};
+        uint32_t valid_cpu_samples_in_window{0};
+        uint32_t valid_pressure_samples_in_window{0};
+        double min_after_io_psi{1e9};
+        double max_after_io_psi{-1e9};
+        double min_after_mem_psi{1e9};
+        double max_after_mem_psi{-1e9};
+        double min_after_cpu_psi{1e9};
+        double max_after_cpu_psi{-1e9};
+        double min_after_thermal{1e9};
+        double max_after_thermal{-1e9};
+        double last_utility_delta{0.0};
+        std::string verdict{"PENDING"};
+        TunerVerdict verdict_enum{TunerVerdict::Pending};
+        std::vector<MutationStep> applied_steps;
+        std::vector<std::string> resource_keys;
+    };
+
+    struct FailedRecoveryRecord {
+        MutationDomain domain{MutationDomain::BlockIo};
+        std::string candidate_id;
+        std::vector<MutationStep> failed_steps;
+        bool is_frequency_policy{false};
+        bool is_gpu_policy{false};
+    };
+
     DeviceProfileHandle device_profile_;
+    std::unique_ptr<BoundedWorkerPool> worker_pool_;
+    std::unique_ptr<GlobalDecisionEngine> decision_engine_;
     TransactionalFrequencyActuator* frequency_actuator_{nullptr};
+    FrequencyController* gpu_frequency_controller_{nullptr};
+    ForegroundTaskResolver* foreground_task_resolver_{nullptr};
     const TieredPolicyRouter* tiered_policy_router_{nullptr};
     PlatformContextSnapshot platform_context_{};
     bool frequency_mutation_active_{false};
@@ -534,9 +678,14 @@ private:
     PolicyDecision frequency_policy_decision_{};
     std::vector<BlockQueueSurface> block_queues_;
     std::vector<std::string> cpufreq_governor_dirs_;
+    std::vector<NodeCapability> kernel_node_capabilities_;
     std::vector<CandidateStats> candidates_;
     std::vector<DiscoveredResourceMetadata> discovered_resources_;
     bool zram_active_{false};
+
+    [[nodiscard]] std::string resolve_vm_node_path(std::string_view semantic_id) const;
+    [[nodiscard]] bool has_runtime_node(std::string_view path) const noexcept;
+    [[nodiscard]] bool candidate_contract_eligible(std::string_view candidate_id) const noexcept;
 
     bool transaction_active_{false};
     bool observing_{false};
@@ -554,6 +703,7 @@ private:
     uint32_t settling_ticks_remaining_{0};
 
     WorkloadClass current_workload_{WorkloadClass::Idle};
+    DynamicWorkloadRegime current_regime_{DynamicWorkloadRegime::IdleDeep};
     BottleneckKind current_bottleneck_{BottleneckKind::None};
     OptimizationObjective current_objective_{OptimizationObjective::HoldBaseline};
     std::string current_candidate_id_{"baseline"};
@@ -600,6 +750,10 @@ private:
     uint32_t total_rejected_{0};
 
     std::vector<MutationStep> applied_steps_;
+    std::vector<ActiveIntervention> active_interventions_;
+    std::vector<FailedRecoveryRecord> unresolved_recoveries_;
+    std::vector<EvaluatedCandidateSummary> last_evaluated_candidates_;
+    std::string last_decision_plan_rationale_;
 
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id,
                            std::string_view reason) noexcept;
@@ -611,7 +765,14 @@ private:
     void save_persisted_stats() const;
     void load_persisted_stats();
     bool verify_active_ownership() const;
+    bool verify_intervention_ownership(const ActiveIntervention& iv) const;
     bool retry_contended_ownership();
+    bool retry_contended_intervention_ownership(ActiveIntervention& iv);
+    bool rollback_intervention(ActiveIntervention& iv, std::string_view reason);
+    bool rollback_partial_steps(MutationDomain domain, std::string_view candidate_id,
+                                std::vector<MutationStep>& steps, std::string_view reason);
+    bool retry_unresolved_recoveries();
+    void sync_primary_state_from_active() noexcept;
     MutationDomain domain_for_candidate(std::string_view candidate_id) const noexcept;
     ControllerPriority priority_for_candidate(std::string_view candidate_id) const noexcept;
     bool apply_transaction(
@@ -620,8 +781,23 @@ private:
         std::string_view intent,
         std::string_view rationale,
         const std::vector<MutationStep>& steps,
-        const TunerTelemetryInput& telemetry);
+        const TunerTelemetryInput& telemetry,
+        EvaluationDomain eval_domain_override = EvaluationDomain::Unavailable,
+        const std::vector<std::string>& resource_keys = {},
+        bool replace_existing_if_any = false);
+    bool apply_gpu_proposal(
+        std::string_view rationale, const TunerTelemetryInput& telemetry,
+        const std::vector<std::string>& resource_keys);
+    bool apply_frequency_proposal(
+        double requested_capacity_scale,
+        uint32_t policy_index,
+        std::string_view rationale,
+        const TunerTelemetryInput& telemetry,
+        uint64_t policy_now_ns,
+        const std::vector<std::string>& resource_keys);
     void evaluate_observation_window(const TunerTelemetryInput& latest_telemetry);
+    bool evaluate_intervention_window(ActiveIntervention& iv,
+                                      const TunerTelemetryInput& latest_telemetry);
     [[nodiscard]] std::optional<uint32_t> select_frequency_policy_index() const noexcept;
     CandidateStats* find_candidate(std::string_view id);
     const CandidateStats* find_candidate(std::string_view id) const;

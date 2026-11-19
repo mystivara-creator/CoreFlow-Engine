@@ -19,8 +19,9 @@ int main() {
     coordinator.reset();
     const auto battery = root / "class/power_supply/battery";
     const auto node = battery / "constant_charge_current_max";
-    put(node, "900000"); put(battery / "temp", "420"); put(battery / "status", "Charging");
-    coreflow::HardwareLongevityManager guard(coordinator, root.string());
+    put(battery / "type", "Battery"); put(node, "900000"); put(battery / "temp", "420"); put(battery / "status", "Charging");
+    const auto proc = root / "proc";
+    coreflow::HardwareLongevityManager guard(coordinator, root.string(), proc.string());
     coreflow::LongevityConfig config; guard.initialize(config);
     assert(!guard.monitor_battery_thermals(44)); assert(get(node) == "900000");
 
@@ -35,7 +36,7 @@ int main() {
     // Start a new fixture with a higher valid OEM ceiling; never increase a low one.
     const auto other = root / "other";
     const auto other_node = other / "class/power_supply/battery/constant_charge_current_max";
-    put(other_node, "2000000"); put(other_node.parent_path() / "temp", "420"); put(other_node.parent_path() / "status", "Charging");
+    put(other_node.parent_path() / "type", "Battery"); put(other_node, "2000000"); put(other_node.parent_path() / "temp", "420"); put(other_node.parent_path() / "status", "Charging");
     coreflow::HardwareLongevityManager stepped(coordinator, other.string()); stepped.initialize(config);
     put(other_node.parent_path() / "temp", "350");
     assert(!stepped.monitor_battery_thermals(95)); // CPU junction heat is not battery temperature.
@@ -54,7 +55,17 @@ int main() {
     assert(!stepped.monitor_battery_thermals(44));
     assert(get(other_node) == "700000");
     assert(coordinator.active_leases().empty());
-    const auto top_app_weight = root / "fs/cgroup/top-app/io.weight";
+    const auto foreground_group = root / "fs/cgroup/interactive-foreground";
+    const auto top_app_weight = foreground_group / "io.weight";
+    put(proc / "self/mountinfo", "55 1 0:55 / " + (root / "fs/cgroup").string() +
+        " rw,nosuid,nodev - cgroup2 cgroup rw\n");
+    put(proc / "441/cgroup", "0::/interactive-foreground\n");
+    put(proc / "441/status", "Name:\ttest-app\nUid:\t10000\t10000\t10000\t10000\n");
+    put(proc / "441/oom_score_adj", "0\n");
+    put(foreground_group / "cpu.uclamp.min", "0.00\n");
+    put(foreground_group / "cpu.uclamp.max", "max\n");
+    put(foreground_group / "cgroup.threads", "441\n");
+    put(foreground_group / "cgroup.procs", "441\n");
     put(top_app_weight, "default 100");
     assert(baseline.capture(top_app_weight.string()));
     assert(baseline.apply_mutation(top_app_weight.string(), "default 300"));
@@ -70,13 +81,13 @@ int main() {
     assert(io_lease.size() == 1);
     assert(io_lease.front().domain == coreflow::MutationDomain::BlockIo);
     coordinator.emergency_preempt_all("test-storage-preemption");
-    assert(get(root / "fs/cgroup/top-app/io.weight") == "default 100");
+    assert(get(top_app_weight) == "default 100");
     assert(coordinator.active_leases().empty());
 
     assert(guard.apply_storage_pacing());
-    put(root / "fs/cgroup/top-app/io.weight", "default 200"); // OEM takes ownership.
+    put(top_app_weight, "default 200"); // OEM takes ownership.
     assert(!guard.apply_storage_pacing());
-    assert(get(root / "fs/cgroup/top-app/io.weight") == "default 200");
+    assert(get(top_app_weight) == "default 200");
     assert(coordinator.active_leases().empty());
     assert(!baseline.has_active_mutations());
     fs::remove_all(root);

@@ -27,6 +27,10 @@ bool AndroidFrameEventBridge::submit(const FrameEvent& event) noexcept {
     if (event.kind == FrameEventKind::FramePresented && event.frame_duration_ns == 0) {
         return false;
     }
+    if (event.kind == FrameEventKind::FrameTimelineWindow &&
+        (event.frame_count == 0 || event.missed_frames > event.frame_count)) {
+        return false;
+    }
 
     FrameEventListener listener;
     {

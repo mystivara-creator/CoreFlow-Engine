@@ -12,6 +12,8 @@
 #pragma once
 
 #include "types.hpp"
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <mutex>
@@ -41,6 +43,8 @@ public:
 
     /// Snapshot a sysfs / proc node before modifying it
     bool capture(const std::string& path);
+    // Capture and fsync an OEM snapshot before a multi-node mutation batch is admitted.
+    bool capture_durable(const std::string& path);
 
     /// Record a planned mutation; returns false if node wasn't snapshotted or write failed
     bool apply_mutation(const std::string& path, const std::string& new_value);
@@ -51,6 +55,10 @@ public:
         const std::string& transaction_id, const std::string& endpoint,
         const std::string& verified_value);
     [[nodiscard]] std::vector<RetainedPerformanceBaseline> performance_baselines() const;
+    /// True only when a persisted retained-performance record and the live inode/value
+    /// prove that the current non-OEM value is still owned by CoreFlow.
+    [[nodiscard]] bool owns_retained_performance_value(
+        const std::string& endpoint, const std::string& verified_value) const;
 
     /// Roll back a specific node to factory value
     bool rollback(const std::string& path);

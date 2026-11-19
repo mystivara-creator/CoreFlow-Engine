@@ -12,6 +12,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <sys/timerfd.h>
 
 using namespace coreflow;
 namespace fs = std::filesystem;
@@ -34,6 +35,13 @@ struct RenderBoosterTestAccess {
     static void restore(RenderBooster& booster) {
         booster.restore_burst();
     }
+    static int64_t expiry_remaining_ns(const RenderBooster& booster) {
+        itimerspec current{};
+        if (!booster.expiry_fd_.valid() ||
+            ::timerfd_gettime(booster.expiry_fd_.get(), &current) != 0) return -1;
+        return static_cast<int64_t>(current.it_value.tv_sec) * 1'000'000'000LL +
+            static_cast<int64_t>(current.it_value.tv_nsec);
+    }
 };
 } // namespace coreflow
 
@@ -55,7 +63,7 @@ int main() {
     assert(governor.is_supported());
     EpollReactor reactor;
     {
-        RenderBooster booster(governor, reactor);
+        RenderBooster booster(governor, reactor, 512U, 200U);
         AndroidFrameEventBridge frame_bridge;
         assert(booster.connect_frame_source(frame_bridge));
         const FrameEvent touch_event{
@@ -110,7 +118,9 @@ int main() {
         // sleeps, or dependence on CI runner CPU availability.
         booster.on_touch_down();
         RenderBoosterTestAccess::dispatch_request(booster);
-        assert(get(top / "cpu.uclamp.min") == "37.11");
+        assert(get(top / "cpu.uclamp.min") == "50.00");
+        const int64_t remaining_ns = RenderBoosterTestAccess::expiry_remaining_ns(booster);
+        assert(remaining_ns > 0 && remaining_ns <= 200'000'000LL);
         assert(governor.get_top_app_max() == 1024u);
 
         RenderBoosterTestAccess::restore(booster);
@@ -123,7 +133,7 @@ int main() {
         // A subsequent burst must be admitted after restoration and journal cleanup.
         booster.on_touch_down();
         RenderBoosterTestAccess::dispatch_request(booster);
-        assert(get(top / "cpu.uclamp.min") == "37.11");
+        assert(get(top / "cpu.uclamp.min") == "50.00");
         RenderBoosterTestAccess::restore(booster);
         assert(get(top / "cpu.uclamp.max") == "100.00");
         assert(coordinator.active_leases().empty());
@@ -132,7 +142,7 @@ int main() {
         // by the synchronous expiry/restore path.
         booster.on_touch_down();
         RenderBoosterTestAccess::dispatch_request(booster);
-        assert(get(top / "cpu.uclamp.min") == "37.11");
+        assert(get(top / "cpu.uclamp.min") == "50.00");
         put(top / "cpu.uclamp.min", "75.00");
         RenderBoosterTestAccess::restore(booster);
         assert(get(top / "cpu.uclamp.min") == "75.00");

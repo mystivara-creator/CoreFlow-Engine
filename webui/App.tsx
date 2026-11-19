@@ -1,39 +1,59 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Flame, Layers, ShieldCheck, Smartphone, Terminal } from 'lucide-react';
-import { applyAppearance, readAppearance, saveAppearance, Theme } from './bridge/appearance';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity,
+  Flame,
+  Terminal,
+  ClipboardCheck,
+  HardDrive,
+  Thermometer,
+  Cpu,
+  Gauge,
+  LockKeyhole,
+  Layers,
+  ShieldCheck,
+  Fingerprint,
+} from 'lucide-react';
+import {
+  AccentSeed,
+  applyAppearance,
+  readAppearance,
+  resolveIsDark,
+  saveAppearance,
+  Theme,
+} from './bridge/appearance';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from './bridge/daemonBridge';
 import { AutonomousStateHero } from './components/AutonomousStateHero';
-import { AutonomousTuningCard } from './components/AutonomousTuningCard';
 import { BaselineGuardianCard } from './components/BaselineGuardianCard';
+import { DirectAdaptiveCard } from './components/DirectAdaptiveCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import { ArchitectureStudioModal } from './components/ArchitectureStudioModal';
 import { ThermalMatrixCard } from './components/ThermalMatrixCard';
-import { HardwareLongevityCard } from './components/HardwareLongevityCard';
-import { AndroidQuickSettingsCard } from './components/AndroidQuickSettingsCard';
 import { DeveloperConsoleCard } from './components/DeveloperConsoleCard';
 import { DeviceValidationSuiteCard } from './components/DeviceValidationSuiteCard';
 import { VulkanCapabilitiesCard } from './components/VulkanCapabilitiesCard';
 import { SemanticEvidencePanel } from './components/SemanticEvidencePanel';
 import { isSemanticEvidence, SemanticEvidence } from './semanticEvidence';
 import {
-  AutonomousConfig,
   AutonomousTelemetry,
+  DirectAdaptiveStatus,
+  isDirectAdaptiveStatus,
   BlockQueueTelemetry,
+  computeSystemHealthSummary,
   computeVulkanTelemetry,
   createInitialAutonomousTelemetry,
   createInitialLogs,
   DEFAULT_AUTONOMOUS_CONFIG,
-  DEFAULT_LONGEVITY_CONFIG,
   DEFAULT_VULKAN_CONFIG,
-  HardwareLongevityConfig,
   mergeConfigText,
   ReactionLogEvent,
   readSectionNumberKey,
   readSectionStringKey,
   stepAutonomousSimulation,
   ThermalSensorDetail,
+  TunerActiveInterventionTelemetry,
   TunerCandidateTelemetry,
+  TunerEvaluatedCandidateTelemetry,
   VulkanEngineConfig,
   VulkanLayerMode,
   VulkanTelemetry,
@@ -46,17 +66,29 @@ const RESOLVE_BIN =
   '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-  '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"; ' +
-  'chmod 755 "$BIN" 2>/dev/null';
+  '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
 const CONFIG = '/data/adb/coreflow/coreflow.conf';
 const LOG = '/data/adb/coreflow/logs/coreflowd.log';
 
 interface NativeStatus {
   running: boolean;
   pid: number;
+  platformVendor?: string;
+  osFamily?: string;
+  osMajor?: number;
+  executionTier?: string;
+  policyFamily?: string;
+  identityConfidence?: string;
+  tier1Eligible?: boolean;
+  inspectionMode?: boolean;
+  mutationRuntimeStarted?: boolean;
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
+  uclampPolicyMin?: number;
+  uclampPolicyMax?: number;
+  uclampTargetPath?: string;
+  uclampEncoding?: string;
   cpuPressurePct?: number | null;
   memoryPressurePct?: number | null;
   ioPressurePct?: number | null;
@@ -79,6 +111,7 @@ interface NativeStatus {
   thermalFallbackActive?: boolean;
   thermalHeadroomValid?: boolean;
   thermalHeadroom?: number | null;
+  thermalPressure?: number;
   thermalSeverity?: number;
   thermalSource?: string;
   thermalSensor?: string;
@@ -91,9 +124,14 @@ interface NativeStatus {
   aiSamples?: number;
   tunerRuntimeStage?: string;
   tunerStage?: string;
+  tunerWorkload?: string;
+  tunerBottleneck?: string;
+  tunerObjective?: string;
   tunerIntent?: string;
   tunerCandidateId?: string;
   tunerCandidateLabel?: string;
+  tunerCapabilityFingerprint?: string;
+  tunerDecisionPlanRationale?: string;
   tunerRationale?: string;
   tunerVerdict?: string;
   tunerUtilityDelta?: number;
@@ -102,8 +140,11 @@ interface NativeStatus {
   tunerRolledBack?: number;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
+  tunerActiveInterventions?: TunerActiveInterventionTelemetry[];
   vulkan?: VulkanTelemetry;
   semanticEvidence?: SemanticEvidence;
+  directAdaptive?: DirectAdaptiveStatus;
 }
 
 const extractJsonObject = (raw: string): unknown => {
@@ -132,17 +173,170 @@ const extractJsonObject = (raw: string): unknown => {
   return JSON.parse(lines[lines.length - 1] ?? '{}');
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isFiniteNum = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const OPTIONAL_NUMBER_KEYS = [
+  'osMajor',
+  'baselineNodesSnapshotted',
+  'thermalPressure',
+  'thermalSeverity',
+  'aiPredictedPressure10s',
+  'aiPredictedVelocity',
+  'aiRecommendedScale',
+  'aiConfidence',
+  'aiSamples',
+  'tunerUtilityDelta',
+  'tunerTrials',
+  'tunerImproved',
+  'tunerRolledBack',
+] as const;
+
+const OPTIONAL_NULLABLE_NUMBER_KEYS = [
+  'cpuPressurePct',
+  'memoryPressurePct',
+  'ioPressurePct',
+  'socCompositeCelsius',
+  'cpuAverageCelsius',
+  'cpuPeakCelsius',
+  'gpuTempCelsius',
+  'batteryTempCelsius',
+  'skinTempCelsius',
+  'thermalHeadroom',
+] as const;
+
+const OPTIONAL_BOOLEAN_KEYS = [
+  'tier1Eligible',
+  'inspectionMode',
+  'mutationRuntimeStarted',
+  'cpuPressureValid',
+  'memoryPressureValid',
+  'ioPressureValid',
+  'thermalPolicyAvailable',
+  'thermalGuardActive',
+  'thermalDataDegraded',
+  'thermalFallbackActive',
+  'thermalHeadroomValid',
+  'aiOnnxActive',
+] as const;
+
+const OPTIONAL_STRING_KEYS = [
+  'platformVendor',
+  'osFamily',
+  'executionTier',
+  'policyFamily',
+  'identityConfidence',
+  'thermalSource',
+  'thermalSensor',
+  'aiBackend',
+  'tunerRuntimeStage',
+  'tunerStage',
+  'tunerWorkload',
+  'tunerBottleneck',
+  'tunerObjective',
+  'tunerIntent',
+  'tunerCandidateId',
+  'tunerCandidateLabel',
+  'tunerCapabilityFingerprint',
+  'tunerDecisionPlanRationale',
+  'tunerRationale',
+  'tunerVerdict',
+] as const;
+
+const hasStrings = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof item[key] === 'string');
+const hasNumbers = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => isFiniteNum(item[key]));
+const hasBooleans = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof item[key] === 'boolean');
+
+const OPTIONAL_ARRAY_GUARDS: Record<string, (item: unknown) => boolean> = {
+  thermalSensors: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'type']) &&
+    isFiniteNum(item.category) &&
+    (item.celsius === null || isFiniteNum(item.celsius)) &&
+    hasBooleans(item, ['valid', 'policyAvailable']) &&
+    (item.velocityCelsiusPerSec === undefined ||
+      item.velocityCelsiusPerSec === null ||
+      isFiniteNum(item.velocityCelsiusPerSec)),
+  blockQueues: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['device', 'activeScheduler', 'baselineScheduler']) &&
+    Array.isArray(item.availableSchedulers) &&
+    item.availableSchedulers.every((name) => typeof name === 'string') &&
+    hasNumbers(item, [
+      'readAheadKb',
+      'nrRequests',
+      'rqAffinity',
+      'readExpireMs',
+      'writesStarved',
+      'fifoBatch',
+    ]),
+  tunerCandidates: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'label', 'domain']) &&
+    hasNumbers(item, [
+      'trials',
+      'successes',
+      'rollbacks',
+      'meanDelta',
+      'ucbScore',
+      'cooldownTicks',
+    ]),
+  tunerEvaluatedCandidates: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'domain', 'intent', 'rejectionReason']) &&
+    hasNumbers(item, [
+      'utilityScore',
+      'empiricalScore',
+      'confidence',
+      'riskPenalty',
+      'thermalPenalty',
+    ]) &&
+    hasBooleans(item, ['eligible', 'selected']),
+  tunerActiveInterventions: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'domain', 'intent', 'stage', 'rationale']) &&
+    hasNumbers(item, ['remainingTicks']),
+};
+
+// Required fields are enforced by checkedNativeStatus. Optional telemetry that is
+// mistyped is dropped (treated as absent) so one malformed field cannot reach a
+// `.toFixed()` in a component and blank the whole dashboard.
+const dropMalformedOptionalTelemetry = (status: Record<string, unknown>): void => {
+  const drop = (key: string, valid: boolean) => {
+    if (status[key] !== undefined && !valid) delete status[key];
+  };
+  for (const key of OPTIONAL_NUMBER_KEYS) drop(key, isFiniteNum(status[key]));
+  for (const key of OPTIONAL_NULLABLE_NUMBER_KEYS)
+    drop(key, status[key] === null || isFiniteNum(status[key]));
+  for (const key of OPTIONAL_BOOLEAN_KEYS) drop(key, typeof status[key] === 'boolean');
+  for (const key of OPTIONAL_STRING_KEYS) drop(key, typeof status[key] === 'string');
+  for (const [key, guard] of Object.entries(OPTIONAL_ARRAY_GUARDS)) {
+    const value = status[key];
+    drop(key, Array.isArray(value) && value.every(guard));
+  }
+  drop('vulkan', isRecord(status.vulkan));
+};
+
 const checkedNativeStatus = (raw: string): NativeStatus => {
   const value: unknown = extractJsonObject(raw);
   if (typeof value !== 'object' || value === null) throw new Error('Invalid native status');
   const status = value as Partial<NativeStatus>;
   if (
     typeof status.running !== 'boolean' ||
-    typeof status.pid !== 'number' ||
-    typeof status.uclampMin !== 'number' ||
-    typeof status.uclampMax !== 'number' ||
+    !isFiniteNum(status.pid) ||
+    !isFiniteNum(status.uclampMin) ||
+    !isFiniteNum(status.uclampMax) ||
     typeof status.uclampSupported !== 'boolean' ||
-    (typeof status.socTempCelsius !== 'number' && status.socTempCelsius !== null) ||
+    (status.uclampPolicyMin !== undefined && !isFiniteNum(status.uclampPolicyMin)) ||
+    (status.uclampPolicyMax !== undefined && !isFiniteNum(status.uclampPolicyMax)) ||
+    (status.uclampTargetPath !== undefined && typeof status.uclampTargetPath !== 'string') ||
+    (status.uclampEncoding !== undefined && typeof status.uclampEncoding !== 'string') ||
+    (!isFiniteNum(status.socTempCelsius) && status.socTempCelsius !== null) ||
     typeof status.recoveryPending !== 'boolean'
   ) {
     throw new Error('Unexpected daemon status schema');
@@ -150,6 +344,10 @@ const checkedNativeStatus = (raw: string): NativeStatus => {
   if (status.semanticEvidence !== undefined && !isSemanticEvidence(status.semanticEvidence)) {
     throw new Error('Unexpected semanticEvidence schema; expected native schemaVersion 1');
   }
+  if (status.directAdaptive !== undefined && !isDirectAdaptiveStatus(status.directAdaptive)) {
+    throw new Error('Unexpected directAdaptive status schema');
+  }
+  dropMalformedOptionalTelemetry(value as Record<string, unknown>);
   return status as NativeStatus;
 };
 
@@ -159,16 +357,15 @@ const execChecked = async (command: string): Promise<string> => {
   return result.stdout;
 };
 
-const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [semanticEvidence, setSemanticEvidence] = useState<SemanticEvidence | null>(null);
+  const [journalOutput, setJournalOutput] = useState<string | null>(null);
+  const [restoringBaseline, setRestoringBaseline] = useState(false);
   const [nativeStatusAvailable, setNativeStatusAvailable] = useState(false);
   const nativeConnected = isNativeBridge && nativeStatusAvailable;
-  const [isSwitching, setIsSwitching] = useState(false);
   const [telemetry, setTelemetry] = useState<AutonomousTelemetry>(() => {
     const initial = createInitialAutonomousTelemetry();
     return isNativeBridge
@@ -194,13 +391,11 @@ export const App: React.FC = () => {
         }
       : initial;
   });
-  const [config, setConfig] = useState<AutonomousConfig>(() => ({ ...DEFAULT_AUTONOMOUS_CONFIG }));
-  type NavTab = 'dashboard' | 'vulkan' | 'thermal' | 'longevity' | 'android' | 'console' | 'validation';
+  const [thermalTripCelsius, setThermalTripCelsius] = useState(
+    DEFAULT_AUTONOMOUS_CONFIG.thermalTripCelsius
+  );
+  type NavTab = 'dashboard' | 'thermal' | 'vulkan' | 'hardware' | 'validation' | 'console';
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
-  const [longevityConfig, setLongevityConfig] = useState<HardwareLongevityConfig>(() => ({
-    ...DEFAULT_LONGEVITY_CONFIG,
-  }));
-  const [longevitySaveMessage, setLongevitySaveMessage] = useState<string | null>(null);
   const [vulkanConfig, setVulkanConfig] = useState<VulkanEngineConfig>(() => ({
     ...DEFAULT_VULKAN_CONFIG,
   }));
@@ -234,15 +429,8 @@ export const App: React.FC = () => {
   }, [isNativeBridge]);
 
   const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [isRestoring, setIsRestoring] = useState(false);
-  const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
 
-  const isDark =
-    appearance.theme === 'dark' ||
-    (appearance.theme === 'system' &&
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-color-scheme: dark)').matches);
+  const isDark = resolveIsDark(appearance.theme);
 
   useEffect(() => {
     applyAppearance(appearance);
@@ -254,6 +442,17 @@ export const App: React.FC = () => {
     setAppearance(next);
     saveAppearance(next);
   };
+
+  const handleSelectAccent = (accent: AccentSeed) => {
+    const next = { ...appearance, accent };
+    setAppearance(next);
+    saveAppearance(next);
+  };
+
+  const healthSummary = useMemo(
+    () => computeSystemHealthSummary(telemetry, thermalTripCelsius),
+    [telemetry, thermalTripCelsius]
+  );
 
   const telemetryRef = useRef(telemetry);
   telemetryRef.current = telemetry;
@@ -275,97 +474,134 @@ export const App: React.FC = () => {
     try {
       const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
       setSemanticEvidence(status.semanticEvidence ?? null);
-      setNativeStatusAvailable(status.semanticEvidence?.status === 'available');
-    const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
-    const isThermalThrottling =
-      status.thermalGuardActive ??
-      (status.thermalFallbackActive
-        ? effectiveTemp >= config.thermalTripCelsius
-        : (status.thermalSeverity ?? 0) >= 3);
-    setTelemetry((old) => ({
-      ...old,
-      engineActive: status.running,
-      uclampMin: status.uclampMin,
-      uclampMax: status.uclampMax,
-      uclampSupported: status.uclampSupported,
-      // Null pressure is unavailable telemetry, not a request to retain stale values.
-      cpuPressurePct: status.cpuPressurePct ?? 0,
-      memoryPressurePct: status.memoryPressurePct ?? 0,
-      ioPressurePct: status.ioPressurePct ?? 0,
-      cpuPressureValid: status.cpuPressureValid ?? (status.cpuPressurePct != null),
-      memoryPressureValid: status.memoryPressureValid ?? (status.memoryPressurePct != null),
-      ioPressureValid: status.ioPressureValid ?? (status.ioPressurePct != null),
-      baselineNodesSnapshotted: status.baselineNodesSnapshotted ?? old.baselineNodesSnapshotted,
-      socTempCelsius: effectiveTemp,
-      socCompositeCelsius: status.socCompositeCelsius ?? effectiveTemp,
-      cpuAverageCelsius: status.cpuAverageCelsius ?? -1,
-      cpuPeakCelsius: status.cpuPeakCelsius ?? -1,
-      gpuTempCelsius: status.gpuTempCelsius ?? -1,
-      batteryTempCelsius: status.batteryTempCelsius ?? -1,
-      skinTempCelsius: status.skinTempCelsius ?? -1,
-      thermalGuardActive: isThermalThrottling,
-      thermalDataDegraded: status.thermalDataDegraded ?? false,
-      thermalFallbackActive: status.thermalFallbackActive ?? false,
-      thermalHeadroomValid: status.thermalHeadroomValid ?? false,
-      thermalHeadroom: status.thermalHeadroom ?? null,
-      thermalSource: status.thermalSource ?? old.thermalSource,
-      thermalSeverity: status.thermalSeverity ?? old.thermalSeverity,
-      thermalSensors: status.thermalSensors ?? old.thermalSensors,
-      aiBackend: status.aiBackend ?? old.aiBackend,
-      aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,
-      aiPredictedPressure10s: status.aiPredictedPressure10s ?? old.aiPredictedPressure10s,
-      aiPredictedVelocity: status.aiPredictedVelocity ?? old.aiPredictedVelocity,
-      aiRecommendedScale: status.aiRecommendedScale ?? old.aiRecommendedScale,
-      aiConfidence: status.aiConfidence ?? old.aiConfidence,
-      aiSamples: status.aiSamples ?? old.aiSamples,
-      tunerRuntimeStage: status.tunerRuntimeStage ?? old.tunerRuntimeStage,
-      tunerStage: status.tunerStage ?? old.tunerStage,
-      tunerIntent: status.tunerIntent ?? old.tunerIntent,
-      tunerCandidateId: status.tunerCandidateId ?? old.tunerCandidateId,
-      tunerCandidateLabel: status.tunerCandidateLabel ?? old.tunerCandidateLabel,
-      tunerRationale: status.tunerRationale ?? old.tunerRationale,
-      tunerVerdict: status.tunerVerdict ?? old.tunerVerdict,
-      tunerUtilityDelta: status.tunerUtilityDelta ?? old.tunerUtilityDelta,
-      tunerTrials: status.tunerTrials ?? old.tunerTrials,
-      tunerImproved: status.tunerImproved ?? old.tunerImproved,
-      tunerRolledBack: status.tunerRolledBack ?? old.tunerRolledBack,
-      blockQueues: status.blockQueues ?? old.blockQueues,
-      tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
-      vulkan: status.vulkan ?? old.vulkan,
-      baselineStatus: status.recoveryPending ? 'protected' : 'restored',
-      transactionStage: status.running
-        ? status.recoveryPending
-          ? 'RETAINED'
-          : 'VERIFIED'
-        : 'PLANNED',
-      modeLabel: status.running
-        ? isThermalThrottling
-          ? 'ThermalGuard Active · Pacing Demand'
-          : status.uclampSupported
-          ? 'Coordinated Stability Policy Active'
-          : 'Daemon Active · Multi-Sensor Equilibrium'
-        : 'Daemon Stopped',
-      modeDescription: status.running
-        ? isThermalThrottling
-          ? status.uclampSupported
-            ? 'Thermal guard active: applying supported clock and UClamp mitigation paths'
-            : 'Thermal guard active: UClamp is unavailable; mitigation is limited to other validated actuator paths'
-          : status.recoveryPending
-            ? `Thermal source: ${status.thermalSource ?? 'oem_policy'}; write-ahead CFJ4 journal armed`
-            : status.uclampSupported
-              ? 'Coordinated mutation transactions with readback-verified UClamp and OEM thermal guards'
-              : 'Daemon active; UClamp capability unavailable. Other controls remain capability-gated and independently verified.'
-        : 'OEM baseline restored',
-      timestamp: Date.now(),
-    }));
+      // A schema-valid daemon payload proves the daemon link even when the semantic
+      // adapter honestly reports status "unavailable"; bindings are gated separately.
+      setNativeStatusAvailable(status.semanticEvidence !== undefined);
+      const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
+      const isThermalThrottling =
+        status.directAdaptive?.thermalGuard ??
+        status.thermalGuardActive ??
+        (status.thermalFallbackActive
+          ? effectiveTemp >= thermalTripCelsius
+          : (status.thermalSeverity ?? 0) >= 3);
+      const adaptiveMode = status.directAdaptive?.mode;
+      const adaptiveModeLabel = adaptiveMode
+        ? ({
+            SCREEN_OFF: 'Screen Off / Deep Idle',
+            BALANCED_SWEET_SPOT: 'Balanced Sweet-Spot',
+            ACTIVE_LOAD: 'Active Load / Gaming',
+            THERMAL_GUARD: 'Thermal Guard',
+            DISCOVERY: 'Capability Discovery',
+          } as Record<string, string>)[adaptiveMode] ?? adaptiveMode
+        : undefined;
+      setTelemetry((old) => ({
+        ...old,
+        engineActive: status.running && (status.directAdaptive?.active ?? true),
+        directAdaptive: status.directAdaptive,
+        platformVendor: status.platformVendor ?? old.platformVendor,
+        osFamily: status.osFamily ?? old.osFamily,
+        osMajor: status.osMajor ?? old.osMajor,
+        executionTier: status.executionTier ?? old.executionTier,
+        policyFamily: status.policyFamily ?? old.policyFamily,
+        identityConfidence: status.identityConfidence ?? old.identityConfidence,
+        tier1Eligible: status.tier1Eligible ?? old.tier1Eligible,
+        inspectionMode: status.inspectionMode ?? old.inspectionMode,
+        mutationRuntimeStarted: status.mutationRuntimeStarted ?? old.mutationRuntimeStarted,
+        uclampMin: status.uclampMin,
+        uclampMax: status.uclampMax,
+        uclampSupported: status.uclampSupported,
+        uclampPolicyMin: status.uclampPolicyMin ?? old.uclampPolicyMin,
+        uclampPolicyMax: status.uclampPolicyMax ?? old.uclampPolicyMax,
+        uclampTargetPath: status.uclampTargetPath ?? old.uclampTargetPath,
+        uclampEncoding: status.uclampEncoding ?? old.uclampEncoding,
+        // Null pressure is unavailable telemetry, not a request to retain stale values.
+        cpuPressurePct: status.cpuPressurePct ?? 0,
+        memoryPressurePct: status.memoryPressurePct ?? 0,
+        ioPressurePct: status.ioPressurePct ?? 0,
+        cpuPressureValid: status.cpuPressureValid ?? status.cpuPressurePct != null,
+        memoryPressureValid: status.memoryPressureValid ?? status.memoryPressurePct != null,
+        ioPressureValid: status.ioPressureValid ?? status.ioPressurePct != null,
+        baselineNodesSnapshotted: status.baselineNodesSnapshotted ?? old.baselineNodesSnapshotted,
+        socTempCelsius: effectiveTemp,
+        socCompositeCelsius: status.socCompositeCelsius ?? effectiveTemp,
+        cpuAverageCelsius: status.cpuAverageCelsius ?? -1,
+        cpuPeakCelsius: status.cpuPeakCelsius ?? -1,
+        gpuTempCelsius: status.gpuTempCelsius ?? -1,
+        batteryTempCelsius: status.batteryTempCelsius ?? -1,
+        skinTempCelsius: status.skinTempCelsius ?? -1,
+        thermalGuardActive: isThermalThrottling,
+        thermalDataDegraded: status.thermalDataDegraded ?? false,
+        thermalFallbackActive: status.thermalFallbackActive ?? false,
+        thermalHeadroomValid: status.thermalHeadroomValid ?? false,
+        thermalHeadroom: status.thermalHeadroom ?? null,
+        thermalPressure: status.thermalPressure ?? old.thermalPressure,
+        thermalSource: status.thermalSource ?? old.thermalSource,
+        thermalSeverity: status.thermalSeverity ?? old.thermalSeverity,
+        thermalSensors: status.thermalSensors ?? old.thermalSensors,
+        aiBackend: status.aiBackend ?? old.aiBackend,
+        aiOnnxActive: status.aiOnnxActive ?? old.aiOnnxActive,
+        aiPredictedPressure10s: status.aiPredictedPressure10s ?? old.aiPredictedPressure10s,
+        aiPredictedVelocity: status.aiPredictedVelocity ?? old.aiPredictedVelocity,
+        aiRecommendedScale: status.aiRecommendedScale ?? old.aiRecommendedScale,
+        aiConfidence: status.aiConfidence ?? old.aiConfidence,
+        aiSamples: status.aiSamples ?? old.aiSamples,
+        tunerRuntimeStage: status.tunerRuntimeStage ?? old.tunerRuntimeStage,
+        tunerStage: status.tunerStage ?? old.tunerStage,
+        tunerWorkload: status.tunerWorkload ?? old.tunerWorkload,
+        tunerBottleneck: status.tunerBottleneck ?? old.tunerBottleneck,
+        tunerObjective: status.tunerObjective ?? old.tunerObjective,
+        tunerIntent: status.tunerIntent ?? old.tunerIntent,
+        tunerCandidateId: status.tunerCandidateId ?? old.tunerCandidateId,
+        tunerCandidateLabel: status.tunerCandidateLabel ?? old.tunerCandidateLabel,
+        tunerCapabilityFingerprint:
+          status.tunerCapabilityFingerprint ?? old.tunerCapabilityFingerprint,
+        tunerDecisionPlanRationale:
+          status.tunerDecisionPlanRationale ?? old.tunerDecisionPlanRationale,
+        tunerRationale: status.tunerRationale ?? old.tunerRationale,
+        tunerVerdict: status.tunerVerdict ?? old.tunerVerdict,
+        tunerUtilityDelta: status.tunerUtilityDelta ?? old.tunerUtilityDelta,
+        tunerTrials: status.tunerTrials ?? old.tunerTrials,
+        tunerImproved: status.tunerImproved ?? old.tunerImproved,
+        tunerRolledBack: status.tunerRolledBack ?? old.tunerRolledBack,
+        blockQueues: status.blockQueues ?? old.blockQueues,
+        tunerCandidates: status.tunerCandidates ?? old.tunerCandidates,
+        tunerEvaluatedCandidates: status.tunerEvaluatedCandidates ?? old.tunerEvaluatedCandidates,
+        tunerActiveInterventions: status.tunerActiveInterventions ?? old.tunerActiveInterventions,
+        vulkan: status.vulkan ?? old.vulkan,
+        baselineStatus:
+          status.recoveryPending ||
+          (status.directAdaptive?.active === true && status.directAdaptive.baselineNodes > 0)
+            ? 'protected'
+            : 'restored',
+        transactionStage: status.running
+          ? status.recoveryPending
+            ? 'RETAINED'
+            : 'VERIFIED'
+          : 'PLANNED',
+        modeLabel: status.running
+          ? adaptiveModeLabel ??
+            (isThermalThrottling ? 'Thermal Guard' : 'Direct Adaptive runtime active')
+          : 'Daemon Stopped',
+        modeDescription: status.running
+          ? status.directAdaptive?.journalFault
+            ? 'Journal fault latched; all further Direct Adaptive mutations are halted until baseline recovery.'
+            : status.directAdaptive?.ownershipLosses
+              ? 'OEM contention isolated at affected nodes; independent capabilities continue.'
+              : status.directAdaptive?.active
+                ? 'Direct Baseline with capability-derived Sweet-Spot policy and verified readback.'
+                : 'Daemon is running; Direct Adaptive discovery or baseline preparation is unavailable.'
+          : 'OEM baseline restored',
+        timestamp: Date.now(),
+      }));
       setNativeError(null);
       return status;
     } catch (error) {
       setNativeStatusAvailable(false);
       setSemanticEvidence(null);
+      setTelemetry((old) => ({ ...old, directAdaptive: undefined }));
       throw error;
     }
-  }, [config.thermalTripCelsius]);
+  }, [thermalTripCelsius]);
 
   useEffect(() => {
     if (!isNativeBridge) return;
@@ -375,67 +611,27 @@ export const App: React.FC = () => {
       const configResult = await execNativeKsuShell(`cat ${CONFIG} 2>/dev/null`);
       if (disposed || configResult.errno !== 0) return;
 
-      const rawBias = readSectionStringKey(configResult.stdout, 'ui_adaptive_bias');
-      const adaptiveBias: AutonomousConfig['adaptiveBias'] =
-        rawBias === 'battery' || rawBias === 'balanced' || rawBias === 'responsiveness'
-          ? rawBias
-          : 'balanced';
-      const uiFloor = readSectionNumberKey(configResult.stdout, 'ui_balanced_uclamp_min');
-      const daemonFloor = readSectionNumberKey(configResult.stdout, 'top_app_interactive_min');
-      const baseFloor = uiFloor ?? daemonFloor;
       const trip = readSectionNumberKey(configResult.stdout, 'thermal_trip_celsius');
-
-      const rawStep = readSectionStringKey(configResult.stdout, 'enable_battery_step_charging');
-      const stepTemp = readSectionNumberKey(configResult.stdout, 'battery_step_temp_threshold');
-      const stepCurrent = readSectionNumberKey(configResult.stdout, 'stepped_charge_current_ma');
-      const rawUfs = readSectionStringKey(configResult.stdout, 'enable_ufs_burst_pacing');
-      const topWeight = readSectionNumberKey(configResult.stdout, 'top_app_io_weight');
-      const bgWeight = readSectionNumberKey(configResult.stdout, 'background_io_weight');
-
-      setConfig((old) => ({
-        ...old,
-        adaptiveBias,
-        balancedUclampMin:
-          baseFloor === null ? old.balancedUclampMin : Math.max(0, Math.min(640, Math.round(baseFloor))),
-        thermalTripCelsius:
-          trip === null ? old.thermalTripCelsius : Math.max(30, Math.min(80, trip)),
-      }));
-
-      setLongevityConfig((old) => ({
-        ...old,
-        enableBatteryStepCharging: rawStep
-          ? rawStep === 'true' || rawStep === '1'
-          : old.enableBatteryStepCharging,
-        batteryStepTempThreshold: stepTemp ?? old.batteryStepTempThreshold,
-        steppedChargeCurrentMa: stepCurrent ?? old.steppedChargeCurrentMa,
-        enableUfsBurstPacing: rawUfs
-          ? rawUfs === 'true' || rawUfs === '1'
-          : old.enableUfsBurstPacing,
-        topAppIoWeight: topWeight ?? old.topAppIoWeight,
-        backgroundIoWeight: bgWeight ?? old.backgroundIoWeight,
-      }));
+      if (trip !== null) setThermalTripCelsius(Math.max(30, Math.min(80, trip)));
 
       const rawVkMode = readSectionStringKey(configResult.stdout, 'vulkan_layer_mode');
       const vkMode: VulkanLayerMode =
         rawVkMode === 'safe_hardware' || rawVkMode === 'full_capability_override'
           ? 'safe_hardware'
           : rawVkMode === 'disabled'
-          ? 'disabled'
-          : 'disabled';
-      const rawSkiavk = readSectionStringKey(configResult.stdout, 'enable_skiavk_threaded');
-      const rawVrs = readSectionStringKey(configResult.stdout, 'enable_adaptive_vrs');
-      const rawPrewarm = readSectionStringKey(configResult.stdout, 'enable_pipeline_cache_prewarm');
-
+            ? 'disabled'
+            : 'disabled';
+      const readFlag = (key: string): boolean | null => {
+        const raw = readSectionStringKey(configResult.stdout, key);
+        return raw === 'true' ? true : raw === 'false' ? false : null;
+      };
       setVulkanConfig((old) => ({
         ...old,
         mode: vkMode,
-        enableSkiavkThreaded: rawSkiavk
-          ? rawSkiavk === 'true' || rawSkiavk === '1'
-          : old.enableSkiavkThreaded,
-        enableAdaptiveVrs: rawVrs ? rawVrs === 'true' || rawVrs === '1' : old.enableAdaptiveVrs,
-        enablePipelineCachePrewarm: rawPrewarm
-          ? rawPrewarm === 'true' || rawPrewarm === '1'
-          : old.enablePipelineCachePrewarm,
+        enableSkiavkThreaded: readFlag('enable_skiavk_threaded') ?? old.enableSkiavkThreaded,
+        enableAdaptiveVrs: readFlag('enable_adaptive_vrs') ?? old.enableAdaptiveVrs,
+        enablePipelineCachePrewarm:
+          readFlag('enable_pipeline_cache_prewarm') ?? old.enablePipelineCachePrewarm,
       }));
     };
 
@@ -445,7 +641,6 @@ export const App: React.FC = () => {
       if (pollInFlight || disposed) return;
       pollInFlight = true;
       try {
-        // Keep native bridge work away from the interaction hot path.
         await refreshNative();
 
         const logResult = await execNativeKsuShell(`/system/bin/tail -n 12 ${LOG} 2>/dev/null`);
@@ -454,7 +649,7 @@ export const App: React.FC = () => {
           if (snapshot && snapshot !== previousLogSnapshot) {
             previousLogSnapshot = snapshot;
             const lines = snapshot
-              .split('\\n')
+              .split(/\r?\n/)
               .map((line) => line.trim())
               .filter(Boolean)
               .slice(-12)
@@ -489,17 +684,18 @@ export const App: React.FC = () => {
     };
   }, [isNativeBridge, refreshNative]);
 
-  const advancePreviewSimulation = useCallback(
-    (forced?: 'cpu' | 'memory' | 'io_trial') => {
-      const { next, event } = stepAutonomousSimulation(telemetryRef.current, config, forced);
-      telemetryRef.current = next;
-      setTelemetry(next);
-      if (event) {
-        setLogs((previous) => [event, ...previous].slice(0, 50));
-      }
-    },
-    [config]
-  );
+  const advancePreviewSimulation = useCallback((forced?: 'cpu' | 'memory' | 'io_trial') => {
+    const { next, event } = stepAutonomousSimulation(
+      telemetryRef.current,
+      DEFAULT_AUTONOMOUS_CONFIG,
+      forced
+    );
+    telemetryRef.current = next;
+    setTelemetry(next);
+    if (event) {
+      setLogs((previous) => [event, ...previous].slice(0, 50));
+    }
+  }, []);
 
   useEffect(() => {
     if (isNativeBridge) return;
@@ -509,92 +705,34 @@ export const App: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [isNativeBridge, advancePreviewSimulation]);
 
-  const handleToggleEngine = async () => {
-    if (!isNativeBridge) {
-      setTelemetry((old) => ({ ...old, engineActive: !old.engineActive }));
-      return;
-    }
-    if (isSwitching) return;
-    setIsSwitching(true);
-    setNativeError(null);
-    try {
-      const before = await refreshNative();
-      if (before.running) {
-        await execChecked(`${RESOLVE_BIN}; "$BIN" --stop`);
-      } else {
-        await execChecked(
-          `rm -f /data/adb/coreflow/SAFE_MODE /data/adb/coreflow/DISABLE /data/adb/modules/cfae_framework/disable /data/adb/modules/coreflow_engine/disable 2>/dev/null; ` +
-            `printf '0\\n' > /data/adb/coreflow/boot_attempts 2>/dev/null; ` +
-            `mkdir -p /data/adb/coreflow/logs 2>/dev/null; ` +
-            `${RESOLVE_BIN}; ` +
-            `"$BIN" --daemon >> "${LOG}" 2>&1 </dev/null || (setsid "$BIN" >> "${LOG}" 2>&1 </dev/null &) 2>/dev/null || (nohup "$BIN" >> "${LOG}" 2>&1 </dev/null &) 2>/dev/null`
-        );
-      }
-
-      let after = before;
-      for (let attempt = 0; attempt < 10; attempt++) {
-        await delay(350);
-        after = await refreshNative();
-        if (after.running !== before.running) break;
-      }
-
-      if (after.running === before.running) {
-        const errorLog = await execNativeKsuShell(
-          `tail -n 6 ${LOG} 2>/dev/null || cat ${LOG} 2>/dev/null`
-        );
-        const logSnippet = errorLog.stdout?.trim();
-        throw new Error(`Daemon state did not change${logSnippet ? ': ' + logSnippet : ''}`);
-      }
-
-      addLog(
-        'INFO',
-        'NativeControl',
-        after.running
-          ? 'Daemon started with coordinated mutation policy'
-          : 'Daemon stopped and baseline recovery verified'
-      );
-    } catch (error) {
-      setNativeError(String(error));
-      addLog('INFO', 'NativeControl', 'Failed: ' + String(error));
-    } finally {
-      setIsSwitching(false);
-    }
-  };
-
-  const handleSimulateCpuLoad = () => {
-    if (isNativeBridge || !telemetry.engineActive) return;
-    advancePreviewSimulation('cpu');
-  };
-
-  const handleSimulateMemoryPressure = () => {
-    if (isNativeBridge || !telemetry.engineActive) return;
-    advancePreviewSimulation('memory');
-  };
-
-  const handleSimulateIoTrial = () => {
-    if (isNativeBridge || !telemetry.engineActive) return;
-    advancePreviewSimulation('io_trial');
-  };
-
-  const writeSurgicalConfigUpdates = async (
-    updates: Record<string, string | number | boolean>,
-    ackToken: string
-  ) => {
+  // This is intentionally the only WebUI configuration writer. It cannot
+  // accept arbitrary system-policy keys; the sole mutable option is Vulkan mode.
+  const writeVulkanLayerMode = async (mode: VulkanLayerMode) => {
     const existingResult = await execNativeKsuShell(
       `cat "${CONFIG}" 2>/dev/null || cat /data/adb/modules/cfae_framework/system/etc/coreflow/default.conf 2>/dev/null || cat /system/etc/coreflow/default.conf 2>/dev/null || true`
     );
-    const mergedText = mergeConfigText(existingResult.stdout ?? '', updates);
+    const merged = mergeConfigText(existingResult.stdout ?? '', { vulkan_layer_mode: mode });
+    const mergedText = merged.endsWith('\n') ? merged : merged + '\n';
+    let delimiter = 'COREFLOW_CONFIG';
+    for (
+      let attempt = 1;
+      mergedText.split('\n').some((line) => line.trim() === delimiter);
+      attempt++
+    ) {
+      delimiter = `COREFLOW_CONFIG_${attempt}`;
+    }
     const command =
       'umask 077 && [ ! -L "' +
       CONFIG +
       '" ] && rm -f "' +
       CONFIG +
       '.tmp" && ' +
-      "cat <<'COREFLOW_CONFIG' > " +
+      `cat <<'${delimiter}' > ` +
       CONFIG +
       '.tmp\n' +
       mergedText +
-      'COREFLOW_CONFIG\nchown 0:0 ' +
+      delimiter +
+      '\nchown 0:0 ' +
       CONFIG +
       '.tmp 2>/dev/null; chmod 600 ' +
       CONFIG +
@@ -602,113 +740,11 @@ export const App: React.FC = () => {
       CONFIG +
       '.tmp ' +
       CONFIG +
-      ` && echo ${ackToken}`;
+      ' && echo COREFLOW_VULKAN_WRITTEN';
     const output = await execChecked(command);
-    if (!output.includes(ackToken)) {
-      throw new Error('Configuration write not acknowledged');
+    if (!output.includes('COREFLOW_VULKAN_WRITTEN')) {
+      throw new Error('Vulkan layer mode write not acknowledged');
     }
-  };
-
-  const handleSaveConfig = async (overrideConfig?: AutonomousConfig) => {
-    const activeConfig = overrideConfig ?? config;
-    setIsSaving(true);
-    setSaveMessage(null);
-    try {
-      if (!isNativeBridge) {
-        setSaveMessage('Preview transaction policy applied');
-        return;
-      }
-
-      const safeBias: AutonomousConfig['adaptiveBias'] =
-        activeConfig.adaptiveBias === 'battery' || activeConfig.adaptiveBias === 'responsiveness'
-          ? activeConfig.adaptiveBias
-          : 'balanced';
-      const baseFloor = Math.max(0, Math.min(640, Math.round(activeConfig.balancedUclampMin)));
-      const multiplier =
-        safeBias === 'battery' ? 0.75 : safeBias === 'responsiveness' ? 1.25 : 1;
-      const balancedMin = Math.max(0, Math.min(1024, Math.round(baseFloor * multiplier)));
-      const trip = Math.max(30, Math.min(80, activeConfig.thermalTripCelsius));
-      const recover = Math.max(25, Math.min(trip - 1, trip - 4));
-
-      await writeSurgicalConfigUpdates(
-        {
-          top_app_interactive_min: balancedMin,
-          ui_adaptive_bias: safeBias,
-          ui_balanced_uclamp_min: baseFloor,
-          thermal_trip_celsius: trip.toFixed(1),
-          thermal_recover_celsius: recover.toFixed(1),
-        },
-        'COREFLOW_CONFIG_WRITTEN'
-      );
-
-      const before = await refreshNative();
-      if (before.running && before.pid > 0) {
-        await execChecked(`kill -HUP ${Math.trunc(before.pid)}`);
-        await delay(250);
-        const after = await refreshNative();
-        if (!after.running) throw new Error('Config saved but daemon reload failed');
-      }
-
-      setSaveMessage(before.running ? 'Committed and reloaded live' : 'Saved for next start');
-      addLog('INFO', 'Config', `Balanced floor=${balancedMin}, fallback trip=${trip.toFixed(1)}°C`);
-    } catch (error) {
-      setSaveMessage('Save failed');
-      setNativeError(String(error));
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleSaveLongevity = async (newConfig: HardwareLongevityConfig) => {
-    setIsSaving(true);
-    setLongevitySaveMessage(null);
-    try {
-      if (!isNativeBridge) {
-        setLongevityConfig(newConfig);
-        setLongevitySaveMessage('Saved in Preview');
-        addLog(
-          'INFO',
-          'Longevity',
-          `Preview: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`
-        );
-        return;
-      }
-      const stepTemp = Math.max(30, Math.min(45, newConfig.batteryStepTempThreshold));
-      const stepCurr = Math.max(100, Math.min(5000, Math.round(newConfig.steppedChargeCurrentMa)));
-      const topWeight = Math.max(1, Math.min(10000, Math.round(newConfig.topAppIoWeight)));
-      const bgWeight = Math.max(1, Math.min(10000, Math.round(newConfig.backgroundIoWeight)));
-
-      await writeSurgicalConfigUpdates(
-        {
-          enable_battery_step_charging: newConfig.enableBatteryStepCharging ? 'true' : 'false',
-          enable_ufs_burst_pacing: newConfig.enableUfsBurstPacing ? 'true' : 'false',
-          battery_step_temp_threshold: stepTemp.toFixed(1),
-          stepped_charge_current_ma: stepCurr,
-          top_app_io_weight: topWeight,
-          background_io_weight: bgWeight,
-        },
-        'COREFLOW_LONGEVITY_WRITTEN'
-      );
-      await execChecked('killall -HUP coreflowd 2>/dev/null || true');
-      setLongevityConfig(newConfig);
-      setLongevitySaveMessage('Armed live in kernel');
-      addLog(
-        'INFO',
-        'Longevity',
-        `Hardware longevity armed: Step charge=${newConfig.batteryStepTempThreshold}°C / ${newConfig.steppedChargeCurrentMa}mA`
-      );
-    } catch (err) {
-      setLongevitySaveMessage('Save failed');
-      setNativeError(String(err));
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleSelectBias = async (bias: AutonomousConfig['adaptiveBias']) => {
-    const nextConfig = { ...config, adaptiveBias: bias };
-    setConfig(nextConfig);
-    await handleSaveConfig(nextConfig);
   };
 
   const handleSaveVulkanConfig = async (nextVulkan: VulkanEngineConfig) => {
@@ -718,13 +754,13 @@ export const App: React.FC = () => {
       const normalizedMode: VulkanLayerMode =
         nextVulkan.mode === 'disabled' ? 'disabled' : 'safe_hardware';
       const sanitizedVulkan: VulkanEngineConfig = { ...nextVulkan, mode: normalizedMode };
-      setVulkanConfig(sanitizedVulkan);
-      setTelemetry((old) => ({
-        ...old,
-        vulkan: computeVulkanTelemetry(sanitizedVulkan, old.vulkan),
-      }));
 
       if (!isNativeBridge) {
+        setVulkanConfig(sanitizedVulkan);
+        setTelemetry((old) => ({
+          ...old,
+          vulkan: computeVulkanTelemetry(sanitizedVulkan, old.vulkan),
+        }));
         setVulkanSaveMessage(
           normalizedMode === 'safe_hardware'
             ? 'Truthful Hardware Pass-Through active in preview'
@@ -733,29 +769,24 @@ export const App: React.FC = () => {
         addLog(
           'BOOST',
           'VulkanLayer',
-          `Mode=${normalizedMode} | SkiaVK=${sanitizedVulkan.enableSkiavkThreaded} | AdaptiveVRS=${sanitizedVulkan.enableAdaptiveVrs}`
+          `Layer mode=${normalizedMode}; rendering optimizers remain unimplemented.`
         );
         return;
       }
 
-      await writeSurgicalConfigUpdates(
-        {
-          vulkan_layer_mode: normalizedMode,
-          enable_skiavk_threaded: sanitizedVulkan.enableSkiavkThreaded ? 'true' : 'false',
-          enable_adaptive_vrs: sanitizedVulkan.enableAdaptiveVrs ? 'true' : 'false',
-          enable_pipeline_cache_prewarm: sanitizedVulkan.enablePipelineCachePrewarm
-            ? 'true'
-            : 'false',
-        },
-        'COREFLOW_VULKAN_WRITTEN'
-      );
+      await writeVulkanLayerMode(normalizedMode);
+      setVulkanConfig(sanitizedVulkan);
+      setTelemetry((old) => ({
+        ...old,
+        vulkan: computeVulkanTelemetry(sanitizedVulkan, old.vulkan),
+      }));
       await execChecked('killall -HUP coreflowd 2>/dev/null || true');
-      await refreshNative();
-      setVulkanSaveMessage('Armed in libVkLayer_coreflow.so');
+      setVulkanSaveMessage('Mode saved · daemon reload requested');
+      void refreshNative().catch(() => {});
       addLog(
         'BOOST',
         'VulkanLayer',
-        `Committed Vulkan mode=${normalizedMode} to /data/adb/coreflow/vulkan_layer.state`
+        `Vulkan layer mode changed to ${normalizedMode}; no system tuning policy was changed.`
       );
     } catch (err) {
       setVulkanSaveMessage('Save failed');
@@ -765,311 +796,837 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRestoreBaseline = async () => {
-    setIsRestoring(true);
-    setRestoreFeedback(null);
+  const handleViewJournal = useCallback(async () => {
     try {
-      if (!isNativeBridge) {
-        setTelemetry((old) => ({
-          ...old,
-          baselineStatus: 'restored',
-          transactionStage: 'PLANNED',
-        }));
-        setRestoreFeedback('Preview: simulated ownership-verified baseline rollback completed.');
-        return;
-      }
-
-      await execChecked(`${RESOLVE_BIN}; "$BIN" --rollback-baseline`);
-      const status = await refreshNative();
-      if (status.running || status.recoveryPending) throw new Error('Rollback not verified');
-
-      setRestoreFeedback('Tracked OEM baseline values restored and daemon stopped.');
-      addLog('BASELINE', 'NativeRecovery', 'Recovery journal cleared after verified rollback.');
+      const raw = await execChecked(`${RESOLVE_BIN}; "$BIN" --journal`);
+      const parsed = extractJsonObject(raw);
+      setJournalOutput(JSON.stringify(parsed, null, 2));
+      setNativeError(null);
     } catch (error) {
-      setRestoreFeedback('Restoration failed: ' + String(error));
-      setNativeError(String(error));
-    } finally {
-      setIsRestoring(false);
+      setNativeError('Unable to read the mutation journal: ' + String(error));
     }
-  };
+  }, []);
 
-  const navItems: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
-    { id: 'dashboard', label: 'Equilibrium', Icon: Activity },
-    { id: 'vulkan', label: 'Vulkan 1.4 & GPU', Icon: Layers },
-    { id: 'thermal', label: 'Thermal Matrix', Icon: Flame },
-    { id: 'longevity', label: 'Hardware Longevity', Icon: ShieldCheck },
-    { id: 'android', label: 'Quick Settings', Icon: Smartphone },
-    { id: 'console', label: 'RPC Console', Icon: Terminal },
-    { id: 'validation', label: 'Device Validation', Icon: Activity },
+  const handleRestoreBaseline = useCallback(async () => {
+    if (
+      !window.confirm(
+        'Restore every CoreFlow-owned node to its captured OEM baseline and stop coreflowd?'
+      )
+    )
+      return;
+    setRestoringBaseline(true);
+    try {
+      await execChecked(`${RESOLVE_BIN}; "$BIN" --rollback-baseline`);
+      setJournalOutput(null);
+      await refreshNative();
+      addLog(
+        'BASELINE',
+        'Baseline',
+        'OEM baseline rollback requested from the Direct Adaptive audit panel.'
+      );
+    } catch (error) {
+      setNativeError('OEM baseline restore failed: ' + String(error));
+    } finally {
+      setRestoringBaseline(false);
+    }
+  }, [addLog, refreshNative]);
+
+  const navItems: {
+    id: NavTab;
+    label: string;
+    shortLabel: string;
+    Icon: React.FC<{ className?: string }>;
+  }[] = [
+    { id: 'dashboard', label: 'Overview', shortLabel: 'Overview', Icon: Activity },
+    { id: 'thermal', label: 'Thermal Matrix', shortLabel: 'Thermal', Icon: Flame },
+    { id: 'vulkan', label: 'Vulkan & GPU', shortLabel: 'Vulkan', Icon: Layers },
+    { id: 'hardware', label: 'Hardware & CDDP', shortLabel: 'Hardware', Icon: HardDrive },
+    { id: 'validation', label: 'DVS Validation', shortLabel: 'Validation', Icon: ClipboardCheck },
+    { id: 'console', label: 'Audit & RPC', shortLabel: 'Audit', Icon: Terminal },
   ];
 
   return (
-    <div className="min-h-screen relative overflow-x-hidden bg-[#f7f9fc] dark:bg-[#0e1117] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 antialiased">
-      {/* Ambient Material 3 Soft Diffused Background Blurs */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed top-12 left-1/4 w-[28rem] h-[28rem] rounded-full bg-[#d3e3fd]/45 dark:bg-[#0842a0]/15 blur-3xl -z-10"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed bottom-12 right-1/4 w-[26rem] h-[26rem] rounded-full bg-slate-200/55 dark:bg-slate-800/20 blur-3xl -z-10"
-      />
-
-      {/* Bridge and telemetry trust state: Connected requires an official daemon schema v1 response. */}
+    <div
+      className="min-h-screen relative overflow-x-hidden flex flex-col font-sans antialiased"
+      style={{
+        background: 'var(--md-sys-color-background)',
+        color: 'var(--md-sys-color-on-surface)',
+      }}
+    >
+      {/* Bridge and telemetry trust state banner */}
       <div
         role="status"
-        className={
-          'px-4 py-2 text-center text-xs backdrop-blur-md border-b border-slate-900/[0.04] dark:border-white/[0.04] ' +
-          (!isNativeBridge
-            ? 'bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-200'
+        className="px-4 py-2 text-center text-xs font-medium"
+        style={{
+          background: !isNativeBridge
+            ? 'var(--md-sys-color-warning-container)'
             : nativeConnected
-              ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200'
-              : 'bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-200')
-        }
+              ? 'var(--md-sys-color-success-container)'
+              : 'var(--md-sys-color-warning-container)',
+          color: !isNativeBridge
+            ? 'var(--md-sys-color-on-warning-container)'
+            : nativeConnected
+              ? 'var(--md-sys-color-on-success-container)'
+              : 'var(--md-sys-color-on-warning-container)',
+          borderBottom: '1px solid var(--md-sys-color-outline-variant)',
+        }}
       >
         {!isNativeBridge
           ? 'Simulation Mode · Browser-only preview; synthetic values are labelled (sim) and are not kernel audit evidence.'
           : nativeConnected
-            ? 'Connected · Native bridge and official daemon semanticEvidence schema v1 are available.'
+            ? 'Connected · Native bridge and official daemon status with semanticEvidence schema v1 received.'
             : 'Native bridge detected · Awaiting an official daemon status payload; semantic telemetry is unavailable.'}
       </div>
 
       {nativeError && (
         <div
           role="alert"
-          className="px-4 py-2 bg-rose-100 text-rose-900 dark:bg-rose-950/80 dark:text-rose-200 text-xs font-medium text-center"
+          className="px-4 py-2 text-xs font-medium text-center"
+          style={{
+            background: 'var(--md-sys-color-error-container)',
+            color: 'var(--md-sys-color-on-error-container)',
+          }}
         >
           {nativeError}
         </div>
       )}
 
+      {/* Material Design 3 Top App Bar */}
       <PixelHeader
-        engineActive={telemetry.engineActive}
-        onToggleEngine={handleToggleEngine}
         isDark={isDark}
+        accent={appearance.accent}
         onToggleTheme={toggleTheme}
+        onSelectAccent={handleSelectAccent}
         modeLabel={telemetry.modeLabel}
         nativeMode={isNativeBridge}
         nativeConnected={nativeConnected}
+        equilibriumScore={healthSummary.equilibriumScore}
         onOpenArchitectureStudio={() => setIsStudioOpen(true)}
       />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-        {/* Material Design 3 Navigation Pill Bar (Unified Monochromatic Tonal Indicator) */}
+      {/* Material Design 3 Adaptive Shell: Navigation Rail (Desktop/Tablet) + Main Workspace */}
+      <div className="flex-1 w-full max-w-[1440px] mx-auto px-3 sm:px-6 py-5 sm:py-7 flex flex-col lg:flex-row gap-6">
+        {/* Desktop M3 Navigation Rail */}
+        <aside className="hidden lg:block w-56 shrink-0">
+          <nav
+            aria-label="Primary sections"
+            className="md3-nav-rail sticky top-24 space-y-1.5"
+          >
+            <div
+              className="px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em]"
+              style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+            >
+              System Domains
+            </div>
+            {navItems.map(({ id, label, Icon }) => {
+              const active = activeTab === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-current={active ? 'page' : undefined}
+                  onClick={() => setActiveTab(id)}
+                  className={
+                    'w-full flex items-center gap-3 px-3.5 py-2.5 rounded-full text-xs font-medium transition-colors text-left ' +
+                    (active ? 'font-semibold' : '')
+                  }
+                  style={{
+                    background: active
+                      ? 'var(--md-sys-color-secondary-container)'
+                      : 'transparent',
+                    color: active
+                      ? 'var(--md-sys-color-on-secondary-container)'
+                      : 'var(--md-sys-color-on-surface-variant)',
+                  }}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span className="truncate">{label}</span>
+                </button>
+              );
+            })}
+
+            <div
+              className="mt-4 pt-3 px-3 space-y-1.5 text-[11px]"
+              style={{ borderTop: '1px solid var(--md-sys-color-outline-variant)' }}
+            >
+              <div
+                className="font-semibold"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
+                Execution Tier
+              </div>
+              <div
+                className="font-mono text-[11px]"
+                style={{ color: 'var(--md-sys-color-primary)' }}
+              >
+                {telemetry.executionTier ?? 'TIER_1_FULL_COORDINATED'}
+              </div>
+              <div
+                className="text-[10px]"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
+                {telemetry.policyFamily ?? 'android_linux_v4'}
+              </div>
+            </div>
+          </nav>
+        </aside>
+
+        {/* Mobile / Compact WebView M3 Segmented Pill Bar */}
         <nav
-          aria-label="Primary sections"
-          className="flex items-center gap-1.5 p-1.5 rounded-full bg-white/75 dark:bg-[#181c24]/75 backdrop-blur-2xl border border-slate-900/[0.06] dark:border-white/[0.07] overflow-x-auto no-scrollbar w-fit max-w-full"
+          aria-label="Primary sections mobile"
+          className="lg:hidden md3-bottom-nav flex items-center gap-1.5 overflow-x-auto no-scrollbar max-w-full"
         >
-          {navItems.map(({ id, label, Icon }) => {
+          {navItems.map(({ id, shortLabel, Icon }) => {
             const active = activeTab === id;
             return (
               <button
                 key={id}
+                type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => setActiveTab(id)}
                 className={
-                  'px-4 py-2 rounded-full text-xs font-medium transition-all flex items-center gap-2 whitespace-nowrap select-none ' +
-                  (active
-                    ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-900/[0.04] dark:hover:bg-white/[0.04]')
+                  'md3-chip flex items-center gap-1.5 whitespace-nowrap select-none ' +
+                  (active ? 'md3-chip-active' : '')
                 }
               >
                 <Icon className="w-3.5 h-3.5 shrink-0" />
-                <span>{label}</span>
+                <span>{shortLabel}</span>
               </button>
             );
           })}
         </nav>
 
-        {/* Tab 1: Equilibrium Dashboard */}
-        {activeTab === 'dashboard' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Engine stability telemetry">
-              <AutonomousStateHero
+        {/* Main Content Surface */}
+        <main className="flex-1 min-w-0 space-y-6">
+          {activeTab === 'dashboard' && (
+            <div className="space-y-6 md3-page-stage">
+              <section className="space-y-4" aria-label="Autonomous runtime state">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p
+                      className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                      style={{ color: 'var(--md-sys-color-primary)' }}
+                    >
+                      CFAE · Material Design 3 System Console
+                    </p>
+                    <h1
+                      className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      Autonomous Operating State
+                    </h1>
+                    <p
+                      className="mt-1 max-w-2xl text-xs sm:text-sm leading-relaxed"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Capability discovery, evidence-led tuning, and verified actuator ownership.
+                      The console reflects native daemon telemetry while selection remains
+                      autonomous and safety-gated.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={
+                        'md3-badge ' +
+                        (telemetry.engineActive ? 'md3-badge-success' : 'md3-badge-neutral')
+                      }
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{
+                          background: telemetry.engineActive
+                            ? 'var(--md-sys-color-success)'
+                            : 'var(--md-sys-color-outline)',
+                        }}
+                      />
+                      {telemetry.engineActive ? 'Autonomous Engine Active' : 'Daemon Standby'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Always render AutonomousStateHero so both Live & Preview modes get full transaction & bandit visibility */}
+                <AutonomousStateHero
+                  telemetry={telemetry}
+                  nativeMode={isNativeBridge}
+                  thermalTripCelsius={thermalTripCelsius}
+                  onTriggerSimulation={!isNativeBridge ? advancePreviewSimulation : undefined}
+                />
+
+                {isNativeBridge && (
+                  <DirectAdaptiveCard
+                    status={telemetry.directAdaptive}
+                    nativeMode={true}
+                    journalOutput={journalOutput}
+                    restoringBaseline={restoringBaseline}
+                    onViewJournal={handleViewJournal}
+                    onRestoreBaseline={handleRestoreBaseline}
+                  />
+                )}
+              </section>
+
+              {/* M3 Tonal Summary Strip */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="md3-card-elevated flex items-start gap-3.5 p-4">
+                  <div
+                    className="rounded-2xl p-2.5 shrink-0"
+                    style={{
+                      background: 'var(--md-sys-color-primary-container)',
+                      color: 'var(--md-sys-color-on-primary-container)',
+                    }}
+                  >
+                    <Thermometer className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Thermal Headroom
+                    </div>
+                    <div
+                      className="mt-1 text-lg font-semibold tabular-nums"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.thermalHeadroomValid && telemetry.thermalHeadroom != null
+                        ? `${Math.round(telemetry.thermalHeadroom * 100)}%`
+                        : 'Unavailable'}
+                    </div>
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      {telemetry.thermalGuardActive
+                        ? 'Thermal guard engaged'
+                        : 'OEM thermal policy respected'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md3-card-elevated flex items-start gap-3.5 p-4">
+                  <div
+                    className="rounded-2xl p-2.5 shrink-0"
+                    style={{
+                      background: 'var(--md-sys-color-primary-container)',
+                      color: 'var(--md-sys-color-on-primary-container)',
+                    }}
+                  >
+                    <Gauge className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Resource Pressure
+                    </div>
+                    <div
+                      className="mt-1 text-lg font-semibold tabular-nums"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.cpuPressureValid ||
+                      telemetry.memoryPressureValid ||
+                      telemetry.ioPressureValid
+                        ? `${Math.max(
+                            telemetry.cpuPressureValid ? telemetry.cpuPressurePct : 0,
+                            telemetry.memoryPressureValid ? telemetry.memoryPressurePct : 0,
+                            telemetry.ioPressureValid ? telemetry.ioPressurePct : 0
+                          ).toFixed(1)}%`
+                        : 'Unavailable'}
+                    </div>
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Highest available PSI avg10
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md3-card-elevated flex items-start gap-3.5 p-4">
+                  <div
+                    className="rounded-2xl p-2.5 shrink-0"
+                    style={{
+                      background: 'var(--md-sys-color-primary-container)',
+                      color: 'var(--md-sys-color-on-primary-container)',
+                    }}
+                  >
+                    <LockKeyhole className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Mutation Ownership
+                    </div>
+                    <div
+                      className="mt-1 text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.baselineStatus === 'protected' ? 'Journal Armed' : 'Guarded'}
+                    </div>
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      CFJ4 Baseline + Readback guard
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <SemanticEvidencePanel
+                evidence={semanticEvidence}
+                nativeConnected={nativeConnected}
+                simulationMode={!isNativeBridge}
+              />
+              {!isNativeBridge && (
+                <BaselineGuardianCard
+                  nodesSnapshotted={telemetry.baselineNodesSnapshotted}
+                  nativeMode={false}
+                  baselineStatus={telemetry.baselineStatus}
+                />
+              )}
+              <LiveReactionStream logs={logs} nativeMode={isNativeBridge} />
+            </div>
+          )}
+
+          {activeTab === 'thermal' && (
+            <div className="space-y-6 md3-page-stage">
+              <header className="space-y-1">
+                <p
+                  className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
+                  Protection Domain
+                </p>
+                <h1
+                  className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  Thermal Intelligence & Multi-Zone Matrix
+                </h1>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed max-w-2xl"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Sensor evidence, velocity tracking, and OEM thermal constraints are surfaced for
+                  full operational transparency. Mitigation is selected autonomously.
+                </p>
+              </header>
+              <ThermalMatrixCard
                 telemetry={telemetry}
                 nativeMode={isNativeBridge}
-                thermalTripCelsius={config.thermalTripCelsius}
-                onSimulateCpuLoad={handleSimulateCpuLoad}
-                onSimulateMemoryPressure={handleSimulateMemoryPressure}
-                onSimulateIoTrial={handleSimulateIoTrial}
+                thermalTripCelsius={thermalTripCelsius}
               />
-            </section>
-
-            <SemanticEvidencePanel
-              evidence={semanticEvidence}
-              nativeConnected={nativeConnected}
-              simulationMode={!isNativeBridge}
-            />
-
-            <section aria-label="Stability policy settings">
-              <AutonomousTuningCard
-                config={config}
-                nativeMode={isNativeBridge}
-                onChangeConfig={setConfig}
-                onSaveConfig={handleSaveConfig}
-                isSaving={isSaving}
-                saveMessage={saveMessage}
-              />
-            </section>
-
-            <section aria-label="Recovery journal">
-              <BaselineGuardianCard
-                nodesSnapshotted={telemetry.baselineNodesSnapshotted}
-                nativeMode={isNativeBridge}
-                baselineStatus={telemetry.baselineStatus}
-                onRestoreBaseline={handleRestoreBaseline}
-                isRestoring={isRestoring}
-                restoreFeedback={restoreFeedback}
-              />
-            </section>
-
-            <section aria-label="Engine activity">
               <LiveReactionStream
-                logs={logs}
-                onClearLogs={() => setLogs([])}
-                engineActive={telemetry.engineActive}
+                logs={logs.filter(
+                  (event) =>
+                    event.type === 'THERMAL' || event.tag.toLowerCase().includes('thermal')
+                )}
                 nativeMode={isNativeBridge}
               />
-            </section>
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Tab 2: Universal Vulkan 1.4 & GPU Capabilities */}
-        {activeTab === 'vulkan' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Vulkan capabilities and implicit layer bridge">
+          {activeTab === 'vulkan' && (
+            <div className="space-y-6 md3-page-stage">
+              <header className="space-y-1">
+                <p
+                  className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
+                  User Opt-In Subsystem
+                </p>
+                <h1
+                  className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  Vulkan Diagnostics & Explicit Layer
+                </h1>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed max-w-2xl"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Vulkan layer activation (`VK_LAYER_COREFLOW_optimizer`) is the sole manual feature
+                  switch in CoreFlow. All kernel tuning domains remain strictly autonomous.
+                </p>
+              </header>
               <VulkanCapabilitiesCard
                 vulkanTelemetry={telemetry.vulkan}
                 vulkanConfig={vulkanConfig}
                 nativeMode={isNativeBridge}
-                onChangeVulkanConfig={(next) => {
-                  setVulkanConfig(next);
-                  setTelemetry((old) => ({
-                    ...old,
-                    vulkan: computeVulkanTelemetry(next, old.vulkan),
-                  }));
-                }}
                 onSaveVulkanConfig={handleSaveVulkanConfig}
                 isSaving={isSaving}
                 saveMessage={vulkanSaveMessage}
               />
-            </section>
-
-            <section aria-label="Engine activity">
               <LiveReactionStream
-                logs={logs}
-                onClearLogs={() => setLogs([])}
-                engineActive={telemetry.engineActive}
+                logs={logs.filter((event) => event.tag.toLowerCase().includes('vulkan'))}
                 nativeMode={isNativeBridge}
               />
-            </section>
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Tab 3: Thermal Matrix */}
-        {activeTab === 'thermal' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Multi-sensor thermal matrix">
-              <ThermalMatrixCard
-                telemetry={telemetry}
-                nativeMode={isNativeBridge}
-                thermalTripCelsius={config.thermalTripCelsius}
-              />
-            </section>
+          {activeTab === 'hardware' && (
+            <div className="space-y-6 md3-page-stage">
+              <header className="space-y-1">
+                <p
+                  className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
+                  Capability Discovery & CDDP
+                </p>
+                <h1
+                  className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  Hardware & Platform Identity Profile
+                </h1>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed max-w-2xl"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Detected hardware is evidence, not automatic mutation authority. CoreFlow adapts
+                  only through validated operational contracts.
+                </p>
+              </header>
 
-            <section aria-label="Engine activity">
-              <LiveReactionStream
-                logs={logs}
-                onClearLogs={() => setLogs([])}
-                engineActive={telemetry.engineActive}
-                nativeMode={isNativeBridge}
-              />
-            </section>
-          </div>
-        )}
+              {/* Device Identity */}
+              <section className="md3-card-elevated space-y-4 p-5 sm:p-7">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-9 h-9 rounded-2xl flex items-center justify-center"
+                    style={{
+                      background: 'var(--md-sys-color-primary-container)',
+                      color: 'var(--md-sys-color-on-primary-container)',
+                    }}
+                  >
+                    <Cpu className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2
+                      className="font-semibold text-base"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      Device Identity
+                    </h2>
+                    <p
+                      className="text-xs"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Probed via `coreflowd --capabilities`
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {[
+                    ['SoC Model', hardwareInfo.socModel],
+                    ['GPU Subsystem', hardwareInfo.gpuType],
+                    ['Kernel Release', hardwareInfo.kernelVersion],
+                    ['Online CPUs', hardwareInfo.onlineCpus],
+                  ].map(([label, value]) => (
+                    <div key={label} className="md3-card-filled p-4">
+                      <div
+                        className="text-[11px]"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {label}
+                      </div>
+                      <div
+                        className="mt-1 break-words font-mono text-sm font-semibold"
+                        style={{ color: 'var(--md-sys-color-on-surface)' }}
+                      >
+                        {value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
 
-        {/* Tab 3: Hardware Longevity & Storage */}
-        {activeTab === 'longevity' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Hardware longevity controls">
-              <HardwareLongevityCard
-                longevityConfig={longevityConfig}
-                nativeMode={isNativeBridge}
-                onSaveLongevity={handleSaveLongevity}
-                isSaving={isSaving}
-                saveMessage={longevitySaveMessage}
-              />
-            </section>
+              {/* Platform Context & Execution Tier */}
+              <section className="md3-card-elevated space-y-4 p-5 sm:p-7">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className="w-9 h-9 rounded-2xl flex items-center justify-center"
+                      style={{
+                        background: 'var(--md-sys-color-secondary-container)',
+                        color: 'var(--md-sys-color-on-secondary-container)',
+                      }}
+                    >
+                      <Fingerprint className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <h2
+                        className="font-semibold text-base"
+                        style={{ color: 'var(--md-sys-color-on-surface)' }}
+                      >
+                        Platform Context & Execution Tier
+                      </h2>
+                      <p
+                        className="text-xs"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        Cross-platform policy gating & capability fingerprint
+                      </p>
+                    </div>
+                  </div>
+                  <span
+                    className={
+                      'md3-badge font-mono ' +
+                      (telemetry.tier1Eligible !== false ? 'md3-badge-success' : 'md3-badge-warning')
+                    }
+                  >
+                    {telemetry.tier1Eligible !== false ? 'TIER-1 ELIGIBLE' : 'RESTRICTED TIER'}
+                  </span>
+                </div>
 
-            <section aria-label="Recovery journal">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                  {[
+                    ['Platform Vendor', telemetry.platformVendor ?? 'Generic / Android'],
+                    [
+                      'OS Family',
+                      `${telemetry.osFamily ?? 'Android'}${telemetry.osMajor ? ` ${telemetry.osMajor}` : ''}`,
+                    ],
+                    ['Execution Tier', telemetry.executionTier ?? 'TIER_1_FULL_COORDINATED'],
+                    ['Policy Family', telemetry.policyFamily ?? 'android_linux_v4'],
+                    ['Identity Confidence', telemetry.identityConfidence ?? 'HIGH'],
+                    [
+                      'Capability Fingerprint',
+                      telemetry.tunerCapabilityFingerprint ?? 'cf-cap-verified',
+                    ],
+                  ].map(([label, val]) => (
+                    <div key={label} className="md3-card-filled p-3.5">
+                      <div
+                        className="text-[11px]"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {label}
+                      </div>
+                      <div
+                        className="mt-1 font-mono font-semibold break-all"
+                        style={{ color: 'var(--md-sys-color-on-surface)' }}
+                      >
+                        {val}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* Kernel Contract Classification Model */}
+              <section className="md3-card-elevated space-y-4 p-5 sm:p-7">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-9 h-9 rounded-2xl flex items-center justify-center"
+                    style={{
+                      background: 'var(--md-sys-color-primary-container)',
+                      color: 'var(--md-sys-color-on-primary-container)',
+                    }}
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p
+                      className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                      style={{ color: 'var(--md-sys-color-primary)' }}
+                    >
+                      Kernel Contract Model
+                    </p>
+                    <h2
+                      className="text-base font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      Discovery Does Not Grant Mutation Authority
+                    </h2>
+                  </div>
+                </div>
+                <p
+                  className="text-xs leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Every discovered attribute receives an explicit contract classification. Unknown
+                  nodes stay visible for hardware understanding but fail closed for automated writes.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {[
+                    {
+                      name: 'RUNTIME_TUNABLE',
+                      badge: 'md3-badge-success',
+                      detail:
+                        'Only class eligible for tuning after ABI, range, access and baseline verification.',
+                    },
+                    {
+                      name: 'OBSERVATION_ONLY',
+                      badge: 'md3-badge-primary',
+                      detail:
+                        'Hardware limits, topology, alignment and telemetry contribute to the fingerprint.',
+                    },
+                    {
+                      name: 'TEST_ONLY',
+                      badge: 'md3-badge-warning',
+                      detail:
+                        'Writable testing interface, excluded from daily performance optimization.',
+                    },
+                    {
+                      name: 'PROTECTED',
+                      badge: 'md3-badge-error',
+                      detail:
+                        'Integrity-critical or system-sensitive attribute; automatic mutation prohibited.',
+                    },
+                  ].map((item) => (
+                    <div key={item.name} className="md3-card-outlined p-4">
+                      <span className={'md3-badge font-mono ' + item.badge}>{item.name}</span>
+                      <p
+                        className="mt-2 text-xs leading-relaxed"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {item.detail}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* Autonomous Hardware Preservation */}
+              <section className="md3-card-elevated space-y-4 p-5 sm:p-7">
+                <div className="flex items-center gap-2">
+                  <HardDrive
+                    className="h-4 w-4"
+                    style={{ color: 'var(--md-sys-color-primary)' }}
+                  />
+                  <h2
+                    className="font-semibold text-base"
+                    style={{ color: 'var(--md-sys-color-on-surface)' }}
+                  >
+                    Autonomous Hardware Preservation
+                  </h2>
+                </div>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Battery, storage, and I/O protection are evaluated from live workload and device
+                  evidence. No manual thresholds or scheduler presets are exposed here; unsupported
+                  nodes remain observation-only until they earn mutation authority.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Battery Temperature
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.batteryTempCelsius != null && telemetry.batteryTempCelsius >= 0
+                        ? `${telemetry.batteryTempCelsius.toFixed(1)} °C`
+                        : 'N/A'}
+                    </div>
+                  </div>
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Block Queues Discovered
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.blockQueues?.length ?? 0}
+                    </div>
+                  </div>
+                  <div className="md3-card-filled p-4">
+                    <div
+                      className="text-[11px]"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      Baseline Snapshots
+                    </div>
+                    <div
+                      className="mt-1 font-mono text-lg font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {telemetry.baselineNodesSnapshotted}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <BaselineGuardianCard
                 nodesSnapshotted={telemetry.baselineNodesSnapshotted}
                 nativeMode={isNativeBridge}
                 baselineStatus={telemetry.baselineStatus}
-                onRestoreBaseline={handleRestoreBaseline}
-                isRestoring={isRestoring}
-                restoreFeedback={restoreFeedback}
               />
-            </section>
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Tab 4: Android Kotlin Quick Settings */}
-        {activeTab === 'android' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Android Kotlin integration">
-              <AndroidQuickSettingsCard
-                currentBias={config.adaptiveBias}
-                onSelectBias={handleSelectBias}
-                nativeMode={isNativeBridge}
-                socTemp={telemetry.socTempCelsius}
-              />
-            </section>
-
-            <section aria-label="Scheduler configuration">
-              <AutonomousTuningCard
-                config={config}
-                nativeMode={isNativeBridge}
-                onChangeConfig={setConfig}
-                onSaveConfig={handleSaveConfig}
-                isSaving={isSaving}
-                saveMessage={saveMessage}
-              />
-            </section>
-          </div>
-        )}
-
-        {/* Tab 6: CoreFlow Device Validation Suite */}
-        {activeTab === 'validation' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Device validation and CDDP evidence export">
+          {activeTab === 'validation' && (
+            <div className="space-y-6 md3-page-stage">
+              <header className="space-y-1">
+                <p
+                  className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
+                  Evidence, Not Assumptions
+                </p>
+                <h1
+                  className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  Device Validation Suite (CF-DVS)
+                </h1>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed max-w-2xl"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Inspect the live validation contract, 8 invariant pass criteria, and native
+                  subsystem readiness.
+                </p>
+              </header>
               <DeviceValidationSuiteCard nativeMode={isNativeBridge} />
-            </section>
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Tab 5: Developer Console */}
-        {activeTab === 'console' && (
-          <div className="space-y-6 m3-stage">
-            <section aria-label="Developer console">
+          {activeTab === 'console' && (
+            <div className="space-y-6 md3-page-stage">
+              <header className="space-y-1">
+                <p
+                  className="text-[11px] font-bold uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
+                  Runtime Transparency
+                </p>
+                <h1
+                  className="text-2xl font-semibold tracking-tight sm:text-3xl"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  Read-Only Audit & Diagnostic RPC
+                </h1>
+                <p
+                  className="text-xs sm:text-sm leading-relaxed max-w-2xl"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  Query read-only runtime evidence, CFJ4 journals, DVS validation payloads, and
+                  decision logs directly from `coreflowd`.
+                </p>
+              </header>
               <DeveloperConsoleCard
                 nativeMode={isNativeBridge}
                 onRefreshTelemetry={async () => {
                   await refreshNative();
                 }}
               />
-            </section>
-
-            <section aria-label="Engine activity">
-              <LiveReactionStream
-                logs={logs}
-                onClearLogs={() => setLogs([])}
-                engineActive={telemetry.engineActive}
-                nativeMode={isNativeBridge}
-              />
-            </section>
-          </div>
-        )}
-      </main>
+              <LiveReactionStream logs={logs} nativeMode={isNativeBridge} />
+            </div>
+          )}
+        </main>
+      </div>
 
       <ArchitectureStudioModal
         isOpen={isStudioOpen}
@@ -1077,16 +1634,26 @@ export const App: React.FC = () => {
         {...hardwareInfo}
       />
 
-      <footer className="border-t border-slate-900/[0.06] dark:border-white/[0.06] bg-white/50 dark:bg-[#0e1117]/60 backdrop-blur-xl py-6 text-xs text-slate-500 dark:text-slate-400">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <footer
+        className="py-5 text-xs mt-8"
+        style={{
+          borderTop: '1px solid var(--md-sys-color-outline-variant)',
+          background: 'var(--md-sys-color-surface-container-low)',
+          color: 'var(--md-sys-color-on-surface-variant)',
+        }}
+      >
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            <span className="font-semibold text-slate-700 dark:text-slate-300">
-              CFAE System Framework v3.1.0
+            <span
+              className="font-semibold"
+              style={{ color: 'var(--md-sys-color-on-surface)' }}
+            >
+              CFAE System Framework v4.0.0
             </span>
-            {' · '}Autonomous Mutation Safety & Coordinated Optimization
+            {' · '}Material Design 3 Autonomous Mutation Safety Console
           </div>
           <div className="text-[11px] font-mono">
-            ISO C++23 · Rust 2024 · Kotlin 2.1 · Readback Verified Recovery
+            ISO C++23 · Rust 2024 · Kotlin 2.1 · CFJ4 Readback Verified Recovery
           </div>
         </div>
       </footer>

@@ -22,7 +22,7 @@ class CfDvsValidatorTest(unittest.TestCase):
                 "device": {"manufacturer": "Example", "model": "Test Device", "android_api": 35},
             },
             "profile": "INTERACTIVE_CPU",
-            "build": {"version": "3.1.0", "commit": "e30174c630c77790dd7fb285e23a70a2035a3c63"},
+            "build": {"version": "4.0.0", "commit": "e30174c630c77790dd7fb285e23a70a2035a3c63"},
             "metrics": {
                 "cpu_psi_some_avg10": {"value": 0.0, "unit": "%", "validity": "valid", "source": "procfs.psi", "observed_at": "2026-11-08T00:01:00Z"},
                 "thermal_headroom": {"value": None, "unit": "ratio", "validity": "unsupported", "source": "thermal.headroom", "observed_at": "2026-11-08T00:01:00Z", "reason": "No supported headroom source"},
@@ -82,14 +82,26 @@ class CfDvsValidatorTest(unittest.TestCase):
                     "related_cpus_valid": True, "frequency_table_valid": True
                 }],
                 "gpu_domains": [], "thermal_sensors": [],
-                "capabilities": [{
-                    "path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq",
-                    "domain": "cpu", "source": "sysfs", "state": "MUTATION_ELIGIBLE",
-                    "semantic_id": "cpufreq.scaling_max_freq", "unit": "kHz",
-                    "current_value": "1800000", "accepted_values": "",
-                    "constraints": "verified bounds and table", "evidence": "synthetic",
-                    "rejection_reason": ""
-                }],
+                "capabilities": [
+                    {
+                        "path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq",
+                        "domain": "cpu", "source": "sysfs", "state": "MUTATION_ELIGIBLE",
+                        "classification": "RUNTIME_TUNABLE", "rejection_code": "NONE",
+                        "semantic_id": "cpufreq.scaling_max_freq", "unit": "kHz",
+                        "current_value": "1800000", "accepted_values": "",
+                        "constraints": "verified bounds and table", "evidence": "synthetic",
+                        "rejection_reason": ""
+                    },
+                    {
+                        "path": "/sys/class/kgsl/kgsl-3d0/max_gpuclk",
+                        "domain": "gpu", "source": "sysfs", "state": "ACCESS_CHECKED",
+                        "classification": "OBSERVATION_ONLY", "rejection_code": "NONE",
+                        "semantic_id": "kgsl.vendor_control.unverified", "unit": "Hz",
+                        "current_value": "800000000", "accepted_values": "",
+                        "constraints": "", "evidence": "synthetic",
+                        "rejection_reason": "Observation-only vendor surface"
+                    },
+                ],
                 "memory_telemetry_available": True, "cgroup_v2_available": False,
                 "uclamp_interface_available": False
             }
@@ -178,6 +190,43 @@ class CfDvsValidatorTest(unittest.TestCase):
             valid, errors = validate_bundle(root)
             self.assertFalse(valid)
             self.assertTrue(any("verdict mismatch" in e for e in errors))
+
+    def test_schema_11_rejects_invalid_capability_types_and_enums(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_bundle(root)
+            report = json.loads((root / "report.json").read_text())
+            report["schema_version"] = "1.1"
+            report["device_profile"] = {
+                "generation": 1, "fingerprint": "0123456789abcdef", "captured_monotonic_ns": 100,
+                "kernel_release": "6.1-test", "android_release": "", "android_api_level": "not-an-int",
+                "device_model": "Synthetic Device", "soc_model": "Synthetic SoC", "hardware_platform": "",
+                "cpu_topology": {"valid": "yes", "possible": [0], "present": [0], "online": [0]},
+                "cpu_policies": [], "gpu_domains": [], "thermal_sensors": [],
+                "capabilities": [{
+                    "path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq",
+                    "domain": "cpu", "source": "sysfs", "state": "DISCOVERED",
+                    "classification": "INVALID_CLASS", "rejection_code": "INVALID_CODE",
+                    "semantic_id": "cpufreq.scaling_max_freq", "unit": "kHz",
+                    "current_value": "1800000", "accepted_values": "",
+                    "constraints": "", "evidence": "", "rejection_reason": ""
+                }],
+                "memory_telemetry_available": True, "cgroup_v2_available": False,
+                "uclamp_interface_available": False
+            }
+            (root / "report.json").write_text(json.dumps(report), encoding="utf-8")
+            files = {name: (root / name).read_bytes() for name in ("report.json", "events.jsonl", "summary.txt")}
+            entries = [
+                {"path": name, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in sorted(files.items())
+            ]
+            (root / "manifest.json").write_text(json.dumps({"manifest_version": "1.0", "files": entries}), encoding="utf-8")
+            valid, errors = validate_bundle(root)
+            self.assertFalse(valid)
+            self.assertTrue(any("android_api_level" in e for e in errors))
+            self.assertTrue(any("cpu_topology must contain a boolean valid field" in e for e in errors))
+            self.assertTrue(any("invalid capability classification" in e for e in errors))
+            self.assertTrue(any("invalid capability rejection_code" in e for e in errors))
 
 
 if __name__ == "__main__":

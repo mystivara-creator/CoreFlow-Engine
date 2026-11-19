@@ -1,4 +1,4 @@
-// CFAE System Framework v3.1.0 — Coordinated Mutation Transaction & Preview Engine.
+// CFAE System Framework v4.0.0 — Coordinated Mutation Transaction & Preview Engine.
 // Native mode reads real daemon telemetry; this simulator models the 5-layer
 // Mutation Safety architecture + Multi-Domain Autonomous Scheduler & Tunable Evaluator for browser preview.
 
@@ -58,11 +58,26 @@ export interface TunerCandidateTelemetry {
   label: string;
   domain: string;
   trials: number;
+  rewardSamples?: number;
   successes: number;
   rollbacks: number;
   meanDelta: number;
   ucbScore: number;
   cooldownTicks: number;
+}
+
+export interface TunerEvaluatedCandidateTelemetry {
+  id: string;
+  domain: string;
+  intent: string;
+  utilityScore: number;
+  empiricalScore: number;
+  confidence: number;
+  riskPenalty: number;
+  thermalPenalty: number;
+  eligible: boolean;
+  selected: boolean;
+  rejectionReason: string;
 }
 
 export type VulkanLayerMode = 'safe_hardware' | 'full_capability_override' | 'disabled';
@@ -74,11 +89,13 @@ export interface VulkanEngineConfig {
   enablePipelineCachePrewarm: boolean;
 }
 
+// Mirrors the shipped config/coreflow.conf [vulkan_engine] defaults: the layer is
+// opt-in and no sub-feature is pre-enabled before the user selects a layer mode.
 export const DEFAULT_VULKAN_CONFIG: VulkanEngineConfig = {
   mode: 'disabled',
-  enableSkiavkThreaded: true,
-  enableAdaptiveVrs: true,
-  enablePipelineCachePrewarm: true,
+  enableSkiavkThreaded: false,
+  enableAdaptiveVrs: false,
+  enablePipelineCachePrewarm: false,
 };
 
 export interface VulkanTelemetry {
@@ -289,11 +306,14 @@ export const CANONICAL_KEY_SECTIONS: Record<string, string> = {
   zero_polling_mode: 'general',
   enable_cgroups_v2: 'general',
   enable_uclamp: 'general',
+  enable_tuner: 'general',
   tier_override: 'device_adaptation',
   unlock_vendor_clamping: 'device_adaptation',
   force_120hz_rendering: 'device_adaptation',
   enable_cpu_frequency_control: 'device_adaptation',
   enable_gpu_frequency_control: 'device_adaptation',
+  enable_direct_adaptive: 'direct_adaptive',
+  direct_adaptive_policy: 'direct_adaptive',
   top_app_interactive_min: 'uclamp_tuning',
   top_app_interactive_max: 'uclamp_tuning',
   ui_adaptive_bias: 'uclamp_tuning',
@@ -330,20 +350,30 @@ export const CANONICAL_KEY_SECTIONS: Record<string, string> = {
   boost_duration_ms: 'render_booster',
 };
 
+// Own-property lookup so keys such as `constructor` or `__proto__` found in an
+// untrusted config file never resolve through Object.prototype.
+function canonicalSectionOf(key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(CANONICAL_KEY_SECTIONS, key)
+    ? CANONICAL_KEY_SECTIONS[key]
+    : undefined;
+}
+
 export function normalizeSectionName(sec: string): string {
   const trimmed = sec.trim();
   return trimmed === 'stability' ? 'stability_policy' : trimmed;
 }
 
 export function parseConfigIni(raw: string): Record<string, Record<string, string>> {
-  const result: Record<string, Record<string, string>> = {};
+  // Prototype-less maps: section/key names come from an untrusted file, so names like
+  // `__proto__` or `toString` must remain plain data.
+  const result: Record<string, Record<string, string>> = Object.create(null);
   let currentSection = '';
   for (const rawLine of raw.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       currentSection = normalizeSectionName(trimmed.slice(1, -1));
-      if (!result[currentSection]) result[currentSection] = {};
+      if (!result[currentSection]) result[currentSection] = Object.create(null);
       continue;
     }
     const eq = trimmed.indexOf('=');
@@ -351,12 +381,12 @@ export function parseConfigIni(raw: string): Record<string, Record<string, strin
     const key = trimmed.slice(0, eq).trim();
     const val = trimmed.slice(eq + 1).trim();
     if (!key) continue;
-    const expectedSection = CANONICAL_KEY_SECTIONS[key];
+    const expectedSection = canonicalSectionOf(key);
     if (expectedSection && currentSection !== expectedSection) {
       continue;
     }
     const sec = currentSection || expectedSection || 'general';
-    if (!result[sec]) result[sec] = {};
+    if (!result[sec]) result[sec] = Object.create(null);
     result[sec][key] = val;
   }
   return result;
@@ -364,7 +394,7 @@ export function parseConfigIni(raw: string): Record<string, Record<string, strin
 
 export function readSectionStringKey(raw: string, key: string): string | null {
   const parsed = parseConfigIni(raw);
-  const expectedSection = CANONICAL_KEY_SECTIONS[key];
+  const expectedSection = canonicalSectionOf(key);
   if (expectedSection) {
     const v = parsed[expectedSection]?.[key];
     return v && v.length > 0 ? v : null;
@@ -389,8 +419,11 @@ export function mergeConfigText(
   const pending: Record<string, string> = {};
   for (const [k, v] of Object.entries(updates)) {
     const key = k.trim();
-    if (!key || !(key in CANONICAL_KEY_SECTIONS)) continue;
-    pending[key] = String(v).trim();
+    if (!key || canonicalSectionOf(key) === undefined) continue;
+    const value = String(v).trim();
+    // A line break or NUL would let a single value inject extra keys/sections.
+    if (/[\r\n\0]/.test(value)) continue;
+    pending[key] = value;
   }
   if (Object.keys(pending).length === 0) return existingText;
 
@@ -405,7 +438,7 @@ export function mergeConfigText(
   const flushRemainingForSection = (sec: string) => {
     if (!sec) return;
     for (const [k, v] of Object.entries(pending)) {
-      if (CANONICAL_KEY_SECTIONS[k] === sec) {
+      if (canonicalSectionOf(k) === sec) {
         outLines.push(`${k} = ${v}`);
         delete pending[k];
       }
@@ -430,7 +463,7 @@ export function mergeConfigText(
       continue;
     }
     const key = line.slice(0, eq).trim();
-    if (key in pending && CANONICAL_KEY_SECTIONS[key] === currentSection) {
+    if (Object.prototype.hasOwnProperty.call(pending, key) && canonicalSectionOf(key) === currentSection) {
       outLines.push(`${key} = ${pending[key]}`);
       delete pending[key];
     } else {
@@ -442,6 +475,7 @@ export function mergeConfigText(
   const sectionOrder = [
     'general',
     'device_adaptation',
+    'direct_adaptive',
     'uclamp_tuning',
     'thermal_guardian',
     'stability_policy',
@@ -452,7 +486,7 @@ export function mergeConfigText(
   ];
 
   for (const sec of sectionOrder) {
-    const keysForSec = Object.keys(pending).filter((k) => CANONICAL_KEY_SECTIONS[k] === sec);
+    const keysForSec = Object.keys(pending).filter((k) => canonicalSectionOf(k) === sec);
     if (keysForSec.length === 0) continue;
     if (outLines.length > 0 && outLines[outLines.length - 1].trim() !== '') {
       outLines.push('');
@@ -467,6 +501,105 @@ export function mergeConfigText(
   return outLines.join('\n') + '\n';
 }
 
+export interface DirectAdaptiveCpuCluster {
+  id: string;
+  opps: string[];
+}
+
+export interface DirectAdaptiveAppliedValue {
+  semantic: string;
+  domain: string;
+  path: string;
+  current: string;
+  oemBaseline: string;
+  target: string;
+  modified: boolean;
+  owned: boolean;
+  health: string;
+}
+
+export interface DirectAdaptiveStatus {
+  active: boolean;
+  discoveryComplete: boolean;
+  mode: string;
+  screenState: string;
+  thermalGuard: boolean;
+  cpuUtilizationPct: number;
+  thermalPressure: number;
+  ramBytes: number;
+  zramBytes: number;
+  refreshHz: number;
+  gpuModel: string;
+  storageType: string;
+  discoveredNodes: number;
+  baselineNodes: number;
+  verifiedMutations: number;
+  skippedNodes: number;
+  ownershipLosses: number;
+  journalFault: boolean;
+  cpuClusters: DirectAdaptiveCpuCluster[];
+  appliedValues: DirectAdaptiveAppliedValue[];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export function isDirectAdaptiveStatus(value: unknown): value is DirectAdaptiveStatus {
+  if (!isRecord(value)) return false;
+  const numberKeys = [
+    'cpuUtilizationPct', 'thermalPressure', 'ramBytes', 'zramBytes', 'refreshHz',
+    'discoveredNodes', 'baselineNodes', 'verifiedMutations', 'skippedNodes', 'ownershipLosses',
+  ] as const;
+  const stringKeys = ['mode', 'screenState', 'gpuModel', 'storageType'] as const;
+  if (
+    typeof value.active !== 'boolean' ||
+    typeof value.discoveryComplete !== 'boolean' ||
+    typeof value.thermalGuard !== 'boolean' ||
+    typeof value.journalFault !== 'boolean' ||
+    !numberKeys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key])) ||
+    !stringKeys.every((key) => typeof value[key] === 'string') ||
+    !Array.isArray(value.cpuClusters) ||
+    !value.cpuClusters.every((item) =>
+      isRecord(item) &&
+      typeof item.id === 'string' &&
+      Array.isArray(item.opps) &&
+      item.opps.every((opp) => typeof opp === 'string')
+    ) ||
+    !Array.isArray(value.appliedValues) ||
+    !value.appliedValues.every((item) =>
+      isRecord(item) &&
+      ['semantic', 'domain', 'path', 'current', 'oemBaseline', 'target', 'health'].every(
+        (key) => typeof item[key] === 'string'
+      ) &&
+      typeof item.modified === 'boolean' &&
+      typeof item.owned === 'boolean'
+    )
+  ) return false;
+  return true;
+}
+
+export interface TunerActiveInterventionTelemetry {
+  candidateId: string;
+  candidateLabel: string;
+  domain: string;
+  intent: string;
+  stage: string;
+  verdict: string;
+  utilityDelta: number;
+  observationTick: number;
+  observationWindow: number;
+  settlingTicksRemaining: number;
+}
+
+export interface SystemHealthSummary {
+  equilibriumScore: number;
+  thermalTone: 'optimal' | 'elevated' | 'guard';
+  pressureTone: 'calm' | 'contended' | 'critical';
+  ownershipTone: 'intact' | 'contended' | 'fault';
+  headline: string;
+  activeDomains: string[];
+}
+
 export interface AutonomousTelemetry {
   mode: AutonomousMode;
   modeLabel: string;
@@ -475,6 +608,19 @@ export interface AutonomousTelemetry {
   uclampMin: number;
   uclampMax: number;
   uclampSupported: boolean;
+  uclampPolicyMin?: number;
+  uclampPolicyMax?: number;
+  uclampTargetPath?: string;
+  uclampEncoding?: string;
+  platformVendor?: string;
+  osFamily?: string;
+  osMajor?: number;
+  executionTier?: string;
+  policyFamily?: string;
+  identityConfidence?: string;
+  tier1Eligible?: boolean;
+  inspectionMode?: boolean;
+  mutationRuntimeStarted?: boolean;
   socTempCelsius: number;
   socCompositeCelsius?: number;
   cpuAverageCelsius?: number;
@@ -488,7 +634,9 @@ export interface AutonomousTelemetry {
   thermalHeadroomValid?: boolean;
   thermalHeadroom?: number | null;
   thermalSource?: string;
+  thermalSensor?: string;
   thermalSeverity?: number;
+  thermalPressure?: number;
   thermalSensors?: ThermalSensorDetail[];
   cpuPressurePct: number;
   memoryPressurePct: number;
@@ -512,17 +660,30 @@ export interface AutonomousTelemetry {
   tunerRuntimeStage?: string;
   tunerStage?: string;
   tunerIntent?: string;
+  tunerWorkload?: string;
+  tunerBottleneck?: string;
+  tunerObjective?: string;
+  tunerCapabilityFingerprint?: string;
   tunerCandidateId?: string;
   tunerCandidateLabel?: string;
   tunerRationale?: string;
+  tunerDecisionPlanRationale?: string;
   tunerVerdict?: string;
   tunerUtilityDelta?: number;
+  tunerNoiseFloor?: number;
   tunerTrials?: number;
   tunerImproved?: number;
   tunerRolledBack?: number;
+  tunerInconclusive?: number;
+  tunerRejected?: number;
+  tunerThermalStabilization?: boolean;
+  tunerThermalRecovery?: boolean;
   blockQueues?: BlockQueueTelemetry[];
   tunerCandidates?: TunerCandidateTelemetry[];
+  tunerEvaluatedCandidates?: TunerEvaluatedCandidateTelemetry[];
+  tunerActiveInterventions?: TunerActiveInterventionTelemetry[];
   vulkan?: VulkanTelemetry;
+  directAdaptive?: DirectAdaptiveStatus;
   timestamp: number;
 }
 
@@ -612,6 +773,19 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     uclampMin: 320,
     uclampMax: 1024,
     uclampSupported: true,
+    uclampPolicyMin: 320,
+    uclampPolicyMax: 1024,
+    uclampTargetPath: '/dev/cpuctl/top-app',
+    uclampEncoding: 'percentage',
+    platformVendor: 'Universal Android',
+    osFamily: 'Android AOSP / GKI',
+    osMajor: 15,
+    executionTier: 'UniversalFallback',
+    policyFamily: 'CoreFlowBase',
+    identityConfidence: 'High',
+    tier1Eligible: true,
+    inspectionMode: false,
+    mutationRuntimeStarted: true,
     socTempCelsius: 38.6,
     socCompositeCelsius: 38.6,
     cpuAverageCelsius: 38.2,
@@ -619,15 +793,19 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     gpuTempCelsius: 36.8,
     batteryTempCelsius: 33.4,
     skinTempCelsius: 35.1,
+    thermalSource: 'android+sysfs-oem-trips',
+    thermalSensor: 'SoC-Composite (CPU+GPU)',
+    thermalSeverity: 0,
+    thermalPressure: 44.0,
     thermalSensors: [
-      { id: 'tz0', type: 'cpu-0-0', category: 1, celsius: 37.8, valid: true, policyAvailable: true },
-      { id: 'tz1', type: 'cpu-0-1', category: 1, celsius: 38.0, valid: true, policyAvailable: true },
-      { id: 'tz2', type: 'cpu-1-0', category: 1, celsius: 39.4, valid: true, policyAvailable: true },
-      { id: 'tz3', type: 'cpu-1-2', category: 1, celsius: 41.5, valid: true, policyAvailable: true },
-      { id: 'tz4', type: 'gpuss-0', category: 1, celsius: 36.8, valid: true, policyAvailable: true },
-      { id: 'tz5', type: 'quiet_therm', category: 3, celsius: 35.1, valid: true, policyAvailable: true },
-      { id: 'tz6', type: 'battery', category: 2, celsius: 33.4, valid: true, policyAvailable: true },
-      { id: 'tz7', type: 'ap_therm', category: 4, celsius: 37.0, valid: true, policyAvailable: true },
+      { id: 'tz0', type: 'cpu-0-0', category: 1, celsius: 37.8, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.02 },
+      { id: 'tz1', type: 'cpu-0-1', category: 1, celsius: 38.0, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.01 },
+      { id: 'tz2', type: 'cpu-1-0', category: 1, celsius: 39.4, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.04 },
+      { id: 'tz3', type: 'cpu-1-2', category: 1, celsius: 41.5, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.05 },
+      { id: 'tz4', type: 'gpuss-0', category: 1, celsius: 36.8, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: -0.02 },
+      { id: 'tz5', type: 'quiet_therm', category: 3, celsius: 35.1, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.00 },
+      { id: 'tz6', type: 'battery', category: 2, celsius: 33.4, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.00 },
+      { id: 'tz7', type: 'ap_therm', category: 4, celsius: 37.0, valid: true, policyAvailable: true, velocityValid: true, velocityCelsiusPerSec: 0.01 },
     ],
     cpuPressurePct: 1.2,
     memoryPressurePct: 0.3,
@@ -648,16 +826,27 @@ export function createInitialAutonomousTelemetry(): AutonomousTelemetry {
     aiRecommendedScale: 0.94,
     aiConfidence: 0.86,
     aiSamples: 12,
+    tunerRuntimeStage: 'STAGE_ACTIVE_TUNING',
     tunerStage: 'RETAINED',
     tunerIntent: 'HoldEquilibrium',
+    tunerWorkload: 'GeneralInteraction',
+    tunerBottleneck: 'None',
+    tunerObjective: 'HoldBaseline',
+    tunerCapabilityFingerprint: 'cddp-v4:8f4e2b91c073a612',
     tunerCandidateId: 'baseline',
     tunerCandidateLabel: 'OEM Verified Baseline',
     tunerRationale: 'System in equilibrium (I/O & memory PSI low); retaining OEM block scheduler without unnecessary mutation.',
+    tunerDecisionPlanRationale: 'Global candidate pool evaluated; equilibrium held with zero conflict rejections.',
     tunerVerdict: 'IMPROVED',
     tunerUtilityDelta: 0.0,
+    tunerNoiseFloor: 0.05,
     tunerTrials: 3,
     tunerImproved: 2,
     tunerRolledBack: 1,
+    tunerInconclusive: 0,
+    tunerRejected: 0,
+    tunerThermalStabilization: false,
+    tunerThermalRecovery: false,
     blockQueues: [
       {
         device: 'sda',
@@ -794,17 +983,25 @@ export function stepAutonomousSimulation(
     };
   }
 
+  // Never let a corrupted config/telemetry value (NaN) poison every later tick.
+  const trip = Number.isFinite(config.thermalTripCelsius)
+    ? config.thermalTripCelsius
+    : DEFAULT_AUTONOMOUS_CONFIG.thermalTripCelsius;
+  const balancedMin = Number.isFinite(config.balancedUclampMin)
+    ? config.balancedUclampMin
+    : DEFAULT_AUTONOMOUS_CONFIG.balancedUclampMin;
   const biasFloor =
     config.adaptiveBias === 'battery'
-      ? Math.round(config.balancedUclampMin * 0.75)
+      ? Math.round(balancedMin * 0.75)
       : config.adaptiveBias === 'responsiveness'
-      ? Math.round(config.balancedUclampMin * 1.25)
-      : config.balancedUclampMin;
+      ? Math.round(balancedMin * 1.25)
+      : balancedMin;
   const base = Math.max(0, Math.min(1024, biasFloor));
 
+  const currentTemp = Number.isFinite(current.socTempCelsius) ? current.socTempCelsius : 38.6;
   const nextTemp = Math.max(
     32,
-    Math.min(49, current.socTempCelsius + (Math.random() - 0.46) * 0.35)
+    Math.min(49, currentTemp + (Math.random() - 0.46) * 0.35)
   );
   const cpu = forced === 'cpu' ? 14 : Math.max(0, Math.random() * 10);
   const memory = forced === 'memory' ? 6.4 : Math.max(0, Math.random() * 3.5);
@@ -819,14 +1016,14 @@ export function stepAutonomousSimulation(
   let min = base;
   let max = 1024;
 
-  if (nextTemp >= config.thermalTripCelsius) {
+  if (nextTemp >= trip) {
     mode = 'thermal_guard';
     min = 0;
     max = 896;
   } else if (memory >= 3 || io >= 5) {
     mode = 'pressure_guard';
     min = Math.floor(base / 4);
-  } else if (cpu >= 8 && nextTemp <= config.thermalTripCelsius - 3) {
+  } else if (cpu >= 8 && nextTemp <= trip - 3) {
     mode = 'sustained_load';
     min = Math.min(1024, base + Math.floor(base / 2));
   }
@@ -861,7 +1058,9 @@ export function stepAutonomousSimulation(
 
   const updatedQueues = prevQueues.map((q) => ({ ...q }));
 
-  if (forced === 'io_trial' || io >= 5.0) {
+  // A forced memory trial raises I/O PSI too (mode pressure_guard) but must still
+  // exercise the memory-relief candidate instead of being shadowed by the I/O branch.
+  if (forced === 'io_trial' || (io >= 5.0 && forced !== 'memory')) {
     tunerStage = 'RETAINED';
     tunerIntent = 'IoLatencyRelief';
     tunerCandidateId = 'io.mq_deadline_low_latency';
@@ -1248,10 +1447,18 @@ export function computeRelativeTunableValue(
   maxBound: number,
   adaptiveScale = 1.0
 ): number {
-  const clampedScale = Math.max(0.25, Math.min(1.0, adaptiveScale));
+  // Bounds are authoritative; tolerate swapped or non-finite arguments instead of
+  // propagating NaN into a value that would be written to a kernel node.
+  const lo = Number.isFinite(minBound) ? minBound : 1;
+  const hi = Number.isFinite(maxBound) ? Math.max(lo, maxBound) : Number.MAX_SAFE_INTEGER;
+  const lower = Math.min(lo, hi);
+  if (!Number.isFinite(factoryBaseline) || !Number.isFinite(targetRatio)) return lower;
+  const clampedScale = Number.isFinite(adaptiveScale)
+    ? Math.max(0.25, Math.min(1.0, adaptiveScale))
+    : 0.25;
   const effectiveRatio = 1.0 + (targetRatio - 1.0) * clampedScale;
   const raw = Math.max(1, Math.round(factoryBaseline * effectiveRatio));
-  return Math.max(minBound, Math.min(maxBound, raw));
+  return Math.max(lower, Math.min(hi, raw));
 }
 
 export interface FeedbackEvaluationInput {
@@ -1291,13 +1498,36 @@ export function evaluateAdaptiveFeedback(input: FeedbackEvaluationInput): Feedba
     };
   }
 
+  // Non-finite readings (failed PSI/thermal parse) must never be scored: NaN would
+  // fall through every comparison below and be reported as NEUTRAL.
+  const finiteOnly = (arr: number[]) => arr.filter((v) => Number.isFinite(v));
+  const afterIoSamples = finiteOnly(input.afterIoPsiSamples);
+  const afterMemSamples = finiteOnly(input.afterMemPsiSamples);
+  const afterCpuSamples = finiteOnly(input.afterCpuPsiSamples);
+  const afterThermalSamples = finiteOnly(input.afterThermalSamples);
+  const baselineFinite = [
+    input.beforeIoPsi, input.beforeMemPsi, input.beforeCpuPsi, input.beforeThermal,
+  ].every((v) => Number.isFinite(v));
+  if (!baselineFinite) {
+    const nextNonImp = input.consecutiveNonImproved + 1;
+    const shift = Math.min(3, nextNonImp - 1);
+    return {
+      verdict: 'INCONCLUSIVE',
+      action: 'ROLLBACK',
+      utilityDelta: 0,
+      nextAdaptiveScale: input.currentAdaptiveScale,
+      cooldownTicks: Math.min(32, 4 * (1 << shift)),
+      nextConsecutiveNonImproved: nextNonImp,
+    };
+  }
+
   const avg = (arr: number[], fallback: number) =>
     arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : fallback;
 
-  const afterIo = avg(input.afterIoPsiSamples, input.beforeIoPsi);
-  const afterMem = avg(input.afterMemPsiSamples, input.beforeMemPsi);
-  const afterCpu = avg(input.afterCpuPsiSamples, input.beforeCpuPsi);
-  const afterTherm = avg(input.afterThermalSamples, input.beforeThermal);
+  const afterIo = avg(afterIoSamples, input.beforeIoPsi);
+  const afterMem = avg(afterMemSamples, input.beforeMemPsi);
+  const afterCpu = avg(afterCpuSamples, input.beforeCpuPsi);
+  const afterTherm = avg(afterThermalSamples, input.beforeThermal);
 
   const ioGain = input.beforeIoPsi - afterIo;
   const memGain = input.beforeMemPsi - afterMem;
@@ -1318,8 +1548,8 @@ export function evaluateAdaptiveFeedback(input: FeedbackEvaluationInput): Feedba
   }
 
   const ioSpread =
-    input.afterIoPsiSamples.length > 1
-      ? Math.max(...input.afterIoPsiSamples) - Math.min(...input.afterIoPsiSamples)
+    afterIoSamples.length > 1
+      ? Math.max(...afterIoSamples) - Math.min(...afterIoSamples)
       : 0;
   if (ioSpread > Math.max(6.0, input.beforeIoPsi * 1.2) && Math.abs(utilityDelta) < 0.50) {
     const nextNonImp = input.consecutiveNonImproved + 1;
@@ -1418,3 +1648,98 @@ export class CentralMutationCoordinatorModel {
     return priority <= existing.priority;
   }
 }
+
+export function computeSystemHealthSummary(
+  telemetry: AutonomousTelemetry,
+  thermalTripCelsius = DEFAULT_AUTONOMOUS_CONFIG.thermalTripCelsius
+): SystemHealthSummary {
+  const safeTrip = Number.isFinite(thermalTripCelsius) && thermalTripCelsius > 25 ? thermalTripCelsius : 44.0;
+  const temp = Number.isFinite(telemetry.socTempCelsius) ? telemetry.socTempCelsius : -1;
+  const cpuPsi = telemetry.cpuPressureValid !== false && Number.isFinite(telemetry.cpuPressurePct)
+    ? Math.max(0, telemetry.cpuPressurePct)
+    : 0;
+  const memPsi = telemetry.memoryPressureValid !== false && Number.isFinite(telemetry.memoryPressurePct)
+    ? Math.max(0, telemetry.memoryPressurePct)
+    : 0;
+  const ioPsi = telemetry.ioPressureValid !== false && Number.isFinite(telemetry.ioPressurePct)
+    ? Math.max(0, telemetry.ioPressurePct)
+    : 0;
+
+  const isThermalGuard =
+    Boolean(telemetry.thermalGuardActive) ||
+    Boolean(telemetry.directAdaptive?.thermalGuard) ||
+    telemetry.mode === 'thermal_guard' ||
+    (temp > 0 && temp >= safeTrip);
+  const isThermalElevated =
+    !isThermalGuard &&
+    ((temp > 0 && temp >= safeTrip - 2.5) ||
+      (typeof telemetry.thermalPressure === 'number' &&
+        Number.isFinite(telemetry.thermalPressure) &&
+        telemetry.thermalPressure >= 60));
+
+  const thermalTone: SystemHealthSummary['thermalTone'] = isThermalGuard
+    ? 'guard'
+    : isThermalElevated
+      ? 'elevated'
+      : 'optimal';
+
+  const maxPsi = Math.max(cpuPsi * 0.65, memPsi * 1.8, ioPsi * 1.4);
+  const pressureTone: SystemHealthSummary['pressureTone'] =
+    maxPsi >= 10 || memPsi >= 5 || ioPsi >= 8
+      ? 'critical'
+      : maxPsi >= 4 || memPsi >= 2.2 || ioPsi >= 3.5
+        ? 'contended'
+        : 'calm';
+
+  const journalFault = Boolean(telemetry.directAdaptive?.journalFault);
+  const ownershipLosses = telemetry.directAdaptive?.ownershipLosses ?? 0;
+  const ownershipTone: SystemHealthSummary['ownershipTone'] = journalFault
+    ? 'fault'
+    : telemetry.ownershipIntact === false || ownershipLosses > 0
+      ? 'contended'
+      : 'intact';
+
+  let score = 100;
+  if (!telemetry.engineActive) score -= 12;
+  if (thermalTone === 'guard') score -= 24;
+  else if (thermalTone === 'elevated') score -= 10;
+  if (temp > 36) score -= Math.min(14, Math.round((temp - 36) * 1.4));
+  score -= Math.min(24, Math.round(cpuPsi * 0.7 + memPsi * 2.1 + ioPsi * 1.5));
+  if (ownershipTone === 'fault') score -= 35;
+  else if (ownershipTone === 'contended') score -= 14;
+
+  const equilibriumScore = Math.max(15, Math.min(100, score));
+
+  const activeDomainsSet = new Set<string>();
+  if (telemetry.uclampSupported) activeDomainsSet.add('UClamp');
+  if (telemetry.directAdaptive?.active) activeDomainsSet.add('DirectAdaptive');
+  if (telemetry.tunerActiveInterventions && telemetry.tunerActiveInterventions.length > 0) {
+    for (const iv of telemetry.tunerActiveInterventions) {
+      if (iv.domain) activeDomainsSet.add(iv.domain);
+    }
+  } else if (telemetry.tunerCandidateId && telemetry.tunerCandidateId !== 'baseline') {
+    const prefix = telemetry.tunerCandidateId.split('.')[0];
+    if (prefix) activeDomainsSet.add(prefix.toUpperCase());
+  }
+  if (telemetry.vulkan?.layerActive) activeDomainsSet.add('VulkanLayer');
+
+  const headline = journalFault
+    ? 'Journal fault latched — mutations halted while OEM recovery remains protected.'
+    : thermalTone === 'guard'
+      ? 'Thermal Guard engaged — pacing SoC demand within OEM thermal boundaries.'
+      : pressureTone === 'critical'
+        ? 'Resource contention detected — coordinated relief transaction active.'
+        : telemetry.engineActive
+          ? 'System in verified equilibrium — readback-checked policies active.'
+          : 'Runtime in standby — OEM baseline values intact.';
+
+  return {
+    equilibriumScore,
+    thermalTone,
+    pressureTone,
+    ownershipTone,
+    headline,
+    activeDomains: Array.from(activeDomainsSet),
+  };
+}
+

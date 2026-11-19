@@ -38,12 +38,12 @@ struct Fixture {
         cgroup = root / "cg" / "workload";
         fs::create_directories(sys);
         fs::create_directories(proc / "self");
-        write(sys, "devices/system/cpu/cpufreq/policy0/scaling_driver", "schedutil\n");
-        write(sys, "devices/system/cpu/cpufreq/policy0/scaling_cur_freq", "600000\n");
-        write(sys, "devices/system/cpu/cpufreq/policy0/scaling_available_frequencies",
+        write(sys, "devices/system/cpu/cpufreq/policy17/scaling_driver", "schedutil\n");
+        write(sys, "devices/system/cpu/cpufreq/policy17/scaling_cur_freq", "600000\n");
+        write(sys, "devices/system/cpu/cpufreq/policy17/scaling_available_frequencies",
               "300000 600000 1200000\n");
-        write(sys, "devices/system/cpu/cpufreq/policy0/cpuinfo_min_freq", "300000\n");
-        write(sys, "devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq", "1200000\n");
+        write(sys, "devices/system/cpu/cpufreq/policy17/cpuinfo_min_freq", "300000\n");
+        write(sys, "devices/system/cpu/cpufreq/policy17/cpuinfo_max_freq", "1200000\n");
         write(proc, "self/cgroup", "0::/workload\n");
         write(proc, "self/mountinfo",
               "29 23 0:26 / " + (root / "cg").string() +
@@ -59,7 +59,7 @@ struct Fixture {
     std::size_t collect(std::array<DomainRelationshipEvidence, 3>& evidence) {
         coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(sys.string(), proc.string());
         coreflow::platform::RawDiscoveredEndpoint endpoint{
-            id(7), "sysfs:/devices/system/cpu/cpufreq/policy0/scaling_cur_freq", AccessCapability::Read, 44};
+            id(7), "sysfs:/devices/system/cpu/cpufreq/policy17/scaling_cur_freq", AccessCapability::Read, 44};
         return adapter.collectDomainRelationshipEvidence(endpoint, evidence);
     }
 };
@@ -114,7 +114,7 @@ int main() {
     }
     {
         Fixture fixture;
-        write(fixture.sys, "devices/system/cpu/cpufreq/policy0/scaling_available_frequencies",
+        write(fixture.sys, "devices/system/cpu/cpufreq/policy17/scaling_available_frequencies",
               "300000 broken 1200000\n");
         assert(fixture.collect(evidence) == 0); // malformed frequency ABI fails closed
     }
@@ -130,8 +130,47 @@ int main() {
     }
     {
         Fixture fixture;
-        write(fixture.sys, "devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq", "300000\n");
+        write(fixture.sys, "devices/system/cpu/cpufreq/policy17/cpuinfo_max_freq", "300000\n");
         assert(fixture.collect(evidence) == 0);
+    }
+    {
+        Fixture fixture;
+        const auto cpuctl = fixture.root / "cpuctl";
+        const auto top_app = cpuctl / "interactive-session";
+        write(fixture.proc, "self/cgroup", "2:cpu,cpuacct:/interactive-session\n");
+        write(fixture.proc, "self/mountinfo",
+              "30 23 0:27 / " + cpuctl.string() +
+              " rw,nosuid,nodev - cgroup cgroup rw,cpu,cpuacct\n");
+        write(fixture.proc, "pressure/cpu",
+              "some avg10=1.00 avg60=0.50 avg300=0.10 total=12345\n"
+              "full avg10=0.00 avg60=0.00 avg300=0.00 total=123\n");
+        write(top_app, "cpu.uclamp.min", "0.00");
+        write(top_app, "cpu.uclamp.max", "max");
+        write(top_app, "tasks", "1234\n");
+        write(top_app, "cgroup.procs", "1234\n");
+        write(top_app, "cpu.uclamp.latency_sensitive", "0\n");
+        assert(fixture.collect(evidence) == 3);
+        assert(evidence[0].kind == DomainEvidenceKind::SubsystemAssociation);
+        assert(evidence[1].kind == DomainEvidenceKind::DriverAbi);
+        assert(evidence[2].kind == DomainEvidenceKind::PsiResponseCorrelation);
+        DomainEvidenceAggregator aggregator{};
+        const auto assessment = aggregator.aggregate(evidence, 44,
+            evidence[0].observed_at_ns, 5'000'000'000ULL);
+        assert(assessment.mutationEligible());
+
+        coreflow::platform::LinuxSysfsDiscoveryAdapter adapter(
+            fixture.sys.string(), fixture.proc.string());
+        coreflow::platform::RawDiscoveredEndpoint endpoint{
+            id(7), "sysfs:/devices/system/cpu/cpufreq/policy17/scaling_cur_freq",
+            AccessCapability::Read, 44};
+        CapabilityResolver resolver{};
+        const auto descriptor = resolver.resolveOne(
+            endpoint, adapter, 44, evidence[0].observed_at_ns);
+        assert(descriptor.has_value());
+        assert(descriptor->state() == DescriptorState::Validated);
+        assert(descriptor->semantic().functional_domain == FunctionalDomain::Cpu);
+        assert(descriptor->domainAssessment().corroborating_relations == 3U);
+        assert(descriptor->mutation().mode == MutationMode::None);
     }
     std::cout << "Linux sysfs discovery adapter mock filesystem: PASS\n";
     return 0;

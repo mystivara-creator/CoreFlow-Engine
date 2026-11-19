@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
@@ -69,7 +70,7 @@ struct VkPhysicalDeviceFeatures2 {
     VkPhysicalDeviceFeatures features;
 };
 
-struct VkPhysicalDeviceLimits {
+struct alignas(8) VkPhysicalDeviceLimits {
     uint8_t opaque[504];
 };
 
@@ -88,6 +89,9 @@ struct VkPhysicalDeviceProperties {
     VkPhysicalDeviceLimits limits;
     VkPhysicalDeviceSparseProperties sparseProperties;
 };
+#if INTPTR_MAX == INT64_MAX
+static_assert(sizeof(VkPhysicalDeviceProperties) == 824U && alignof(VkPhysicalDeviceProperties) == 8U);
+#endif
 
 struct VkPhysicalDeviceProperties2 {
     VkStructureType sType;
@@ -536,6 +540,12 @@ void test_vulkan_layer_truthfulness_and_dispatch() {
     VkDevice dev_b = nullptr;
     assert(create_dev(phys_b, &dci_b, nullptr, &dev_b) == VK_SUCCESS);
 
+    for (const char* cache_fn : {"vkCreatePipelineCache", "vkGetPipelineCacheData", "vkDestroyPipelineCache"}) {
+        const auto via_gipa = vkGetInstanceProcAddr(inst_a, cache_fn);
+        const auto via_gdpa = vkGetDeviceProcAddr(dev_a, cache_fn);
+        assert(via_gipa != nullptr && via_gipa == via_gdpa);
+    }
+
     auto destroy_dev_a = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(dev_a, "vkDestroyDevice"));
     auto destroy_dev_b = reinterpret_cast<PFN_vkDestroyDevice>(vkGetDeviceProcAddr(dev_b, "vkDestroyDevice"));
     destroy_dev_a(dev_a, nullptr);
@@ -705,6 +715,15 @@ int main() {
     coordinator.emergency_preempt_all("test-mali-policy-preemption");
     assert(read_file(mali_dev / "device/power_policy") == "always_on");
     assert(coordinator.active_leases().empty());
+
+    // A rejected Mali power_policy write must roll back and release the GpuDevfreq lease.
+    if (::geteuid() != 0) {
+        assert(::chmod((mali_dev / "device/power_policy").c_str(), 0444) == 0);
+        assert(!vk.apply_workload_policy(WorkloadState::Balanced, 0.95, false));
+        assert(read_file(mali_dev / "device/power_policy") == "always_on");
+        assert(coordinator.active_leases().empty());
+        assert(::chmod((mali_dev / "device/power_policy").c_str(), 0644) == 0);
+    }
 
     assert(!baseline.has_active_mutations());
     fs::remove_all(tmp_root);

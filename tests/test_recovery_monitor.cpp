@@ -155,7 +155,7 @@ int main() {
 
         const fs::path round_root = fs::path(state_dir) / ("round-" + std::to_string(round));
         const fs::path tuner_sys = round_root / "tuner-sys";
-        const fs::path queue = tuner_sys / "block/sdb/queue";
+        const fs::path queue = tuner_sys / "class/block/sdb/queue";
         const fs::path longevity_sys = round_root / "longevity-sys";
         const fs::path battery_dir = longevity_sys / "class/power_supply/battery";
         const fs::path battery_node = battery_dir / "constant_charge_current_max";
@@ -168,6 +168,7 @@ int main() {
         put(queue / "iosched/writes_starved", "2");
         put(queue / "iosched/fifo_batch", "16");
 
+        put(battery_dir / "type", "Battery");
         put(battery_node, "2000000");
         put(battery_dir / "temp", "420");
         put(battery_dir / "status", "Charging");

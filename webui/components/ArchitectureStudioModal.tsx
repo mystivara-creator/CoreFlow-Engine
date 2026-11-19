@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { X, Copy, Download, Activity, Cpu, Code2, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { X, Copy, Download, Activity, Cpu, Code2, ShieldCheck, Layers } from 'lucide-react';
 import blueprint from '../../docs/EQUILIBRIUM_BLUEPRINT.md?raw';
 import rustController from '../../rust/src/controller.rs?raw';
 import rustBridge from '../../rust/src/bridge.rs?raw';
@@ -67,11 +67,27 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
     return samples;
   }, [load, ambient]);
 
-  if (!props.isOpen) return null;
+  const { isOpen, onClose } = props;
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  if (!isOpen) return null;
 
   const fullText =
     blueprint +
-    `\n\n## CFAE System Framework v3.1.0\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
+    `\n\n## CFAE System Framework v4.0.0\n## Current Hardware\nSoC: ${props.socModel}\nKernel: ${props.kernelVersion}\nCPUs: ${props.onlineCpus}\nGPU: ${props.gpuType}\n`;
 
   const copy = async () => {
     try {
@@ -100,45 +116,71 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
   const capacityPoints = simulation.map((s, i) => `${i * 5},${200 - s.scale * 160}`).join(' ');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/55 backdrop-blur-2xl m3-stage">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 backdrop-blur-xl md3-page-stage"
+      style={{ background: 'color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent)' }}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="CFAE System Framework Architecture Studio"
-        className="relative w-full max-w-5xl h-[88vh] flex flex-col m3-card text-slate-900 dark:text-slate-100 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-5xl h-[88vh] flex flex-col md3-card-elevated overflow-hidden"
+        style={{
+          background: 'var(--md-sys-color-surface-container-high)',
+          border: '1px solid var(--md-sys-color-outline-variant)',
+        }}
       >
-        <header className="px-6 py-5 border-b border-slate-900/[0.06] dark:border-white/[0.06] flex justify-between items-center gap-3">
-          <div>
-            <h2 className="font-semibold text-lg text-slate-900 dark:text-white">
-              CFAE Architecture & Mutation Safety Studio
-            </h2>
-            <p className="text-xs text-[#0b57d0] dark:text-[#a8c7fa] font-mono">
-              v3.1.0 · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
-            </p>
+        <header
+          className="px-6 py-4 flex justify-between items-center gap-3"
+          style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0"
+              style={{
+                background: 'var(--md-sys-color-primary-container)',
+                color: 'var(--md-sys-color-on-primary-container)',
+              }}
+            >
+              <Layers size={19} />
+            </div>
+            <div>
+              <h2
+                className="font-semibold text-base sm:text-lg tracking-tight"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
+                CFAE Architecture & Mutation Safety Studio
+              </h2>
+              <p
+                className="text-xs font-mono"
+                style={{ color: 'var(--md-sys-color-primary)' }}
+              >
+                v4.0.0 · C++23 + Rust 2024 + Kotlin · Coordinated Mutation Transactions
+              </p>
+            </div>
           </div>
           <button
             onClick={props.onClose}
             aria-label="Close Studio"
-            className="w-9 h-9 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.12] flex items-center justify-center text-slate-600 dark:text-slate-300"
+            className="md3-icon-btn"
           >
             <X size={18} />
           </button>
         </header>
 
         <nav
-          className="flex flex-wrap gap-1.5 px-6 py-3 border-b border-slate-900/[0.06] dark:border-white/[0.06]"
+          className="flex flex-wrap gap-1.5 px-6 py-3"
+          style={{
+            borderBottom: '1px solid var(--md-sys-color-outline-variant)',
+            background: 'var(--md-sys-color-surface-container)',
+          }}
           aria-label="Studio sections"
         >
           {tabs.map((item) => (
             <button
               key={item}
               onClick={() => setTab(item)}
-              className={
-                'px-3.5 py-1.5 rounded-full text-xs font-medium transition-all ' +
-                (item === tab
-                  ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
-                  : 'bg-slate-900/[0.04] dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 hover:bg-slate-900/[0.08]')
-              }
+              className={'md3-chip ' + (item === tab ? 'md3-chip-active' : '')}
             >
               {item}
             </button>
@@ -149,11 +191,17 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
           {tab === 'Architecture' && (
             <>
               <div className="space-y-2">
-                <h3 className="font-semibold text-base flex items-center gap-2">
-                  <Cpu size={18} className="text-[#0b57d0] dark:text-[#a8c7fa]" />
+                <h3
+                  className="font-semibold text-base flex items-center gap-2"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  <Cpu size={18} style={{ color: 'var(--md-sys-color-primary)' }} />
                   Multi-Language Native Architecture
                 </h3>
-                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                <p
+                  className="text-xs sm:text-sm leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
                   Sensor & Capability Discovery → State Normalization → Reasoning Engine → Dependency Analyzer → Mutation Planner → Safety Admission Gate → Transaction Coordinator (Apply Order + Ownership Guard) → Readback Verify → Outcome Evaluator → Retain / Rollback → Outcome Learning.
                 </p>
               </div>
@@ -173,22 +221,31 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                     'Android 15 (API 35) Quick Settings TileService and Battery thermal broadcast integration.',
                   ],
                   [
-                    'Material 3 WebUI Workbench',
-                    'Lightweight offline KernelSU/APatch dashboard displaying live runtime status or labeled preview telemetry.',
+                    'Material 3 Expressive WebUI',
+                    'Offline KernelSU/APatch workbench displaying live runtime status or clearly labeled preview telemetry with dynamic seed palettes.',
                   ],
                 ].map(([title, text]) => (
-                  <div key={title} className="m3-tonal-block p-5 space-y-1.5">
-                    <h4 className="text-xs sm:text-sm font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">
+                  <div key={title} className="md3-card-filled p-5 space-y-1.5">
+                    <h4
+                      className="text-xs sm:text-sm font-semibold"
+                      style={{ color: 'var(--md-sys-color-primary)' }}
+                    >
                       {title}
                     </h4>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                    <p
+                      className="text-xs leading-relaxed"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
                       {text}
                     </p>
                   </div>
                 ))}
               </div>
 
-              <div className="m3-tonal-block p-5 font-mono text-xs space-y-1.5 text-slate-700 dark:text-slate-300">
+              <div
+                className="md3-card-outlined p-5 font-mono text-xs space-y-1.5"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 <div>SoC: {props.socModel}</div>
                 <div>Kernel: {props.kernelVersion}</div>
                 <div>Online CPUs: {props.onlineCpus}</div>
@@ -200,11 +257,17 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
           {tab === 'Mutation Safety' && (
             <>
               <div className="space-y-2">
-                <h3 className="font-semibold text-base flex items-center gap-2">
-                  <ShieldCheck size={18} className="text-[#0b57d0] dark:text-[#a8c7fa]" />
+                <h3
+                  className="font-semibold text-base flex items-center gap-2"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  <ShieldCheck size={18} style={{ color: 'var(--md-sys-color-primary)' }} />
                   Coordinated Optimization & 5-Layer Mutation Safety
                 </h3>
-                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                <p
+                  className="text-xs sm:text-sm leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
                   The primary unit of control is the <strong>Mutation Transaction</strong>: one explicit optimization goal, a dependency-verified change plan within a bounded risk budget, per-write readback verification, and ownership-safe rollback.
                 </p>
               </div>
@@ -236,18 +299,34 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                     'Evaluates Stability, Responsiveness, Pressure, Thermal, and Power outcomes (IMPROVED, NEUTRAL, REGRESSED, OWNERSHIP_LOST) with anti-repeat deferral.',
                   ],
                 ].map(([t, d]) => (
-                  <div key={t} className="m3-tonal-block p-4 space-y-1.5">
-                    <h4 className="text-xs font-semibold text-[#0b57d0] dark:text-[#a8c7fa]">{t}</h4>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">{d}</p>
+                  <div key={t} className="md3-card-filled p-4 space-y-1.5">
+                    <h4
+                      className="text-xs font-semibold"
+                      style={{ color: 'var(--md-sys-color-primary)' }}
+                    >
+                      {t}
+                    </h4>
+                    <p
+                      className="text-xs leading-relaxed"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      {d}
+                    </p>
                   </div>
                 ))}
               </div>
 
-              <div className="m3-tonal-block p-5 text-xs space-y-2">
-                <div className="font-semibold text-slate-900 dark:text-slate-100">
+              <div className="md3-card-outlined p-5 text-xs space-y-2">
+                <div
+                  className="font-semibold"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
                   12 Non-Negotiable Safety Invariants:
                 </div>
-                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                <p
+                  className="leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
                   1. Zero write without valid baseline · 2. Zero mutation without known semantics & range · 3. Zero grouped mutation without verified relationship · 4. No concurrent conflicting transactions · 5. Mandatory readback after every write · 6. Rollback never overwrites external OEM/Android changes · 7. No blind retries without new evidence · 8. Retention requires valid outcome & ownership · 9. No unverified metric claims · 10. OEM/Android thermal policy remains supreme · 11. Write-ahead journal & idempotent recovery · 12. Fail-safe default is no write.
                 </p>
               </div>
@@ -257,10 +336,16 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
           {tab === 'Risk & Provenance' && (
             <>
               <div className="space-y-2">
-                <h3 className="font-semibold text-base">
+                <h3
+                  className="font-semibold text-base"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
                   Multi-Dimensional Risk Model & Dependency Provenance
                 </h3>
-                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                <p
+                  className="text-xs sm:text-sm leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
                   CoreFlow evaluates seven distinct risk dimensions rather than a single opaque score: Semantic uncertainty, Platform uncertainty, Interaction risk, Reversibility, System impact, Observability, and Ownership confidence.
                 </p>
               </div>
@@ -272,21 +357,40 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                   ['High Risk Class', 'Broad impact, uncertain platform semantics, or weak observability. Strictly isolated or rejected; never grouped with other changes.'],
                   ['Forbidden Class', 'Missing baseline, unsafe rollback path, ownership conflict, or violates OEM thermal/power safety policy. Never mutated.'],
                 ].map(([cls, policy]) => (
-                  <div key={cls} className="m3-tonal-block p-4 space-y-1">
-                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">{cls}</div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">{policy}</p>
+                  <div key={cls} className="md3-card-filled p-4 space-y-1">
+                    <div
+                      className="text-xs font-semibold"
+                      style={{ color: 'var(--md-sys-color-on-surface)' }}
+                    >
+                      {cls}
+                    </div>
+                    <p
+                      className="text-xs leading-relaxed"
+                      style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    >
+                      {policy}
+                    </p>
                   </div>
                 ))}
               </div>
 
-              <div className="m3-tonal-block p-5 space-y-2 text-xs">
-                <div className="font-semibold text-slate-900 dark:text-slate-100">
+              <div className="md3-card-outlined p-5 space-y-2 text-xs">
+                <div
+                  className="font-semibold"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
                   Transaction State Machine Protocol
                 </div>
-                <div className="font-mono text-[#0b57d0] dark:text-[#a8c7fa] leading-relaxed">
+                <div
+                  className="font-mono leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-primary)' }}
+                >
                   PROPOSED → ADMISSION_CHECK → PREPARED → APPLYING → READBACK_VERIFY → OBSERVING → COMMITTED → RETAINED
                 </div>
-                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                <p
+                  className="leading-relaxed"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
                   Failed admission transitions to DEFERRED / REJECTED. Readback mismatch or observed regression transitions immediately to ROLLING_BACK under Ownership Guard verification.
                 </p>
               </div>
@@ -295,31 +399,52 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
           {tab === 'HAL / Binder' && (
             <>
-              <h3 className="font-semibold text-base">Platform Integration & OEM Boundaries</h3>
-              <div className="m3-tonal-block overflow-hidden">
+              <h3
+                className="font-semibold text-base"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
+                Platform Integration & OEM Boundaries
+              </h3>
+              <div className="md3-card-filled overflow-hidden">
                 <table className="w-full text-xs text-left">
                   <thead>
-                    <tr className="border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+                    <tr style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}>
                       <th className="p-4 font-semibold">Capability</th>
                       <th className="p-4 font-semibold">Implementation Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
+                  <tbody>
                     {[
                       ['AIDL Power HAL discovery', 'Nonblocking libbinder_ndk lookup; capability detection only.'],
                       ['Qualcomm / MediaTek interception', 'Unavailable: requires a registered, versioned OEM/AOSP proxy backend.'],
                       ['Binder device access', 'Does not expose or reroute other processes’ transactions.'],
                       ['NPU / APU offload', 'Unavailable: requires a compatible compute workload and runtime.'],
                     ].map(([a, b]) => (
-                      <tr key={a}>
-                        <td className="p-4 font-medium text-[#0b57d0] dark:text-[#a8c7fa]">{a}</td>
-                        <td className="p-4 text-slate-600 dark:text-slate-400">{b}</td>
+                      <tr
+                        key={a}
+                        style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+                      >
+                        <td
+                          className="p-4 font-medium"
+                          style={{ color: 'var(--md-sys-color-primary)' }}
+                        >
+                          {a}
+                        </td>
+                        <td
+                          className="p-4"
+                          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                        >
+                          {b}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              <p
+                className="text-xs leading-relaxed"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 OEM thermal services remain authoritative. The daemon never replaces Power HAL services, patches Binder, or injects undocumented vendor transactions.
               </p>
             </>
@@ -327,16 +452,27 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
           {tab === 'Thermal Simulator' && (
             <>
-              <h3 className="font-semibold text-base flex items-center gap-2">
-                <Activity size={18} className="text-[#0b57d0] dark:text-[#a8c7fa]" />
+              <h3
+                className="font-semibold text-base flex items-center gap-2"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
+                <Activity size={18} style={{ color: 'var(--md-sys-color-primary)' }} />
                 Illustrative Thermal Equilibrium Plant
               </h3>
-              <p className="text-xs text-slate-600 dark:text-slate-400">
+              <p
+                className="text-xs"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 Synthetic first-order thermal plant for previewing PID slew bounding. Separate from native device sensor telemetry.
               </p>
               <div className="grid sm:grid-cols-2 gap-4">
-                <label className="m3-tonal-block p-4 block text-xs">
-                  <span className="font-medium">Workload Intensity: {load}%</span>
+                <label className="md3-card-filled p-4 block text-xs">
+                  <span
+                    className="font-medium"
+                    style={{ color: 'var(--md-sys-color-on-surface)' }}
+                  >
+                    Workload Intensity: {load}%
+                  </span>
                   <input
                     aria-label="Simulated workload"
                     className="block w-full mt-2"
@@ -347,8 +483,13 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                     onChange={(e) => setLoad(Number(e.target.value))}
                   />
                 </label>
-                <label className="m3-tonal-block p-4 block text-xs">
-                  <span className="font-medium">Ambient Temperature: {ambient} °C</span>
+                <label className="md3-card-filled p-4 block text-xs">
+                  <span
+                    className="font-medium"
+                    style={{ color: 'var(--md-sys-color-on-surface)' }}
+                  >
+                    Ambient Temperature: {ambient} °C
+                  </span>
                   <input
                     aria-label="Simulated ambient temperature"
                     className="block w-full mt-2"
@@ -364,7 +505,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                 viewBox="0 0 620 235"
                 role="img"
                 aria-label="Temperature and capacity scale over 120 simulated seconds"
-                className="w-full m3-tonal-block p-2"
+                className="w-full md3-card-filled p-2"
               >
                 <line x1="10" y1="200" x2="610" y2="200" stroke="#64748b" strokeOpacity="0.4" />
                 <polyline
@@ -377,7 +518,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                 <polyline
                   points={capacityPoints}
                   fill="none"
-                  stroke="#0b57d0"
+                  stroke="var(--md-sys-color-primary)"
                   strokeWidth="2.2"
                   transform="translate(10,0)"
                 />
@@ -389,12 +530,12 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                 </text>
               </svg>
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-                <span>
+                <span style={{ color: 'var(--md-sys-color-on-surface)' }}>
                   Final: {simulation[120].temperature.toFixed(1)} °C ·{' '}
                   {(simulation[120].scale * 100).toFixed(0)}% capacity budget
                 </span>
-                <span className="text-slate-500">
-                  Amber: Temperature (20–70 °C) · Blue: Capacity Scale (40–100%)
+                <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                  Amber: Temperature (20–70 °C) · Accent: Capacity Scale (40–100%)
                 </span>
               </div>
             </>
@@ -402,23 +543,29 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
           {tab === 'C++23 / Rust 2024' && (
             <>
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="font-semibold text-base flex items-center gap-2">
-                  <Code2 size={18} className="text-[#0b57d0] dark:text-[#a8c7fa]" />
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <h3
+                  className="font-semibold text-base flex items-center gap-2"
+                  style={{ color: 'var(--md-sys-color-on-surface)' }}
+                >
+                  <Code2 size={18} style={{ color: 'var(--md-sys-color-primary)' }} />
                   Production Source Inspector
                 </h3>
                 <select
                   aria-label="Source file"
                   value={source}
                   onChange={(e) => setSource(e.target.value)}
-                  className="px-4 py-1.5 rounded-full text-xs font-medium bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd]"
+                  className="md3-btn-tonal text-xs"
                 >
                   {Object.keys(sources).map((name) => (
                     <option key={name}>{name}</option>
                   ))}
                 </select>
               </div>
-              <pre className="overflow-auto text-xs font-mono p-5 m3-tonal-block whitespace-pre max-h-96 leading-relaxed">
+              <pre
+                className="overflow-auto text-xs font-mono p-5 md3-card-filled whitespace-pre max-h-96 leading-relaxed"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
                 {sources[source]}
               </pre>
             </>
@@ -426,10 +573,15 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
 
           {tab === 'Export' && (
             <>
-              <h3 className="font-semibold text-base">Specification & Blueprint Export</h3>
+              <h3
+                className="font-semibold text-base"
+                style={{ color: 'var(--md-sys-color-on-surface)' }}
+              >
+                Specification & Blueprint Export
+              </h3>
               <div className="flex gap-2.5 flex-wrap">
                 <button
-                  className="inline-flex items-center gap-2 bg-[#0b57d0] dark:bg-[#a8c7fa] text-white dark:text-[#062e6f] px-5 py-2 rounded-full text-xs font-medium"
+                  className="md3-btn-filled"
                   onClick={() => void copy()}
                 >
                   <Copy size={14} />
@@ -438,7 +590,7 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                 {['md', 'txt'].map((ext) => (
                   <button
                     key={ext}
-                    className="inline-flex items-center gap-2 bg-slate-900/[0.05] dark:bg-white/[0.06] px-4 py-2 rounded-full text-xs font-medium"
+                    className="md3-btn-outlined"
                     onClick={() => download(ext)}
                   >
                     <Download size={14} />
@@ -447,11 +599,18 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
                 ))}
               </div>
               {copyError && (
-                <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">
+                <p
+                  role="alert"
+                  className="text-xs"
+                  style={{ color: 'var(--md-sys-color-warning)' }}
+                >
                   {copyError}
                 </p>
               )}
-              <pre className="whitespace-pre-wrap font-mono text-xs text-slate-600 dark:text-slate-300 m3-tonal-block p-5 max-h-96 overflow-auto leading-relaxed">
+              <pre
+                className="whitespace-pre-wrap font-mono text-xs md3-card-filled p-5 max-h-96 overflow-auto leading-relaxed"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
                 {fullText}
               </pre>
             </>

@@ -48,15 +48,25 @@ IntentActuator::IntentActuator(CentralMutationCoordinator& coordinator,
                                std::string proc_root)
     : coordinator_(coordinator), baseline_store_(baseline_store),
       proc_root_(std::move(proc_root)),
-      controller_id_(CentralMutationCoordinator::make_controller_identity("IntentActuator")) {}
+      controller_id_(CentralMutationCoordinator::make_controller_identity("IntentActuator")) {
+    (void)coordinator_.register_preemption_handler(
+        controller_id_,
+        [this](MutationDomain domain, std::string_view transaction_id,
+               std::string_view reason) noexcept {
+            return handle_preemption(domain, transaction_id, reason);
+        });
+}
 
 IntentActuator::~IntentActuator() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    // Retained is terminal: destructor must never roll back a committed result.
-    // Only an actively observed transaction is eligible for destructor rollback.
-    if (state_.state == IntentActuatorState::Observing) {
-        (void)finish_rollback_locked("IntentActuator teardown");
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Retained is terminal: teardown must not undo a committed result.
+        if (state_.state == IntentActuatorState::Observing) {
+            (void)finish_rollback_locked("IntentActuator teardown");
+        }
     }
+    // Drain callbacks without holding mutex_: an in-flight preemption callback
+    // may be waiting for that mutex in handle_preemption().
     coordinator_.unregister_preemption_handler(controller_id_);
 }
 
@@ -175,6 +185,13 @@ bool IntentActuator::read_value_locked(std::string& value) const noexcept {
 IntentActuatorSnapshot IntentActuator::observe(const InfrastructurePsiSample& sample) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.state != IntentActuatorState::Observing) return state_;
+    if (coordinator_.is_preemption_requested(domain_, controller_id_, state_.transaction_id)) {
+        // A pending preemption makes lease_is_live() false by design, but the
+        // current owner remains authoritative until its rollback callback is
+        // acknowledged. Do not misclassify that transition as an external write.
+        state_.reason = "preemption pending; awaiting coordinator rollback callback";
+        return state_;
+    }
     if (!coordinator_.lease_is_live(domain_, controller_id_, state_.transaction_id)) {
         (void)coordinator_.mark_external_ownership_lost(domain_, controller_id_, state_.transaction_id);
         state_.state = IntentActuatorState::OwnershipQuarantined;
@@ -229,6 +246,28 @@ IntentActuatorSnapshot IntentActuator::observe(const InfrastructurePsiSample& sa
     return state_;
 }
 
+bool IntentActuator::handle_preemption(
+    MutationDomain domain, std::string_view transaction_id,
+    std::string_view reason) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (domain != domain_ || transaction_id.empty() ||
+        state_.transaction_id != transaction_id) {
+        return false;
+    }
+    if (state_.state == IntentActuatorState::Observing) {
+        return finish_rollback_locked(reason.empty()
+            ? "preemption requested; transaction rolled back"
+            : reason);
+    }
+    if (state_.state != IntentActuatorState::RolledBack &&
+        state_.state != IntentActuatorState::Retained) return false;
+    const auto leases = coordinator_.active_leases();
+    return std::none_of(leases.begin(), leases.end(), [&](const DomainLease& lease) {
+        return lease.domain == domain_ && lease.owner_controller == controller_id_ &&
+               lease.transaction_id == transaction_id;
+    });
+}
+
 bool IntentActuator::finish_rollback_locked(std::string_view reason) {
     if (state_.path.empty() || state_.transaction_id.empty()) return false;
     std::string current;
@@ -241,6 +280,17 @@ bool IntentActuator::finish_rollback_locked(std::string_view reason) {
     const bool restored = baseline_store_.rollback(state_.path);
     if (restored) {
         coordinator_.release_lease(domain_, controller_id_, state_.transaction_id);
+        const auto leases = coordinator_.active_leases();
+        const bool lease_remains = std::any_of(
+            leases.begin(), leases.end(), [&](const DomainLease& lease) {
+                return lease.domain == domain_ && lease.owner_controller == controller_id_ &&
+                       lease.transaction_id == state_.transaction_id;
+            });
+        if (lease_remains) {
+            state_.state = IntentActuatorState::RecoveryRequired;
+            state_.reason = "baseline restored but ownership remains quarantined";
+            return false;
+        }
         state_.state = IntentActuatorState::RolledBack;
         state_.reason = std::string(reason);
         return true;

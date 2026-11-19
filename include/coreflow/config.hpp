@@ -8,18 +8,24 @@
 #pragma once
 
 #include "types.hpp"
-#include <string>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"3.1.0"};
+    std::string version{"4.0.0"};
     std::string log_level{"info"};
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
@@ -27,6 +33,10 @@ struct DaemonConfig {
     // Normal daemon operation is autonomous; read-only inspection is an explicit CLI mode.
     bool inspection_mode{false};
     bool enable_tuner{true};
+
+    // [direct_adaptive] Capability-derived Direct Baseline + Sweet-Spot runtime.
+    bool enable_direct_adaptive{true};
+    std::string direct_adaptive_policy{"auto"};
 
     // [device_adaptation]
     std::string tier_override{"auto"};
@@ -81,9 +91,9 @@ struct DaemonConfig {
 
     // [vulkan_engine]
     std::string vulkan_layer_mode{"disabled"};
-    bool enable_skiavk_threaded{true};
-    bool enable_adaptive_vrs{true};
-    bool enable_pipeline_cache_prewarm{true};
+    bool enable_skiavk_threaded{false};
+    bool enable_adaptive_vrs{false};
+    bool enable_pipeline_cache_prewarm{false};
 
     static std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t\r\n");
@@ -132,6 +142,9 @@ struct DaemonConfig {
             key == "enable_cgroups_v2" || key == "enable_uclamp" ||
             key == "enable_tuner") {
             return "general";
+        }
+        if (key == "enable_direct_adaptive" || key == "direct_adaptive_policy") {
+            return "direct_adaptive";
         }
         if (key == "tier_override" || key == "unlock_vendor_clamping" ||
             key == "force_120hz_rendering" || key == "enable_cpu_frequency_control" ||
@@ -230,6 +243,14 @@ struct DaemonConfig {
             else if (key == "force_120hz_rendering") cfg.force_120hz_rendering = parse_bool(val);
             else if (key == "enable_cpu_frequency_control") cfg.enable_cpu_frequency_control = parse_bool(val);
             else if (key == "enable_gpu_frequency_control") cfg.enable_gpu_frequency_control = parse_bool(val);
+
+            // [direct_adaptive]
+            else if (key == "enable_direct_adaptive") cfg.enable_direct_adaptive = parse_bool(val);
+            else if (key == "direct_adaptive_policy") {
+                const auto policy = to_lower_ascii(val);
+                cfg.direct_adaptive_policy =
+                    (policy == "auto" || policy == "disabled") ? policy : "auto";
+            }
 
             // [uclamp_tuning]
             else if (key == "top_app_interactive_min") {
@@ -389,6 +410,7 @@ struct DaemonConfig {
         cfg.top_app_io_weight = std::clamp(cfg.top_app_io_weight, 1u, 10000u);
         cfg.background_io_weight = std::clamp(cfg.background_io_weight, 1u, 10000u);
         cfg.top_app_interactive_max = std::max(cfg.top_app_interactive_max, cfg.top_app_interactive_min);
+        cfg.top_app_game_max = std::max(cfg.top_app_game_max, cfg.top_app_game_min);
         if (cfg.thermal_recover_celsius >= cfg.thermal_trip_celsius) {
             cfg.thermal_recover_celsius = cfg.thermal_trip_celsius - 4.0f;
         }

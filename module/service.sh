@@ -1,5 +1,6 @@
 #!/system/bin/sh
-# CFAE System Framework v3.1.0: post-boot launcher & 120s boot-health confirmation (overlay & system-ready).
+# CFAE System Framework v4.0.0: post-boot Direct Adaptive daemon launcher.
+# CoreFlow coexists with OEM thermal services; it never stops or disables them.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:${PATH:-/usr/bin:/bin}"
 umask 077
 

@@ -9,7 +9,7 @@ context = (Path(__file__).resolve().parents[1] / "src/kernel/coreflow_context.cp
 assert "finish_cli_process" not in source
 assert "::_exit(status);" not in source
 assert "CoreFlowContext context;" in source
-assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 2
+assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 3
 
 for command, printer in (
     ('if (command == "--status")', "print_status(context);"),
@@ -48,13 +48,38 @@ assert "write_status_snapshot" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "print_live_status_snapshot(live_pid)" in source
 assert "std::chrono::milliseconds(500)" in source
-assert "kStartupGrace = std::chrono::seconds(12)" in source
-assert "STAGE_OBSERVING -> STAGE_ACTIVE_TUNING" in source
-assert "set_operational(false)" in source
-assert "thermal.pressure <= 65.0" in source
-admission_start = source.index("if (!lifecycle_promoted)")
-admission_end = source.index("// Real-time Hybrid ONNX", admission_start)
-assert "return;" not in source[admission_start:admission_end]
+
+# Direct Adaptive is the production composition root and starts after
+# CoreFlowContext has completed durable OEM journal recovery. Optional workload
+# telemetry never gates its independently discovered actuator domains.
+runtime_start = source.index("coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);")
+runtime_end = source.index("const auto pid_target_pressure", runtime_start)
+runtime = source[runtime_start:runtime_end]
+assert "direct_runtime.set_mutation_enabled" in runtime
+assert "const bool direct_runtime_ready = direct_runtime.start();" in runtime
+assert "Production composition ready" in runtime
+assert "daemon remains alive and direct actuators are skipped" in runtime
+assert "DIRECT_BASELINE: topology and journal recovery complete" in runtime
+assert "bool lifecycle_promoted = true;" in runtime
+assert "const bool workload_pipeline_ready = workload_pipeline.start();" in runtime
+assert "if (!workload_pipeline_ready)" in runtime
+assert "DirectAdaptiveRuntime continues from procfs/sysfs telemetry and timerfd cadence" in runtime
+assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);" in source
+assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
+assert "kStartupGrace" not in source
+assert "STAGE_OBSERVING" not in source
+
+# OEM thermal severity is authoritative when available. Celsius trip points are
+# consulted only for the explicit generic-fallback path.
+thermal_start = source.index("const bool thermal_limit_hit")
+thermal_end = source.index("const WorkloadState desired", thermal_start)
+thermal_policy = source[thermal_start:thermal_end]
+assert "thermal.severity >= 3" in thermal_policy
+assert "thermal.pressure >= 85.0" in thermal_policy
+assert "thermal.pressure > 65.0" in thermal_policy
+assert "temp >= config.thermal_trip_celsius" in thermal_policy
+assert "thermal.fallback_active" in thermal_policy
+
 status_timer_start = source.index("const int status_timer_fd")
 status_timer_end = source.index('emit_log(false, "[CoreFlow] C++23', status_timer_start)
 assert "build_status_json" not in source[status_timer_start:status_timer_end]
@@ -87,3 +112,19 @@ assert "gpu_busy_sum" in probe
 assert "frameDeadlineMissCount" in probe
 assert "pipeline.stop();" in probe
 assert "MutationCoordinator" not in probe
+
+
+# Direct Adaptive is the production runtime authority, not a detached unit-test-only contract.
+assert '#include "coreflow/direct_adaptive_runtime.hpp"' in source
+assert "coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);" in source
+assert "const bool direct_runtime_ready = direct_runtime.start();" in source
+assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);" in source
+assert "directAdaptive" in source
+assert "if (!BaselineStore::instance().recover_pending()) return 1;" in source
+assert "context.autonomous_tuner().set_operational(false);" in source
+assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
+assert "apply_storage_pacing();" not in source
+assert 'if (command == "--journal")' in source
+assert "if (config.inspection_mode)" in source
+assert "direct_runtime.set_mutation_enabled(!config.inspection_mode" in source
+assert "std::clamp(65.0 + normalized * 20.0, 0.0, 85.0);" in source

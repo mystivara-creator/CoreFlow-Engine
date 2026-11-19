@@ -1,10 +1,10 @@
-# CFAE System Framework v3.1.0 — Mutation Safety & Coordinated Optimization Architecture
+# CFAE System Framework v4.0.0 — Mutation Safety & Coordinated Optimization Architecture
 
 ## 1. Architectural Principle
 
 Zero device-specific hardcoding does not mean blind mutation. Ability to write to a sysfs/cgroup node proves only file access, not safety, semantic meaning, compatibility, or system benefit.
 
-The primary unit of control in CFAE System Framework v3.1.0 is the **Coordinated Mutation Transaction**: one explicit optimization objective, a dependency-verified change plan within a bounded risk budget, domain ownership arbitration via `CentralMutationCoordinator`, per-write readback verification, settling-window + noise-floor validation, and ownership-safe rollback.
+The primary unit of control in CFAE System Framework v4.0.0 is the **Coordinated Mutation Transaction**: one explicit optimization objective, a dependency-verified change plan within a bounded risk budget, domain ownership arbitration via `CentralMutationCoordinator`, per-write readback verification, settling-window + noise-floor validation, and ownership-safe rollback.
 
 ### Unified Optimization Lifecycle
 
@@ -36,7 +36,7 @@ Device Discovery
 
 ## 3. Implemented Production Core (C++23 + Rust 2024 + Kotlin 2.1)
 
-Component presence is not feature completion. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`. ART/DEX2OAT/JIT/AOT, SurfaceFlinger control, ANGLE, OpenGL tuning, and Vulkan rendering acceleration are not implemented. Vulkan ICD probing and pass-through are observation/compatibility plumbing. GPU kernel mutation is narrowly limited to Mali `power_policy`; Qualcomm KGSL remains observation-only. Power HAL detection does not intercept or issue hints.
+Component presence is not feature completion. See `docs/architecture/P1_FEATURE_ACCOUNTABILITY_REPORT.md`. ART/DEX2OAT/JIT/AOT, SurfaceFlinger control, ANGLE, OpenGL tuning, SkiaVK/HWUI renderer changes, adaptive VRS, and Power HAL hint submission are not implemented. Vulkan ICD probing is observation-only. The implicit layer contains bounded VkPipelineCache persistence hooks, but controller-side installation/configuration does not prove Android application processes load it; process-level activation remains unverified. Qualcomm KGSL uses a bounded evidence-driven GPU candidate route: GPU-bound/gaming classification, actual FrameTimeline misses, live `gpuclk` OPP verification, validated paired endpoints, and thermal headroom gate one `GpuDevfreq` lease. A GPU-only outcome evaluator checks frame misses, clock stability, and thermal pressure; inconclusive or regressing trials restore the `BaselineStore` pair. This is limited Qualcomm KGSL actuation, not general rendering optimization, and still requires physical-device acceptance. Mali `power_policy` is limited actuation only.
 
 - `src/daemon/main.cpp`: Daemon lifecycle, singleton PID lock, signal hardening, PSI reads, and coordinated state application.
 - `src/daemon/reactor.cpp`: Zero-polling Linux `epoll` + `timerfd` + `signalfd` event loop.
@@ -47,7 +47,7 @@ Component presence is not feature completion. See `docs/architecture/P1_FEATURE_
 - `rust/src/bridge.rs`: Typed `cxx` FFI bridge between C++23 and Rust 2024.
 - `src/kernel/frequency_controller.cpp`: CPUFreq and GPU devfreq ceiling actuation with OEM ownership verification.
 - `src/kernel/autonomous_tuner.cpp`: Universal resource classifier, `CentralMutationCoordinator`, workload/bottleneck/objective reasoning engine, relative baseline scaling (`compute_relative_u64` with `adaptive_scale`), active `ThermalStabilization` & `ThermalRecovery`, settling + noise-floor outcome evaluator, and `CFTS2` persistent learning.
-- `src/kernel/vulkan_controller.cpp` & `src/layer/vk_layer_coreflow.cpp`: Vulkan ICD probing and transparent pass-through dispatch only (`OBSERVATION_ONLY`); no SkiaVK, VRS, pipeline-cache, or rendering optimizer. Mali `power_policy` is a separate limited GPU sysfs mutation.
+- `src/kernel/vulkan_controller.cpp` & `src/layer/vk_layer_coreflow.cpp`: Native ICD inspection and bounded `VkPipelineCache` lifecycle persistence hooks in the implicit layer. Process-level Android loader activation and cache reuse still require runtime proof; no SkiaVK/HWUI, adaptive VRS, or rendering optimizer is claimed. Mali `power_policy` remains separate limited actuation; KGSL paired-level support is bounded autonomous actuation behind live OPP/readback, thermal, and workload admission; physical ABI and thermal-recovery validation remain required.
 - `src/kernel/neural_predictor.cpp`: Hybrid ONNX Runtime C-API (`dlopen`) + Online Recursive Least Squares & 6×8×2 Micro-MLP 10-second horizon thermal/pressure predictor.
 - `src/kernel/hardware_longevity.cpp`: Bounded battery step-charging ceiling reduction and cgroup v2 relative I/O weights.
 - `src/kernel/power_bridge.cpp`: AIDL Power HAL presence discovery only (`OBSERVATION_ONLY`); Binder interception and hint submission are `NOT_IMPLEMENTED`.

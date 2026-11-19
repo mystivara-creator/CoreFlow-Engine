@@ -8,6 +8,7 @@
 #include "coreflow/unique_fd.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -124,11 +125,23 @@ bool NeuralPredictor::try_load_custom_weights(const std::string& path) noexcept 
         return false;
     }
 
+    std::string content;
+    content.reserve(static_cast<size_t>(st.st_size));
     char buf[4096];
-    const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
-    if (n <= 0) return false;
+    while (content.size() < 16384U) {
+        const size_t remaining = 16384U - content.size();
+        const ssize_t n = ::read(fd.get(), buf, std::min(sizeof(buf), remaining));
+        if (n > 0) {
+            content.append(buf, static_cast<size_t>(n));
+            continue;
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        return false;
+    }
+    if (content.empty()) return false;
 
-    std::istringstream stream(std::string(buf, static_cast<size_t>(n)));
+    std::istringstream stream(content);
     std::string header;
     if (!(stream >> header) || header != "CFW1") return false;
 
@@ -193,14 +206,12 @@ bool NeuralPredictor::try_load_onnx_runtime(const std::string& onnx_path) noexce
 void NeuralPredictor::initialize(std::string_view model_dir) noexcept {
     model_dir_ = std::string(model_dir);
     close_onnx_runtime();
-    init_default_network();
-
-    custom_weights_loaded_ = try_load_custom_weights(model_dir_ + "/equilibrium.cfw");
+    custom_weights_loaded_ = false;
     (void)try_load_onnx_runtime(model_dir_ + "/equilibrium.onnx");
     reset();
-    if (custom_weights_loaded_) {
-        (void)try_load_custom_weights(model_dir_ + "/equilibrium.cfw");
-    }
+    custom_weights_loaded_ = try_load_custom_weights(model_dir_ + "/equilibrium.cfw");
+    last_.backend = onnx_loaded_ ? "onnx-runtime-hybrid"
+                                 : (custom_weights_loaded_ ? "custom-cfw-rls-mlp" : "embedded-rls-mlp");
 }
 
 NeuralPrediction NeuralPredictor::infer_and_learn(const NeuralInput& input) noexcept {

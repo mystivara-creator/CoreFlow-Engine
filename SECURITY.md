@@ -1,4 +1,4 @@
-# CFAE System Framework v3.1.0 Security Model
+# CFAE System Framework v4.0.0 Security Model
 
 CFAE System Framework (`coreflowd`) is a privileged Android 15+ (API 35+) daemon. It operates on verified kernel interfaces only.
 

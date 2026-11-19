@@ -1,6 +1,7 @@
 #pragma once
 #include "coreflow/device_profile.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <atomic>
 #include <condition_variable>

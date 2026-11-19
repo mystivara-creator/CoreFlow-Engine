@@ -1,6 +1,6 @@
 /**
  * @file types.hpp
- * @brief CFAE System Framework v3.1.0 ISO C++23 Core Type Definitions
+ * @brief CFAE System Framework v4.0.0 ISO C++23 Core Type Definitions
  *        and Coordinated Mutation Transaction Models.
  * @author mystivara-creator
  * @license MIT
@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <optional>
 #include <system_error>
+#include <type_traits>
 #include <cerrno>
 #include <cstdlib>
 #include <cmath>
@@ -42,7 +44,7 @@ inline bool parse_ascii_double(std::string_view text, double& value) noexcept {
 }
 
 // ============================================================================
-// Coordinated Mutation Transaction & Safety Model (v3.1.0)
+// Coordinated Mutation Transaction & Safety Model (v4.0.0)
 // ============================================================================
 enum class DependencyRelation : uint8_t {
     RequiredBefore = 0, ///< Control A must be applied before Control B
@@ -168,10 +170,10 @@ struct UclampValues {
 // Cgroup v2 Migration Targets
 // ============================================================================
 enum class CgroupTarget : uint8_t {
-    TopApp,      ///< /sys/fs/cgroup/top-app
-    Foreground,  ///< /sys/fs/cgroup/foreground
-    Background,  ///< /sys/fs/cgroup/background
-    System       ///< /sys/fs/cgroup/system
+    TopApp,      ///< Semantic target resolved from runtime cgroup topology.
+    Foreground,  ///< Semantic target resolved from runtime cgroup topology.
+    Background,  ///< Semantic target resolved from runtime cgroup topology.
+    System       ///< Semantic target resolved from runtime cgroup topology.
 };
 
 // ============================================================================
@@ -189,6 +191,40 @@ enum class CoreFlowError {
     ThermalEmergency
 };
 
-std::error_code make_error_code(CoreFlowError e);
+class CoreFlowErrorCategory final : public std::error_category {
+public:
+    const char* name() const noexcept override {
+        return "coreflow";
+    }
+
+    std::string message(int ev) const override {
+        switch (static_cast<CoreFlowError>(ev)) {
+            case CoreFlowError::Success: return "success";
+            case CoreFlowError::NodeNotFound: return "node not found";
+            case CoreFlowError::PermissionDenied: return "permission denied";
+            case CoreFlowError::EpollCreateFailed: return "epoll_create failed";
+            case CoreFlowError::EpollCtlFailed: return "epoll_ctl failed";
+            case CoreFlowError::InvalidTopology: return "invalid topology";
+            case CoreFlowError::BaselineSnapshotFailed: return "baseline snapshot failed";
+            case CoreFlowError::RollbackFailed: return "rollback failed";
+            case CoreFlowError::ThermalEmergency: return "thermal emergency";
+        }
+        return "unknown coreflow error";
+    }
+};
+
+inline const std::error_category& coreflow_error_category() noexcept {
+    static const CoreFlowErrorCategory category{};
+    return category;
+}
+
+inline std::error_code make_error_code(CoreFlowError e) noexcept {
+    return {static_cast<int>(e), coreflow_error_category()};
+}
 
 } // namespace coreflow
+
+namespace std {
+template <>
+struct is_error_code_enum<coreflow::CoreFlowError> : true_type {};
+} // namespace std

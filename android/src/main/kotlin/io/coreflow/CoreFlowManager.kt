@@ -13,7 +13,8 @@ import java.io.BufferedReader
 object CoreFlowManager {
 
     private const val RESOLVE_DAEMON =
-        "BIN=\"/data/adb/modules/cfae_framework/system/bin/coreflowd\"; " +
+        "BIN=\"/data/adb/modules_update/cfae_framework/system/bin/coreflowd\"; " +
+        "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/cfae_framework/system/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/coreflow_engine/system/bin/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/cfae_framework/coreflowd\"; " +
         "[ -x \"\$BIN\" ] || BIN=\"/data/adb/modules/coreflow_engine/coreflowd\"; " +
@@ -98,7 +99,7 @@ object CoreFlowManager {
                 val trimmed = line.trim()
                 if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith(";")) continue
                 if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                    inUclampSection = trimmed.substring(1, trimmed.length - 1).trim() == "uclamp_tuning"
+                    inUclampSection = trimmed.substring(1, trimmed.length - 1).trim().lowercase() == "uclamp_tuning"
                     continue
                 }
                 if (!inUclampSection) continue

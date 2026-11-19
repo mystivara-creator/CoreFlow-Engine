@@ -1,5 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertTriangle, RotateCcw } from 'lucide-react';
+import { AlertTriangle, RotateCcw, ShieldCheck } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -21,7 +21,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('[CoreFlow WebUI] Uncaught component error:', error, errorInfo);
+    console.error('[CoreFlow M3 WebUI] Uncaught component error:', error, errorInfo);
   }
 
   private handleReset = () => {
@@ -32,29 +32,45 @@ export class ErrorBoundary extends Component<Props, State> {
   public render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-slate-50 dark:bg-[#090d16] text-slate-900 dark:text-slate-100 flex items-center justify-center p-4">
-          <div className="max-w-md w-full rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-xl text-center">
-            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto mb-4">
+        <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: 'var(--md-sys-color-background)', color: 'var(--md-sys-color-on-surface)' }}>
+          <div className="md3-card-elevated max-w-md w-full p-7 text-center space-y-4">
+            <div
+              className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto"
+              style={{
+                backgroundColor: 'var(--md-sys-color-error-container)',
+                color: 'var(--md-sys-color-on-error-container)',
+              }}
+            >
               <AlertTriangle className="w-6 h-6" />
             </div>
-            <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white mb-2">
-              Dashboard Encountered an Issue
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 leading-relaxed">
-              CoreFlow caught a runtime error. Your device daemon settings remain intact and safe.
-            </p>
+            <div className="space-y-1.5">
+              <h2 className="text-xl font-bold tracking-tight">
+                UI Surface Interrupted
+              </h2>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                The Material 3 console caught a rendering exception. Native <code className="font-mono">coreflowd</code> daemon state and OEM baseline journals remain untouched.
+              </p>
+            </div>
             {this.state.error && (
-              <pre className="p-3 mb-4 rounded-xl bg-slate-100 dark:bg-slate-950 text-[11px] font-mono text-slate-700 dark:text-slate-300 text-left overflow-auto max-h-32">
+              <pre className="md3-card-filled p-3 text-[11px] font-mono text-left overflow-auto max-h-32">
                 {this.state.error.message}
               </pre>
             )}
-            <button
-              onClick={this.handleReset}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition-transform active:scale-95 shadow-md shadow-sky-500/20"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reload Dashboard</span>
-            </button>
+            <div className="pt-1 flex items-center justify-center gap-3">
+              <button
+                type="button"
+                id="btn-error-reload"
+                onClick={this.handleReset}
+                className="md3-btn-filled"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reload Console</span>
+              </button>
+            </div>
+            <div className="pt-2 flex items-center justify-center gap-1.5 text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Write-ahead CFJ4 recovery remains independent</span>
+            </div>
           </div>
         </div>
       );

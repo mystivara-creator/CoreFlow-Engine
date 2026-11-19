@@ -1,6 +1,7 @@
 #pragma once
 #include "thermal_monitor.hpp"
 #include <cmath>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <unordered_map>

@@ -1,4 +1,4 @@
-# CDDP Synthetic Fixtures A-J
+# CDDP Synthetic Fixtures A-L
 
 Fixtures are materialized into isolated temporary sysfs/procfs trees by `tests/cddp_fixture_factory.hpp`; they require neither root nor a real Android device.
 
@@ -14,5 +14,7 @@ Fixtures are materialized into isolated temporary sysfs/procfs trees by `tests/c
 | H | Recognized Mali devfreq | GPU max capability verified in Hz |
 | I | Qualcomm KGSL-like nodes | Observation-only |
 | J | Sparse system tree | Missing capabilities remain unavailable |
+| K | Whitespace-delimited `related_cpus` | CPU policy membership parsed cleanly |
+| L | Malformed `related_cpus` with valid `affected_cpus` | Falls back to valid `affected_cpus` |
 
 The E2E test claims verified actuation and restoration only. It does not claim performance improvement without comparable runtime telemetry.

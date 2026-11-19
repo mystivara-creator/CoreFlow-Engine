@@ -13,6 +13,7 @@
 #include "coreflow/intent_actuator.hpp"
 #include "coreflow/platform_context.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 

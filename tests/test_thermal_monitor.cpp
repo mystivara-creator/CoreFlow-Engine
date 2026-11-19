@@ -293,6 +293,19 @@ int main() {
     const auto recovered = freshness.evaluate(frozen_at);
     assert(recovered.valid && !recovered.stale);
 
+    // When thermal root ends with /sys/class/thermal, battery_celsius() resolves sibling
+    // /sys/class/power_supply/battery/temp, and fan/cooling zones do not pollute compute hottest.
+    const auto sys_class_thermal = root + "/sys/class/thermal";
+    create_zone(sys_class_thermal, 0, "cpu-cluster0", "41000");
+    create_zone(sys_class_thermal, 1, "fan_cooling_dev", "88000");
+    const auto ps_battery = root + "/sys/class/power_supply/battery";
+    std::filesystem::create_directories(ps_battery);
+    { std::ofstream(ps_battery + "/type") << "Battery\n"; }
+    { std::ofstream(ps_battery + "/temp") << "345\n"; }
+    ThermalMonitor sibling_mon(sys_class_thermal);
+    assert(std::fabs(sibling_mon.battery_celsius() - 34.5f) < 0.01f);
+    assert(std::fabs(sibling_mon.hottest_celsius() - 41.0f) < 0.01f);
+
     std::filesystem::remove_all(root);
     std::cout << "ThermalMonitor cluster discovery, fusion, headroom, hwmon, and TemperatureTrendTracker PASS\n";
     return 0;

@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { Cpu, Flame, Layers, ShieldCheck, Thermometer, Zap, Filter, Search } from 'lucide-react';
+import {
+  Activity,
+  Battery,
+  ChevronDown,
+  Cpu,
+  Flame,
+  Search,
+  ShieldCheck,
+  Smartphone,
+  Thermometer,
+} from 'lucide-react';
 import { AutonomousTelemetry, ThermalSensorDetail } from '../engine/autonomousEngine';
 
 interface Props {
@@ -16,7 +26,11 @@ export const ThermalMatrixCard: React.FC<Props> = ({
   const [filterCategory, setFilterCategory] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const composite = telemetry.socCompositeCelsius ?? telemetry.socTempCelsius;
+  const composite =
+    telemetry.socCompositeCelsius && telemetry.socCompositeCelsius > 0
+      ? telemetry.socCompositeCelsius
+      : telemetry.socTempCelsius;
+
   const cpuAvg = telemetry.cpuAverageCelsius ?? -1;
   const cpuPeak = telemetry.cpuPeakCelsius ?? -1;
   const gpu = telemetry.gpuTempCelsius ?? -1;
@@ -47,7 +61,7 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       case 4:
         return 'Board · PMIC';
       default:
-        return 'Diagnostic · Unclassified';
+        return 'Diagnostic · Aux';
     }
   };
 
@@ -65,40 +79,49 @@ export const ThermalMatrixCard: React.FC<Props> = ({
   };
 
   return (
-    <div className="m3-card p-5 sm:p-8 space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-900/[0.06] dark:border-white/[0.06]">
+    <div className="md3-card-elevated p-6 sm:p-8 space-y-6">
+      {/* Header */}
+      <div
+        className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5"
+        style={{ borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}
+      >
         <div className="space-y-1.5 max-w-2xl">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <Flame className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa]" />
-            <span className="font-semibold text-slate-900 dark:text-slate-100 text-base sm:text-lg">
-              Multi-Sensor Thermal & OEM Policy Matrix{!nativeMode ? ' (sim)' : ''}
+          <div className="flex flex-wrap items-center gap-2">
+            <Flame className="w-4 h-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+            <h2 className="font-bold text-base sm:text-lg">
+              Multi-Sensor Thermal &amp; OEM Policy Matrix{!nativeMode ? ' (sim)' : ''}
+            </h2>
+            <span
+              className={
+                isThrottling
+                  ? 'md3-badge md3-badge-warning'
+                  : 'md3-badge md3-badge-success'
+              }
+            >
+              {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}
             </span>
-            <span aria-hidden="true">·</span>
-            <span className="font-medium text-[#0b57d0] dark:text-[#a8c7fa]">
-              {isThrottling ? 'ThermalGuard Active Mitigation' : 'Thermal Headroom Nominal'}{!nativeMode ? ' (sim)' : ''}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span>{nativeMode ? 'Hardware sysfs / hwmon Live' : 'Preview Model'}</span>
             {telemetry.thermalDataDegraded && (
-              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200 font-medium">
+              <span className="md3-badge md3-badge-warning">
                 Sensor Degraded (Partial Read)
               </span>
             )}
             {telemetry.thermalFallbackActive && (
-              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950/70 dark:text-amber-200 font-medium">
+              <span className="md3-badge md3-badge-warning">
                 Generic Fallback Mode
               </span>
             )}
           </div>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            Prioritizes validated Android thermal status and per-zone OEM trip points over single-sensor heuristics. Separate compute, battery, skin, and diagnostic hwmon domains are evaluated without conflating distinct physical units.
+          <p
+            className="text-xs sm:text-sm leading-relaxed"
+            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+          >
+            Prioritizes validated Android NDK thermal severity and per-zone OEM trip points over single-sensor heuristics. Compute, battery, skin, and PMIC/board domains are evaluated independently with physical velocity tracking.
           </p>
         </div>
 
-        <div className="m3-tonal-block px-4 py-2.5 text-xs font-mono shrink-0 self-start">
-          <span className="text-slate-500 dark:text-slate-400">Policy Reference: </span>
-          <span className="font-semibold text-slate-900 dark:text-slate-100">
+        <div className="md3-card-filled px-4 py-2.5 text-xs font-mono shrink-0 self-start">
+          <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>Policy Reference: </span>
+          <span className="font-bold">
             {nativeMode
               ? telemetry.thermalFallbackActive
                 ? `Fallback (${thermalTripCelsius.toFixed(1)} °C)`
@@ -109,89 +132,105 @@ export const ThermalMatrixCard: React.FC<Props> = ({
       </div>
 
       {/* Primary Composite SoC Bar */}
-      <div className="m3-tonal-block p-5">
-        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 mb-3">
-          <span className="flex items-center gap-2 font-medium">
-            <Thermometer className="w-4 h-4 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
+      <div className="md3-card-filled p-5 space-y-3">
+        <div className="flex items-center justify-between text-xs">
+          <span className="flex items-center gap-2 font-bold">
+            <Thermometer className="w-4 h-4 shrink-0" style={{ color: 'var(--md-sys-color-primary)' }} />
             <span>Weighted SoC Composite Diagnostic{!nativeMode ? ' (sim)' : ''}</span>
           </span>
-          <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 text-sm shrink-0">
+          <span className="font-mono tabular-nums font-bold text-base shrink-0">
             {composite > 0 ? composite.toFixed(1) : '--.-'} °C
           </span>
         </div>
-        <div className="w-full h-2.5 rounded-full bg-slate-900/[0.08] dark:bg-white/[0.08] overflow-hidden">
+
+        <div className="md3-progress-track">
           <div
-            className="h-full transition-all duration-500 rounded-full bg-[#0b57d0] dark:bg-[#a8c7fa]"
+            className="md3-progress-bar"
             style={{ width: `${thermalProgress}%` }}
           />
         </div>
-        <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
+
+        <div
+          className="flex justify-between text-[11px] font-mono tabular-nums"
+          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+        >
           <span>30.0 °C (Idle)</span>
           <span>{thermalTripCelsius.toFixed(1)} °C (Mitigation Gate)</span>
           <span>60.0 °C (OEM Ceiling)</span>
         </div>
       </div>
 
-      {/* Cluster & Subsystem Cards Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
+      {/* 5-Domain Subsystem Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {[
-          { label: nativeMode ? 'CPU Cluster Avg' : 'CPU Cluster Avg (sim)', val: cpuAvg, sub: 'Little & Big Cores', Icon: Cpu },
-          { label: nativeMode ? 'CPU Peak Core' : 'CPU Peak Core (sim)', val: cpuPeak, sub: 'Hottest Core Zone', Icon: Zap },
-          { label: nativeMode ? 'GPU Domain' : 'GPU Domain (sim)', val: gpu, sub: 'Shader / Devfreq', Icon: Layers },
-          { label: nativeMode ? 'Battery Cell' : 'Battery Cell (sim)', val: battery, sub: 'Charge Guard Input', Icon: ShieldCheck },
-          { label: nativeMode ? 'Skin / Surface' : 'Skin / Surface (sim)', val: skin, sub: 'Chassis Thermistor', Icon: Thermometer },
-        ].map(({ label, val, sub, Icon }) => (
-          <div
-            key={label}
-            className="m3-tonal-block p-4 flex flex-col justify-between col-span-1 last:col-span-2 lg:last:col-span-1 min-w-0"
-          >
-            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 mb-2">
-              <span className="font-medium truncate">{label}</span>
-              <Icon className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
+          { label: 'CPU Cluster Avg', val: cpuAvg, Icon: Cpu, sub: 'All compute cores' },
+          { label: 'CPU Peak Core', val: cpuPeak, Icon: Flame, sub: 'Hottest core die' },
+          { label: 'GPU Domain', val: gpu, Icon: Activity, sub: 'Graphics subsystem' },
+          { label: 'Battery Cell', val: battery, Icon: Battery, sub: 'Charging protection' },
+          { label: 'Skin / Chassis', val: skin, Icon: Smartphone, sub: 'Surface comfort' },
+        ].map(({ label, val, Icon, sub }) => (
+          <div key={label} className="md3-card-filled p-4 flex flex-col justify-between">
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="font-semibold truncate">{label}</span>
+              <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--md-sys-color-primary)' }} />
             </div>
-            <div className="text-xl font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+            <div className="text-xl font-bold font-mono tabular-nums">
               {val > 0 ? val.toFixed(1) : '--.-'}{' '}
-              <span className="text-xs font-normal text-slate-500 dark:text-slate-400">°C</span>
+              <span
+                className="text-xs font-normal"
+                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+              >
+                °C
+              </span>
             </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 truncate">{sub}</div>
+            <div
+              className="text-[11px] mt-1.5"
+              style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+            >
+              {sub}
+            </div>
           </div>
         ))}
       </div>
 
-      {/* Collapsible Full Hardware Thermal Zone Inspector */}
+      {/* Expandable Hardware Thermal Zone Matrix */}
       {sensors.length > 0 && (
-        <details className="group m3-tonal-block overflow-hidden">
-          <summary className="flex items-center justify-between gap-3 px-5 py-4 cursor-pointer select-none text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-900/[0.03] dark:hover:bg-white/[0.03]">
-            <span className="flex items-center gap-2 min-w-0">
-              <Filter className="w-3.5 h-3.5 text-[#0b57d0] dark:text-[#a8c7fa] shrink-0" />
-              <span className="truncate">Discovered Hardware Thermal Zones{!nativeMode ? ' (sim)' : ''} ({sensors.length} Zones)</span>
-            </span>
-            <span className="text-xs font-normal text-slate-400 group-open:rotate-180 transition-transform duration-200 shrink-0">
-              ▼
-            </span>
+        <details className="group md3-card-filled overflow-hidden" open>
+          <summary className="cursor-pointer p-4 sm:p-5 flex items-center justify-between text-xs sm:text-sm font-bold select-none">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <ShieldCheck
+                className="w-4 h-4 shrink-0"
+                style={{ color: 'var(--md-sys-color-primary)' }}
+              />
+              <span className="truncate">
+                Discovered Hardware Thermal Zones{!nativeMode ? ' (sim)' : ''} ({sensors.length} Zones)
+              </span>
+            </div>
+            <ChevronDown className="w-4 h-4 shrink-0 transition-transform duration-200 group-open:rotate-180" />
           </summary>
 
-          <div className="p-4 sm:p-5 border-t border-slate-900/[0.06] dark:border-white/[0.06] space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex gap-1.5 flex-wrap">
+          <div
+            className="p-4 sm:p-5 pt-0 space-y-4"
+            style={{ borderTop: '1px solid var(--md-sys-color-outline-variant)' }}
+          >
+            {/* Filter & Search Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4">
+              <div className="flex flex-wrap gap-1.5">
                 {[
-                  { id: null, label: 'All Zones' },
+                  { id: null, label: 'All Domains' },
                   { id: 1, label: 'Compute' },
                   { id: 2, label: 'Battery' },
                   { id: 3, label: 'Skin' },
-                  { id: 4, label: 'Board' },
+                  { id: 4, label: 'Board/PMIC' },
                 ].map((cat) => {
                   const active = filterCategory === cat.id;
                   return (
                     <button
                       key={String(cat.id)}
+                      type="button"
+                      aria-pressed={active}
                       onClick={() => setFilterCategory(cat.id)}
-                      className={
-                        'px-3.5 py-1.5 text-xs rounded-full font-medium transition-all ' +
-                        (active
-                          ? 'bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0] dark:text-[#d3e3fd] font-semibold'
-                          : 'bg-slate-900/[0.04] dark:bg-white/[0.05] text-slate-600 dark:text-slate-300 hover:bg-slate-900/[0.08]')
-                      }
+                      className={'md3-chip ' + (active ? 'is-selected' : '')}
                     >
                       {cat.label}
                     </button>
@@ -199,62 +238,73 @@ export const ThermalMatrixCard: React.FC<Props> = ({
                 })}
               </div>
 
-              <div className="relative w-full sm:w-56">
-                <Search className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <div className="relative">
+                <Search
+                  className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                />
                 <input
                   type="text"
-                  placeholder="Search sensor type..."
+                  aria-label="Search thermal zone"
+                  placeholder="Search zone..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-4 py-1.5 text-xs rounded-full bg-white/70 dark:bg-slate-900/60 border border-slate-900/[0.08] dark:border-white/[0.08] text-slate-800 dark:text-slate-200 focus:outline-none focus:border-[#0b57d0]"
+                  className="w-full sm:w-52 pl-9 pr-3.5 py-1.5 text-xs rounded-full focus:outline-none"
+                  style={{
+                    backgroundColor: 'var(--md-sys-color-surface-container-lowest)',
+                    border: '1px solid var(--md-sys-color-outline-variant)',
+                    color: 'var(--md-sys-color-on-surface)',
+                  }}
                 />
               </div>
             </div>
 
-            <div className="max-h-72 overflow-y-auto rounded-2xl border border-slate-900/[0.06] dark:border-white/[0.06] divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
+            {/* Zone Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 max-h-80 overflow-y-auto pr-1">
               {filteredSensors.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-500">
-                  No matching hardware thermal zones found.
+                <div
+                  className="col-span-full text-center py-6 text-xs"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                >
+                  No thermal sensors match your filter.
                 </div>
               ) : (
                 filteredSensors.map((sensor) => (
                   <div
-                    key={sensor.id + sensor.type}
-                    title={`${sensor.id} (${sensor.type})`}
-                    className="flex items-center justify-between gap-3 px-3.5 sm:px-4 py-2.5 text-xs hover:bg-slate-900/[0.02] dark:hover:bg-white/[0.02]"
+                    key={sensor.id}
+                    className="md3-card-elevated p-3.5 flex items-center justify-between gap-2"
                   >
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <span className="font-mono text-[11px] px-2 py-0.5 rounded-lg bg-slate-900/[0.05] dark:bg-white/[0.07] text-slate-600 dark:text-slate-300 shrink-0 min-w-[44px] text-center">
-                        {formatZoneId(sensor.id)}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
-                          {sensor.type}
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate sm:hidden">
-                          {getCategoryLabel(sensor.category)}
-                        </div>
+                    <div className="min-w-0 pr-2">
+                      <div className="text-xs font-mono font-bold truncate" title={sensor.type}>
+                        {sensor.type}
+                      </div>
+                      <div
+                        className="text-[11px] truncate"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                        title={sensor.id}
+                      >
+                        {formatZoneId(sensor.id)} · {getCategoryLabel(sensor.category)}
                       </div>
                     </div>
-                    <span className="text-slate-500 dark:text-slate-400 hidden sm:inline shrink-0 w-36 truncate">
-                      {getCategoryLabel(sensor.category)}
-                    </span>
-                    <div className="text-right shrink-0 pl-2">
-                      <div className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
-                        {sensor.celsius !== null && sensor.celsius >= 0 ? (
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-mono tabular-nums font-bold">
+                        {sensor.valid && sensor.celsius !== null ? (
                           `${sensor.celsius.toFixed(1)} °C`
                         ) : (
-                          <span className="text-slate-400 font-normal">Offline</span>
+                          <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>N/A</span>
                         )}
                       </div>
-                      <div className="font-mono tabular-nums text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                        {sensor.velocityValid
-                          ? `${sensor.velocityCelsiusPerSec! > 0 ? '+' : ''}${sensor.velocityCelsiusPerSec!.toFixed(2)} °C/s`
-                          : !sensor.valid
-                            ? 'Trend unavailable'
-                            : sensor.velocitySamples !== undefined
-                              ? `Trend warming up (${sensor.velocitySamples}/2)`
-                              : nativeMode ? 'Trend unavailable' : 'Preview trend'}
+                      <div
+                        className="text-[10px] font-mono tabular-nums"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {sensor.velocityValid &&
+                        sensor.velocityCelsiusPerSec !== null &&
+                        sensor.velocityCelsiusPerSec !== undefined
+                          ? `${sensor.velocityCelsiusPerSec > 0 ? '+' : ''}${sensor.velocityCelsiusPerSec.toFixed(2)} °C/s`
+                          : sensor.policyAvailable
+                            ? 'OEM trip'
+                            : 'no-trip'}
                       </div>
                     </div>
                   </div>
