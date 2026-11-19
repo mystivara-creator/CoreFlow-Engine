@@ -1,7 +1,10 @@
-#include "coreflow/runtime_architecture.hpp"
+#include "coreflow/direct_adaptive_runtime.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <span>
 #include <string>
@@ -212,5 +215,43 @@ int main() {
     }
 
     std::cout << "Direct Adaptive Sweet-Spot policy tests passed\n";
+    // The interactive governor is admitted only when its actual ABI tunables
+    // are present under the discovered cpufreq policy.
+    {
+        namespace fs = std::filesystem;
+        char temp_path[] = "/tmp/coreflow-da-policy-XXXXXX";
+        const char* created = ::mkdtemp(temp_path);
+        assert(created != nullptr);
+        const fs::path root(created);
+        const fs::path policy = root / "sys/devices/system/cpu/cpufreq/policy0";
+        fs::create_directories(policy / "interactive");
+        fs::create_directories(root / "proc");
+
+        const auto write_file = [](const fs::path& file, const std::string& value) {
+            std::ofstream stream(file);
+            assert(stream.good());
+            stream << value;
+            stream.close();
+            assert(stream.good());
+        };
+        write_file(policy / "scaling_available_frequencies", "300000 600000 900000 1200000\\n");
+        write_file(policy / "scaling_governor", "interactive\\n");
+        write_file(policy / "interactive/hispeed_freq", "600000\\n");
+        write_file(policy / "interactive/hispeed_load", "85\\n");
+
+        TopologyScanner scanner;
+        const auto discovery = scanner.discover({root / "sys", root / "proc"});
+        assert(discovery.enumeration_completed);
+        std::size_t hispeed_freq_nodes = 0U;
+        std::size_t hispeed_load_nodes = 0U;
+        for (const auto& node : discovery.manifest.nodes) {
+            if (node.semantic == "cpu.hispeed_freq") ++hispeed_freq_nodes;
+            if (node.semantic == "cpu.hispeed_load") ++hispeed_load_nodes;
+        }
+        assert(hispeed_freq_nodes == 1U);
+        assert(hispeed_load_nodes == 1U);
+        fs::remove_all(root);
+    }
+
     return 0;
 }
