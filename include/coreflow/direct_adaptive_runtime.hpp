@@ -57,9 +57,15 @@ public:
         std::uint32_t& refresh_hz, double& cpu_utilization) noexcept;
 
 private:
+    struct CpuCounters final {
+        std::uint64_t total{};
+        std::uint64_t idle{};
+    };
+
     BaselineStore& baseline_;
     std::uint64_t previous_cpu_total_{};
     std::uint64_t previous_cpu_idle_{};
+    std::unordered_map<unsigned, CpuCounters> previous_cpu_counters_;
 };
 
 class SweetSpotEngine final {
