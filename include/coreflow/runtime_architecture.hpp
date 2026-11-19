@@ -300,6 +300,7 @@ struct PolicyInput final {
     const AdaptiveReference& adaptive_reference;
     std::span<const ControlCapability> controls;
     const AlgorithmConstants& algorithm;
+    OperatingMode previous_mode{OperatingMode::Unknown};
 };
 
 struct PolicyAction final {
