@@ -251,8 +251,10 @@ std::vector<unsigned> parse_cpu_list(std::string_view raw) {
         while (position < raw.size() && (raw[position] == ' ' || raw[position] == '\\t' || raw[position] == ',')) ++position;
         if (position == raw.size()) break;
         const std::size_t token_end = raw.find(',', position);
-        const std::string_view token = raw.substr(position,
+        std::string_view token = raw.substr(position,
             token_end == std::string_view::npos ? raw.size() - position : token_end - position);
+        while (!token.empty() && (token.front() == ' ' || token.front() == '\\t')) token.remove_prefix(1U);
+        while (!token.empty() && (token.back() == ' ' || token.back() == '\\t')) token.remove_suffix(1U);
         const std::size_t dash = token.find('-');
         std::uint64_t first = 0U, last = 0U;
         if (dash == std::string_view::npos) {
