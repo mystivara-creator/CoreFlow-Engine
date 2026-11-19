@@ -1222,6 +1222,7 @@ struct DirectAdaptiveRuntime::Impl final {
         // idle after thermal recovery.
         const bool idle_policy_already_applied =
             mutation_enabled && screen_off && !snapshot.thermal_guard &&
+            previous_mode != OperatingMode::ThermalGuard &&
             last_evaluation != Timestamp{} &&
             last_evaluated_mode == OperatingMode::Idle;
         if (idle_policy_already_applied) {
