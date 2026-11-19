@@ -234,10 +234,10 @@ int main() {
             stream.close();
             assert(stream.good());
         };
-        write_file(policy / "scaling_available_frequencies", "300000 600000 900000 1200000\\n");
-        write_file(policy / "scaling_governor", "interactive\\n");
-        write_file(policy / "interactive/hispeed_freq", "600000\\n");
-        write_file(policy / "interactive/hispeed_load", "85\\n");
+        write_file(policy / "scaling_available_frequencies", "300000 600000 900000 1200000\n");
+        write_file(policy / "scaling_governor", "interactive\n");
+        write_file(policy / "interactive/hispeed_freq", "600000\n");
+        write_file(policy / "interactive/hispeed_load", "85\n");
 
         TopologyScanner scanner;
         const auto discovery = scanner.discover({root / "sys", root / "proc"});
