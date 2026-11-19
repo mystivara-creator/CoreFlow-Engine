@@ -214,7 +214,6 @@ int main() {
         assert(cluster && std::get<std::int64_t>(cluster->target_value) == 0);
     }
 
-    std::cout << "Direct Adaptive Sweet-Spot policy tests passed\n";
     // The interactive governor is admitted only when its actual ABI tunables
     // are present under the discovered cpufreq policy.
     {
@@ -253,5 +252,6 @@ int main() {
         fs::remove_all(root);
     }
 
+    std::cout << "Direct Adaptive Sweet-Spot policy tests passed\n";
     return 0;
 }
