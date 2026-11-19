@@ -58,6 +58,9 @@ public:
 private:
     [[nodiscard]] static uint64_t monotonic_now_ns() noexcept;
     [[nodiscard]] bool finish_rollback_locked(std::string_view reason);
+    [[nodiscard]] bool handle_preemption(MutationDomain domain,
+                                         std::string_view transaction_id,
+                                         std::string_view reason) noexcept;
     [[nodiscard]] bool read_value_locked(std::string& value) const noexcept;
     [[nodiscard]] double selected_psi(const InfrastructurePsiSample& sample) const noexcept;
 
