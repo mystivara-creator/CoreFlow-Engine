@@ -108,7 +108,8 @@ int main() {
             outcome.transaction_id, cache_pressure.string(), "130"));
 
         // Higher-priority ownership must be granted only after the actuator
-        // acknowledges preemption by restoring its captured baseline.
+        // acknowledges preemption by restoring the OEM factory baseline.
+        // Retained performance records do not replace the recovery baseline.
         const auto preemption_profile = profiler.refresh();
         const uint64_t preemption_start = now_ns();
         InfrastructurePsiSample preemption_admission{
@@ -124,7 +125,7 @@ int main() {
             ControllerPriority::EmergencySafety));
         assert(preemptible.snapshot().state == IntentActuatorState::RolledBack);
         { std::ifstream in(cache_pressure); in >> preempted_value; }
-        assert(preempted_value == "130");
+        assert(preempted_value == "100");
         assert(coordinator.active_leases().empty());
         assert(coordinator.acquire_lease(
             MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx",
@@ -135,7 +136,7 @@ int main() {
     {
         std::string retained_value;
         { std::ifstream in(cache_pressure); in >> retained_value; }
-        assert(retained_value == "130");
+        assert(retained_value == "100");
         assert(store.rollback(cache_pressure.string()));
         { std::ifstream in(cache_pressure); in >> retained_value; }
         assert(retained_value == "100");
