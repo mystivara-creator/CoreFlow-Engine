@@ -185,6 +185,13 @@ bool IntentActuator::read_value_locked(std::string& value) const noexcept {
 IntentActuatorSnapshot IntentActuator::observe(const InfrastructurePsiSample& sample) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.state != IntentActuatorState::Observing) return state_;
+    if (coordinator_.is_preemption_requested(domain_, controller_id_, state_.transaction_id)) {
+        // A pending preemption makes lease_is_live() false by design, but the
+        // current owner remains authoritative until its rollback callback is
+        // acknowledged. Do not misclassify that transition as an external write.
+        state_.reason = "preemption pending; awaiting coordinator rollback callback";
+        return state_;
+    }
     if (!coordinator_.lease_is_live(domain_, controller_id_, state_.transaction_id)) {
         (void)coordinator_.mark_external_ownership_lost(domain_, controller_id_, state_.transaction_id);
         state_.state = IntentActuatorState::OwnershipQuarantined;
