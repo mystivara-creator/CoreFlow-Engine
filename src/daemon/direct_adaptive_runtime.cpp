@@ -222,6 +222,54 @@ std::vector<fs::path> child_directories(const fs::path& parent, std::size_t limi
     return output;
 }
 
+std::vector<unsigned> parse_cpu_list(std::string_view raw) {
+    std::vector<unsigned> cpus;
+    std::size_t position = 0U;
+    while (position < raw.size()) {
+        while (position < raw.size() && (raw[position] == ' ' || raw[position] == '\\t' || raw[position] == ',')) ++position;
+        if (position == raw.size()) break;
+        const std::size_t token_end = raw.find(',', position);
+        const std::string_view token = raw.substr(position,
+            token_end == std::string_view::npos ? raw.size() - position : token_end - position);
+        const std::size_t dash = token.find('-');
+        std::uint64_t first = 0U, last = 0U;
+        if (dash == std::string_view::npos) {
+            if (!parse_u64(token, first)) return {};
+            last = first;
+        } else {
+            if (!parse_u64(token.substr(0U, dash), first) ||
+                !parse_u64(token.substr(dash + 1U), last) || last < first) return {};
+        }
+        if (last > 4095U || last - first > 4095U || cpus.size() + (last - first + 1U) > 4096U) return {};
+        for (std::uint64_t cpu = first; cpu <= last; ++cpu) cpus.push_back(static_cast<unsigned>(cpu));
+        position = token_end == std::string_view::npos ? raw.size() : token_end + 1U;
+    }
+    std::sort(cpus.begin(), cpus.end());
+    cpus.erase(std::unique(cpus.begin(), cpus.end()), cpus.end());
+    return cpus;
+}
+
+std::optional<std::uint64_t> policy_capacity(
+    const fs::path& policy, const fs::path& sysfs_root) {
+    auto cpus = parse_cpu_list(read_text(policy / "related_cpus"));
+    if (cpus.empty()) cpus = parse_cpu_list(read_text(policy / "affected_cpus"));
+    if (cpus.empty()) return std::nullopt;
+
+    std::vector<std::uint64_t> capacities;
+    capacities.reserve(cpus.size());
+    for (const unsigned cpu : cpus) {
+        std::uint64_t capacity = 0U;
+        if (parse_u64(read_text(sysfs_root / "devices/system/cpu" /
+                ("cpu" + std::to_string(cpu)) / "cpu_capacity"), capacity) &&
+            capacity > 0U && capacity <= 65536U) {
+            capacities.push_back(capacity);
+        }
+    }
+    if (capacities.empty()) return std::nullopt;
+    std::sort(capacities.begin(), capacities.end());
+    return capacities[capacities.size() / 2U];
+}
+
 std::vector<fs::path> find_tunables(const fs::path& root, std::size_t max_depth = 3U) {
     std::vector<fs::path> output;
     std::error_code ec;
@@ -396,14 +444,16 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
                 has_target = true;
             }
         } else if (semantic == "cpu.hispeed_load") {
-            const bool little = node->domain_id.find("little") != std::string::npos;
-            const bool big = node->domain_id.find("big") != std::string::npos;
+            const bool little = node->domain_id == "cpu.little";
+            const bool middle = node->domain_id == "cpu.mid";
+            const bool big = node->domain_id == "cpu.big";
             if (intent.mode == OperatingMode::Idle) numeric_target = 95.0L;
             else if (intent.mode == OperatingMode::HighLoad) numeric_target = 75.0L;
             else if (intent.mode == OperatingMode::ThermalGuard) numeric_target = 90.0L;
             else if (little) numeric_target = 90.0L;
+            else if (middle) numeric_target = 86.0L;
             else if (big) numeric_target = 82.0L;
-            else continue;
+            else continue; // No topology evidence: do not invent a cluster role.
             has_target = true;
         } else if (semantic == "cpu.up_rate_limit_us" && frame_us > 0.0) {
             numeric_target = std::clamp(frame_us * 0.06, 100.0, 5000.0);
@@ -566,19 +616,49 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
 
     const fs::path cpufreq_root = roots.sysfs_root / "devices/system/cpu/cpufreq";
     const auto policies = child_directories(cpufreq_root);
-    std::vector<std::uint64_t> policy_maxima;
-    struct CpuPolicyInfo final { fs::path path; std::string domain; std::vector<std::uint64_t> opps; };
+    struct CpuPolicyInfo final {
+        fs::path path;
+        std::string domain;
+        std::vector<std::uint64_t> opps;
+        std::optional<std::uint64_t> capacity;
+    };
     std::vector<CpuPolicyInfo> cpu_infos;
+    std::set<std::uint64_t> policy_maxima;
+    std::set<std::uint64_t> capacity_levels;
+    bool capacity_evidence_complete = true;
     for (const auto& policy : policies) {
         const auto name = policy.filename().string();
         if (name.rfind("policy", 0) != 0) continue;
         auto opps = parse_integer_list(read_text(policy / "scaling_available_frequencies"));
         if (opps.size() < 2U) continue;
-        policy_maxima.push_back(opps.back());
-        cpu_infos.push_back({policy, {}, std::move(opps)});
+        policy_maxima.insert(opps.back());
+        auto capacity = policy_capacity(policy, roots.sysfs_root);
+        if (capacity) capacity_levels.insert(*capacity);
+        else capacity_evidence_complete = false;
+        cpu_infos.push_back({policy, "cpu.unknown", std::move(opps), capacity});
     }
-    const auto max_policy = policy_maxima.empty() ? 0U :
-        *std::max_element(policy_maxima.begin(), policy_maxima.end());
+
+    // CPUFreq policy frequency maxima are not a reliable cluster identity on
+    // heterogeneous SoCs with three or more performance domains. Prefer the
+    // kernel's per-CPU capacity scale, and use OPP maxima only for a clear
+    // two-tier topology. Ambiguous layouts remain unclassified.
+    if (capacity_evidence_complete && capacity_levels.size() >= 2U) {
+        const auto lowest = *capacity_levels.begin();
+        const auto highest = *capacity_levels.rbegin();
+        for (auto& info : cpu_infos) {
+            if (!info.capacity) continue;
+            if (*info.capacity == lowest) info.domain = "cpu.little";
+            else if (*info.capacity == highest) info.domain = "cpu.big";
+            else info.domain = "cpu.mid";
+        }
+    } else if (policy_maxima.size() == 2U) {
+        const auto lowest = *policy_maxima.begin();
+        const auto highest = *policy_maxima.rbegin();
+        for (auto& info : cpu_infos) {
+            if (info.opps.back() == lowest) info.domain = "cpu.little";
+            else if (info.opps.back() == highest) info.domain = "cpu.big";
+        }
+    }
 
     constexpr std::array<std::string_view, 5> cpu_tunables{
         "hispeed_freq", "hispeed_load", "up_rate_limit_us",
