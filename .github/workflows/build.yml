@@ -1,11 +1,7 @@
 name: CoreFlow Engine CI
 
 on:
-  push:
-    branches: [main, 'feat/*', 'hardening/*', 'fix/*']
-    tags: ['v*']
-  pull_request:
-    branches: [main, feat/p3-dynamic-infrastructure, feat/p4-native-actuators-end-to-end, 'fix/*']
+  # CI is intentionally manual during Phase 2 to avoid redundant/canceled runs per commit.
   workflow_dispatch:
     inputs:
       android_min_api:
