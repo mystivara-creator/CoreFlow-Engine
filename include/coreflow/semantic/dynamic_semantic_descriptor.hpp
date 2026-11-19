@@ -1,5 +1,6 @@
 #pragma once
 
+#include "coreflow/semantic/domain_evidence_aggregator.hpp"
 #include "coreflow/semantic/semantic_types.hpp"
 
 #include <array>

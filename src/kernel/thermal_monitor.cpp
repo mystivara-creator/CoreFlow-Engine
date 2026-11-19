@@ -247,7 +247,7 @@ int classify_thermal_type(std::string_view type) {
     if (lower == "skin" || lower.rfind("skin-", 0) == 0 || lower.rfind("skin_", 0) == 0 ||
         lower.find("quiet_therm") != std::string::npos || lower.find("case_therm") != std::string::npos ||
         lower.find("shell_therm") != std::string::npos || lower.find("chg_skin") != std::string::npos ||
-        lower.find(" surface") != std::string::npos || lower.find("virtual-skin") != std::string::npos) {
+        lower.find("surface") != std::string::npos || lower.find("virtual-skin") != std::string::npos) {
         return 3;
     }
     if (lower.find("ap_therm") != std::string::npos || lower.find("xo-therm") != std::string::npos ||
@@ -257,6 +257,16 @@ int classify_thermal_type(std::string_view type) {
         return 4;
     }
     return 0;
+}
+
+bool is_cluster_compute_name(std::string_view lower) noexcept {
+    const auto matches_prefix = [&](std::string_view prefix) noexcept {
+        if (lower.size() < prefix.size() || lower.substr(0, prefix.size()) != prefix) return false;
+        if (lower.size() == prefix.size()) return true;
+        const char next = lower[prefix.size()];
+        return next == '-' || next == '_' || (next >= '0' && next <= '9');
+    };
+    return matches_prefix("big") || matches_prefix("mid") || matches_prefix("little");
 }
 
 bool is_excluded_non_thermal_peripheral(std::string_view raw_type) {
@@ -372,7 +382,11 @@ float ThermalMonitor::hottest_category_locked(int category) const {
 float ThermalMonitor::battery_celsius_locked() const {
     const float tz_batt = hottest_category_locked(2);
     if (tz_batt >= 0.0f) return tz_batt;
-    const fs::path supply_root = fs::path(sysfs_root_).parent_path().parent_path() / "power_supply";
+    fs::path base_path(sysfs_root_);
+    if (base_path.filename().empty() && base_path.has_parent_path()) {
+        base_path = base_path.parent_path();
+    }
+    const fs::path supply_root = base_path.parent_path() / "power_supply";
     std::error_code ec;
     float observed = -1.0f;
     unsigned battery_count = 0;
@@ -422,7 +436,7 @@ MultiSensorProfile ThermalMonitor::multi_sensor_profile_locked() const {
                 gpu_readings.push_back(value);
             } else if (lower.find("cpu") != std::string::npos || lower.find("apss") != std::string::npos ||
                        lower.find("cluster") != std::string::npos || lower.find("tsens") != std::string::npos ||
-                       lower == "big" || lower == "mid" || lower == "little") {
+                       is_cluster_compute_name(lower)) {
                 cpu_readings.push_back(value);
                 max_cpu = std::max(max_cpu, value);
             } else {
@@ -728,7 +742,7 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
                     gpu_readings.push_back(temp);
                 } else if (lower.find("cpu") != std::string::npos || lower.find("apss") != std::string::npos ||
                            lower.find("cluster") != std::string::npos || lower.find("tsens") != std::string::npos ||
-                           lower == "big" || lower == "mid" || lower == "little") {
+                           is_cluster_compute_name(lower)) {
                     cpu_readings.push_back(temp);
                     max_cpu = std::max(max_cpu, temp);
                 } else {

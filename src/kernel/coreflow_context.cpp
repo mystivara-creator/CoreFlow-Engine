@@ -33,7 +33,8 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     if (state_ == State::Stopping) return false;
 
     if (state_ == State::Failed || state_ == State::Stopped) {
-        if (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
+        if (memory_warmup_controller_ || intent_actuator_ || recovery_monitor_ ||
+            uclamp_governor_ || frequency_controller_ ||
             transactional_frequency_actuator_ || qcom_lmh_ceiling_provider_ ||
             generic_frequency_ceiling_provider_ || fallback_frequency_ceiling_provider_ ||
             autonomous_tuner_ || hardware_longevity_ || vulkan_controller_) {
@@ -54,14 +55,14 @@ bool CoreFlowContext::Start(Mode mode) noexcept {
     thermal_safety_authority_ = std::make_unique<ThermalSafetyAuthority>(*thermal_monitor_);
     profiler_ = std::make_unique<DeviceProfiler>();
     profile_ = profiler_->refresh();
-    const NativeAndroidPropertySource native_properties;
-    const PlatformContextDetector platform_detector(native_properties);
-    platform_context_ = platform_detector.detect(profile_->generation);
     if (!profile_) {
         destroy_runtime_services();
         state_ = State::Failed;
         return false;
     }
+    const NativeAndroidPropertySource native_properties;
+    const PlatformContextDetector platform_detector(native_properties);
+    platform_context_ = platform_detector.detect(profile_->generation);
 
     if (mode_ == Mode::ReadOnly) {
         // No mutation callback, actuator, tuner, predictor training, or worker
@@ -107,7 +108,8 @@ bool CoreFlowContext::Stop(std::string_view reason) noexcept {
 
     state_ = State::Stopping;
     if (mode_ == Mode::Daemon &&
-        (recovery_monitor_ || uclamp_governor_ || frequency_controller_ ||
+        (memory_warmup_controller_ || intent_actuator_ || recovery_monitor_ ||
+         uclamp_governor_ || frequency_controller_ ||
          transactional_frequency_actuator_ || autonomous_tuner_ ||
          hardware_longevity_ || vulkan_controller_)) {
         if (autonomous_tuner_ && !autonomous_tuner_->rollback_active(reason)) {

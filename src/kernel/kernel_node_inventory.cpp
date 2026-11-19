@@ -235,6 +235,9 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
         parent_node.unit = "governor_token";
         parent_node.rejection_reason = "Parent policy observed; child ABI must be rediscovered after a policy change";
         append_unique(nodes, std::move(parent_node), maximum_nodes);
+        const bool safe_governor = !governor.empty() && governor != "." && governor != ".." &&
+            governor.find('/') == std::string::npos && governor.find('\0') == std::string::npos;
+        if (!safe_governor) continue;
         const fs::path governor_dir = policy / governor;
         for (const auto& path : regular_children(governor_dir)) {
             auto child = observe(path, HardwareDomain::Cpu, ProfileSource::Sysfs,
@@ -331,6 +334,7 @@ std::vector<NodeCapability> KernelNodeInventory::scan(std::size_t maximum_nodes)
             if (frequency == 0U || levels.size() >= 512U) { levels.clear(); break; }
             levels.push_back(frequency);
         }
+        if (!table_stream.eof()) levels.clear();
         const uint64_t last = levels.empty() ? 0U : static_cast<uint64_t>(levels.size() - 1U);
         const bool count_valid = !levels.empty() && reported == levels.size();
         const bool increasing = levels.size() >= 2U &&

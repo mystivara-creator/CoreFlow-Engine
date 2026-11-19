@@ -34,7 +34,7 @@ bool readable_dir(const std::string& p) noexcept { struct stat s{}; return ::sta
 bool bpffs(const std::string& p) noexcept { struct statfs s{}; return ::statfs(p.c_str(),&s)==0&&static_cast<unsigned long>(s.f_type)==0xcafe4a11UL; }
 CapabilityState file_state(const std::string& p) noexcept { struct stat s{}; if(::stat(p.c_str(),&s)!=0||!S_ISREG(s.st_mode))return CapabilityState::Unavailable; return ::access(p.c_str(),R_OK)==0?CapabilityState::Available:CapabilityState::Restricted; }
 bool line(const std::string& p,char* b,size_t n) noexcept { if(!n)return false; FILE* f=std::fopen(p.c_str(),"r"); if(!f)return false; bool ok=std::fgets(b,static_cast<int>(n),f)!=nullptr; std::fclose(f); return ok; }
-bool psi(const std::string& p,double& out) noexcept { char b[512]{}; if(!line(p,b,sizeof(b)))return false; char* s=std::strstr(b,"some "); if(!s)return false; char* v=std::strstr(s,"avg10="); if(!v)return false; v+=6; char* e=nullptr; double d=std::strtod(v,&e); if(e==v||d<0.0||d>100.0)return false; out=d; return true; }
+bool psi(const std::string& p,double& out) noexcept { char b[512]{}; if(!line(p,b,sizeof(b)))return false; char* s=std::strstr(b,"some "); if(!s)return false; char* v=std::strstr(s,"avg10="); if(!v)return false; v+=6; char* e=nullptr; double d=std::strtod(v,&e); if(e==v||!std::isfinite(d)||d<0.0||d>100.0)return false; out=d; return true; }
 bool disk_sectors(const std::string& p,uint64_t& out) noexcept {
  FILE* f=std::fopen(p.c_str(),"r"); if(!f)return false; char b[512]{}; uint64_t total=0; bool any=false;
  while(std::fgets(b,sizeof(b),f)){ unsigned ma=0,mi=0; char name[128]{}; unsigned long long a=0,c=0,rd=0,d=0,w=0,g=0,wr=0; int n=std::sscanf(b,"%u %u %127s %llu %llu %llu %llu %llu %llu %llu",&ma,&mi,name,&a,&c,&rd,&d,&w,&g,&wr); if(n<10||!std::strncmp(name,"loop",4)||!std::strncmp(name,"ram",3))continue; uint64_t x=static_cast<uint64_t>(rd),y=static_cast<uint64_t>(wr); if(x>UINT64_MAX-total||y>UINT64_MAX-total-x)continue; total+=x+y; any=true; }
@@ -86,10 +86,17 @@ bool parse_u64_file(const std::string& path, uint64_t& value) noexcept {
     if (!read_text(path, text, sizeof(text))) {
         return false;
     }
+    char* cursor = text;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+        ++cursor;
+    }
+    if (*cursor < '0' || *cursor > '9') {
+        return false;
+    }
     char* end = nullptr;
     errno = 0;
-    const unsigned long long parsed = std::strtoull(text, &end, 10);
-    if (errno != 0 || end == text) {
+    const unsigned long long parsed = std::strtoull(cursor, &end, 10);
+    if (errno != 0 || end == cursor) {
         return false;
     }
     while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {

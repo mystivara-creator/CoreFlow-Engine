@@ -1234,8 +1234,8 @@ struct DirectAdaptiveRuntime::Impl final {
             << ",\"mode\":" << json_escape(mode_name(snapshot.mode))
             << ",\"screenState\":" << json_escape(snapshot.screen_off ? "OFF" : "ON_OR_UNKNOWN")
             << ",\"thermalGuard\":" << (snapshot.thermal_guard ? "true" : "false")
-            << ",\"cpuUtilizationPct\":" << snapshot.cpu_utilization * 100.0
-            << ",\"thermalPressure\":" << snapshot.thermal_pressure
+            << ",\"cpuUtilizationPct\":" << (std::isfinite(snapshot.cpu_utilization) ? snapshot.cpu_utilization * 100.0 : 0.0)
+            << ",\"thermalPressure\":" << (std::isfinite(snapshot.thermal_pressure) ? snapshot.thermal_pressure : 0.0)
             << ",\"ramBytes\":" << snapshot.ram_bytes
             << ",\"zramBytes\":" << snapshot.zram_bytes
             << ",\"refreshHz\":" << snapshot.refresh_hz
@@ -1462,6 +1462,17 @@ bool DirectAdaptiveRuntime::start() noexcept {
 void DirectAdaptiveRuntime::refresh() noexcept {
     if (!impl_) return;
     impl_->snapshot.started = false;
+    impl_->snapshot.discovery_complete = false;
+    impl_->snapshot.mode = OperatingMode::Unknown;
+    impl_->snapshot.gpu_model = "unavailable";
+    impl_->snapshot.storage_type = "unavailable";
+    impl_->snapshot.verified_mutations = 0U;
+    impl_->snapshot.skipped_nodes = 0U;
+    impl_->snapshot.ownership_losses = 0U;
+    impl_->last_targets.clear();
+    impl_->last_observed.clear();
+    impl_->last_evaluation = Timestamp{};
+    impl_->last_evaluated_mode = OperatingMode::Unknown;
     impl_->start();
 }
 

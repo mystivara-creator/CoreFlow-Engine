@@ -74,15 +74,18 @@ std::string serializeSemanticEvidence(
         return out.str();
     }
 
+    const auto effectiveObservedAtNs =
+        [](const DynamicSemanticDescriptor& descriptor) noexcept -> std::uint64_t {
+        const auto assessed = descriptor.domainAssessment().assessed_at_ns;
+        return assessed != 0U ? assessed : descriptor.provenance().observed_at_ns;
+    };
+
     const auto newest = std::max_element(
         descriptors.begin(), descriptors.end(),
-        [](const DynamicSemanticDescriptor& lhs, const DynamicSemanticDescriptor& rhs) {
-            return lhs.domainAssessment().assessed_at_ns <
-                   rhs.domainAssessment().assessed_at_ns;
+        [&](const DynamicSemanticDescriptor& lhs, const DynamicSemanticDescriptor& rhs) {
+            return effectiveObservedAtNs(lhs) < effectiveObservedAtNs(rhs);
         });
-    const auto newest_observed = newest->domainAssessment().assessed_at_ns != 0U
-        ? newest->domainAssessment().assessed_at_ns
-        : newest->provenance().observed_at_ns;
+    const auto newest_observed = effectiveObservedAtNs(*newest);
     const auto top_age = calculateAge(newest_observed, now_ns);
 
     out << ",\"status\":\"available\""
@@ -100,9 +103,7 @@ std::string serializeSemanticEvidence(
         first = false;
 
         const auto& assessment = descriptor.domainAssessment();
-        const auto observed = assessment.assessed_at_ns != 0U
-            ? assessment.assessed_at_ns
-            : descriptor.provenance().observed_at_ns;
+        const auto observed = effectiveObservedAtNs(descriptor);
         const auto age = calculateAge(observed, now_ns);
         const double confidence = std::isfinite(assessment.confidence)
             ? std::clamp(static_cast<double>(assessment.confidence), 0.0, 1.0)

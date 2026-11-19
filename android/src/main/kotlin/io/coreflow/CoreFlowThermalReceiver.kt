@@ -25,8 +25,7 @@ class CoreFlowThermalReceiver : BroadcastReceiver() {
             try {
                 when (intent.action) {
                     PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> {
-                        val pm = context.getSystemService(Context::class.java)
-                            ?.getSystemService(PowerManager::class.java)
+                        val pm = context.getSystemService(PowerManager::class.java)
                             ?: context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                         val profile = if (pm?.isPowerSaveMode == true) {
                             CoreFlowManager.Profile.BATTERY

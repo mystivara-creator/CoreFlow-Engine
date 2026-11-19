@@ -34,6 +34,9 @@
     return typeof window !== 'undefined' && typeof window.ksu?.exec === 'function';
   }
 
+  var EXEC_TIMEOUT_MS = 10000;
+  var callbackSeq = 0;
+
   // Private implementation detail: never expose arbitrary root shell execution
   // to page scripts. The public API below is intentionally read-only.
   function execCommand(cmd) {
@@ -41,23 +44,40 @@
       return Promise.reject(new Error('KernelSU bridge not available'));
     }
     return new Promise(function (resolve) {
-      var callbackName = '__cf_js_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+      var settled = false;
+      var timer = null;
+      callbackSeq += 1;
+      var callbackName = '__cf_js_' + Date.now() + '_' + callbackSeq;
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+        resolve(result);
+      }
+
+      // A bridge that never calls back must not leave the UI waiting forever.
+      timer = setTimeout(function () {
+        finish({ errno: -1, stdout: '', stderr: 'Native command timed out after ' + EXEC_TIMEOUT_MS + 'ms' });
+      }, EXEC_TIMEOUT_MS);
+
       window[callbackName] = function (errno, stdout, stderr) {
-        delete window[callbackName];
-        resolve({
-          errno: typeof errno === 'number' ? errno : 0,
+        finish({
+          errno: typeof errno === 'number' && isFinite(errno) ? errno : 0,
           stdout: String(stdout || ''),
           stderr: String(stderr || '')
         });
       };
+
       try {
         window.ksu.exec(cmd, '{}', callbackName);
       } catch (e) {
         try {
           var direct = window.ksu.exec(cmd);
-          resolve({ errno: 0, stdout: String(direct || ''), stderr: '' });
+          finish({ errno: 0, stdout: String(direct || ''), stderr: '' });
         } catch (err) {
-          resolve({ errno: -1, stdout: '', stderr: String(err) });
+          finish({ errno: -1, stdout: '', stderr: String(err) });
         }
       }
     });

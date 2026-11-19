@@ -255,6 +255,7 @@ bool HardwareLongevityManager::monitor_battery_thermals(float soc_temp) {
         }
         if (!applied) {
             battery_mutation_active_ = true;
+            (void)rollback_battery_locked();
             return false;
         }
         last_charge_ua_ = target;

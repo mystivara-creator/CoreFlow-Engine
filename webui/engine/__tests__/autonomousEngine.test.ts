@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CentralMutationCoordinatorModel,
+  createInitialAutonomousTelemetry,
+  DEFAULT_AUTONOMOUS_CONFIG,
   classifyResourcePermission,
   classifyWorkload,
   computeRelativeTunableValue,
@@ -15,6 +17,7 @@ import {
   readSectionNumberKey,
   readSectionStringKey,
   selectOptimizationObjective,
+  stepAutonomousSimulation,
 } from '../autonomousEngine.ts';
 
 test('computeVulkanTelemetry never fabricates API version, extension count, or unsupported hardware features', () => {
@@ -329,3 +332,105 @@ vendor_flag = true
   assert.equal(readSectionStringKey(merged, 'vulkan_layer_mode'), 'safe_hardware');
 });
 
+test('DEFAULT_VULKAN_CONFIG mirrors the shipped opt-in config (layer disabled, no sub-feature enabled)', () => {
+  assert.deepEqual(DEFAULT_VULKAN_CONFIG, {
+    mode: 'disabled',
+    enableSkiavkThreaded: false,
+    enableAdaptiveVrs: false,
+    enablePipelineCachePrewarm: false,
+  });
+  const vk = computeVulkanTelemetry(DEFAULT_VULKAN_CONFIG, { available: true });
+  assert.equal(vk.layerActive, false);
+  assert.equal(vk.skiavkActive, false);
+  assert.equal(vk.adaptiveVrsActive, false);
+  assert.equal(vk.pipelineCachePrewarmActive, false);
+});
+
+test('config helpers resolve shipped keys and ignore prototype-chain key names', () => {
+  const raw = `[general]
+enable_tuner = false
+[direct_adaptive]
+enable_direct_adaptive = true
+direct_adaptive_policy = auto
+constructor = evil
+__proto__ = evil
+`;
+  assert.equal(readSectionStringKey(raw, 'enable_tuner'), 'false');
+  assert.equal(readSectionStringKey(raw, 'enable_direct_adaptive'), 'true');
+  assert.equal(readSectionStringKey(raw, 'direct_adaptive_policy'), 'auto');
+  assert.equal(readSectionStringKey(raw, 'toString'), null);
+  assert.equal(mergeConfigText(raw, { constructor: 'x', toString: 'y' }), raw);
+});
+
+test('mergeConfigText refuses values that could inject extra keys, sections or heredoc terminators', () => {
+  const initial = '[vulkan_engine]\nvulkan_layer_mode = disabled\n';
+  assert.equal(
+    mergeConfigText(initial, { vulkan_layer_mode: 'disabled\n[general]\nenable_uclamp = false' }),
+    initial
+  );
+  assert.equal(mergeConfigText(initial, { vulkan_layer_mode: 'a\0b' }), initial);
+  const merged = mergeConfigText(initial, { vulkan_layer_mode: 'safe_hardware', enable_direct_adaptive: false });
+  assert.equal(readSectionStringKey(merged, 'vulkan_layer_mode'), 'safe_hardware');
+  assert.equal(readSectionStringKey(merged, 'enable_direct_adaptive'), 'false');
+  assert.ok(merged.endsWith('\n'));
+});
+
+test('computeRelativeTunableValue never emits NaN and respects swapped or non-finite bounds', () => {
+  assert.equal(computeRelativeTunableValue(100, 2.0, 10, 150), 150);
+  assert.equal(computeRelativeTunableValue(100, 0.5, 80, 150), 80);
+  assert.equal(computeRelativeTunableValue(Number.NaN, 2.0, 10, 150), 10);
+  assert.equal(computeRelativeTunableValue(100, Number.POSITIVE_INFINITY, 10, 150), 10);
+  assert.equal(computeRelativeTunableValue(100, 2.0, 150, 10), 150);
+  assert.equal(computeRelativeTunableValue(100, 1.5, 10, 1000, Number.NaN), 113);
+});
+
+test('evaluateAdaptiveFeedback treats non-finite telemetry as INCONCLUSIVE rollback, never NEUTRAL/NaN', () => {
+  const base = {
+    intent: 'IoLatencyRelief' as const,
+    beforeIoPsi: 10,
+    afterIoPsiSamples: [4, 4],
+    beforeMemPsi: 1,
+    afterMemPsiSamples: [1],
+    beforeCpuPsi: 5,
+    afterCpuPsiSamples: [5],
+    beforeThermal: 40,
+    afterThermalSamples: [40],
+    ownershipIntact: true,
+    currentAdaptiveScale: 0.5,
+    consecutiveNonImproved: 0,
+  };
+  const badBaseline = evaluateAdaptiveFeedback({ ...base, beforeIoPsi: Number.NaN });
+  assert.equal(badBaseline.verdict, 'INCONCLUSIVE');
+  assert.equal(badBaseline.action, 'ROLLBACK');
+  assert.equal(badBaseline.utilityDelta, 0);
+  assert.equal(badBaseline.nextAdaptiveScale, 0.5);
+  assert.equal(badBaseline.cooldownTicks, 4);
+
+  // Non-finite samples are discarded; the remaining finite samples still decide the verdict.
+  const filtered = evaluateAdaptiveFeedback({ ...base, afterIoPsiSamples: [Number.NaN, 4, Number.POSITIVE_INFINITY] });
+  assert.equal(filtered.verdict, 'IMPROVED');
+  assert.ok(Number.isFinite(filtered.utilityDelta));
+
+  // All samples invalid -> falls back to the baseline value (no gain), not NaN.
+  const noSamples = evaluateAdaptiveFeedback({ ...base, afterIoPsiSamples: [Number.NaN] });
+  assert.equal(noSamples.verdict, 'NEUTRAL');
+  assert.equal(noSamples.utilityDelta, 0);
+});
+
+test('stepAutonomousSimulation exercises memory relief for a forced memory trial and survives corrupted inputs', () => {
+  const memory = stepAutonomousSimulation(createInitialAutonomousTelemetry(), DEFAULT_AUTONOMOUS_CONFIG, 'memory');
+  assert.equal(memory.next.tunerIntent, 'MemoryStallRelief');
+  assert.equal(memory.next.tunerCandidateId, 'vm.zram_latency_relief');
+
+  const io = stepAutonomousSimulation(createInitialAutonomousTelemetry(), DEFAULT_AUTONOMOUS_CONFIG, 'io_trial');
+  assert.equal(io.next.tunerIntent, 'IoLatencyRelief');
+
+  const corrupted = stepAutonomousSimulation(
+    { ...createInitialAutonomousTelemetry(), socTempCelsius: Number.NaN },
+    { ...DEFAULT_AUTONOMOUS_CONFIG, thermalTripCelsius: Number.NaN, balancedUclampMin: Number.NaN },
+    'cpu'
+  );
+  assert.ok(Number.isFinite(corrupted.next.socTempCelsius));
+  assert.ok(Number.isFinite(corrupted.next.uclampMin));
+  assert.ok(corrupted.next.uclampMin >= 0 && corrupted.next.uclampMin <= 1024);
+});

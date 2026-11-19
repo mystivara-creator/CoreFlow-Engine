@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <linux/input.h>
 #include <string>

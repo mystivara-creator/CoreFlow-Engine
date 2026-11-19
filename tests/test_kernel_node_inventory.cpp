@@ -177,6 +177,13 @@ int main() {
     const auto bounded = inventory.scan(2U);
     assert(bounded.size() <= 2U);
 
+    // Path-traversal tokens in scaling_governor must be rejected before scanning children.
+    const auto outside_governor = sys / "devices/system/cpu/cpufreq/outside_gov";
+    put(outside_governor / "escaped_tunable", "1\n");
+    put(sys / "devices/system/cpu/cpufreq/policy0/scaling_governor", "../outside_gov\n");
+    const auto traversal_scan = inventory.scan(64U);
+    assert(find(traversal_scan, outside_governor / "escaped_tunable") == nullptr);
+
     fs::remove_all(root);
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     std::cout << "KernelNodeInventory dynamic parent/child scan PASS\n";

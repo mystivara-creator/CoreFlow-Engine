@@ -133,6 +133,15 @@ int main() {
     assert(stale.find("\"ageMs\":5000.000001") != std::string::npos);
     assert(stale.find("\"freshness\":\"stale\"") != std::string::npos);
 
+    // Multi-descriptor batches sharing a generation must report the newest observed timestamp at top level.
+    std::vector<DynamicSemanticDescriptor> multi{};
+    multi.push_back(candidate.front());
+    auto later = resolve(validated_adapter, validated_endpoint, 350U);
+    multi.push_back(later.front());
+    const auto multi_json = serializeSemanticEvidence(multi, 400U);
+    assert(multi_json.find("\"status\":\"available\",\"generation\":\"7\",\"observedAtMonotonicNs\":\"350\"") !=
+           std::string::npos);
+
     std::cout << "P3 native semantic evidence serialization contract: PASS" << std::endl;
     return 0;
 }

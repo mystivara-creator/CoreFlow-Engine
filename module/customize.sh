@@ -276,6 +276,7 @@ fi
 [ -f "$MODPATH/service.sh" ] || die "service.sh missing from package."
 [ -f "$MODPATH/post-fs-data.sh" ] || die "post-fs-data.sh missing from package."
 [ -f "$MODPATH/uninstall.sh" ] || die "uninstall.sh missing from package."
+[ -f "$MODPATH/action.sh" ] || die "action.sh missing from package."
 if [ ! -f "$MODPATH/system/etc/coreflow/default.conf" ]; then
     report "WARN: default.conf not found; daemon may use compiled defaults"
 fi
@@ -377,7 +378,7 @@ report "evdev event nodes visible: $INPUT_COUNT; native ioctl capability filteri
 
 section "04 / NATIVE CAPABILITY PROBE"
 report "Preflight: invoke native read-only capability inspection"
-CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$"
+CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$$"
 NATIVE_PROBE_STATUS="DEFERRED"
 if "$CORE_BIN" --capabilities > "$CAPABILITY_TMP" 2>&1; then
     NATIVE_PROBE_STATUS="PASS"
@@ -400,7 +401,7 @@ report "Installer policy: no sysfs, procfs, cgroup, boot property, thermal, or S
 # Persist only the read-only preflight report; never rewrite an existing safety marker.
 PREFLIGHT_LOG="$STATE_DIR/install-preflight.log"
 if [ ! -L "$PREFLIGHT_LOG" ]; then
-    PREFLIGHT_TMP="$PREFLIGHT_LOG.tmp.$"
+    PREFLIGHT_TMP="$PREFLIGHT_LOG.tmp.$$"
     rm -f "$PREFLIGHT_TMP"
     printf '%s\n' "$PREFLIGHT_REPORT" > "$PREFLIGHT_TMP" &&
         chmod 0600 "$PREFLIGHT_TMP" &&
@@ -419,6 +420,7 @@ set_file_perm "$CORE_BIN" 0755 || die "Cannot set coreflowd permissions."
 set_file_perm "$MODPATH/service.sh" 0755
 set_file_perm "$MODPATH/post-fs-data.sh" 0755
 set_file_perm "$MODPATH/uninstall.sh" 0755
+set_file_perm "$MODPATH/action.sh" 0755
 set_file_perm "$MODPATH/customize.sh" 0755
 set_file_perm "$MODPATH/module.prop" 0644
 set_file_perm "$MODPATH/sepolicy.rule" 0644
@@ -439,6 +441,7 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
     stage_optional "$MODPATH/service.sh" "$LIVE_MOD/service.sh" 0755 || UPGRADE_OK=0
     stage_optional "$MODPATH/post-fs-data.sh" "$LIVE_MOD/post-fs-data.sh" 0755 || UPGRADE_OK=0
     stage_optional "$MODPATH/uninstall.sh" "$LIVE_MOD/uninstall.sh" 0755 || UPGRADE_OK=0
+    stage_optional "$MODPATH/action.sh" "$LIVE_MOD/action.sh" 0755 || UPGRADE_OK=0
     stage_optional "$MODPATH/customize.sh" "$LIVE_MOD/customize.sh" 0755 || UPGRADE_OK=0
     stage_optional "$MODPATH/sepolicy.rule" "$LIVE_MOD/sepolicy.rule" 0644 || UPGRADE_OK=0
 

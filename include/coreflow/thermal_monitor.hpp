@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>

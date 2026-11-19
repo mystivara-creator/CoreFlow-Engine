@@ -1555,7 +1555,8 @@ void AutonomousTuner::classify_discovered_resources() {
 
         const std::string active_gov = DaemonConfig::trim(
             read_first_line((it->path() / "scaling_governor").string()));
-        if (active_gov.empty()) continue;
+        if (active_gov.empty() || active_gov == "." || active_gov == ".." ||
+            active_gov.find('/') != std::string::npos || active_gov.find('\0') != std::string::npos) continue;
         const fs::path governor_dir = it->path() / active_gov;
         std::error_code governor_ec;
         if (!fs::is_directory(governor_dir, governor_ec) || governor_ec) continue;
@@ -1728,11 +1729,14 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
                 });
         };
         for (const auto& policy : device_profile_->cpu_policies) {
+            if (policy.governor.empty() || policy.governor == "." || policy.governor == ".." ||
+                policy.governor.find('/') != std::string::npos ||
+                policy.governor.find('\0') != std::string::npos) continue;
             const fs::path policy_path(policy.policy_path);
             const fs::path governor_dir = policy_path / policy.governor;
             const std::string up = (governor_dir / "up_rate_limit_us").string();
             const std::string down = (governor_dir / "down_rate_limit_us").string();
-            if (!policy.governor.empty() && eligible_capability(up) && eligible_capability(down)) {
+            if (eligible_capability(up) && eligible_capability(down)) {
                 (void)store.capture(up);
                 (void)store.capture(down);
                 cpufreq_governor_dirs_.push_back(governor_dir.string());
@@ -1750,7 +1754,8 @@ void AutonomousTuner::discover(std::string_view sys_root, std::string_view proc_
         if (pol_name.rfind("policy", 0) != 0) continue;
         const fs::path scaling_gov_path = it->path() / "scaling_governor";
         const std::string active_gov = DaemonConfig::trim(read_first_line(scaling_gov_path.string()));
-        if (active_gov.empty()) continue;
+        if (active_gov.empty() || active_gov == "." || active_gov == ".." ||
+            active_gov.find('/') != std::string::npos || active_gov.find('\0') != std::string::npos) continue;
         const fs::path governor_dir = it->path() / active_gov;
         const std::string up_path = (governor_dir / "up_rate_limit_us").string();
         const std::string down_path = (governor_dir / "down_rate_limit_us").string();
@@ -2219,33 +2224,40 @@ bool AutonomousTuner::rollback_active(std::string_view reason) {
 
     bool all_restored = retry_unresolved_recoveries();
 
-    // Also unwind any in-flight partial applied_steps_ left from an interrupted apply_transaction().
-    if (!applied_steps_.empty() && active_interventions_.empty()) {
-        auto& store = BaselineStore::instance();
-        std::vector<MutationStep> failed_steps;
-        for (auto it = applied_steps_.rbegin(); it != applied_steps_.rend(); ++it) {
-            if (!store.rollback(it->path)) {
-                failed_steps.push_back(*it);
+    // Also unwind any in-flight partial applied_steps_ (or pre-commit lease) left from an interrupted apply_transaction().
+    if (active_interventions_.empty()) {
+        if (!applied_steps_.empty()) {
+            auto& store = BaselineStore::instance();
+            std::vector<MutationStep> failed_steps;
+            for (auto it = applied_steps_.rbegin(); it != applied_steps_.rend(); ++it) {
+                if (!store.rollback(it->path)) {
+                    failed_steps.push_back(*it);
+                }
             }
-        }
-        if (!failed_steps.empty()) {
-            std::reverse(failed_steps.begin(), failed_steps.end());
-            applied_steps_ = std::move(failed_steps);
-            unresolved_recoveries_.push_back(FailedRecoveryRecord{
-                .domain = domain_for_candidate(current_candidate_id_),
-                .candidate_id = current_candidate_id_,
-                .failed_steps = applied_steps_,
-                .is_frequency_policy = false,
-            });
-            all_restored = false;
-        } else {
-            if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
-                coordinator_.release_lease(
-                    domain_for_candidate(current_candidate_id_),
-                    controller_name_,
-                    current_candidate_id_);
+            if (!failed_steps.empty()) {
+                std::reverse(failed_steps.begin(), failed_steps.end());
+                applied_steps_ = std::move(failed_steps);
+                unresolved_recoveries_.push_back(FailedRecoveryRecord{
+                    .domain = domain_for_candidate(current_candidate_id_),
+                    .candidate_id = current_candidate_id_,
+                    .failed_steps = applied_steps_,
+                    .is_frequency_policy = false,
+                });
+                all_restored = false;
+            } else {
+                if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
+                    coordinator_.release_lease(
+                        domain_for_candidate(current_candidate_id_),
+                        controller_name_,
+                        current_candidate_id_);
+                }
+                applied_steps_.clear();
             }
-            applied_steps_.clear();
+        } else if (!current_candidate_id_.empty() && current_candidate_id_ != "baseline") {
+            coordinator_.release_lease(
+                domain_for_candidate(current_candidate_id_),
+                controller_name_,
+                current_candidate_id_);
         }
     }
 

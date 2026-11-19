@@ -12,6 +12,8 @@
 #pragma once
 
 #include "types.hpp"
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <mutex>

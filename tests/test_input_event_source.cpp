@@ -178,7 +178,9 @@ static void put_file(const fs::path& path, const std::string& value) {
 static std::string proc_stat(pid_t pid, uint64_t start) {
     std::string result = std::to_string(pid) + " (com.example.game) S";
     for (unsigned field = 4; field <= 21; ++field) result += " 0";
-    result += " " + std::to_string(start) + " 0 0\n";
+    result += ' ';
+    result += std::to_string(start);
+    result += " 0 0\n";
     return result;
 }
 
@@ -188,9 +190,12 @@ static void make_task(const fs::path& proc, pid_t pid, pid_t tid,
              comm + "\n");
     put_file(proc / std::to_string(pid) / "task" / std::to_string(tid) / "stat",
              proc_stat(tid, start));
-    put_file(proc / std::to_string(tid) / "status",
-             "Name:\t" + comm + "\nTgid:\t" + std::to_string(pid) +
-             "\nUid:\t10000\t10000\t10000\t10000\n");
+    std::string status = "Name:\t";
+    status += comm;
+    status += "\nTgid:\t";
+    status += std::to_string(pid);
+    status += "\nUid:\t10000\t10000\t10000\t10000\n";
+    put_file(proc / std::to_string(tid) / "status", status);
     put_file(proc / std::to_string(pid) / "task" / std::to_string(tid) / "cgroup",
              "0::/top-app/render\n");
 }

@@ -149,7 +149,8 @@ void RenderBooster::on_frame_event(const FrameEvent& event) noexcept {
                     std::min<uint64_t>(event.missed_frames, UINT32_MAX));
                 const uint32_t previous =
                     consecutive_hitches_.fetch_add(increment, std::memory_order_relaxed);
-                trigger_burst = previous < 2U && previous + increment >= 2U;
+                trigger_burst = previous < 2U &&
+                    static_cast<uint64_t>(previous) + static_cast<uint64_t>(increment) >= 2ULL;
             }
             break;
         }

@@ -138,15 +138,15 @@ struct VkPhysicalDeviceFeatures2 {
     VkPhysicalDeviceFeatures features;
 };
 
-struct VkPhysicalDeviceLimits {
-    uint8_t opaque[504];
+struct alignas(8) VkPhysicalDeviceLimits {
+    uint64_t opaque[63];
 };
 
 struct VkPhysicalDeviceSparseProperties {
     VkBool32 words[5];
 };
 
-struct VkPhysicalDeviceProperties {
+struct alignas(8) VkPhysicalDeviceProperties {
     uint32_t apiVersion;
     uint32_t driverVersion;
     uint32_t vendorID;
@@ -158,7 +158,12 @@ struct VkPhysicalDeviceProperties {
     VkPhysicalDeviceSparseProperties sparseProperties;
 };
 
-struct VkPhysicalDeviceProperties2 {
+static_assert(sizeof(VkPhysicalDeviceLimits) == 504,
+              "VkPhysicalDeviceLimits must match Vulkan 64-bit ABI size");
+static_assert(sizeof(VkPhysicalDeviceProperties) == 824,
+              "VkPhysicalDeviceProperties must match Vulkan 64-bit ABI size");
+
+struct alignas(8) VkPhysicalDeviceProperties2 {
     int32_t sType;
     void* pNext;
     VkPhysicalDeviceProperties properties;
@@ -328,7 +333,9 @@ int open_app_pipeline_cache_dir() noexcept {
     if (terminator != std::string::npos) package.resize(terminator);
     const size_t process_suffix = package.find(':');
     if (process_suffix != std::string::npos) package.resize(process_suffix);
-    if (package.empty() || package.size() > 200U) return -1;
+    if (package.empty() || package.size() > 200U ||
+        package.front() == '.' || package.back() == '.' ||
+        package.find("..") != std::string::npos) return -1;
     for (const unsigned char ch : package) {
         if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
               (ch >= '0' && ch <= '9') || ch == '_' || ch == '.')) return -1;
@@ -865,6 +872,15 @@ CF_VK_EXPORT PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const
     }
     if (std::strcmp(pName, "vkDestroyDevice") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkDestroyDevice);
+    }
+    if (std::strcmp(pName, "vkCreatePipelineCache") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkCreatePipelineCache);
+    }
+    if (std::strcmp(pName, "vkGetPipelineCacheData") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkGetPipelineCacheData);
+    }
+    if (std::strcmp(pName, "vkDestroyPipelineCache") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(&layer_vkDestroyPipelineCache);
     }
     if (std::strcmp(pName, "vkGetDeviceProcAddr") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(&vkGetDeviceProcAddr);

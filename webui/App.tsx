@@ -135,21 +135,98 @@ const extractJsonObject = (raw: string): unknown => {
   return JSON.parse(lines[lines.length - 1] ?? '{}');
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isFiniteNum = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const OPTIONAL_NUMBER_KEYS = [
+  'baselineNodesSnapshotted', 'thermalSeverity', 'aiPredictedPressure10s', 'aiPredictedVelocity',
+  'aiRecommendedScale', 'aiConfidence', 'aiSamples', 'tunerUtilityDelta', 'tunerTrials',
+  'tunerImproved', 'tunerRolledBack',
+] as const;
+const OPTIONAL_NULLABLE_NUMBER_KEYS = [
+  'cpuPressurePct', 'memoryPressurePct', 'ioPressurePct', 'socCompositeCelsius',
+  'cpuAverageCelsius', 'cpuPeakCelsius', 'gpuTempCelsius', 'batteryTempCelsius',
+  'skinTempCelsius', 'thermalHeadroom',
+] as const;
+const OPTIONAL_BOOLEAN_KEYS = [
+  'cpuPressureValid', 'memoryPressureValid', 'ioPressureValid', 'thermalPolicyAvailable',
+  'thermalGuardActive', 'thermalDataDegraded', 'thermalFallbackActive', 'thermalHeadroomValid',
+  'aiOnnxActive',
+] as const;
+const OPTIONAL_STRING_KEYS = [
+  'thermalSource', 'thermalSensor', 'aiBackend', 'tunerRuntimeStage', 'tunerStage', 'tunerIntent',
+  'tunerCandidateId', 'tunerCandidateLabel', 'tunerRationale', 'tunerVerdict',
+] as const;
+
+const hasStrings = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof item[key] === 'string');
+const hasNumbers = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => isFiniteNum(item[key]));
+const hasBooleans = (item: Record<string, unknown>, keys: string[]) =>
+  keys.every((key) => typeof item[key] === 'boolean');
+
+const OPTIONAL_ARRAY_GUARDS: Record<string, (item: unknown) => boolean> = {
+  thermalSensors: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'type']) &&
+    isFiniteNum(item.category) &&
+    (item.celsius === null || isFiniteNum(item.celsius)) &&
+    hasBooleans(item, ['valid', 'policyAvailable']) &&
+    (item.velocityCelsiusPerSec === undefined ||
+      item.velocityCelsiusPerSec === null ||
+      isFiniteNum(item.velocityCelsiusPerSec)),
+  blockQueues: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['device', 'activeScheduler', 'baselineScheduler']) &&
+    Array.isArray(item.availableSchedulers) &&
+    item.availableSchedulers.every((name) => typeof name === 'string') &&
+    hasNumbers(item, ['readAheadKb', 'nrRequests', 'rqAffinity', 'readExpireMs', 'writesStarved', 'fifoBatch']),
+  tunerCandidates: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'label', 'domain']) &&
+    hasNumbers(item, ['trials', 'successes', 'rollbacks', 'meanDelta', 'ucbScore', 'cooldownTicks']),
+  tunerEvaluatedCandidates: (item) =>
+    isRecord(item) &&
+    hasStrings(item, ['id', 'domain', 'intent', 'rejectionReason']) &&
+    hasNumbers(item, ['utilityScore', 'empiricalScore', 'confidence', 'riskPenalty', 'thermalPenalty']) &&
+    hasBooleans(item, ['eligible', 'selected']),
+};
+
+// Required fields are enforced by checkedNativeStatus. Optional telemetry that is
+// mistyped is dropped (treated as absent) so one malformed field cannot reach a
+// `.toFixed()` in a component and blank the whole dashboard.
+const dropMalformedOptionalTelemetry = (status: Record<string, unknown>): void => {
+  const drop = (key: string, valid: boolean) => {
+    if (status[key] !== undefined && !valid) delete status[key];
+  };
+  for (const key of OPTIONAL_NUMBER_KEYS) drop(key, isFiniteNum(status[key]));
+  for (const key of OPTIONAL_NULLABLE_NUMBER_KEYS) drop(key, status[key] === null || isFiniteNum(status[key]));
+  for (const key of OPTIONAL_BOOLEAN_KEYS) drop(key, typeof status[key] === 'boolean');
+  for (const key of OPTIONAL_STRING_KEYS) drop(key, typeof status[key] === 'string');
+  for (const [key, guard] of Object.entries(OPTIONAL_ARRAY_GUARDS)) {
+    const value = status[key];
+    drop(key, Array.isArray(value) && value.every(guard));
+  }
+  drop('vulkan', isRecord(status.vulkan));
+};
+
 const checkedNativeStatus = (raw: string): NativeStatus => {
   const value: unknown = extractJsonObject(raw);
   if (typeof value !== 'object' || value === null) throw new Error('Invalid native status');
   const status = value as Partial<NativeStatus>;
   if (
     typeof status.running !== 'boolean' ||
-    typeof status.pid !== 'number' ||
-    typeof status.uclampMin !== 'number' ||
-    typeof status.uclampMax !== 'number' ||
+    !isFiniteNum(status.pid) ||
+    !isFiniteNum(status.uclampMin) ||
+    !isFiniteNum(status.uclampMax) ||
     typeof status.uclampSupported !== 'boolean' ||
-    (status.uclampPolicyMin !== undefined && typeof status.uclampPolicyMin !== 'number') ||
-    (status.uclampPolicyMax !== undefined && typeof status.uclampPolicyMax !== 'number') ||
+    (status.uclampPolicyMin !== undefined && !isFiniteNum(status.uclampPolicyMin)) ||
+    (status.uclampPolicyMax !== undefined && !isFiniteNum(status.uclampPolicyMax)) ||
     (status.uclampTargetPath !== undefined && typeof status.uclampTargetPath !== 'string') ||
     (status.uclampEncoding !== undefined && typeof status.uclampEncoding !== 'string') ||
-    (typeof status.socTempCelsius !== 'number' && status.socTempCelsius !== null) ||
+    (!isFiniteNum(status.socTempCelsius) && status.socTempCelsius !== null) ||
     typeof status.recoveryPending !== 'boolean'
   ) {
     throw new Error('Unexpected daemon status schema');
@@ -160,6 +237,7 @@ const checkedNativeStatus = (raw: string): NativeStatus => {
   if (status.directAdaptive !== undefined && !isDirectAdaptiveStatus(status.directAdaptive)) {
     throw new Error('Unexpected directAdaptive status schema');
   }
+  dropMalformedOptionalTelemetry(value as Record<string, unknown>);
   return status as NativeStatus;
 };
 
@@ -278,7 +356,9 @@ export const App: React.FC = () => {
     try {
       const status = checkedNativeStatus(await execChecked(`${RESOLVE_BIN}; "$BIN" --status`));
       setSemanticEvidence(status.semanticEvidence ?? null);
-      setNativeStatusAvailable(status.semanticEvidence?.status === 'available');
+      // A schema-valid daemon payload proves the daemon link even when the semantic
+      // adapter honestly reports status "unavailable"; bindings are gated separately.
+      setNativeStatusAvailable(status.semanticEvidence !== undefined);
     const effectiveTemp = status.socCompositeCelsius ?? status.socTempCelsius ?? -1;
     const isThermalThrottling =
       status.directAdaptive?.thermalGuard ??
@@ -405,7 +485,19 @@ export const App: React.FC = () => {
           : rawVkMode === 'disabled'
           ? 'disabled'
           : 'disabled';
-      setVulkanConfig((old) => ({ ...old, mode: vkMode }));
+      const readFlag = (key: string): boolean | null => {
+        const raw = readSectionStringKey(configResult.stdout, key);
+        return raw === 'true' ? true : raw === 'false' ? false : null;
+      };
+      // Reflect the persisted sub-feature flags instead of assuming defaults.
+      setVulkanConfig((old) => ({
+        ...old,
+        mode: vkMode,
+        enableSkiavkThreaded: readFlag('enable_skiavk_threaded') ?? old.enableSkiavkThreaded,
+        enableAdaptiveVrs: readFlag('enable_adaptive_vrs') ?? old.enableAdaptiveVrs,
+        enablePipelineCachePrewarm:
+          readFlag('enable_pipeline_cache_prewarm') ?? old.enablePipelineCachePrewarm,
+      }));
     };
 
     let pollInFlight = false;
@@ -423,7 +515,7 @@ export const App: React.FC = () => {
           if (snapshot && snapshot !== previousLogSnapshot) {
             previousLogSnapshot = snapshot;
             const lines = snapshot
-              .split('\\n')
+              .split(/\r?\n/)
               .map((line) => line.trim())
               .filter(Boolean)
               .slice(-12)
@@ -484,18 +576,27 @@ export const App: React.FC = () => {
     const existingResult = await execNativeKsuShell(
       `cat "${CONFIG}" 2>/dev/null || cat /data/adb/modules/cfae_framework/system/etc/coreflow/default.conf 2>/dev/null || cat /system/etc/coreflow/default.conf 2>/dev/null || true`
     );
-    const mergedText = mergeConfigText(existingResult.stdout ?? '', { vulkan_layer_mode: mode });
+    const merged = mergeConfigText(existingResult.stdout ?? '', { vulkan_layer_mode: mode });
+    const mergedText = merged.endsWith('\n') ? merged : merged + '\n';
+    // The config text is embedded in a quoted heredoc executed as root. Pick a
+    // delimiter that cannot appear as a line of the text so a crafted config line can
+    // never terminate the heredoc early and run the remainder as shell commands.
+    let delimiter = 'COREFLOW_CONFIG';
+    for (let attempt = 1; mergedText.split('\n').some((line) => line.trim() === delimiter); attempt++) {
+      delimiter = `COREFLOW_CONFIG_${attempt}`;
+    }
     const command =
       'umask 077 && [ ! -L "' +
       CONFIG +
       '" ] && rm -f "' +
       CONFIG +
       '.tmp" && ' +
-      "cat <<'COREFLOW_CONFIG' > " +
+      `cat <<'${delimiter}' > ` +
       CONFIG +
       '.tmp\n' +
       mergedText +
-      'COREFLOW_CONFIG\nchown 0:0 ' +
+      delimiter +
+      '\nchown 0:0 ' +
       CONFIG +
       '.tmp 2>/dev/null; chmod 600 ' +
       CONFIG +
@@ -621,7 +722,7 @@ export const App: React.FC = () => {
         {!isNativeBridge
           ? 'Simulation Mode · Browser-only preview; synthetic values are labelled (sim) and are not kernel audit evidence.'
           : nativeConnected
-            ? 'Connected · Native bridge and official daemon semanticEvidence schema v1 are available.'
+            ? 'Connected · Native bridge and official daemon status with semanticEvidence schema v1 received.'
             : 'Native bridge detected · Awaiting an official daemon status payload; semantic telemetry is unavailable.'}
       </div>
 
@@ -654,6 +755,8 @@ export const App: React.FC = () => {
             return (
               <button
                 key={id}
+                type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => setActiveTab(id)}
                 className={
                   'pixel-nav-item flex items-center gap-2 whitespace-nowrap select-none ' +

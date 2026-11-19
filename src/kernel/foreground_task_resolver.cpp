@@ -160,6 +160,7 @@ bool ForegroundTaskResolver::is_whitelisted_thread(
 }
 
 bool ForegroundTaskResolver::read_top_app_pids(std::vector<pid_t>& pids) const noexcept {
+    if (top_app_cgroup_.empty()) return false;
     std::string contents;
     // Prefer process membership. When only a task/thread ABI is exposed,
     // normalize leader TIDs to process IDs and cross-check proc membership.

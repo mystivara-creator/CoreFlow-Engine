@@ -89,11 +89,13 @@ export interface VulkanEngineConfig {
   enablePipelineCachePrewarm: boolean;
 }
 
+// Mirrors the shipped config/coreflow.conf [vulkan_engine] defaults: the layer is
+// opt-in and no sub-feature is pre-enabled before the user selects a layer mode.
 export const DEFAULT_VULKAN_CONFIG: VulkanEngineConfig = {
   mode: 'disabled',
-  enableSkiavkThreaded: true,
-  enableAdaptiveVrs: true,
-  enablePipelineCachePrewarm: true,
+  enableSkiavkThreaded: false,
+  enableAdaptiveVrs: false,
+  enablePipelineCachePrewarm: false,
 };
 
 export interface VulkanTelemetry {
@@ -304,11 +306,14 @@ export const CANONICAL_KEY_SECTIONS: Record<string, string> = {
   zero_polling_mode: 'general',
   enable_cgroups_v2: 'general',
   enable_uclamp: 'general',
+  enable_tuner: 'general',
   tier_override: 'device_adaptation',
   unlock_vendor_clamping: 'device_adaptation',
   force_120hz_rendering: 'device_adaptation',
   enable_cpu_frequency_control: 'device_adaptation',
   enable_gpu_frequency_control: 'device_adaptation',
+  enable_direct_adaptive: 'direct_adaptive',
+  direct_adaptive_policy: 'direct_adaptive',
   top_app_interactive_min: 'uclamp_tuning',
   top_app_interactive_max: 'uclamp_tuning',
   ui_adaptive_bias: 'uclamp_tuning',
@@ -345,20 +350,30 @@ export const CANONICAL_KEY_SECTIONS: Record<string, string> = {
   boost_duration_ms: 'render_booster',
 };
 
+// Own-property lookup so keys such as `constructor` or `__proto__` found in an
+// untrusted config file never resolve through Object.prototype.
+function canonicalSectionOf(key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(CANONICAL_KEY_SECTIONS, key)
+    ? CANONICAL_KEY_SECTIONS[key]
+    : undefined;
+}
+
 export function normalizeSectionName(sec: string): string {
   const trimmed = sec.trim();
   return trimmed === 'stability' ? 'stability_policy' : trimmed;
 }
 
 export function parseConfigIni(raw: string): Record<string, Record<string, string>> {
-  const result: Record<string, Record<string, string>> = {};
+  // Prototype-less maps: section/key names come from an untrusted file, so names like
+  // `__proto__` or `toString` must remain plain data.
+  const result: Record<string, Record<string, string>> = Object.create(null);
   let currentSection = '';
   for (const rawLine of raw.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       currentSection = normalizeSectionName(trimmed.slice(1, -1));
-      if (!result[currentSection]) result[currentSection] = {};
+      if (!result[currentSection]) result[currentSection] = Object.create(null);
       continue;
     }
     const eq = trimmed.indexOf('=');
@@ -366,12 +381,12 @@ export function parseConfigIni(raw: string): Record<string, Record<string, strin
     const key = trimmed.slice(0, eq).trim();
     const val = trimmed.slice(eq + 1).trim();
     if (!key) continue;
-    const expectedSection = CANONICAL_KEY_SECTIONS[key];
+    const expectedSection = canonicalSectionOf(key);
     if (expectedSection && currentSection !== expectedSection) {
       continue;
     }
     const sec = currentSection || expectedSection || 'general';
-    if (!result[sec]) result[sec] = {};
+    if (!result[sec]) result[sec] = Object.create(null);
     result[sec][key] = val;
   }
   return result;
@@ -379,7 +394,7 @@ export function parseConfigIni(raw: string): Record<string, Record<string, strin
 
 export function readSectionStringKey(raw: string, key: string): string | null {
   const parsed = parseConfigIni(raw);
-  const expectedSection = CANONICAL_KEY_SECTIONS[key];
+  const expectedSection = canonicalSectionOf(key);
   if (expectedSection) {
     const v = parsed[expectedSection]?.[key];
     return v && v.length > 0 ? v : null;
@@ -404,8 +419,11 @@ export function mergeConfigText(
   const pending: Record<string, string> = {};
   for (const [k, v] of Object.entries(updates)) {
     const key = k.trim();
-    if (!key || !(key in CANONICAL_KEY_SECTIONS)) continue;
-    pending[key] = String(v).trim();
+    if (!key || canonicalSectionOf(key) === undefined) continue;
+    const value = String(v).trim();
+    // A line break or NUL would let a single value inject extra keys/sections.
+    if (/[\r\n\0]/.test(value)) continue;
+    pending[key] = value;
   }
   if (Object.keys(pending).length === 0) return existingText;
 
@@ -420,7 +438,7 @@ export function mergeConfigText(
   const flushRemainingForSection = (sec: string) => {
     if (!sec) return;
     for (const [k, v] of Object.entries(pending)) {
-      if (CANONICAL_KEY_SECTIONS[k] === sec) {
+      if (canonicalSectionOf(k) === sec) {
         outLines.push(`${k} = ${v}`);
         delete pending[k];
       }
@@ -445,7 +463,7 @@ export function mergeConfigText(
       continue;
     }
     const key = line.slice(0, eq).trim();
-    if (key in pending && CANONICAL_KEY_SECTIONS[key] === currentSection) {
+    if (Object.prototype.hasOwnProperty.call(pending, key) && canonicalSectionOf(key) === currentSection) {
       outLines.push(`${key} = ${pending[key]}`);
       delete pending[key];
     } else {
@@ -457,6 +475,7 @@ export function mergeConfigText(
   const sectionOrder = [
     'general',
     'device_adaptation',
+    'direct_adaptive',
     'uclamp_tuning',
     'thermal_guardian',
     'stability_policy',
@@ -467,7 +486,7 @@ export function mergeConfigText(
   ];
 
   for (const sec of sectionOrder) {
-    const keysForSec = Object.keys(pending).filter((k) => CANONICAL_KEY_SECTIONS[k] === sec);
+    const keysForSec = Object.keys(pending).filter((k) => canonicalSectionOf(k) === sec);
     if (keysForSec.length === 0) continue;
     if (outLines.length > 0 && outLines[outLines.length - 1].trim() !== '') {
       outLines.push('');
@@ -892,17 +911,25 @@ export function stepAutonomousSimulation(
     };
   }
 
+  // Never let a corrupted config/telemetry value (NaN) poison every later tick.
+  const trip = Number.isFinite(config.thermalTripCelsius)
+    ? config.thermalTripCelsius
+    : DEFAULT_AUTONOMOUS_CONFIG.thermalTripCelsius;
+  const balancedMin = Number.isFinite(config.balancedUclampMin)
+    ? config.balancedUclampMin
+    : DEFAULT_AUTONOMOUS_CONFIG.balancedUclampMin;
   const biasFloor =
     config.adaptiveBias === 'battery'
-      ? Math.round(config.balancedUclampMin * 0.75)
+      ? Math.round(balancedMin * 0.75)
       : config.adaptiveBias === 'responsiveness'
-      ? Math.round(config.balancedUclampMin * 1.25)
-      : config.balancedUclampMin;
+      ? Math.round(balancedMin * 1.25)
+      : balancedMin;
   const base = Math.max(0, Math.min(1024, biasFloor));
 
+  const currentTemp = Number.isFinite(current.socTempCelsius) ? current.socTempCelsius : 38.6;
   const nextTemp = Math.max(
     32,
-    Math.min(49, current.socTempCelsius + (Math.random() - 0.46) * 0.35)
+    Math.min(49, currentTemp + (Math.random() - 0.46) * 0.35)
   );
   const cpu = forced === 'cpu' ? 14 : Math.max(0, Math.random() * 10);
   const memory = forced === 'memory' ? 6.4 : Math.max(0, Math.random() * 3.5);
@@ -917,14 +944,14 @@ export function stepAutonomousSimulation(
   let min = base;
   let max = 1024;
 
-  if (nextTemp >= config.thermalTripCelsius) {
+  if (nextTemp >= trip) {
     mode = 'thermal_guard';
     min = 0;
     max = 896;
   } else if (memory >= 3 || io >= 5) {
     mode = 'pressure_guard';
     min = Math.floor(base / 4);
-  } else if (cpu >= 8 && nextTemp <= config.thermalTripCelsius - 3) {
+  } else if (cpu >= 8 && nextTemp <= trip - 3) {
     mode = 'sustained_load';
     min = Math.min(1024, base + Math.floor(base / 2));
   }
@@ -959,7 +986,9 @@ export function stepAutonomousSimulation(
 
   const updatedQueues = prevQueues.map((q) => ({ ...q }));
 
-  if (forced === 'io_trial' || io >= 5.0) {
+  // A forced memory trial raises I/O PSI too (mode pressure_guard) but must still
+  // exercise the memory-relief candidate instead of being shadowed by the I/O branch.
+  if (forced === 'io_trial' || (io >= 5.0 && forced !== 'memory')) {
     tunerStage = 'RETAINED';
     tunerIntent = 'IoLatencyRelief';
     tunerCandidateId = 'io.mq_deadline_low_latency';
@@ -1346,10 +1375,18 @@ export function computeRelativeTunableValue(
   maxBound: number,
   adaptiveScale = 1.0
 ): number {
-  const clampedScale = Math.max(0.25, Math.min(1.0, adaptiveScale));
+  // Bounds are authoritative; tolerate swapped or non-finite arguments instead of
+  // propagating NaN into a value that would be written to a kernel node.
+  const lo = Number.isFinite(minBound) ? minBound : 1;
+  const hi = Number.isFinite(maxBound) ? Math.max(lo, maxBound) : Number.MAX_SAFE_INTEGER;
+  const lower = Math.min(lo, hi);
+  if (!Number.isFinite(factoryBaseline) || !Number.isFinite(targetRatio)) return lower;
+  const clampedScale = Number.isFinite(adaptiveScale)
+    ? Math.max(0.25, Math.min(1.0, adaptiveScale))
+    : 0.25;
   const effectiveRatio = 1.0 + (targetRatio - 1.0) * clampedScale;
   const raw = Math.max(1, Math.round(factoryBaseline * effectiveRatio));
-  return Math.max(minBound, Math.min(maxBound, raw));
+  return Math.max(lower, Math.min(hi, raw));
 }
 
 export interface FeedbackEvaluationInput {
@@ -1389,13 +1426,36 @@ export function evaluateAdaptiveFeedback(input: FeedbackEvaluationInput): Feedba
     };
   }
 
+  // Non-finite readings (failed PSI/thermal parse) must never be scored: NaN would
+  // fall through every comparison below and be reported as NEUTRAL.
+  const finiteOnly = (arr: number[]) => arr.filter((v) => Number.isFinite(v));
+  const afterIoSamples = finiteOnly(input.afterIoPsiSamples);
+  const afterMemSamples = finiteOnly(input.afterMemPsiSamples);
+  const afterCpuSamples = finiteOnly(input.afterCpuPsiSamples);
+  const afterThermalSamples = finiteOnly(input.afterThermalSamples);
+  const baselineFinite = [
+    input.beforeIoPsi, input.beforeMemPsi, input.beforeCpuPsi, input.beforeThermal,
+  ].every((v) => Number.isFinite(v));
+  if (!baselineFinite) {
+    const nextNonImp = input.consecutiveNonImproved + 1;
+    const shift = Math.min(3, nextNonImp - 1);
+    return {
+      verdict: 'INCONCLUSIVE',
+      action: 'ROLLBACK',
+      utilityDelta: 0,
+      nextAdaptiveScale: input.currentAdaptiveScale,
+      cooldownTicks: Math.min(32, 4 * (1 << shift)),
+      nextConsecutiveNonImproved: nextNonImp,
+    };
+  }
+
   const avg = (arr: number[], fallback: number) =>
     arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : fallback;
 
-  const afterIo = avg(input.afterIoPsiSamples, input.beforeIoPsi);
-  const afterMem = avg(input.afterMemPsiSamples, input.beforeMemPsi);
-  const afterCpu = avg(input.afterCpuPsiSamples, input.beforeCpuPsi);
-  const afterTherm = avg(input.afterThermalSamples, input.beforeThermal);
+  const afterIo = avg(afterIoSamples, input.beforeIoPsi);
+  const afterMem = avg(afterMemSamples, input.beforeMemPsi);
+  const afterCpu = avg(afterCpuSamples, input.beforeCpuPsi);
+  const afterTherm = avg(afterThermalSamples, input.beforeThermal);
 
   const ioGain = input.beforeIoPsi - afterIo;
   const memGain = input.beforeMemPsi - afterMem;
@@ -1416,8 +1476,8 @@ export function evaluateAdaptiveFeedback(input: FeedbackEvaluationInput): Feedba
   }
 
   const ioSpread =
-    input.afterIoPsiSamples.length > 1
-      ? Math.max(...input.afterIoPsiSamples) - Math.min(...input.afterIoPsiSamples)
+    afterIoSamples.length > 1
+      ? Math.max(...afterIoSamples) - Math.min(...afterIoSamples)
       : 0;
   if (ioSpread > Math.max(6.0, input.beforeIoPsi * 1.2) && Math.abs(utilityDelta) < 0.50) {
     const nextNonImp = input.consecutiveNonImproved + 1;

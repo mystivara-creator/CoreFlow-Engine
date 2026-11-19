@@ -44,9 +44,18 @@ namespace {
     uint64_t max_bound,
     double adaptive_scale) noexcept {
     const uint64_t baseline = env.lookup_factory_u64(path, fallback_baseline);
-    const double clamped_scale = std::clamp(adaptive_scale, 0.25, 1.0);
-    const double effective_ratio = 1.0 + (ratio - 1.0) * clamped_scale;
+    const double safe_scale = std::isfinite(adaptive_scale) ? adaptive_scale : 1.0;
+    const double safe_ratio = std::isfinite(ratio) ? ratio : 1.0;
+    const double clamped_scale = std::clamp(safe_scale, 0.25, 1.0);
+    const double effective_ratio = 1.0 + (safe_ratio - 1.0) * clamped_scale;
     const double calc = static_cast<double>(baseline) * effective_ratio;
+    if (!std::isfinite(calc) || calc <= 1.0) {
+        return std::clamp<uint64_t>(1U, min_bound, max_bound);
+    }
+    const double upper = static_cast<double>(max_bound);
+    if (calc >= upper) {
+        return max_bound;
+    }
     const uint64_t rounded = std::max<uint64_t>(1U, static_cast<uint64_t>(std::round(calc)));
     return std::clamp(rounded, min_bound, max_bound);
 }

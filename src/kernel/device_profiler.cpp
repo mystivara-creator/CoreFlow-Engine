@@ -425,7 +425,10 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
         if (read_attribute(dir / "scaling_governor", raw, 128U)) policy.governor = trim(raw);
         if (read_attribute(dir / "scaling_available_governors", raw, 4096U))
             policy.available_governors = parse_tokens(raw);
-        if (!policy.governor.empty())
+        const bool safe_governor = !policy.governor.empty() && policy.governor != "." &&
+            policy.governor != ".." && policy.governor.find('/') == std::string::npos &&
+            policy.governor.find('\0') == std::string::npos;
+        if (safe_governor)
             policy.governor_tunables = regular_attribute_names(dir / policy.governor);
         std::vector<uint64_t> table;
         if (read_attribute(dir / "scaling_available_frequencies", raw, 8192U) ||
@@ -455,7 +458,7 @@ DeviceProfileHandle DeviceProfiler::build_profile(uint64_t generation) const {
 
         // Governor-specific rate-limit controls are observed but never promoted
         // without a verified driver-specific ABI and accepted range contract.
-        if (!policy.governor.empty()) {
+        if (safe_governor) {
             const fs::path governor_dir = dir / policy.governor;
             for (const auto& tunable : regular_attribute_names(governor_dir)) {
                 const fs::path path = governor_dir / tunable;

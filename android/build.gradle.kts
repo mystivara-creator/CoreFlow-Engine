@@ -1,22 +1,21 @@
 plugins {
-    alias(libs.plugins.android.library) apply false
+    id("com.android.library") version "8.7.3"
     kotlin("android") version "2.1.0"
 }
 
 android {
-    namespace = "io.coreflow.engine"
+    namespace = "io.coreflow"
     compileSdk = 35
 
     defaultConfig {
         minSdk = 35
         targetSdk = 35
-        consumerProguardFiles("consumer-rules.pro")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 

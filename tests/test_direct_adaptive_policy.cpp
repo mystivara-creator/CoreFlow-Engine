@@ -471,6 +471,20 @@ int main() {
         const auto ambiguous_domains = discover_domains(ambiguous_root, false);
         assert(ambiguous_domains.size() == 3U);
         for (const auto& domain : ambiguous_domains) assert(domain == "cpu.unknown");
+
+        // DirectAdaptiveRuntime::refresh() resets transient counters and re-runs discovery cleanly.
+        assert(::setenv("COREFLOW_TEST_STATE_DIR", ambiguous_root.c_str(), 1) == 0);
+        auto& store = coreflow::BaselineStore::instance();
+        store.reinitialize();
+        assert(store.recover_pending());
+        DirectAdaptiveRuntime runtime(store);
+        runtime.set_mutation_enabled(false);
+        (void)runtime.start();
+        runtime.refresh();
+        assert(runtime.snapshot().verified_mutations == 0U);
+        assert(runtime.snapshot().ownership_losses == 0U);
+        assert(runtime.status_json().find("\"verifiedMutations\":0") != std::string::npos);
+        (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
         fs::remove_all(ambiguous_root);
     }
 

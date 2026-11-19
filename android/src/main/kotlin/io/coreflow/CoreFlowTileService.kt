@@ -2,6 +2,7 @@ package io.coreflow
 
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,13 +62,15 @@ class CoreFlowTileService : TileService() {
             val statusResult = CoreFlowManager.getStatus()
             val status = statusResult.getOrNull()
             val isRunning = status?.isRunning == true
-            val temp = status?.socCompositeCelsius ?: -1f
+            val temp = status?.socCompositeCelsius?.takeIf { it > 0f }
+                ?: status?.socTempCelsius
+                ?: -1f
 
             if (isRunning) {
                 val profile = profiles[currentProfileIndex]
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "CoreFlow: ${profile.label}"
-                tile.subtitle = if (temp > 0) String.format("%.1f°C", temp) else "Active"
+                tile.subtitle = if (temp > 0f) String.format(Locale.US, "%.1f°C", temp) else "Active"
             } else {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "CoreFlow"

@@ -262,7 +262,7 @@ std::vector<ProcessCgroupMembership> MountTopologyResolver::process_memberships(
         std::string cgroup_path = line.substr(second + 1U);
         if (!safe_absolute_path(cgroup_path)) continue;
         uint64_t hierarchy_id = 0;
-        (void)parse_u64(hierarchy, hierarchy_id);
+        if (!parse_u64(hierarchy, hierarchy_id)) continue;
         const auto active = split(controllers, ',');
         for (const auto& mount : mounts) {
             bool matches = false;

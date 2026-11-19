@@ -210,7 +210,8 @@ bool UclampGovernor::handle_preemption(
 bool UclampGovernor::owned_values_intact_locked() {
     if (!supported_) return false;
     if (!has_written_) return !mutation_active_;
-    if (get_top_app_min() == last_min_ && get_top_app_max() == last_max_) return true;
+    if (read_uclamp_node(target_path_ + "/cpu.uclamp.min") == last_min_ &&
+        read_uclamp_node(target_path_ + "/cpu.uclamp.max") == last_max_) return true;
     // An external actor changed one of the paired values. Reconcile the journal,
     // relinquish the lease only after both nodes are verified, then disable control.
     std::cerr << "[CoreFlow][Uclamp] external clamp change; relinquishing control\n";
@@ -220,10 +221,12 @@ bool UclampGovernor::owned_values_intact_locked() {
 }
 
 bool UclampGovernor::is_supported() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     return supported_;
 }
 
 std::string_view UclampGovernor::encoding_name() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     switch (encoding_) {
         case Encoding::Percentage: return "percentage";
         case Encoding::Capacity1024: return "capacity1024";
@@ -386,9 +389,14 @@ bool UclampGovernor::validate_target(const std::string& directory,
 bool UclampGovernor::apply_state(WorkloadState state,
                                  uint32_t balanced_min,
                                  uint32_t balanced_max) {
-    if (!owned_values_intact()) return false;
+    uint32_t oem_max = 1024u;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!owned_values_intact_locked()) return false;
+        oem_max = oem_max_;
+    }
     // A user/OEM ceiling is authoritative, including a temporary thermal cap.
-    const uint32_t base_max = std::min({balanced_max, oem_max_, 1024u});
+    const uint32_t base_max = std::min({balanced_max, oem_max, 1024u});
     const uint32_t base_min = balanced_min > base_max ? 0u : std::min(balanced_min, base_max);
 
     UclampValues top{.uclamp_min = base_min, .uclamp_max = base_max};
@@ -418,8 +426,14 @@ bool UclampGovernor::apply_state(WorkloadState state,
 
 bool UclampGovernor::apply_budget(WorkloadState state, uint32_t floor,
                                  uint32_t ceiling, uint32_t capacity) {
-    if (capacity > 1024u || !owned_values_intact()) return false;
-    const auto base_max = std::min({ceiling, oem_max_, 1024u});
+    if (capacity > 1024u) return false;
+    uint32_t oem_max = 1024u;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!owned_values_intact_locked()) return false;
+        oem_max = oem_max_;
+    }
+    const auto base_max = std::min({ceiling, oem_max, 1024u});
     const auto maximum = (base_max * capacity) / 1024u;
     uint32_t minimum = floor > base_max ? 0u : std::min(floor, base_max);
     if (state == WorkloadState::ThermalGuard) minimum = 0;
@@ -480,8 +494,8 @@ bool UclampGovernor::write_top_app(uint32_t min_val, uint32_t max_val, Controlle
     }
 
     mutation_active_ = true;
-    last_min_ = get_top_app_min();
-    last_max_ = get_top_app_max();
+    last_min_ = read_uclamp_node(min_path);
+    last_max_ = read_uclamp_node(max_path);
     if (last_min_ != min_val || last_max_ != max_val) {
         if (!rollback_transaction_locked()) return false;
         return false;
@@ -562,10 +576,12 @@ std::string UclampGovernor::encode(uint32_t capacity, bool maximum) const {
 }
 
 uint32_t UclampGovernor::get_top_app_min() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return supported_ ? read_uclamp_node(target_path_ + "/cpu.uclamp.min") : 0;
 }
 
 uint32_t UclampGovernor::get_top_app_max() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return supported_ ? read_uclamp_node(target_path_ + "/cpu.uclamp.max") : 0;
 }
 

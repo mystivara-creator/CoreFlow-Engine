@@ -1,5 +1,6 @@
 #pragma once
 #include "coreflow/device_profile.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>

@@ -158,6 +158,30 @@ int main() {
     assert(updated_uclamp.top_app_game_max == 960u);
     assert(updated_uclamp.sched_util_clamp_min_rt_default == 144u);
 
+    // Default Vulkan sub-features are opt-in (false) and top_app_game_max clamps >= top_app_game_min.
+    const coreflow::DaemonConfig default_cfg{};
+    assert(default_cfg.vulkan_layer_mode == "disabled");
+    assert(!default_cfg.enable_skiavk_threaded);
+    assert(!default_cfg.enable_adaptive_vrs);
+    assert(!default_cfg.enable_pipeline_cache_prewarm);
+    {
+        std::ofstream f(path);
+        f << "[uclamp_tuning]\n"
+             "top_app_game_min=700\n"
+             "top_app_game_max=300\n";
+    }
+    const auto inverted_game_uclamp = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(inverted_game_uclamp.top_app_game_min == 700u);
+    assert(inverted_game_uclamp.top_app_game_max == 700u);
+
+    // CoreFlowError integrates with std::error_code without throwing exceptions.
+    const std::error_code ok_ec = coreflow::CoreFlowError::Success;
+    const std::error_code thermal_ec = coreflow::CoreFlowError::ThermalEmergency;
+    assert(!ok_ec);
+    assert(static_cast<bool>(thermal_ec));
+    assert(std::string(thermal_ec.category().name()) == "coreflow");
+    assert(!thermal_ec.message().empty());
+
     std::filesystem::remove(path);
     std::cout << "Configuration bounds, section validation, and surgical merge PASS\n";
 }

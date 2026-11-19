@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, Copy, Download, Activity, Cpu, Code2, ShieldCheck } from 'lucide-react';
 import blueprint from '../../docs/EQUILIBRIUM_BLUEPRINT.md?raw';
 import rustController from '../../rust/src/controller.rs?raw';
@@ -67,7 +67,23 @@ export const ArchitectureStudioModal: React.FC<ArchitectureStudioModalProps> = (
     return samples;
   }, [load, ambient]);
 
-  if (!props.isOpen) return null;
+  const { isOpen, onClose } = props;
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  if (!isOpen) return null;
 
   const fullText =
     blueprint +

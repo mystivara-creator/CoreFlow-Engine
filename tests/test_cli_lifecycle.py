@@ -125,3 +125,6 @@ assert "context.autonomous_tuner().set_operational(false);" in source
 assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
 assert "apply_storage_pacing();" not in source
 assert 'if (command == "--journal")' in source
+assert "if (config.inspection_mode)" in source
+assert "direct_runtime.set_mutation_enabled(!config.inspection_mode" in source
+assert "std::clamp(65.0 + normalized * 20.0, 0.0, 85.0);" in source

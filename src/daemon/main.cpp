@@ -28,7 +28,6 @@
 #include "coreflow/semantic/capability_resolver.hpp"
 #include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
 #include "coreflow/semantic/semantic_evidence_serializer.hpp"
-#include "coreflow/workload_intelligence.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -1199,7 +1198,7 @@ int run_workload_probe() {
         << ",\"sampleCount\":" << features.sample_count
         << ",\"eventCount\":" << features.event_count
         << ",\"eventDrainSaturated\":" << (features.event_drain_saturated ? "true" : "false")
-        << ",\"gpuSource\":\"" << gpu_source_name << "\""
+        << ",\"gpuSource\":" << json_string(gpu_source_name)
         << ",\"gpuBusySamples\":" << features.gpu_busy_sample_count
         << ",\"frameTimelineCaptured\":" << ((features.valid_features & FeatureFrameDeadline) ? "true" : "false")
         << ",\"frameDeadlineCount\":" << features.frame_deadline_count
@@ -1560,7 +1559,7 @@ int main(int argc, char* argv[]) {
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--stop|--rollback-baseline|--capabilities|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -1667,8 +1666,8 @@ int main(int argc, char* argv[]) {
         const double trip = static_cast<double>(config.thermal_trip_celsius);
         const double span = std::max(1.0, trip - recovery);
         const double normalized = std::clamp(
-            (static_cast<double>(config.pid_target_celsius) - recovery) / span, 0.0, 3.0);
-        return std::clamp(65.0 + normalized * 20.0, 0.0, 130.0);
+            (static_cast<double>(config.pid_target_celsius) - recovery) / span, 0.0, 1.0);
+        return std::clamp(65.0 + normalized * 20.0, 0.0, 85.0);
     };
     bool pid_target_initialized = false;
     bool pid_target_fallback = false;
@@ -1816,12 +1815,14 @@ int main(int argc, char* argv[]) {
                     direct_runtime.set_mutation_enabled(!config.inspection_mode &&
                         config.enable_direct_adaptive && config.direct_adaptive_policy != "disabled");
                     direct_runtime.refresh();
-                    context.vulkan_controller().configure({
-                        .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-                        .enable_skiavk_threaded = config.enable_skiavk_threaded,
-                        .enable_adaptive_vrs = config.enable_adaptive_vrs,
-                        .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-                    });
+                    if (!config.inspection_mode) {
+                        context.vulkan_controller().configure({
+                            .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
+                            .enable_skiavk_threaded = config.enable_skiavk_threaded,
+                            .enable_adaptive_vrs = config.enable_adaptive_vrs,
+                            .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
+                        });
+                    }
                     const uint32_t clamped_ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec timer{};
                     timer.it_interval.tv_sec = clamped_ms / 1000;

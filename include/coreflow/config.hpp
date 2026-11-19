@@ -8,12 +8,18 @@
 #pragma once
 
 #include "types.hpp"
-#include <string>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace coreflow {
 
@@ -85,9 +91,9 @@ struct DaemonConfig {
 
     // [vulkan_engine]
     std::string vulkan_layer_mode{"disabled"};
-    bool enable_skiavk_threaded{true};
-    bool enable_adaptive_vrs{true};
-    bool enable_pipeline_cache_prewarm{true};
+    bool enable_skiavk_threaded{false};
+    bool enable_adaptive_vrs{false};
+    bool enable_pipeline_cache_prewarm{false};
 
     static std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t\r\n");
@@ -404,6 +410,7 @@ struct DaemonConfig {
         cfg.top_app_io_weight = std::clamp(cfg.top_app_io_weight, 1u, 10000u);
         cfg.background_io_weight = std::clamp(cfg.background_io_weight, 1u, 10000u);
         cfg.top_app_interactive_max = std::max(cfg.top_app_interactive_max, cfg.top_app_interactive_min);
+        cfg.top_app_game_max = std::max(cfg.top_app_game_max, cfg.top_app_game_min);
         if (cfg.thermal_recover_celsius >= cfg.thermal_trip_celsius) {
             cfg.thermal_recover_celsius = cfg.thermal_trip_celsius - 4.0f;
         }

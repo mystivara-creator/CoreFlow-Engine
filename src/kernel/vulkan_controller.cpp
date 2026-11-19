@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <sys/stat.h>
@@ -354,7 +355,8 @@ uint32_t read_uint32_node(const std::string& path, uint32_t fallback = 0) noexce
     const std::string line = read_first_line(path);
     if (line.empty()) return fallback;
     double val = 0.0;
-    if (!parse_ascii_double(line, val) || val < 0.0) return fallback;
+    if (!parse_ascii_double(line, val) || !std::isfinite(val) || val < 0.0 ||
+        val > static_cast<double>(std::numeric_limits<uint32_t>::max())) return fallback;
     return static_cast<uint32_t>(val);
 }
 
@@ -1088,7 +1090,14 @@ bool VulkanController::apply_workload_policy(
                 active_mutation_paths_.end()) {
             active_mutation_paths_.push_back(path);
         }
-        if (!applied || readback != value) return false;
+        if (!applied || readback != value) {
+            if (!active_mutation_paths_.empty()) {
+                (void)rollback_gpu_transaction_locked();
+            } else if (!transaction_id_.empty()) {
+                release_gpu_lease_locked();
+            }
+            return false;
+        }
         return true;
     };
 

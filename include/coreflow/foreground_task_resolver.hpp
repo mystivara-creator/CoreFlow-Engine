@@ -7,9 +7,12 @@
 
 #include "coreflow/cgroup_v2.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <sys/types.h>
 #include <unordered_map>
 #include <vector>
 

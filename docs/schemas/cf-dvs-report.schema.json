@@ -545,12 +545,22 @@
               "state": {
                 "enum": [
                   "AVAILABLE",
+                  "DISCOVERED",
                   "READABLE",
                   "WRITABLE",
+                  "ACCESS_CHECKED",
                   "SEMANTICS_VERIFIED",
                   "CONSTRAINTS_VERIFIED",
                   "MUTATION_ELIGIBLE",
                   "UNKNOWN"
+                ]
+              },
+              "classification": {
+                "enum": [
+                  "RUNTIME_TUNABLE",
+                  "OBSERVATION_ONLY",
+                  "TEST_ONLY",
+                  "PROTECTED"
                 ]
               },
               "semantic_id": {
@@ -580,6 +590,23 @@
               "rejection_reason": {
                 "type": "string",
                 "maxLength": 512
+              },
+              "rejection_code": {
+                "enum": [
+                  "NONE",
+                  "EACCES_SELINUX",
+                  "ENOENT",
+                  "FORMAT_MISMATCH",
+                  "BASELINE_CAPTURE_FAILED",
+                  "BASELINE_NOT_CAPTURED",
+                  "READBACK_MISMATCH",
+                  "PERMISSION_DENIED",
+                  "SEMANTICS_UNVERIFIED",
+                  "CONSTRAINTS_UNVERIFIED",
+                  "AMBIGUOUS_TARGET",
+                  "IO_ERROR",
+                  "UNKNOWN"
+                ]
               }
             }
           }

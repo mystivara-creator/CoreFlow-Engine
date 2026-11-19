@@ -758,9 +758,11 @@ bool FrequencyController::apply(double scale, bool thermal_guard) {
     return ok;
 }
 size_t FrequencyController::cpu_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     return std::count_if(domains_.begin(), domains_.end(), [](const auto& d) { return !d.gpu && !d.retired; });
 }
 size_t FrequencyController::gpu_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     return std::count_if(domains_.begin(), domains_.end(), [](const auto& d) { return d.gpu && !d.retired; });
 }
 size_t FrequencyController::kgsl_count() const noexcept {

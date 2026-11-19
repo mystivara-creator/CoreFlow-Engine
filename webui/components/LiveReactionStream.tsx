@@ -77,6 +77,7 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
         {/* Action Buttons */}
         <div className="flex items-center gap-2 shrink-0">
           <button
+            type="button"
             onClick={handleCopyLogs}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-xs font-medium text-slate-700 dark:text-slate-200"
           >
@@ -103,6 +104,8 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
             return (
               <button
                 key={chip.id}
+                type="button"
+                aria-pressed={active}
                 onClick={() => setFilterType(chip.id)}
                 className={
                   'px-3.5 py-1.5 rounded-full font-medium transition-all ' +
@@ -121,6 +124,7 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
+            aria-label="Filter audit trail"
             placeholder="Filter audit trail..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -130,7 +134,7 @@ export const LiveReactionStream: React.FC<LiveReactionStreamProps> = ({
       </div>
 
       {/* Block-Aligned Log Stream */}
-      <div className="m3-tonal-block p-4 max-h-72 overflow-y-auto font-mono text-xs divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
+      <div role="log" aria-label="Audit trail" className="m3-tonal-block p-4 max-h-72 overflow-y-auto font-mono text-xs divide-y divide-slate-900/[0.05] dark:divide-white/[0.05]">
         {filteredLogs.length === 0 ? (
           <div className="text-center py-8 text-slate-500 dark:text-slate-400 font-sans text-xs">
             No audit events match the current filter.

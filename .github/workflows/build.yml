@@ -280,10 +280,9 @@ jobs:
             "${MODULE_DIR}/system/etc/coreflow" \
             "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d"
           cp "$BINARY" "${MODULE_DIR}/system/bin/coreflowd"
-          if [ -n "$VK_LAYER_SO" ] && [ -f "$VK_LAYER_SO" ]; then
-            cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
-            chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
-          fi
+          test -n "$VK_LAYER_SO" && test -f "$VK_LAYER_SO"
+          cp "$VK_LAYER_SO" "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
+          chmod 0644 "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
           cp module/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/"
           cp module/module.prop module/customize.sh module/service.sh module/post-fs-data.sh \
             module/uninstall.sh module/action.sh module/sepolicy.rule "${MODULE_DIR}/"
@@ -296,15 +295,15 @@ jobs:
             "${MODULE_DIR}/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json"
           find "${MODULE_DIR}/webroot" -type f -exec chmod 0644 {} +
           test -s "${MODULE_DIR}/system/bin/coreflowd"
+          test -s "${MODULE_DIR}/system/lib64/libVkLayer_coreflow.so"
           test -s "${MODULE_DIR}/webroot/index.html"
-          VERSION="${{ steps.version_info.outputs.version }}"
           ZIP_NAME="CFAE-System-Framework-package.zip"
           mkdir -p artifacts
           (cd "${MODULE_DIR}" && zip -qr9 "../${ZIP_NAME}" .)
           PACKAGE_ZIP="artifacts/${ZIP_NAME}"
           unzip -tq "${PACKAGE_ZIP}"
           PACKAGE_ENTRIES="$(unzip -Z1 "${PACKAGE_ZIP}")"
-          for required in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh action.sh sepolicy.rule system/bin/coreflowd system/etc/coreflow/default.conf webroot/index.html; do
+          for required in module.prop customize.sh service.sh post-fs-data.sh uninstall.sh action.sh sepolicy.rule system/bin/coreflowd system/lib64/libVkLayer_coreflow.so system/etc/coreflow/default.conf system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json webroot/index.html; do
             if ! grep -Fxq "${required}" <<< "${PACKAGE_ENTRIES}"; then
               echo "::error::KernelSU-compatible module entry is missing: ${required}"
               exit 1

@@ -136,6 +136,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
             <button
               type="button"
               disabled={isSaving}
+              aria-pressed={vulkanConfig.mode === 'disabled'}
               onClick={() => void handleSelectMode('disabled')}
               className={
                 'text-left p-4 rounded-2xl border transition-colors ' +
@@ -160,6 +161,7 @@ export const VulkanCapabilitiesCard: React.FC<VulkanCapabilitiesCardProps> = ({
             <button
               type="button"
               disabled={isSaving}
+              aria-pressed={vulkanConfig.mode !== 'disabled'}
               onClick={() => void handleSelectMode('safe_hardware')}
               className={
                 'text-left p-4 rounded-2xl border transition-colors ' +

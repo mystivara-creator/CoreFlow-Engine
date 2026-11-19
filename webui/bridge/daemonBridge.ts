@@ -22,6 +22,7 @@ declare global {
 }
 
 const DEFAULT_EXEC_TIMEOUT_MS = 10000;
+const MAX_EXEC_TIMEOUT_MS = 120000;
 let callbackSeq = 0;
 
 export function hasNativeKernelSuBridge(): boolean {
@@ -52,12 +53,15 @@ export async function execNativeKsuShell(
   if (!hasNativeKernelSuBridge() || !window.ksu) {
     return { errno: -1, stdout: '', stderr: 'Native KernelSU bridge unavailable' };
   }
-  if (!command || command.includes('\0')) {
+  if (typeof command !== 'string' || !command || command.includes('\0')) {
     return { errno: -1, stdout: '', stderr: 'Invalid shell command' };
   }
 
   const ksu = window.ksu;
-  const boundedTimeout = Math.max(1000, timeoutMs);
+  // NaN/Infinity would make setTimeout fire immediately or never; clamp to a sane window.
+  const boundedTimeout = Number.isFinite(timeoutMs)
+    ? Math.min(MAX_EXEC_TIMEOUT_MS, Math.max(1000, timeoutMs))
+    : DEFAULT_EXEC_TIMEOUT_MS;
 
   return new Promise<ShellResult>((resolve) => {
     let settled = false;

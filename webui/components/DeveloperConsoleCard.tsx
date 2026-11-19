@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, Play, Copy, Check, RefreshCw, Code2, ShieldAlert } from 'lucide-react';
 import { execNativeKsuShell, hasNativeKernelSuBridge } from '../bridge/daemonBridge';
 
@@ -16,6 +16,13 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
   );
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   const RESOLVE_BIN =
     'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
@@ -121,11 +128,19 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
       }
 
       const result = await execNativeKsuShell(cmd);
-      try {
-        const parsed = extractJson(result.stdout);
-        setOutput(JSON.stringify(parsed, null, 2));
-      } catch {
-        setOutput(result.stdout || result.stderr || 'Command executed with no output.');
+      const failure =
+        result.errno !== 0
+          ? `[exit ${result.errno}] ${result.stderr.trim() || 'Command failed'}\n`
+          : '';
+      if (!result.stdout.trim()) {
+        setOutput(failure || result.stderr || 'Command executed with no output.');
+      } else {
+        try {
+          const parsed = extractJson(result.stdout);
+          setOutput(failure + JSON.stringify(parsed, null, 2));
+        } catch {
+          setOutput(failure + result.stdout);
+        }
       }
       if (cmd.includes('--status')) {
         await onRefreshTelemetry();
@@ -137,10 +152,19 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
     }
   };
 
-  const copyToClipboard = () => {
-    void navigator.clipboard.writeText(output);
+  const copyToClipboard = async () => {
+    // navigator.clipboard is absent in non-secure WebView contexts; never throw from a handler.
+    try {
+      await navigator.clipboard.writeText(output);
+    } catch {
+      return;
+    }
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copyTimerRef.current = null;
+    }, 2000);
   };
 
   return (
@@ -164,7 +188,8 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
         </div>
 
         <button
-          onClick={copyToClipboard}
+          type="button"
+          onClick={() => void copyToClipboard()}
           className="px-4 py-2 rounded-full bg-slate-900/[0.05] hover:bg-slate-900/[0.09] dark:bg-white/[0.06] dark:hover:bg-white/[0.11] text-xs font-medium text-slate-700 dark:text-slate-200 inline-flex items-center gap-2 self-start"
         >
           {copied ? (
@@ -193,7 +218,8 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
           },
           {
             label: 'Inspect Recovery Journal',
-            cmd: 'cat /data/adb/coreflow/baseline.journal 2>/dev/null || echo "Journal clean"',
+            // baseline.journal is a binary CFJ4 write-ahead log; the daemon decodes it.
+            cmd: `${RESOLVE_BIN}; "$BIN" --journal`,
             title: 'Recovery Journal',
             Icon: RefreshCw,
           },
@@ -206,6 +232,7 @@ export const DeveloperConsoleCard: React.FC<Props> = ({
         ].map(({ label, cmd, title, Icon }) => (
           <button
             key={title}
+            type="button"
             onClick={() => void runCommand(cmd, title)}
             disabled={isRunning}
             className="px-4 py-2 rounded-full bg-[#d3e3fd]/70 hover:bg-[#d3e3fd] text-[#041e49] dark:bg-[#0842a0]/60 dark:hover:bg-[#0842a0] dark:text-[#d3e3fd] text-xs font-medium transition-all inline-flex items-center gap-2 disabled:opacity-50"

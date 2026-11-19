@@ -607,13 +607,17 @@ size_t CgroupV2Controller::pending_thread_migrations() const noexcept {
 
 bool CgroupV2Controller::set_cpuset(CgroupTarget target, std::string_view cpus) {
     if (!supported_) return false;
-    return write_node(get_cgroup_path(target) + "/cpuset.cpus", cpus);
+    const std::string dir = get_cgroup_path(target);
+    if (dir.empty()) return false;
+    return write_node(dir + "/cpuset.cpus", cpus);
 }
 
 bool CgroupV2Controller::set_cpu_weight(CgroupTarget target, uint32_t weight) {
     if (!supported_) return false;
+    const std::string dir = get_cgroup_path(target);
+    if (dir.empty()) return false;
     weight = std::clamp(weight, 1u, 10000u);
-    return write_node(get_cgroup_path(target) + "/cpu.weight", std::to_string(weight));
+    return write_node(dir + "/cpu.weight", std::to_string(weight));
 }
 
 bool CgroupV2Controller::unlock_vendor_restrictions() {

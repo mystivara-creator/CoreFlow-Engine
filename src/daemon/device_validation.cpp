@@ -545,6 +545,15 @@ bool DeviceValidationRecorder::start(std::string_view profile, DeviceProfileHand
         "\",\"device_profile_generation\":" + std::to_string(device_profile_->generation) +
         ",\"device_profile_fingerprint\":\"" + json_escape(device_profile_->fingerprint) + "\"}";
     if (!append_event("session.started", session_id_, data)) {
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            writer_stop_ = true;
+        }
+        queue_cv_.notify_one();
+        if (writer_started_) {
+            (void)::pthread_join(writer_thread_, nullptr);
+            writer_started_ = false;
+        }
         active_ = false;
         close_files();
         if (error) *error = "unable to write CF-DVS session header";
@@ -706,8 +715,8 @@ bool DeviceValidationRecorder::stop(std::string* bundle_path, std::string* error
     const bool capture_ok = !failed_ && samples_ > 0;
     const bool journal_clear = samples_ > 0 && latest_.journal_clear;
     const bool active_mutations = samples_ > 0 && latest_.active_mutations;
-    const bool recovery_pending = samples_ > 0 &&
-        (latest_.recovery_pending || (!journal_clear && !active_mutations));
+    const bool recovery_pending = samples_ == 0 ||
+        latest_.recovery_pending || (!journal_clear && !active_mutations);
     const bool rollback_verified = samples_ > 0 && latest_.rollback_verified &&
         journal_clear && !active_mutations;
     const std::string ended_at = utc_now();

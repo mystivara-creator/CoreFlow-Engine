@@ -9,9 +9,11 @@
 #include "coreflow/reactor.hpp"
 #include "coreflow/runtime_architecture.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace coreflow::runtime {
