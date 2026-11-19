@@ -106,6 +106,31 @@ int main() {
             outcome.transaction_id, cache_pressure.string(), "120"));
         assert(!store.retain_performance_baseline(
             outcome.transaction_id, cache_pressure.string(), "130"));
+
+        // Higher-priority ownership must be granted only after the actuator
+        // acknowledges preemption by restoring its captured baseline.
+        const auto preemption_profile = profiler.refresh();
+        const uint64_t preemption_start = now_ns();
+        InfrastructurePsiSample preemption_admission{
+            .monotonic_ns=preemption_start,.memory_some_avg10=8.0,.io_some_avg10=0.0,
+            .memory_valid=true,.io_valid=true
+        };
+        IntentActuator preemptible(coordinator, store, proc.string());
+        assert(preemptible.begin(
+            preemption_profile, "vm.vfs_cache_pressure", "140", preemption_admission));
+        std::string preempted_value;
+        assert(!coordinator.acquire_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx",
+            ControllerPriority::EmergencySafety));
+        assert(preemptible.snapshot().state == IntentActuatorState::RolledBack);
+        { std::ifstream in(cache_pressure); in >> preempted_value; }
+        assert(preempted_value == "130");
+        assert(coordinator.active_leases().empty());
+        assert(coordinator.acquire_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx",
+            ControllerPriority::EmergencySafety));
+        coordinator.release_lease(
+            MutationDomain::VmMemory, "EmergencySafetyTest", "emergency-tx");
     }
     {
         std::string retained_value;
