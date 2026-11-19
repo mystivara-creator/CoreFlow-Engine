@@ -378,9 +378,12 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
         (thermal_valid && thermal_pressure >= (was_thermal_guard ? 0.85 * (1.0 - hysteresis) : 0.85)) ||
         (!thermal_valid && was_thermal_guard);
     const bool was_high_load = input.previous_mode == OperatingMode::HighLoad;
-    const double cpu_enter = 0.70 * (was_high_load ? 1.0 - hysteresis : 1.0);
-    const double psi_enter = 0.20 * (was_high_load ? 1.0 - hysteresis : 1.0);
+    const double hysteresis_scale = was_high_load ? 1.0 - hysteresis : 1.0;
+    const double cpu_enter = 0.70 * hysteresis_scale;
+    const double core_enter = 0.90 * hysteresis_scale;
+    const double psi_enter = 0.20 * hysteresis_scale;
     const bool high_load = cpu_load >= cpu_enter ||
+        metric_value(state, "cpu.max_core_util") >= core_enter ||
         metric_value(state, "cpu.pressure") >= psi_enter ||
         metric_value(state, "gpu.busy") >= cpu_enter;
 
