@@ -357,6 +357,26 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
             return values[std::min(index, values.size() - 1U)];
         };
 
+        const auto has_writable_kgsl_pair = [&]() {
+            if (semantic != "gpu.kgsl.min_pwrlevel" &&
+                semantic != "gpu.kgsl.max_pwrlevel") return true;
+            const std::string_view counterpart = semantic == "gpu.kgsl.min_pwrlevel"
+                ? "gpu.kgsl.max_pwrlevel" : "gpu.kgsl.min_pwrlevel";
+            return std::any_of(input.controls.begin(), input.controls.end(),
+                [&](const ControlCapability& other) {
+                    if (other.node_id == control.node_id || !other.writable ||
+                        !other.supported_range.valid() ||
+                        std::holds_alternative<std::monostate>(other.current_value)) return false;
+                    const NodeDescriptor* paired_node = input.manifest.find(other.node_id);
+                    return paired_node != nullptr &&
+                        paired_node->semantic == counterpart &&
+                        paired_node->domain_id == node->domain_id &&
+                        paired_node->access == AccessState::Writable &&
+                        paired_node->write_probe == ProbeState::Available;
+                });
+        };
+        if (!has_writable_kgsl_pair()) continue;
+
         if (semantic == "cpu.hispeed_freq") {
             const double tier = intent.mode == OperatingMode::Idle ? 0.35 :
                 intent.mode == OperatingMode::HighLoad ? 0.78 :
@@ -393,18 +413,21 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
                 intent.mode == OperatingMode::ThermalGuard ? 8.0 : 14.0;
             numeric_target = (frame_us / 1000.0) * window;
             has_target = true;
-        } else if (semantic == "gpu.kgsl.default_pwrlevel") {
-            const double tier = intent.mode == OperatingMode::Idle ? 0.72 :
-                intent.mode == OperatingMode::HighLoad ? 0.20 :
-                intent.mode == OperatingMode::ThermalGuard ? 0.80 : 0.35;
+        } else if (semantic == "gpu.kgsl.max_pwrlevel") {
+            // KGSL index zero is the fastest OPP. max_pwrlevel is the
+            // performance ceiling, so its index must remain at or below min.
+            const double tier = intent.mode == OperatingMode::Idle ? 0.65 :
+                intent.mode == OperatingMode::HighLoad ? 0.05 :
+                intent.mode == OperatingMode::ThermalGuard ? 0.30 : 0.35;
             if (const auto selected = choose_opp(tier, true)) {
                 numeric_target = static_cast<long double>(*selected);
                 has_target = true;
             }
         } else if (semantic == "gpu.kgsl.min_pwrlevel") {
-            const double tier = intent.mode == OperatingMode::Idle ? 0.72 :
-                intent.mode == OperatingMode::HighLoad ? 0.20 :
-                intent.mode == OperatingMode::ThermalGuard ? 0.80 : 0.35;
+            // min_pwrlevel is the lower-performance bound (higher index).
+            const double tier = intent.mode == OperatingMode::Idle ? 0.95 :
+                intent.mode == OperatingMode::HighLoad ? 0.35 :
+                intent.mode == OperatingMode::ThermalGuard ? 0.65 : 0.70;
             if (const auto selected = choose_opp(tier, true)) {
                 numeric_target = static_cast<long double>(*selected);
                 has_target = true;
@@ -556,7 +579,7 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
         const auto freqs = parse_ordered_integer_list(read_text(resolved / "gpu_available_frequencies"));
         const auto levels_raw = read_text(resolved / "num_pwrlevels");
         std::uint64_t levels = 0U;
-        if (freqs.size() < 2U || !parse_u64(levels_raw, levels) || levels != freqs.size()) continue;
+        if (freqs.size() < 3U || !parse_u64(levels_raw, levels) || levels != freqs.size()) continue;
         const bool increasing = std::is_sorted(freqs.begin(), freqs.end());
         const bool decreasing = std::is_sorted(freqs.rbegin(), freqs.rend());
         if (!increasing && !decreasing) continue;
@@ -565,13 +588,17 @@ DiscoveryResult TopologyScanner::discover(const DiscoveryRoots& roots) noexcept 
         for (std::uint64_t i = 0; i < levels; ++i) level_values.emplace_back(static_cast<std::int64_t>(i));
         const auto model = read_text(resolved / "gpu_model");
         const std::string gpu_id = "gpu.kgsl:" + (model.empty() ? entry.filename().string() : model);
-        const auto level_range = NumericRange{0.0L, static_cast<long double>(levels - 1U), 1.0L};
-        const auto default_path = resolved / "default_pwrlevel";
-        if (!read_text(default_path).empty()) {
-            add_node(default_path, NodeDomain::Gpu, gpu_id,
-                     "gpu.kgsl.default_pwrlevel", level_range, level_values);
-        } else {
-            add_node(resolved / "min_pwrlevel", NodeDomain::Gpu, gpu_id,
+        // Older KGSL drivers reserve the final level as a sentinel. Restrict
+        // both controls to the conservative common range and require the pair.
+        const auto level_range = NumericRange{0.0L, static_cast<long double>(levels - 2U), 1.0L};
+        const auto max_path = resolved / "max_pwrlevel";
+        const auto min_path = resolved / "min_pwrlevel";
+        if (!read_text(max_path).empty() && !read_text(min_path).empty()) {
+            // Write the performance ceiling first, then the lower-performance
+            // bound. This ordering lets KGSL converge safely from old bounds.
+            add_node(max_path, NodeDomain::Gpu, gpu_id,
+                     "gpu.kgsl.max_pwrlevel", level_range, level_values);
+            add_node(min_path, NodeDomain::Gpu, gpu_id,
                      "gpu.kgsl.min_pwrlevel", level_range, level_values);
         }
         add_node(resolved / "idle_timer", NodeDomain::Gpu, gpu_id,
