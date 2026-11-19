@@ -38,7 +38,7 @@ NormalizedState state_with(double refresh, double cpu, bool screen_off = false,
                            double thermal = 0.0, bool thermal_valid = false) {
     NormalizedState state;
     const auto now = Clock::now();
-    state.metrics.push_back({"display.refresh_hz", refresh / 240.0, 1.0, now, refresh > 0.0});
+    state.metrics.push_back({"display.refresh_hz", refresh / 1000.0, 1.0, now, refresh > 0.0});
     state.metrics.push_back({"cpu.util", cpu, 1.0, now, true});
     state.metrics.push_back({"screen.off", screen_off ? 1.0 : 0.0, 1.0, now, true});
     state.metrics.push_back({"device.ram_ge_6gb", 1.0, 1.0, now, true});
@@ -107,6 +107,26 @@ int main() {
         const auto selected = std::get<std::int64_t>(opp->target_value);
         assert(selected == 300000 || selected == 600000 || selected == 900000 ||
                selected == 1200000 || selected == 1500000 || selected == 1800000);
+    }
+
+    // High-refresh panels retain their measured frame period instead of
+    // saturating at the old 240 Hz normalization ceiling.
+    {
+        DeviceManifest manifest;
+        manifest.nodes.push_back(numeric_node("up-rate-480", "cpu.up_rate_limit_us",
+            "cpu.big", 1000, {0.0L, 1000000.0L, 1.0L}));
+        manifest.nodes.push_back(numeric_node("down-rate-480", "cpu.down_rate_limit_us",
+            "cpu.big", 1000, {0.0L, 1000000.0L, 1.0L}));
+        OemBaseline baseline;
+        for (const auto& node : manifest.nodes) {
+            baseline.entries.push_back({node.id, node.observed_value, node.identity, Clock::now()});
+        }
+        auto state = state_with(480.0, 0.10);
+        const auto intent = run_policy(manifest, baseline, state);
+        const auto* up = find_action(intent, "up-rate-480");
+        const auto* down = find_action(intent, "down-rate-480");
+        assert(up && std::get<std::int64_t>(up->target_value) == 125);
+        assert(down && std::get<std::int64_t>(down->target_value) == 10000);
     }
 
     // Screen-off policy uses T_frame * window and does not require PSI.
