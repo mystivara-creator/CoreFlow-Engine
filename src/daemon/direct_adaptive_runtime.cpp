@@ -300,10 +300,11 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
     const bool thermal_valid = metric(state, "thermal.pressure") != nullptr &&
                                metric(state, "thermal.pressure")->well_formed();
     const bool thermal_emergency = metric_value(state, "thermal.emergency") >= 0.5;
+    const bool fused_thermal_guard = metric_value(state, "thermal.guard") >= 0.5;
     const double hysteresis = std::isfinite(input.algorithm.hysteresis_ratio)
         ? std::clamp(input.algorithm.hysteresis_ratio, 0.0, 0.50) : 0.0;
     const bool was_thermal_guard = input.previous_mode == OperatingMode::ThermalGuard;
-    const bool thermal_guard = thermal_emergency ||
+    const bool thermal_guard = fused_thermal_guard || thermal_emergency ||
         (thermal_valid && thermal_pressure >= (was_thermal_guard ? 0.85 * (1.0 - hysteresis) : 0.85)) ||
         (!thermal_valid && was_thermal_guard);
     const bool was_high_load = input.previous_mode == OperatingMode::HighLoad;
@@ -1192,7 +1193,8 @@ struct DirectAdaptiveRuntime::Impl final {
     }
 
     void tick(double thermal_pressure = 0.0, bool thermal_valid = false,
-              bool thermal_emergency = false) noexcept {
+              bool thermal_emergency = false,
+              bool thermal_guard_active = false) noexcept {
         if (!snapshot.started) return;
         // Re-read every resolved node before policy evaluation. The manifest is a
         // topology/capability snapshot, never a stale value snapshot. A replaced
@@ -1232,6 +1234,7 @@ struct DirectAdaptiveRuntime::Impl final {
                 std::clamp(thermal_pressure / 100.0, 0.0, 1.0), 1.0, now, true});
         }
         if (thermal_emergency) state.metrics.push_back({"thermal.emergency", 1.0, 1.0, now, true});
+        if (thermal_guard_active) state.metrics.push_back({"thermal.guard", 1.0, 1.0, now, true});
 
         snapshot.screen_off = screen_off;
         snapshot.ram_bytes = ram_bytes;
@@ -1239,7 +1242,8 @@ struct DirectAdaptiveRuntime::Impl final {
         snapshot.refresh_hz = refresh_hz;
         snapshot.cpu_utilization = cpu_util;
         snapshot.thermal_pressure = thermal_valid ? thermal_pressure : 0.0;
-        snapshot.thermal_guard = thermal_emergency || (thermal_valid && thermal_pressure >= 85.0);
+        snapshot.thermal_guard = thermal_guard_active || thermal_emergency ||
+            (thermal_valid && thermal_pressure >= 85.0);
         const OperatingMode previous_mode = snapshot.mode;
         // Thermal safety always outranks display-idle policy. A screen-off
         // device can still overheat (charging, background work, or a hot SoC).
@@ -1323,8 +1327,9 @@ void DirectAdaptiveRuntime::refresh() noexcept {
 }
 
 void DirectAdaptiveRuntime::tick(
-    double thermal_pressure, bool thermal_valid, bool thermal_emergency) noexcept {
-    if (impl_) impl_->tick(thermal_pressure, thermal_valid, thermal_emergency);
+    double thermal_pressure, bool thermal_valid, bool thermal_emergency,
+    bool thermal_guard_active) noexcept {
+    if (impl_) impl_->tick(thermal_pressure, thermal_valid, thermal_emergency, thermal_guard_active);
 }
 
 const DirectAdaptiveSnapshot& DirectAdaptiveRuntime::snapshot() const noexcept {
