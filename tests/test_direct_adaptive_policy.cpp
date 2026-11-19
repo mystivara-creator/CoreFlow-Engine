@@ -47,7 +47,9 @@ NormalizedState state_with(double refresh, double cpu, bool screen_off = false,
     return state;
 }
 
-PolicyIntent run_policy(DeviceManifest& manifest, OemBaseline& baseline, NormalizedState& state) {
+PolicyIntent run_policy(DeviceManifest& manifest, OemBaseline& baseline,
+                           NormalizedState& state,
+                           OperatingMode previous_mode = OperatingMode::Unknown) {
     std::vector<ControlCapability> controls;
     for (const auto& node : manifest.nodes) {
         controls.push_back({
@@ -58,7 +60,7 @@ PolicyIntent run_policy(DeviceManifest& manifest, OemBaseline& baseline, Normali
     const AlgorithmConstants algorithm{0.08, 0.20, 32U, 4096U};
     AdaptiveReference reference;
     reference.generated_at = Clock::now();
-    const PolicyInput input{manifest, baseline, state, reference, controls, algorithm};
+    const PolicyInput input{manifest, baseline, state, reference, controls, algorithm, previous_mode};
     return calculate_policy_intent(input, Clock::now());
 }
 
@@ -250,6 +252,41 @@ int main() {
         const auto* cluster = find_action(intent, "page-cluster");
         assert(swappiness && std::get<std::int64_t>(swappiness->target_value) == 65);
         assert(cluster && std::get<std::int64_t>(cluster->target_value) == 0);
+    }
+
+    // Mode hysteresis prevents repeated transitions near CPU and thermal
+    // thresholds. ThermalGuard remains active if its telemetry disappears.
+    {
+        DeviceManifest manifest;
+        OemBaseline baseline;
+
+        auto thermal_entry = state_with(120.0, 0.0, false, 0.86, true);
+        assert(run_policy(manifest, baseline, thermal_entry, OperatingMode::Balanced).mode ==
+               OperatingMode::ThermalGuard);
+
+        auto thermal_hold = state_with(120.0, 0.0, false, 0.82, true);
+        assert(run_policy(manifest, baseline, thermal_hold, OperatingMode::ThermalGuard).mode ==
+               OperatingMode::ThermalGuard);
+
+        auto thermal_exit = state_with(120.0, 0.0, false, 0.75, true);
+        assert(run_policy(manifest, baseline, thermal_exit, OperatingMode::ThermalGuard).mode ==
+               OperatingMode::Balanced);
+
+        auto load_entry = state_with(120.0, 0.72);
+        assert(run_policy(manifest, baseline, load_entry, OperatingMode::Balanced).mode ==
+               OperatingMode::HighLoad);
+
+        auto load_hold = state_with(120.0, 0.67);
+        assert(run_policy(manifest, baseline, load_hold, OperatingMode::HighLoad).mode ==
+               OperatingMode::HighLoad);
+
+        auto load_exit = state_with(120.0, 0.60);
+        assert(run_policy(manifest, baseline, load_exit, OperatingMode::HighLoad).mode ==
+               OperatingMode::Balanced);
+
+        auto thermal_evidence_lost = state_with(120.0, 0.0);
+        assert(run_policy(manifest, baseline, thermal_evidence_lost, OperatingMode::ThermalGuard).mode ==
+               OperatingMode::ThermalGuard);
     }
 
     // The interactive governor is admitted only when its actual ABI tunables
