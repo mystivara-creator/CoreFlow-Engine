@@ -339,7 +339,7 @@ int main() {
         assert(run_policy(manifest, baseline, core_entry).mode == OperatingMode::HighLoad);
 
         auto core_hold = state_with(120.0, 0.10);
-        core_hold.metrics.push_back({"cpu.max_core_util", 0.75, 1.0, Clock::now(), true});
+        core_hold.metrics.push_back({"cpu.max_core_util", 0.84, 1.0, Clock::now(), true});
         assert(run_policy(manifest, baseline, core_hold, OperatingMode::HighLoad).mode ==
                OperatingMode::HighLoad);
 
