@@ -124,13 +124,19 @@ int main() {
         assert(std::get<std::int64_t>(action->target_value) == 67);
     }
 
-    // KGSL indices are inverse to devfreq: index zero is the highest OPP.
+    // KGSL indices are inverse to devfreq. Both bounds are required:
+    // max_pwrlevel is the faster ceiling (lower index), min_pwrlevel the
+    // slower floor (higher index). A single unpaired bound is never mutated.
     {
         DeviceManifest manifest;
-        manifest.nodes.push_back(numeric_node("kgsl-default", "gpu.kgsl.default_pwrlevel",
-            "gpu.kgsl:Adreno", 7, {0.0L, 7.0L, 1.0L},
-            {std::int64_t{0}, std::int64_t{1}, std::int64_t{2}, std::int64_t{3},
-             std::int64_t{4}, std::int64_t{5}, std::int64_t{6}, std::int64_t{7}}));
+        const std::vector<NodeValue> levels{
+            std::int64_t{0}, std::int64_t{1}, std::int64_t{2}, std::int64_t{3},
+            std::int64_t{4}, std::int64_t{5}, std::int64_t{6}, std::int64_t{7}};
+        manifest.nodes.push_back(numeric_node("kgsl-max", "gpu.kgsl.max_pwrlevel",
+            "gpu.kgsl:Adreno", 0, {0.0L, 6.0L, 1.0L}, levels));
+        manifest.nodes.back().domain = NodeDomain::Gpu;
+        manifest.nodes.push_back(numeric_node("kgsl-min", "gpu.kgsl.min_pwrlevel",
+            "gpu.kgsl:Adreno", 6, {0.0L, 6.0L, 1.0L}, levels));
         manifest.nodes.back().domain = NodeDomain::Gpu;
         manifest.nodes.push_back(numeric_node("mali-max", "gpu.devfreq.max_freq",
             "gpu.devfreq:Mali", 400000, {200000.0L, 1000000.0L, std::nullopt},
@@ -141,10 +147,22 @@ int main() {
         for (const auto& node : manifest.nodes) baseline.entries.push_back({node.id, node.observed_value, node.identity, Clock::now()});
         auto state = state_with(120.0, 0.20);
         const auto intent = run_policy(manifest, baseline, state);
-        const auto* kgsl = find_action(intent, "kgsl-default");
+        const auto* kgsl_max = find_action(intent, "kgsl-max");
+        const auto* kgsl_min = find_action(intent, "kgsl-min");
         const auto* mali = find_action(intent, "mali-max");
-        assert(kgsl && std::get<std::int64_t>(kgsl->target_value) == 2);
+        assert(kgsl_max && std::get<std::int64_t>(kgsl_max->target_value) == 2);
+        assert(kgsl_min && std::get<std::int64_t>(kgsl_min->target_value) == 5);
         assert(mali && std::get<std::int64_t>(mali->target_value) >= 800000);
+
+        DeviceManifest unpaired;
+        unpaired.nodes.push_back(numeric_node("kgsl-only-min", "gpu.kgsl.min_pwrlevel",
+            "gpu.kgsl:Adreno", 6, {0.0L, 6.0L, 1.0L}, levels));
+        unpaired.nodes.back().domain = NodeDomain::Gpu;
+        OemBaseline unpaired_baseline;
+        unpaired_baseline.entries.push_back({"kgsl-only-min", std::int64_t{6},
+            unpaired.nodes.front().identity, Clock::now()});
+        const auto unpaired_intent = run_policy(unpaired, unpaired_baseline, state);
+        assert(find_action(unpaired_intent, "kgsl-only-min") == nullptr);
     }
 
     // Thermal safety must outrank screen-off idle, and recovery must return
