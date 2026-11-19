@@ -1,7 +1,11 @@
 name: CoreFlow Engine CI
 
 on:
-  # CI is intentionally manual during Phase 2 to avoid redundant/canceled runs per commit.
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       android_min_api:
