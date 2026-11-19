@@ -300,11 +300,20 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
     const bool thermal_valid = metric(state, "thermal.pressure") != nullptr &&
                                metric(state, "thermal.pressure")->well_formed();
     const bool thermal_emergency = metric_value(state, "thermal.emergency") >= 0.5;
-    const bool high_load = cpu_load >= 0.70 ||
-        metric_value(state, "cpu.pressure") >= 0.20 ||
-        metric_value(state, "gpu.busy") >= 0.70;
+    const double hysteresis = std::isfinite(input.algorithm.hysteresis_ratio)
+        ? std::clamp(input.algorithm.hysteresis_ratio, 0.0, 0.50) : 0.0;
+    const bool was_thermal_guard = input.previous_mode == OperatingMode::ThermalGuard;
+    const bool thermal_guard = thermal_emergency ||
+        (thermal_valid && thermal_pressure >= (was_thermal_guard ? 0.85 * (1.0 - hysteresis) : 0.85)) ||
+        (!thermal_valid && was_thermal_guard);
+    const bool was_high_load = input.previous_mode == OperatingMode::HighLoad;
+    const double cpu_enter = 0.70 * (was_high_load ? 1.0 - hysteresis : 1.0);
+    const double psi_enter = 0.20 * (was_high_load ? 1.0 - hysteresis : 1.0);
+    const bool high_load = cpu_load >= cpu_enter ||
+        metric_value(state, "cpu.pressure") >= psi_enter ||
+        metric_value(state, "gpu.busy") >= cpu_enter;
 
-    if (thermal_emergency || (thermal_valid && thermal_pressure >= 0.85)) {
+    if (thermal_guard) {
         intent.mode = OperatingMode::ThermalGuard;
     } else if (screen_off) {
         intent.mode = OperatingMode::Idle;
@@ -821,7 +830,7 @@ TelemetrySnapshot Telemetry::sample(
 PolicyIntent SweetSpotEngine::evaluate(
     const DeviceManifest& manifest, const OemBaseline& baseline,
     const NormalizedState& state, std::uint64_t, std::uint64_t,
-    std::uint32_t, std::string_view, OperatingMode,
+    std::uint32_t, std::string_view, OperatingMode previous_mode,
     Timestamp evaluation_time) const noexcept {
     AlgorithmConstants algorithm{0.08, 0.20, 32U, kReadLimit};
     AdaptiveReference reference;
@@ -843,7 +852,7 @@ PolicyIntent SweetSpotEngine::evaluate(
         });
     }
     return calculate_policy_intent(
-        PolicyInput{manifest, baseline, state, reference, controls, algorithm},
+        PolicyInput{manifest, baseline, state, reference, controls, algorithm, previous_mode},
         evaluation_time);
 }
 
@@ -1201,6 +1210,7 @@ struct DirectAdaptiveRuntime::Impl final {
         snapshot.cpu_utilization = cpu_util;
         snapshot.thermal_pressure = thermal_valid ? thermal_pressure : 0.0;
         snapshot.thermal_guard = thermal_emergency || (thermal_valid && thermal_pressure >= 85.0);
+        const OperatingMode previous_mode = snapshot.mode;
         // Thermal safety always outranks display-idle policy. A screen-off
         // device can still overheat (charging, background work, or a hot SoC).
         snapshot.mode = snapshot.thermal_guard ? OperatingMode::ThermalGuard :
@@ -1219,8 +1229,9 @@ struct DirectAdaptiveRuntime::Impl final {
             return;
         }
         const auto intent = controller.evaluate(manifest, oem, state, ram_bytes,
-            zram_bytes, refresh_hz, snapshot.storage_type, snapshot.mode, now);
+            zram_bytes, refresh_hz, snapshot.storage_type, previous_mode, now);
         if (intent.mode != OperatingMode::Unknown) snapshot.mode = intent.mode;
+        snapshot.thermal_guard = snapshot.mode == OperatingMode::ThermalGuard;
         if (!mutation_enabled) {
             last_evaluation = now;
             build_json();
