@@ -491,6 +491,36 @@ PolicyIntent calculate_policy_intent(const PolicyInput& input, Timestamp evaluat
         });
     }
 
+    // KGSL setters clamp against the opposite bound. Order each changed pair
+    // from the live interval so neither write is silently clamped by the old peer.
+    for (auto max_it = intent.actions.begin(); max_it != intent.actions.end(); ++max_it) {
+        const NodeDescriptor* max_node = input.manifest.find(max_it->node_id);
+        if (max_node == nullptr || max_node->semantic != "gpu.kgsl.max_pwrlevel") continue;
+
+        auto min_it = std::find_if(intent.actions.begin(), intent.actions.end(),
+            [&](const PolicyAction& action) {
+                const NodeDescriptor* candidate = input.manifest.find(action.node_id);
+                return candidate != nullptr &&
+                    candidate->semantic == "gpu.kgsl.min_pwrlevel" &&
+                    candidate->domain_id == max_node->domain_id;
+            });
+        if (min_it == intent.actions.end()) continue;
+
+        const auto min_control = std::find_if(input.controls.begin(), input.controls.end(),
+            [&](const ControlCapability& control) { return control.node_id == min_it->node_id; });
+        if (min_control == input.controls.end()) continue;
+
+        long double target_max = 0.0L;
+        long double current_min = 0.0L;
+        if (!numeric_value(max_it->target_value, target_max) ||
+            !numeric_value(min_control->current_value, current_min)) continue;
+
+        const bool max_first = target_max <= current_min;
+        if ((max_first && min_it < max_it) || (!max_first && max_it < min_it)) {
+            std::iter_swap(max_it, min_it);
+        }
+    }
+
     if (!refresh_valid) intent.unavailable_evidence.emplace_back("display.refresh_rate");
     if (!thermal_valid) intent.unavailable_evidence.emplace_back("thermal_pressure");
     if (state.find("cpu.util") == nullptr) intent.unavailable_evidence.emplace_back("cpu.utilization");
