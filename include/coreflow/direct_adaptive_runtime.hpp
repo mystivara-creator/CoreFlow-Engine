@@ -118,7 +118,8 @@ public:
     void refresh() noexcept;
     void set_mutation_enabled(bool enabled) noexcept;
     void tick(double thermal_pressure = 0.0, bool thermal_valid = false,
-              bool thermal_emergency = false) noexcept;
+              bool thermal_emergency = false,
+              bool thermal_guard_active = false) noexcept;
     [[nodiscard]] const DirectAdaptiveSnapshot& snapshot() const noexcept;
     [[nodiscard]] std::string status_json() const;
     [[nodiscard]] bool started() const noexcept;
