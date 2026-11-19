@@ -385,6 +385,69 @@ int main() {
         fs::remove_all(root);
     }
 
+    // Heterogeneous CPU topology uses kernel capacity evidence for two- and
+    // three-cluster layouts. Ambiguous frequency-only layouts are not guessed.
+    {
+        namespace fs = std::filesystem;
+        const auto write_file = [](const fs::path& file, const std::string& value) {
+            fs::create_directories(file.parent_path());
+            std::ofstream stream(file);
+            assert(stream.good());
+            stream << value;
+            stream.close();
+            assert(stream.good());
+        };
+        const auto discover_domains = [&](const fs::path& root, bool with_capacity) {
+            const std::vector<std::string> frequencies{
+                "300000 600000 900000 1500000\n",
+                "400000 800000 1200000 2200000\n",
+                "500000 1000000 1800000 3000000\n"};
+            const std::vector<std::string> capacities{"300\n", "600\n", "900\n"};
+            for (unsigned index = 0U; index < 3U; ++index) {
+                const fs::path policy = root / "sys/devices/system/cpu/cpufreq" /
+                    ("policy" + std::to_string(index));
+                write_file(policy / "scaling_available_frequencies", frequencies[index]);
+                write_file(policy / "scaling_governor", "interactive\n");
+                write_file(policy / "related_cpus", std::to_string(index) + "\n");
+                write_file(policy / "interactive/hispeed_load", "85\n");
+                if (with_capacity) {
+                    write_file(root / "sys/devices/system/cpu" /
+                        ("cpu" + std::to_string(index)) / "cpu_capacity", capacities[index]);
+                }
+            }
+            fs::create_directories(root / "proc");
+            TopologyScanner scanner;
+            const auto result = scanner.discover({root / "sys", root / "proc"});
+            assert(result.enumeration_completed);
+            std::vector<std::string> domains;
+            for (const auto& node : result.manifest.nodes) {
+                if (node.semantic == "cpu.hispeed_load") domains.push_back(node.domain_id);
+            }
+            std::sort(domains.begin(), domains.end());
+            return domains;
+        };
+
+        char capacity_path[] = "/tmp/coreflow-da-capacity-XXXXXX";
+        const char* capacity_created = ::mkdtemp(capacity_path);
+        assert(capacity_created != nullptr);
+        const fs::path capacity_root(capacity_created);
+        const auto capacity_domains = discover_domains(capacity_root, true);
+        assert(capacity_domains.size() == 3U);
+        assert(capacity_domains[0] == "cpu.big");
+        assert(capacity_domains[1] == "cpu.little");
+        assert(capacity_domains[2] == "cpu.mid");
+        fs::remove_all(capacity_root);
+
+        char ambiguous_path[] = "/tmp/coreflow-da-ambiguous-XXXXXX";
+        const char* ambiguous_created = ::mkdtemp(ambiguous_path);
+        assert(ambiguous_created != nullptr);
+        const fs::path ambiguous_root(ambiguous_created);
+        const auto ambiguous_domains = discover_domains(ambiguous_root, false);
+        assert(ambiguous_domains.size() == 3U);
+        for (const auto& domain : ambiguous_domains) assert(domain == "cpu.unknown");
+        fs::remove_all(ambiguous_root);
+    }
+
     std::cout << "Direct Adaptive Sweet-Spot policy tests passed\n";
     return 0;
 }
