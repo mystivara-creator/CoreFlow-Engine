@@ -1,5 +1,7 @@
 #include "coreflow/direct_adaptive_runtime.hpp"
 
+#include <algorithm>
+
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
