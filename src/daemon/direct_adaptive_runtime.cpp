@@ -1182,7 +1182,7 @@ struct DirectAdaptiveRuntime::Impl final {
         // evaluations. Do not suppress thermal entry or the transition back to
         // idle after thermal recovery.
         const bool idle_policy_already_applied =
-            screen_off && !snapshot.thermal_guard &&
+            mutation_enabled && screen_off && !snapshot.thermal_guard &&
             last_evaluation != Timestamp{} &&
             last_evaluated_mode == OperatingMode::Idle;
         if (idle_policy_already_applied) {
@@ -1197,8 +1197,11 @@ struct DirectAdaptiveRuntime::Impl final {
             build_json();
             return;
         }
+        bool policy_settled = intent.actions.empty();
         if (!intent.actions.empty()) {
             const auto result = actuator.execute(manifest, oem, intent, algorithm);
+            policy_settled = !result.global_mutation_stop &&
+                result.journal_status == JournalStatus::Committed && !result.policy_rejected;
             if (result.global_mutation_stop || result.journal_status == JournalStatus::JournalFault ||
                 result.policy_rejected) {
                 snapshot.journal_fault = result.global_mutation_stop ||
@@ -1212,11 +1215,17 @@ struct DirectAdaptiveRuntime::Impl final {
                 else ++snapshot.skipped_nodes;
                 if (node_result.health == ActuatorHealth::IdentityLost ||
                     node_result.health == ActuatorHealth::OemContention) ++snapshot.ownership_losses;
+                if (node_result.health == ActuatorHealth::WriteFailed ||
+                    node_result.health == ActuatorHealth::ReadbackFailed ||
+                    node_result.health == ActuatorHealth::ValueMismatch) {
+                    policy_settled = false;
+                }
             }
             for (const auto& action : intent.actions) last_targets[action.node_id] = action.target_value;
         }
         last_evaluation = now;
-        last_evaluated_mode = snapshot.mode;
+        if (policy_settled) last_evaluated_mode = snapshot.mode;
+        else last_evaluated_mode = OperatingMode::Unknown;
         build_json();
     }
 };
