@@ -293,6 +293,11 @@ int main() {
         assert(run_policy(manifest, baseline, thermal_entry, OperatingMode::Balanced).mode ==
                OperatingMode::ThermalGuard);
 
+        auto fused_oem_guard = state_with(120.0, 0.0, false, 0.50, true);
+        fused_oem_guard.metrics.push_back({"thermal.guard", 1.0, 1.0, Clock::now(), true});
+        assert(run_policy(manifest, baseline, fused_oem_guard, OperatingMode::Balanced).mode ==
+               OperatingMode::ThermalGuard);
+
         auto thermal_hold = state_with(120.0, 0.0, false, 0.82, true);
         assert(run_policy(manifest, baseline, thermal_hold, OperatingMode::ThermalGuard).mode ==
                OperatingMode::ThermalGuard);
