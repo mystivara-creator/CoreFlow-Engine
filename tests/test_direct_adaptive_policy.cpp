@@ -85,6 +85,8 @@ int main() {
             "cpu.big", 85, {0.0L, 100.0L, 1.0L}));
         manifest.nodes.push_back(numeric_node("little-load", "cpu.hispeed_load",
             "cpu.little", 85, {0.0L, 100.0L, 1.0L}));
+        manifest.nodes.push_back(numeric_node("mid-load", "cpu.hispeed_load",
+            "cpu.mid", 85, {0.0L, 100.0L, 1.0L}));
         manifest.nodes.push_back(numeric_node("up-rate", "cpu.up_rate_limit_us",
             "cpu.big", 1000, {0.0L, 1000000.0L, 1.0L}));
         manifest.nodes.push_back(numeric_node("down-rate", "cpu.down_rate_limit_us",
@@ -98,11 +100,13 @@ int main() {
         assert(intent.mode == OperatingMode::Balanced);
         const auto* big = find_action(intent, "big-load");
         const auto* little = find_action(intent, "little-load");
+        const auto* middle = find_action(intent, "mid-load");
         const auto* up = find_action(intent, "up-rate");
         const auto* down = find_action(intent, "down-rate");
         const auto* boost = find_action(intent, "boost");
         assert(big && std::get<std::int64_t>(big->target_value) == 82);
         assert(little && std::get<std::int64_t>(little->target_value) == 90);
+        assert(middle && std::get<std::int64_t>(middle->target_value) == 86);
         assert(up && std::get<std::int64_t>(up->target_value) == 500);
         assert(down && std::get<std::int64_t>(down->target_value) == 10000);
         assert(boost && std::get<std::int64_t>(boost->target_value) == 0);
@@ -323,6 +327,26 @@ int main() {
         auto thermal_evidence_lost = state_with(120.0, 0.0);
         assert(run_policy(manifest, baseline, thermal_evidence_lost, OperatingMode::ThermalGuard).mode ==
                OperatingMode::ThermalGuard);
+    }
+
+    // A saturated individual core must not be hidden by a low system-wide
+    // average. The same hysteresis contract applies to the per-core signal.
+    {
+        DeviceManifest manifest;
+        OemBaseline baseline;
+        auto core_entry = state_with(120.0, 0.10);
+        core_entry.metrics.push_back({"cpu.max_core_util", 0.92, 1.0, Clock::now(), true});
+        assert(run_policy(manifest, baseline, core_entry).mode == OperatingMode::HighLoad);
+
+        auto core_hold = state_with(120.0, 0.10);
+        core_hold.metrics.push_back({"cpu.max_core_util", 0.75, 1.0, Clock::now(), true});
+        assert(run_policy(manifest, baseline, core_hold, OperatingMode::HighLoad).mode ==
+               OperatingMode::HighLoad);
+
+        auto core_exit = state_with(120.0, 0.10);
+        core_exit.metrics.push_back({"cpu.max_core_util", 0.70, 1.0, Clock::now(), true});
+        assert(run_policy(manifest, baseline, core_exit, OperatingMode::HighLoad).mode ==
+               OperatingMode::Balanced);
     }
 
     // The interactive governor is admitted only when its actual ABI tunables
