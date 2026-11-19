@@ -252,8 +252,13 @@ bool IntentActuator::handle_preemption(
             ? "preemption requested; transaction rolled back"
             : reason);
     }
-    return state_.state == IntentActuatorState::RolledBack ||
-           state_.state == IntentActuatorState::Retained;
+    if (state_.state != IntentActuatorState::RolledBack &&
+        state_.state != IntentActuatorState::Retained) return false;
+    const auto leases = coordinator_.active_leases();
+    return std::none_of(leases.begin(), leases.end(), [&](const DomainLease& lease) {
+        return lease.domain == domain_ && lease.owner_controller == controller_id_ &&
+               lease.transaction_id == transaction_id;
+    });
 }
 
 bool IntentActuator::finish_rollback_locked(std::string_view reason) {
@@ -268,6 +273,17 @@ bool IntentActuator::finish_rollback_locked(std::string_view reason) {
     const bool restored = baseline_store_.rollback(state_.path);
     if (restored) {
         coordinator_.release_lease(domain_, controller_id_, state_.transaction_id);
+        const auto leases = coordinator_.active_leases();
+        const bool lease_remains = std::any_of(
+            leases.begin(), leases.end(), [&](const DomainLease& lease) {
+                return lease.domain == domain_ && lease.owner_controller == controller_id_ &&
+                       lease.transaction_id == state_.transaction_id;
+            });
+        if (lease_remains) {
+            state_.state = IntentActuatorState::RecoveryRequired;
+            state_.reason = "baseline restored but ownership remains quarantined";
+            return false;
+        }
         state_.state = IntentActuatorState::RolledBack;
         state_.reason = std::string(reason);
         return true;
