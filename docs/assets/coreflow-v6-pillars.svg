@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 220" width="1200" height="220" role="img" aria-label="CoreFlow v6 Four Core Engineering Rules">
+  <rect width="1200" height="220" rx="18" fill="#0B1120"/>
+  <rect x="1" y="1" width="1198" height="218" rx="17" fill="none" stroke="#1E293B" stroke-width="1.5"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">
+    <!-- Card 1 -->
+    <rect x="24" y="24" width="270" height="172" rx="14" fill="#111C33" stroke="#38BDF8" stroke-opacity="0.30"/>
+    <circle cx="52" cy="54" r="10" fill="#38BDF8"/>
+    <text x="72" y="59" fill="#F8FAFC" font-size="16" font-weight="700">1. Absent, Not Disabled</text>
+    <text x="42" y="92" fill="#94A3B8" font-size="13">CoreFlow Atlas probes real kernel</text>
+    <text x="42" y="112" fill="#94A3B8" font-size="13">sysfs nodes first. Controls your</text>
+    <text x="42" y="132" fill="#94A3B8" font-size="13">kernel does not expose never appear</text>
+    <text x="42" y="152" fill="#94A3B8" font-size="13">as fake switches in the UI.</text>
+
+    <!-- Card 2 -->
+    <rect x="318" y="24" width="270" height="172" rx="14" fill="#111C33" stroke="#22C55E" stroke-opacity="0.30"/>
+    <circle cx="346" cy="54" r="10" fill="#22C55E"/>
+    <text x="366" y="59" fill="#F8FAFC" font-size="16" font-weight="700">2. Single CFJ4 Path</text>
+    <text x="336" y="92" fill="#94A3B8" font-size="13">Every sysfs &amp; charging write goes</text>
+    <text x="336" y="112" fill="#94A3B8" font-size="13">through CFJ4 BaselineStore with</text>
+    <text x="336" y="132" fill="#94A3B8" font-size="13">read-back checks, auto-cooldown</text>
+    <text x="336" y="152" fill="#94A3B8" font-size="13">OEM yield, and clean rollback.</text>
+
+    <!-- Card 3 -->
+    <rect x="612" y="24" width="270" height="172" rx="14" fill="#111C33" stroke="#F59E0B" stroke-opacity="0.30"/>
+    <circle cx="640" cy="54" r="10" fill="#F59E0B"/>
+    <text x="660" y="59" fill="#F8FAFC" font-size="16" font-weight="700">3. Verified AI Feed</text>
+    <text x="630" y="92" fill="#94A3B8" font-size="13">No silent mystery tweaks. Every</text>
+    <text x="630" y="112" fill="#94A3B8" font-size="13">launch burst, thermal guard, and</text>
+    <text x="630" y="132" fill="#94A3B8" font-size="13">bypass switch is logged live as a</text>
+    <text x="630" y="152" fill="#94A3B8" font-size="13">verified decision episode.</text>
+
+    <!-- Card 4 -->
+    <rect x="906" y="24" width="270" height="172" rx="14" fill="#111C33" stroke="#A78BFA" stroke-opacity="0.30"/>
+    <circle cx="934" cy="54" r="10" fill="#A78BFA"/>
+    <text x="954" y="59" fill="#F8FAFC" font-size="16" font-weight="700">4. Native Zero-Bloat</text>
+    <text x="924" y="92" fill="#94A3B8" font-size="13">C++20 + Rust core (~600 KB) with</text>
+    <text x="924" y="112" fill="#94A3B8" font-size="13">per-TID UClamp, closed-loop render</text>
+    <text x="924" y="132" fill="#94A3B8" font-size="13">load feedback, and ~0.0% idle</text>
+    <text x="924" y="152" fill="#94A3B8" font-size="13">battery overhead on Android 13+.</text>
+  </g>
+</svg>

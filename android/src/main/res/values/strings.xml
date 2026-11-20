@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">CoreFlow</string>
     <string name="qs_tile_label">CoreFlow Mode</string>
+    <string name="qs_bypass_tile_label">CoreFlow Bypass</string>
 </resources>

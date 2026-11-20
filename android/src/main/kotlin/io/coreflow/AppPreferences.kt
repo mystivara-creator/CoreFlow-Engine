@@ -7,6 +7,7 @@ object AppPreferences {
     private const val PREFS_NAME = "coreflow_companion_prefs"
     private const val KEY_THEME_MODE = "theme_mode_index"
     private const val KEY_POLL_INTERVAL_IDX = "poll_interval_index"
+    private const val KEY_LANGUAGE_IDX = "language_index"
 
     val themeModeLabels: List<String> = listOf(
         "Monet System",
@@ -34,6 +35,12 @@ object AppPreferences {
 
     val pollIntervalValuesMs: List<Long> = listOf(1500L, 2500L, 5000L)
 
+    val languageLabels: List<String> = listOf(
+        "System Default",
+        "English",
+        "Bahasa Indonesia",
+    )
+
     fun getThemeModeIndex(context: Context): Int =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getInt(KEY_THEME_MODE, 0)
@@ -55,6 +62,18 @@ object AppPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_POLL_INTERVAL_IDX, index.coerceIn(0, pollIntervalValuesMs.lastIndex))
+            .apply()
+    }
+
+    fun getLanguageIndex(context: Context): Int =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_LANGUAGE_IDX, 0)
+            .coerceIn(0, languageLabels.lastIndex)
+
+    fun setLanguageIndex(context: Context, index: Int) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_LANGUAGE_IDX, index.coerceIn(0, languageLabels.lastIndex))
             .apply()
     }
 }

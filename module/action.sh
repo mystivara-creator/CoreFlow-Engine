@@ -13,6 +13,8 @@ BIN="$MODDIR/system/bin/coreflowd"
 
 case "${1:-status}" in
   status) "$BIN" --status ;;
+  atlas) "$BIN" --atlas ;;
+  episodes) "$BIN" --episodes ;;
   journal) "$BIN" --journal ;;
   diag) "$BIN" --diag ;;
   rollback)
@@ -26,7 +28,7 @@ case "${1:-status}" in
     exit "$RESULT"
     ;;
   *)
-    echo "Usage: action.sh [status|journal|diag|rollback]" >&2
+    echo "Usage: action.sh [status|atlas|episodes|journal|diag|rollback]" >&2
     exit 2
     ;;
 esac

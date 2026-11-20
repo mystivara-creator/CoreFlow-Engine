@@ -380,7 +380,7 @@ export const App: React.FC = () => {
       } else {
         setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
       }
-      addLog('BOOST', 'Daemon', 'CoreFlow v5.1.0 daemon started.');
+      addLog('BOOST', 'Daemon', 'CoreFlow v6.0.0 daemon started.');
       setFeedback('CoreFlow daemon started and active.');
     } catch (err) {
       setErrorMsg(`Unable to start daemon: ${String(err)}`);
@@ -1326,7 +1326,7 @@ export const App: React.FC = () => {
           color: 'var(--md-sys-color-on-surface-variant)',
         }}
       >
-        CoreFlow Engine v5.1.0 · Android 13+ Lean 4-Pillar Adaptive Framework · CFJ4 OEM Safe
+        CoreFlow Engine v6.0.0 · Android 13+ Lean 4-Pillar Adaptive Framework · CFJ4 OEM Safe
       </footer>
     </div>
   );

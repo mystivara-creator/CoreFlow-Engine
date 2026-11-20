@@ -12,6 +12,7 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
@@ -33,11 +34,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * Native Floating Game HUD overlay (SYSTEM_ALERT_WINDOW).
- * Shows live SoC temperature, render pressure, UClamp floor, active profile,
- * and a 1-tap A/B Pause/Resume button directly on top of any app or game.
+ * CoreFlow v6.0 NextGen Floating Game HUD + Expandable Mini Game Panel.
+ * - Real SurfaceFlinger FPS counter (shows "--" if unavailable, never fabricates FPS).
+ * - Live SoC Temp, Render Pressure, UClamp Floor, and active mode.
+ * - Tap the pill to expand a quick Game Panel with 4-profile switcher, 1-tap A/B Pause,
+ *   and 1-tap Bypass Charging (shown only when supported by the kernel).
  */
 class CoreFlowOverlayService : Service() {
 
@@ -68,9 +72,18 @@ class CoreFlowOverlayService : Service() {
     private var hudView: View? = null
     private var titleText: TextView? = null
     private var metricsText: TextView? = null
-    private var togglePill: TextView? = null
+    private var expandPanel: LinearLayout? = null
+    private var pauseButton: TextView? = null
+    private var bypassButton: TextView? = null
+
     private var isPausedState = false
+    private var isBypassSupported = false
+    private var isBypassConfig = false
+    private var isExpanded = false
     private var intervalMs = 1500L
+
+    private var lastFlipCount: Long? = null
+    private var lastFlipTimeMs: Long = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -107,18 +120,39 @@ class CoreFlowOverlayService : Service() {
         super.onDestroy()
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun makeChip(label: String, bgColor: Int, onClick: () -> Unit): TextView {
+        val bg = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(8).toFloat()
+            setColor(bgColor)
+        }
+        return TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            background = bg
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = dp(5) }
+            layoutParams = lp
+            setOnClickListener { onClick() }
+        }
+    }
+
     private fun attachHudOverlay() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
-        val density = resources.displayMetrics.density
-        fun dp(v: Int): Int = (v * density).toInt()
-
         val bg = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(16).toFloat()
-            setColor(Color.argb(215, 18, 22, 30))
-            setStroke(dp(1), Color.argb(90, 96, 165, 250))
+            setColor(Color.argb(225, 15, 20, 29))
+            setStroke(dp(1), Color.argb(105, 56, 189, 248))
         }
 
         val root = LinearLayout(this).apply {
@@ -127,62 +161,105 @@ class CoreFlowOverlayService : Service() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
         }
 
-        val topRow = LinearLayout(this).apply {
+        val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
         val title = TextView(this).apply {
-            text = "CoreFlow · Live"
+            text = "CF v6 · Live"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         titleText = title
 
-        val pillBg = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(10).toFloat()
-            setColor(Color.argb(200, 37, 99, 235))
+        val expandHint = TextView(this).apply {
+            text = "▾"
+            setTextColor(Color.rgb(148, 163, 184))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(8), 0, 0, 0)
         }
-        val pill = TextView(this).apply {
-            text = "A/B"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            background = pillBg
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                marginStart = dp(10)
-            }
-            layoutParams = lp
-            setOnClickListener {
-                scope.launch {
-                    val targetPaused = !isPausedState
-                    CoreFlowManager.setPaused(targetPaused)
-                    refreshOnce()
-                }
-            }
-        }
-        togglePill = pill
 
-        topRow.addView(title)
-        topRow.addView(pill)
+        headerRow.addView(title)
+        headerRow.addView(expandHint)
 
         val metrics = TextView(this).apply {
-            text = "Connecting..."
+            text = "-- FPS · --°C · RP --%"
             setTextColor(Color.rgb(203, 213, 225))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             typeface = Typeface.MONOSPACE
-            setPadding(0, dp(3), 0, 0)
+            setPadding(0, dp(2), 0, 0)
         }
         metricsText = metrics
 
-        root.addView(topRow)
+        // Expandable Mini Game Side Panel
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(8), 0, 0)
+        }
+
+        val profileRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val profileShort = listOf(
+            "BAL" to CoreFlowManager.Profile.BALANCED,
+            "SMT" to CoreFlowManager.Profile.SMOOTHNESS,
+            "GAM" to CoreFlowManager.Profile.GAMING,
+            "BAT" to CoreFlowManager.Profile.BATTERY,
+        )
+        for ((shortName, prof) in profileShort) {
+            profileRow.addView(
+                makeChip(shortName, Color.argb(190, 30, 41, 59)) {
+                    scope.launch {
+                        CoreFlowManager.applyProfile(prof)
+                        refreshOnce()
+                    }
+                },
+            )
+        }
+
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+
+        val pauseBtn = makeChip("PAUSE", Color.argb(210, 37, 99, 235)) {
+            scope.launch {
+                CoreFlowManager.setPaused(!isPausedState)
+                refreshOnce()
+            }
+        }
+        pauseButton = pauseBtn
+
+        val bypassBtn = makeChip("BYPASS", Color.argb(210, 16, 185, 129)) {
+            scope.launch {
+                CoreFlowManager.setPowerControl("bypass_charging", if (!isBypassConfig) "true" else "false")
+                refreshOnce()
+            }
+        }.apply {
+            visibility = View.GONE
+        }
+        bypassButton = bypassBtn
+
+        val closeBtn = makeChip("CLOSE", Color.argb(200, 185, 28, 28)) {
+            stopSelf()
+        }
+
+        actionRow.addView(pauseBtn)
+        actionRow.addView(bypassBtn)
+        actionRow.addView(closeBtn)
+
+        panel.addView(profileRow)
+        panel.addView(actionRow)
+        expandPanel = panel
+
+        root.addView(headerRow)
         root.addView(metrics)
+        root.addView(panel)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -200,6 +277,7 @@ class CoreFlowOverlayService : Service() {
         var startY = 0
         var downRawX = 0f
         var downRawY = 0f
+        var moved = false
 
         root.setOnTouchListener { _, event ->
             when (event.action) {
@@ -208,16 +286,27 @@ class CoreFlowOverlayService : Service() {
                     startY = params.y
                     downRawX = event.rawX
                     downRawY = event.rawY
+                    moved = false
                     true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - downRawX).toInt()
                     val dy = (event.rawY - downRawY).toInt()
-                    if (abs(dx) > 3 || abs(dy) > 3) {
+                    if (abs(dx) > 6 || abs(dy) > 6) {
+                        moved = true
                         params.x = startX + dx
                         params.y = startY + dy
                         runCatching { wm.updateViewLayout(root, params) }
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        isExpanded = !isExpanded
+                        expandPanel?.visibility = if (isExpanded) View.VISIBLE else View.GONE
+                        expandHint.text = if (isExpanded) "▴" else "▾"
                     }
                     true
                 }
@@ -241,29 +330,58 @@ class CoreFlowOverlayService : Service() {
     }
 
     private suspend fun refreshOnce() {
+        val nowMs = SystemClock.elapsedRealtime()
+        val flips = CoreFlowManager.readSurfaceFlingerFlipCount()
+        var fpsText = "-- FPS"
+        if (flips != null && lastFlipCount != null && nowMs > lastFlipTimeMs) {
+            val dFrames = flips - lastFlipCount!!
+            val dtSec = (nowMs - lastFlipTimeMs) / 1000.0
+            if (dFrames >= 0L && dtSec >= 0.25) {
+                val fps = (dFrames / dtSec).roundToInt().coerceIn(0, 240)
+                fpsText = "$fps FPS"
+            }
+        }
+        if (flips != null) {
+            lastFlipCount = flips
+            lastFlipTimeMs = nowMs
+        }
+
         val status = CoreFlowManager.getStatus().getOrNull()
         if (status == null) {
-            titleText?.text = "CoreFlow · Offline"
-            metricsText?.text = "Daemon not responding"
+            titleText?.text = "CF v6 · Offline"
+            metricsText?.text = "$fpsText · Daemon offline"
             return
         }
 
         isPausedState = status.inspectionMode
+        isBypassSupported = status.batteryPower.bypassSupported
+        isBypassConfig = status.powerConfig.bypassCharging
+
         val stateLabel = when {
             !status.isRunning -> "STOPPED"
-            status.inspectionMode -> "PAUSED (OEM)"
-            status.thermalGuardActive -> "THERMAL GUARD"
+            status.inspectionMode -> "PAUSED"
+            status.thermalGuardActive -> "T-GUARD"
             else -> status.effectiveProfile.label.uppercase(Locale.US)
         }
-        titleText?.text = "CF · $stateLabel"
+        titleText?.text = "CF · $stateLabel" + if (status.batteryPower.bypassActive) " · BYP" else ""
 
-        val pillBg = togglePill?.background as? GradientDrawable
+        val pauseBg = pauseButton?.background as? GradientDrawable
         if (status.inspectionMode) {
-            togglePill?.text = "RESUME"
-            pillBg?.setColor(Color.argb(220, 217, 119, 6))
+            pauseButton?.text = "RESUME"
+            pauseBg?.setColor(Color.argb(220, 217, 119, 6))
         } else {
-            togglePill?.text = "PAUSE"
-            pillBg?.setColor(Color.argb(200, 37, 99, 235))
+            pauseButton?.text = "PAUSE"
+            pauseBg?.setColor(Color.argb(210, 37, 99, 235))
+        }
+
+        bypassButton?.visibility = if (isBypassSupported) View.VISIBLE else View.GONE
+        val bypassBg = bypassButton?.background as? GradientDrawable
+        if (status.batteryPower.bypassActive) {
+            bypassButton?.text = "BYP ON"
+            bypassBg?.setColor(Color.argb(220, 16, 185, 129))
+        } else {
+            bypassButton?.text = "BYP OFF"
+            bypassBg?.setColor(Color.argb(190, 51, 65, 85))
         }
 
         val tempStr = if (status.socTempCelsius >= 0f) {
@@ -272,8 +390,7 @@ class CoreFlowOverlayService : Service() {
             "--°C"
         }
         val rpPct = (status.renderPressure * 100f).toInt().coerceIn(0, 100)
-        val scalePct = (status.capacityScale * 100f).toInt().coerceIn(0, 100)
-        metricsText?.text = "$tempStr | RP $rpPct% | UC ${status.uclampMin} | $scalePct%"
+        metricsText?.text = "$fpsText · $tempStr · RP $rpPct% · UC ${status.uclampMin}"
     }
 
     private fun createNotificationChannel() {
@@ -283,7 +400,7 @@ class CoreFlowOverlayService : Service() {
             "CoreFlow Live HUD",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Keeps the draggable CoreFlow Game HUD overlay active."
+            description = "Keeps the draggable CoreFlow v6 Game HUD & mini panel active."
             setShowBadge(false)
         }
         nm.createNotificationChannel(channel)
@@ -304,8 +421,8 @@ class CoreFlowOverlayService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_coreflow_tile)
-            .setContentTitle("CoreFlow Live HUD Active")
-            .setContentText("Drag the floating HUD or tap Stop to dismiss.")
+            .setContentTitle("CoreFlow v6 Live HUD Active")
+            .setContentText("Tap HUD to expand Game Panel, or tap Stop to dismiss.")
             .setContentIntent(openIntent)
             .setOngoing(true)
             .addAction(

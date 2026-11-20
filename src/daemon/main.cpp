@@ -30,6 +30,7 @@
 #include "coreflow/v5/storage_memory_actuator.hpp"
 #include "coreflow/v5/thermal_envelope_actuator.hpp"
 #include "coreflow/v5/thread_scheduler.hpp"
+#include "coreflow/v6/decision_journal.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -68,7 +69,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "5.1.0";
+constexpr char kVersion[] = "6.0.0";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -536,6 +537,13 @@ struct HistoryPoint {
     std::string mode{"EFFICIENCY"};
 };
 
+struct ThermalZoneSnapshot {
+    std::string id;
+    std::string type;
+    std::string category;
+    double celsius{-1.0};
+};
+
 struct RuntimeStatusData {
     bool running{false};
     pid_t pid{0};
@@ -562,6 +570,10 @@ struct RuntimeStatusData {
     ThermalEnvelopeStats envelope_stats{};
     std::vector<std::string> contended_paths{};
     BatteryPowerTelemetry battery{};
+    MemorySnapshot memory{};
+    std::vector<uint64_t> cluster_cur_khz{};
+    std::vector<ThermalZoneSnapshot> thermal_zones{};
+    std::vector<v6::DecisionEpisode> episodes{};
     SessionMetrics session{};
     size_t baseline_nodes{0};
     bool recovery_pending{false};
@@ -574,6 +586,51 @@ std::string serialize_string_array(const std::vector<std::string>& items) {
     for (size_t i = 0; i < items.size(); ++i) {
         if (i != 0U) out << ',';
         out << json_str(items[i]);
+    }
+    out << ']';
+    return out.str();
+}
+
+const char* thermal_category_name(int cat) noexcept {
+    switch (cat) {
+        case 1: return "compute";
+        case 2: return "battery";
+        case 3: return "skin";
+        case 4: return "board";
+        default: return "sensor";
+    }
+}
+
+std::vector<ThermalZoneSnapshot> collect_thermal_zones(const coreflow::ThermalBundle& tb) {
+    std::vector<ThermalZoneSnapshot> out;
+    for (const auto& s : tb.assessment.readings) {
+        if (!s.valid || !std::isfinite(s.celsius) || s.celsius <= 0.0f || s.celsius > 125.0f) continue;
+        ThermalZoneSnapshot z{};
+        z.id = s.id;
+        z.type = s.type;
+        z.category = thermal_category_name(s.category);
+        z.celsius = static_cast<double>(s.celsius);
+        out.push_back(std::move(z));
+        if (out.size() >= 10U) break;
+    }
+    return out;
+}
+
+std::string serialize_episodes_array(const std::vector<v6::DecisionEpisode>& episodes) {
+    std::ostringstream out;
+    out << '[';
+    for (size_t i = 0; i < episodes.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& ep = episodes[i];
+        out << "{\"id\":" << ep.id
+            << ",\"tsMs\":" << ep.ts_ms
+            << ",\"domain\":" << json_str(ep.domain)
+            << ",\"trigger\":" << json_str(ep.trigger)
+            << ",\"action\":" << json_str(ep.action)
+            << ",\"outcome\":" << json_str(ep.outcome)
+            << ",\"socTempC\":" << (std::isfinite(ep.soc_temp_c) && ep.soc_temp_c >= 0.0 ? std::to_string(safe_num(ep.soc_temp_c)) : "null")
+            << ",\"renderPressure\":" << safe_num(ep.render_pressure)
+            << ",\"capacityScale\":" << safe_num(ep.capacity_scale, 1.0) << '}';
     }
     out << ']';
     return out.str();
@@ -626,6 +683,11 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"thermalPacing\":" << (s.config.enable_thermal_pacing ? "true" : "false")
         << ",\"batteryStepCharging\":" << (s.config.enable_battery_step_charging ? "true" : "false")
         << "}"
+        << ",\"powerConfig\":{"
+        << "\"bypassCharging\":" << (s.config.bypass_charging ? "true" : "false")
+        << ",\"bypassOnGaming\":" << (s.config.bypass_on_gaming ? "true" : "false")
+        << ",\"chargeLimitPct\":" << s.config.charge_limit_pct
+        << "}"
         << ",\"apps\":{"
         << "\"gaming\":" << serialize_string_array(gaming_list)
         << ",\"smoothness\":" << serialize_string_array(smoothness_list)
@@ -658,6 +720,38 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"mglruAvailable\":" << (!s.topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
         << ",\"cgroupV2Available\":" << (!s.topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
         << "}"
+        << ",\"memory\":{"
+        << "\"totalBytes\":" << s.memory.total_bytes
+        << ",\"availableBytes\":" << s.memory.available_bytes
+        << ",\"swapTotalBytes\":" << s.memory.swap_total_bytes
+        << ",\"swapFreeBytes\":" << s.memory.swap_free_bytes
+        << "}"
+        << ",\"cpuClusters\":[";
+    for (size_t i = 0; i < s.topo.cpu_clusters.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& c = s.topo.cpu_clusters[i];
+        const uint64_t cur_khz = (i < s.cluster_cur_khz.size()) ? s.cluster_cur_khz[i] : 0U;
+        const uint64_t min_khz = c.opps_khz.empty() ? 0U : c.opps_khz.front();
+        const uint64_t max_khz = c.opps_khz.empty() ? 0U : c.opps_khz.back();
+        out << "{\"role\":" << json_str(HardwareProbe::cluster_role_name(c.role))
+            << ",\"governor\":" << json_str(c.governor)
+            << ",\"curKhz\":" << cur_khz
+            << ",\"minKhz\":" << min_khz
+            << ",\"maxKhz\":" << max_khz
+            << ",\"capacity\":" << c.capacity
+            << ",\"availableGovernors\":" << serialize_string_array(c.available_governors) << '}';
+    }
+    out << "]"
+        << ",\"thermalZones\":[";
+    for (size_t i = 0; i < s.thermal_zones.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& z = s.thermal_zones[i];
+        out << "{\"id\":" << json_str(z.id)
+            << ",\"type\":" << json_str(z.type)
+            << ",\"category\":" << json_str(z.category)
+            << ",\"celsius\":" << safe_num(z.celsius) << '}';
+    }
+    out << "]"
         << ",\"batteryPower\":{"
         << "\"available\":" << (s.battery.available ? "true" : "false")
         << ",\"charging\":" << (s.battery.charging ? "true" : "false")
@@ -669,6 +763,11 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"powerMw\":" << safe_num(s.battery.power_mw)
         << ",\"chargeLimitUa\":" << s.battery.charge_limit_ua
         << ",\"oemBaselineUa\":" << s.battery.oem_baseline_ua
+        << ",\"capacityPct\":" << (s.battery.battery_capacity_pct >= 0 ? std::to_string(s.battery.battery_capacity_pct) : "null")
+        << ",\"bypassSupported\":" << (s.battery.bypass_supported ? "true" : "false")
+        << ",\"bypassActive\":" << (s.battery.bypass_active ? "true" : "false")
+        << ",\"bypassReason\":" << json_str(s.battery.bypass_reason)
+        << ",\"chargeLimitPct\":" << s.battery.charge_limit_pct
         << ",\"status\":" << json_str(s.battery.status)
         << "}"
         << ",\"session\":{"
@@ -679,6 +778,7 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"peakSocTempCelsius\":" << (s.session.peak_soc_temp_celsius >= 0.0 ? std::to_string(safe_num(s.session.peak_soc_temp_celsius)) : "null")
         << ",\"avgCapacityScale\":" << safe_num(avg_scale, 1.0)
         << "}"
+        << ",\"episodes\":" << serialize_episodes_array(s.episodes)
         << ",\"history\":[";
     for (size_t i = 0; i < s.history.size(); ++i) {
         if (i != 0U) out << ',';
@@ -703,11 +803,16 @@ std::string build_readonly_status_json() {
     data.config = DaemonConfig::load_best_available(false);
     data.ctx.effective_profile = ContextEngine::parse_profile(data.config.profile);
     data.topo = probe.discover();
+    data.memory = probe.read_memory_snapshot();
+    for (const auto& c : data.topo.cpu_clusters) {
+        data.cluster_cur_khz.push_back(probe.read_cluster_cur_freq_khz(c).value_or(0U));
+    }
     const auto tb = thermal_mon.sample_bundle(false);
     data.soc_temp = tb.composite_celsius;
     data.battery_temp = tb.battery_celsius;
     data.thermal_pressure = tb.assessment.pressure;
     data.thermal_source = tb.assessment.source;
+    data.thermal_zones = collect_thermal_zones(tb);
     data.gpu_busy_pct = probe.read_gpu_busy_pct(data.topo);
     data.cpu_psi = probe.read_psi_avg10("cpu");
     data.mem_psi = probe.read_psi_avg10("memory");
@@ -722,9 +827,84 @@ void print_readonly_status() {
     std::cout << build_readonly_status_json() << "\n" << std::flush;
 }
 
+std::string build_atlas_json() {
+    HardwareProbe probe;
+    ThermalMonitor thermal_mon;
+    const auto topo = probe.discover();
+    const auto tb = thermal_mon.sample_bundle(false);
+    const auto zones = collect_thermal_zones(tb);
+    const auto batt = HardwareLongevityManager::probe_battery_telemetry();
+    ThreadSchedulerActuator probe_sched;
+    const bool per_thread_uclamp = probe_sched.probe_support();
+
+    std::ostringstream out;
+    out << "{\"atlasFormat\":\"coreflow-atlas-v6\""
+        << ",\"version\":" << json_str(kVersion)
+        << ",\"socModel\":" << json_str(topo.soc_model)
+        << ",\"kernelVersion\":" << json_str(topo.kernel_version)
+        << ",\"refreshHz\":" << topo.refresh_hz
+        << ",\"ramBytes\":" << topo.total_ram_bytes
+        << ",\"zramBytes\":" << topo.zram_bytes
+        << ",\"perThreadUclampSupported\":" << (per_thread_uclamp ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (!topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << ",\"mglruAvailable\":" << (!topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
+        << ",\"oledDisplayPowerNodes\":" << (topo.drm_dpms_paths.size() + topo.fb_blank_paths.size())
+        << ",\"gpu\":{\"available\":" << (topo.gpu.available ? "true" : "false")
+        << ",\"model\":" << json_str(topo.gpu.model)
+        << ",\"isKgsl\":" << (topo.gpu.is_kgsl ? "true" : "false")
+        << ",\"isMtkGed\":" << (topo.gpu.is_mtk_ged ? "true" : "false")
+        << ",\"hasBusySensor\":" << (!topo.gpu.busy_path.empty() ? "true" : "false")
+        << ",\"oppCount\":" << (topo.gpu.is_kgsl ? topo.gpu.kgsl_num_pwrlevels : topo.gpu.devfreq_opps_hz.size())
+        << "}"
+        << ",\"powerControl\":{\"available\":" << (batt.available ? "true" : "false")
+        << ",\"bypassSupported\":" << (batt.bypass_supported ? "true" : "false")
+        << ",\"bypassNode\":" << json_str(batt.bypass_node_path)
+        << ",\"capacitySupported\":" << (batt.battery_capacity_pct >= 0 ? "true" : "false")
+        << ",\"stepChargingSupported\":" << (batt.charge_limit_ua > 0U ? "true" : "false")
+        << "}"
+        << ",\"cpuClusters\":[";
+    for (size_t i = 0; i < topo.cpu_clusters.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& c = topo.cpu_clusters[i];
+        const uint64_t cur_khz = probe.read_cluster_cur_freq_khz(c).value_or(0U);
+        out << "{\"role\":" << json_str(HardwareProbe::cluster_role_name(c.role))
+            << ",\"governor\":" << json_str(c.governor)
+            << ",\"curKhz\":" << cur_khz
+            << ",\"minKhz\":" << (c.opps_khz.empty() ? 0U : c.opps_khz.front())
+            << ",\"maxKhz\":" << (c.opps_khz.empty() ? 0U : c.opps_khz.back())
+            << ",\"capacity\":" << c.capacity
+            << ",\"availableGovernors\":" << serialize_string_array(c.available_governors) << '}';
+    }
+    out << "],\"storageQueues\":[";
+    for (size_t i = 0; i < topo.storage_queues.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& q = topo.storage_queues[i];
+        out << "{\"device\":" << json_str(q.device_name)
+            << ",\"type\":" << json_str(HardwareProbe::storage_type_name(q.type))
+            << ",\"baselineReadAheadKb\":" << q.baseline_read_ahead_kb
+            << ",\"nrRequests\":" << q.nr_requests << '}';
+    }
+    out << "],\"thermalZones\":[";
+    for (size_t i = 0; i < zones.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& z = zones[i];
+        out << "{\"id\":" << json_str(z.id)
+            << ",\"type\":" << json_str(z.type)
+            << ",\"category\":" << json_str(z.category)
+            << ",\"celsius\":" << safe_num(z.celsius) << '}';
+    }
+    out << "]}";
+    return out.str();
+}
+
+void print_atlas() {
+    std::cout << build_atlas_json() << "\n" << std::flush;
+}
+
 std::string build_capabilities_json() {
     HardwareProbe probe;
     const auto topo = probe.discover();
+    const auto batt = HardwareLongevityManager::probe_battery_telemetry();
     ThreadSchedulerActuator probe_sched;
     const bool per_thread_uclamp = probe_sched.probe_support();
     std::ostringstream out;
@@ -741,6 +921,7 @@ std::string build_capabilities_json() {
         << ",\"perThreadUclampSupported\":" << (per_thread_uclamp ? "true" : "false")
         << ",\"mglruAvailable\":" << (!topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
         << ",\"cgroupV2Available\":" << (!topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << ",\"bypassChargingSupported\":" << (batt.bypass_supported ? "true" : "false")
         << ",\"oledDisplayPowerNodes\":" << (topo.drm_dpms_paths.size() + topo.fb_blank_paths.size())
         << "}";
     return out.str();
@@ -877,6 +1058,44 @@ bool read_live_status_snapshot_str(pid_t expected_pid, std::string& out_payload)
     return true;
 }
 
+void print_episodes() {
+    std::string status_json;
+    const pid_t live = daemon_pid();
+    if (live > 0 && read_live_status_snapshot_str(live, status_json)) {
+        const size_t pos = status_json.find("\"episodes\":[");
+        if (pos != std::string::npos) {
+            const size_t arr_start = status_json.find('[', pos);
+            int depth = 0;
+            bool in_str = false;
+            bool esc = false;
+            size_t arr_end = std::string::npos;
+            for (size_t i = arr_start; i < status_json.size(); ++i) {
+                const char c = status_json[i];
+                if (in_str) {
+                    if (esc) { esc = false; }
+                    else if (c == '\\') { esc = true; }
+                    else if (c == '"') { in_str = false; }
+                    continue;
+                }
+                if (c == '"') { in_str = true; }
+                else if (c == '[') { ++depth; }
+                else if (c == ']') {
+                    --depth;
+                    if (depth == 0) { arr_end = i; break; }
+                }
+            }
+            if (arr_end != std::string::npos) {
+                std::cout << "{\"version\":" << json_str(kVersion)
+                          << ",\"running\":true,\"episodes\":"
+                          << status_json.substr(arr_start, arr_end - arr_start + 1U)
+                          << "}\n" << std::flush;
+                return;
+            }
+        }
+    }
+    std::cout << "{\"version\":" << json_str(kVersion) << ",\"running\":false,\"episodes\":[]}\n" << std::flush;
+}
+
 void print_diag() {
     std::string status_json;
     const pid_t live = daemon_pid();
@@ -884,12 +1103,13 @@ void print_diag() {
         status_json = build_readonly_status_json();
     }
     const std::string caps_json = build_capabilities_json();
+    const std::string atlas_json = build_atlas_json();
     const std::string journal_json = build_journal_json();
 #ifndef COREFLOW_BUILD_COMMIT
 #define COREFLOW_BUILD_COMMIT "unknown"
 #endif
     std::ostringstream out;
-    out << "{\"reportFormat\":\"coreflow-diag-v1\""
+    out << "{\"reportFormat\":\"coreflow-diag-v6\""
         << ",\"version\":" << json_str(kVersion)
         << ",\"commit\":" << json_str(COREFLOW_BUILD_COMMIT)
         << ",\"generatedAtMs\":" << epoch_now_ms()
@@ -898,6 +1118,7 @@ void print_diag() {
         << ",\"disable\":" << (marker_exists("/data/adb/coreflow/DISABLE") ? "true" : "false")
         << "}"
         << ",\"capabilities\":" << caps_json
+        << ",\"atlas\":" << atlas_json
         << ",\"status\":" << status_json
         << ",\"journal\":" << journal_json
         << "}";
@@ -966,6 +1187,14 @@ int main(int argc, char* argv[]) {
             print_capabilities();
             return 0;
         }
+        if (cmd == "--atlas") {
+            print_atlas();
+            return 0;
+        }
+        if (cmd == "--episodes") {
+            print_episodes();
+            return 0;
+        }
         if (cmd == "--journal") {
             print_journal();
             return 0;
@@ -980,11 +1209,11 @@ int main(int argc, char* argv[]) {
         if (cmd == "--daemon" || cmd == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--atlas|--episodes|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -1074,6 +1303,7 @@ int main(int argc, char* argv[]) {
     RenderLoadSampler render_sampler;
 
     RuntimeStatusData live_status{};
+    v6::DecisionJournal decision_journal{};
     live_status.running = true;
     live_status.pid = ::getpid();
     live_status.config = config;
@@ -1083,8 +1313,16 @@ int main(int argc, char* argv[]) {
     live_status.battery = longevity.sample_battery_telemetry();
     live_status.session.started_steady_ms = steady_now_ms();
     bool last_screen_off = false;
+    bool prev_bypass_active = false;
+    size_t prev_contended_count = 0U;
     ForegroundAppInfo last_fg{};
     MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
+    live_status.memory = last_mem_snap;
+    decision_journal.record(
+        epoch_now_ms(), "context", "Boot",
+        "CoreFlow v6.0.0 initialized (profile=" + config.profile + ")",
+        "verified", -1.0, 0.0, 1.0);
+    live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
     auto last_thermal_tick = std::chrono::steady_clock::now();
 
@@ -1209,6 +1447,12 @@ int main(int argc, char* argv[]) {
                     if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
                     emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile +
                              ", paused=" + (config.inspection_mode ? "yes" : "no") + ").");
+                    decision_journal.record(
+                        epoch_now_ms(), "context", "ConfigReload",
+                        config.inspection_mode ? "Paused (OEM A/B inspection mode)"
+                                               : ("Profile=" + config.profile +
+                                                  (config.bypass_charging ? " · Bypass ON" : "")),
+                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
                 } else {
                     reactor.stop();
                 }
@@ -1242,6 +1486,10 @@ int main(int argc, char* argv[]) {
         live_status.ctx = context_engine.evaluate(sig);
         if (live_status.ctx.newly_launched_app) {
             ++live_status.session.launch_bursts;
+            decision_journal.record(
+                epoch_now_ms(), "storage", "LaunchBurst",
+                "Boosted " + (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
+                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
         if (changed || live_status.ctx.mode != prev_mode) {
             const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
@@ -1321,11 +1569,18 @@ int main(int argc, char* argv[]) {
         live_status.battery_temp = batt_temp;
         live_status.thermal_pressure = thermal.pressure;
         live_status.thermal_source = thermal.source;
+        live_status.thermal_zones = collect_thermal_zones(tb);
         live_status.cpu_util_pct = cpu_util;
         live_status.gpu_busy_pct = gpu_busy;
         live_status.cpu_psi = cpu_psi;
         live_status.mem_psi = mem_psi;
         live_status.io_psi = io_psi;
+        live_status.memory = last_mem_snap;
+        live_status.cluster_cur_khz.clear();
+        live_status.cluster_cur_khz.reserve(topo.cpu_clusters.size());
+        for (const auto& c : topo.cpu_clusters) {
+            live_status.cluster_cur_khz.push_back(probe.read_cluster_cur_freq_khz(c).value_or(0U));
+        }
 
         if (std::isfinite(soc_temp) && soc_temp > 0.0f) {
             ++live_status.session.temp_samples;
@@ -1339,12 +1594,25 @@ int main(int argc, char* argv[]) {
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
             live_status.contended_paths = collect_contended_paths();
+            if (live_status.contended_paths.size() > prev_contended_count) {
+                decision_journal.record(
+                    epoch_now_ms(), "thermal", "OEMContention",
+                    "Yielded " + std::to_string(live_status.contended_paths.size()) + " sysfs node(s) to auto-cooldown",
+                    "oem_yield", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            } else if (live_status.contended_paths.empty() && prev_contended_count > 0U) {
+                decision_journal.record(
+                    epoch_now_ms(), "thermal", "OEMRecovery",
+                    "Re-acquired full sysfs ownership after cooldown",
+                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            }
+            prev_contended_count = live_status.contended_paths.size();
             size_t active_nodes = 0U;
             for (const auto& entry : baseline.get_audit_trail()) {
                 if (entry.is_modified) ++active_nodes;
             }
             live_status.baseline_nodes = active_nodes;
             live_status.recovery_pending = active_nodes > 0U;
+            live_status.episodes = decision_journal.recent(16U);
             ++live_status.session.scale_samples;
             live_status.session.scale_sum += live_status.capacity_scale;
             live_status.history.push_back(HistoryPoint{
@@ -1375,6 +1643,10 @@ int main(int argc, char* argv[]) {
             thread_scheduler.reset_all();
             longevity.restore_oem_baseline();
             (void)baseline.rollback_all();
+            decision_journal.record(
+                epoch_now_ms(), "thermal", "EmergencyCutoff",
+                "Extreme thermal limit reached; restored OEM baseline",
+                "rolled_back", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
             record_history_and_publish();
             return;
@@ -1388,6 +1660,15 @@ int main(int argc, char* argv[]) {
                (live_status.thermal_guard && soc_temp > config.thermal_recover_celsius));
         if (thermal_guard && !live_status.session.prev_thermal_guard) {
             ++live_status.session.thermal_guard_events;
+            decision_journal.record(
+                epoch_now_ms(), "thermal", "ThermalGuard",
+                "Thermal Guard engaged; smoothly capping headroom",
+                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+        } else if (!thermal_guard && live_status.session.prev_thermal_guard) {
+            decision_journal.record(
+                epoch_now_ms(), "thermal", "ThermalRecovered",
+                "Thermal Guard released; full headroom restored",
+                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
         live_status.session.prev_thermal_guard = thermal_guard;
         live_status.thermal_guard = thermal_guard;
@@ -1448,9 +1729,18 @@ int main(int argc, char* argv[]) {
         sig.foreground_pid = screen_off ? 0 : last_fg.pid;
         sig.foreground_package = screen_off ? std::string{} : last_fg.package_name;
         sig.has_game_thread = !screen_off && last_fg.has_game_thread;
+        const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
         if (live_status.ctx.newly_launched_app) {
             ++live_status.session.launch_bursts;
+        }
+        if (live_status.ctx.mode != prev_mode) {
+            decision_journal.record(
+                epoch_now_ms(), "context", "ModeShift",
+                std::string(ContextEngine::mode_name(prev_mode)) + " -> " +
+                    ContextEngine::mode_name(live_status.ctx.mode) +
+                    (live_status.ctx.foreground_package.empty() ? "" : (" (" + live_status.ctx.foreground_package + ")")),
+                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
 
         if (!config.inspection_mode) {
@@ -1471,6 +1761,21 @@ int main(int argc, char* argv[]) {
                 config.enable_thermal_pacing,
                 build_envelope_telemetry(), now_ms);
             longevity.monitor_battery_thermals(soc_temp);
+            (void)longevity.apply_power_control(
+                config.bypass_charging,
+                live_status.ctx.mode == ContextMode::Gaming,
+                config.bypass_on_gaming,
+                config.charge_limit_pct);
+            const bool now_bypass = longevity.is_bypass_active();
+            if (now_bypass != prev_bypass_active) {
+                const auto btel = longevity.sample_battery_telemetry();
+                decision_journal.record(
+                    epoch_now_ms(), "power",
+                    now_bypass ? "BypassEngaged" : "BypassReleased",
+                    now_bypass ? ("Charging bypassed (" + btel.bypass_reason + ")") : "Restored OEM charging path",
+                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                prev_bypass_active = now_bypass;
+            }
         } else {
             thread_scheduler.reset_all();
         }
@@ -1482,9 +1787,10 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v5.1.0 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v6.0.0 NextGen Autonomous 4-Pillar Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
-             ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") + ").");
+             ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
+             ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") + ").");
 
     reactor.run();
 
@@ -1497,6 +1803,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v5.1.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v6.0.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }

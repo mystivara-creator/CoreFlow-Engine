@@ -294,6 +294,21 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             CpuClusterInfo info{};
             info.policy_path = pdir.string();
             info.governor = read_first_line(pdir / "scaling_governor");
+            {
+                std::istringstream gov_ss(read_first_line(pdir / "scaling_available_governors"));
+                std::string gov;
+                while (gov_ss >> gov && info.available_governors.size() < 16U) {
+                    if (std::find(info.available_governors.begin(), info.available_governors.end(), gov) ==
+                        info.available_governors.end()) {
+                        info.available_governors.push_back(std::move(gov));
+                    }
+                }
+            }
+            if (is_regular_readable(pdir / "scaling_cur_freq")) {
+                info.cur_freq_path = (pdir / "scaling_cur_freq").string();
+            } else if (is_regular_readable(pdir / "cpuinfo_cur_freq")) {
+                info.cur_freq_path = (pdir / "cpuinfo_cur_freq").string();
+            }
             info.opps_khz = std::move(opps);
             max_freqs.insert(info.opps_khz.back());
 
@@ -784,6 +799,15 @@ MemorySnapshot HardwareProbe::read_memory_snapshot() const noexcept {
         snap.available_bytes = snap.total_bytes / 2U;
     }
     return snap;
+}
+
+std::optional<uint64_t> HardwareProbe::read_cluster_cur_freq_khz(const CpuClusterInfo& cluster) const noexcept {
+    if (cluster.cur_freq_path.empty()) return std::nullopt;
+    uint64_t khz = 0;
+    if (parse_u64(read_first_line(cluster.cur_freq_path), khz) && khz > 0U) {
+        return khz;
+    }
+    return std::nullopt;
 }
 
 } // namespace coreflow::v5

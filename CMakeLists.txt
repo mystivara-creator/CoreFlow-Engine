@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 5.1.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 6.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,6 +119,14 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_v5_thermal_envelope PRIVATE pthread)
     endif()
     add_test(NAME V5ThermalEnvelopeActuatorTest COMMAND test_v5_thermal_envelope)
+
+    add_executable(test_v6_decision_journal
+        tests/test_v6_decision_journal.cpp
+    )
+    if(NOT ANDROID)
+        target_link_libraries(test_v6_decision_journal PRIVATE pthread)
+    endif()
+    add_test(NAME V6DecisionJournalTest COMMAND test_v6_decision_journal)
 
     # Foundational Infrastructure & Safety Tests
     add_executable(test_mount_topology

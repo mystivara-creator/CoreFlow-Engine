@@ -2,6 +2,30 @@
 
 # CFAE System Framework Release History
 
+## v6.0.0 — CoreFlow v6 NextGen (Atlas, Live AI Feed, Control Hub, Bypass Charging & Real FPS Game HUD)
+
+> **Next-Generation Milestone (`v6.0.0`, `versionCode=60000`)**: Combines CoreFlow's lean native **C++20 + Rust** 4-pillar daemon (`~600 KB`, `~0.0%` idle battery) with capability-driven kernel discovery (**CoreFlow Atlas**), transparent **Verified Decision Episodes**, **CFJ4-Protected Bypass Charging & Charge Ceiling**, and a redesigned 5-tab **Miuix Compose Companion App** with **Real FPS Game HUD**.
+
+### Engine & Kernel Architecture (`coreflowd v6.0.0`)
+- **CoreFlow Atlas (`coreflowd --atlas`)**: Single-pass capability manifest exposing discovered EAS CPU clusters (live MHz, governors, available governors, OPP bounds, capacity), GPU (`KGSL`, `Mali`, `MediaTek GED`, `Xclipse`), storage queues, live **Thermal Zones** (`compute / battery / skin / board`), memory/ZRAM/PSI, and safe power-control nodes.
+- **Verified Live Decision Episodes (`coreflowd --episodes`)**: Zero-allocation 32-slot `DecisionJournal` ring buffer recording every boot, mode shift, launch burst, thermal guard, OEM contention yield/recovery, and bypass charging change with read-back outcome (`verified / oem_yield / rolled_back`).
+- **CFJ4-Protected Bypass Charging & Charge Ceiling %**: Fail-closed discovery of unambiguous charging control nodes (`input_suspend`, `charging_enabled`, `battery_charging_enabled`) under `/sys/class/power_supply/*` with `[power]` config (`bypass_charging`, `bypass_on_gaming`, `charge_limit_pct` with 3% hysteresis) and 100% clean OEM rollback on stop/uninstall/emergency.
+- **Diagnostic Bundle v6 (`coreflow-diag-v6`)**: `coreflowd --diag` and `action.sh [status|atlas|episodes|journal|diag|rollback]` now bundle the full hardware Atlas alongside live status and CFJ4 journal.
+
+### CoreFlow Companion App v6.0.0 (Miuix Compose + `libsu`)
+- **5-Tab HyperOS Miuix Architecture (`Home · Control · Live AI · Apps · Settings`)**:
+  - **Home**: Aligned uniform-height metric pills, **Live SoC Temp & Headroom Sparkline Canvas**, 4-Pillar readiness strip, uniform 2x2 profile cards, 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** button (shown only if kernel supports it).
+  - **Capability-Driven Control Hub ("Absent, Not Disabled")**: Per-cluster EAS frequency bars, GPU busy % & live color-coded **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling (Off · 80% · 85% · 90%)**, RAM/ZRAM/PSI stall gauges, and live Engine Pillar switches.
+  - **Live Engine Feed**: Chronological verified decision timeline + live 10s AI thermal prediction & confidence.
+  - **Deep Per-App Inspector**: Tap any app to inspect its **Effective State** (`Using Global` vs `Override Active`), auto-bypass status, 5-mode override chips, and 1-tap Reset to Global.
+  - **Real FPS Floating Game HUD & Expandable Mini Panel**: Real SurfaceFlinger frame-delta FPS counter (`--` when unavailable, never fabricated) + tap-to-expand Game Panel (`BAL / SMT / GAM / BAT`, 1-tap Pause A/B, 1-tap Bypass Charging).
+  - **Dual Quick Settings Tiles**: Both **CoreFlow Mode** and **CoreFlow Bypass** tiles with 1-tap Control Center pinning.
+  - **Bilingual UI (English + Bahasa Indonesia)**, live Miuix/Monet theme switcher, **SAF Profile Backup & Share** (`coreflow-profile-v6.json` with SoC provenance check), Creator GitHub profile (`@mystivara-creator`), and AI/Platform Partner credits (`Claude`, `ChatGPT`, `Gemini`, `GitHub`).
+
+### Licensing & Design Contract
+- Added [docs/DESIGN.md](docs/DESIGN.md) and original architecture SVG diagrams under `docs/assets/`.
+- Adopted the transparent **CoreFlow Community Source-Available License v1.0** (`LICENSE`): free for personal use, auditing, and learning while protecting `@mystivara-creator`'s authorship against unauthorized rebranding or resale.
+
 ## v5.1.0 — The Lean 4-Pillar Generation (Major Upgrade from v3.1.0)
 
 > **Direct Upgrade from `v3.1.0` → `v5.1.0`**: This is the first public release of the **v5.x CoreFlow Engine**, consolidating the complete `v5.0.0`–`v5.0.2` 4-pillar architecture overhaul together with all `v5.1.0` cross-SoC, closed-loop render, and WebUI upgrades into one battle-tested release.

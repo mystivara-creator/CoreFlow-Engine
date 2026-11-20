@@ -1,90 +1,101 @@
-# CoreFlow Engine (CFAE)
+<p align="center">
+  <img src="docs/assets/coreflow-v6-banner.svg" width="100%" alt="CoreFlow Engine v6.0 NextGen">
+</p>
 
-[![Version](https://img.shields.io/badge/version-v5.1.0-blue)](#)
-[![Platform](https://img.shields.io/badge/Android-13%2B%20(API%2033%2B)%20ARM64-3DDC84)](#instalasi)
-[![License](https://img.shields.io/badge/license-Apache--2.0-orange)](LICENSE)
-
-**CoreFlow Engine** adalah framework sistem otonom berbasis **C++23 + Rust** untuk perangkat Android root (KernelSU / APatch / Magisk). CoreFlow melakukan deteksi topologi perangkat keras secara dinamis (**zero hardcoded path**) dan mengkalibrasi seluruh parameter langsung dari karakteristik silicon serta telemetri kernel real-time (**zero fixed tuning value**), dengan jaminan pemulihan penuh ke konfigurasi pabrik melalui jurnal **CFJ4 OEM Rollback**.
-
----
-
-## Arsitektur 4-Pilar Otonom
-
-| Pilar | Fokus | Mekanisme Inti |
-| :--- | :--- | :--- |
-| **1. Frame & UI Smoothness** | Respons sentuhan `< 5 ms` & animasi konsisten | Per-TID `SYS_sched_setattr` (`uclamp_min/max`) pada thread CFS kritis (`RenderThread`, `RenderEngine`, `hwuiTask`, `UnityMain`, `GameThread`, `EmuThread`, `CrRendererMain`) dengan umpan balik *closed-loop* saturasi thread render + kapasitas EAS (`little`/`mid`/`big`) + refresh rate layar — menghindari bentrok PowerHAL cgroup global. |
-| **2. Dynamic Storage Burst & QoS** | App launch & loading game cepat | Deteksi foreground cepat `200 ms`, penemuan otomatis antrean blok fisik (UFS/NVMe/eMMC) & `dm-*` aktif dari `/proc/self/mountinfo`; adaptasi `read_ahead_kb` sesuai geometri antrean (`max_sectors_kb`, `nr_requests`) + `io_psi`, serta isolasi cgroup `background`. |
-| **3. Anti-Stutter Memory & Smart Pre-Read** | Bebas lag saat multitasking | Aktivasi otomatis Linux **MGLRU**, adaptasi kontinu `min_ttl_ms`, `swappiness`, dan `compaction_proactiveness` dari `MemAvailable` + ZRAM + `mem_psi`, serta prefetch `posix_fadvise(POSIX_FADV_WILLNEED)` terukur khusus aplikasi UI foreground. |
-| **4. Thermal PID & Battery Longevity** | Performa stabil tanpa throttling kasar | **Rust PID controller** + prediktor termal **Online RLS + Micro-MLP (10 detik)** memodulasi amplop CPU/GPU (Adreno KGSL, devfreq Mali/Xclipse, dan MediaTek GED), pemutus darurat termal (`SoC ≥ 95 °C` / `Baterai ≥ 58 °C`), deteksi `ScreenOff` OLED/AOD (DRM DPMS & `bl_power`), serta step-charging baterai (termasuk *dual-cell*). |
-
-### Prinsip Desain
-- **Zero Fixed Tuning Values & Zero Hardcoded Paths** — setiap perangkat dikalibrasi dari hardware-nya sendiri saat startup & runtime.
-- **Anti-Contention OEM dengan Auto-Cooldown** — jika daemon vendor mengubah node sysfs eksternal, CoreFlow mundur secara elegan (tanpa bertarung dengan OEM) dan baru mencoba memulihkan kontrol setelah cooldown eksponensial (`30s → 300s`) jika OEM sudah tenang.
-- **CFJ4 Durable Rollback & A/B Pause Instan** — setiap mutasi kernel dicatat sebelum diterapkan dan dapat dibandingkan langsung (*Pause / Resume* 1-klik di WebUI) atau dipulihkan 100% ke baseline OEM tanpa reboot.
+<p align="center">
+  <strong>Android 13+ (API 33+) · ARM64 · C++20 + Rust Daemon · Miuix Compose Companion App · Magisk / KernelSU / APatch</strong>
+</p>
 
 ---
 
-## Instalasi
+## In Ten Seconds
 
-- **Syarat**: Android 13+ (API 33+), ARM64 (`arm64-v8a`), root via **KernelSU / KernelSU-Next / APatch / Magisk**.
-- Unduh `CFAE-System-Framework-package.zip` dari [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases) atau tab **Artifacts** di GitHub Actions.
-- Flash melalui root manager lalu reboot.
-- Buka **WebUI MD3 Control Center**:
-  - **KernelSU / KernelSU-Next / APatch**: buka langsung tombol **WebUI** pada kartu modul.
-  - **Magisk**: gunakan aplikasi **KsuWebUI Standalone** atau **MMRL** untuk membuka WebUI modul.
-- Fitur utama WebUI:
-  - **Pause (A/B) / Resume & Start CoreFlow** langsung dari header kontrol.
-  - **Session Impact & 4-Pillar Readiness** (uptime, jumlah launch burst, MB pre-read, rata-rata/puncak suhu, status 4 pilar).
-  - **Installed App Picker** (pencarian otomatis aplikasi terinstal + 1-klik profil per-app: `Auto` / `Gaming` / `Smooth` / `Battery` / `Stock OEM`).
-  - **Inspect CFJ4** & **Export Diag** 1-klik untuk pelaporan bug yang rapi dan aman.
+**CoreFlow Engine v6.0 NextGen** is an autonomous, capability-driven performance and power framework for rooted Android — engineered in **C++20 + Rust** (`~600 KB`, `~0.0%` idle battery overhead) paired with a native **Miuix Compose Companion App** and **MD3 WebUI**.
+
+Instead of dumping fake switches or fighting OEM thermal daemons, CoreFlow v6 follows four strict engineering rules:
+
+<p align="center">
+  <img src="docs/assets/coreflow-v6-pillars.svg" width="100%" alt="CoreFlow v6 Four Engineering Rules">
+</p>
 
 ---
 
-## CLI Operasional (Root / Termux)
+## 3-Plane Architecture
+
+<p align="center">
+  <img src="docs/assets/coreflow-v6-architecture.svg" width="100%" alt="CoreFlow v6 3-Plane Architecture">
+</p>
+
+1. **Plane 1 — CoreFlow Atlas (`--atlas`)**: Single-pass hardware & kernel discovery across EAS CPU clusters/OPPs/governors, GPU (`KGSL`, `Mali`, `MediaTek GED`, `Xclipse`, `PowerVR`), UFS/eMMC queues, Linux `MGLRU` / `ZRAM` / `PSI`, OLED DRM DPMS, thermal zones, and safe writable charging control nodes.
+2. **Plane 2 — Single CFJ4 Control Plane**: Every sysfs and charging mutation flows through `BaselineStore (CFJ4)` with read-back verification, exponential-backoff OEM coexistence (`30s → 300s`), and 100% zero-trace OEM rollback:
+   - **Per-TID `SYS_sched_setattr` UClamp** driven by closed-loop `RenderLoadSampler` (`/proc/<pid>/task/<tid>/stat`).
+   - **Dynamic UFS/eMMC Launch Burst** (`200ms` foreground detection) + background I/O QoS isolation.
+   - **Automatic Linux MGLRU & Smart Pre-Read** (`posix_fadvise` library warmup).
+   - **Rust PID + Online RLS/MLP Thermal Pacing** (10-second predictive headroom control).
+   - **CFJ4-Protected Bypass Charging & Charge Ceiling %** (`input_suspend` / `charging_enabled` / `battery_charging_enabled` with 3% hysteresis — fail-closed if unsupported).
+3. **Plane 3 — Live Verified Decision Episodes (`--episodes`)**: Every boot, mode shift, launch burst, thermal guard, OEM yield, and bypass toggle is logged into a zero-allocation 32-slot ring buffer so you always see *what changed, why, and whether read-back succeeded*.
+
+---
+
+## CoreFlow Companion App (Miuix Compose + `libsu`)
+
+Works directly on **Magisk, KernelSU, KernelSU-Next, and APatch** — **no KsuWebUI or MMRL required**!
+
+- **Home**: Aligned live telemetry pills (`SoC Temp`, `Render`, `UClamp`, `Headroom`), live **SoC Temp & Headroom Sparkline**, 4-Pillar readiness strip, 2x2 Autonomous Profiles (`Balanced`, `Smoothness`, `Gaming`, `Battery`), 1-tap **Pause (A/B Compare)**, and quick **Bypass Charging** toggle (when supported).
+- **Control Hub (Capability-Driven)**: Live per-cluster EAS frequency bars, GPU busy % & live **Thermal Zones**, **Bypass Charging / Auto Bypass in Games / Charge Ceiling (80% / 85% / 90%)**, RAM/ZRAM & PSI stall monitors, Real FPS HUD controls, and **2 Quick Settings Tiles** (*CoreFlow Mode* + *CoreFlow Bypass*).
+- **Live AI Feed**: Real-time stream of verified `DecisionEpisode` cards + 10-second AI thermal forecast.
+- **Deep Per-App Rules**: Real app icons & names via `PackageManager`, automatic Game detection, Effective State badges (`Using Global` / `Override Active`), and 5-mode overrides (`Auto / Gaming / Smooth / Battery / Stock`).
+- **Floating Real FPS Game HUD**: Draggable overlay over any game with real SurfaceFlinger FPS readout + **tap-to-expand Mini Game Panel** (4-profile pills, 1-tap Pause A/B, 1-tap Bypass Charging).
+- **Settings, Backup & Bilingual UI**: Instant **English / Bahasa Indonesia** switcher, live Miuix/Monet themes, **SAF Profile Export/Import** with SoC provenance verification, native Share Sheet `--diag`, CFJ4 Journal inspector, and Emergency OEM Rollback.
+
+---
+
+## Requirements & Installation
+
+- **Device**: Android 13+ (**API 33+**, ARM64 / `arm64-v8a`)
+- **Root**: KernelSU, KernelSU-Next, APatch, or Magisk
+
+### 1. Flash the Engine Module
+1. Download **`CFAE-System-Framework-v6.0.0-arm64.zip`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
+2. Flash in **KernelSU / KernelSU-Next / APatch / Magisk** (supports atomic hot-upgrade with read-only 4-pillar preflight checks).
+3. Reboot once on first install.
+
+### 2. Install CoreFlow Companion App (Recommended)
+1. Download **`CoreFlow-Companion-v6.0.0-release.apk`** from [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
+2. Install and grant root access when prompted by Magisk / KernelSU / APatch.
+3. *(Alternative)* Open the bundled **MD3 WebUI** directly in KernelSU / APatch (or via **KsuWebUI** / **MMRL** on Magisk).
+
+---
+
+## Native CLI Reference
 
 ```sh
-coreflowd --status                             # Status live, mode, suhu, PID scale, session & aktuator
-coreflowd --capabilities                       # Inspeksi topologi hardware (read-only)
-coreflowd --journal                            # Audit seluruh node aktif di jurnal CFJ4
-coreflowd --diag                               # Bundel diagnostik lengkap (privacy-safe JSON)
-coreflowd --set-config profile=smoothness      # Ubah konfigurasi live tanpa restart
-coreflowd --set-config inspection_mode=true    # Pause instan ke baseline OEM (A/B compare)
-coreflowd --rollback-baseline                  # Hentikan daemon & pulihkan 100% baseline OEM
+coreflowd --status            # Live JSON telemetry, thermal zones, clusters, episodes & history
+coreflowd --atlas             # Full capability-driven hardware & kernel Atlas JSON
+coreflowd --episodes          # Recent verified decision episodes
+coreflowd --journal           # Inspect CFJ4 OEM baseline rollback journal
+coreflowd --diag              # One-shot privacy-safe diagnostic bundle (coreflow-diag-v6)
+coreflowd --set-config key=v  # Atomic configuration update + live SIGHUP reload
+coreflowd --rollback-baseline # Stop daemon & cleanly restore every modified OEM sysfs node
 ```
 
-> **Kill switch darurat**: buat file kosong `/data/adb/coreflow/DISABLE` atau nonaktifkan modul di root manager.
+See [docs/DESIGN.md](docs/DESIGN.md) for the UI & Honesty Contract and [SECURITY.md](SECURITY.md) for the security model.
 
 ---
 
-## Validasi Perangkat & Transparansi
+## Creator & AI Engineering Credits
 
-CoreFlow tidak memaksa *unlock thermal* berbahaya dan tidak mengklaim "magic FPS boost" yang merusak baterai. Fokus utamanya adalah **frame pacing lebih konsisten, cold-launch lebih sigap, dan stabilitas termal jangka panjang**.
-- Panduan uji perangkat & metrik *Before vs After*: lihat [docs/DEVICE_TEST.md](docs/DEVICE_TEST.md) dan [docs/DEVICE_VALIDATION_SUITE.md](docs/DEVICE_VALIDATION_SUITE.md).
-- Bagikan hasil `coreflowd --diag` dan laporan benchmark perangkat Anda di grup komunitas untuk memperluas matriks perangkat teruji.
-
----
-
-## Build & Pengujian
-
-```sh
-cmake -S . -B build/host -G Ninja -DCORE_FLOW_BUILD_TESTS=ON
-cmake --build build/host --parallel && ctest --test-dir build/host --output-on-failure
-cargo test --manifest-path rust/Cargo.toml && npm run lint && npm run build
-```
+- **Creator & Maintainer**: **[Mystivara Creator](https://github.com/mystivara-creator)** (`@mystivara-creator`)
+- **Powered By · AI & Platform Partners**:
+  - **Claude** (*Anthropic*) — Systems architecture & hardening
+  - **ChatGPT** (*OpenAI*) — Prototyping & ideation
+  - **Gemini** (*Google DeepMind*) — Native C++/Rust engine & Miuix Compose engineering
+  - **GitHub** — Actions CI/CD, ARM64 NDK builds & release hosting
 
 ---
 
-## Lisensi, Hak Cipta & Aturan Fork
+## License
 
-Proyek ini dilisensikan di bawah **[Apache License 2.0](LICENSE)** — **Copyright © 2026 mystivara-creator**.
-
-Jika Anda melakukan **fork**, memodifikasi, atau mendistribusikan ulang kode ini (termasuk dalam bentuk modul/binary hasil kompilasi), Anda **wajib**:
-1. Menyertakan salinan penuh file [LICENSE](LICENSE) dan [NOTICE](NOTICE) serta mempertahankan seluruh pemberitahuan hak cipta asli milik **mystivara-creator**.
-2. Mencantumkan **catatan perubahan yang jelas** (*prominent notice of changes*) pada file atau dokumentasi yang dimodifikasi sesuai Pasal 4(b) Apache-2.0.
-3. Tidak menggunakan nama resmi **CoreFlow Engine / CFAE** untuk menyiratkan bahwa fork tidak resmi mendapat dukungan resmi dari pemilik asli.
-
----
-
-## Komunitas
-
-- [Telegram Channel](https://t.me/VaraProjects) · [Telegram Discussion](https://t.me/VaraProjectsDiscussion) · [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues)
+CoreFlow Engine & CoreFlow Companion are distributed under the **[CoreFlow Community Source-Available License v1.0](LICENSE)**:
+- **Free & transparent**: You are welcome to download, use personally, inspect, audit, and learn from the entire codebase.
+- **Respect authorship**: Please do not rebrand, resell, or redistribute modified forks/binaries as your own work without prior permission from `@mystivara-creator`.
