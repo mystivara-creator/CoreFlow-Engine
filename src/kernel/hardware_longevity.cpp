@@ -59,8 +59,36 @@ struct DiscoveredBatteryPaths {
     std::string current_node;
     std::string voltage_node;
     std::string charge_max_node;
+    std::string capacity_node;
+    std::string bypass_node;
+    std::string bypass_enable_val;
+    std::string bypass_disable_val;
     bool valid{false};
 };
+
+void probe_bypass_node(const fs::path& dir, DiscoveredBatteryPaths& item) {
+    struct Candidate {
+        const char* leaf;
+        const char* enable_val;
+        const char* disable_val;
+    };
+    constexpr Candidate kCandidates[] = {
+        {"input_suspend", "1", "0"},
+        {"charging_enabled", "0", "1"},
+        {"battery_charging_enabled", "0", "1"},
+    };
+    for (const auto& cand : kCandidates) {
+        const fs::path p = dir / cand.leaf;
+        if (!regular_non_symlink(p)) continue;
+        if (::access(p.c_str(), R_OK | W_OK) != 0) continue;
+        const std::string val = line(p.string());
+        if (val != "0" && val != "1") continue;
+        item.bypass_node = p.string();
+        item.bypass_enable_val = cand.enable_val;
+        item.bypass_disable_val = cand.disable_val;
+        return;
+    }
+}
 
 DiscoveredBatteryPaths find_unambiguous_battery_supply(const fs::path& sys_root) {
     const fs::path supply_root = sys_root / "class/power_supply";
@@ -98,9 +126,12 @@ DiscoveredBatteryPaths find_unambiguous_battery_supply(const fs::path& sys_root)
         const auto current_now_path = resolved / "current_now";
         const auto voltage_now_path = resolved / "voltage_now";
         const auto charge_max_path = resolved / "constant_charge_current_max";
+        const auto capacity_path = resolved / "capacity";
         if (regular_non_symlink(current_now_path)) item.current_node = current_now_path.string();
         if (regular_non_symlink(voltage_now_path)) item.voltage_node = voltage_now_path.string();
         if (regular_non_symlink(charge_max_path)) item.charge_max_node = charge_max_path.string();
+        if (regular_non_symlink(capacity_path)) item.capacity_node = capacity_path.string();
+        probe_bypass_node(resolved, item);
         item.valid = true;
         matches.push_back(std::move(item));
     }
@@ -138,7 +169,12 @@ BatteryPowerTelemetry read_battery_telemetry(
     const std::string& status_node,
     const std::string& current_node,
     const std::string& voltage_node,
+    const std::string& capacity_node,
+    const std::string& bypass_node,
     bool thermal_step_active,
+    bool bypass_active,
+    const std::string& bypass_reason,
+    uint32_t charge_limit_pct,
     uint64_t charge_limit_ua,
     uint64_t oem_baseline_ua) {
     BatteryPowerTelemetry out{};
@@ -155,6 +191,16 @@ BatteryPowerTelemetry read_battery_telemetry(
         out.status = st;
         out.charging = (st == "Charging" || st == "Full");
         out.available = true;
+    }
+
+    const std::string cap_path = !capacity_node.empty()
+        ? capacity_node
+        : (!battery_dir.empty() ? (fs::path(battery_dir) / "capacity").string() : std::string{});
+    if (!cap_path.empty() && regular_non_symlink(cap_path)) {
+        double raw_cap = -1.0;
+        if (parse_ascii_double(line(cap_path), raw_cap) && raw_cap >= 0.0 && raw_cap <= 100.0) {
+            out.battery_capacity_pct = static_cast<int>(std::lround(raw_cap));
+        }
     }
 
     bool fuel_gauge_uses_micro_units = (oem_baseline_ua > 20000U);
@@ -197,6 +243,11 @@ BatteryPowerTelemetry read_battery_telemetry(
 
     out.fast_charging = (st == "Charging") && (std::abs(out.current_ma) >= 2200.0 || out.power_mw >= 10000.0);
     out.thermal_step_active = thermal_step_active;
+    out.bypass_supported = !bypass_node.empty();
+    out.bypass_active = bypass_active;
+    out.bypass_reason = bypass_reason;
+    out.bypass_node_path = bypass_node;
+    out.charge_limit_pct = charge_limit_pct;
     out.charge_limit_ua = charge_limit_ua;
     out.oem_baseline_ua = oem_baseline_ua;
     return out;
@@ -217,6 +268,7 @@ HardwareLongevityManager::HardwareLongevityManager(CentralMutationCoordinator& c
 HardwareLongevityManager::~HardwareLongevityManager() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (bypass_active_) (void)rollback_bypass_locked();
         if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
         if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
     }
@@ -245,6 +297,21 @@ void HardwareLongevityManager::release_lease_locked(
     if (transaction_id.empty()) return;
     coordinator_.release_lease(domain, controller_name_, transaction_id);
     transaction_id.clear();
+}
+
+bool HardwareLongevityManager::rollback_bypass_locked() noexcept {
+    if (bypass_node_.empty() || !bypass_active_) {
+        bypass_active_ = false;
+        bypass_reason_ = "off";
+        return true;
+    }
+    auto& store = BaselineStore::instance();
+    const bool ok = store.rollback(bypass_node_);
+    if (ok) {
+        bypass_active_ = false;
+        bypass_reason_ = "off";
+    }
+    return ok;
 }
 
 bool HardwareLongevityManager::rollback_battery_locked() noexcept {
@@ -292,6 +359,7 @@ bool HardwareLongevityManager::handle_preemption(
     std::lock_guard<std::mutex> lock(mutex_);
     if (domain == MutationDomain::PowerLongevity) {
         if (battery_transaction_id_.empty() || battery_transaction_id_ != transaction_id) return false;
+        (void)rollback_bypass_locked();
         return rollback_battery_locked();
     }
     if (domain == MutationDomain::BlockIo) {
@@ -303,12 +371,17 @@ bool HardwareLongevityManager::handle_preemption(
 
 void HardwareLongevityManager::initialize(const LongevityConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (bypass_active_) (void)rollback_bypass_locked();
     if ((!battery_transaction_id_.empty() && !rollback_battery_locked()) ||
         (!storage_transaction_id_.empty() && !rollback_storage_locked())) {
         return;
     }
     config_ = config;
     battery_stepped_ = false;
+    bypass_active_ = false;
+    ceiling_latched_ = false;
+    active_charge_limit_pct_ = 0;
+    bypass_reason_ = "off";
     storage_paced_ = false;
     battery_mutation_active_ = false;
     next_storage_probe_ = {};
@@ -322,6 +395,10 @@ void HardwareLongevityManager::discover_battery_node() {
     battery_status_node_.clear();
     battery_current_node_.clear();
     battery_voltage_node_.clear();
+    battery_capacity_node_.clear();
+    bypass_node_.clear();
+    bypass_enable_val_.clear();
+    bypass_disable_val_.clear();
 
     // Enumerate power-supply devices and select by the power_supply type ABI,
     // never by a vendor device-directory name. Only the standardized charging
@@ -334,6 +411,10 @@ void HardwareLongevityManager::discover_battery_node() {
     battery_status_node_ = discovered.status_node;
     battery_current_node_ = discovered.current_node;
     battery_voltage_node_ = discovered.voltage_node;
+    battery_capacity_node_ = discovered.capacity_node;
+    bypass_node_ = discovered.bypass_node;
+    bypass_enable_val_ = discovered.bypass_enable_val;
+    bypass_disable_val_ = discovered.bypass_disable_val;
 
     if (config_.enable_battery_step_charging && !discovered.charge_max_node.empty()) {
         const std::string& candidate = discovered.charge_max_node;
@@ -527,8 +608,76 @@ bool HardwareLongevityManager::apply_storage_pacing() {
     return true;
 }
 
+bool HardwareLongevityManager::apply_power_control(
+    bool manual_bypass, bool gaming_mode, bool bypass_on_gaming, uint32_t charge_limit_pct) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint32_t sanitized_limit = (charge_limit_pct >= 60U && charge_limit_pct <= 95U) ? charge_limit_pct : 0U;
+    active_charge_limit_pct_ = sanitized_limit;
+
+    if (bypass_node_.empty()) {
+        bypass_active_ = false;
+        ceiling_latched_ = false;
+        bypass_reason_ = "off";
+        return false;
+    }
+
+    int cap = -1;
+    if (!battery_capacity_node_.empty() && regular_non_symlink(battery_capacity_node_)) {
+        double raw_cap = -1.0;
+        if (parse_ascii_double(line(battery_capacity_node_), raw_cap) && raw_cap >= 0.0 && raw_cap <= 100.0) {
+            cap = static_cast<int>(std::lround(raw_cap));
+        }
+    }
+
+    if (sanitized_limit == 0U || cap < 0) {
+        ceiling_latched_ = false;
+    } else if (cap >= static_cast<int>(sanitized_limit)) {
+        ceiling_latched_ = true;
+    } else if (cap <= static_cast<int>(sanitized_limit) - 3) {
+        ceiling_latched_ = false;
+    }
+
+    const bool want_bypass = manual_bypass || (bypass_on_gaming && gaming_mode) || ceiling_latched_;
+    std::string reason = "off";
+    if (manual_bypass) reason = "manual";
+    else if (bypass_on_gaming && gaming_mode) reason = "gaming";
+    else if (ceiling_latched_) reason = "charge_limit";
+
+    if (!want_bypass) {
+        if (bypass_active_) {
+            return rollback_bypass_locked();
+        }
+        bypass_reason_ = "off";
+        return true;
+    }
+
+    auto& store = BaselineStore::instance();
+    if (!store.capture(bypass_node_)) {
+        return false;
+    }
+    const std::string cur = line(bypass_node_);
+    if (cur == bypass_enable_val_) {
+        bypass_active_ = true;
+        bypass_reason_ = std::move(reason);
+        return true;
+    }
+    const bool applied = store.apply_mutation(bypass_node_, bypass_enable_val_);
+    const std::string readback = line(bypass_node_);
+    if (!applied || readback != bypass_enable_val_) {
+        (void)store.rollback(bypass_node_);
+        bypass_active_ = false;
+        bypass_reason_ = "off";
+        return false;
+    }
+    bypass_active_ = true;
+    bypass_reason_ = std::move(reason);
+    return true;
+}
+
 void HardwareLongevityManager::restore_oem_baseline() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (bypass_active_) (void)rollback_bypass_locked();
+    ceiling_latched_ = false;
     if (!battery_transaction_id_.empty()) (void)rollback_battery_locked();
     if (!storage_transaction_id_.empty()) (void)rollback_storage_locked();
     if (storage_transaction_id_.empty() && storage_mutation_paths_.empty()) storage_paced_ = false;
@@ -537,6 +686,16 @@ void HardwareLongevityManager::restore_oem_baseline() {
 bool HardwareLongevityManager::is_battery_guarded() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return battery_stepped_;
+}
+
+bool HardwareLongevityManager::is_bypass_supported() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !bypass_node_.empty();
+}
+
+bool HardwareLongevityManager::is_bypass_active() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bypass_active_;
 }
 
 bool HardwareLongevityManager::is_storage_paced() const noexcept {
@@ -554,7 +713,9 @@ BatteryPowerTelemetry HardwareLongevityManager::sample_battery_telemetry() const
     return read_battery_telemetry(
         battery_dir_, battery_temp_node_, battery_status_node_,
         battery_current_node_, battery_voltage_node_,
-        battery_stepped_, last_charge_ua_, charge_baseline_ua_);
+        battery_capacity_node_, bypass_node_,
+        battery_stepped_, bypass_active_, bypass_reason_,
+        active_charge_limit_pct_, last_charge_ua_, charge_baseline_ua_);
 }
 
 BatteryPowerTelemetry HardwareLongevityManager::probe_battery_telemetry(std::string_view sys_root) {
@@ -571,7 +732,8 @@ BatteryPowerTelemetry HardwareLongevityManager::probe_battery_telemetry(std::str
     return read_battery_telemetry(
         discovered.dir, discovered.temp_node, discovered.status_node,
         discovered.current_node, discovered.voltage_node,
-        false, charge_limit_ua, 0U);
+        discovered.capacity_node, discovered.bypass_node,
+        false, false, "off", 0U, charge_limit_ua, 0U);
 }
 
 } // namespace coreflow

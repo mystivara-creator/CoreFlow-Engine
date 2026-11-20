@@ -30,7 +30,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"5.1.0"};
+    std::string version{"6.0.0"};
     std::string profile{"balanced"}; // balanced | smoothness | battery | gaming
     std::string log_level{"info"};
     bool zero_polling_mode{true};
@@ -40,11 +40,16 @@ struct DaemonConfig {
     bool inspection_mode{false};
     bool enable_tuner{true};
 
-    // [features] CoreFlow v5 4-pillar feature toggles
+    // [features] CoreFlow v5/v6 4-pillar feature toggles
     bool enable_frame_smoothness{true};
     bool enable_storage_burst{true};
     bool enable_memory_guard{true};
     bool enable_thermal_pacing{true};
+
+    // [power] CoreFlow v6 CFJ4-protected power & bypass charging controls
+    bool bypass_charging{false};
+    bool bypass_on_gaming{false};
+    uint32_t charge_limit_pct{0}; // 0 = off, 60..95 = active charge ceiling
 
     // [apps] Optional per-app overrides (comma-separated Android package names)
     std::string gaming_apps{};
@@ -182,6 +187,10 @@ struct DaemonConfig {
         if (key == "enable_frame_smoothness" || key == "enable_storage_burst" ||
             key == "enable_memory_guard" || key == "enable_thermal_pacing") {
             return "features";
+        }
+        if (key == "bypass_charging" || key == "bypass_on_gaming" ||
+            key == "charge_limit_pct") {
+            return "power";
         }
         if (key == "gaming_apps" || key == "smoothness_apps" ||
             key == "battery_apps" || key == "excluded_apps") {
@@ -441,6 +450,16 @@ struct DaemonConfig {
             else if (key == "background_io_weight") {
                 uint32_t v = 0;
                 if (parse_uint32_safe(val, v)) cfg.background_io_weight = v;
+            }
+
+            // [power]
+            else if (key == "bypass_charging") cfg.bypass_charging = parse_bool(val);
+            else if (key == "bypass_on_gaming") cfg.bypass_on_gaming = parse_bool(val);
+            else if (key == "charge_limit_pct") {
+                uint32_t v = 0;
+                if (parse_uint32_safe(val, v)) {
+                    cfg.charge_limit_pct = (v >= 60u && v <= 95u) ? v : 0u;
+                }
             }
 
             // [render_pipeline]

@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="CoreFlow v6 3-Plane Architecture">
+  <rect width="1200" height="260" rx="18" fill="#0B1120"/>
+  <rect x="1" y="1" width="1198" height="258" rx="17" fill="none" stroke="#1E293B" stroke-width="1.5"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif">
+    <!-- Plane 1 -->
+    <rect x="30" y="42" width="250" height="176" rx="14" fill="#111C33" stroke="#38BDF8" stroke-opacity="0.45"/>
+    <text x="52" y="74" fill="#7DD3FC" font-size="13" font-weight="700">PLANE 1 · DISCOVERY</text>
+    <text x="52" y="102" fill="#F8FAFC" font-size="19" font-weight="800">CoreFlow Atlas</text>
+    <text x="52" y="130" fill="#94A3B8" font-size="13">• EAS CPU Clusters &amp; OPPs</text>
+    <text x="52" y="152" fill="#94A3B8" font-size="13">• KGSL / Mali / MTK GED GPU</text>
+    <text x="52" y="174" fill="#94A3B8" font-size="13">• Thermal Zones &amp; OLED DPMS</text>
+    <text x="52" y="196" fill="#94A3B8" font-size="13">• Safe Power &amp; Bypass Nodes</text>
+
+    <!-- Arrow 1 -->
+    <line x1="286" y1="130" x2="328" y2="130" stroke="#38BDF8" stroke-width="2.5"/>
+    <polygon points="328,124 340,130 328,136" fill="#38BDF8"/>
+
+    <!-- Plane 2 -->
+    <rect x="346" y="42" width="265" height="176" rx="14" fill="#111C33" stroke="#22C55E" stroke-opacity="0.45"/>
+    <text x="368" y="74" fill="#86EFAC" font-size="13" font-weight="700">PLANE 2 · SINGLE WRITE PATH</text>
+    <text x="368" y="102" fill="#F8FAFC" font-size="19" font-weight="800">CFJ4 Control Plane</text>
+    <text x="368" y="130" fill="#94A3B8" font-size="13">• Per-TID sched_setattr UClamp</text>
+    <text x="368" y="152" fill="#94A3B8" font-size="13">• UFS Burst + MGLRU + Pre-Read</text>
+    <text x="368" y="174" fill="#94A3B8" font-size="13">• Rust PID + Online RLS Thermal</text>
+    <text x="368" y="196" fill="#94A3B8" font-size="13">• Bypass Charging + Charge Limit</text>
+
+    <!-- Arrow 2 -->
+    <line x1="617" y1="130" x2="659" y2="130" stroke="#22C55E" stroke-width="2.5"/>
+    <polygon points="659,124 671,130 659,136" fill="#22C55E"/>
+
+    <!-- Plane 3 -->
+    <rect x="677" y="42" width="230" height="176" rx="14" fill="#111C33" stroke="#F59E0B" stroke-opacity="0.45"/>
+    <text x="699" y="74" fill="#FDE68A" font-size="13" font-weight="700">PLANE 3 · AUDIT</text>
+    <text x="699" y="102" fill="#F8FAFC" font-size="19" font-weight="800">Live Episodes</text>
+    <text x="699" y="130" fill="#94A3B8" font-size="13">• 32-Slot Ring Buffer</text>
+    <text x="699" y="152" fill="#94A3B8" font-size="13">• Read-Back Verification</text>
+    <text x="699" y="174" fill="#94A3B8" font-size="13">• Auto-Cooldown Yield</text>
+    <text x="699" y="196" fill="#94A3B8" font-size="13">• --atlas / --diag JSON</text>
+
+    <!-- Arrow 3 -->
+    <line x1="913" y1="130" x2="955" y2="130" stroke="#A78BFA" stroke-width="2.5"/>
+    <polygon points="955,124 967,130 955,136" fill="#A78BFA"/>
+
+    <!-- Plane 4 (Clients) -->
+    <rect x="973" y="42" width="197" height="176" rx="14" fill="#111C33" stroke="#A78BFA" stroke-opacity="0.45"/>
+    <text x="993" y="74" fill="#DDD6FE" font-size="13" font-weight="700">CLIENTS</text>
+    <text x="993" y="102" fill="#F8FAFC" font-size="19" font-weight="800">App + WebUI</text>
+    <text x="993" y="130" fill="#94A3B8" font-size="13">• Miuix Compose App</text>
+    <text x="993" y="152" fill="#94A3B8" font-size="13">• Real FPS Game HUD</text>
+    <text x="993" y="174" fill="#94A3B8" font-size="13">• 2 Quick Settings Tiles</text>
+    <text x="993" y="196" fill="#94A3B8" font-size="13">• MD3 KSU/MMRL WebUI</text>
+  </g>
+</svg>

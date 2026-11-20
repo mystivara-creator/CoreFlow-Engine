@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="1200" height="280" role="img" aria-label="CoreFlow Engine v6.0 NextGen">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1120"/>
+      <stop offset="55%" stop-color="#111C33"/>
+      <stop offset="100%" stop-color="#0D1628"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#A78BFA"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="280" rx="22" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="278" rx="21" fill="none" stroke="#38BDF8" stroke-opacity="0.22" stroke-width="1.5"/>
+  <circle cx="1050" cy="60" r="140" fill="#38BDF8" fill-opacity="0.06"/>
+  <circle cx="180" cy="240" r="130" fill="#A78BFA" fill-opacity="0.06"/>
+  <!-- Bolt Emblem -->
+  <rect x="64" y="72" width="96" height="96" rx="24" fill="#1E3A8A" fill-opacity="0.55" stroke="#38BDF8" stroke-opacity="0.45"/>
+  <path d="M119 92 L92 126 H112 L108 152 L135 117 H115 L119 92 Z" fill="url(#accent)"/>
+  <!-- Title -->
+  <text x="190" y="114" fill="#F8FAFC" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="42" font-weight="800" letter-spacing="-0.5">CoreFlow Engine v6.0 NextGen</text>
+  <text x="190" y="150" fill="#94A3B8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="19" font-weight="500">Capability-Driven Android 13+ Native Performance &amp; Power Framework (C++20 · Rust · Miuix Compose)</text>
+  <!-- Badges -->
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif" font-size="13" font-weight="700">
+    <rect x="190" y="176" width="150" height="32" rx="16" fill="#38BDF8" fill-opacity="0.14" stroke="#38BDF8" stroke-opacity="0.35"/>
+    <text x="265" y="197" text-anchor="middle" fill="#7DD3FC">C++20 + Rust Core</text>
+
+    <rect x="354" y="176" width="166" height="32" rx="16" fill="#22C55E" fill-opacity="0.14" stroke="#22C55E" stroke-opacity="0.35"/>
+    <text x="437" y="197" text-anchor="middle" fill="#86EFAC">CFJ4 Zero-Trace OEM</text>
+
+    <rect x="534" y="176" width="170" height="32" rx="16" fill="#A78BFA" fill-opacity="0.14" stroke="#A78BFA" stroke-opacity="0.35"/>
+    <text x="619" y="197" text-anchor="middle" fill="#DDD6FE">Miuix Companion App</text>
+
+    <rect x="718" y="176" width="176" height="32" rx="16" fill="#F59E0B" fill-opacity="0.14" stroke="#F59E0B" stroke-opacity="0.35"/>
+    <text x="806" y="197" text-anchor="middle" fill="#FDE68A">Real FPS HUD + Bypass</text>
+  </g>
+</svg>

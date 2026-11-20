@@ -1,6 +1,7 @@
 package io.coreflow.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +24,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,6 +48,7 @@ import java.util.Locale
 
 @Composable
 fun HomeTab(
+    strings: AppStrings,
     hasRoot: Boolean?,
     status: CoreFlowManager.DaemonStatus?,
     lastError: String?,
@@ -49,6 +56,7 @@ fun HomeTab(
     scrollBehavior: ScrollBehavior,
     onSelectProfile: (CoreFlowManager.Profile) -> Unit,
     onTogglePause: (Boolean) -> Unit,
+    onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
 ) {
     LazyColumn(
@@ -145,14 +153,14 @@ fun HomeTab(
                 Text(
                     text = status?.foregroundPackage?.takeIf { it.isNotBlank() }?.let { "Foreground: $it" }
                         ?: status?.hardware?.socModel
-                        ?: "Waiting for CoreFlow Engine v5.1.0 telemetry",
+                        ?: "Waiting for CoreFlow v6.0.0 telemetry",
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
 
-                // Uniform 4-Metric Row (strictly aligned equal heights & single-line labels)
+                // Uniform 4-Metric Row
                 Spacer(Modifier.height(14.dp))
                 val tempColor = when {
                     (status?.socTempCelsius ?: 0f) >= 55f -> Color(0xFFEF4444)
@@ -226,14 +234,17 @@ fun HomeTab(
                     )
                 }
 
+                // Action Row: Pause A/B + Capability-Driven Bypass Quick Toggle
                 Spacer(Modifier.height(14.dp))
+                val bypassSupported = status?.batteryPower?.bypassSupported == true
+                val bypassActive = status?.batteryPower?.bypassActive == true
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (isRunning) {
                         TextButton(
-                            text = if (isPaused) "Resume CoreFlow" else "Pause (A/B Compare)",
+                            text = if (isPaused) strings.resumeEngine else strings.pauseCompare,
                             onClick = { onTogglePause(!isPaused) },
                             enabled = !busy,
                             colors = if (isPaused) {
@@ -243,9 +254,22 @@ fun HomeTab(
                             },
                             modifier = Modifier.weight(1f),
                         )
+                        if (bypassSupported) {
+                            TextButton(
+                                text = if (bypassActive) strings.bypassOn else strings.bypassOff,
+                                onClick = { onToggleBypass(!(status?.powerConfig?.bypassCharging == true)) },
+                                enabled = !busy,
+                                colors = if (bypassActive) {
+                                    ButtonDefaults.textButtonColorsPrimary()
+                                } else {
+                                    ButtonDefaults.textButtonColors()
+                                },
+                                modifier = Modifier.weight(0.75f),
+                            )
+                        }
                     } else {
                         TextButton(
-                            text = "Start CoreFlow Engine",
+                            text = strings.startEngine,
                             onClick = onStartDaemon,
                             enabled = !busy && hasRoot == true,
                             colors = ButtonDefaults.textButtonColorsPrimary(),
@@ -256,9 +280,20 @@ fun HomeTab(
             }
         }
 
+        // Live Telemetry Sparkline Card (shown once history has >= 2 samples)
+        val history = status?.history.orEmpty()
+        if (history.size >= 2) {
+            item {
+                SmallTitle(text = strings.sectionSparkline)
+            }
+            item {
+                LiveSparklineCard(history = history)
+            }
+        }
+
         // 4-Profile Selector (Strictly Equal-Height 2x2 Cards)
         item {
-            SmallTitle(text = "AUTONOMOUS PROFILE")
+            SmallTitle(text = strings.sectionProfile)
         }
 
         item {
@@ -339,9 +374,9 @@ fun HomeTab(
             }
         }
 
-        // Session Impact Card (Strictly Equal-Height 3x2 Pills)
+        // Session Impact Card
         item {
-            SmallTitle(text = "SESSION IMPACT")
+            SmallTitle(text = strings.sectionSession)
         }
 
         item {
@@ -425,7 +460,124 @@ fun HomeTab(
 }
 
 @Composable
-private fun MetricPill(
+private fun LiveSparklineCard(history: List<CoreFlowManager.HistorySample>) {
+    val temps = history.mapNotNull { it.temp?.takeIf { t -> t > 0f } }
+    val scales = history.map { it.scale.coerceIn(0.25f, 1f) }
+    val latestTemp = temps.lastOrNull()
+    val latestScale = scales.lastOrNull() ?: 1f
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LegendDot(
+                    color = Color(0xFFF59E0B),
+                    text = latestTemp?.let { String.format(Locale.US, "SoC %.1f°C", it) } ?: "SoC --",
+                )
+                LegendDot(
+                    color = Color(0xFF38BDF8),
+                    text = "Headroom ${(latestScale * 100f).toInt()}%",
+                )
+            }
+            Text(
+                text = "${history.size}s",
+                fontSize = 10.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+        ) {
+            val w = size.width
+            val h = size.height
+            if (w <= 0f || h <= 0f) return@Canvas
+
+            // Subtle horizontal guide lines
+            val guideColor = Color.Gray.copy(alpha = 0.16f)
+            drawLine(guideColor, Offset(0f, h * 0.25f), Offset(w, h * 0.25f), strokeWidth = 1f)
+            drawLine(guideColor, Offset(0f, h * 0.75f), Offset(w, h * 0.75f), strokeWidth = 1f)
+
+            // Draw Headroom curve (blue, 0..1)
+            if (scales.size >= 2) {
+                val scalePath = Path()
+                scales.forEachIndexed { idx, v ->
+                    val x = w * idx.toFloat() / (scales.size - 1).toFloat()
+                    val y = h - (v * h * 0.85f) - h * 0.05f
+                    if (idx == 0) scalePath.moveTo(x, y) else scalePath.lineTo(x, y)
+                }
+                drawPath(
+                    path = scalePath,
+                    color = Color(0xFF38BDF8),
+                    style = Stroke(width = 3.5f, cap = StrokeCap.Round),
+                )
+            }
+
+            // Draw SoC Temp curve (amber, normalized 25..75°C)
+            if (temps.size >= 2) {
+                val minT = (temps.min() - 3f).coerceAtLeast(20f)
+                val maxT = (temps.max() + 3f).coerceAtLeast(minT + 10f)
+                val linePath = Path()
+                val fillPath = Path()
+                temps.forEachIndexed { idx, t ->
+                    val x = w * idx.toFloat() / (temps.size - 1).toFloat()
+                    val norm = ((t - minT) / (maxT - minT)).coerceIn(0f, 1f)
+                    val y = h - (norm * h * 0.85f) - h * 0.05f
+                    if (idx == 0) {
+                        linePath.moveTo(x, y)
+                        fillPath.moveTo(x, h)
+                        fillPath.lineTo(x, y)
+                    } else {
+                        linePath.lineTo(x, y)
+                        fillPath.lineTo(x, y)
+                    }
+                }
+                fillPath.lineTo(w, h)
+                fillPath.close()
+                drawPath(
+                    path = fillPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFFF59E0B).copy(alpha = 0.22f), Color.Transparent),
+                    ),
+                )
+                drawPath(
+                    path = linePath,
+                    color = Color(0xFFF59E0B),
+                    style = Stroke(width = 4f, cap = StrokeCap.Round),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(
+            text = text,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = MiuixTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+internal fun MetricPill(
     label: String,
     value: String,
     modifier: Modifier = Modifier,

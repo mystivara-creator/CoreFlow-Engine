@@ -164,6 +164,71 @@ int main() {
         assert(!amb_probe.available);
     }
 
+    // CoreFlow v6: CFJ4-protected Bypass Charging & Charge Ceiling % hysteresis
+    {
+        const auto pwr_sys = root / "v6_bypass_sys";
+        const auto pwr_bat = pwr_sys / "class/power_supply/battery";
+        put(pwr_bat / "type", "Battery");
+        put(pwr_bat / "temp", "360");
+        put(pwr_bat / "status", "Charging");
+        put(pwr_bat / "capacity", "75");
+        put(pwr_bat / "input_suspend", "0");
+
+        coreflow::CentralMutationCoordinator coord2;
+        coreflow::HardwareLongevityManager mgr2(coord2, pwr_sys.string(), (root / "proc").string());
+        mgr2.initialize({true, false, 41.5f, 1500, 800, 50});
+        assert(mgr2.is_bypass_supported());
+        assert(!mgr2.is_bypass_active());
+
+        // 1. Manual bypass engages input_suspend=1 with read-back verification
+        assert(mgr2.apply_power_control(true, false, false, 0));
+        assert(mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "1");
+        assert(mgr2.sample_battery_telemetry().bypass_reason == "manual");
+
+        // 2. Disabling manual bypass cleanly rolls back input_suspend=0 via CFJ4
+        assert(mgr2.apply_power_control(false, false, false, 0));
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+
+        // 3. Auto bypass during Gaming mode
+        assert(mgr2.apply_power_control(false, true, true, 0));
+        assert(mgr2.is_bypass_active());
+        assert(mgr2.sample_battery_telemetry().bypass_reason == "gaming");
+        assert(get(pwr_bat / "input_suspend") == "1");
+        assert(mgr2.apply_power_control(false, false, true, 0));
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+
+        // 4. Charge ceiling 80% with 3% hysteresis (engage at 80, hold at 79, release at 77)
+        put(pwr_bat / "capacity", "80");
+        assert(mgr2.apply_power_control(false, false, false, 80));
+        assert(mgr2.is_bypass_active());
+        assert(mgr2.sample_battery_telemetry().bypass_reason == "charge_limit");
+        assert(get(pwr_bat / "input_suspend") == "1");
+
+        put(pwr_bat / "capacity", "79");
+        assert(mgr2.apply_power_control(false, false, false, 80));
+        assert(mgr2.is_bypass_active());
+
+        put(pwr_bat / "capacity", "77");
+        assert(mgr2.apply_power_control(false, false, false, 80));
+        assert(!mgr2.is_bypass_active());
+        assert(get(pwr_bat / "input_suspend") == "0");
+
+        // 5. Fail-closed when no bypass node exists
+        const auto no_bp_sys = root / "v6_no_bypass_sys";
+        const auto no_bp_bat = no_bp_sys / "class/power_supply/battery";
+        put(no_bp_bat / "type", "Battery");
+        put(no_bp_bat / "temp", "350");
+        put(no_bp_bat / "status", "Charging");
+        coreflow::HardwareLongevityManager mgr3(coord2, no_bp_sys.string(), (root / "proc").string());
+        mgr3.initialize({true, false, 41.5f, 1500, 800, 50});
+        assert(!mgr3.is_bypass_supported());
+        assert(!mgr3.apply_power_control(true, true, true, 80));
+        assert(!mgr3.is_bypass_active());
+    }
+
     fs::remove_all(root);
 }
 

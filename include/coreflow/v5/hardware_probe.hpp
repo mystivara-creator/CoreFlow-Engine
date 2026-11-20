@@ -30,6 +30,8 @@ enum class StorageType : uint8_t {
 struct CpuClusterInfo {
     std::string policy_path;
     std::string governor;
+    std::vector<std::string> available_governors;
+    std::string cur_freq_path;
     ClusterRole role{ClusterRole::Unknown};
     std::vector<uint64_t> opps_khz;
     uint64_t capacity{0};
@@ -141,6 +143,7 @@ public:
     [[nodiscard]] std::optional<double> read_gpu_busy_pct(const HardwareTopology& topo) const noexcept;
     [[nodiscard]] std::optional<double> read_psi_avg10(const std::string& resource) const noexcept;
     [[nodiscard]] MemorySnapshot read_memory_snapshot() const noexcept;
+    [[nodiscard]] std::optional<uint64_t> read_cluster_cur_freq_khz(const CpuClusterInfo& cluster) const noexcept;
 
     [[nodiscard]] static const char* storage_type_name(StorageType type) noexcept;
     [[nodiscard]] static const char* cluster_role_name(ClusterRole role) noexcept;

@@ -47,7 +47,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private data class SponsorEntry(
@@ -82,7 +81,7 @@ private val AI_AND_PLATFORM_SPONSORS = listOf(
     ),
     SponsorEntry(
         name = "GitHub",
-        role = "Actions CI/CD & Open Source",
+        role = "Actions CI/CD & Hosting",
         badge = "GH",
         accent = Color(0xFF8B5CF6),
         url = "https://github.com/mystivara-creator/CoreFlow-Engine",
@@ -91,22 +90,25 @@ private val AI_AND_PLATFORM_SPONSORS = listOf(
 
 @Composable
 fun SystemTab(
+    strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
     journalText: String?,
     busy: Boolean,
     themeModeIndex: Int,
     pollIntervalIndex: Int,
+    languageIndex: Int,
     scrollBehavior: ScrollBehavior,
     onThemeModeChange: (Int) -> Unit,
     onPollIntervalChange: (Int) -> Unit,
-    onToggleFeature: (key: String, label: String, enabled: Boolean) -> Unit,
+    onLanguageChange: (Int) -> Unit,
+    onExportProfile: () -> Unit,
+    onImportProfile: () -> Unit,
     onLoadJournal: () -> Unit,
     onShareDiag: () -> Unit,
     onRollback: () -> Unit,
 ) {
     val context = LocalContext.current
     var confirmRollback by remember { mutableStateOf(false) }
-    val features = status?.features ?: CoreFlowManager.EngineFeatures()
 
     LazyColumn(
         modifier = Modifier
@@ -115,13 +117,17 @@ fun SystemTab(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // App Preferences
-        item {
-            SmallTitle(text = "APP SETTINGS")
-        }
-
+        // App Preferences (Theme, Language, Polling)
+        item { SmallTitle(text = strings.sectionAppSettings) }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
+                OverlayDropdownPreference(
+                    items = AppPreferences.languageLabels,
+                    selectedIndex = languageIndex,
+                    title = "Language / Bahasa",
+                    summary = "Instant switch between English and Bahasa Indonesia",
+                    onSelectedIndexChange = onLanguageChange,
+                )
                 OverlayDropdownPreference(
                     items = AppPreferences.themeModeLabels,
                     selectedIndex = themeModeIndex,
@@ -139,56 +145,27 @@ fun SystemTab(
             }
         }
 
-        // Live Engine Pillar Toggles
-        item {
-            SmallTitle(text = "ENGINE PILLAR CONTROLS")
-        }
-
+        // Profile Backup & Share (SAF with SoC Provenance)
+        item { SmallTitle(text = strings.sectionProfileTransfer) }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
-                SwitchPreference(
-                    checked = features.frameSmoothness,
-                    onCheckedChange = { onToggleFeature("enable_frame_smoothness", "Frame Smoothness", it) },
-                    title = "Per-TID Frame Smoothness",
-                    summary = "Closed-loop RenderThread & GameThread UClamp boost",
-                    enabled = !busy,
+                ArrowPreference(
+                    title = strings.exportProfileTitle,
+                    summary = strings.exportProfileSummary,
+                    enabled = !busy && status != null,
+                    onClick = onExportProfile,
                 )
-                SwitchPreference(
-                    checked = features.storageBurst,
-                    onCheckedChange = { onToggleFeature("enable_storage_burst", "Storage Launch Burst", it) },
-                    title = "Dynamic Storage Launch Burst",
-                    summary = "UFS/eMMC read-ahead burst & background I/O isolation",
+                ArrowPreference(
+                    title = strings.importProfileTitle,
+                    summary = strings.importProfileSummary,
                     enabled = !busy,
-                )
-                SwitchPreference(
-                    checked = features.memoryGuard,
-                    onCheckedChange = { onToggleFeature("enable_memory_guard", "Memory Guard", it) },
-                    title = "MGLRU & Smart Pre-Read",
-                    summary = "Anti-stutter working-set protection & library warmup",
-                    enabled = !busy,
-                )
-                SwitchPreference(
-                    checked = features.thermalPacing,
-                    onCheckedChange = { onToggleFeature("enable_thermal_pacing", "Thermal Pacing", it) },
-                    title = "Rust PID Thermal Pacing",
-                    summary = "Smooth predictive thermal envelope before OEM throttling",
-                    enabled = !busy,
-                )
-                SwitchPreference(
-                    checked = features.batteryStepCharging,
-                    onCheckedChange = { onToggleFeature("enable_battery_step_charging", "Battery Step Charging", it) },
-                    title = "Thermal Step Charging Guard",
-                    summary = "Protects battery longevity during hot fast-charging",
-                    enabled = !busy,
+                    onClick = onImportProfile,
                 )
             }
         }
 
         // OEM Coexistence & Diagnostics
-        item {
-            SmallTitle(text = "OEM COEXISTENCE & DIAGNOSTICS")
-        }
-
+        item { SmallTitle(text = strings.sectionCoexistence) }
         item {
             val contended = status?.contendedPaths.orEmpty()
             Card(
@@ -207,7 +184,7 @@ fun SystemTab(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = if (contended.isEmpty()) {
-                        "CoreFlow v5.1.0 is cleanly cooperating with OEM thermal & storage policies."
+                        "CoreFlow v6.0.0 is cleanly cooperating with OEM thermal & storage policies."
                     } else {
                         contended.joinToString("\n")
                     },
@@ -221,7 +198,7 @@ fun SystemTab(
             Card(modifier = Modifier.fillMaxWidth()) {
                 ArrowPreference(
                     title = "Export & Share Diagnostics (--diag)",
-                    summary = "Generate coreflow-diag-v5.1.0.json and open Android Share Sheet",
+                    summary = "Generate coreflow-diag-v6.0.0.json (Atlas + Status + CFJ4 Journal)",
                     enabled = !busy,
                     onClick = onShareDiag,
                 )
@@ -251,10 +228,7 @@ fun SystemTab(
         }
 
         // Emergency Recovery
-        item {
-            SmallTitle(text = "RECOVERY")
-        }
-
+        item { SmallTitle(text = strings.sectionRecovery) }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -266,7 +240,7 @@ fun SystemTab(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "Stops CoreFlow actuation and restores every modified sysfs node to its exact factory OEM value.",
+                    text = "Stops CoreFlow actuation and restores every modified sysfs & charging node to its exact factory OEM value.",
                     style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
@@ -294,10 +268,7 @@ fun SystemTab(
         }
 
         // Creator Identity & GitHub Profile
-        item {
-            SmallTitle(text = "CREATOR & MAINTAINER")
-        }
-
+        item { SmallTitle(text = strings.sectionCreator) }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -329,7 +300,7 @@ fun SystemTab(
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "@mystivara-creator · Author of CoreFlow Engine & CFAE Framework",
+                            text = "@mystivara-creator · Creator & Maintainer of CoreFlow Engine",
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
@@ -342,17 +313,14 @@ fun SystemTab(
                 )
                 ArrowPreference(
                     title = "CoreFlow-Engine Repository",
-                    summary = "Source code, issues & releases (v${BuildConfig.VERSION_NAME})",
+                    summary = "Releases, Atlas docs & issue tracker (v${BuildConfig.VERSION_NAME})",
                     onClick = { openUrl(context, "https://github.com/mystivara-creator/CoreFlow-Engine") },
                 )
             }
         }
 
         // AI Partners & Platform Sponsors
-        item {
-            SmallTitle(text = "POWERED BY · AI & PLATFORM SPONSORS")
-        }
-
+        item { SmallTitle(text = strings.sectionSponsors) }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val rows = AI_AND_PLATFORM_SPONSORS.chunked(2)
@@ -412,13 +380,21 @@ fun SystemTab(
             }
         }
 
+        // Humble Source-Available License Statement
+        item { SmallTitle(text = strings.sectionLicense) }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(14.dp),
+                insideMargin = PaddingValues(16.dp),
             ) {
                 Text(
-                    text = "CoreFlow Companion v${BuildConfig.VERSION_NAME} · Apache-2.0 License",
+                    text = "CoreFlow Companion v${BuildConfig.VERSION_NAME} NextGen",
+                    style = MiuixTheme.textStyles.headline2,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "CoreFlow Community Source-Available License — Free for personal use, learning, and security auditing. Authored by Mystivara Creator with transparent AI collaboration (Claude, ChatGPT, Gemini). Please do not rebrand, resell, or redistribute as your own work without permission.",
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )

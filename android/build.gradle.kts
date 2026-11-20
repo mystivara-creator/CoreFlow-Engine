@@ -21,8 +21,8 @@ android {
         applicationId = "io.coreflow.companion"
         minSdk = 33
         targetSdk = 36
-        versionCode = 51000
-        versionName = "5.1.0"
+        versionCode = 60000
+        versionName = "6.0.0"
     }
 
     signingConfigs {

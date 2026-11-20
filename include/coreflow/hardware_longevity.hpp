@@ -40,6 +40,12 @@ struct BatteryPowerTelemetry {
     double power_mw{0.0};
     uint64_t charge_limit_ua{0};
     uint64_t oem_baseline_ua{0};
+    int battery_capacity_pct{-1};
+    bool bypass_supported{false};
+    bool bypass_active{false};
+    uint32_t charge_limit_pct{0};
+    std::string bypass_reason{"off"};
+    std::string bypass_node_path{};
     std::string status{"Unknown"};
 };
 
@@ -57,13 +63,19 @@ public:
     /// Evaluate battery thermal load and step-charge if overheating
     bool monitor_battery_thermals(float current_soc_temp);
 
+    /// Apply CFJ4-journaled Bypass Charging & Charge Ceiling % (fail-closed when unsupported)
+    bool apply_power_control(bool manual_bypass, bool gaming_mode,
+                             bool bypass_on_gaming, uint32_t charge_limit_pct);
+
     /// Apply UFS storage write pacing to minimize write amplification and frame stutter
     bool apply_storage_pacing();
 
-    /// Revert any battery/storage changes back to OEM factory baseline
+    /// Revert any battery/storage/bypass changes back to OEM factory baseline
     void restore_oem_baseline();
 
     [[nodiscard]] bool is_battery_guarded() const noexcept;
+    [[nodiscard]] bool is_bypass_supported() const noexcept;
+    [[nodiscard]] bool is_bypass_active() const noexcept;
     [[nodiscard]] bool is_storage_paced() const noexcept;
     [[nodiscard]] std::string battery_node_path() const;
     [[nodiscard]] BatteryPowerTelemetry sample_battery_telemetry() const;
@@ -83,7 +95,15 @@ private:
     std::string battery_status_node_;
     std::string battery_current_node_;
     std::string battery_voltage_node_;
+    std::string battery_capacity_node_;
+    std::string bypass_node_;
+    std::string bypass_enable_val_;
+    std::string bypass_disable_val_;
     bool battery_stepped_{false};
+    bool bypass_active_{false};
+    bool ceiling_latched_{false};
+    uint32_t active_charge_limit_pct_{0};
+    std::string bypass_reason_{"off"};
     bool storage_paced_{false};
     uint64_t charge_baseline_ua_{0};
     uint64_t last_charge_ua_{0};
@@ -99,6 +119,7 @@ private:
                               std::string& transaction_id, std::string_view prefix);
     void release_lease_locked(MutationDomain domain, std::string& transaction_id) noexcept;
     bool rollback_battery_locked() noexcept;
+    bool rollback_bypass_locked() noexcept;
     bool rollback_storage_locked() noexcept;
     bool handle_preemption(MutationDomain domain, std::string_view transaction_id) noexcept;
 };

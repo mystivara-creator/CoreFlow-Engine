@@ -1,6 +1,8 @@
 package io.coreflow.ui
 
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -34,6 +36,7 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.GridView
+import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.Settings
@@ -52,6 +55,9 @@ fun CoreFlowApp(
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var pollIntervalIndex by remember { mutableIntStateOf(AppPreferences.getPollIntervalIndex(context)) }
+    var languageIndex by remember { mutableIntStateOf(AppPreferences.getLanguageIndex(context)) }
+    val strings = rememberAppStrings(languageIndex)
+
     var hasRoot by remember { mutableStateOf<Boolean?>(null) }
     var status by remember { mutableStateOf<CoreFlowManager.DaemonStatus?>(null) }
     var lastError by remember { mutableStateOf<String?>(null) }
@@ -77,6 +83,52 @@ fun CoreFlowApp(
             }
     }
 
+    // SAF Profile Export Launcher
+    val exportProfileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        val currentStatus = status ?: return@rememberLauncherForActivityResult
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                val payload = CoreFlowManager.buildShareableProfileJson(currentStatus)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                } ?: error("Cannot open output stream")
+            }.onSuccess {
+                snackbarHostState.showSnackbar("Profile exported (${currentStatus.hardware.socModel})")
+            }.onFailure { err ->
+                snackbarHostState.showSnackbar(err.message ?: "Export failed")
+            }
+        }
+    }
+
+    // SAF Profile Import Launcher
+    val importProfileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            busyAction = true
+            runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("Cannot read profile file")
+                CoreFlowManager.importShareableProfileJson(raw, status?.hardware?.socModel.orEmpty()).getOrThrow()
+            }.onSuccess { res ->
+                refreshStatus()
+                val note = if (res.socMismatchWarning) {
+                    "Imported ${res.appliedCount} settings (note: source SoC ${res.sourceSoc} differs)"
+                } else {
+                    "Imported ${res.appliedCount} settings cleanly"
+                }
+                snackbarHostState.showSnackbar(note)
+            }.onFailure { err ->
+                snackbarHostState.showSnackbar(err.message ?: "Import failed")
+            }
+            busyAction = false
+        }
+    }
+
     LaunchedEffect(pollIntervalIndex) {
         hasRoot = CoreFlowManager.checkRootAccess()
         val intervalMs = AppPreferences.pollIntervalValuesMs[pollIntervalIndex]
@@ -87,7 +139,7 @@ fun CoreFlowApp(
     }
 
     LaunchedEffect(selectedTab) {
-        if (selectedTab == 1 && installedApps.isEmpty() && !appsLoading) {
+        if (selectedTab == 3 && installedApps.isEmpty() && !appsLoading) {
             appsLoading = true
             installedApps = AppCatalog.loadLaunchableApps(context)
             appsLoading = false
@@ -95,12 +147,19 @@ fun CoreFlowApp(
     }
 
     val scrollBehavior = MiuixScrollBehavior()
-    val tabTitles = listOf("CoreFlow", "Per-App Rules", "HUD & Device", "Settings")
+    val tabTitles = listOf(
+        strings.titleHome,
+        strings.titleControl,
+        strings.titleLive,
+        strings.titleApps,
+        strings.titleSettings,
+    )
     val tabSubtitles = listOf(
-        status?.let { "v${it.version} · ${if (it.isRunning) "PID ${it.pid}" else "Stopped"}" } ?: "CFAE Companion",
+        status?.let { "v${it.version} · ${if (it.isRunning) "PID ${it.pid}" else "Stopped"}" } ?: "CFAE NextGen",
+        strings.subControl,
+        strings.subLive,
         "${status?.apps?.totalConfigured ?: 0} active overrides",
-        "Floating Overlay & Quick Tile",
-        "Engine, Theme & Credits",
+        strings.subSettings,
     )
 
     Scaffold(
@@ -134,25 +193,31 @@ fun CoreFlowApp(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
                     icon = MiuixIcons.GridView,
-                    label = "Home",
+                    label = strings.tabHome,
                 )
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    icon = MiuixIcons.ListView,
-                    label = "Apps",
+                    icon = MiuixIcons.Tune,
+                    label = strings.tabControl,
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = MiuixIcons.Tune,
-                    label = "HUD",
+                    icon = MiuixIcons.Info,
+                    label = strings.tabLive,
                 )
                 NavigationBarItem(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
+                    icon = MiuixIcons.ListView,
+                    label = strings.tabApps,
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 4,
+                    onClick = { selectedTab = 4 },
                     icon = MiuixIcons.Settings,
-                    label = "Settings",
+                    label = strings.tabSettings,
                 )
             }
         },
@@ -165,6 +230,7 @@ fun CoreFlowApp(
         ) {
             when (selectedTab) {
                 0 -> HomeTab(
+                    strings = strings,
                     hasRoot = hasRoot,
                     status = status,
                     lastError = lastError,
@@ -200,6 +266,22 @@ fun CoreFlowApp(
                             busyAction = false
                         }
                     },
+                    onToggleBypass = { enabled ->
+                        scope.launch {
+                            busyAction = true
+                            CoreFlowManager.setPowerControl("bypass_charging", if (enabled) "true" else "false")
+                                .onSuccess {
+                                    refreshStatus()
+                                    snackbarHostState.showSnackbar(
+                                        if (enabled) "Bypass Charging enabled (CFJ4)" else "Bypass Charging disabled",
+                                    )
+                                }
+                                .onFailure { err ->
+                                    snackbarHostState.showSnackbar(err.message ?: "Failed to toggle bypass")
+                                }
+                            busyAction = false
+                        }
+                    },
                     onStartDaemon = {
                         scope.launch {
                             busyAction = true
@@ -217,9 +299,56 @@ fun CoreFlowApp(
                     },
                 )
 
-                1 -> AppsTab(
+                1 -> ControlHubTab(
+                    strings = strings,
+                    status = status,
+                    busy = busyAction,
+                    scrollBehavior = scrollBehavior,
+                    onToggleFeature = { key, label, enabled ->
+                        scope.launch {
+                            busyAction = true
+                            CoreFlowManager.setFeatureToggle(key, enabled)
+                                .onSuccess {
+                                    refreshStatus()
+                                    snackbarHostState.showSnackbar("$label ${if (enabled) "enabled" else "disabled"}")
+                                }
+                                .onFailure { err ->
+                                    snackbarHostState.showSnackbar(err.message ?: "Failed to update $label")
+                                }
+                            busyAction = false
+                        }
+                    },
+                    onSetPowerControl = { key, value, msg ->
+                        scope.launch {
+                            busyAction = true
+                            CoreFlowManager.setPowerControl(key, value)
+                                .onSuccess {
+                                    refreshStatus()
+                                    snackbarHostState.showSnackbar(msg)
+                                }
+                                .onFailure { err ->
+                                    snackbarHostState.showSnackbar(err.message ?: "Failed to update power control")
+                                }
+                            busyAction = false
+                        }
+                    },
+                    onMessage = { msg ->
+                        scope.launch { snackbarHostState.showSnackbar(msg) }
+                    },
+                )
+
+                2 -> LiveFeedTab(
+                    strings = strings,
+                    status = status,
+                    scrollBehavior = scrollBehavior,
+                )
+
+                3 -> AppsTab(
+                    strings = strings,
                     apps = installedApps,
                     loading = appsLoading,
+                    globalProfile = status?.profile ?: CoreFlowManager.Profile.BALANCED,
+                    bypassOnGaming = status?.powerConfig?.bypassOnGaming == true,
                     rules = status?.apps ?: CoreFlowManager.AppRules(),
                     scrollBehavior = scrollBehavior,
                     onReloadApps = {
@@ -244,20 +373,14 @@ fun CoreFlowApp(
                     },
                 )
 
-                2 -> HudTab(
-                    status = status,
-                    scrollBehavior = scrollBehavior,
-                    onMessage = { msg ->
-                        scope.launch { snackbarHostState.showSnackbar(msg) }
-                    },
-                )
-
-                3 -> SystemTab(
+                4 -> SystemTab(
+                    strings = strings,
                     status = status,
                     journalText = journalText,
                     busy = busyAction,
                     themeModeIndex = themeModeIndex,
                     pollIntervalIndex = pollIntervalIndex,
+                    languageIndex = languageIndex,
                     scrollBehavior = scrollBehavior,
                     onThemeModeChange = { newIdx ->
                         onThemeModeChange(newIdx)
@@ -272,19 +395,18 @@ fun CoreFlowApp(
                             snackbarHostState.showSnackbar("Refresh rate: ${AppPreferences.pollIntervalLabels[newIdx]}")
                         }
                     },
-                    onToggleFeature = { key, label, enabled ->
+                    onLanguageChange = { newIdx ->
+                        languageIndex = newIdx
+                        AppPreferences.setLanguageIndex(context, newIdx)
                         scope.launch {
-                            busyAction = true
-                            CoreFlowManager.setFeatureToggle(key, enabled)
-                                .onSuccess {
-                                    refreshStatus()
-                                    snackbarHostState.showSnackbar("$label ${if (enabled) "enabled" else "disabled"}")
-                                }
-                                .onFailure { err ->
-                                    snackbarHostState.showSnackbar(err.message ?: "Failed to update $label")
-                                }
-                            busyAction = false
+                            snackbarHostState.showSnackbar("Language: ${AppPreferences.languageLabels[newIdx]}")
                         }
+                    },
+                    onExportProfile = {
+                        exportProfileLauncher.launch("coreflow-profile-v6.0.0.json")
+                    },
+                    onImportProfile = {
+                        importProfileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
                     onLoadJournal = {
                         scope.launch {
@@ -304,7 +426,7 @@ fun CoreFlowApp(
                                 .onSuccess { diagJson ->
                                     runCatching {
                                         val dir = File(context.cacheDir, "diag").apply { mkdirs() }
-                                        val outFile = File(dir, "coreflow-diag-v5.1.0.json")
+                                        val outFile = File(dir, "coreflow-diag-v6.0.0.json")
                                         outFile.writeText(diagJson)
                                         val uri = FileProvider.getUriForFile(
                                             context,
@@ -314,7 +436,7 @@ fun CoreFlowApp(
                                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                             type = "application/json"
                                             putExtra(Intent.EXTRA_STREAM, uri)
-                                            putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v5.1.0 Diagnostics")
+                                            putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v6.0.0 Diagnostics")
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(
