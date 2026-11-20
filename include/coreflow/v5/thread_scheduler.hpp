@@ -5,7 +5,7 @@
  * Targets SurfaceFlinger, RenderThread, HWUI, and foreground UI/game threads directly
  * per-TID so animations and touch responses stay smooth without fighting PowerHAL's
  * global top-app cgroup writes.
- * @license MIT
+ * @license Apache-2.0
  */
 #pragma once
 
@@ -39,6 +39,7 @@ struct ThreadDemandContext {
     uint32_t refresh_hz{60};      // Discovered display refresh rate
     double cpu_psi{0.0};          // Live CPU PSI avg10 (0..100)
     double gpu_busy_pct{0.0};     // Live GPU busy percentage (0..100)
+    double render_pressure{0.0};  // Closed-loop RenderThread/GameThread CPU saturation (0.0..1.0)
 };
 
 class ThreadSchedulerActuator {

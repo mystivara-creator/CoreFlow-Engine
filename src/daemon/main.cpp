@@ -1,17 +1,17 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine v5.0.0 — Lean 4-Pillar Adaptive Android Daemon.
+ * @brief CoreFlow Engine v5.1.0 — Lean 4-Pillar Adaptive Android Daemon.
  *
  * Pillars:
  *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
- *  2. ContextEngine (5-mode context + foreground app + critical render TIDs + per-app rules)
+ *  2. ContextEngine (5-mode context + foreground app + critical render TIDs + 4-profile per-app rules)
  *  3. Focused Actuators:
- *     - ThreadSchedulerActuator (per-TID sched_setattr UClamp on SurfaceFlinger/RenderThread/UI)
- *     - StorageMemoryActuator (dynamic UFS/eMMC burst, background QoS, MGLRU, smart pre-read)
- *     - ThermalEnvelopeActuator (Rust PID + Neural 10s lookahead CPU/GPU smooth pacing)
- *     - HardwareLongevityManager (battery thermal step-charging & foreground io.weight)
- *  4. Clean JSON status/config contract for the v5 MD3 WebUI.
- * @license MIT
+ *     - ThreadSchedulerActuator (per-TID sched_setattr UClamp with closed-loop render pressure)
+ *     - StorageMemoryActuator (dynamic UFS/eMMC burst, background QoS, MGLRU, smart pre-read, timed contention recovery)
+ *     - ThermalEnvelopeActuator (Rust PID + Online RLS/MLP 10s lookahead CPU/GPU smooth pacing)
+ *     - HardwareLongevityManager (battery thermal step-charging with dual-cell primary selection)
+ *  4. Clean JSON status/config/diag contract for the v5 MD3 WebUI & Android QS Tile.
+ * @license Apache-2.0
  */
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
@@ -54,6 +54,7 @@
 #include <sys/timerfd.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -67,7 +68,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "5.0.2";
+constexpr char kVersion[] = "5.1.0";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -435,6 +436,97 @@ private:
     double last_pct_{0.0};
 };
 
+// Lightweight closed-loop RenderThread/GameThread CPU saturation sampler (0.0..1.0).
+class RenderLoadSampler {
+public:
+    RenderLoadSampler() noexcept {
+        const long hz = ::sysconf(_SC_CLK_TCK);
+        clk_tck_ = (hz > 0) ? static_cast<double>(hz) : 100.0;
+    }
+
+    double sample(int32_t pid, const std::vector<int32_t>& tids, double elapsed_sec) noexcept {
+        if (pid <= 0 || tids.empty() || elapsed_sec <= 0.05) {
+            last_pid_ = 0;
+            prev_ticks_.clear();
+            last_pressure_ = 0.0;
+            return 0.0;
+        }
+        if (pid != last_pid_) {
+            last_pid_ = pid;
+            prev_ticks_.clear();
+        }
+        double peak_ratio = 0.0;
+        const size_t limit = std::min<size_t>(tids.size(), 4U);
+        std::unordered_map<int32_t, uint64_t> next_ticks;
+        next_ticks.reserve(limit);
+        for (size_t i = 0; i < limit; ++i) {
+            const int32_t tid = tids[i];
+            if (tid <= 0) continue;
+            uint64_t total_ticks = 0U;
+            if (!read_tid_cpu_ticks(pid, tid, total_ticks)) continue;
+            next_ticks[tid] = total_ticks;
+            const auto prev = prev_ticks_.find(tid);
+            if (prev != prev_ticks_.end() && total_ticks >= prev->second) {
+                const double delta_sec = static_cast<double>(total_ticks - prev->second) / clk_tck_;
+                peak_ratio = std::max(peak_ratio, std::clamp(delta_sec / elapsed_sec, 0.0, 1.0));
+            }
+        }
+        prev_ticks_ = std::move(next_ticks);
+        // Smooth EMA to avoid single-tick spikes
+        last_pressure_ = std::clamp(0.55 * last_pressure_ + 0.45 * peak_ratio, 0.0, 1.0);
+        return last_pressure_;
+    }
+
+private:
+    static bool read_tid_cpu_ticks(int32_t pid, int32_t tid, uint64_t& out_ticks) noexcept {
+        const std::string path = "/proc/" + std::to_string(pid) + "/task/" + std::to_string(tid) + "/stat";
+        UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (!fd.valid()) return false;
+        char buf[512];
+        const ssize_t n = ::read(fd.get(), buf, sizeof(buf) - 1U);
+        if (n <= 0) return false;
+        buf[n] = '\0';
+        const std::string_view raw(buf, static_cast<size_t>(n));
+        // Skip past "(comm)" because comm can contain spaces or parentheses
+        const size_t rparen = raw.rfind(')');
+        if (rparen == std::string_view::npos || rparen + 2U >= raw.size()) return false;
+        std::istringstream ss{std::string(raw.substr(rparen + 2U))};
+        std::string tok;
+        uint64_t utime = 0U, stime = 0U;
+        // Field 3 is state (index 0 after ')'); field 14 is utime (index 11), field 15 is stime (index 12)
+        for (int idx = 0; idx <= 12; ++idx) {
+            if (!(ss >> tok)) return false;
+            if (idx == 11) {
+                const auto r = std::from_chars(tok.data(), tok.data() + tok.size(), utime);
+                if (r.ec != std::errc{}) return false;
+            } else if (idx == 12) {
+                const auto r = std::from_chars(tok.data(), tok.data() + tok.size(), stime);
+                if (r.ec != std::errc{}) return false;
+            }
+        }
+        out_ticks = utime + stime;
+        return true;
+    }
+
+    double clk_tck_{100.0};
+    int32_t last_pid_{0};
+    std::unordered_map<int32_t, uint64_t> prev_ticks_;
+    double last_pressure_{0.0};
+};
+
+struct SessionMetrics {
+    uint64_t started_steady_ms{0};
+    uint64_t uptime_sec{0};
+    uint64_t launch_bursts{0};
+    uint64_t thermal_guard_events{0};
+    uint64_t temp_samples{0};
+    double temp_sum_celsius{0.0};
+    double peak_soc_temp_celsius{-1.0};
+    uint64_t scale_samples{0};
+    double scale_sum{0.0};
+    bool prev_thermal_guard{false};
+};
+
 struct HistoryPoint {
     uint64_t ts_ms{0};
     double soc_temp{-1.0};
@@ -457,6 +549,7 @@ struct RuntimeStatusData {
     double thermal_pressure{0.0};
     std::string thermal_source{"unavailable"};
     double cpu_util_pct{0.0};
+    double render_pressure{0.0};
     std::optional<double> gpu_busy_pct{};
     std::optional<double> cpu_psi{};
     std::optional<double> mem_psi{};
@@ -467,7 +560,9 @@ struct RuntimeStatusData {
     ThreadSchedulerStats thread_stats{};
     StorageMemoryStats storage_stats{};
     ThermalEnvelopeStats envelope_stats{};
+    std::vector<std::string> contended_paths{};
     BatteryPowerTelemetry battery{};
+    SessionMetrics session{};
     size_t baseline_nodes{0};
     bool recovery_pending{false};
     std::vector<HistoryPoint> history{};
@@ -486,13 +581,22 @@ std::string serialize_string_array(const std::vector<std::string>& items) {
 
 std::string build_status_json(const RuntimeStatusData& s) {
     const auto gaming_list = DaemonConfig::parse_package_list(s.config.gaming_apps);
+    const auto smoothness_list = DaemonConfig::parse_package_list(s.config.smoothness_apps);
+    const auto battery_list = DaemonConfig::parse_package_list(s.config.battery_apps);
     const auto excluded_list = DaemonConfig::parse_package_list(s.config.excluded_apps);
+    const double avg_temp = s.session.temp_samples > 0U
+        ? (s.session.temp_sum_celsius / static_cast<double>(s.session.temp_samples))
+        : -1.0;
+    const double avg_scale = s.session.scale_samples > 0U
+        ? (s.session.scale_sum / static_cast<double>(s.session.scale_samples))
+        : s.capacity_scale;
 
     std::ostringstream out;
     out << "{\"version\":" << json_str(kVersion)
         << ",\"running\":" << (s.running ? "true" : "false")
         << ",\"pid\":" << s.pid
         << ",\"profile\":" << json_str(s.config.profile)
+        << ",\"effectiveProfile\":" << json_str(ContextEngine::profile_name(s.ctx.effective_profile))
         << ",\"inspectionMode\":" << (s.config.inspection_mode ? "true" : "false")
         << ",\"mode\":" << json_str(s.thermal_emergency ? "THERMAL_EMERGENCY"
                                     : s.thermal_guard ? "THERMAL_GUARD"
@@ -506,6 +610,7 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
         << ",\"thermalSource\":" << json_str(s.thermal_source)
         << ",\"cpuUtilPct\":" << safe_num(s.cpu_util_pct)
+        << ",\"renderPressure\":" << safe_num(s.render_pressure)
         << ",\"gpuBusyPct\":" << (s.gpu_busy_pct ? std::to_string(safe_num(*s.gpu_busy_pct)) : "null")
         << ",\"cpuPsi\":" << (s.cpu_psi ? std::to_string(safe_num(*s.cpu_psi)) : "null")
         << ",\"memPsi\":" << (s.mem_psi ? std::to_string(safe_num(*s.mem_psi)) : "null")
@@ -523,6 +628,8 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << "}"
         << ",\"apps\":{"
         << "\"gaming\":" << serialize_string_array(gaming_list)
+        << ",\"smoothness\":" << serialize_string_array(smoothness_list)
+        << ",\"battery\":" << serialize_string_array(battery_list)
         << ",\"excluded\":" << serialize_string_array(excluded_list)
         << "}"
         << ",\"actuators\":{"
@@ -537,6 +644,7 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"prereadBytes\":" << s.storage_stats.preread_bytes_total
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
         << ",\"contendedNodes\":" << (s.storage_stats.contended_nodes + s.envelope_stats.contended_nodes)
+        << ",\"contendedPaths\":" << serialize_string_array(s.contended_paths)
         << "}"
         << ",\"hardware\":{"
         << "\"socModel\":" << json_str(s.topo.soc_model)
@@ -563,6 +671,14 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"oemBaselineUa\":" << s.battery.oem_baseline_ua
         << ",\"status\":" << json_str(s.battery.status)
         << "}"
+        << ",\"session\":{"
+        << "\"uptimeSec\":" << s.session.uptime_sec
+        << ",\"launchBursts\":" << s.session.launch_bursts
+        << ",\"thermalGuardEvents\":" << s.session.thermal_guard_events
+        << ",\"avgSocTempCelsius\":" << (avg_temp >= 0.0 ? std::to_string(safe_num(avg_temp)) : "null")
+        << ",\"peakSocTempCelsius\":" << (s.session.peak_soc_temp_celsius >= 0.0 ? std::to_string(safe_num(s.session.peak_soc_temp_celsius)) : "null")
+        << ",\"avgCapacityScale\":" << safe_num(avg_scale, 1.0)
+        << "}"
         << ",\"history\":[";
     for (size_t i = 0; i < s.history.size(); ++i) {
         if (i != 0U) out << ',';
@@ -578,13 +694,14 @@ std::string build_status_json(const RuntimeStatusData& s) {
     return out.str();
 }
 
-void print_readonly_status() {
+std::string build_readonly_status_json() {
     HardwareProbe probe;
     ThermalMonitor thermal_mon;
     RuntimeStatusData data{};
     data.running = false;
     data.pid = 0;
     data.config = DaemonConfig::load_best_available(false);
+    data.ctx.effective_profile = ContextEngine::parse_profile(data.config.profile);
     data.topo = probe.discover();
     const auto tb = thermal_mon.sample_bundle(false);
     data.soc_temp = tb.composite_celsius;
@@ -598,10 +715,14 @@ void print_readonly_status() {
     data.battery = HardwareLongevityManager::probe_battery_telemetry();
     data.baseline_nodes = count_journal_entries();
     data.recovery_pending = !journal_clear();
-    std::cout << build_status_json(data) << "\n" << std::flush;
+    return build_status_json(data);
 }
 
-void print_capabilities() {
+void print_readonly_status() {
+    std::cout << build_readonly_status_json() << "\n" << std::flush;
+}
+
+std::string build_capabilities_json() {
     HardwareProbe probe;
     const auto topo = probe.discover();
     ThreadSchedulerActuator probe_sched;
@@ -620,8 +741,13 @@ void print_capabilities() {
         << ",\"perThreadUclampSupported\":" << (per_thread_uclamp ? "true" : "false")
         << ",\"mglruAvailable\":" << (!topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
         << ",\"cgroupV2Available\":" << (!topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << ",\"oledDisplayPowerNodes\":" << (topo.drm_dpms_paths.size() + topo.fb_blank_paths.size())
         << "}";
-    std::cout << out.str() << "\n" << std::flush;
+    return out.str();
+}
+
+void print_capabilities() {
+    std::cout << build_capabilities_json() << "\n" << std::flush;
 }
 
 std::string hex_decode_journal_field(std::string_view hex) {
@@ -643,7 +769,7 @@ std::string hex_decode_journal_field(std::string_view hex) {
     return out;
 }
 
-void print_journal() {
+std::string build_journal_json() {
     struct JournalRow {
         std::string path;
         std::string factory_value;
@@ -715,6 +841,66 @@ void print_journal() {
             << ",\"modified\":" << (e.modified ? "true" : "false") << '}';
     }
     out << "]}";
+    return out.str();
+}
+
+void print_journal() {
+    std::cout << build_journal_json() << "\n" << std::flush;
+}
+
+bool read_live_status_snapshot_str(pid_t expected_pid, std::string& out_payload) {
+    if (expected_pid <= 0) return false;
+    UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return false;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 512 * 1024) {
+        return false;
+    }
+    const auto now = std::chrono::system_clock::now();
+    const auto mod = std::chrono::system_clock::from_time_t(st.st_mtime);
+    if (now < mod || now - mod > std::chrono::seconds(4)) return false;
+    std::string payload(static_cast<size_t>(st.st_size), '\0');
+    size_t off = 0;
+    while (off < payload.size()) {
+        const ssize_t n = ::read(fd.get(), payload.data() + off, payload.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        off += static_cast<size_t>(n);
+    }
+    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid) + ",";
+    if (payload.find("\"running\":true") == std::string::npos ||
+        payload.find(pid_field) == std::string::npos ||
+        payload.front() != '{' || payload.back() != '}') {
+        return false;
+    }
+    out_payload = std::move(payload);
+    return true;
+}
+
+void print_diag() {
+    std::string status_json;
+    const pid_t live = daemon_pid();
+    if (!(live > 0 && read_live_status_snapshot_str(live, status_json))) {
+        status_json = build_readonly_status_json();
+    }
+    const std::string caps_json = build_capabilities_json();
+    const std::string journal_json = build_journal_json();
+#ifndef COREFLOW_BUILD_COMMIT
+#define COREFLOW_BUILD_COMMIT "unknown"
+#endif
+    std::ostringstream out;
+    out << "{\"reportFormat\":\"coreflow-diag-v1\""
+        << ",\"version\":" << json_str(kVersion)
+        << ",\"commit\":" << json_str(COREFLOW_BUILD_COMMIT)
+        << ",\"generatedAtMs\":" << epoch_now_ms()
+        << ",\"safetyMarkers\":{"
+        << "\"safeMode\":" << (marker_exists("/data/adb/coreflow/SAFE_MODE") ? "true" : "false")
+        << ",\"disable\":" << (marker_exists("/data/adb/coreflow/DISABLE") ? "true" : "false")
+        << "}"
+        << ",\"capabilities\":" << caps_json
+        << ",\"status\":" << status_json
+        << ",\"journal\":" << journal_json
+        << "}";
     std::cout << out.str() << "\n" << std::flush;
 }
 
@@ -784,17 +970,21 @@ int main(int argc, char* argv[]) {
             print_journal();
             return 0;
         }
+        if (cmd == "--diag") {
+            print_diag();
+            return 0;
+        }
         if (cmd == "--stop" || cmd == "--rollback-baseline") {
             return stop_daemon();
         }
         if (cmd == "--daemon" || cmd == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--stop|--rollback-baseline|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--stop|--rollback-baseline|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--diag|--stop|--rollback-baseline|--set-config key=value ...]\n";
         return 2;
     }
 
@@ -852,7 +1042,9 @@ int main(int argc, char* argv[]) {
         context_engine.set_profile(ContextEngine::parse_profile(config.profile));
         context_engine.set_app_rules(
             DaemonConfig::parse_package_list(config.gaming_apps),
-            DaemonConfig::parse_package_list(config.excluded_apps));
+            DaemonConfig::parse_package_list(config.excluded_apps),
+            DaemonConfig::parse_package_list(config.smoothness_apps),
+            DaemonConfig::parse_package_list(config.battery_apps));
         longevity.initialize({
             config.enable_battery_step_charging,
             config.enable_storage_burst,
@@ -879,14 +1071,17 @@ int main(int argc, char* argv[]) {
     EpollReactor reactor;
     NativeInputEventSource input_source(reactor);
     CpuUtilSampler cpu_sampler;
+    RenderLoadSampler render_sampler;
 
     RuntimeStatusData live_status{};
     live_status.running = true;
     live_status.pid = ::getpid();
     live_status.config = config;
+    live_status.ctx.effective_profile = context_engine.profile();
     live_status.topo = topo;
     live_status.thread_stats = thread_scheduler.stats();
     live_status.battery = longevity.sample_battery_telemetry();
+    live_status.session.started_steady_ms = steady_now_ms();
     bool last_screen_off = false;
     ForegroundAppInfo last_fg{};
     MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
@@ -919,6 +1114,7 @@ int main(int argc, char* argv[]) {
         d.refresh_hz = topo.refresh_hz;
         d.cpu_psi = live_status.cpu_psi.value_or(0.0);
         d.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        d.render_pressure = live_status.render_pressure;
         return d;
     };
     const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
@@ -936,6 +1132,15 @@ int main(int argc, char* argv[]) {
         return e;
     };
 
+    const auto collect_contended_paths = [&]() {
+        std::vector<std::string> merged = storage_memory.contended_paths();
+        const auto env_paths = thermal_envelope.contended_paths();
+        merged.insert(merged.end(), env_paths.begin(), env_paths.end());
+        std::sort(merged.begin(), merged.end());
+        merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+        return merged;
+    };
+
     // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
     if (!input_source.start([&](const FrameEvent&) {
             if (config.inspection_mode || live_status.thermal_emergency || last_screen_off) return;
@@ -950,10 +1155,11 @@ int main(int argc, char* argv[]) {
                 sig.gpu_busy_pct = live_status.gpu_busy_pct;
                 sig.foreground_pid = last_fg.pid;
                 sig.foreground_package = last_fg.package_name;
+                sig.has_game_thread = last_fg.has_game_thread;
                 live_status.ctx = context_engine.evaluate(sig);
                 const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
                 thread_scheduler.apply(
-                    live_status.ctx.mode, context_engine.profile(),
+                    live_status.ctx.mode, live_status.ctx.effective_profile,
                     live_status.capacity_scale, live_status.thermal_guard,
                     config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
                     build_thread_demand());
@@ -994,13 +1200,15 @@ int main(int argc, char* argv[]) {
                         config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
                     live_status.config = config;
                     live_status.topo = topo;
+                    live_status.ctx.effective_profile = context_engine.profile();
                     const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec ts{};
                     ts.it_interval.tv_sec = ms / 1000;
                     ts.it_interval.tv_nsec = (ms % 1000) * 1000000L;
                     ts.it_value = ts.it_interval;
                     if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
-                    emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile + ").");
+                    emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile +
+                             ", paused=" + (config.inspection_mode ? "yes" : "no") + ").");
                 } else {
                     reactor.stop();
                 }
@@ -1010,8 +1218,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Fast path 2 (500 ms while screen ON): Foreground app change & launch burst trigger
-    (void)reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
+    // Fast path 2 (200 ms while screen ON): Rapid foreground app change & launch burst trigger
+    (void)reactor.create_timerfd(std::chrono::milliseconds(200), [&](uint32_t) {
         if (last_screen_off || config.inspection_mode || live_status.thermal_emergency) return;
         const auto fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
         const bool changed = fg.pid != last_fg.pid || fg.package_name != last_fg.package_name;
@@ -1029,32 +1237,37 @@ int main(int argc, char* argv[]) {
         sig.gpu_busy_pct = live_status.gpu_busy_pct;
         sig.foreground_pid = fg.pid;
         sig.foreground_package = fg.package_name;
+        sig.has_game_thread = fg.has_game_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
+        if (live_status.ctx.newly_launched_app) {
+            ++live_status.session.launch_bursts;
+        }
         if (changed || live_status.ctx.mode != prev_mode) {
             const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
             thread_scheduler.apply(
-                live_status.ctx.mode, context_engine.profile(),
+                live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_frame_smoothness, sf_tids, fg.critical_tids,
                 build_thread_demand());
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
             storage_memory.apply(
-                topo, sysfs_ctx, context_engine.profile(),
+                topo, sysfs_ctx, live_status.ctx.effective_profile,
                 config.enable_storage_burst, config.enable_memory_guard, now_ms,
                 build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
-                topo, sysfs_ctx.mode, context_engine.profile(),
+                topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_thermal_pacing,
-                build_envelope_telemetry());
+                build_envelope_telemetry(), now_ms);
             live_status.thread_stats = thread_scheduler.stats();
             live_status.storage_stats = storage_memory.stats();
             live_status.envelope_stats = thermal_envelope.stats();
+            live_status.contended_paths = collect_contended_paths();
         }
     });
 
-    // Main control path (default 1000 ms): Thermal + PSI + Neural 10s + Rust PID + All 4 Pillars + Status JSON
+    // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + All 4 Pillars + Status JSON
     const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
     thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
         if (safety_halt_requested()) {
@@ -1067,6 +1280,9 @@ int main(int argc, char* argv[]) {
             std::chrono::duration<double>(now_tp - last_thermal_tick).count(), 0.001, 60.0);
         last_thermal_tick = now_tp;
         const uint64_t now_ms = steady_now_ms();
+        if (now_ms >= live_status.session.started_steady_ms) {
+            live_status.session.uptime_sec = (now_ms - live_status.session.started_steady_ms) / 1000ULL;
+        }
 
         const auto tb = thermal_mon.sample_bundle(true);
         auto thermal = tb.assessment;
@@ -1111,14 +1327,26 @@ int main(int argc, char* argv[]) {
         live_status.mem_psi = mem_psi;
         live_status.io_psi = io_psi;
 
+        if (std::isfinite(soc_temp) && soc_temp > 0.0f) {
+            ++live_status.session.temp_samples;
+            live_status.session.temp_sum_celsius += static_cast<double>(soc_temp);
+            if (live_status.session.peak_soc_temp_celsius < 0.0 ||
+                static_cast<double>(soc_temp) > live_status.session.peak_soc_temp_celsius) {
+                live_status.session.peak_soc_temp_celsius = static_cast<double>(soc_temp);
+            }
+        }
+
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
+            live_status.contended_paths = collect_contended_paths();
             size_t active_nodes = 0U;
             for (const auto& entry : baseline.get_audit_trail()) {
                 if (entry.is_modified) ++active_nodes;
             }
             live_status.baseline_nodes = active_nodes;
             live_status.recovery_pending = active_nodes > 0U;
+            ++live_status.session.scale_samples;
+            live_status.session.scale_sum += live_status.capacity_scale;
             live_status.history.push_back(HistoryPoint{
                 .ts_ms = epoch_now_ms(),
                 .soc_temp = soc_temp >= 0.0f ? static_cast<double>(soc_temp) : -1.0,
@@ -1139,6 +1367,10 @@ int main(int argc, char* argv[]) {
         if ((batt_temp > 0.0f && batt_temp >= 58.0f) || soc_temp >= 95.0f) {
             live_status.thermal_emergency = true;
             live_status.thermal_guard = true;
+            if (!live_status.session.prev_thermal_guard) {
+                ++live_status.session.thermal_guard_events;
+                live_status.session.prev_thermal_guard = true;
+            }
             live_status.capacity_scale = 0.25;
             thread_scheduler.reset_all();
             longevity.restore_oem_baseline();
@@ -1154,9 +1386,13 @@ int main(int argc, char* argv[]) {
                (live_status.thermal_guard && thermal.pressure > 65.0))
             : (thermal.emergency || soc_temp >= config.thermal_trip_celsius ||
                (live_status.thermal_guard && soc_temp > config.thermal_recover_celsius));
+        if (thermal_guard && !live_status.session.prev_thermal_guard) {
+            ++live_status.session.thermal_guard_events;
+        }
+        live_status.session.prev_thermal_guard = thermal_guard;
         live_status.thermal_guard = thermal_guard;
 
-        // 10s Neural thermal lookahead + Rust PID capacity scale
+        // 10s Online RLS + Micro-MLP thermal lookahead + Rust PID capacity scale
         const auto ai = neural.infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
@@ -1198,6 +1434,9 @@ int main(int argc, char* argv[]) {
 
         if (!screen_off) {
             last_fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
+            live_status.render_pressure = render_sampler.sample(last_fg.pid, last_fg.critical_tids, elapsed);
+        } else {
+            live_status.render_pressure = render_sampler.sample(0, {}, elapsed);
         }
 
         ContextSignalInput sig{};
@@ -1208,25 +1447,29 @@ int main(int argc, char* argv[]) {
         sig.gpu_busy_pct = gpu_busy;
         sig.foreground_pid = screen_off ? 0 : last_fg.pid;
         sig.foreground_package = screen_off ? std::string{} : last_fg.package_name;
+        sig.has_game_thread = !screen_off && last_fg.has_game_thread;
         live_status.ctx = context_engine.evaluate(sig);
+        if (live_status.ctx.newly_launched_app) {
+            ++live_status.session.launch_bursts;
+        }
 
         if (!config.inspection_mode) {
             const auto sf_tids = screen_off ? std::vector<int32_t>{} : context_engine.resolve_surfaceflinger_tids();
             thread_scheduler.apply(
-                live_status.ctx.mode, context_engine.profile(),
+                live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, thermal_guard,
                 config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
                 build_thread_demand());
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
             storage_memory.apply(
-                topo, sysfs_ctx, context_engine.profile(),
+                topo, sysfs_ctx, live_status.ctx.effective_profile,
                 config.enable_storage_burst, config.enable_memory_guard, now_ms,
                 build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
-                topo, sysfs_ctx.mode, context_engine.profile(),
+                topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, thermal_guard,
                 config.enable_thermal_pacing,
-                build_envelope_telemetry());
+                build_envelope_telemetry(), now_ms);
             longevity.monitor_battery_thermals(soc_temp);
         } else {
             thread_scheduler.reset_all();
@@ -1239,7 +1482,7 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v5.0.2 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v5.1.0 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") + ").");
 
@@ -1254,6 +1497,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v5.0.2 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v5.1.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }

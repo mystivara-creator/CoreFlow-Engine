@@ -1,6 +1,6 @@
 {
-  "version": "v5.0.2",
-  "versionCode": 50200,
-  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v5.0.2/CFAE-System-Framework-v5.0.2-arm64.zip",
-  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v5.0.2/CHANGELOG.md"
+  "version": "v5.1.0",
+  "versionCode": 51000,
+  "zipUrl": "https://github.com/mystivara-creator/CoreFlow-Engine/releases/download/v5.1.0/CFAE-System-Framework-v5.1.0-arm64.zip",
+  "changelog": "https://raw.githubusercontent.com/mystivara-creator/CoreFlow-Engine/v5.1.0/CHANGELOG.md"
 }

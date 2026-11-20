@@ -58,6 +58,11 @@ case "${1:-}" in
     echo '{"journal":"available"}'
     exit 0
     ;;
+  --diag)
+    printf '%s\n' --diag >> "$COREFLOW_DAEMON_COMMAND_LOG"
+    echo '{"reportFormat":"coreflow-diag-v1"}'
+    exit 0
+    ;;
   --rollback-baseline)
     printf '%s\n' --rollback-baseline >> "$COREFLOW_DAEMON_COMMAND_LOG"
     exit "${COREFLOW_MOCK_ROLLBACK_RESULT:-0}"
@@ -92,14 +97,14 @@ done
 [ "$(cat "$STATE_DIR/boot_attempts")" = "5" ] || { echo "FAIL: boot_attempts != 5"; exit 1; }
 [ -f "$STATE_DIR/SAFE_MODE" ] || { echo "FAIL: SAFE_MODE not triggered at 5 boots"; exit 1; }
 
-# 3. Test customize.sh hot-upgrade preserves SAFE_MODE and DISABLE markers
+# 3. Test customize.sh hot-upgrade preserves SAFE_MODE and DISABLE markers (on Android 13 / API 33)
 mkdir -p "$LIVE_MOD/system/bin"
 cp "$MOD_DIR/system/bin/coreflowd" "$LIVE_MOD/system/bin/coreflowd"
 touch "$STATE_DIR/DISABLE"
 
 run_customize() (
   ARCH="arm64"
-  API="35"
+  API="${1:-33}"
   MODPATH="$MOD_DIR"
   COREFLOW_TEST_ALLOW_NON_ELF_BINARY=1
   ui_print() { :; }
@@ -108,7 +113,11 @@ run_customize() (
   set_perm_recursive() { :; }
   . "$MOD_DIR/customize.sh"
 )
-run_customize
+if run_customize 32 2>/dev/null; then
+  echo "FAIL: customize.sh accepted unsupported Android API 32"
+  exit 1
+fi
+run_customize 33
 
 [ -f "$STATE_DIR/SAFE_MODE" ] || { echo "FAIL: customize.sh deleted SAFE_MODE"; exit 1; }
 [ -f "$STATE_DIR/DISABLE" ] || { echo "FAIL: customize.sh deleted DISABLE"; exit 1; }
@@ -116,7 +125,7 @@ run_customize
 
 # 4. Clear safety markers and verify customize.sh hot-reloads and verifies daemon status
 rm -f "$STATE_DIR/SAFE_MODE" "$STATE_DIR/DISABLE"
-run_customize
+run_customize 35
 [ -f "$STATE_DIR/coreflowd.pid" ] || { echo "FAIL: daemon did not start after clearing markers"; exit 1; }
 
 # 5. Concurrent service invocations must result in one deterministic daemon launch.
@@ -158,6 +167,11 @@ grep -q '"running":true' "$TMP_ROOT/action-status.out" || {
 sh "$MOD_DIR/action.sh" journal > "$TMP_ROOT/action-journal.out"
 grep -q '"journal":"available"' "$TMP_ROOT/action-journal.out" || {
   echo "FAIL: action.sh journal did not invoke the module-local daemon"
+  exit 1
+}
+sh "$MOD_DIR/action.sh" diag > "$TMP_ROOT/action-diag.out"
+grep -q '"reportFormat":"coreflow-diag-v1"' "$TMP_ROOT/action-diag.out" || {
+  echo "FAIL: action.sh diag did not invoke the module-local daemon"
   exit 1
 }
 printf 'wal\n' > "$STATE_DIR/direct-adaptive.wal"

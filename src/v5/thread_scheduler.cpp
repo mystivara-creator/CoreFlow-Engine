@@ -1,7 +1,7 @@
 /**
  * @file thread_scheduler.cpp
  * @brief CoreFlow v5 Pillar 3A: Per-Thread UClamp actuator via Linux SYS_sched_setattr.
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/v5/thread_scheduler.hpp"
 
@@ -106,9 +106,10 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
     const double hz = static_cast<double>(std::clamp(demand.refresh_hz, 60U, 240U));
     const double hz_factor = std::clamp(1.0 + std::log2(hz / 60.0) * 0.18, 1.0, 1.28);
 
-    // Live scheduling contention feedback from PSI & GPU utilization.
+    // Live scheduling contention & closed-loop RenderThread saturation feedback.
     const double psi_norm = std::isfinite(demand.cpu_psi) ? std::clamp(demand.cpu_psi / 100.0, 0.0, 1.0) : 0.0;
     const double gpu_norm = std::isfinite(demand.gpu_busy_pct) ? std::clamp(demand.gpu_busy_pct / 100.0, 0.0, 1.0) : 0.0;
+    const double render_norm = std::isfinite(demand.render_pressure) ? std::clamp(demand.render_pressure, 0.0, 1.0) : 0.0;
 
     const double profile_bias =
         profile == PerformanceProfile::Smoothness ? 1.18 :
@@ -119,15 +120,16 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
     switch (mode) {
         case ContextMode::LaunchBurst:
             // Place cold-start UI/Render threads cleanly above little_cap onto mid/big cores.
-            anchor_floor = (mid_cap * 0.82 + little_cap * 0.18) * (1.0 + psi_norm * 0.15);
+            anchor_floor = (mid_cap * 0.82 + little_cap * 0.18) * (1.0 + psi_norm * 0.15 + render_norm * 0.12);
             break;
         case ContextMode::Interactive:
-            // Hover smoothly around little_cap knee; lift across cluster boundary under high-Hz or PSI.
-            anchor_floor = little_cap * (0.68 + psi_norm * 0.35) * hz_factor;
+            // Hover smoothly around little_cap knee; lift across cluster boundary under high-Hz, PSI, or render load.
+            anchor_floor = little_cap * (0.68 + psi_norm * 0.35 + render_norm * 0.42) * hz_factor;
             break;
         case ContextMode::Gaming:
-            // Scale dynamically between little_cap and mid_cap with live GPU + CPU pressure.
-            anchor_floor = (little_cap + (mid_cap - little_cap) * std::clamp(0.35 + gpu_norm * 0.45 + psi_norm * 0.25, 0.20, 1.0)) * hz_factor;
+            // Scale dynamically between little_cap and mid_cap with live GPU + CPU + RenderThread pressure.
+            anchor_floor = (little_cap + (mid_cap - little_cap) *
+                std::clamp(0.35 + gpu_norm * 0.45 + psi_norm * 0.25 + render_norm * 0.30, 0.20, 1.0)) * hz_factor;
             break;
         default:
             return {0U, 1024U};

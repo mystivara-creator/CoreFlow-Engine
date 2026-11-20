@@ -1,7 +1,7 @@
 /**
- * CFAE System Framework v4.0.0 JavaScript RPC Bridge for KernelSU & APatch
- * Read-only diagnostic surface for native daemon status, capabilities, journal, and CF-DVS state.
- * @license MIT
+ * CFAE System Framework v5.1.0 JavaScript RPC Bridge for KernelSU, APatch & Magisk (KsuWebUI/MMRL)
+ * Read-only diagnostic surface for native daemon status, capabilities, journal, and diagnostic bundle.
+ * @license Apache-2.0
  */
 (function (global) {
   'use strict';
@@ -85,7 +85,7 @@
   }
 
   var CoreFlow = {
-    version: '4.0.0',
+    version: '5.1.0',
     hasBridge: hasBridge,
     getStatus: async function () {
       var res = await execCommand(RESOLVE_BIN + '; "$BIN" --status');
@@ -99,6 +99,11 @@
     },
     getJournal: async function () {
       var res = await execCommand(RESOLVE_BIN + '; "$BIN" --journal');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      return parseCleanJson(res.stdout);
+    },
+    getDiag: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --diag');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return parseCleanJson(res.stdout);
     },

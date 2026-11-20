@@ -1,7 +1,7 @@
 /**
  * @file mutation_coordinator.cpp
  * @brief Thread-safe cross-controller mutation ownership and preemption dispatch.
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/baseline_store.hpp"

@@ -1,7 +1,7 @@
 /**
  * @file neural_predictor.cpp
  * @brief Hybrid ONNX Runtime C-API Bridge & Online RLS-MLP Thermal/Workload Predictor
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/neural_predictor.hpp"
 #include "coreflow/config.hpp"

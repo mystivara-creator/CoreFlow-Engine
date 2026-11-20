@@ -1,7 +1,7 @@
 /**
  * @file neural_predictor.hpp
  * @brief Hybrid ONNX Runtime C-API Bridge & Online RLS-MLP Thermal/Workload Predictor
- * @license MIT
+ * @license Apache-2.0
  *
  * Implements a two-tier real inference engine for coreflowd:
  * 1. Dynamic ONNX Runtime C-API session (via dlopen of libonnxruntime.so + .onnx model)

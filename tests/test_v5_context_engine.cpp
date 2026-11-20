@@ -132,6 +132,41 @@ int main() {
     sig.screen_off = true;
     assert(engine.evaluate(sig).mode == ContextMode::ScreenOff);
 
+    // 8. 4-profile per-app rules (smoothness_apps & battery_apps set effective_profile cleanly)
+    engine.set_profile(PerformanceProfile::Balanced);
+    engine.set_app_rules(
+        {"com.example.forcedgame"},
+        {"com.android.camera"},
+        {"com.instagram.android"},
+        {"com.whatsapp"});
+    sig.screen_off = false;
+    sig.now_ms = 14000;
+    sig.foreground_pid = 7001;
+    sig.foreground_package = "com.instagram.android";
+    dec = engine.evaluate(sig);
+    assert(dec.effective_profile == PerformanceProfile::Smoothness);
+
+    sig.now_ms = 17000;
+    sig.foreground_pid = 7002;
+    sig.foreground_package = "com.whatsapp";
+    dec = engine.evaluate(sig);
+    assert(dec.effective_profile == PerformanceProfile::Battery);
+
+    // 9. GPU-less MediaTek/emulator auto-gaming via game engine thread + sustained CPU load
+    assert(ContextEngine::is_game_engine_thread_name("EmuThread"));
+    assert(ContextEngine::is_critical_render_thread_name("CrRendererMain"));
+    sig.gpu_busy_pct = std::nullopt;
+    sig.has_game_thread = true;
+    sig.cpu_util_pct = 62.0;
+    sig.foreground_pid = 7003;
+    sig.foreground_package = "org.ppsspp.ppsspp";
+    sig.now_ms = 20000;
+    assert(engine.evaluate(sig).mode == ContextMode::LaunchBurst);
+    sig.now_ms = 22500;
+    (void)engine.evaluate(sig);
+    sig.now_ms = 23500;
+    assert(engine.evaluate(sig).mode == ContextMode::Gaming);
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

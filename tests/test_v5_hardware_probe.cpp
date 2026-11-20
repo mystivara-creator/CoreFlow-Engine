@@ -117,6 +117,39 @@ int main() {
     const auto cpu_psi = probe.read_psi_avg10("cpu");
     assert(cpu_psi.has_value() && *cpu_psi == 12.5);
 
+    // MediaTek GED GPU + OLED DRM DPMS / bl_power + sugov_ext custom governor probe
+    {
+        const fs::path mtk_sys = root / "mtk_sys";
+        const fs::path mtk_proc = root / "mtk_proc";
+        const fs::path mp0 = mtk_sys / "devices/system/cpu/cpufreq/policy0";
+        write_file(mp0 / "scaling_available_frequencies", "400000 1200000 2000000\n");
+        write_file(mp0 / "scaling_governor", "sugov_ext\n");
+        write_file(mp0 / "sugov_ext/up_rate_limit_us", "500\n");
+        write_file(mtk_sys / "module/ged/parameters/gpu_loading", "54 0 0\n");
+        const fs::path oled_bl = mtk_sys / "class/backlight/panel0-backlight";
+        write_file(oled_bl / "brightness", "120\n");
+        write_file(oled_bl / "max_brightness", "4095\n");
+        write_file(oled_bl / "bl_power", "0\n");
+        const fs::path drm = mtk_sys / "class/drm/card0-DSI-1";
+        write_file(drm / "status", "connected\n");
+        write_file(drm / "dpms", "On\n");
+
+        HardwareProbe mtk_probe(mtk_sys.string(), mtk_proc.string());
+        const HardwareTopology mtk_topo = mtk_probe.discover();
+        assert(mtk_topo.cpu_clusters.size() == 1U);
+        assert(!mtk_topo.cpu_clusters[0].up_rate_limit_path.empty());
+        assert(mtk_topo.gpu.available && mtk_topo.gpu.is_mtk_ged);
+        const auto mtk_busy = mtk_probe.read_gpu_busy_pct(mtk_topo);
+        assert(mtk_busy.has_value() && *mtk_busy == 54.0);
+        assert(!mtk_probe.is_screen_off(mtk_topo));
+        // OLED AOD / DPMS Off triggers ScreenOff even when brightness is non-zero
+        write_file(drm / "dpms", "Off\n");
+        assert(mtk_probe.is_screen_off(mtk_topo));
+        write_file(drm / "dpms", "On\n");
+        write_file(oled_bl / "bl_power", "4\n");
+        assert(mtk_probe.is_screen_off(mtk_topo));
+    }
+
     fs::remove_all(root);
     std::cout << "v5 HardwareProbe tests passed\n";
     return 0;

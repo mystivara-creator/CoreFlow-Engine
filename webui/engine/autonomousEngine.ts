@@ -1,8 +1,9 @@
 /**
- * CoreFlow Engine v5.0.2 — Lean 4-Pillar WebUI Data Contract, Validators & Preview Simulator.
+ * CoreFlow Engine v5.1.0 — Lean 4-Pillar WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
+export type AppRuleCategory = 'default' | 'gaming' | 'smoothness' | 'battery' | 'excluded';
 
 export type ContextModeName =
   | 'LAUNCH_BURST'
@@ -24,6 +25,8 @@ export interface CoreFlowFeatures {
 
 export interface CoreFlowAppRules {
   gaming: string[];
+  smoothness: string[];
+  battery: string[];
   excluded: string[];
 }
 
@@ -39,6 +42,7 @@ export interface CoreFlowActuatorStats {
   prereadBytes: number;
   managedEnvelopeNodes: number;
   contendedNodes: number;
+  contendedPaths: string[];
 }
 
 export interface CoreFlowHardwareInfo {
@@ -68,6 +72,15 @@ export interface BatteryPowerTelemetry {
   status: string;
 }
 
+export interface SessionSummary {
+  uptimeSec: number;
+  launchBursts: number;
+  thermalGuardEvents: number;
+  avgSocTempCelsius: number | null;
+  peakSocTempCelsius: number | null;
+  avgCapacityScale: number;
+}
+
 export interface HistorySample {
   ts: number;
   temp: number | null;
@@ -82,6 +95,7 @@ export interface CoreFlowV5Status {
   running: boolean;
   pid: number;
   profile: PerformanceProfile;
+  effectiveProfile: PerformanceProfile;
   inspectionMode: boolean;
   mode: ContextModeName;
   foregroundPackage: string;
@@ -93,6 +107,7 @@ export interface CoreFlowV5Status {
   thermalPressure: number;
   thermalSource: string;
   cpuUtilPct: number;
+  renderPressure: number;
   gpuBusyPct: number | null;
   cpuPsi: number | null;
   memPsi: number | null;
@@ -106,6 +121,7 @@ export interface CoreFlowV5Status {
   actuators: CoreFlowActuatorStats;
   hardware: CoreFlowHardwareInfo;
   batteryPower: BatteryPowerTelemetry;
+  session: SessionSummary;
   history: HistorySample[];
 }
 
@@ -115,6 +131,13 @@ export interface ReactionLogEvent {
   type: 'INFO' | 'THERMAL' | 'BOOST' | 'BASELINE';
   tag: string;
   message: string;
+}
+
+export interface PillarReadinessItem {
+  id: string;
+  name: string;
+  ready: boolean;
+  detail: string;
 }
 
 export const PROFILE_META: Record<
@@ -178,6 +201,107 @@ export function sanitizePackageList(packages: string[]): string[] {
   return out;
 }
 
+export function parseInstalledPackages(rawPmOutput: string): string[] {
+  const pkgs: string[] = [];
+  for (const line of rawPmOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const pkg = trimmed.startsWith('package:') ? trimmed.slice('package:'.length).trim() : trimmed;
+    if (isValidPackageName(pkg)) pkgs.push(pkg);
+  }
+  return Array.from(new Set(pkgs)).sort((a, b) => a.localeCompare(b));
+}
+
+export function getPackageRuleCategory(apps: CoreFlowAppRules, pkg: string): AppRuleCategory {
+  const lower = pkg.trim().toLowerCase();
+  if (!lower) return 'default';
+  if (apps.excluded.some((x) => x.toLowerCase() === lower)) return 'excluded';
+  if (apps.gaming.some((x) => x.toLowerCase() === lower)) return 'gaming';
+  if (apps.smoothness.some((x) => x.toLowerCase() === lower)) return 'smoothness';
+  if (apps.battery.some((x) => x.toLowerCase() === lower)) return 'battery';
+  return 'default';
+}
+
+export function assignPackageRule(
+  apps: CoreFlowAppRules,
+  rawPkg: string,
+  category: AppRuleCategory
+): CoreFlowAppRules {
+  const pkg = rawPkg.trim();
+  if (!isValidPackageName(pkg)) return apps;
+  const lower = pkg.toLowerCase();
+  const next: CoreFlowAppRules = {
+    gaming: apps.gaming.filter((x) => x.toLowerCase() !== lower),
+    smoothness: apps.smoothness.filter((x) => x.toLowerCase() !== lower),
+    battery: apps.battery.filter((x) => x.toLowerCase() !== lower),
+    excluded: apps.excluded.filter((x) => x.toLowerCase() !== lower),
+  };
+  if (category !== 'default') {
+    next[category] = sanitizePackageList([...next[category], pkg]);
+  }
+  return next;
+}
+
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0m';
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+export function computePillarReadiness(status: CoreFlowV5Status): {
+  readyCount: number;
+  total: number;
+  pillars: PillarReadinessItem[];
+} {
+  const p1 = status.actuators.perThreadUclampSupported && status.features.frameSmoothness;
+  const p2 = status.hardware.storageType !== 'Unknown' && status.features.storageBurst;
+  const p3 = status.features.memoryGuard;
+  const p4 = status.features.thermalPacing && status.thermalSource !== 'unavailable';
+  const pillars: PillarReadinessItem[] = [
+    {
+      id: 'p1',
+      name: 'Frame Smoothness',
+      ready: p1,
+      detail: status.actuators.perThreadUclampSupported
+        ? `Per-TID UClamp (${status.actuators.boostedTids} TIDs)`
+        : 'Kernel lacks per-TID UClamp',
+    },
+    {
+      id: 'p2',
+      name: 'Storage Burst & QoS',
+      ready: p2,
+      detail:
+        status.hardware.storageType !== 'Unknown'
+          ? `${status.hardware.storageType} · ${status.actuators.readAheadKb || 'OEM'} KB`
+          : 'Storage queue pending',
+    },
+    {
+      id: 'p3',
+      name: 'Memory & Pre-Read',
+      ready: p3,
+      detail: status.hardware.mglruAvailable
+        ? `MGLRU Active · ${status.actuators.prereadFiles} prefetched`
+        : `Adaptive VM · ${status.actuators.prereadFiles} prefetched`,
+    },
+    {
+      id: 'p4',
+      name: 'Thermal PID Guard',
+      ready: p4,
+      detail: `${Math.round(status.capacityScale * 100)}% budget · ${status.thermalSource}`,
+    },
+  ];
+  return {
+    readyCount: pillars.filter((p) => p.ready).length,
+    total: 4,
+    pillars,
+  };
+}
+
 const ALLOWED_SET_CONFIG_KEYS = new Set([
   'profile',
   'inspection_mode',
@@ -187,15 +311,19 @@ const ALLOWED_SET_CONFIG_KEYS = new Set([
   'enable_thermal_pacing',
   'enable_battery_step_charging',
   'gaming_apps',
+  'smoothness_apps',
+  'battery_apps',
   'excluded_apps',
 ]);
+
+const APP_LIST_KEYS = new Set(['gaming_apps', 'smoothness_apps', 'battery_apps', 'excluded_apps']);
 
 // Builds a shell-safe single-quoted argument string for `coreflowd --set-config`.
 export function buildSafeSetConfigArg(key: string, value: string): string | null {
   if (!ALLOWED_SET_CONFIG_KEYS.has(key)) return null;
   if (key === 'profile') {
     if (!['balanced', 'smoothness', 'battery', 'gaming'].includes(value)) return null;
-  } else if (key === 'gaming_apps' || key === 'excluded_apps') {
+  } else if (APP_LIST_KEYS.has(key)) {
     if (value.length > 0) {
       const items = value.split(',').map((s) => s.trim()).filter(Boolean);
       if (items.some((item) => !isValidPackageName(item))) return null;
@@ -207,6 +335,9 @@ export function buildSafeSetConfigArg(key: string, value: string): string | null
   // Single quotes with strict allowlisted charset make shell injection impossible.
   return `'${key}=${value}'`;
 }
+
+const parseProfile = (raw: unknown): PerformanceProfile =>
+  raw === 'smoothness' || raw === 'battery' || raw === 'gaming' ? raw : 'balanced';
 
 export function parseV5Status(raw: unknown): CoreFlowV5Status {
   if (!isRecord(raw)) throw new Error('Invalid status JSON root');
@@ -222,24 +353,23 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   ) {
     throw new Error('Unexpected CoreFlow v5 status schema');
   }
-  const profileRaw = typeof raw.profile === 'string' ? raw.profile : 'balanced';
-  const profile: PerformanceProfile =
-    profileRaw === 'smoothness' || profileRaw === 'battery' || profileRaw === 'gaming'
-      ? profileRaw
-      : 'balanced';
+  const profile = parseProfile(raw.profile);
+  const effectiveProfile = typeof raw.effectiveProfile === 'string' ? parseProfile(raw.effectiveProfile) : profile;
 
   const features = raw.features;
   const apps = raw.apps;
   const actuators = raw.actuators;
   const hw = raw.hardware;
   const batt = raw.batteryPower;
+  const sess = isRecord(raw.session) ? raw.session : {};
   const historyRaw = Array.isArray(raw.history) ? raw.history : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '5.0.2',
+    version: typeof raw.version === 'string' ? raw.version : '5.1.0',
     running: raw.running,
     pid: raw.pid,
     profile,
+    effectiveProfile,
     inspectionMode: raw.inspectionMode === true,
     mode: (raw.mode as ContextModeName) ?? 'EFFICIENCY',
     foregroundPackage: typeof raw.foregroundPackage === 'string' ? raw.foregroundPackage : '',
@@ -251,6 +381,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
     thermalPressure: isFiniteNum(raw.thermalPressure) ? raw.thermalPressure : 0,
     thermalSource: typeof raw.thermalSource === 'string' ? raw.thermalSource : 'unavailable',
     cpuUtilPct: isFiniteNum(raw.cpuUtilPct) ? raw.cpuUtilPct : 0,
+    renderPressure: isFiniteNum(raw.renderPressure) ? Math.max(0, Math.min(1, raw.renderPressure)) : 0,
     gpuBusyPct: isFiniteNum(raw.gpuBusyPct) ? raw.gpuBusyPct : null,
     cpuPsi: isFiniteNum(raw.cpuPsi) ? raw.cpuPsi : null,
     memPsi: isFiniteNum(raw.memPsi) ? raw.memPsi : null,
@@ -268,6 +399,8 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
     },
     apps: {
       gaming: Array.isArray(apps.gaming) ? apps.gaming.filter((x): x is string => typeof x === 'string') : [],
+      smoothness: Array.isArray(apps.smoothness) ? apps.smoothness.filter((x): x is string => typeof x === 'string') : [],
+      battery: Array.isArray(apps.battery) ? apps.battery.filter((x): x is string => typeof x === 'string') : [],
       excluded: Array.isArray(apps.excluded) ? apps.excluded.filter((x): x is string => typeof x === 'string') : [],
     },
     actuators: {
@@ -282,6 +415,9 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       prereadBytes: isFiniteNum(actuators.prereadBytes) ? actuators.prereadBytes : 0,
       managedEnvelopeNodes: isFiniteNum(actuators.managedEnvelopeNodes) ? actuators.managedEnvelopeNodes : 0,
       contendedNodes: isFiniteNum(actuators.contendedNodes) ? actuators.contendedNodes : 0,
+      contendedPaths: Array.isArray(actuators.contendedPaths)
+        ? actuators.contendedPaths.filter((x): x is string => typeof x === 'string')
+        : [],
     },
     hardware: {
       socModel: typeof hw.socModel === 'string' ? hw.socModel : 'Unknown SoC',
@@ -308,6 +444,14 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       oemBaselineUa: isFiniteNum(batt.oemBaselineUa) ? batt.oemBaselineUa : 0,
       status: typeof batt.status === 'string' && batt.status.length > 0 ? batt.status : 'Unavailable',
     },
+    session: {
+      uptimeSec: isFiniteNum(sess.uptimeSec) ? sess.uptimeSec : 0,
+      launchBursts: isFiniteNum(sess.launchBursts) ? sess.launchBursts : 0,
+      thermalGuardEvents: isFiniteNum(sess.thermalGuardEvents) ? sess.thermalGuardEvents : 0,
+      avgSocTempCelsius: isFiniteNum(sess.avgSocTempCelsius) ? sess.avgSocTempCelsius : null,
+      peakSocTempCelsius: isFiniteNum(sess.peakSocTempCelsius) ? sess.peakSocTempCelsius : null,
+      avgCapacityScale: isFiniteNum(sess.avgCapacityScale) ? sess.avgCapacityScale : 1,
+    },
     history: historyRaw
       .filter((h): h is Record<string, unknown> => isRecord(h) && isFiniteNum(h.ts))
       .map((h) => ({
@@ -331,13 +475,26 @@ export function computeHealthScore(status: CoreFlowV5Status): number {
   return Math.max(15, Math.min(100, Math.round(score)));
 }
 
+export const PREVIEW_INSTALLED_PACKAGES: string[] = [
+  'com.miHoYo.GenshinImpact',
+  'com.kurogame.wutheringwaves.global',
+  'com.mobile.legends',
+  'com.instagram.android',
+  'com.android.chrome',
+  'com.whatsapp',
+  'com.spotify.music',
+  'com.google.android.youtube',
+  'com.android.camera',
+];
+
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '5.0.2',
+    version: '5.1.0',
     running: true,
     pid: 1428,
     profile: 'balanced',
+    effectiveProfile: 'balanced',
     inspectionMode: false,
     mode: 'INTERACTIVE',
     foregroundPackage: 'com.android.chrome',
@@ -349,6 +506,7 @@ export function createPreviewStatus(): CoreFlowV5Status {
     thermalPressure: 41.2,
     thermalSource: 'android-thermal-preview',
     cpuUtilPct: 24.5,
+    renderPressure: 0.34,
     gpuBusyPct: 18.0,
     cpuPsi: 1.2,
     memPsi: 0.3,
@@ -366,6 +524,8 @@ export function createPreviewStatus(): CoreFlowV5Status {
     },
     apps: {
       gaming: ['com.miHoYo.GenshinImpact'],
+      smoothness: ['com.instagram.android'],
+      battery: ['com.whatsapp'],
       excluded: ['com.android.camera'],
     },
     actuators: {
@@ -376,10 +536,11 @@ export function createPreviewStatus(): CoreFlowV5Status {
       storageBurstActive: false,
       readAheadKb: 128,
       backgroundIsolated: true,
-      prereadFiles: 12,
-      prereadBytes: 24 * 1024 * 1024,
+      prereadFiles: 18,
+      prereadBytes: 42 * 1024 * 1024,
       managedEnvelopeNodes: 8,
       contendedNodes: 0,
+      contendedPaths: [],
     },
     hardware: {
       socModel: 'Preview ARM64 SoC (Browser Demo)',
@@ -406,6 +567,14 @@ export function createPreviewStatus(): CoreFlowV5Status {
       oemBaselineUa: 3000000,
       status: 'Discharging',
     },
+    session: {
+      uptimeSec: 2540,
+      launchBursts: 14,
+      thermalGuardEvents: 0,
+      avgSocTempCelsius: 37.2,
+      peakSocTempCelsius: 41.6,
+      avgCapacityScale: 0.97,
+    },
     history: Array.from({ length: 20 }, (_, i) => ({
       ts: now - (19 - i) * 2000,
       temp: Number((37.0 + Math.sin(i * 0.4) * 1.2).toFixed(1)),
@@ -428,12 +597,14 @@ export function stepPreviewStatus(prev: CoreFlowV5Status, tick: number): CoreFlo
   return {
     ...prev,
     mode: nextMode,
+    effectiveProfile: nextMode === 'GAMING' ? 'gaming' : prev.profile,
     foregroundPackage:
       nextMode === 'GAMING' ? 'com.miHoYo.GenshinImpact' :
       nextMode === 'LAUNCH_BURST' ? 'com.instagram.android' : 'com.android.chrome',
     socTempCelsius: temp,
     thermalPressure: pressure,
     cpuUtilPct: cpu,
+    renderPressure: nextMode === 'GAMING' ? 0.62 : nextMode === 'LAUNCH_BURST' ? 0.48 : 0.18,
     gpuBusyPct: nextMode === 'GAMING' ? 68 : nextMode === 'LAUNCH_BURST' ? 24 : 8,
     capacityScale: scale,
     actuators: {
@@ -444,6 +615,12 @@ export function stepPreviewStatus(prev: CoreFlowV5Status, tick: number): CoreFlo
       storageBurstActive: nextMode === 'LAUNCH_BURST',
       readAheadKb: nextMode === 'LAUNCH_BURST' ? 512 : 128,
       backgroundIsolated: nextMode !== 'EFFICIENCY',
+    },
+    session: {
+      ...prev.session,
+      uptimeSec: prev.session.uptimeSec + 2,
+      launchBursts: prev.session.launchBursts + (nextMode === 'LAUNCH_BURST' ? 1 : 0),
+      peakSocTempCelsius: Math.max(prev.session.peakSocTempCelsius ?? temp, temp),
     },
     history: [...prev.history, nextPoint].slice(-60),
   };

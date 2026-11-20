@@ -1,7 +1,7 @@
 /**
  * @file context_engine.cpp
  * @brief CoreFlow v5 Pillar 2: 5-Mode Context Classifier, Foreground App & Critical Thread Resolver.
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/v5/context_engine.hpp"
 
@@ -139,14 +139,24 @@ void ContextEngine::set_profile(PerformanceProfile profile) noexcept {
 
 void ContextEngine::set_app_rules(
     const std::vector<std::string>& gaming_apps,
-    const std::vector<std::string>& excluded_apps) {
+    const std::vector<std::string>& excluded_apps,
+    const std::vector<std::string>& smoothness_apps,
+    const std::vector<std::string>& battery_apps) {
     gaming_apps_.clear();
     excluded_apps_.clear();
+    smoothness_apps_.clear();
+    battery_apps_.clear();
     for (const auto& pkg : gaming_apps) {
         if (!pkg.empty()) gaming_apps_.insert(to_lower_copy(pkg));
     }
     for (const auto& pkg : excluded_apps) {
         if (!pkg.empty()) excluded_apps_.insert(to_lower_copy(pkg));
+    }
+    for (const auto& pkg : smoothness_apps) {
+        if (!pkg.empty()) smoothness_apps_.insert(to_lower_copy(pkg));
+    }
+    for (const auto& pkg : battery_apps) {
+        if (!pkg.empty()) battery_apps_.insert(to_lower_copy(pkg));
     }
 }
 
@@ -182,23 +192,37 @@ const char* ContextEngine::mode_name(ContextMode mode) noexcept {
     }
 }
 
+bool ContextEngine::is_game_engine_thread_name(std::string_view comm) noexcept {
+    if (comm.empty()) return false;
+    return comm == "UnityMain" ||
+           comm.rfind("UnityGfxDevice", 0) == 0 ||
+           comm == "GameThread" ||
+           comm == "RHIThread" ||
+           comm == "VulkanThread" ||
+           comm == "RenderThread 0" ||
+           comm == "Godot" ||
+           comm == "RenderServer" ||
+           comm == "EmuThread" ||
+           comm == "CPUThread" ||
+           comm == "VideoThread" ||
+           comm == "SDLThread" ||
+           comm.rfind("GLThread", 0) == 0;
+}
+
 bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexcept {
     if (comm.empty()) return false;
-    // Android UI / HWUI / Compositor & major mobile game engine main/render threads
+    if (is_game_engine_thread_name(comm)) return true;
+    // Android UI / HWUI / Compositor / Chromium WebView & GPU driver worker threads
     return comm == "RenderThread" ||
            comm == "surfaceflinger" ||
            comm == "RenderEngine" ||
            comm == "Binder:sf" ||
            comm.rfind("hwuiTask", 0) == 0 ||
            comm.rfind("RenderThread", 0) == 0 ||
-           comm == "UnityMain" ||
-           comm.rfind("UnityGfxDevice", 0) == 0 ||
-           comm == "GameThread" ||
-           comm == "RHIThread" ||
-           comm == "RenderThread 0" ||
-           comm == "GLThread" ||
-           comm.rfind("GLThread", 0) == 0 ||
-           comm == "VulkanThread" ||
+           comm == "CrRendererMain" ||
+           comm == "Compositor" ||
+           comm == "VizCompositorTh" ||
+           comm == "SkiaOutput" ||
            comm == "mali-cmar-backe" ||
            comm == "adreno-worker";
 }
@@ -212,6 +236,16 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
     out.app_excluded = !pkg_lower.empty() && excluded_apps_.contains(pkg_lower);
     out.app_forced_gaming = !pkg_lower.empty() && gaming_apps_.contains(pkg_lower);
 
+    PerformanceProfile eff_profile = profile_;
+    if (out.app_forced_gaming) {
+        eff_profile = PerformanceProfile::Gaming;
+    } else if (!pkg_lower.empty() && smoothness_apps_.contains(pkg_lower)) {
+        eff_profile = PerformanceProfile::Smoothness;
+    } else if (!pkg_lower.empty() && battery_apps_.contains(pkg_lower)) {
+        eff_profile = PerformanceProfile::Battery;
+    }
+    out.effective_profile = eff_profile;
+
     // Detect foreground app switch -> trigger LaunchBurst (except for excluded apps or screen-off)
     const bool fg_changed =
         !input.foreground_package.empty() &&
@@ -224,8 +258,8 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         gpu_high_streak_ = 0;
         gpu_low_streak_ = 0;
         if (!input.screen_off && !out.app_excluded) {
-            const uint64_t burst_ms = profile_ == PerformanceProfile::Battery ? 1200ULL :
-                profile_ == PerformanceProfile::Smoothness ? 2000ULL : 1600ULL;
+            const uint64_t burst_ms = eff_profile == PerformanceProfile::Battery ? 1200ULL :
+                eff_profile == PerformanceProfile::Smoothness ? 2000ULL : 1600ULL;
             launch_burst_until_ms_ = input.now_ms + burst_ms;
             out.newly_launched_app = true;
         }
@@ -245,7 +279,10 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         return out;
     }
 
-    // Hysteretic GPU-driven Gaming detection (3 ticks >= 48% to enter, 5 ticks < 25% to exit)
+    // Hysteretic Gaming detection:
+    //  - Primary: GPU busy >= 48% (or >= 35% + CPU >= 55%) for 3 ticks; exit < 25% for 5 ticks.
+    //  - Fallback (non-Qualcomm / CPU-bound emulators without GPU busy node):
+    //    active game-engine thread (UnityMain/GameThread/EmuThread/etc.) + CPU >= 50% for 3 ticks.
     if (input.gpu_busy_pct.has_value()) {
         const double gpu = *input.gpu_busy_pct;
         if (gpu >= 48.0 || (gpu >= 35.0 && input.cpu_util_pct >= 55.0)) {
@@ -257,12 +294,22 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
             gpu_high_streak_ = 0;
             if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
         }
+    } else if (input.has_game_thread) {
+        if (input.cpu_util_pct >= 50.0) {
+            ++gpu_high_streak_;
+            gpu_low_streak_ = 0;
+            if (gpu_high_streak_ >= 3U) gaming_latched_ = true;
+        } else if (input.cpu_util_pct < 25.0) {
+            ++gpu_low_streak_;
+            gpu_high_streak_ = 0;
+            if (gpu_low_streak_ >= 5U) gaming_latched_ = false;
+        }
     }
 
     const uint64_t touch_hold_ms =
-        profile_ == PerformanceProfile::Smoothness ? 550ULL :
-        profile_ == PerformanceProfile::Battery ? 250ULL :
-        profile_ == PerformanceProfile::Gaming ? 450ULL : 400ULL;
+        eff_profile == PerformanceProfile::Smoothness ? 550ULL :
+        eff_profile == PerformanceProfile::Battery ? 250ULL :
+        eff_profile == PerformanceProfile::Gaming ? 450ULL : 400ULL;
 
     if (launch_burst_until_ms_ > input.now_ms) {
         out.launch_burst_remaining_ms = launch_burst_until_ms_ - input.now_ms;
@@ -275,7 +322,7 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
     if (out.launch_burst_remaining_ms > 0U) {
         out.mode = ContextMode::LaunchBurst;
     } else if (out.app_forced_gaming || gaming_latched_ ||
-               (profile_ == PerformanceProfile::Gaming && input.cpu_util_pct >= 30.0)) {
+               (eff_profile == PerformanceProfile::Gaming && input.cpu_util_pct >= 30.0)) {
         out.mode = ContextMode::Gaming;
     } else if (out.touch_hold_remaining_ms > 0U || input.cpu_util_pct >= 55.0) {
         out.mode = ContextMode::Interactive;
@@ -370,6 +417,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     if (best_pid == cached_fg_pid_ && now >= cached_fg_tids_ms_ &&
         now - cached_fg_tids_ms_ < 3000ULL && !cached_fg_tids_.empty()) {
         result.critical_tids = cached_fg_tids_;
+        result.has_game_thread = cached_fg_has_game_thread_;
         return result;
     }
 
@@ -385,6 +433,9 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         if (!parse_i32(it->path().filename().string(), tid) || tid == best_pid) continue;
         std::string comm = read_small_file(it->path() / "comm", 64U);
         while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
+        if (is_game_engine_thread_name(comm)) {
+            result.has_game_thread = true;
+        }
         if (is_critical_render_thread_name(comm) && is_cfs_thread(tid, procfs_root_)) {
             result.critical_tids.push_back(tid);
         }
@@ -392,6 +443,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     cached_fg_pid_ = best_pid;
     cached_fg_tids_ms_ = now;
     cached_fg_tids_ = result.critical_tids;
+    cached_fg_has_game_thread_ = result.has_game_thread;
     return result;
 }
 

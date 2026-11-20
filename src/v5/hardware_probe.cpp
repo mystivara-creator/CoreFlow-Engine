@@ -1,7 +1,7 @@
 /**
  * @file hardware_probe.cpp
  * @brief CoreFlow v5 Pillar 1: Single-pass capability-based hardware & kernel topology probe.
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/v5/hardware_probe.hpp"
 #include "coreflow/mount_topology.hpp"
@@ -316,7 +316,8 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 all_have_cap = false;
             }
 
-            if (info.governor == "walt" || info.governor == "schedutil" || info.governor == "interactive") {
+            if (!info.governor.empty() && info.governor != "performance" &&
+                info.governor != "powersave" && info.governor != "userspace") {
                 info.hispeed_freq_path = find_governor_tunable(pdir, info.governor, "hispeed_freq").string();
                 info.hispeed_load_path = find_governor_tunable(pdir, info.governor, "hispeed_load").string();
                 info.up_rate_limit_path = find_governor_tunable(pdir, info.governor, "up_rate_limit_us").string();
@@ -409,7 +410,13 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 if (folded.find("gpu") == std::string::npos &&
                     folded.find("mali") == std::string::npos &&
                     folded.find("adreno") == std::string::npos &&
-                    folded.find("kgsl") == std::string::npos) {
+                    folded.find("kgsl") == std::string::npos &&
+                    folded.find("xclipse") == std::string::npos &&
+                    folded.find("pvr") == std::string::npos &&
+                    folded.find("rgx") == std::string::npos &&
+                    folded.find("panfrost") == std::string::npos &&
+                    folded.find("panthor") == std::string::npos &&
+                    folded.find("gpufreq") == std::string::npos) {
                     continue;
                 }
                 const auto opps = parse_u64_list_sorted(read_first_line(resolved / "available_frequencies"));
@@ -429,6 +436,35 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                     topo.gpu.busy_path = (resolved / "load").string();
                 } else if (is_regular_readable(resolved / "gpu_busy_percentage")) {
                     topo.gpu.busy_path = (resolved / "gpu_busy_percentage").string();
+                } else if (is_regular_readable(resolved / "utilization")) {
+                    topo.gpu.busy_path = (resolved / "utilization").string();
+                }
+                break;
+            }
+        }
+        // MediaTek Dimensity GED / gpufreqv2 telemetry discovery (when devfreq is absent)
+        if (!topo.gpu.available) {
+            const std::array<fs::path, 4> mtk_busy_candidates{
+                sys / "kernel/ged/hal/gpu_utilization",
+                sys / "module/ged/parameters/gpu_loading",
+                proc / "mali/utilization",
+                sys / "kernel/gpu/gpu_busy",
+            };
+            for (const auto& cand : mtk_busy_candidates) {
+                if (!is_regular_readable(cand)) continue;
+                topo.gpu.available = true;
+                topo.gpu.is_kgsl = false;
+                topo.gpu.is_mtk_ged = true;
+                topo.gpu.device_path = cand.parent_path().string();
+                topo.gpu.busy_path = cand.string();
+                const auto model_txt = read_first_line(sys / "kernel/gpu/gpu_model");
+                topo.gpu.model = model_txt.empty() ? "MediaTek Mali/Immortalis (GED)" : model_txt;
+                if (is_regular_writable(sys / "kernel/gpu/gpu_max_clock")) {
+                    const auto opps = parse_u64_list_sorted(read_first_line(sys / "kernel/gpu/gpu_freq_table"));
+                    if (opps.size() >= 2U) {
+                        topo.gpu.devfreq_opps_hz = opps;
+                        topo.gpu.devfreq_max_freq_path = (sys / "kernel/gpu/gpu_max_clock").string();
+                    }
                 }
                 break;
             }
@@ -531,7 +567,7 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         if (is_regular_writable(mglru)) topo.vm.mglru_min_ttl_path = mglru.string();
     }
 
-    // 7. Backlights & Display Refresh Rate (fully dynamic scan across DRM & graphics nodes)
+    // 7. Backlights, Display Power (OLED/DRM/FB) & Refresh Rate (fully dynamic scan)
     {
         for (const auto& bl : child_dirs(sys / "class/backlight", 16U)) {
             const auto resolved = canonical_under(bl, sys);
@@ -544,6 +580,17 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             for (const auto& dev : child_dirs(root, 32U)) {
                 const auto resolved = canonical_under(dev, sys);
                 if (resolved.empty()) continue;
+                const fs::path dpms_path = resolved / "dpms";
+                if (is_regular_readable(dpms_path)) {
+                    const std::string conn_status = to_lower_copy(read_first_line(resolved / "status"));
+                    if (conn_status.empty() || conn_status == "connected") {
+                        topo.drm_dpms_paths.push_back(dpms_path.string());
+                    }
+                }
+                const fs::path blank_path = resolved / "blank";
+                if (is_regular_readable(blank_path)) {
+                    topo.fb_blank_paths.push_back(blank_path.string());
+                }
                 for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "measured_fps",
                                          "current_mode", "modes", "available_modes", "msm_fb_panel_info"}) {
                     const fs::path leaf_path = resolved / leaf;
@@ -623,25 +670,56 @@ HardwareTopology HardwareProbe::discover() const noexcept {
 }
 
 bool HardwareProbe::is_screen_off(const HardwareTopology& topo) const noexcept {
-    if (topo.backlight_dirs.empty()) return false;
-    bool have_any = false;
+    // 1. Check DRM DPMS connectors first when present (most authoritative on OLED / AOD panels).
+    bool have_dpms = false;
+    bool all_dpms_off = true;
+    for (const auto& dpms_path : topo.drm_dpms_paths) {
+        const std::string state = to_lower_copy(read_first_line(dpms_path));
+        if (state.empty()) continue;
+        have_dpms = true;
+        if (state == "on") {
+            all_dpms_off = false;
+        }
+    }
+    if (have_dpms && all_dpms_off) return true;
+
+    // 2. Check backlight brightness and bl_power (bl_power != 0 indicates FB_BLANK_POWERDOWN / AOD suspend).
+    bool have_bl = false;
+    bool all_bl_off = true;
     for (const auto& dir : topo.backlight_dirs) {
-        uint64_t cur = 0, max_b = 0;
+        uint64_t cur = 0, max_b = 0, bl_power = 0;
+        if (parse_u64(read_first_line(fs::path(dir) / "bl_power"), bl_power) && bl_power != 0U) {
+            have_bl = true;
+            continue; // Powered down regardless of residual brightness
+        }
         if (!parse_u64(read_first_line(fs::path(dir) / "brightness"), cur)) continue;
         if (parse_u64(read_first_line(fs::path(dir) / "max_brightness"), max_b) && max_b == 0U) continue;
-        have_any = true;
-        if (cur != 0U) return false;
+        have_bl = true;
+        if (cur != 0U) {
+            all_bl_off = false;
+        }
     }
-    return have_any;
+    if (have_bl) return all_bl_off;
+
+    // 3. Fallback to framebuffer blank state (/sys/class/graphics/fb*/blank != 0).
+    bool have_fb = false;
+    bool all_fb_blank = true;
+    for (const auto& blank_path : topo.fb_blank_paths) {
+        uint64_t blank = 0;
+        if (!parse_u64(read_first_line(blank_path), blank)) continue;
+        have_fb = true;
+        if (blank == 0U) all_fb_blank = false;
+    }
+    return have_fb && all_fb_blank;
 }
 
 std::optional<double> HardwareProbe::read_gpu_busy_pct(const HardwareTopology& topo) const noexcept {
     if (!topo.gpu.available || topo.gpu.busy_path.empty()) return std::nullopt;
     const auto raw = read_first_line(topo.gpu.busy_path);
     if (raw.empty()) return std::nullopt;
-    // KGSL format: " 42 %" or "42%". Devfreq load format: "42@600000000" or "42".
+    // KGSL: " 42 %" / "42%". Devfreq: "42@600000000" / "42". MediaTek GED: "48 0 0" or "gpu_loading: 48".
     size_t i = 0;
-    while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t')) ++i;
+    while (i < raw.size() && (raw[i] < '0' || raw[i] > '9')) ++i;
     size_t j = i;
     while (j < raw.size() && ((raw[j] >= '0' && raw[j] <= '9') || raw[j] == '.')) ++j;
     if (j <= i) return std::nullopt;

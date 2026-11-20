@@ -10,8 +10,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * Android Quick Settings Tile for CoreFlow Engine.
- * Allows cycling through Balanced, Performance (Responsiveness), and Battery profiles
+ * Android Quick Settings Tile for CoreFlow Engine v5.1.0.
+ * Cycles through Balanced, Smoothness, Gaming, and Battery profiles
  * with verified root persistence and live state synchronization.
  */
 class CoreFlowTileService : TileService() {
@@ -20,7 +20,8 @@ class CoreFlowTileService : TileService() {
     private var currentProfileIndex = 0
     private val profiles = listOf(
         CoreFlowManager.Profile.BALANCED,
-        CoreFlowManager.Profile.PERFORMANCE,
+        CoreFlowManager.Profile.SMOOTHNESS,
+        CoreFlowManager.Profile.GAMING,
         CoreFlowManager.Profile.BATTERY
     )
 
@@ -59,18 +60,19 @@ class CoreFlowTileService : TileService() {
     private fun updateTileState() {
         val tile = qsTile ?: return
         scope.launch {
-            val statusResult = CoreFlowManager.getStatus()
-            val status = statusResult.getOrNull()
+            val status = CoreFlowManager.getStatus().getOrNull()
             val isRunning = status?.isRunning == true
-            val temp = status?.socCompositeCelsius?.takeIf { it > 0f }
-                ?: status?.socTempCelsius
-                ?: -1f
+            val temp = status?.socTempCelsius ?: -1f
 
             if (isRunning) {
-                val profile = profiles[currentProfileIndex]
-                tile.state = Tile.STATE_ACTIVE
+                val profile = status?.profile ?: profiles[currentProfileIndex]
+                tile.state = if (status?.inspectionMode == true) Tile.STATE_INACTIVE else Tile.STATE_ACTIVE
                 tile.label = "CoreFlow: ${profile.label}"
-                tile.subtitle = if (temp > 0f) String.format(Locale.US, "%.1f°C", temp) else "Active"
+                tile.subtitle = when {
+                    status?.inspectionMode == true -> "Paused (OEM)"
+                    temp > 0f -> String.format(Locale.US, "%.1f°C · %d%%", temp, ((status?.capacityScale ?: 1f) * 100).toInt())
+                    else -> status?.mode ?: "Active"
+                }
             } else {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "CoreFlow"

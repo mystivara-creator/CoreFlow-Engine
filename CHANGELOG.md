@@ -2,6 +2,57 @@
 
 # CFAE System Framework Release History
 
+## v5.1.0 — The Lean 4-Pillar Generation (Major Upgrade from v3.1.0)
+
+> **Direct Upgrade from `v3.1.0` → `v5.1.0`**: This is the first public release of the **v5.x CoreFlow Engine**, consolidating the complete `v5.0.0`–`v5.0.2` 4-pillar architecture overhaul together with all `v5.1.0` cross-SoC, closed-loop render, and WebUI upgrades into one battle-tested release.
+
+### Compatibility & Requirements
+- **Android**: Android 13+ (**API 33+**, ARM64 / `arm64-v8a`) — broadened from API 35 with dynamic `dlopen("libandroid.so")` Thermal API compatibility.
+- **Root Solutions**: **KernelSU**, **KernelSU-Next**, **APatch**, and **Magisk** (for Magisk users, open the WebUI via **KsuWebUI** or **MMRL**).
+- **Upgrade Safety**: Atomic hot-upgrade via `customize.sh` with read-only 4-pillar preflight readiness probe, ELF64 AArch64 verification, conflict advisory, and automatic **CFJ4 Zero-Trace OEM Rollback**.
+
+### Major Architecture Leap (Since v3.1.0)
+- **Lean 4-Pillar Native Architecture (`C++20` + `Rust`)**:
+  1. **Pillar 1 — Per-TID `SYS_sched_setattr` UClamp**: Boosts only the foreground app's real critical render/game/UI threads (`RenderThread`, `UIThread`, `UnityMain`, `GameThread`, `EmuThread`, `CrRendererMain`, etc.) instead of blasting whole-cluster CPU frequencies. Self-calibrates directly from discovered EAS cluster capacities and display refresh rate.
+  2. **Pillar 2 — Dynamic UFS/eMMC Launch Burst & Background QoS**: Delivers instant I/O launch bursts when opening apps (now with **200ms** foreground polling) while protecting foreground smoothness from background I/O contention.
+  3. **Pillar 3 — MGLRU Anti-Stutter Memory & Smart Pre-Read**: Automatically enables Linux MGLRU when supported, protects working sets under live RAM/ZRAM/PSI pressure, and pre-warms app libraries/assets safely via `posix_fadvise`.
+  4. **Pillar 4 — Rust PID + Online RLS/MLP Thermal Pacing**: Smooth, zero-oscillation thermal envelope control with cached trip points and dynamic thermal headroom scaling before stock OEM throttling clips frame pacing.
+- **Zero-Overhead Daemon & HyperOS/Android 15 Foreground Resolver**: Eliminated unnecessary `fsync`/cgroup overhead with deadband write suppression, anti-flap hysteresis, and `RenderThread` + `oom_score_adj` foreground ranking.
+- **CFJ4 Transactional Baseline Journal & `--journal`**: Every sysfs mutation is journaled with strict ownership checks; uninstalling or rolling back restores factory OEM values cleanly without overwriting values changed externally by the OEM.
+- **Apache-2.0 License**: Transitioned repository license and standardized all source headers to `Apache-2.0`.
+
+### What's New in v5.1.0
+- **Closed-Loop Render Load Feedback (`RenderLoadSampler`)**: Measures live `RenderThread` / `GameThread` CPU saturation via `/proc/<pid>/task/<tid>/stat` and feeds `render_pressure` directly into `ThreadSchedulerActuator` so per-TID UClamp scales with actual frame-budget demand.
+- **Timed Exponential-Backoff OEM Coexistence**: Replaced permanent node surrender in `StorageMemoryActuator` and `ThermalEnvelopeActuator` with automatic cooldown recovery (`30s → 60s → 120s → 240s → 300s`) plus transparent `actuators.contendedPaths` visibility.
+- **Expanded Cross-SoC & Hardware Detection**:
+  - **MediaTek GED / `gpufreqv2`** GPU utilization probing (`/sys/kernel/ged/hal/gpu_utilization`, `/sys/module/ged/parameters/gpu_loading`, `/proc/mali/utilization`) plus devfreq matching for `xclipse`, `pvr`/`rgx`, `panfrost`/`panthor`.
+  - **GPU-less Game-Engine Auto-Gaming Fallback** for Unity/Unreal/Godot/Emulator threads when GPU sysfs is absent.
+  - **OLED / AOD Screen-Off Detection** via DRM DPMS (`/sys/class/drm/*/dpms`), `bl_power`, and `fb*/blank`.
+  - **Custom CPU Governors** (`sugov_ext`, `sched_pixel`, `uag`, `scx`, etc.) and unambiguous **Dual-Cell Fast-Charging** primary battery selection.
+- **4-Profile Per-App Rules & Faster 200ms Launch Detection**: Added `smoothness_apps` and `battery_apps` alongside `gaming_apps` and `excluded_apps`, with foreground polling cut from `500ms` to `200ms`.
+- **Material Design 3 WebUI Control Center & Quick Settings Tile**:
+  - **1-Tap Pause / Resume (Instant A/B Compare)** and **Start CoreFlow** recovery button.
+  - **Session Impact & 4-Pillar Readiness** card (`uptime`, launch bursts, pre-read MB, avg/peak SoC temp, thermal guard count, CFJ4 journaled nodes).
+  - **Installed App Picker** (`cmd package` / `pm list packages -3`) with search and 1-tap `Auto / Gaming / Smooth / Battery / Stock` override chips.
+  - **Transparent OEM Coexistence Yield** panel and 1-click **Export Diag** (`coreflowd --diag` / `action.sh diag` privacy-safe diagnostic bundle).
+  - Synced Android **Quick Settings Tile** (`CoreFlowManager.kt` / `CoreFlowTileService.kt`) with v5.1.0 JSON schema and 4-profile cycling (`Balanced`, `Smoothness`, `Gaming`, `Battery`).
+
+## v5.0.2 — Zero-Overhead Daemon, RenderThread Ranking & Advanced Installer
+
+- Eliminated unnecessary fsync/cgroup CPU overhead with anti-flap hysteresis and deadband write suppression.
+- Improved foreground app resolution via `RenderThread` ranking to avoid false switches to bound background services on HyperOS/Android 15.
+- Upgraded `customize.sh` with read-only 4-pillar preflight readiness probe, ELF64 AArch64 verification, conflict advisory, and atomic hot-upgrade.
+- Transitioned repository license to Apache-2.0.
+
+## v5.0.1 — Autonomous Self-Calibrating Actuators & CFJ4 Journal Reader
+
+- Made all 4 pillars self-calibrating from discovered EAS cluster capacities, display refresh rate, storage queue geometry, and live RAM/ZRAM/PSI telemetry.
+- Added HyperOS `oom_score_adj` foreground resolver, thermal trip-point caching, automatic Linux MGLRU enablement, and `coreflowd --journal` CFJ4 reader.
+
+## v5.0.0 — Lean 4-Pillar Architecture Refactor
+
+- Refactored CoreFlow into the lean 4-pillar architecture: Per-TID `SYS_sched_setattr` UClamp, Dynamic UFS/eMMC Launch Burst & Background QoS, MGLRU Anti-Stutter Memory & `posix_fadvise` Smart Pre-Read, and Rust PID + Online RLS/MLP Thermal Pacing with CFJ4 OEM rollback.
+
 ## Unreleased — v4.0.0 GPU integration (device acceptance required)
 
 - Route the existing `GpuCandidateProvider` through `GlobalDecisionEngine` into the bounded KGSL paired-level actuator. Admission requires a discovered GPU domain, validated writable KGSL endpoints, live `gpuclk` readback matching the driver's advertised OPP table, GPU-bound/gaming workload evidence, actual FrameTimeline deadline misses, valid thermal pressure, and at least 0.35 thermal headroom.

@@ -1,7 +1,7 @@
 /**
  * @file thermal_envelope_actuator.cpp
  * @brief CoreFlow v5 Pillar 3C: Smooth CPU/GPU governor & thermal envelope actuator driven by Rust PID + Context.
- * @license MIT
+ * @license Apache-2.0
  */
 #include "coreflow/v5/thermal_envelope_actuator.hpp"
 
@@ -47,6 +47,34 @@ void ThermalEnvelopeActuator::reset_contention() noexcept {
     last_written_.clear();
     stats_.contended_nodes = 0U;
     stats_.managed_nodes = 0U;
+}
+
+std::vector<std::string> ThermalEnvelopeActuator::contended_paths() const {
+    std::vector<std::string> out;
+    out.reserve(contended_paths_.size());
+    for (const auto& [path, _] : contended_paths_) {
+        out.push_back(path);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void ThermalEnvelopeActuator::record_contention(
+    const std::string& path,
+    const std::string& observed,
+    uint64_t now_ms) noexcept {
+    // Adopt OEM's external value in CFJ4 without overwriting it, so journal stays clean
+    // and post-cooldown recovery can safely re-acquire ownership once OEM settles.
+    (void)baseline_.rollback(path);
+    auto& entry = contended_paths_[path];
+    ++entry.strikes;
+    const uint32_t shift = std::min<uint32_t>(entry.strikes - 1U, 4U);
+    const uint64_t backoff = std::min<uint64_t>(
+        kMaxContentionCooldownMs, kInitialContentionCooldownMs << shift);
+    entry.retry_after_ms = now_ms + backoff;
+    entry.observed_value = observed;
+    last_written_.erase(path);
+    stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
 }
 
 uint64_t ThermalEnvelopeActuator::select_opp(
@@ -101,15 +129,27 @@ std::pair<uint64_t, uint64_t> ThermalEnvelopeActuator::compute_kgsl_levels(
 }
 
 bool ThermalEnvelopeActuator::write_managed_node(
-    const std::string& path, const std::string& target, uint64_t deadband) noexcept {
-    if (path.empty() || target.empty() || contended_paths_.contains(path)) return false;
+    const std::string& path, const std::string& target, uint64_t now_ms, uint64_t deadband) noexcept {
+    if (path.empty() || target.empty()) return false;
 
     const std::string live = read_line_trimmed(path);
     if (live.empty()) return false;
+
+    const auto cit = contended_paths_.find(path);
+    if (cit != contended_paths_.end()) {
+        if (now_ms < cit->second.retry_after_ms) return false;
+        if (live != cit->second.observed_value) {
+            // OEM daemon is still mutating this node; extend cooldown without writing.
+            record_contention(path, live, now_ms);
+            return false;
+        }
+        contended_paths_.erase(cit);
+        stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+    }
+
     const auto prev = last_written_.find(path);
     if (prev != last_written_.end() && live != prev->second) {
-        contended_paths_.insert(path);
-        stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        record_contention(path, live, now_ms);
         return false;
     }
     if (live == target) {
@@ -130,8 +170,7 @@ bool ThermalEnvelopeActuator::write_managed_node(
     if (!baseline_.apply_mutation(path, target)) return false;
     const std::string verify = read_line_trimmed(path);
     if (verify != target) {
-        contended_paths_.insert(path);
-        stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        record_contention(path, verify, now_ms);
         return false;
     }
     last_written_[path] = target;
@@ -153,7 +192,8 @@ void ThermalEnvelopeActuator::apply(
     double capacity_scale,
     bool thermal_guard,
     bool enabled,
-    const EnvelopeTelemetry& telemetry) noexcept {
+    const EnvelopeTelemetry& telemetry,
+    uint64_t now_ms) noexcept {
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
     stats_.last_capacity_scale = scale;
 
@@ -193,7 +233,7 @@ void ThermalEnvelopeActuator::apply(
             }
             const double effective_tier = std::clamp(mode_demand * profile_bias * scale, 0.25, 1.0);
             const uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
-            if (freq > 0U) (void)write_managed_node(cluster.hispeed_freq_path, std::to_string(freq));
+            if (freq > 0U) (void)write_managed_node(cluster.hispeed_freq_path, std::to_string(freq), now_ms);
         }
 
         if (!cluster.hispeed_load_path.empty()) {
@@ -212,7 +252,7 @@ void ThermalEnvelopeActuator::apply(
             // Smooth thermal backoff raises hispeed_load gradually as PID scale drops.
             target_load += (1.0 - scale) * 14.0;
             const uint32_t load = static_cast<uint32_t>(std::clamp(std::lround(target_load), 65L, 96L));
-            (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load), 3U);
+            (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load), now_ms, 3U);
         }
 
         if (!cluster.up_rate_limit_path.empty()) {
@@ -222,7 +262,7 @@ void ThermalEnvelopeActuator::apply(
                 mode == ContextMode::Gaming ? 0.06 : 0.16;
             const uint64_t up_us = static_cast<uint64_t>(
                 std::clamp(std::lround((frame_us * up_frames) / std::clamp(scale, 0.50, 1.0)), 300L, 6000L));
-            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us), 300U);
+            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us), now_ms, 300U);
         }
 
         if (!cluster.down_rate_limit_path.empty()) {
@@ -232,7 +272,7 @@ void ThermalEnvelopeActuator::apply(
                 mode == ContextMode::Interactive ? (1.05 + cpu_psi_norm * 0.30) : 0.55;
             const uint64_t down_us = static_cast<uint64_t>(
                 std::clamp(std::lround(frame_us * down_frames * scale), 3000L, 30000L));
-            (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us), 1500U);
+            (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us), now_ms, 1500U);
         }
     }
 
@@ -244,7 +284,7 @@ void ThermalEnvelopeActuator::apply(
                 (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? (12.0 + gpu_norm * 6.0) : 7.0;
             const uint64_t idle_ms = static_cast<uint64_t>(
                 std::clamp(std::lround((frame_us / 1000.0) * frames * scale), 40L, 400L));
-            (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms), 15U);
+            (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms), now_ms, 15U);
         }
 
         if (topo.gpu.is_kgsl &&
@@ -256,11 +296,11 @@ void ThermalEnvelopeActuator::apply(
             (void)parse_u64_exact(read_line_trimmed(topo.gpu.kgsl_min_pwrlevel_path), live_min);
             // Order writes from the live interval so KGSL never clamps one against the stale peer.
             if (target_max <= live_min) {
-                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max));
-                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min));
+                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
+                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
             } else {
-                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min));
-                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max));
+                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
+                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
             }
         } else if (!topo.gpu.devfreq_max_freq_path.empty() && !topo.gpu.devfreq_opps_hz.empty()) {
             double base_tier = 0.80;
@@ -271,7 +311,7 @@ void ThermalEnvelopeActuator::apply(
             else base_tier = 0.60 + gpu_norm * 0.15;
             const double tier = std::clamp(base_tier * profile_bias * scale, 0.30, 1.0);
             const uint64_t freq = select_opp(topo.gpu.devfreq_opps_hz, tier);
-            if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq));
+            if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq), now_ms);
         }
     }
 

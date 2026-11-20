@@ -1,7 +1,7 @@
 /**
  * @file context_engine.hpp
  * @brief CoreFlow v5 Pillar 2: 5-Mode Context Classifier, Foreground App & Critical Thread Resolver.
- * @license MIT
+ * @license Apache-2.0
  */
 #pragma once
 
@@ -34,6 +34,7 @@ struct ForegroundAppInfo {
     int32_t pid{0};
     std::string package_name;
     std::vector<int32_t> critical_tids;
+    bool has_game_thread{false};
 };
 
 struct ContextSignalInput {
@@ -44,10 +45,12 @@ struct ContextSignalInput {
     std::optional<double> gpu_busy_pct{};
     int32_t foreground_pid{0};
     std::string foreground_package;
+    bool has_game_thread{false};
 };
 
 struct ContextDecision {
     ContextMode mode{ContextMode::Efficiency};
+    PerformanceProfile effective_profile{PerformanceProfile::Balanced};
     bool newly_launched_app{false};
     bool app_excluded{false};
     bool app_forced_gaming{false};
@@ -63,7 +66,9 @@ public:
 
     void set_profile(PerformanceProfile profile) noexcept;
     void set_app_rules(const std::vector<std::string>& gaming_apps,
-                       const std::vector<std::string>& excluded_apps);
+                       const std::vector<std::string>& excluded_apps,
+                       const std::vector<std::string>& smoothness_apps = {},
+                       const std::vector<std::string>& battery_apps = {});
 
     // Called from epoll input path (< 5ms latency) on touch activity.
     void notify_touch(uint64_t now_ms) noexcept;
@@ -81,12 +86,15 @@ public:
     [[nodiscard]] static const char* profile_name(PerformanceProfile profile) noexcept;
     [[nodiscard]] static const char* mode_name(ContextMode mode) noexcept;
     [[nodiscard]] static bool is_critical_render_thread_name(std::string_view comm) noexcept;
+    [[nodiscard]] static bool is_game_engine_thread_name(std::string_view comm) noexcept;
 
 private:
     std::string procfs_root_;
     PerformanceProfile profile_{PerformanceProfile::Balanced};
     std::unordered_set<std::string> gaming_apps_;
     std::unordered_set<std::string> excluded_apps_;
+    std::unordered_set<std::string> smoothness_apps_;
+    std::unordered_set<std::string> battery_apps_;
 
     uint64_t last_touch_ms_{0};
     uint64_t launch_burst_until_ms_{0};
@@ -103,6 +111,7 @@ private:
     mutable int32_t cached_fg_pid_{0};
     mutable uint64_t cached_fg_tids_ms_{0};
     mutable std::vector<int32_t> cached_fg_tids_;
+    mutable bool cached_fg_has_game_thread_{false};
 };
 
 } // namespace coreflow::v5

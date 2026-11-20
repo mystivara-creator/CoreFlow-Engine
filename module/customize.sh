@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CoreFlow Engine (CFAE) v5.0.2 — Advanced Read-Only Preflight, Integrity & Atomic Upgrade Installer.
+# CoreFlow Engine (CFAE) v5.1.0 — Advanced Read-Only Preflight, Integrity & Atomic Upgrade Installer.
 # All runtime capability discovery, hardware calibration, and kernel actuation remain owned by coreflowd.
 
 PATH="/system/bin:/system/xbin:/sbin:/vendor/bin:$PATH"
@@ -234,7 +234,7 @@ detect_conflicting_modules() {
 # ---------------------------------------------------------------------------
 ui ""
 ui "+======================================================+"
-ui "|             COREFLOW ENGINE  v5.0.2                  |"
+ui "|             COREFLOW ENGINE  v5.1.0                  |"
 ui "|     AUTONOMOUS 4-PILLAR ANDROID SYSTEM ENGINE        |"
 ui "|              by mystivara-creator                    |"
 ui "+======================================================+"
@@ -252,7 +252,7 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CoreFlow Engine v5.0.2 — read-only installer preflight"
+PREFLIGHT_REPORT="CoreFlow Engine v5.1.0 — read-only installer preflight"
 
 # Detect previous installation version for transparent upgrade reporting
 PREV_VERSION=""
@@ -275,7 +275,7 @@ esac
 API_LEVEL="$API"
 is_numeric "$API_LEVEL" || API_LEVEL="$(get_property ro.build.version.sdk)"
 is_numeric "$API_LEVEL" || die "Android API level could not be determined."
-[ "$API_LEVEL" -ge 35 ] || die "Unsupported Android API $API_LEVEL. Android 15 / API 35+ is required."
+[ "$API_LEVEL" -ge 33 ] || die "Unsupported Android API $API_LEVEL. Android 13 / API 33+ is required."
 
 ANDROID_RELEASE="$(get_property ro.build.version.release)"
 MANUFACTURER="$(get_property ro.product.manufacturer)"
@@ -310,9 +310,9 @@ status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
 status_line "INFO" "Kernel   : $KERNEL_RELEASE"
 status_line "INFO" "Root/MAC : $ROOT_MANAGER · SELinux $SELINUX_STATE"
 if [ -n "$PREV_VERSION" ]; then
-    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v5.0.2"
+    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v5.1.0"
 else
-    status_line "INSTALL" "Fresh installation of CoreFlow Engine v5.0.2"
+    status_line "INSTALL" "Fresh installation of CoreFlow Engine v5.1.0"
 fi
 
 # ---------------------------------------------------------------------------
@@ -506,7 +506,7 @@ elif [ -f "$DEFAULT_CONF" ] && [ ! -L "$DEFAULT_CONF" ]; then
     TMP_CONF="$USER_CONF.tmp.$$"
     rm -f "$TMP_CONF"
     if cp -f "$DEFAULT_CONF" "$TMP_CONF" && chmod 0600 "$TMP_CONF" && mv -f "$TMP_CONF" "$USER_CONF"; then
-        status_line "INIT" "Initialized default v5.0.2 configuration ($USER_CONF)"
+        status_line "INIT" "Initialized default v5.1.0 configuration ($USER_CONF)"
     else
         rm -f "$TMP_CONF"
         status_line "WARN" "Could not initialize default config; daemon will use compiled defaults"
@@ -592,12 +592,12 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                     START_ATTEMPT=$((START_ATTEMPT + 1))
                 done
                 if [ "$DAEMON_READY" -eq 1 ]; then
-                    status_line "LIVE" "CoreFlow v5.0.2 daemon restarted & verified via --status"
+                    status_line "LIVE" "CoreFlow v5.1.0 daemon restarted & verified via --status"
                 else
-                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v5.0.2"
+                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v5.1.0"
                 fi
             else
-                status_line "WARN" "Live service.sh unavailable; reboot once to activate v5.0.2"
+                status_line "WARN" "Live service.sh unavailable; reboot once to activate v5.1.0"
             fi
         fi
     fi
@@ -607,9 +607,9 @@ fi
 
 ui ""
 ui "+======================================================+"
-ui "|  CoreFlow Engine v5.0.2 — Installation Successful    |"
+ui "|  CoreFlow Engine v5.1.0 — Installation Successful    |"
 ui "+------------------------------------------------------+"
-ui "|  WebUI   : Open via KernelSU / APatch / Magisk       |"
+ui "|  WebUI   : KernelSU / APatch (or KsuWebUI on Magisk) |"
 ui "|  Report  : $STATE_DIR/install-preflight.log"
 ui "|  Policy  : Zero kernel/SELinux mutation in installer |"
 ui "|  Safety  : CFJ4 durable OEM baseline & rollback      |"
