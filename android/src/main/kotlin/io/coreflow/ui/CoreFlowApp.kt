@@ -150,7 +150,7 @@ fun CoreFlowApp() {
                 )
             }
         },
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        snackbarHost = { SnackbarHost(state = snackbarHostState) },
     ) { innerPadding ->
         Box(
             modifier = Modifier
