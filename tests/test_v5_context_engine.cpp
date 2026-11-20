@@ -167,6 +167,25 @@ int main() {
     sig.now_ms = 23500;
     assert(engine.evaluate(sig).mode == ContextMode::Gaming);
 
+    // 10. HyperOS/Android background services without RenderThread must never hijack foreground or trigger LaunchBurst
+    assert(ContextEngine::is_background_system_service("com.xiaomi.xmsf"));
+    assert(ContextEngine::is_background_system_service("com.milink.service"));
+    assert(ContextEngine::is_background_system_service("com.android.externalstorage"));
+    assert(!ContextEngine::is_background_system_service("com.miHoYo.GenshinImpact"));
+    write_file(root / "bg_only_top_app", "31001\n31002\n31003\n");
+    write_file(proc / "31001/cmdline", std::string("com.xiaomi.xmsf\0", 16));
+    write_file(proc / "31001/oom_score_adj", "0\n");
+    write_file(proc / "31001/task/31001/comm", "com.xiaomi.xmsf\n");
+    write_file(proc / "31002/cmdline", std::string("com.milink.service\0", 19));
+    write_file(proc / "31002/oom_score_adj", "0\n");
+    write_file(proc / "31002/task/31002/comm", "milink.service\n");
+    write_file(proc / "31003/cmdline", std::string("com.android.externalstorage\0", 28));
+    write_file(proc / "31003/oom_score_adj", "0\n");
+    write_file(proc / "31003/task/31003/comm", "externalstorage\n");
+    const auto bg_fg = engine.resolve_foreground_app((root / "bg_only_top_app").string());
+    assert(bg_fg.pid == 0);
+    assert(bg_fg.package_name.empty());
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

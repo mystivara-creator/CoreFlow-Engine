@@ -412,6 +412,8 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             }
             if (is_regular_readable(resolved / "gpu_busy_percentage")) {
                 topo.gpu.busy_path = (resolved / "gpu_busy_percentage").string();
+            } else if (is_regular_readable(resolved / "gpubusy")) {
+                topo.gpu.busy_path = (resolved / "gpubusy").string();
             }
             break;
         }
@@ -732,6 +734,16 @@ std::optional<double> HardwareProbe::read_gpu_busy_pct(const HardwareTopology& t
     if (!topo.gpu.available || topo.gpu.busy_path.empty()) return std::nullopt;
     const auto raw = read_first_line(topo.gpu.busy_path);
     if (raw.empty()) return std::nullopt;
+    // KGSL gpubusy: "<busy_us> <total_us>" ratio
+    if (topo.gpu.busy_path.size() >= 7U &&
+        topo.gpu.busy_path.compare(topo.gpu.busy_path.size() - 7U, 7U, "gpubusy") == 0) {
+        std::istringstream ss(raw);
+        double busy = 0.0, total = 0.0;
+        if ((ss >> busy >> total) && total > 0.0 && busy >= 0.0) {
+            return std::clamp((busy / total) * 100.0, 0.0, 100.0);
+        }
+        return std::nullopt;
+    }
     // KGSL: " 42 %" / "42%". Devfreq: "42@600000000" / "42". MediaTek GED: "48 0 0" or "gpu_loading: 48".
     size_t i = 0;
     while (i < raw.size() && (raw[i] < '0' || raw[i] > '9')) ++i;

@@ -304,23 +304,23 @@ html[data-theme="dark"][data-accent="amber"] {
    Material Design 3 Structural Surfaces & Elevation Containers
    ============================================================================ */
 
-/* M3 Elevated Card (Surface Container Low + Subtle Elevation) */
+/* M3 Elevated Card (Proportional Mobile-First Surface) */
 .md3-card-elevated,
 .m3-card {
   background-color: var(--md-sys-color-surface-container-lowest);
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-xl);
+  border-radius: 18px;
   box-shadow:
-    0 1px 3px rgba(12, 18, 28, 0.04),
-    0 10px 28px -22px rgba(12, 18, 28, 0.18);
+    0 1px 2px rgba(12, 18, 28, 0.04),
+    0 8px 22px -18px rgba(12, 18, 28, 0.16);
 }
 
 html[data-theme="dark"] .md3-card-elevated,
 html[data-theme="dark"] .m3-card {
   background-color: var(--md-sys-color-surface-container-low);
   box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.22),
-    0 12px 28px -20px rgba(0, 0, 0, 0.48);
+    0 1px 2px rgba(0, 0, 0, 0.22),
+    0 10px 24px -18px rgba(0, 0, 0, 0.45);
 }
 
 /* M3 Filled Tonal Card (Surface Container) */
@@ -328,21 +328,99 @@ html[data-theme="dark"] .m3-card {
 .m3-tonal-block {
   background-color: var(--md-sys-color-surface-container);
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-lg);
+  border-radius: 13px;
 }
 
 /* M3 High-Emphasis Container */
 .md3-card-high {
   background-color: var(--md-sys-color-surface-container-high);
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-lg);
+  border-radius: 13px;
 }
 
 /* M3 Outlined Card */
 .md3-card-outlined {
   background-color: transparent;
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-lg);
+  border-radius: 13px;
+}
+
+/* CoreFlow Proportional Section Title & Segmented Controls */
+.cf-section-title {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 0 0.25rem;
+}
+
+.cf-seg-bar {
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.cf-seg-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 2.15rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 9px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--md-sys-color-on-surface-variant);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.cf-seg-btn.is-active {
+  background-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-weight: 700;
+}
+
+.cf-metric-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  background-color: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  min-width: 0;
+}
+
+.cf-metric-label {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cf-metric-value {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* M3 Primary Hero Banner Surface */
@@ -353,7 +431,7 @@ html[data-theme="dark"] .m3-card {
     var(--md-sys-color-surface-container) 100%
   );
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-xl);
+  border-radius: 18px;
 }
 
 html[data-theme="dark"] .md3-hero-container {
@@ -365,7 +443,7 @@ html[data-theme="dark"] .md3-hero-container {
 }
 
 /* ============================================================================
-   Material Design 3 Navigation Architecture (Rail + Top App Bar + Bottom Bar)
+   Material Design 3 Navigation Architecture
    ============================================================================ */
 
 .md3-top-app-bar {
@@ -373,52 +451,6 @@ html[data-theme="dark"] .md3-hero-container {
   border-bottom: 1px solid var(--md-sys-color-outline-variant);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-}
-
-.md3-nav-rail {
-  width: 5.75rem;
-  background-color: var(--md-sys-color-surface-container-low);
-  border-right: 1px solid var(--md-sys-color-outline-variant);
-}
-
-.md3-rail-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3rem;
-  width: 100%;
-  padding: 0.45rem 0.25rem;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: var(--md-sys-shape-corner-md);
-}
-
-.md3-rail-pill {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 3.5rem;
-  height: 2rem;
-  border-radius: var(--md-sys-shape-corner-full);
-  transition:
-    background-color 200ms var(--md-sys-motion-easing-emphasized),
-    color 200ms var(--md-sys-motion-easing-standard);
-}
-
-.md3-rail-btn:hover .md3-rail-pill {
-  background-color: var(--md-sys-color-surface-container-high);
-}
-
-.md3-rail-btn.is-active {
-  color: var(--md-sys-color-on-surface);
-  font-weight: 700;
-}
-
-.md3-rail-btn.is-active .md3-rail-pill {
-  background-color: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
 }
 
 .md3-bottom-nav {
@@ -435,14 +467,15 @@ html[data-theme="dark"] .md3-hero-container {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  min-height: 2.5rem;
-  padding: 0 1.15rem;
-  border-radius: var(--md-sys-shape-corner-full);
+  gap: 0.4rem;
+  min-height: 2.2rem;
+  padding: 0 0.9rem;
+  border-radius: 11px;
   background-color: var(--md-sys-color-primary);
   color: var(--md-sys-color-on-primary);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
   border: 1px solid transparent;
 }
 .md3-btn-filled:hover:enabled {
@@ -453,15 +486,16 @@ html[data-theme="dark"] .md3-hero-container {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  min-height: 2.4rem;
-  padding: 0 1.05rem;
-  border-radius: var(--md-sys-shape-corner-full);
-  background-color: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
-  font-size: 0.76rem;
+  gap: 0.4rem;
+  min-height: 2.2rem;
+  padding: 0 0.9rem;
+  border-radius: 11px;
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font-size: 0.75rem;
   font-weight: 600;
-  border: 1px solid transparent;
+  white-space: nowrap;
+  border: 1px solid var(--md-sys-color-outline-variant);
 }
 .md3-btn-tonal:hover:enabled {
   filter: brightness(0.97);
@@ -471,14 +505,15 @@ html[data-theme="dark"] .md3-hero-container {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  min-height: 2.4rem;
-  padding: 0 1.05rem;
-  border-radius: var(--md-sys-shape-corner-full);
-  background-color: var(--md-sys-color-surface-container-lowest);
+  gap: 0.4rem;
+  min-height: 2.2rem;
+  padding: 0 0.9rem;
+  border-radius: 11px;
+  background-color: transparent;
   color: var(--md-sys-color-on-surface);
-  font-size: 0.76rem;
+  font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
   border: 1px solid var(--md-sys-color-outline-variant);
 }
 .md3-btn-outlined:hover:enabled {
@@ -489,9 +524,9 @@ html[data-theme="dark"] .md3-hero-container {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.4rem;
-  height: 2.4rem;
-  border-radius: var(--md-sys-shape-corner-full);
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 11px;
   background-color: var(--md-sys-color-surface-container);
   color: var(--md-sys-color-on-surface-variant);
   border: 1px solid var(--md-sys-color-outline-variant);
@@ -501,39 +536,17 @@ html[data-theme="dark"] .md3-hero-container {
   color: var(--md-sys-color-on-surface);
 }
 
-/* M3 Filter & Assist Chips */
-.md3-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 2rem;
-  padding: 0 0.85rem;
-  border-radius: var(--md-sys-shape-corner-sm);
-  background-color: var(--md-sys-color-surface-container);
-  color: var(--md-sys-color-on-surface-variant);
-  border: 1px solid var(--md-sys-color-outline-variant);
-  font-size: 0.74rem;
-  font-weight: 600;
-}
-.md3-chip:hover:enabled {
-  background-color: var(--md-sys-color-surface-container-high);
-}
-.md3-chip.is-selected {
-  background-color: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
-  border-color: transparent;
-}
-
 /* M3 Tonal Status Badges */
 .md3-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.22rem 0.68rem;
-  border-radius: var(--md-sys-shape-corner-full);
-  font-size: 0.68rem;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 8px;
+  font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 .md3-badge-primary {
   background-color: var(--md-sys-color-primary-container);
@@ -567,7 +580,7 @@ html[data-theme="dark"] .md3-hero-container {
 /* M3 Progress Indicator */
 .md3-progress-track {
   width: 100%;
-  height: 0.55rem;
+  height: 0.4rem;
   border-radius: var(--md-sys-shape-corner-full);
   background-color: var(--md-sys-color-surface-container-highest);
   overflow: hidden;

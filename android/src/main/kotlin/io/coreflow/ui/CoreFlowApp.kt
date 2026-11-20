@@ -155,10 +155,10 @@ fun CoreFlowApp(
         strings.titleSettings,
     )
     val tabSubtitles = listOf(
-        status?.let { "v${it.version} · ${if (it.isRunning) "PID ${it.pid}" else "Stopped"}" } ?: "CFAE NextGen",
+        status?.let { "v${it.version} · ${if (it.isRunning) "PID ${it.pid}" else strings.statusStopped}" } ?: "CFAE NextGen",
         strings.subControl,
         strings.subLive,
-        "${status?.apps?.totalConfigured ?: 0} active overrides",
+        "${status?.apps?.totalConfigured ?: 0} ${strings.activeOverridesSuffix}",
         strings.subSettings,
     )
 

@@ -98,11 +98,11 @@ fun HomeTab(
                 else -> Color(0xFF22C55E)
             }
             val headline = when {
-                status == null -> "Connecting..."
-                !isRunning -> "Engine Stopped"
-                isPaused -> "Paused · OEM Mode"
-                status.thermalGuardActive -> "Thermal Guard"
-                else -> "${status.effectiveProfile.label} · ${status.mode}"
+                status == null -> if (strings.isIndonesian) "Menghubungkan..." else "Connecting..."
+                !isRunning -> if (strings.isIndonesian) "Engine Berhenti" else "Engine Stopped"
+                isPaused -> if (strings.isIndonesian) "Dijeda · Mode OEM" else "Paused · OEM Mode"
+                status.thermalGuardActive -> strings.humanizeMode("THERMAL_GUARD")
+                else -> "${status.effectiveProfile.label} · ${strings.humanizeMode(status.mode)}"
             }
 
             Card(
@@ -287,7 +287,10 @@ fun HomeTab(
                 SmallTitle(text = strings.sectionSparkline)
             }
             item {
-                LiveSparklineCard(history = history)
+                LiveSparklineCard(
+                    history = history,
+                    trendLabel = strings.formatTrend(status?.thermalVelocityCpm ?: 0f),
+                )
             }
         }
 
@@ -460,7 +463,10 @@ fun HomeTab(
 }
 
 @Composable
-private fun LiveSparklineCard(history: List<CoreFlowManager.HistorySample>) {
+private fun LiveSparklineCard(
+    history: List<CoreFlowManager.HistorySample>,
+    trendLabel: String,
+) {
     val temps = history.mapNotNull { it.temp?.takeIf { t -> t > 0f } }
     val scales = history.map { it.scale.coerceIn(0.25f, 1f) }
     val latestTemp = temps.lastOrNull()
@@ -475,7 +481,7 @@ private fun LiveSparklineCard(history: List<CoreFlowManager.HistorySample>) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 LegendDot(
                     color = Color(0xFFF59E0B),
                     text = latestTemp?.let { String.format(Locale.US, "SoC %.1f°C", it) } ?: "SoC --",
@@ -486,9 +492,11 @@ private fun LiveSparklineCard(history: List<CoreFlowManager.HistorySample>) {
                 )
             }
             Text(
-                text = "${history.size}s",
+                text = "$trendLabel · ${history.size}s",
                 fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -587,17 +595,17 @@ internal fun MetricPill(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MiuixTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f))
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .padding(horizontal = 9.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (accent != null) {
                 Box(
                     modifier = Modifier
-                        .size(6.dp)
+                        .size(5.dp)
                         .clip(CircleShape)
                         .background(accent),
                 )
@@ -607,16 +615,18 @@ internal fun MetricPill(
                 fontSize = 10.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = value,
-            style = MiuixTheme.textStyles.body2,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = MiuixTheme.colorScheme.onSurface,
             maxLines = 1,
+            softWrap = false,
             overflow = TextOverflow.Ellipsis,
         )
     }

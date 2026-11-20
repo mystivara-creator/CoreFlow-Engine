@@ -47,6 +47,12 @@ test('buildSafeSetConfigArg allowlists only v5.1 keys and safe single-quoted val
     "'gaming_apps=com.tencent.ig,com.miHoYo.GenshinImpact'"
   );
   assert.equal(buildSafeSetConfigArg('gaming_apps', 'com.app$(whoami)'), null);
+  assert.equal(buildSafeSetConfigArg('bypass_charging', 'true'), "'bypass_charging=true'");
+  assert.equal(buildSafeSetConfigArg('bypass_on_gaming', 'false'), "'bypass_on_gaming=false'");
+  assert.equal(buildSafeSetConfigArg('charge_limit_pct', '85'), "'charge_limit_pct=85'");
+  assert.equal(buildSafeSetConfigArg('charge_limit_pct', '0'), "'charge_limit_pct=0'");
+  assert.equal(buildSafeSetConfigArg('charge_limit_pct', '45'), null);
+  assert.equal(buildSafeSetConfigArg('charge_limit_pct', '100'), null);
   assert.equal(buildSafeSetConfigArg('unknown_key', 'true'), null);
 });
 
@@ -58,6 +64,10 @@ test('parseV5Status parses live daemon payload and rejects malformed schema', ()
   assert.equal(parsed.effectiveProfile, 'balanced');
   assert.equal(parsed.hardware.storageType, 'UFS');
   assert.equal(parsed.actuators.perThreadUclampSupported, true);
+  assert.equal(parsed.powerConfig.chargeLimitPct, 85);
+  assert.equal(parsed.batteryPower.bypassSupported, true);
+  assert.ok(parsed.cpuClusters.length > 0);
+  assert.ok(parsed.episodes.length > 0);
   assert.deepEqual(parsed.apps.smoothness, ['com.instagram.android']);
   assert.deepEqual(parsed.apps.battery, ['com.whatsapp']);
   assert.equal(parsed.session.launchBursts, 14);

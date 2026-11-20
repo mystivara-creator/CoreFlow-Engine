@@ -224,6 +224,7 @@ object CoreFlowManager {
         val baselineNodesSnapshotted: Int,
         val recoveryPending: Boolean,
         val thermalSource: String,
+        val thermalVelocityCpm: Float = 0f,
         val thermalGuardActive: Boolean = false,
         val features: EngineFeatures = EngineFeatures(),
         val powerConfig: PowerConfig = PowerConfig(),
@@ -408,6 +409,7 @@ object CoreFlowManager {
                 baselineNodesSnapshotted = json.optInt("baselineNodesSnapshotted", 0),
                 recoveryPending = json.optBoolean("recoveryPending", false),
                 thermalSource = json.optString("thermalSource", "oem_policy"),
+                thermalVelocityCpm = json.optFiniteFloat("thermalVelocityCpm", 0f),
                 thermalGuardActive = json.optBoolean("thermalGuard", false),
                 features = EngineFeatures(
                     frameSmoothness = featuresJson?.optBoolean("frameSmoothness", true) ?: true,

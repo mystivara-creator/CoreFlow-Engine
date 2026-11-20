@@ -558,6 +558,7 @@ struct RuntimeStatusData {
     std::string thermal_source{"unavailable"};
     double cpu_util_pct{0.0};
     double render_pressure{0.0};
+    double thermal_velocity_cpm{0.0};
     std::optional<double> gpu_busy_pct{};
     std::optional<double> cpu_psi{};
     std::optional<double> mem_psi{};
@@ -665,6 +666,7 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"socTempCelsius\":" << (std::isfinite(s.soc_temp) && s.soc_temp >= 0.0 ? std::to_string(s.soc_temp) : "null")
         << ",\"batteryTempCelsius\":" << (std::isfinite(s.battery_temp) && s.battery_temp >= 0.0 ? std::to_string(s.battery_temp) : "null")
         << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
+        << ",\"thermalVelocityCpm\":" << safe_num(s.thermal_velocity_cpm)
         << ",\"thermalSource\":" << json_str(s.thermal_source)
         << ",\"cpuUtilPct\":" << safe_num(s.cpu_util_pct)
         << ",\"renderPressure\":" << safe_num(s.render_pressure)
@@ -1484,7 +1486,7 @@ int main(int argc, char* argv[]) {
         sig.has_game_thread = fg.has_game_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
-        if (live_status.ctx.newly_launched_app) {
+        if (live_status.ctx.newly_launched_app && (fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
             decision_journal.record(
                 epoch_now_ms(), "storage", "LaunchBurst",
@@ -1508,6 +1510,13 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry(), now_ms);
+            if (config.bypass_on_gaming) {
+                (void)longevity.apply_power_control(
+                    config.bypass_charging,
+                    live_status.ctx.mode == ContextMode::Gaming,
+                    config.bypass_on_gaming,
+                    config.charge_limit_pct);
+            }
             live_status.thread_stats = thread_scheduler.stats();
             live_status.storage_stats = storage_memory.stats();
             live_status.envelope_stats = thermal_envelope.stats();
@@ -1595,9 +1604,20 @@ int main(int argc, char* argv[]) {
             live_status.battery = longevity.sample_battery_telemetry();
             live_status.contended_paths = collect_contended_paths();
             if (live_status.contended_paths.size() > prev_contended_count) {
+                std::string node_label = std::to_string(live_status.contended_paths.size()) + " sysfs node(s)";
+                if (!live_status.contended_paths.empty()) {
+                    const auto& first_path = live_status.contended_paths.front();
+                    const auto slash = first_path.find_last_of('/');
+                    const std::string leaf = slash != std::string::npos ? first_path.substr(slash + 1U) : first_path;
+                    if (!leaf.empty()) {
+                        node_label = live_status.contended_paths.size() == 1U
+                            ? leaf
+                            : (leaf + " +" + std::to_string(live_status.contended_paths.size() - 1U));
+                    }
+                }
                 decision_journal.record(
                     epoch_now_ms(), "thermal", "OEMContention",
-                    "Yielded " + std::to_string(live_status.contended_paths.size()) + " sysfs node(s) to auto-cooldown",
+                    "Yielded " + node_label + " to OEM cooldown",
                     "oem_yield", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
             } else if (live_status.contended_paths.empty() && prev_contended_count > 0U) {
                 decision_journal.record(
@@ -1615,8 +1635,9 @@ int main(int argc, char* argv[]) {
             live_status.episodes = decision_journal.recent(16U);
             ++live_status.session.scale_samples;
             live_status.session.scale_sum += live_status.capacity_scale;
+            const uint64_t sample_ts = epoch_now_ms();
             live_status.history.push_back(HistoryPoint{
-                .ts_ms = epoch_now_ms(),
+                .ts_ms = sample_ts,
                 .soc_temp = soc_temp >= 0.0f ? static_cast<double>(soc_temp) : -1.0,
                 .thermal_pressure = thermal.pressure,
                 .cpu_util_pct = cpu_util,
@@ -1628,6 +1649,19 @@ int main(int argc, char* argv[]) {
             if (live_status.history.size() > 60U) {
                 live_status.history.erase(live_status.history.begin());
             }
+            // Compute smoothed thermal rise/cool velocity (°C/min) over the last ~10-15 samples
+            double vel_cpm = 0.0;
+            if (soc_temp > 0.0f && live_status.history.size() >= 4U) {
+                const size_t lookback = std::min<size_t>(live_status.history.size() - 1U, 12U);
+                const auto& ref = live_status.history[live_status.history.size() - 1U - lookback];
+                if (ref.soc_temp > 0.0 && sample_ts > ref.ts_ms) {
+                    const double dt_min = static_cast<double>(sample_ts - ref.ts_ms) / 60000.0;
+                    if (dt_min >= 0.04) {
+                        vel_cpm = std::clamp((static_cast<double>(soc_temp) - ref.soc_temp) / dt_min, -25.0, 25.0);
+                    }
+                }
+            }
+            live_status.thermal_velocity_cpm = vel_cpm;
             (void)write_status_snapshot(build_status_json(live_status));
         };
 
@@ -1715,7 +1749,15 @@ int main(int argc, char* argv[]) {
 
         if (!screen_off) {
             last_fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
-            live_status.render_pressure = render_sampler.sample(last_fg.pid, last_fg.critical_tids, elapsed);
+            double rp = render_sampler.sample(last_fg.pid, last_fg.critical_tids, elapsed);
+            // Blend GPU busy / CPU PSI floor so Vulkan/GPU-bound scenes always report live render pressure
+            const double gpu_floor = gpu_busy.has_value() && *gpu_busy >= 8.0
+                ? std::clamp((*gpu_busy / 100.0) * 0.78, 0.0, 0.92)
+                : 0.0;
+            const double psi_floor = cpu_psi.has_value() && *cpu_psi >= 3.0
+                ? std::clamp(*cpu_psi / 65.0, 0.0, 0.65)
+                : 0.0;
+            live_status.render_pressure = std::clamp(std::max({rp, gpu_floor, psi_floor}), 0.0, 1.0);
         } else {
             live_status.render_pressure = render_sampler.sample(0, {}, elapsed);
         }
@@ -1731,7 +1773,8 @@ int main(int argc, char* argv[]) {
         sig.has_game_thread = !screen_off && last_fg.has_game_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
-        if (live_status.ctx.newly_launched_app) {
+        if (live_status.ctx.newly_launched_app &&
+            (last_fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
         }
         if (live_status.ctx.mode != prev_mode) {

@@ -13,10 +13,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +46,7 @@ fun LiveFeedTab(
     scrollBehavior: ScrollBehavior,
 ) {
     val episodes = status?.episodes.orEmpty()
-    val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
     LazyColumn(
         modifier = Modifier
@@ -55,27 +58,57 @@ fun LiveFeedTab(
         item { SmallTitle(text = strings.sectionAiBrain) }
 
         item {
+            val contendedCount = status?.contendedPaths?.size ?: 0
+            val sourceLabel = status?.let {
+                strings.humanizeThermalSource(it.thermalSource, contendedCount)
+            } ?: "--"
+            val sourceColor = when {
+                contendedCount > 0 -> Color(0xFFF59E0B)
+                status?.isRunning == true -> Color(0xFF22C55E)
+                else -> Color(0xFF64748B)
+            }
+            val vel = status?.thermalVelocityCpm ?: 0f
+            val trendColor = when {
+                vel >= 0.6f -> Color(0xFFEF4444)
+                vel <= -0.6f -> Color(0xFF38BDF8)
+                else -> Color(0xFF22C55E)
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
+                insideMargin = PaddingValues(15.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = status?.let { "${it.mode} · ${it.effectiveProfile.label}" } ?: "Offline",
-                        style = MiuixTheme.textStyles.headline1,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = status?.thermalSource ?: "--",
-                        fontSize = 11.sp,
-                        color = MiuixTheme.colorScheme.primary,
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(9.dp)
+                                .clip(CircleShape)
+                                .background(sourceColor),
+                        )
+                        Text(
+                            text = status?.let {
+                                "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
+                            } ?: "Offline",
+                            style = MiuixTheme.textStyles.headline1,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    BadgeTag(sourceLabel, sourceColor)
                 }
-                Spacer(Modifier.height(10.dp))
+
+                Spacer(Modifier.height(12.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -83,21 +116,42 @@ fun LiveFeedTab(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     MetricPill(
-                        label = "10s Forecast",
-                        value = status?.let { String.format(Locale.US, "%.0f idx", it.aiPredicted10s) } ?: "--",
+                        label = strings.labelForecast10s,
+                        value = status?.let { "${it.aiPredicted10s.toInt().coerceIn(0, 130)}%" } ?: "--",
                         accent = Color(0xFFF59E0B),
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "Confidence",
+                        label = strings.labelConfidence,
                         value = status?.let { "${(it.aiConfidence * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
                         accent = Color(0xFF38BDF8),
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "CPU Util",
+                        label = strings.labelCpuLoad,
                         value = status?.let { "${it.cpuUtilPct.toInt().coerceIn(0, 100)}%" } ?: "--",
                         accent = Color(0xFFA78BFA),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MetricPill(
+                        label = strings.labelTrend,
+                        value = strings.formatTrend(vel),
+                        accent = trendColor,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    MetricPill(
+                        label = "Render",
+                        value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                        accent = Color(0xFF10B981),
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
@@ -128,17 +182,18 @@ fun LiveFeedTab(
                     "uclamp" -> Color(0xFFA78BFA)
                     else -> MiuixTheme.colorScheme.primary
                 }
-                val (outcomeText, outcomeColor) = when (ep.outcome) {
-                    "oem_yield" -> "OEM Yield" to Color(0xFFF59E0B)
-                    "rolled_back" -> "Rolled Back" to Color(0xFFEF4444)
-                    "skipped" -> "Skipped" to Color(0xFF64748B)
-                    else -> "Verified" to Color(0xFF22C55E)
+                val outcomeColor = when (ep.outcome) {
+                    "oem_yield" -> Color(0xFFF59E0B)
+                    "rolled_back" -> Color(0xFFEF4444)
+                    "skipped" -> Color(0xFF64748B)
+                    else -> Color(0xFF22C55E)
                 }
+                val outcomeText = strings.humanizeOutcome(ep.outcome)
                 val tsLabel = if (ep.tsMs > 0L) timeFmt.format(Date(ep.tsMs)) else "--:--:--"
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(14.dp),
+                    insideMargin = PaddingValues(13.dp),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -146,6 +201,7 @@ fun LiveFeedTab(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Row(
+                            modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
@@ -158,18 +214,23 @@ fun LiveFeedTab(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        Spacer(Modifier.size(8.dp))
                         BadgeTag(outcomeText, outcomeColor)
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text = ep.action,
-                        style = MiuixTheme.textStyles.body2,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
                         color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(6.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = tsLabel,
@@ -185,6 +246,8 @@ fun LiveFeedTab(
                             text = meta,
                             fontSize = 10.sp,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -209,6 +272,7 @@ private fun BadgeTag(label: String, color: Color) {
             fontWeight = FontWeight.Bold,
             color = color,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }

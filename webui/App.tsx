@@ -4,9 +4,8 @@ import {
   AppWindow,
   Battery,
   BatteryCharging,
-  CheckCircle2,
   ClipboardCopy,
-  Cpu,
+  ExternalLink,
   FileJson,
   Flame,
   Gamepad2,
@@ -15,14 +14,15 @@ import {
   Pause,
   Play,
   Plus,
+  Radio,
   RefreshCw,
   RotateCcw,
   Search,
+  Settings,
   ShieldAlert,
-  ShieldCheck,
+  Sliders,
   Sparkles,
   Trash2,
-  Zap,
 } from 'lucide-react';
 import {
   AccentSeed,
@@ -70,6 +70,7 @@ const RESOLVE_SERVICE =
   'SVC="/data/adb/modules/cfae_framework/service.sh"; ' +
   '[ -f "$SVC" ] || SVC="/data/adb/modules_update/cfae_framework/service.sh"';
 const LOG_PATH = '/data/adb/coreflow/logs/coreflowd.log';
+const LANG_KEY = 'coreflow_webui_lang';
 
 const extractJsonObject = (raw: string): unknown => {
   const lines = raw
@@ -102,28 +103,45 @@ const formatBytes = (bytes: number): string => {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 };
 
-const ThermalSparkline: React.FC<{ samples: HistorySample[] }> = ({ samples }) => {
+const formatClock = (tsMs: number): string => {
+  if (!tsMs || tsMs <= 0) return '--:--:--';
+  const d = new Date(tsMs);
+  return d.toTimeString().slice(0, 8);
+};
+
+const formatTrend = (vel: number, isId: boolean): string => {
+  if (vel >= 0.6) return `${isId ? 'Naik' : 'Rising'} +${vel.toFixed(1)}°/m`;
+  if (vel <= -0.6) return `${isId ? 'Turun' : 'Cooling'} ${vel.toFixed(1)}°/m`;
+  return isId ? 'Stabil' : 'Stable';
+};
+
+const DualSparkline: React.FC<{
+  samples: HistorySample[];
+  trendLabel: string;
+  isId: boolean;
+}> = ({ samples, trendLabel, isId }) => {
   const valid = samples.filter((s) => s.temp !== null && Number.isFinite(s.temp));
   if (valid.length < 2) {
     return (
       <div
-        className="flex h-20 items-center justify-center rounded-2xl text-xs"
+        className="flex h-16 items-center justify-center rounded-xl text-xs"
         style={{
-          background: 'var(--md-sys-color-surface-container-low)',
+          background: 'var(--md-sys-color-surface-container)',
           color: 'var(--md-sys-color-on-surface-variant)',
         }}
       >
-        Collecting live thermal telemetry...
+        {isId ? 'Mengumpulkan telemetri termal live...' : 'Collecting live thermal telemetry...'}
       </div>
     );
   }
   const temps = valid.map((s) => s.temp as number);
-  const minT = Math.min(25, Math.floor(Math.min(...temps) - 2));
-  const maxT = Math.max(55, Math.ceil(Math.max(...temps) + 2));
+  const minT = Math.max(20, Math.floor(Math.min(...temps) - 3));
+  const maxT = Math.max(minT + 10, Math.ceil(Math.max(...temps) + 3));
   const span = Math.max(1, maxT - minT);
   const width = 320;
-  const height = 72;
-  const points = valid
+  const height = 64;
+
+  const tempPoints = valid
     .map((s, idx) => {
       const x = (idx / (valid.length - 1)) * width;
       const y = height - (((s.temp as number) - minT) / span) * (height - 10) - 5;
@@ -131,34 +149,69 @@ const ThermalSparkline: React.FC<{ samples: HistorySample[] }> = ({ samples }) =
     })
     .join(' ');
 
+  const scalePoints = valid
+    .map((s, idx) => {
+      const x = (idx / (valid.length - 1)) * width;
+      const y = height - Math.max(0.2, Math.min(1, s.scale)) * (height - 10) - 5;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+
   return (
     <div
-      className="rounded-2xl p-3"
-      style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+      className="rounded-xl p-3"
+      style={{
+        background: 'var(--md-sys-color-surface-container)',
+        border: '1px solid var(--md-sys-color-outline-variant)',
+      }}
     >
-      <div className="mb-1 flex items-center justify-between text-[11px]">
-        <span style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-          SoC Thermal Trend ({valid.length} samples)
-        </span>
-        <span className="font-mono font-semibold">
-          {temps[temps.length - 1].toFixed(1)} °C
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="inline-flex items-center gap-1.5 font-medium truncate">
+            <span className="h-2 w-2 rounded-full shrink-0" style={{ background: '#f59e0b' }} />
+            <span className="font-mono font-semibold tabular-nums">
+              {temps[temps.length - 1].toFixed(1)}°C
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 font-medium truncate">
+            <span className="h-2 w-2 rounded-full shrink-0" style={{ background: '#38bdf8' }} />
+            <span className="font-mono font-semibold tabular-nums">
+              {Math.round(valid[valid.length - 1].scale * 100)}%
+            </span>
+          </span>
+        </div>
+        <span
+          className="font-mono text-[10px] font-medium shrink-0"
+          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+        >
+          {trendLabel} · {valid.length}s
         </span>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-16 w-full overflow-visible">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-14 w-full overflow-visible">
+        <line x1="0" y1={height * 0.25} x2={width} y2={height * 0.25} stroke="currentColor" strokeOpacity="0.1" />
+        <line x1="0" y1={height * 0.75} x2={width} y2={height * 0.75} stroke="currentColor" strokeOpacity="0.1" />
         <polyline
           fill="none"
-          stroke="var(--md-sys-color-primary)"
-          strokeWidth="2.2"
+          stroke="#38bdf8"
+          strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
-          points={points}
+          points={scalePoints}
+        />
+        <polyline
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          points={tempPoints}
         />
       </svg>
     </div>
   );
 };
 
-type NavTab = 'home' | 'apps' | 'system';
+type NavTab = 'home' | 'control' | 'live' | 'apps' | 'system';
 
 const RULE_CATEGORY_OPTIONS: { id: AppRuleCategory; label: string }[] = [
   { id: 'default', label: 'Auto' },
@@ -168,9 +221,33 @@ const RULE_CATEGORY_OPTIONS: { id: AppRuleCategory; label: string }[] = [
   { id: 'excluded', label: 'Stock' },
 ];
 
+const AI_SPONSORS = [
+  { name: 'Claude', badge: 'CL', role: 'Anthropic · Architecture', color: '#d97757', url: 'https://claude.ai' },
+  { name: 'ChatGPT', badge: 'AI', role: 'OpenAI · Ideation', color: '#10a37f', url: 'https://chatgpt.com' },
+  { name: 'Gemini', badge: 'GM', role: 'DeepMind · Engine & UI', color: '#4285f4', url: 'https://gemini.google.com' },
+  { name: 'GitHub', badge: 'GH', role: 'CI/CD & Releases', color: '#8b5cf6', url: 'https://github.com/mystivara-creator/CoreFlow-Engine' },
+];
+
+const ACCENT_SEEDS: { id: AccentSeed; label: string; swatch: string }[] = [
+  { id: 'ocean', label: 'Ocean', swatch: '#0b57d0' },
+  { id: 'emerald', label: 'Emerald', swatch: '#006c4c' },
+  { id: 'amber', label: 'Amber', swatch: '#b27b00' },
+];
+
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
+  const [lang, setLang] = useState<'id' | 'en'>(() => {
+    try {
+      const saved = window.localStorage.getItem(LANG_KEY);
+      if (saved === 'id' || saved === 'en') return saved;
+      return navigator.language.toLowerCase().startsWith('id') || navigator.language.toLowerCase().startsWith('in')
+        ? 'id'
+        : 'en';
+    } catch {
+      return 'en';
+    }
+  });
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [nativeConnected, setNativeConnected] = useState(false);
   const [status, setStatus] = useState<CoreFlowV5Status>(() => createPreviewStatus());
@@ -183,15 +260,17 @@ export const App: React.FC = () => {
   const [starting, setStarting] = useState(false);
   const [logs, setLogs] = useState<ReactionLogEvent[]>([]);
 
-  // Per-App Picker & manual entry state
+  // Per-App Picker & filter state
   const [installedApps, setInstalledApps] = useState<string[]>(() =>
     hasNativeKernelSuBridge() ? [] : PREVIEW_INSTALLED_PACKAGES
   );
   const [loadingApps, setLoadingApps] = useState(false);
   const [appSearch, setAppSearch] = useState('');
+  const [appFilter, setAppFilter] = useState<'all' | 'rules'>('all');
   const [manualPkg, setManualPkg] = useState('');
   const [manualCategory, setManualCategory] = useState<Exclude<AppRuleCategory, 'default'>>('gaming');
 
+  const isId = lang === 'id';
   const isDark = resolveIsDark(appearance.theme);
   useEffect(() => {
     applyAppearance(appearance);
@@ -202,6 +281,16 @@ export const App: React.FC = () => {
     const next = { ...appearance, theme };
     setAppearance(next);
     saveAppearance(next);
+  };
+
+  const toggleLang = () => {
+    const next = lang === 'id' ? 'en' : 'id';
+    setLang(next);
+    try {
+      window.localStorage.setItem(LANG_KEY, next);
+    } catch {
+      // ignore storage errors
+    }
   };
 
   const handleSelectAccent = (accent: AccentSeed) => {
@@ -248,7 +337,7 @@ export const App: React.FC = () => {
         setInstalledApps(parseInstalledPackages(res.stdout));
       }
     } catch {
-      // Keep manual fallback available
+      // Manual fallback remains available
     } finally {
       setLoadingApps(false);
     }
@@ -351,7 +440,9 @@ export const App: React.FC = () => {
     void applyConfigUpdates(
       [['profile', profile]],
       (prev) => ({ ...prev, profile, effectiveProfile: profile }),
-      `Profile switched to ${PROFILE_META[profile].label}`
+      isId
+        ? `Profil diubah ke ${PROFILE_META[profile].label}`
+        : `Profile switched to ${PROFILE_META[profile].label}`
     );
   };
 
@@ -361,8 +452,46 @@ export const App: React.FC = () => {
       [['inspection_mode', nextPaused ? 'true' : 'false']],
       (prev) => ({ ...prev, inspectionMode: nextPaused }),
       nextPaused
-        ? 'Paused (OEM Stock A/B compare active — all kernel nodes restored)'
-        : 'CoreFlow Autonomous Engine resumed'
+        ? isId
+          ? 'CoreFlow dijeda (Mode OEM A/B aktif)'
+          : 'CoreFlow paused (OEM A/B compare active)'
+        : isId
+          ? 'CoreFlow Engine dilanjutkan'
+          : 'CoreFlow Engine resumed'
+    );
+  };
+
+  const handleTogglePowerFlag = (
+    key: 'bypass_charging' | 'bypass_on_gaming',
+    field: 'bypassCharging' | 'bypassOnGaming',
+    label: string
+  ) => {
+    const nextVal = !status.powerConfig[field];
+    void applyConfigUpdates(
+      [[key, nextVal ? 'true' : 'false']],
+      (prev) => ({
+        ...prev,
+        powerConfig: { ...prev.powerConfig, [field]: nextVal },
+        batteryPower:
+          field === 'bypassCharging'
+            ? { ...prev.batteryPower, bypassActive: nextVal }
+            : prev.batteryPower,
+      }),
+      `${label} ${nextVal ? 'ON' : 'OFF'}`
+    );
+  };
+
+  const handleChargeLimit = (pct: number) => {
+    void applyConfigUpdates(
+      [['charge_limit_pct', String(pct)]],
+      (prev) => ({ ...prev, powerConfig: { ...prev.powerConfig, chargeLimitPct: pct } }),
+      pct === 0
+        ? isId
+          ? 'Batas cas dimatikan'
+          : 'Charge ceiling disabled'
+        : isId
+          ? `Batas cas diatur ke ${pct}%`
+          : `Charge ceiling set to ${pct}%`
     );
   };
 
@@ -381,7 +510,7 @@ export const App: React.FC = () => {
         setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
       }
       addLog('BOOST', 'Daemon', 'CoreFlow v6.0.0 daemon started.');
-      setFeedback('CoreFlow daemon started and active.');
+      setFeedback(isId ? 'Daemon CoreFlow aktif.' : 'CoreFlow daemon started.');
     } catch (err) {
       setErrorMsg(`Unable to start daemon: ${String(err)}`);
     } finally {
@@ -401,24 +530,21 @@ export const App: React.FC = () => {
         ...prev,
         features: { ...prev.features, [featureField]: nextVal },
       }),
-      `${label} ${nextVal ? 'enabled' : 'disabled'}`
+      `${label} ${nextVal ? 'ON' : 'OFF'}`
     );
   };
 
   const handleAssignAppRule = (pkg: string, category: AppRuleCategory) => {
     const trimmed = pkg.trim();
     if (!isValidPackageName(trimmed)) {
-      setErrorMsg('Enter a valid Android package name (e.g. com.miHoYo.GenshinImpact)');
+      setErrorMsg(
+        isId
+          ? 'Masukkan nama paket Android yang valid (contoh: com.miHoYo.GenshinImpact)'
+          : 'Enter a valid Android package name (e.g. com.miHoYo.GenshinImpact)'
+      );
       return;
     }
     const nextApps: CoreFlowAppRules = assignPackageRule(status.apps, trimmed, category);
-    const labelMap: Record<AppRuleCategory, string> = {
-      default: 'Auto (Global Profile)',
-      gaming: 'Gaming',
-      smoothness: 'Smoothness',
-      battery: 'Battery',
-      excluded: 'Excluded (OEM Stock)',
-    };
     void applyConfigUpdates(
       [
         ['gaming_apps', nextApps.gaming.join(',')],
@@ -427,7 +553,7 @@ export const App: React.FC = () => {
         ['excluded_apps', nextApps.excluded.join(',')],
       ],
       (prev) => ({ ...prev, apps: nextApps }),
-      `${trimmed} → ${labelMap[category]}`
+      `${trimmed} → ${category.toUpperCase()}`
     );
   };
 
@@ -457,7 +583,7 @@ export const App: React.FC = () => {
       if (!isNativeBridge) {
         pretty = JSON.stringify(
           {
-            reportFormat: 'coreflow-diag-v1',
+            reportFormat: 'coreflow-diag-v6',
             version: status.version,
             generatedAtMs: Date.now(),
             status,
@@ -472,9 +598,9 @@ export const App: React.FC = () => {
       setDiagJson(pretty);
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(pretty).catch(() => {});
-        setFeedback('Diagnostic report exported and copied to clipboard.');
+        setFeedback(isId ? 'Diagnostik diekspor & disalin ke clipboard.' : 'Diagnostic report copied to clipboard.');
       } else {
-        setFeedback('Diagnostic report generated below.');
+        setFeedback(isId ? 'Diagnostik siap di bawah.' : 'Diagnostic report generated below.');
       }
       setErrorMsg(null);
     } catch (err) {
@@ -485,7 +611,9 @@ export const App: React.FC = () => {
   const handleRestoreBaseline = async () => {
     if (
       !window.confirm(
-        'Restore all CoreFlow-managed kernel nodes to their captured OEM baseline and stop coreflowd?'
+        isId
+          ? 'Pulihkan semua node kernel CoreFlow ke nilai bawaan OEM dan hentikan coreflowd?'
+          : 'Restore all CoreFlow-managed kernel nodes to OEM baseline and stop coreflowd?'
       )
     ) {
       return;
@@ -500,7 +628,7 @@ export const App: React.FC = () => {
         setStatus((prev) => ({ ...prev, running: false, baselineNodesSnapshotted: 0 }));
       }
       addLog('BASELINE', 'Rollback', 'OEM factory baseline restored cleanly.');
-      setFeedback('OEM baseline restored. You can restart CoreFlow anytime.');
+      setFeedback(isId ? 'Baseline OEM berhasil dipulihkan.' : 'OEM baseline restored cleanly.');
     } catch (err) {
       setErrorMsg(`Restore failed: ${String(err)}`);
     } finally {
@@ -510,86 +638,49 @@ export const App: React.FC = () => {
 
   const healthScore = useMemo(() => computeHealthScore(status), [status]);
   const readiness = useMemo(() => computePillarReadiness(status), [status]);
-  const modeMeta = status.inspectionMode
-    ? { label: 'Paused (OEM Stock)', tone: 'warning' as const }
-    : MODE_LABELS[status.mode] ?? { label: status.mode, tone: 'neutral' as const };
-  const modeBadgeClass =
-    modeMeta.tone === 'error'
-      ? 'md3-badge md3-badge-error'
-      : modeMeta.tone === 'warning'
-        ? 'md3-badge md3-badge-warning'
-        : modeMeta.tone === 'success'
-          ? 'md3-badge md3-badge-success'
-          : 'md3-badge md3-badge-neutral';
+  const rawModeMeta = MODE_LABELS[status.mode] ?? { label: status.mode, labelId: status.mode, tone: 'neutral' as const };
+  const modeLabel = status.inspectionMode
+    ? isId
+      ? 'Dijeda · OEM'
+      : 'Paused · OEM'
+    : isId
+      ? rawModeMeta.labelId
+      : rawModeMeta.label;
+
+  const totalOverrides =
+    status.apps.gaming.length +
+    status.apps.smoothness.length +
+    status.apps.battery.length +
+    status.apps.excluded.length;
 
   const filteredInstalledApps = useMemo(() => {
     const q = appSearch.trim().toLowerCase();
-    const list = q
-      ? installedApps.filter((pkg) => pkg.toLowerCase().includes(q))
-      : installedApps;
-    // Sort configured apps first so user immediately sees their overrides
+    const list = installedApps.filter((pkg) => {
+      if (appFilter === 'rules' && getPackageRuleCategory(status.apps, pkg) === 'default') return false;
+      return !q || pkg.toLowerCase().includes(q);
+    });
     return [...list].sort((a, b) => {
       const ra = getPackageRuleCategory(status.apps, a) === 'default' ? 1 : 0;
       const rb = getPackageRuleCategory(status.apps, b) === 'default' ? 1 : 0;
       return ra !== rb ? ra - rb : a.localeCompare(b);
     });
-  }, [installedApps, appSearch, status.apps]);
+  }, [installedApps, appSearch, appFilter, status.apps]);
 
-  const featureItems: {
-    configKey: string;
-    field: keyof CoreFlowFeatures;
-    title: string;
-    desc: string;
-    Icon: React.FC<{ className?: string }>;
-  }[] = [
-    {
-      configKey: 'enable_frame_smoothness',
-      field: 'frameSmoothness',
-      title: 'Per-Thread Frame Smoothness',
-      desc: 'Closed-loop RenderThread & SurfaceFlinger UClamp via sched_setattr without fighting PowerHAL.',
-      Icon: Sparkles,
-    },
-    {
-      configKey: 'enable_storage_burst',
-      field: 'storageBurst',
-      title: 'UFS / eMMC Launch Burst & QoS',
-      desc: '200ms foreground launch burst + isolates background I/O & CPU contention.',
-      Icon: HardDrive,
-    },
-    {
-      configKey: 'enable_memory_guard',
-      field: 'memoryGuard',
-      title: 'Anti-Stutter Memory & Pre-Read',
-      desc: 'MGLRU working-set guard, dynamic swappiness, and bounded posix_fadvise app asset prefetch.',
-      Icon: MemoryStick,
-    },
-    {
-      configKey: 'enable_thermal_pacing',
-      field: 'thermalPacing',
-      title: 'Thermal PID Smooth Pacing',
-      desc: 'Rust PID + Online RLS/MLP 10s lookahead scales CPU/GPU envelopes smoothly before cliff-throttling.',
-      Icon: Flame,
-    },
-    {
-      configKey: 'enable_battery_step_charging',
-      field: 'batteryStepCharging',
-      title: 'Battery Step-Charging Guard',
-      desc: 'Protects battery longevity by stepping down charge current only when hot while charging.',
-      Icon: BatteryCharging,
-    },
+  const navTabs: { id: NavTab; label: string; Icon: React.FC<{ className?: string }> }[] = [
+    { id: 'home', label: isId ? 'Beranda' : 'Home', Icon: Activity },
+    { id: 'control', label: isId ? 'Kontrol' : 'Control', Icon: Sliders },
+    { id: 'live', label: 'Live AI', Icon: Radio },
+    { id: 'apps', label: isId ? 'Aplikasi' : 'Apps', Icon: AppWindow },
+    { id: 'system', label: isId ? 'Setelan' : 'System', Icon: Settings },
   ];
 
-  const ruleBuckets: {
-    key: Exclude<AppRuleCategory, 'default'>;
-    title: string;
-    badgeClass: string;
-    Icon: React.FC<{ className?: string; style?: React.CSSProperties }>;
-  }[] = [
-    { key: 'gaming', title: 'Gaming Mode', badgeClass: 'md3-badge md3-badge-success', Icon: Gamepad2 },
-    { key: 'smoothness', title: 'Smoothness', badgeClass: 'md3-badge md3-badge-success', Icon: Sparkles },
-    { key: 'battery', title: 'Battery Saver', badgeClass: 'md3-badge md3-badge-neutral', Icon: Battery },
-    { key: 'excluded', title: 'Excluded (OEM Stock)', badgeClass: 'md3-badge md3-badge-warning', Icon: ShieldAlert },
-  ];
+  const trendText = formatTrend(status.thermalVelocityCpm, isId);
+  const ramUsedGb = Math.max(0, status.memory.totalBytes - status.memory.availableBytes) / 1024 ** 3;
+  const ramTotGb = status.memory.totalBytes / 1024 ** 3;
+  const ramFrac = status.memory.totalBytes > 0 ? Math.min(1, ramUsedGb / Math.max(0.1, ramTotGb)) : 0;
+  const zramUsedGb = Math.max(0, status.memory.swapTotalBytes - status.memory.swapFreeBytes) / 1024 ** 3;
+  const zramTotGb = status.memory.swapTotalBytes / 1024 ** 3;
+  const zramFrac = status.memory.swapTotalBytes > 0 ? Math.min(1, zramUsedGb / Math.max(0.1, zramTotGb)) : 0;
 
   return (
     <div
@@ -602,62 +693,61 @@ export const App: React.FC = () => {
       <PixelHeader
         isDark={isDark}
         onToggleTheme={toggleTheme}
-        accent={appearance.accent}
-        onSelectAccent={handleSelectAccent}
-        modeLabel={modeMeta.label}
+        lang={lang}
+        onToggleLang={toggleLang}
+        modeLabel={modeLabel}
+        version={status.version}
         healthScore={healthScore}
         nativeMode={isNativeBridge}
         nativeConnected={nativeConnected}
       />
 
-      {/* Compact Tab Bar */}
+      {/* Proportional 5-Tab Segmented Bar (zero wrap even on 360px phones) */}
       <nav
-        className="sticky top-[4rem] z-20 px-4 py-2"
+        className="sticky top-14 z-20 px-3 py-2"
         style={{
-          background: 'var(--md-sys-color-surface-container-low)',
+          background: 'var(--md-sys-color-surface)',
           borderBottom: '1px solid var(--md-sys-color-outline-variant)',
         }}
       >
-        <div className="mx-auto flex max-w-5xl items-center gap-2">
-          {(
-            [
-              { id: 'home', label: 'Control Center', Icon: Activity },
-              { id: 'apps', label: 'Per-App Rules', Icon: AppWindow },
-              { id: 'system', label: 'System & Safety', Icon: ShieldCheck },
-            ] as const
-          ).map(({ id, label, Icon }) => {
-            const active = activeTab === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setActiveTab(id)}
-                className={active ? 'md3-btn-filled flex-1 sm:flex-none' : 'md3-btn-tonal flex-1 sm:flex-none'}
-              >
-                <Icon className="h-4 w-4" />
-                <span>{label}</span>
-              </button>
-            );
-          })}
+        <div className="mx-auto max-w-4xl">
+          <div className="cf-seg-bar grid-cols-5">
+            {navTabs.map(({ id, label, Icon }) => {
+              const active = activeTab === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setActiveTab(id)}
+                  className={`cf-seg-btn flex-col sm:flex-row gap-0.5 sm:gap-1.5 py-1.5 ${active ? 'is-active' : ''}`}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="text-[10px] sm:text-xs leading-none">{label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </nav>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 space-y-5 px-4 py-5 sm:px-6">
+      <main className="mx-auto w-full max-w-4xl flex-1 space-y-4 px-3.5 py-4 sm:px-5">
         {!isNativeBridge && (
           <div
-            className="rounded-2xl px-4 py-2.5 text-xs font-medium"
+            className="rounded-xl px-3.5 py-2 text-[11px] font-medium leading-snug"
             style={{
               background: 'var(--md-sys-color-warning-container)',
               color: 'var(--md-sys-color-on-warning-container)',
             }}
           >
-            Browser Preview Mode — interactive demo. On a rooted Android 13+ device (KernelSU / APatch / Magisk + KsuWebUI), changes apply live to <code>coreflowd</code>.
+            {isId
+              ? 'Mode Pratinjau Browser — di Android root (Magisk / KSU / APatch), semua kontrol terhubung langsung ke coreflowd.'
+              : 'Browser Preview Mode — on rooted Android (Magisk / KSU / APatch), changes apply live to coreflowd.'}
           </div>
         )}
 
         {feedback && (
           <div
-            className="rounded-2xl px-4 py-2.5 text-xs font-medium"
+            className="rounded-xl px-3.5 py-2 text-xs font-medium"
             style={{
               background: 'var(--md-sys-color-success-container)',
               color: 'var(--md-sys-color-on-success-container)',
@@ -669,7 +759,7 @@ export const App: React.FC = () => {
 
         {errorMsg && (
           <div
-            className="rounded-2xl px-4 py-2.5 text-xs font-medium"
+            className="rounded-xl px-3.5 py-2 text-xs font-medium"
             style={{
               background: 'var(--md-sys-color-error-container)',
               color: 'var(--md-sys-color-on-error-container)',
@@ -679,198 +769,136 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* ========================= TAB 1: HOME ========================= */}
         {activeTab === 'home' && (
-          <div className="space-y-5">
-            {/* Live Context Hero + Instant A/B Pause or Start Controls */}
-            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={modeBadgeClass}>{modeMeta.label}</span>
-                    <span className="md3-badge md3-badge-neutral font-mono">
-                      {PROFILE_META[status.effectiveProfile].label.toUpperCase()}
-                    </span>
-                    <span className="md3-badge md3-badge-success font-mono">
-                      {readiness.readyCount}/{readiness.total} PILLARS
-                    </span>
-                    {status.actuators.storageBurstActive && !status.inspectionMode && (
-                      <span className="md3-badge md3-badge-success">UFS BURST</span>
-                    )}
+          <div className="space-y-4">
+            {/* Hero Status Card */}
+            <section className="md3-card-elevated space-y-3.5 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{
+                        background: !status.running
+                          ? '#ef4444'
+                          : status.inspectionMode || status.thermalGuard
+                            ? '#f59e0b'
+                            : '#22c55e',
+                      }}
+                    />
+                    <h1 className="truncate text-base font-bold tracking-tight">
+                      {PROFILE_META[status.effectiveProfile].label} · {modeLabel}
+                    </h1>
                   </div>
-                  <h1 className="mt-2 text-lg font-bold tracking-tight sm:text-xl">
-                    {status.foregroundPackage || 'System Idle / No Foreground App'}
-                  </h1>
-                  <p className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    {status.running
-                      ? `PID ${status.pid} · ${status.hardware.storageType} · ${status.hardware.refreshHz} Hz · Render load ${Math.round(status.renderPressure * 100)}%`
-                      : 'Daemon stopped — OEM factory baseline active'}
+                  <p
+                    className="mt-0.5 truncate font-mono text-[11px]"
+                    style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                  >
+                    {status.foregroundPackage || status.hardware.socModel}
                   </p>
                 </div>
+                <span className="md3-badge md3-badge-primary font-mono shrink-0">
+                  {readiness.readyCount}/4 {isId ? 'Pilar' : 'Pillars'}
+                </span>
+              </div>
 
-                <div className="flex items-center gap-3">
-                  {status.running ? (
+              {/* 4 Uniform Metric Tiles */}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="cf-metric-tile">
+                  <div className="cf-metric-label">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#22c55e' }} />
+                    SoC Temp
+                  </div>
+                  <div className="cf-metric-value">
+                    {status.socTempCelsius !== null ? `${status.socTempCelsius.toFixed(1)}°C` : '--'}
+                  </div>
+                </div>
+                <div className="cf-metric-tile">
+                  <div className="cf-metric-label">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#38bdf8' }} />
+                    Render
+                  </div>
+                  <div className="cf-metric-value">{Math.round(status.renderPressure * 100)}%</div>
+                </div>
+                <div className="cf-metric-tile">
+                  <div className="cf-metric-label">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#a78bfa' }} />
+                    UClamp
+                  </div>
+                  <div className="cf-metric-value">{status.actuators.threadUclampMin}</div>
+                </div>
+                <div className="cf-metric-tile">
+                  <div className="cf-metric-label">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#34d399' }} />
+                    Headroom
+                  </div>
+                  <div className="cf-metric-value">{Math.round(status.capacityScale * 100)}%</div>
+                </div>
+              </div>
+
+              {/* Quick Actions Row */}
+              <div className="flex items-center gap-2">
+                {status.running ? (
+                  <>
                     <button
                       type="button"
                       disabled={savingKey !== null}
                       onClick={handleTogglePause}
-                      className={status.inspectionMode ? 'md3-btn-filled' : 'md3-btn-tonal'}
-                      title="Instant A/B Compare: Pause reverts to OEM Stock immediately without stopping daemon"
+                      className={`${status.inspectionMode ? 'md3-btn-filled' : 'md3-btn-tonal'} flex-1`}
                     >
-                      {status.inspectionMode ? (
-                        <>
-                          <Play className="h-4 w-4" />
-                          <span>Resume</span>
-                        </>
-                      ) : (
-                        <>
-                          <Pause className="h-4 w-4" />
-                          <span>Pause (A/B)</span>
-                        </>
-                      )}
+                      {status.inspectionMode ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                      <span>
+                        {status.inspectionMode
+                          ? isId
+                            ? 'Lanjutkan'
+                            : 'Resume'
+                          : isId
+                            ? 'Jeda (A/B)'
+                            : 'Pause (A/B)'}
+                      </span>
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={starting}
-                      onClick={() => void handleStartDaemon()}
-                      className="md3-btn-filled"
-                    >
-                      <Play className="h-4 w-4" />
-                      <span>{starting ? 'Starting...' : 'Start CoreFlow'}</span>
-                    </button>
-                  )}
-
-                  <div className="text-right">
-                    <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                      PID Budget
-                    </div>
-                    <div className="font-mono text-2xl font-bold tabular-nums">
-                      {Math.round(status.capacityScale * 100)}%
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    SoC Temp
-                  </div>
-                  <div className="mt-0.5 font-mono text-lg font-bold">
-                    {status.socTempCelsius !== null ? `${status.socTempCelsius.toFixed(1)} °C` : 'N/A'}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Battery Temp
-                  </div>
-                  <div className="mt-0.5 font-mono text-lg font-bold">
-                    {status.batteryTempCelsius !== null ? `${status.batteryTempCelsius.toFixed(1)} °C` : 'N/A'}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Render TIDs Boosted
-                  </div>
-                  <div className="mt-0.5 font-mono text-lg font-bold">
-                    {status.actuators.boostedTids}{' '}
-                    <span className="text-xs font-normal" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                      ({status.actuators.threadUclampMin})
-                    </span>
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Storage Read-Ahead
-                  </div>
-                  <div className="mt-0.5 font-mono text-lg font-bold">
-                    {status.actuators.readAheadKb > 0 ? `${status.actuators.readAheadKb} KB` : 'OEM'}
-                  </div>
-                </div>
-              </div>
-
-              <ThermalSparkline samples={status.history} />
-            </section>
-
-            {/* Shareable Session Impact & 4-Pillar Readiness */}
-            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
-                  <h2 className="text-base font-bold">Session Impact & Pillar Readiness</h2>
-                </div>
-                <span className="font-mono text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                  Uptime {formatDuration(status.session.uptimeSec)}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                <div className="md3-card-filled p-3">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Launch Bursts
-                  </div>
-                  <div className="mt-0.5 font-mono text-base font-bold">{status.session.launchBursts}x</div>
-                </div>
-                <div className="md3-card-filled p-3">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Smart Pre-Read
-                  </div>
-                  <div className="mt-0.5 font-mono text-base font-bold">
-                    {formatBytes(status.actuators.prereadBytes)}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Avg / Peak SoC
-                  </div>
-                  <div className="mt-0.5 font-mono text-base font-bold">
-                    {status.session.avgSocTempCelsius !== null
-                      ? `${status.session.avgSocTempCelsius.toFixed(1)}° / ${(status.session.peakSocTempCelsius ?? status.session.avgSocTempCelsius).toFixed(1)}°`
-                      : 'N/A'}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Thermal Guards
-                  </div>
-                  <div className="mt-0.5 font-mono text-base font-bold">
-                    {status.session.thermalGuardEvents}x · CFJ4 {status.baselineNodesSnapshotted}
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {readiness.pillars.map((pillar) => (
-                  <div
-                    key={pillar.id}
-                    className="flex items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5"
-                    style={{ background: 'var(--md-sys-color-surface-container-low)' }}
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold">{pillar.name}</div>
-                      <div
-                        className="truncate text-[11px]"
-                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                    {status.batteryPower.bypassSupported && (
+                      <button
+                        type="button"
+                        disabled={savingKey !== null}
+                        onClick={() => handleTogglePowerFlag('bypass_charging', 'bypassCharging', 'Bypass Charging')}
+                        className={`${status.batteryPower.bypassActive ? 'md3-btn-filled' : 'md3-btn-tonal'} flex-1`}
                       >
-                        {pillar.detail}
-                      </div>
-                    </div>
-                    <span className={pillar.ready ? 'md3-badge md3-badge-success' : 'md3-badge md3-badge-warning'}>
-                      {pillar.ready ? 'READY' : 'LIMITED'}
-                    </span>
-                  </div>
-                ))}
+                        <BatteryCharging className="h-3.5 w-3.5" />
+                        <span>
+                          {status.batteryPower.bypassActive
+                            ? isId
+                              ? 'Bypass Aktif'
+                              : 'Bypass ON'
+                            : isId
+                              ? 'Bypass Mati'
+                              : 'Bypass OFF'}
+                        </span>
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={starting}
+                    onClick={() => void handleStartDaemon()}
+                    className="md3-btn-filled w-full"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    <span>{starting ? '...' : isId ? 'Jalankan CoreFlow Engine' : 'Start CoreFlow Engine'}</span>
+                  </button>
+                )}
               </div>
+
+              <DualSparkline samples={status.history} trendLabel={trendText} isId={isId} />
             </section>
 
-            {/* Profile Selector */}
-            <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex items-center gap-2">
-                <Zap className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
-                <h2 className="text-base font-bold">Performance Profile</h2>
-              </div>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {(['balanced', 'smoothness', 'battery', 'gaming'] as PerformanceProfile[]).map((p) => {
+            {/* 2x2 Proportional Autonomous Profile Grid */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Profil Otonom' : 'Autonomous Profile'}</div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {(['balanced', 'smoothness', 'gaming', 'battery'] as PerformanceProfile[]).map((p) => {
                   const active = status.profile === p;
                   return (
                     <button
@@ -878,11 +906,11 @@ export const App: React.FC = () => {
                       type="button"
                       disabled={savingKey !== null}
                       onClick={() => handleSelectProfile(p)}
-                      className="rounded-2xl p-3.5 text-left transition-all"
+                      className="flex flex-col justify-between rounded-2xl p-3.5 text-left"
                       style={{
                         background: active
                           ? 'var(--md-sys-color-primary-container)'
-                          : 'var(--md-sys-color-surface-container)',
+                          : 'var(--md-sys-color-surface-container-low)',
                         color: active
                           ? 'var(--md-sys-color-on-primary-container)'
                           : 'var(--md-sys-color-on-surface)',
@@ -891,98 +919,437 @@ export const App: React.FC = () => {
                           : '1px solid var(--md-sys-color-outline-variant)',
                       }}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold">{PROFILE_META[p].label}</span>
-                        {active && <span className="md3-badge md3-badge-success">ACTIVE</span>}
+                      <div className="flex w-full items-center justify-between gap-1">
+                        <span className="text-sm font-bold truncate">{PROFILE_META[p].label}</span>
+                        {active && (
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ background: 'var(--md-sys-color-primary)' }}
+                          />
+                        )}
                       </div>
-                      <p className="mt-1 text-xs opacity-85">{PROFILE_META[p].tagline}</p>
+                      <p className="mt-1 text-[11px] leading-snug opacity-80 line-clamp-2">
+                        {isId ? PROFILE_META[p].taglineId : PROFILE_META[p].tagline}
+                      </p>
                     </button>
                   );
                 })}
               </div>
-            </section>
+            </div>
 
-            {/* 5 Core Feature Toggles */}
-            <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
-                <h2 className="text-base font-bold">Core Adaptive Features</h2>
-              </div>
-              <div className="divide-y" style={{ borderColor: 'var(--md-sys-color-outline-variant)' }}>
-                {featureItems.map(({ configKey, field, title, desc, Icon }) => {
-                  const enabled = status.features[field];
-                  return (
-                    <div
-                      key={configKey}
-                      className="flex items-center justify-between gap-4 py-3 first:pt-1 last:pb-1"
-                    >
-                      <div className="flex items-start gap-3">
-                        <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-                        <div>
-                          <div className="text-sm font-semibold">{title}</div>
-                          <p
-                            className="text-xs leading-relaxed"
-                            style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
-                          >
-                            {desc}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={enabled}
-                        disabled={savingKey !== null}
-                        onClick={() => handleToggleFeature(configKey, field, title)}
-                        className={enabled ? 'md3-btn-filled shrink-0' : 'md3-btn-tonal shrink-0'}
-                      >
-                        {enabled ? 'ON' : 'OFF'}
-                      </button>
+            {/* Session Impact 2x3 Uniform Grid */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Dampak Sesi' : 'Session Impact'}</div>
+              <section className="md3-card-elevated p-3.5">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Uptime</div>
+                    <div className="cf-metric-value">{formatDuration(status.session.uptimeSec)}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Bursts</div>
+                    <div className="cf-metric-value">{status.session.launchBursts}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Pre-Read</div>
+                    <div className="cf-metric-value">{formatBytes(status.actuators.prereadBytes)}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Avg / Peak</div>
+                    <div className="cf-metric-value">
+                      {status.session.avgSocTempCelsius !== null
+                        ? `${Math.round(status.session.avgSocTempCelsius)}/${Math.round(
+                            status.session.peakSocTempCelsius ?? status.session.avgSocTempCelsius
+                          )}°`
+                        : '--'}
                     </div>
-                  );
-                })}
-              </div>
-            </section>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Guards</div>
+                    <div className="cf-metric-value">{status.session.thermalGuardEvents}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">CFJ4</div>
+                    <div className="cf-metric-value">{status.baselineNodesSnapshotted}</div>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
         )}
 
-        {activeTab === 'apps' && (
-          <div className="space-y-5">
-            {/* Active Foreground App Quick Actions */}
-            {status.foregroundPackage && (
-              <section className="md3-card-elevated flex flex-wrap items-center justify-between gap-3 p-5">
-                <div>
-                  <div className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Detected Foreground App
+        {/* ========================= TAB 2: CONTROL HUB ========================= */}
+        {activeTab === 'control' && (
+          <div className="space-y-4">
+            {/* CPU Clusters */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'CPU & Penjadwal EAS' : 'CPU & EAS Scheduler'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                {status.cpuClusters.length > 0 && (
+                  <div className="space-y-2.5">
+                    {status.cpuClusters.map((c, idx) => {
+                      const frac = c.maxKhz > 0 && c.curKhz > 0 ? Math.min(1, Math.max(0.05, c.curKhz / c.maxKhz)) : 0;
+                      return (
+                        <div key={`${c.role}-${idx}`} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-semibold uppercase">
+                              {c.role} · <span className="font-mono font-normal opacity-80">{c.governor}</span>
+                            </span>
+                            <span className="font-mono text-[11px] tabular-nums opacity-85">
+                              {c.curKhz > 0 ? `${Math.round(c.curKhz / 1000)} MHz` : '--'}
+                              {c.maxKhz > 0 ? ` / ${Math.round(c.maxKhz / 1000)}` : ''}
+                            </span>
+                          </div>
+                          <div className="md3-progress-track">
+                            <div className="md3-progress-bar" style={{ width: `${Math.round(frac * 100)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="font-mono text-sm font-bold">{status.foregroundPackage}</div>
+                )}
+
+                <FeatureRow
+                  Icon={Sparkles}
+                  title="Per-TID Frame Smoothness"
+                  desc={`UClamp ${status.actuators.threadUclampMin}..${status.actuators.threadUclampMax} (${status.actuators.boostedTids} TIDs)`}
+                  enabled={status.features.frameSmoothness}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_frame_smoothness', 'frameSmoothness', 'Frame Smoothness')}
+                />
+              </section>
+            </div>
+
+            {/* GPU & Thermal Zones */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'GPU & Zona Termal' : 'GPU & Thermal Zones'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">GPU</div>
+                    <div className="cf-metric-value">{status.hardware.gpuModel || 'Devfreq'}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">GPU Busy</div>
+                    <div className="cf-metric-value">
+                      {status.gpuBusyPct !== null ? `${Math.round(status.gpuBusyPct)}%` : '--'}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {RULE_CATEGORY_OPTIONS.map((opt) => {
-                    const current = getPackageRuleCategory(status.apps, status.foregroundPackage) === opt.id;
+                {status.thermalZones.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {status.thermalZones.slice(0, 6).map((z, idx) => (
+                      <div key={`${z.id}-${idx}`} className="cf-metric-tile">
+                        <div className="cf-metric-label">{z.type}</div>
+                        <div className="cf-metric-value">{z.celsius.toFixed(1)}°C</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <FeatureRow
+                  Icon={Flame}
+                  title="Rust PID + RLS Thermal Pacing"
+                  desc={`${Math.round(status.capacityScale * 100)}% headroom · ${status.actuators.managedEnvelopeNodes} nodes`}
+                  enabled={status.features.thermalPacing}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_thermal_pacing', 'thermalPacing', 'Thermal Pacing')}
+                />
+              </section>
+            </div>
+
+            {/* Power & CFJ4 Bypass Charging */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Daya & Bypass Charging' : 'Power & Bypass Charging'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                {status.batteryPower.available && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="cf-metric-tile">
+                      <div className="cf-metric-label">Battery</div>
+                      <div className="cf-metric-value">
+                        {status.batteryPower.capacityPct !== null
+                          ? `${status.batteryPower.capacityPct}%`
+                          : status.batteryPower.status}
+                      </div>
+                    </div>
+                    <div className="cf-metric-tile">
+                      <div className="cf-metric-label">Power</div>
+                      <div className="cf-metric-value">
+                        {status.batteryPower.powerMw > 0
+                          ? `${(status.batteryPower.powerMw / 1000).toFixed(1)} W`
+                          : '--'}
+                      </div>
+                    </div>
+                    <div className="cf-metric-tile">
+                      <div className="cf-metric-label">Batt Temp</div>
+                      <div className="cf-metric-value">
+                        {status.batteryPower.temperatureCelsius !== null
+                          ? `${status.batteryPower.temperatureCelsius.toFixed(1)}°C`
+                          : '--'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {status.batteryPower.bypassSupported && (
+                  <>
+                    <FeatureRow
+                      Icon={BatteryCharging}
+                      title="Bypass Charging (CFJ4)"
+                      desc={
+                        status.batteryPower.bypassActive
+                          ? `Active (${status.batteryPower.bypassReason})`
+                          : isId
+                            ? 'Alirkan daya langsung ke sistem tanpa memanaskan baterai'
+                            : 'Power device directly while plugged in without heating battery'
+                      }
+                      enabled={status.powerConfig.bypassCharging}
+                      disabled={savingKey !== null}
+                      onToggle={() => handleTogglePowerFlag('bypass_charging', 'bypassCharging', 'Bypass Charging')}
+                    />
+                    <FeatureRow
+                      Icon={Gamepad2}
+                      title={isId ? 'Auto Bypass saat Gaming' : 'Auto Bypass in Gaming'}
+                      desc={
+                        isId
+                          ? 'Aktifkan Bypass Charging otomatis saat game berjalan'
+                          : 'Automatically engage bypass charging during Gaming Mode'
+                      }
+                      enabled={status.powerConfig.bypassOnGaming}
+                      disabled={savingKey !== null}
+                      onToggle={() => handleTogglePowerFlag('bypass_on_gaming', 'bypassOnGaming', 'Auto Bypass Gaming')}
+                    />
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold">
+                          {isId ? 'Batas Cas Baterai (Charge Ceiling)' : 'Battery Charge Ceiling'}
+                        </span>
+                        <span className="font-mono text-[11px] opacity-75">
+                          {status.powerConfig.chargeLimitPct === 0 ? 'OFF' : `${status.powerConfig.chargeLimitPct}%`}
+                        </span>
+                      </div>
+                      <div className="cf-seg-bar grid-cols-4">
+                        {[0, 80, 85, 90].map((pct) => (
+                          <button
+                            key={pct}
+                            type="button"
+                            disabled={savingKey !== null}
+                            onClick={() => handleChargeLimit(pct)}
+                            className={`cf-seg-btn ${status.powerConfig.chargeLimitPct === pct ? 'is-active' : ''}`}
+                          >
+                            {pct === 0 ? 'Off' : `${pct}%`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <FeatureRow
+                  Icon={Battery}
+                  title={isId ? 'Penjaga Step-Charging Termal' : 'Thermal Step-Charging Guard'}
+                  desc={
+                    status.batteryPower.thermalStepActive
+                      ? 'Stepped down due to battery heat'
+                      : isId
+                        ? 'Menjaga umur baterai saat fast-charging panas'
+                        : 'Protects battery longevity during hot fast-charging'
+                  }
+                  enabled={status.features.batteryStepCharging}
+                  disabled={savingKey !== null}
+                  onToggle={() =>
+                    handleToggleFeature('enable_battery_step_charging', 'batteryStepCharging', 'Step Charging')
+                  }
+                />
+              </section>
+            </div>
+
+            {/* Memory & Storage */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Memori & Penyimpanan' : 'Memory & Storage'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                {ramTotGb > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium">RAM</span>
+                      <span className="font-mono text-[11px] tabular-nums opacity-80">
+                        {ramUsedGb.toFixed(1)} / {ramTotGb.toFixed(1)} GB
+                      </span>
+                    </div>
+                    <div className="md3-progress-track">
+                      <div className="md3-progress-bar" style={{ width: `${Math.round(ramFrac * 100)}%`, background: '#38bdf8' }} />
+                    </div>
+                  </div>
+                )}
+                {zramTotGb > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium">ZRAM / Swap</span>
+                      <span className="font-mono text-[11px] tabular-nums opacity-80">
+                        {zramUsedGb.toFixed(1)} / {zramTotGb.toFixed(1)} GB
+                      </span>
+                    </div>
+                    <div className="md3-progress-track">
+                      <div className="md3-progress-bar" style={{ width: `${Math.round(zramFrac * 100)}%`, background: '#a78bfa' }} />
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">CPU PSI</div>
+                    <div className="cf-metric-value">
+                      {status.cpuPsi !== null ? `${status.cpuPsi.toFixed(1)}%` : '--'}
+                    </div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Mem PSI</div>
+                    <div className="cf-metric-value">
+                      {status.memPsi !== null ? `${status.memPsi.toFixed(1)}%` : '--'}
+                    </div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">I/O PSI</div>
+                    <div className="cf-metric-value">
+                      {status.ioPsi !== null ? `${status.ioPsi.toFixed(1)}%` : '--'}
+                    </div>
+                  </div>
+                </div>
+                <FeatureRow
+                  Icon={HardDrive}
+                  title={`${status.hardware.storageType} Launch Burst`}
+                  desc={`Read-ahead: ${status.actuators.readAheadKb || 'OEM'} KB · I/O isolation`}
+                  enabled={status.features.storageBurst}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_storage_burst', 'storageBurst', 'Storage Burst')}
+                />
+                <FeatureRow
+                  Icon={MemoryStick}
+                  title="MGLRU & Smart Pre-Read"
+                  desc={status.hardware.mglruAvailable ? 'Linux MGLRU active · anti-stutter guard' : 'Adaptive VM anti-stutter guard'}
+                  enabled={status.features.memoryGuard}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_memory_guard', 'memoryGuard', 'Memory Guard')}
+                />
+              </section>
+            </div>
+          </div>
+        )}
+
+        {/* ========================= TAB 3: LIVE AI FEED ========================= */}
+        {activeTab === 'live' && (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="cf-section-title">
+                {isId ? 'Prediktor AI & Konteks Live' : 'Live AI Predictor & Context'}
+              </div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ background: status.actuators.contendedNodes > 0 ? '#f59e0b' : '#22c55e' }}
+                    />
+                    <h2 className="truncate text-sm font-bold">
+                      {modeLabel} · {PROFILE_META[status.effectiveProfile].label}
+                    </h2>
+                  </div>
+                  <span
+                    className={
+                      status.actuators.contendedNodes > 0
+                        ? 'md3-badge md3-badge-warning'
+                        : 'md3-badge md3-badge-success'
+                    }
+                  >
+                    {status.actuators.contendedNodes > 0
+                      ? `OEM Yield (${status.actuators.contendedNodes})`
+                      : isId
+                        ? 'Adaptif'
+                        : 'Adaptive'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">{isId ? 'Prediksi 10d' : '10s Forecast'}</div>
+                    <div className="cf-metric-value">{Math.round(status.aiPredicted10s)}%</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">{isId ? 'Akurasi AI' : 'Confidence'}</div>
+                    <div className="cf-metric-value">{Math.round(status.aiConfidence * 100)}%</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">{isId ? 'Beban CPU' : 'CPU Load'}</div>
+                    <div className="cf-metric-value">{Math.round(status.cpuUtilPct)}%</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">{isId ? 'Tren Suhu' : 'Trend'}</div>
+                    <div className="cf-metric-value">{trendText}</div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <div className="space-y-2">
+              <div className="cf-section-title">
+                {isId ? `Log Keputusan Terverifikasi (${status.episodes.length})` : `Verified Decision Episodes (${status.episodes.length})`}
+              </div>
+              {status.episodes.length === 0 ? (
+                <div className="md3-card-elevated p-4 text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                  {isId
+                    ? 'Mesin memantau secara tenang — belum ada mutasi baru.'
+                    : 'Engine observing calmly — no new mutations needed yet.'}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {status.episodes.map((ep) => {
+                    const badgeClass =
+                      ep.outcome === 'oem_yield'
+                        ? 'md3-badge md3-badge-warning'
+                        : ep.outcome === 'rolled_back'
+                          ? 'md3-badge md3-badge-error'
+                          : 'md3-badge md3-badge-success';
                     return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        disabled={savingKey !== null}
-                        className={current ? 'md3-btn-filled' : 'md3-btn-tonal'}
-                        onClick={() => handleAssignAppRule(status.foregroundPackage, opt.id)}
-                      >
-                        {opt.label}
-                      </button>
+                      <div key={ep.id} className="md3-card-elevated space-y-1.5 p-3.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="md3-badge md3-badge-primary uppercase">{ep.domain}</span>
+                            <span className="truncate text-xs font-bold">{ep.trigger}</span>
+                          </div>
+                          <span className={badgeClass}>
+                            {ep.outcome === 'oem_yield'
+                              ? 'OEM Yield'
+                              : isId
+                                ? 'Terverifikasi'
+                                : 'Verified'}
+                          </span>
+                        </div>
+                        <p className="text-xs leading-snug">{ep.action}</p>
+                        <div
+                          className="flex items-center justify-between font-mono text-[10px]"
+                          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                        >
+                          <span>{formatClock(ep.tsMs)}</span>
+                          <span>
+                            {ep.socTempC !== null ? `${ep.socTempC.toFixed(1)}°C · ` : ''}
+                            RP {Math.round(ep.renderPressure * 100)}% · Scale {Math.round(ep.capacityScale * 100)}%
+                          </span>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
-              </section>
-            )}
+              )}
+            </div>
+          </div>
+        )}
 
-            {/* Installed App Picker (1-Tap Per-App Profile Assignment) */}
-            <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <AppWindow className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
-                  <h2 className="text-base font-bold">Installed App Picker ({installedApps.length})</h2>
-                </div>
+        {/* ========================= TAB 4: APPS ========================= */}
+        {activeTab === 'apps' && (
+          <div className="space-y-4">
+            <section className="md3-card-elevated space-y-3 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-bold">
+                  {isId ? `Aturan Aplikasi (${installedApps.length})` : `Installed Apps (${installedApps.length})`}
+                </h2>
                 <button
                   type="button"
                   disabled={loadingApps}
@@ -990,22 +1357,20 @@ export const App: React.FC = () => {
                   onClick={() => void loadInstalledApps()}
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${loadingApps ? 'animate-spin' : ''}`} />
-                  <span>{loadingApps ? 'Scanning...' : 'Refresh Apps'}</span>
+                  <span>{loadingApps ? '...' : isId ? 'Muat Ulang' : 'Refresh'}</span>
                 </button>
               </div>
-              <p className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                Assign per-app profiles without typing package names: <strong>Gaming</strong>, <strong>Smooth</strong>, <strong>Battery</strong>, or <strong>Stock</strong> (OEM untouched).
-              </p>
+
               <div className="relative">
                 <Search
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
+                  className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
                   style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
                 />
                 <input
                   type="text"
                   value={appSearch}
                   onChange={(e) => setAppSearch(e.target.value)}
-                  placeholder="Search installed package (e.g. genshin, instagram, whatsapp)..."
+                  placeholder={isId ? 'Cari nama paket...' : 'Search package name...'}
                   className="w-full rounded-xl py-2 pl-9 pr-3 font-mono text-xs"
                   style={{
                     background: 'var(--md-sys-color-surface-container)',
@@ -1015,10 +1380,27 @@ export const App: React.FC = () => {
                 />
               </div>
 
-              <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+              <div className="cf-seg-bar grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setAppFilter('all')}
+                  className={`cf-seg-btn ${appFilter === 'all' ? 'is-active' : ''}`}
+                >
+                  {isId ? `Semua (${installedApps.length})` : `All (${installedApps.length})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAppFilter('rules')}
+                  className={`cf-seg-btn ${appFilter === 'rules' ? 'is-active' : ''}`}
+                >
+                  {isId ? `Diatur (${totalOverrides})` : `Rules (${totalOverrides})`}
+                </button>
+              </div>
+
+              <div className="max-h-96 space-y-2 overflow-y-auto pr-0.5">
                 {filteredInstalledApps.length === 0 ? (
                   <div className="py-4 text-center text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    {loadingApps ? 'Loading installed apps...' : 'No matching packages found. Use manual entry below.'}
+                    {loadingApps ? '...' : isId ? 'Tidak ada paket yang cocok.' : 'No matching packages.'}
                   </div>
                 ) : (
                   filteredInstalledApps.slice(0, 60).map((pkg) => {
@@ -1026,11 +1408,23 @@ export const App: React.FC = () => {
                     return (
                       <div
                         key={pkg}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5"
-                        style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                        className="space-y-2 rounded-xl p-3"
+                        style={{
+                          background: 'var(--md-sys-color-surface-container)',
+                          border: '1px solid var(--md-sys-color-outline-variant)',
+                        }}
                       >
-                        <span className="truncate font-mono text-xs font-medium">{pkg}</span>
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-mono text-xs font-semibold">{pkg}</span>
+                          <span
+                            className={
+                              currentCat === 'default' ? 'md3-badge md3-badge-neutral' : 'md3-badge md3-badge-primary'
+                            }
+                          >
+                            {RULE_CATEGORY_OPTIONS.find((o) => o.id === currentCat)?.label ?? 'Auto'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1">
                           {RULE_CATEGORY_OPTIONS.map((opt) => {
                             const active = currentCat === opt.id;
                             return (
@@ -1039,7 +1433,7 @@ export const App: React.FC = () => {
                                 type="button"
                                 disabled={savingKey !== null}
                                 onClick={() => handleAssignAppRule(pkg, opt.id)}
-                                className="rounded-lg px-2 py-1 text-[11px] font-semibold transition-colors"
+                                className="rounded-lg py-1.5 text-[10.5px] font-semibold truncate"
                                 style={{
                                   background: active
                                     ? 'var(--md-sys-color-primary)'
@@ -1061,16 +1455,16 @@ export const App: React.FC = () => {
               </div>
             </section>
 
-            {/* Manual Package Entry + Active Rule Buckets */}
-            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
-              <h2 className="text-base font-bold">Active Overrides & Manual Entry</h2>
+            {/* Manual Package Rule Entry */}
+            <section className="md3-card-elevated space-y-3 p-4">
+              <h2 className="text-sm font-bold">{isId ? 'Tambah Paket Manual' : 'Manual Package Entry'}</h2>
               <div className="flex flex-wrap gap-2">
                 <input
                   type="text"
                   value={manualPkg}
                   onChange={(e) => setManualPkg(e.target.value)}
                   placeholder="com.example.package"
-                  className="min-w-[180px] flex-1 rounded-xl px-3 py-2 font-mono text-xs"
+                  className="min-w-[160px] flex-1 rounded-xl px-3 py-2 font-mono text-xs"
                   style={{
                     background: 'var(--md-sys-color-surface-container)',
                     border: '1px solid var(--md-sys-color-outline-variant)',
@@ -1079,9 +1473,7 @@ export const App: React.FC = () => {
                 />
                 <select
                   value={manualCategory}
-                  onChange={(e) =>
-                    setManualCategory(e.target.value as Exclude<AppRuleCategory, 'default'>)
-                  }
+                  onChange={(e) => setManualCategory(e.target.value as Exclude<AppRuleCategory, 'default'>)}
                   className="rounded-xl px-3 py-2 text-xs font-semibold"
                   style={{
                     background: 'var(--md-sys-color-surface-container)',
@@ -1090,9 +1482,9 @@ export const App: React.FC = () => {
                   }}
                 >
                   <option value="gaming">Gaming</option>
-                  <option value="smoothness">Smoothness</option>
+                  <option value="smoothness">Smooth</option>
                   <option value="battery">Battery</option>
-                  <option value="excluded">Excluded (OEM)</option>
+                  <option value="excluded">Stock</option>
                 </select>
                 <button
                   type="button"
@@ -1102,217 +1494,277 @@ export const App: React.FC = () => {
                     setManualPkg('');
                   }}
                 >
-                  <Plus className="h-4 w-4" />
-                  <span>Add</span>
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>{isId ? 'Tambah' : 'Add'}</span>
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {ruleBuckets.map(({ key, title, badgeClass, Icon }) => {
-                  const list = status.apps[key];
-                  return (
-                    <div
-                      key={key}
-                      className="rounded-2xl p-3.5 space-y-2"
-                      style={{ background: 'var(--md-sys-color-surface-container-low)' }}
-                    >
-                      <div className="flex items-center gap-2 text-xs font-bold">
-                        <Icon className="h-3.5 w-3.5" style={{ color: 'var(--md-sys-color-primary)' }} />
-                        <span>{title}</span>
-                        <span className="ml-auto font-mono opacity-70">{list.length}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {list.length === 0 ? (
-                          <span className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                            None configured
-                          </span>
-                        ) : (
-                          list.map((pkg) => (
-                            <span key={pkg} className={`${badgeClass} gap-1.5 font-mono`}>
-                              {pkg}
-                              <button
-                                type="button"
-                                aria-label={`Remove ${pkg}`}
-                                onClick={() => handleAssignAppRule(pkg, 'default')}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </button>
-                            </span>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              {totalOverrides > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {(['gaming', 'smoothness', 'battery', 'excluded'] as const).flatMap((bucket) =>
+                    status.apps[bucket].map((pkg) => (
+                      <span key={`${bucket}-${pkg}`} className="md3-badge md3-badge-neutral gap-1.5 font-mono">
+                        <span>{pkg}</span>
+                        <span className="opacity-70">({bucket})</span>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${pkg}`}
+                          onClick={() => handleAssignAppRule(pkg, 'default')}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))
+                  )}
+                </div>
+              )}
             </section>
           </div>
         )}
 
+        {/* ========================= TAB 5: SYSTEM ========================= */}
         {activeTab === 'system' && (
-          <div className="space-y-5">
-            {/* Hardware Probe Summary */}
-            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-base font-bold">Discovered Hardware & Capabilities</h2>
-                <div className="flex flex-wrap gap-1.5">
-                  <span
-                    className={
-                      status.actuators.perThreadUclampSupported
-                        ? 'md3-badge md3-badge-success'
-                        : 'md3-badge md3-badge-warning'
-                    }
-                  >
-                    {status.actuators.perThreadUclampSupported
-                      ? 'Per-TID UClamp Ready'
-                      : 'Per-TID UClamp Unavailable'}
-                  </span>
-                  <span
-                    className={
-                      status.hardware.mglruAvailable
-                        ? 'md3-badge md3-badge-success'
-                        : 'md3-badge md3-badge-neutral'
-                    }
-                  >
-                    {status.hardware.mglruAvailable ? 'MGLRU Active' : 'No MGLRU'}
-                  </span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    SoC / Platform
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-sm font-semibold">
-                    {status.hardware.socModel}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Storage Media
-                  </div>
-                  <div className="mt-0.5 font-mono text-sm font-semibold">
-                    {status.hardware.storageType} · {status.actuators.prereadFiles} prefetched
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    GPU Surface
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-sm font-semibold">
-                    {status.hardware.gpuModel}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    RAM / ZRAM
-                  </div>
-                  <div className="mt-0.5 font-mono text-sm font-semibold">
-                    {formatBytes(status.hardware.ramBytes)} / {formatBytes(status.hardware.zramBytes)}
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    CPU Clusters / Hz
-                  </div>
-                  <div className="mt-0.5 font-mono text-sm font-semibold">
-                    {status.hardware.cpuClusters} clusters · {status.hardware.refreshHz} Hz
-                  </div>
-                </div>
-                <div className="md3-card-filled p-3.5">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    Battery / Power
-                  </div>
-                  <div className="mt-0.5 font-mono text-sm font-semibold">
-                    {status.batteryPower.available
-                      ? `${status.batteryPower.status} · ${Math.round(status.batteryPower.currentMa)} mA`
-                      : 'Unavailable'}
-                  </div>
-                </div>
-              </div>
-
-              {status.actuators.contendedPaths.length > 0 && (
-                <div
-                  className="rounded-2xl p-3.5 text-xs space-y-1.5"
-                  style={{
-                    background: 'var(--md-sys-color-warning-container)',
-                    color: 'var(--md-sys-color-on-warning-container)',
-                  }}
-                >
-                  <div className="font-bold">
-                    OEM Coexistence Yield ({status.actuators.contendedPaths.length} nodes in auto-cooldown)
-                  </div>
-                  <p className="opacity-90">
-                    CoreFlow yielded cleanly to an OEM daemon on these sysfs nodes and will automatically retry after cooldown if the vendor daemon settles:
-                  </p>
-                  <ul className="list-disc pl-4 font-mono text-[11px]">
-                    {status.actuators.contendedPaths.map((p) => (
-                      <li key={p}>{p}</li>
+          <div className="space-y-4">
+            {/* Appearance & Accent Palette */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Tampilan & Bahasa' : 'Appearance & Language'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold">{isId ? 'Palet Aksen Material You' : 'Material You Accent'}</span>
+                  <div className="flex items-center gap-2">
+                    {ACCENT_SEEDS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => handleSelectAccent(opt.id)}
+                        className="h-6 w-6 rounded-full"
+                        aria-label={opt.label}
+                        style={{
+                          background: opt.swatch,
+                          boxShadow:
+                            appearance.accent === opt.id
+                              ? '0 0 0 2px var(--md-sys-color-surface), 0 0 0 4px var(--md-sys-color-primary)'
+                              : 'none',
+                        }}
+                      />
                     ))}
-                  </ul>
+                  </div>
                 </div>
-              )}
-            </section>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={toggleTheme} className="md3-btn-tonal w-full">
+                    {isDark ? (isId ? 'Mode Terang' : 'Light Mode') : isId ? 'Mode Gelap' : 'Dark Mode'}
+                  </button>
+                  <button type="button" onClick={toggleLang} className="md3-btn-tonal w-full">
+                    {isId ? 'Switch to English' : 'Ganti ke Indonesia'}
+                  </button>
+                </div>
+              </section>
+            </div>
 
-            {/* Safety & CFJ4 Rollback */}
+            {/* Hardware Atlas */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Atlas Perangkat Keras' : 'Hardware Atlas'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">SoC</div>
+                    <div className="cf-metric-value">{status.hardware.socModel}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Storage</div>
+                    <div className="cf-metric-value">{status.hardware.storageType}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Display</div>
+                    <div className="cf-metric-value">{status.hardware.refreshHz} Hz</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">RAM / ZRAM</div>
+                    <div className="cf-metric-value">
+                      {formatBytes(status.hardware.ramBytes)} / {formatBytes(status.hardware.zramBytes)}
+                    </div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">CPU Clusters</div>
+                    <div className="cf-metric-value">{status.hardware.cpuClusters}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">MGLRU / UClamp</div>
+                    <div className="cf-metric-value">
+                      {status.hardware.mglruAvailable ? 'ON' : 'OFF'} ·{' '}
+                      {status.actuators.perThreadUclampSupported ? 'TID' : 'OFF'}
+                    </div>
+                  </div>
+                </div>
+
+                {status.actuators.contendedPaths.length > 0 && (
+                  <div
+                    className="rounded-xl p-3 text-xs space-y-1"
+                    style={{
+                      background: 'var(--md-sys-color-warning-container)',
+                      color: 'var(--md-sys-color-on-warning-container)',
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                      <span>OEM Yield ({status.actuators.contendedPaths.length} nodes)</span>
+                    </div>
+                    <ul className="list-disc pl-4 font-mono text-[10.5px]">
+                      {status.actuators.contendedPaths.map((p) => (
+                        <li key={p} className="truncate">{p}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            </div>
+
+            {/* CFJ4 Recovery & Diagnostics */}
             <BaselineGuardianCard
               nodesSnapshotted={status.baselineNodesSnapshotted}
               nativeMode={isNativeBridge}
               baselineStatus={status.baselineNodesSnapshotted > 0 ? 'protected' : 'restored'}
             />
 
-            <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-base font-bold">CFJ4 Audit, Diagnostics & Emergency Restore</h2>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" className="md3-btn-tonal" onClick={() => void handleViewJournal()}>
-                    <FileJson className="h-4 w-4" />
-                    <span>Inspect CFJ4</span>
+            <section className="md3-card-elevated space-y-3 p-4">
+              <h2 className="text-sm font-bold">
+                {isId ? 'Diagnostik & Pemulihan CFJ4' : 'CFJ4 Diagnostics & Recovery'}
+              </h2>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <button type="button" className="md3-btn-tonal w-full" onClick={() => void handleViewJournal()}>
+                  <FileJson className="h-3.5 w-3.5" />
+                  <span>CFJ4</span>
+                </button>
+                <button type="button" className="md3-btn-tonal w-full" onClick={() => void handleExportDiag()}>
+                  <ClipboardCopy className="h-3.5 w-3.5" />
+                  <span>Diag</span>
+                </button>
+                {status.running ? (
+                  <button
+                    type="button"
+                    disabled={restoring}
+                    className="md3-btn-filled col-span-2 sm:col-span-1 w-full"
+                    onClick={() => void handleRestoreBaseline()}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>{restoring ? '...' : isId ? 'Pulihkan OEM' : 'Restore OEM'}</span>
                   </button>
-                  <button type="button" className="md3-btn-tonal" onClick={() => void handleExportDiag()}>
-                    <ClipboardCopy className="h-4 w-4" />
-                    <span>Export Diag</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={starting}
+                    className="md3-btn-filled col-span-2 sm:col-span-1 w-full"
+                    onClick={() => void handleStartDaemon()}
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    <span>{starting ? '...' : isId ? 'Jalankan' : 'Start'}</span>
                   </button>
-                  {status.running ? (
-                    <button
-                      type="button"
-                      disabled={restoring}
-                      className="md3-btn-filled"
-                      onClick={() => void handleRestoreBaseline()}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      <span>{restoring ? 'Restoring...' : 'Restore OEM Baseline'}</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={starting}
-                      className="md3-btn-filled"
-                      onClick={() => void handleStartDaemon()}
-                    >
-                      <Play className="h-4 w-4" />
-                      <span>{starting ? 'Starting...' : 'Start CoreFlow'}</span>
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
               {journalJson && (
                 <pre
-                  className="max-h-56 overflow-auto rounded-2xl p-3 font-mono text-[11px]"
-                  style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                  className="max-h-48 overflow-auto rounded-xl p-3 font-mono text-[10.5px]"
+                  style={{ background: 'var(--md-sys-color-surface-container)' }}
                 >
                   {journalJson}
                 </pre>
               )}
               {diagJson && (
                 <pre
-                  className="max-h-56 overflow-auto rounded-2xl p-3 font-mono text-[11px]"
-                  style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                  className="max-h-48 overflow-auto rounded-xl p-3 font-mono text-[10.5px]"
+                  style={{ background: 'var(--md-sys-color-surface-container)' }}
                 >
                   {diagJson}
                 </pre>
               )}
             </section>
+
+            {/* Creator Identity & AI Sponsors */}
+            <div className="space-y-2">
+              <div className="cf-section-title">{isId ? 'Pembuat & Partner AI' : 'Creator & AI Partners'}</div>
+              <section className="md3-card-elevated space-y-3 p-4">
+                <a
+                  href="https://github.com/mystivara-creator"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between gap-3 rounded-xl p-3"
+                  style={{
+                    background: 'var(--md-sys-color-surface-container)',
+                    border: '1px solid var(--md-sys-color-outline-variant)',
+                  }}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-bold text-sm"
+                      style={{
+                        background: 'var(--md-sys-color-primary-container)',
+                        color: 'var(--md-sys-color-on-primary-container)',
+                      }}
+                    >
+                      MC
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold truncate">Mystivara Creator</div>
+                      <div
+                        className="text-[11px] truncate"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        @mystivara-creator · CoreFlow Engine
+                      </div>
+                    </div>
+                  </div>
+                  <ExternalLink className="h-4 w-4 shrink-0 opacity-70" />
+                </a>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {AI_SPONSORS.map((sp) => (
+                    <a
+                      key={sp.name}
+                      href={sp.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex flex-col justify-between rounded-xl p-3"
+                      style={{
+                        background: 'var(--md-sys-color-surface-container)',
+                        border: '1px solid var(--md-sys-color-outline-variant)',
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[10px] font-bold"
+                          style={{ background: `${sp.color}28`, color: sp.color }}
+                        >
+                          {sp.badge}
+                        </span>
+                        <span className="text-xs font-bold truncate">{sp.name}</span>
+                      </div>
+                      <span
+                        className="mt-1 text-[10.5px] leading-tight truncate"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {sp.role}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+
+                <p
+                  className="rounded-xl p-3 text-[11px] leading-relaxed"
+                  style={{
+                    background: 'var(--md-sys-color-surface-container)',
+                    color: 'var(--md-sys-color-on-surface-variant)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--md-sys-color-on-surface)' }}>
+                    CoreFlow Community Source-Available License v1.0
+                  </strong>{' '}
+                  —{' '}
+                  {isId
+                    ? 'Gratis untuk penggunaan pribadi, belajar, dan audit keamanan. Dibuat oleh Mystivara Creator berkolaborasi secara transparan bersama AI (Claude, ChatGPT, Gemini). Dilarang rebrand atau memperjualbelikan tanpa izin.'
+                    : 'Free for personal use, learning, and security auditing. Authored by Mystivara Creator with transparent AI collaboration (Claude, ChatGPT, Gemini). No rebranding or commercial resale without permission.'}
+                </p>
+              </section>
+            </div>
 
             <LiveReactionStream logs={logs} nativeMode={isNativeBridge} />
           </div>
@@ -1320,16 +1772,53 @@ export const App: React.FC = () => {
       </main>
 
       <footer
-        className="mt-6 py-4 text-center text-xs"
+        className="mt-4 py-3 text-center text-[11px]"
         style={{
           borderTop: '1px solid var(--md-sys-color-outline-variant)',
           color: 'var(--md-sys-color-on-surface-variant)',
         }}
       >
-        CoreFlow Engine v6.0.0 · Android 13+ Lean 4-Pillar Adaptive Framework · CFJ4 OEM Safe
+        CoreFlow Engine v{status.version} NextGen · Mystivara Creator · CFJ4 OEM Safe
       </footer>
     </div>
   );
 };
+
+const FeatureRow: React.FC<{
+  Icon: React.FC<{ className?: string }>;
+  title: string;
+  desc: string;
+  enabled: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}> = ({ Icon, title, desc, enabled, disabled, onToggle }) => (
+  <div
+    className="flex items-center justify-between gap-3 pt-2.5"
+    style={{ borderTop: '1px solid var(--md-sys-color-outline-variant)' }}
+  >
+    <div className="flex items-start gap-2.5 min-w-0">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 opacity-85" />
+      <div className="min-w-0">
+        <div className="text-xs font-semibold leading-snug">{title}</div>
+        <p
+          className="text-[11px] leading-snug"
+          style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+        >
+          {desc}
+        </p>
+      </div>
+    </div>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`${enabled ? 'md3-btn-filled' : 'md3-btn-tonal'} shrink-0 min-w-[3.2rem]`}
+    >
+      {enabled ? 'ON' : 'OFF'}
+    </button>
+  </div>
+);
 
 export default App;

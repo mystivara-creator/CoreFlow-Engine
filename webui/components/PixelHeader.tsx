@@ -1,30 +1,25 @@
 import React from 'react';
-import { Cpu, Moon, Palette, ShieldCheck, Sun } from 'lucide-react';
-import { AccentSeed } from '../bridge/appearance';
+import { Cpu, Globe, Moon, ShieldCheck, Sun } from 'lucide-react';
 
 interface Props {
   isDark: boolean;
   onToggleTheme: () => void;
-  accent?: AccentSeed;
-  onSelectAccent?: (accent: AccentSeed) => void;
+  lang: 'id' | 'en';
+  onToggleLang: () => void;
   modeLabel: string;
+  version: string;
   healthScore?: number;
   nativeMode?: boolean;
   nativeConnected?: boolean;
 }
 
-const ACCENT_OPTIONS: { id: AccentSeed; label: string; swatch: string }[] = [
-  { id: 'ocean', label: 'Ocean', swatch: '#0b57d0' },
-  { id: 'emerald', label: 'Emerald', swatch: '#006c4c' },
-  { id: 'amber', label: 'Amber', swatch: '#b27b00' },
-];
-
 export const PixelHeader: React.FC<Props> = ({
   isDark,
   onToggleTheme,
-  accent = 'ocean',
-  onSelectAccent,
+  lang,
+  onToggleLang,
   modeLabel,
+  version,
   healthScore,
   nativeMode = false,
   nativeConnected = false,
@@ -37,29 +32,29 @@ export const PixelHeader: React.FC<Props> = ({
   const statusText = nativeMode
     ? nativeConnected
       ? 'LIVE'
-      : 'CONNECTING'
+      : 'WAIT'
     : 'DEMO';
 
   return (
     <header className="md3-top-app-bar sticky top-0 z-30">
-      <div className="mx-auto flex min-h-[4rem] max-w-5xl items-center justify-between gap-3 px-4 py-2 sm:px-6">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="mx-auto flex h-14 max-w-4xl items-center justify-between gap-2 px-3.5 sm:px-5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <div
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-xs"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
             style={{
               backgroundColor: 'var(--md-sys-color-primary-container)',
               color: 'var(--md-sys-color-on-primary-container)',
             }}
           >
-            <Cpu className="h-5 w-5" />
+            <Cpu className="h-4 w-4" />
           </div>
 
           <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="truncate text-sm font-bold tracking-tight sm:text-base">
-                CoreFlow Engine
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-bold tracking-tight">
+                CoreFlow
               </span>
-              <span className="md3-badge md3-badge-neutral font-mono">v6.0.0</span>
+              <span className="md3-badge md3-badge-neutral font-mono">v{version}</span>
               <span className={statusBadgeClass}>
                 <span
                   className="h-1.5 w-1.5 rounded-full"
@@ -74,21 +69,21 @@ export const PixelHeader: React.FC<Props> = ({
               </span>
             </div>
             <p
-              className="mt-0.5 truncate text-xs"
+              className="truncate text-[11px] leading-tight"
               style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
             >
               <span className="font-semibold" style={{ color: 'var(--md-sys-color-on-surface)' }}>
                 {modeLabel}
               </span>
-              <span> · Lean 4-Pillar Adaptive Runtime</span>
+              <span> · NextGen 4-Pillar</span>
             </p>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {typeof healthScore === 'number' && (
             <div
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"
+              className="hidden sm:inline-flex items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold"
               style={{
                 backgroundColor: 'var(--md-sys-color-surface-container)',
                 border: '1px solid var(--md-sys-color-outline-variant)',
@@ -99,41 +94,16 @@ export const PixelHeader: React.FC<Props> = ({
             </div>
           )}
 
-          {onSelectAccent && (
-            <div
-              className="hidden sm:inline-flex items-center gap-1 rounded-full px-2 py-1"
-              style={{
-                backgroundColor: 'var(--md-sys-color-surface-container)',
-                border: '1px solid var(--md-sys-color-outline-variant)',
-              }}
-              role="group"
-              aria-label="Material You seed color palette"
-            >
-              <Palette
-                className="h-3.5 w-3.5 ml-1 mr-0.5"
-                style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
-              />
-              {ACCENT_OPTIONS.map((opt) => {
-                const active = accent === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    aria-pressed={active}
-                    aria-label={`${opt.label} palette`}
-                    onClick={() => onSelectAccent(opt.id)}
-                    className="h-5 w-5 rounded-full transition-transform"
-                    style={{
-                      backgroundColor: opt.swatch,
-                      boxShadow: active
-                        ? '0 0 0 2px var(--md-sys-color-surface), 0 0 0 4px var(--md-sys-color-primary)'
-                        : 'none',
-                    }}
-                  />
-                );
-              })}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={onToggleLang}
+            className="md3-icon-btn w-auto px-2 gap-1 text-[11px] font-bold"
+            aria-label="Switch language"
+            title="ID / EN"
+          >
+            <Globe className="h-3.5 w-3.5" />
+            <span>{lang.toUpperCase()}</span>
+          </button>
 
           <button
             type="button"
