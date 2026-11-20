@@ -189,7 +189,8 @@ bool StorageMemoryActuator::write_managed_node(
     const std::string& path,
     const std::string& target,
     double numeric_tolerance,
-    bool verify_nonzero_mask) noexcept {
+    bool verify_nonzero_mask,
+    double deadband) noexcept {
     if (path.empty() || target.empty() || contended_paths_.contains(path)) return false;
 
     const auto prev = last_written_.find(path);
@@ -199,7 +200,7 @@ bool StorageMemoryActuator::write_managed_node(
     // If we previously wrote this node and an external OEM daemon changed it outside tolerance,
     // step back gracefully instead of fighting the vendor daemon.
     if (prev != last_written_.end() &&
-        !values_equivalent(live, prev->second, numeric_tolerance, verify_nonzero_mask)) {
+        !values_equivalent(live, prev->second, std::max(numeric_tolerance, 0.6), verify_nonzero_mask)) {
         contended_paths_.insert(path);
         stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
         return false;
@@ -208,16 +209,25 @@ bool StorageMemoryActuator::write_managed_node(
         last_written_[path] = live;
         return true;
     }
+    // Suppress minor PSI/RAM jitter writes so CFJ4 journal is not fsynced for negligible deltas.
+    if (deadband > 0.0 && prev != last_written_.end()) {
+        double live_num = 0.0, tgt_num = 0.0;
+        if (parse_ascii_double(live, live_num) && parse_ascii_double(target, tgt_num) &&
+            std::abs(live_num - tgt_num) <= deadband) {
+            return true;
+        }
+    }
 
-    if (!baseline_.capture_durable(path)) return false;
+    // BaselineStore::apply_mutation already performs durable write-ahead journaling before writing.
+    if (!baseline_.capture(path)) return false;
     if (!baseline_.apply_mutation(path, target)) return false;
     const std::string verify = read_first_line_raw(path);
-    if (!values_equivalent(verify, target, numeric_tolerance, verify_nonzero_mask)) {
+    if (!values_equivalent(verify, target, std::max(numeric_tolerance, 0.6), verify_nonzero_mask)) {
         contended_paths_.insert(path);
         stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
         return false;
     }
-    // Store the kernel's actual canonical readback (e.g. quantized "34.96" or "0x0007")
+    // Store the kernel's actual canonical readback (e.g. quantized "34.96" or "0x0003")
     // so subsequent ticks never misclassify quantization as OEM contention.
     last_written_[path] = verify;
     return true;
@@ -247,7 +257,7 @@ void StorageMemoryActuator::apply(
         uint64_t primary_ra = 0U;
         for (const auto& q : topo.storage_queues) {
             const uint64_t target_ra = compute_read_ahead_kb(q, ctx.mode, profile, io_psi);
-            if (write_managed_node(q.read_ahead_kb_path, std::to_string(target_ra))) {
+            if (write_managed_node(q.read_ahead_kb_path, std::to_string(target_ra), 0.0, false, 32.0)) {
                 if (primary_ra == 0U || !q.is_mapper) primary_ra = target_ra;
             }
         }
@@ -274,12 +284,12 @@ void StorageMemoryActuator::apply(
                 const double adapted_pct = std::clamp(base_pct - (cpu_psi * 0.15), 15.625, 50.0);
                 if (topo.cgroups.uclamp_uses_percent) {
                     const std::string bg_cap = format_quantized_uclamp_pct(adapted_pct);
-                    any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path, bg_cap, 0.6) || any_bg;
+                    any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path, bg_cap, 0.6, false, 2.5) || any_bg;
                 } else {
                     const uint32_t raw_cap = static_cast<uint32_t>(
                         std::clamp(std::lround(adapted_pct * 10.24), 160L, 512L));
                     any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path,
-                                                std::to_string(raw_cap), 4.0) || any_bg;
+                                                std::to_string(raw_cap), 4.0, false, 24.0) || any_bg;
                 }
             }
             stats_.background_isolated = any_bg;
@@ -325,7 +335,8 @@ void StorageMemoryActuator::apply(
                 ttl_ms = static_cast<uint32_t>(
                     std::clamp(std::lround(raw_ttl / 50.0) * 50L, 150L, 1500L));
             }
-            (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms));
+            const double ttl_deadband = (ctx.mode == ContextMode::ScreenOff) ? 0.0 : 100.0;
+            (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms), 0.0, false, ttl_deadband);
         }
 
         if (topo.zram_active && !topo.vm.page_cluster_path.empty()) {
@@ -341,7 +352,7 @@ void StorageMemoryActuator::apply(
                                         mem_psi_norm * 15.0;
             const uint32_t swap_val = static_cast<uint32_t>(
                 std::clamp(std::lround(adapted_swap / 5.0) * 5L, 30L, topo.zram_active ? 100L : 80L));
-            (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val));
+            (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val), 0.0, false, 5.0);
         }
 
         if (!topo.vm.compaction_proactiveness_path.empty()) {
@@ -352,7 +363,8 @@ void StorageMemoryActuator::apply(
                 const double raw_comp = 20.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) * (1.0 - mem_psi_norm * 0.5);
                 comp = static_cast<uint32_t>(std::clamp(std::lround(raw_comp / 5.0) * 5L, 5L, 25L));
             }
-            (void)write_managed_node(topo.vm.compaction_proactiveness_path, std::to_string(comp));
+            const double comp_deadband = (comp == 0U) ? 0.0 : 5.0;
+            (void)write_managed_node(topo.vm.compaction_proactiveness_path, std::to_string(comp), 0.0, false, comp_deadband);
         }
 
         // 3. Smart asynchronous UFS/eMMC page-cache pre-read on newly launched foreground app

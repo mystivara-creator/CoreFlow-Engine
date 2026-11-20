@@ -59,7 +59,7 @@ export const PixelHeader: React.FC<Props> = ({
               <span className="truncate text-sm font-bold tracking-tight sm:text-base">
                 CoreFlow Engine
               </span>
-              <span className="md3-badge md3-badge-neutral font-mono">v5.0.1</span>
+              <span className="md3-badge md3-badge-neutral font-mono">v5.0.2</span>
               <span className={statusBadgeClass}>
                 <span
                   className="h-1.5 w-1.5 rounded-full"

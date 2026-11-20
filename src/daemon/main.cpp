@@ -67,7 +67,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "5.0.1";
+constexpr char kVersion[] = "5.0.2";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -890,7 +890,26 @@ int main(int argc, char* argv[]) {
     bool last_screen_off = false;
     ForegroundAppInfo last_fg{};
     MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
+    uint64_t last_sysfs_active_ms = 0U;
     auto last_thermal_tick = std::chrono::steady_clock::now();
+
+    const auto build_sysfs_ctx = [&](const ContextDecision& raw, uint64_t now_ms, const ForegroundAppInfo& fg) noexcept {
+        ContextDecision out = raw;
+        // Only prefetch assets for real visible UI apps that own a render thread.
+        if (fg.critical_tids.size() <= 1U) {
+            out.newly_launched_app = false;
+        }
+        // Anti-flap hysteresis for disk-journaled sysfs actuators: hold Interactive for 4s
+        // before relaxing to Efficiency so typing/scrolling does not thrash 25 CFJ4 nodes/sec.
+        if (raw.mode == ContextMode::Interactive || raw.mode == ContextMode::LaunchBurst ||
+            raw.mode == ContextMode::Gaming) {
+            last_sysfs_active_ms = now_ms;
+        } else if (raw.mode == ContextMode::Efficiency && last_sysfs_active_ms > 0U &&
+                   now_ms >= last_sysfs_active_ms && now_ms - last_sysfs_active_ms < 4000ULL) {
+            out.mode = ContextMode::Interactive;
+        }
+        return out;
+    };
 
     const auto build_thread_demand = [&]() noexcept {
         ThreadDemandContext d{};
@@ -1019,12 +1038,13 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_frame_smoothness, sf_tids, fg.critical_tids,
                 build_thread_demand());
+            const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
             storage_memory.apply(
-                topo, live_status.ctx, context_engine.profile(),
+                topo, sysfs_ctx, context_engine.profile(),
                 config.enable_storage_burst, config.enable_memory_guard, now_ms,
                 build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
-                topo, live_status.ctx.mode, context_engine.profile(),
+                topo, sysfs_ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry());
@@ -1197,18 +1217,16 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, thermal_guard,
                 config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
                 build_thread_demand());
+            const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
             storage_memory.apply(
-                topo, live_status.ctx, context_engine.profile(),
+                topo, sysfs_ctx, context_engine.profile(),
                 config.enable_storage_burst, config.enable_memory_guard, now_ms,
                 build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
-                topo, live_status.ctx.mode, context_engine.profile(),
+                topo, sysfs_ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry());
-            if (config.enable_storage_burst && live_status.ctx.mode != ContextMode::Excluded) {
-                (void)longevity.apply_storage_pacing();
-            }
             longevity.monitor_battery_thermals(soc_temp);
         } else {
             thread_scheduler.reset_all();
@@ -1221,7 +1239,7 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v5.0.1 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v5.0.2 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") + ").");
 
@@ -1236,6 +1254,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v5.0.1 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v5.0.2 Daemon stopped; OEM baseline restored.");
     return 0;
 }

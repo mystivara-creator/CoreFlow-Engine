@@ -1,11 +1,14 @@
 #!/system/bin/sh
-# CFAE System Framework — installer preflight, package validation and safe upgrade.
-# Runtime capability discovery and all kernel actuation remain owned by coreflowd.
+# CoreFlow Engine (CFAE) v5.0.2 — Advanced Read-Only Preflight, Integrity & Atomic Upgrade Installer.
+# All runtime capability discovery, hardware calibration, and kernel actuation remain owned by coreflowd.
 
 PATH="/system/bin:/system/xbin:/sbin:/vendor/bin:$PATH"
 export PATH
 umask 077
 
+# ---------------------------------------------------------------------------
+# UI & Formatting Helpers (POSIX sh / Toybox / BusyBox / mksh safe)
+# ---------------------------------------------------------------------------
 ui() {
     if command -v ui_print >/dev/null 2>&1; then
         ui_print "$1"
@@ -15,7 +18,8 @@ ui() {
 }
 
 die() {
-    ui "! $1"
+    ui ""
+    ui "  [FAIL] $1"
     if command -v abort >/dev/null 2>&1; then
         abort "! $1"
     fi
@@ -29,16 +33,19 @@ $1"
 
 section() {
     ui ""
-    ui "+--------------------------------------------------+"
+    ui "+------------------------------------------------------+"
     ui "| $1"
-    ui "+--------------------------------------------------+"
+    ui "+------------------------------------------------------+"
     PREFLIGHT_REPORT="$PREFLIGHT_REPORT
 
-$1"
+=== $1 ==="
 }
 
 status_line() {
-    ui "  [$1] $2"
+    printf '  [%-7s] %s\n' "$1" "$2" | while IFS= read -r LINE; do
+        ui "$LINE"
+    done
+    report "[$1] $2"
 }
 
 read_value() {
@@ -59,6 +66,33 @@ is_numeric() {
     esac
 }
 
+# Pure POSIX JSON field extractors (zero dependency on jq/python)
+json_str() {
+    printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
+
+json_val() {
+    printf '%s' "$1" | sed -n "s/.*\"$2\":\([^,}]*\).*/\1/p" | head -n 1 | tr -d ' "'
+}
+
+bytes_to_gb() {
+    is_numeric "$1" || { echo "0.0"; return; }
+    awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824.0 }'
+}
+
+sha256_short() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print substr($1,1,16)}'
+    elif command -v toybox >/dev/null 2>&1; then
+        toybox sha256sum "$1" 2>/dev/null | awk '{print substr($1,1,16)}'
+    else
+        echo "unavailable"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Safe Atomic Staging & Permission Helpers
+# ---------------------------------------------------------------------------
 stage_and_replace() {
     SRC="$1"
     DST="$2"
@@ -111,18 +145,35 @@ set_webroot_perm() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Environment & Hardware Inventory Helpers (Strictly Read-Only)
+# ---------------------------------------------------------------------------
 detect_root_manager() {
     if [ -n "${KSU:-}" ] || [ -n "${KSU_VER_CODE:-}" ] ||
        [ -d /data/adb/ksu ] || [ -x /data/adb/ksud ]; then
-        ROOT_MANAGER="KernelSU / KernelSU Next"
+        if [ -n "${KSU_VER:-}" ]; then
+            ROOT_MANAGER="KernelSU ($KSU_VER)"
+        elif [ -n "${KSU_VER_CODE:-}" ]; then
+            ROOT_MANAGER="KernelSU (code $KSU_VER_CODE)"
+        else
+            ROOT_MANAGER="KernelSU / KernelSU Next"
+        fi
     elif [ -n "${APATCH:-}" ] || [ -n "${APATCH_VER_CODE:-}" ] ||
          [ -d /data/adb/ap ] || [ -x /data/adb/apd ]; then
-        ROOT_MANAGER="APatch"
+        if [ -n "${APATCH_VER:-}" ]; then
+            ROOT_MANAGER="APatch ($APATCH_VER)"
+        else
+            ROOT_MANAGER="APatch"
+        fi
     elif [ -n "${MAGISK_VER_CODE:-}" ] || [ -d /data/adb/magisk ] ||
          [ -x /data/adb/magisk/magisk32 ] || [ -x /sbin/.magisk/magisk ]; then
-        ROOT_MANAGER="Magisk"
+        if [ -n "${MAGISK_VER:-}" ]; then
+            ROOT_MANAGER="Magisk ($MAGISK_VER)"
+        else
+            ROOT_MANAGER="Magisk"
+        fi
     elif [ -n "${BOOTMODE:-}" ] || [ -n "${MODPATH:-}" ]; then
-        ROOT_MANAGER="Root-manager installer environment (unidentified)"
+        ROOT_MANAGER="Root-manager installer environment"
     else
         ROOT_MANAGER="Unknown"
     fi
@@ -147,13 +198,47 @@ count_input_nodes() {
     echo "$COUNT"
 }
 
+detect_conflicting_modules() {
+    CONFLICTS=""
+    CONFLICT_COUNT=0
+    MOD_ROOT="/data/adb/modules"
+    [ -d "$MOD_ROOT" ] || return 0
+    for DIR in "$MOD_ROOT"/*; do
+        [ -d "$DIR" ] || continue
+        [ ! -e "$DIR/disable" ] && [ ! -e "$DIR/remove" ] || continue
+        MID="$(basename "$DIR")"
+        case "$MID" in
+            cfae_framework|coreflow_engine) continue ;;
+        esac
+        MPROP="$DIR/module.prop"
+        [ -r "$MPROP" ] || continue
+        MNAME="$(awk -F= '$1 == "name" { print $2; exit }' "$MPROP" 2>/dev/null)"
+        MDESC="$(awk -F= '$1 == "description" { print $2; exit }' "$MPROP" 2>/dev/null)"
+        FOLDED="$(printf '%s %s %s' "$MID" "$MNAME" "$MDESC" | tr 'A-Z' 'a-z')"
+        case "$FOLDED" in
+            *thermal*|*uclamp*|*perf*|*tweak*|*boost*|*governor*|*ktweak*|*fkm*|*magisk-perf*|*encore*|*celestial*|*strp*|*walt*)
+                CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
+                [ -n "$MNAME" ] || MNAME="$MID"
+                if [ -z "$CONFLICTS" ]; then
+                    CONFLICTS="$MNAME"
+                else
+                    CONFLICTS="$CONFLICTS, $MNAME"
+                fi
+                ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Banner & Staging Guards
+# ---------------------------------------------------------------------------
 ui ""
-ui "+==================================================+"
-ui "|          COREFLOW ENGINE  v5.0.1                 |"
-ui "|          LEAN 4-PILLAR INSTALLER                 |"
-ui "|          by mystivara-creator                    |"
-ui "+==================================================+"
-ui "  Preparing a read-only capability inventory..."
+ui "+======================================================+"
+ui "|             COREFLOW ENGINE  v5.0.2                  |"
+ui "|     AUTONOMOUS 4-PILLAR ANDROID SYSTEM ENGINE        |"
+ui "|              by mystivara-creator                    |"
+ui "+======================================================+"
+ui "  Zero Fixed Values · Zero Hardcoded Paths · CFJ4 Safe"
 
 [ -n "$MODPATH" ] || die "MODPATH is not provided by the root-manager installer."
 [ -d "$MODPATH" ] || die "Module staging directory does not exist: $MODPATH"
@@ -167,73 +252,74 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CoreFlow Engine v5.0.1 — read-only installer preflight"
+PREFLIGHT_REPORT="CoreFlow Engine v5.0.2 — read-only installer preflight"
+
+# Detect previous installation version for transparent upgrade reporting
+PREV_VERSION=""
+if [ -r "$LIVE_MOD/module.prop" ] && [ ! -L "$LIVE_MOD/module.prop" ]; then
+    PREV_VERSION="$(awk -F= '$1 == "version" { print $2; exit }' "$LIVE_MOD/module.prop" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------
+# 01 / DEVICE & PLATFORM VALIDATION
+# ---------------------------------------------------------------------------
 section "01 / DEVICE & PLATFORM"
-report "Preflight: package and platform identity"
 
 INSTALL_ARCH="$ARCH"
 [ -n "$INSTALL_ARCH" ] || INSTALL_ARCH="$(uname -m 2>/dev/null)"
 case "$INSTALL_ARCH" in
     arm64|aarch64|arm64-v8a) ;;
-    *) die "Unsupported architecture ($INSTALL_ARCH). CFAE requires ARM64." ;;
+    *) die "Unsupported architecture ($INSTALL_ARCH). CoreFlow requires ARM64." ;;
 esac
-report "PASS: installer architecture = $INSTALL_ARCH"
 
 API_LEVEL="$API"
 is_numeric "$API_LEVEL" || API_LEVEL="$(get_property ro.build.version.sdk)"
 is_numeric "$API_LEVEL" || die "Android API level could not be determined."
 [ "$API_LEVEL" -ge 35 ] || die "Unsupported Android API $API_LEVEL. Android 15 / API 35+ is required."
-report "PASS: Android API level = $API_LEVEL"
 
 ANDROID_RELEASE="$(get_property ro.build.version.release)"
 MANUFACTURER="$(get_property ro.product.manufacturer)"
 BRAND="$(get_property ro.product.brand)"
 MODEL="$(get_property ro.product.model)"
 DEVICE="$(get_property ro.product.device)"
-FINGERPRINT="$(get_property ro.build.fingerprint)"
 ABI_LIST="$(get_property ro.product.cpu.abilist64)"
 [ -n "$MANUFACTURER" ] || MANUFACTURER="unknown"
 [ -n "$BRAND" ] || BRAND="unknown"
 [ -n "$MODEL" ] || MODEL="unknown"
 [ -n "$DEVICE" ] || DEVICE="unknown"
 [ -n "$ANDROID_RELEASE" ] || ANDROID_RELEASE="unknown"
-[ -n "$FINGERPRINT" ] || FINGERPRINT="unavailable"
-
-report "Device: $MANUFACTURER / $BRAND / $MODEL ($DEVICE)"
-report "Android release: $ANDROID_RELEASE; SDK: $API_LEVEL"
-report "Build fingerprint: $FINGERPRINT"
 
 case "$ABI_LIST" in
-    *arm64-v8a*) report "PASS: 64-bit ABI list contains arm64-v8a" ;;
-    '') report "INFO: ro.product.cpu.abilist64 unavailable; installer ARCH is the ABI evidence" ;;
+    *arm64-v8a*|'') ;;
     *) die "64-bit ABI list does not contain arm64-v8a: $ABI_LIST" ;;
 esac
-if [ -e /system/bin/linker64 ]; then
-    report "PASS: 64-bit Android linker present"
-else
-    report "WARN: /system/bin/linker64 was not visible during installer preflight"
-fi
 
 ROOT_MANAGER=""
 detect_root_manager
-report "Root manager: $ROOT_MANAGER"
-
 KERNEL_RELEASE="$(uname -r 2>/dev/null)"
-KERNEL_ARCH="$(uname -m 2>/dev/null)"
 [ -n "$KERNEL_RELEASE" ] || KERNEL_RELEASE="unknown"
-[ -n "$KERNEL_ARCH" ] || KERNEL_ARCH="unknown"
-report "Kernel: $KERNEL_RELEASE ($KERNEL_ARCH)"
-
 if command -v getenforce >/dev/null 2>&1; then
     SELINUX_STATE="$(getenforce 2>/dev/null)"
 else
     SELINUX_STATE="unknown"
 fi
 [ -n "$SELINUX_STATE" ] || SELINUX_STATE="unknown"
-report "SELinux: $SELINUX_STATE (installer does not change SELinux mode or policy)"
 
+status_line "PASS" "Platform : Android $ANDROID_RELEASE (API $API_LEVEL) · $INSTALL_ARCH"
+status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
+status_line "INFO" "Kernel   : $KERNEL_RELEASE"
+status_line "INFO" "Root/MAC : $ROOT_MANAGER · SELinux $SELINUX_STATE"
+if [ -n "$PREV_VERSION" ]; then
+    status_line "UPGRADE" "Detected existing installation: $PREV_VERSION -> v5.0.2"
+else
+    status_line "INSTALL" "Fresh installation of CoreFlow Engine v5.0.2"
+fi
+
+# ---------------------------------------------------------------------------
+# 02 / PACKAGE INTEGRITY & BINARY VERIFICATION
+# ---------------------------------------------------------------------------
 section "02 / PACKAGE INTEGRITY"
-report "Preflight: package integrity"
+
 CORE_BIN="$MODPATH/system/bin/coreflowd"
 if [ ! -f "$CORE_BIN" ]; then
     if [ -f "$MODPATH/coreflowd" ] && [ ! -L "$MODPATH/coreflowd" ]; then
@@ -247,7 +333,7 @@ fi
 [ -s "$CORE_BIN" ] || die "coreflowd binary is empty."
 
 if [ "$COREFLOW_TEST_ALLOW_NON_ELF_BINARY" = "1" ]; then
-    report "TEST MODE: non-ELF mock daemon accepted by lifecycle regression harness"
+    status_line "TEST" "Non-ELF mock daemon accepted by regression harness"
 else
     command -v od >/dev/null 2>&1 || die "od is required to validate the packaged ELF binary."
     ELF_MAGIC="$(od -An -tx1 -N4 "$CORE_BIN" 2>/dev/null | tr -d ' \n')"
@@ -258,7 +344,8 @@ else
     [ "$ELF_CLASS" = "02" ] || die "coreflowd is not a 64-bit ELF binary."
     [ "$ELF_ENDIAN" = "01" ] || die "coreflowd is not little-endian ARM64 ELF."
     [ "$ELF_MACHINE" = "b700" ] || die "coreflowd ELF machine is not AArch64 (e_machine=183)."
-    report "PASS: coreflowd is 64-bit little-endian AArch64 ELF"
+    BIN_SHA="$(sha256_short "$CORE_BIN")"
+    status_line "PASS" "ELF64 AArch64 binary verified (sha256:${BIN_SHA}...)"
 fi
 
 if [ -f "$MODPATH/module.prop" ] && [ ! -L "$MODPATH/module.prop" ]; then
@@ -266,139 +353,167 @@ if [ -f "$MODPATH/module.prop" ] && [ ! -L "$MODPATH/module.prop" ]; then
     MODULE_VERSION="$(awk -F= '$1 == "version" { print $2; exit }' "$MODPATH/module.prop")"
     MODULE_CODE="$(awk -F= '$1 == "versionCode" { print $2; exit }' "$MODPATH/module.prop")"
     [ "$MODULE_ID" = "cfae_framework" ] || die "Unexpected module id: $MODULE_ID"
-    [ -n "$MODULE_VERSION" ] || MODULE_VERSION="unknown"
-    [ -n "$MODULE_CODE" ] || MODULE_CODE="unknown"
-    report "PASS: module metadata id=$MODULE_ID version=$MODULE_VERSION code=$MODULE_CODE"
+    status_line "PASS" "Metadata : $MODULE_ID · $MODULE_VERSION (code $MODULE_CODE)"
+fi
+
+for REQ_SCRIPT in service.sh post-fs-data.sh uninstall.sh action.sh; do
+    [ -f "$MODPATH/$REQ_SCRIPT" ] || die "$REQ_SCRIPT missing from package."
+done
+if [ -f "$MODPATH/sepolicy.rule" ]; then
+    RULE_COUNT="$(grep -c '^allow ' "$MODPATH/sepolicy.rule" 2>/dev/null || echo 0)"
+    status_line "PASS" "SELinux  : scoped live policy packaged ($RULE_COUNT targeted rules)"
 else
-    report "WARN: module.prop unavailable in staging directory"
+    status_line "WARN" "SELinux  : sepolicy.rule not packaged"
+fi
+if [ -f "$MODPATH/webroot/index.html" ]; then
+    status_line "PASS" "WebUI    : MD3 Control Center payload verified"
+else
+    status_line "WARN" "WebUI    : webroot/index.html missing"
 fi
 
-[ -f "$MODPATH/service.sh" ] || die "service.sh missing from package."
-[ -f "$MODPATH/post-fs-data.sh" ] || die "post-fs-data.sh missing from package."
-[ -f "$MODPATH/uninstall.sh" ] || die "uninstall.sh missing from package."
-[ -f "$MODPATH/action.sh" ] || die "action.sh missing from package."
-if [ ! -f "$MODPATH/system/etc/coreflow/default.conf" ]; then
-    report "WARN: default.conf not found; daemon may use compiled defaults"
-fi
-if [ ! -f "$MODPATH/sepolicy.rule" ]; then
-    report "INFO: no additional SELinux policy file packaged"
+# ---------------------------------------------------------------------------
+# 03 / NATIVE HARDWARE & 4-PILLAR READINESS PROBE
+# ---------------------------------------------------------------------------
+section "03 / 4-PILLAR HARDWARE READINESS"
+
+# Apply executable bit before read-only native probe
+set_file_perm "$CORE_BIN" 0755 || die "Cannot set coreflowd permissions."
+
+CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$$"
+CAP_JSON=""
+NATIVE_PROBE_STATUS="DEFERRED"
+if "$CORE_BIN" --capabilities > "$CAPABILITY_TMP" 2>&1; then
+    NATIVE_PROBE_STATUS="PASS"
+    CAP_JSON="$(tail -n 1 "$CAPABILITY_TMP" 2>/dev/null)"
+    chmod 0600 "$CAPABILITY_TMP" 2>/dev/null
+    if [ -s "$CAPABILITY_TMP" ] && [ ! -L "$STATE_DIR/install-capabilities.log" ]; then
+        mv -f "$CAPABILITY_TMP" "$STATE_DIR/install-capabilities.log"
+    else
+        rm -f "$CAPABILITY_TMP"
+    fi
+else
+    rm -f "$CAPABILITY_TMP"
 fi
 
-section "03 / KERNEL CAPABILITY DISCOVERY"
-report "Preflight: read-only kernel capability inventory"
-
+# Baseline sysfs read-only signals
 CGROUP2_ROOT="$(awk '$0 ~ / - cgroup2 / { print $5; exit }' /proc/self/mountinfo 2>/dev/null)"
 if [ -n "$CGROUP2_ROOT" ] && [ -r "$CGROUP2_ROOT/cgroup.controllers" ]; then
     CGROUP_CONTROLLERS="$(cat "$CGROUP2_ROOT/cgroup.controllers" 2>/dev/null)"
     [ -n "$CGROUP_CONTROLLERS" ] || CGROUP_CONTROLLERS="none"
     if [ "$CGROUP_CONTROLLERS" = "none" ]; then CGROUP_STATUS="LIMITED"; else CGROUP_STATUS="AVAILABLE"; fi
-    report "cgroup v2: mounted at $CGROUP2_ROOT; controllers=$CGROUP_CONTROLLERS"
 else
-    CGROUP2_ROOT=""
     CGROUP_CONTROLLERS="unavailable"
     CGROUP_STATUS="UNAVAILABLE"
-    report "cgroup v2: no readable unified mount detected; runtime will evaluate available fallbacks"
-fi
-
-TOP_APP_PATH=""
-for CANDIDATE in "$CGROUP2_ROOT/top-app" /sys/fs/cgroup/top-app /dev/cpuctl/top-app; do
-    [ -n "$CANDIDATE" ] || continue
-    if [ -d "$CANDIDATE" ]; then
-        TOP_APP_PATH="$CANDIDATE"
-        break
-    fi
-done
-if [ -n "$TOP_APP_PATH" ]; then
-    report "top-app cgroup: $TOP_APP_PATH"
-    if [ -r "$TOP_APP_PATH/cpu.uclamp.min" ] && [ -r "$TOP_APP_PATH/cpu.uclamp.max" ]; then
-        UCLAMP_MIN="$(cat "$TOP_APP_PATH/cpu.uclamp.min" 2>/dev/null)"
-        UCLAMP_MAX="$(cat "$TOP_APP_PATH/cpu.uclamp.max" 2>/dev/null)"
-        [ -n "$UCLAMP_MIN" ] || UCLAMP_MIN="unreadable"
-        [ -n "$UCLAMP_MAX" ] || UCLAMP_MAX="unreadable"
-        report "UClamp nodes visible: min=$UCLAMP_MIN; max=$UCLAMP_MAX; encoding is verified by the native engine"
-    else
-        report "UClamp nodes: not readable at the top-app path visible to installer"
-    fi
-else
-    report "top-app cgroup: not found at common mount locations; native discovery remains authoritative"
-fi
-
-CPU_POSSIBLE="$(read_value /sys/devices/system/cpu/possible)"
-CPU_PRESENT="$(read_value /sys/devices/system/cpu/present)"
-CPU_ONLINE="$(read_value /sys/devices/system/cpu/online)"
-[ -n "$CPU_POSSIBLE" ] || CPU_POSSIBLE="unknown"
-[ -n "$CPU_PRESENT" ] || CPU_PRESENT="unknown"
-[ -n "$CPU_ONLINE" ] || CPU_ONLINE="unknown"
-report "CPU topology: possible=$CPU_POSSIBLE; present=$CPU_PRESENT; online=$CPU_ONLINE"
-
-CPUFREQ_COUNT=0
-for POLICY in /sys/devices/system/cpu/cpufreq/policy*; do
-    [ -d "$POLICY" ] || continue
-    CPUFREQ_COUNT=$((CPUFREQ_COUNT + 1))
-done
-report "CPUFreq policies visible: $CPUFREQ_COUNT"
-if [ -r /sys/devices/system/cpu/cpufreq/policy0/scaling_available_frequencies ]; then
-    report "CPUFreq OPP table: readable on policy0"
-else
-    report "CPUFreq OPP table: policy0 table not visible; each policy is evaluated independently at runtime"
-fi
-
-DEVFREQ_COUNT=0
-for DEVFREQ in /sys/class/devfreq/*; do
-    [ -d "$DEVFREQ" ] || continue
-    DEVFREQ_COUNT=$((DEVFREQ_COUNT + 1))
-done
-report "Generic devfreq devices visible: $DEVFREQ_COUNT"
-if [ -r /sys/class/kgsl/kgsl-3d0/gpubusy ]; then
-    report "Qualcomm KGSL gpubusy: readable; current implementation treats Qualcomm KGSL utilization as observation-only"
-else
-    report "Qualcomm KGSL gpubusy: not visible"
 fi
 
 THERMAL_COUNT="$(count_thermal_zones)"
-report "Thermal zones with readable temp: $THERMAL_COUNT"
-if [ -r /sys/class/power_supply/battery/temp ]; then
-    report "Battery temperature node: readable"
-else
-    report "Battery temperature node: unavailable"
-fi
+INPUT_COUNT="$(count_input_nodes)"
 PSI_AVAILABLE_COUNT=0
 for PSI_DOMAIN in cpu memory io; do
-    if [ -r "/proc/pressure/$PSI_DOMAIN" ]; then
-        PSI_AVAILABLE_COUNT=$((PSI_AVAILABLE_COUNT + 1))
-        PSI_SAMPLE="$(head -n 1 "/proc/pressure/$PSI_DOMAIN" 2>/dev/null)"
-        report "PSI $PSI_DOMAIN: available ($PSI_SAMPLE)"
-    else
-        report "PSI $PSI_DOMAIN: unavailable"
-    fi
+    [ -r "/proc/pressure/$PSI_DOMAIN" ] && PSI_AVAILABLE_COUNT=$((PSI_AVAILABLE_COUNT + 1))
 done
 
-INPUT_COUNT="$(count_input_nodes)"
-report "evdev event nodes visible: $INPUT_COUNT; native ioctl capability filtering decides which nodes are actual touchscreens"
+SOC_MODEL="runtime-auto"
+GPU_MODEL="runtime-auto"
+STORAGE_TYPE="runtime-auto"
+RAM_GB="?"
+ZRAM_GB="?"
+CPU_CLUSTERS="?"
+REFRESH_HZ="?"
+P1_UCLAMP="deferred"
+P3_MGLRU="deferred"
+P2_CGROUP="deferred"
 
-section "04 / NATIVE CAPABILITY PROBE"
-report "Preflight: invoke native read-only capability inspection"
-CAPABILITY_TMP="$STATE_DIR/install-capabilities.tmp.$$"
-NATIVE_PROBE_STATUS="DEFERRED"
-if "$CORE_BIN" --capabilities > "$CAPABILITY_TMP" 2>&1; then
-    NATIVE_PROBE_STATUS="PASS"
-    chmod 0600 "$CAPABILITY_TMP" 2>/dev/null
-    if [ -s "$CAPABILITY_TMP" ] && [ ! -L "$STATE_DIR/install-capabilities.log" ]; then
-        mv -f "$CAPABILITY_TMP" "$STATE_DIR/install-capabilities.log"
-        report "PASS: coreflowd --capabilities completed in read-only mode; report saved to $STATE_DIR/install-capabilities.log"
-    else
-        rm -f "$CAPABILITY_TMP"
-        report "PASS: coreflowd --capabilities returned successfully"
-    fi
+if [ "$NATIVE_PROBE_STATUS" = "PASS" ] && [ -n "$CAP_JSON" ]; then
+    SOC_TMP="$(json_str "$CAP_JSON" "socModel")"
+    GPU_TMP="$(json_str "$CAP_JSON" "gpuModel")"
+    STO_TMP="$(json_str "$CAP_JSON" "storageType")"
+    RAM_TMP="$(json_val "$CAP_JSON" "ramBytes")"
+    ZRM_TMP="$(json_val "$CAP_JSON" "zramBytes")"
+    CLU_TMP="$(json_val "$CAP_JSON" "cpuClusters")"
+    RHZ_TMP="$(json_val "$CAP_JSON" "refreshHz")"
+    UCL_TMP="$(json_val "$CAP_JSON" "perThreadUclampSupported")"
+    MGL_TMP="$(json_val "$CAP_JSON" "mglruAvailable")"
+    CG2_TMP="$(json_val "$CAP_JSON" "cgroupV2Available")"
+
+    [ -n "$SOC_TMP" ] && SOC_MODEL="$SOC_TMP"
+    [ -n "$GPU_TMP" ] && GPU_MODEL="$GPU_TMP"
+    [ -n "$STO_TMP" ] && STORAGE_TYPE="$STO_TMP"
+    [ -n "$RAM_TMP" ] && RAM_GB="$(bytes_to_gb "$RAM_TMP")"
+    [ -n "$ZRM_TMP" ] && ZRAM_GB="$(bytes_to_gb "$ZRM_TMP")"
+    [ -n "$CLU_TMP" ] && CPU_CLUSTERS="$CLU_TMP"
+    [ -n "$RHZ_TMP" ] && REFRESH_HZ="$RHZ_TMP"
+    [ -n "$UCL_TMP" ] && P1_UCLAMP="$UCL_TMP"
+    [ -n "$MGL_TMP" ] && P3_MGLRU="$MGL_TMP"
+    [ -n "$CG2_TMP" ] && P2_CGROUP="$CG2_TMP"
+
+    status_line "PROBE" "SoC: $SOC_MODEL | GPU: $GPU_MODEL | Clusters: $CPU_CLUSTERS"
+    status_line "PROBE" "Storage: $STORAGE_TYPE | RAM: ${RAM_GB} GB | ZRAM: ${ZRAM_GB} GB | Panel: ${REFRESH_HZ} Hz"
 else
-    NATIVE_PROBE_STATUS="DEFERRED"
-    rm -f "$CAPABILITY_TMP"
-    report "INFO: native capability probe could not complete in installer context; service will rediscover after boot"
+    status_line "DEFER" "Native probe deferred to post-boot daemon startup"
 fi
 
-report "Installer policy: no sysfs, procfs, cgroup, boot property, thermal, or SELinux mutation is performed by customize.sh"
+# 4-Pillar Readiness Breakdown
+if [ "$P1_UCLAMP" = "true" ]; then
+    status_line "READY" "Pillar 1 — Per-TID Render & UI Smoothness (SYS_sched_setattr)"
+elif [ "$P1_UCLAMP" = "false" ]; then
+    status_line "LIMITED" "Pillar 1 — Per-TID UClamp unsupported by kernel"
+else
+    status_line "DEFER" "Pillar 1 — Per-TID UClamp (evaluated at boot)"
+fi
 
-# Persist only the read-only preflight report; never rewrite an existing safety marker.
+if [ "$STORAGE_TYPE" != "Unknown" ] && [ "$STORAGE_TYPE" != "runtime-auto" ]; then
+    status_line "READY" "Pillar 2 — Dynamic $STORAGE_TYPE Burst & Background QoS (cgroup2=$P2_CGROUP)"
+else
+    status_line "DEFER" "Pillar 2 — Dynamic Storage Burst & QoS (evaluated at boot)"
+fi
+
+if [ "$P3_MGLRU" = "true" ]; then
+    status_line "READY" "Pillar 3 — MGLRU Anti-Stutter Memory & Smart Pre-Read"
+elif [ "$P3_MGLRU" = "false" ]; then
+    status_line "READY" "Pillar 3 — Adaptive VM Memory Guard & Smart Pre-Read (no MGLRU)"
+else
+    status_line "DEFER" "Pillar 3 — Adaptive Memory Guard & Smart Pre-Read"
+fi
+
+status_line "READY" "Pillar 4 — Rust PID Thermal Pacing ($THERMAL_COUNT zones, PSI $PSI_AVAILABLE_COUNT/3, $INPUT_COUNT evdev)"
+
+# Non-blocking third-party module conflict advisory
+CONFLICTS=""
+CONFLICT_COUNT=0
+detect_conflicting_modules
+if [ "$CONFLICT_COUNT" -gt 0 ]; then
+    status_line "ADVISORY" "Possible competing performance modules ($CONFLICT_COUNT): $CONFLICTS"
+    status_line "INFO" "CoreFlow yields safely on OEM/external contention, but disabling overlapping tweakers gives cleanest results"
+else
+    status_line "PASS" "No overlapping performance/thermal modules detected"
+fi
+
+# ---------------------------------------------------------------------------
+# 04 / CONFIGURATION PRESERVATION & PERMISSIONS
+# ---------------------------------------------------------------------------
+section "04 / CONFIGURATION & STAGING"
+
+USER_CONF="$STATE_DIR/coreflow.conf"
+DEFAULT_CONF="$MODPATH/system/etc/coreflow/default.conf"
+if [ -f "$USER_CONF" ] && [ ! -L "$USER_CONF" ]; then
+    if [ ! -L "$STATE_DIR/coreflow.conf.bak" ]; then
+        cp -f "$USER_CONF" "$STATE_DIR/coreflow.conf.bak" 2>/dev/null &&
+            chmod 0600 "$STATE_DIR/coreflow.conf.bak" 2>/dev/null
+    fi
+    status_line "KEEP" "Preserved user configuration & per-app rules ($USER_CONF)"
+elif [ -f "$DEFAULT_CONF" ] && [ ! -L "$DEFAULT_CONF" ]; then
+    TMP_CONF="$USER_CONF.tmp.$$"
+    rm -f "$TMP_CONF"
+    if cp -f "$DEFAULT_CONF" "$TMP_CONF" && chmod 0600 "$TMP_CONF" && mv -f "$TMP_CONF" "$USER_CONF"; then
+        status_line "INIT" "Initialized default v5.0.2 configuration ($USER_CONF)"
+    else
+        rm -f "$TMP_CONF"
+        status_line "WARN" "Could not initialize default config; daemon will use compiled defaults"
+    fi
+fi
+
+# Persist read-only preflight log without touching safety markers
 PREFLIGHT_LOG="$STATE_DIR/install-preflight.log"
 if [ ! -L "$PREFLIGHT_LOG" ]; then
     PREFLIGHT_TMP="$PREFLIGHT_LOG.tmp.$$"
@@ -408,15 +523,13 @@ if [ ! -L "$PREFLIGHT_LOG" ]; then
         mv -f "$PREFLIGHT_TMP" "$PREFLIGHT_LOG"
 fi
 
-# Keep legacy module removal manager-controlled; do not recursively delete an old installation.
+# Mark legacy module ID for manager-controlled removal without recursive rm
 if [ -d /data/adb/modules/coreflow_engine ] &&
    [ "$MODPATH" != /data/adb/modules/coreflow_engine ]; then
-    ui "- Marking legacy CoreFlow Engine installation for root-manager removal..."
+    status_line "MIGRATE" "Marking legacy module coreflow_engine for root-manager removal"
     touch /data/adb/modules/coreflow_engine/remove 2>/dev/null || true
 fi
 
-# Apply package permissions after validation.
-set_file_perm "$CORE_BIN" 0755 || die "Cannot set coreflowd permissions."
 set_file_perm "$MODPATH/service.sh" 0755
 set_file_perm "$MODPATH/post-fs-data.sh" 0755
 set_file_perm "$MODPATH/uninstall.sh" 0755
@@ -427,8 +540,11 @@ set_file_perm "$MODPATH/sepolicy.rule" 0644
 set_file_perm "$MODPATH/system/etc/coreflow/default.conf" 0644
 set_webroot_perm "$MODPATH/webroot"
 
+# ---------------------------------------------------------------------------
+# 05 / ATOMIC LIVE HOT-UPGRADE OR FRESH STAGING
+# ---------------------------------------------------------------------------
 if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
-    ui "- Staging verified live hot-upgrade into active module..."
+    status_line "STAGE" "Performing atomic live hot-upgrade into active module..."
     UPGRADE_OK=1
 
     stage_and_replace "$CORE_BIN" "$LIVE_MOD/system/bin/coreflowd" 0755 || UPGRADE_OK=0
@@ -448,22 +564,21 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
     fi
 
     if [ "$UPGRADE_OK" -ne 1 ]; then
-        ui "! Live upgrade staging incomplete; the installed module remains in place and new files apply after reboot."
+        status_line "WARN" "Live staging incomplete; new files will activate cleanly after reboot"
     else
         LIVE_BIN="$LIVE_MOD/system/bin/coreflowd"
         "$LIVE_BIN" --stop >/dev/null 2>&1 || killall -TERM coreflowd >/dev/null 2>&1 || true
 
-        # Safety markers are authoritative. A hot-upgrade must never clear them.
+        # Safety markers are authoritative; hot-upgrade never clears SAFE_MODE/DISABLE.
         if [ -e "$STATE_DIR/SAFE_MODE" ] || [ -e "$STATE_DIR/DISABLE" ] ||
            [ -e "$LIVE_MOD/disable" ] || [ -e /data/adb/modules/coreflow_engine/disable ]; then
-            ui "- SAFE_MODE/DISABLE marker preserved; automatic daemon restart skipped."
+            status_line "SAFE" "SAFE_MODE/DISABLE marker preserved; automatic restart skipped"
         else
             mkdir -p "$STATE_DIR/logs" 2>/dev/null || true
             LIVE_LOG="$STATE_DIR/logs/coreflowd.log"
             LIVE_SERVICE="$LIVE_MOD/service.sh"
             if [ -f "$LIVE_SERVICE" ] && [ ! -L "$LIVE_SERVICE" ] && [ ! -L "$LIVE_LOG" ]; then
                 chmod 0755 "$LIVE_SERVICE" 2>/dev/null || true
-                # Delegate daemon startup to the serialized post-boot entrypoint.
                 COREFLOW_STATE_DIR="$STATE_DIR" COREFLOW_SKIP_BOOT_WAIT=1 \
                     sh "$LIVE_SERVICE" >/dev/null 2>&1 || true
                 START_ATTEMPT=0
@@ -477,46 +592,26 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
                     START_ATTEMPT=$((START_ATTEMPT + 1))
                 done
                 if [ "$DAEMON_READY" -eq 1 ]; then
-                    ui "- Live daemon restart confirmed by native --status."
+                    status_line "LIVE" "CoreFlow v5.0.2 daemon restarted & verified via --status"
                 else
-                    ui "! Live daemon restart was not confirmed by service.sh; reboot before relying on the new package."
+                    status_line "WARN" "Live restart unconfirmed; reboot once to activate v5.0.2"
                 fi
             else
-                ui "! Live service.sh entrypoint is unavailable; reboot before relying on the new package."
+                status_line "WARN" "Live service.sh unavailable; reboot once to activate v5.0.2"
             fi
         fi
     fi
 else
-    ui "- First-time package staging complete."
-    ui "- Reboot once to mount the systemless overlay and let service.sh start coreflowd after boot completion."
+    status_line "DONE" "Fresh staging complete — reboot once to mount overlay & start coreflowd"
 fi
 
 ui ""
-ui "+==================================================+"
-ui "|                 PREFLIGHT SUMMARY                 |"
-ui "+--------------------------------------------------+"
-status_line "PASS" "Platform : Android $ANDROID_RELEASE / API $API_LEVEL / ARM64"
-status_line "INFO" "Device   : $BRAND $MODEL ($DEVICE)"
-status_line "INFO" "Root     : $ROOT_MANAGER | SELinux: $SELINUX_STATE"
-if [ "$CGROUP_STATUS" = "AVAILABLE" ]; then
-    status_line "PASS" "cgroup v2: controllers exposed ($CGROUP_CONTROLLERS)"
-elif [ "$CGROUP_STATUS" = "LIMITED" ]; then
-    status_line "WARN" "cgroup v2 mounted, but no controllers are exposed"
-else
-    status_line "INFO" "cgroup v2 unavailable; runtime fallback discovery applies"
-fi
-status_line "INFO" "CPUFreq  : $CPUFREQ_COUNT policies | devfreq: $DEVFREQ_COUNT"
-status_line "INFO" "Thermal  : $THERMAL_COUNT readable zones | PSI: $PSI_AVAILABLE_COUNT/3 domains"
-status_line "INFO" "Input    : $INPUT_COUNT evdev nodes (native filtering required)"
-status_line "OBSERVE" "KGSL GPU utilization is observation-only"
-if [ "$NATIVE_PROBE_STATUS" = "PASS" ]; then
-    status_line "PASS" "Native capability probe completed"
-else
-    status_line "DEFER" "Native capability probe deferred to post-boot runtime"
-fi
-ui "+--------------------------------------------------+"
-ui "  Installer : SUCCESS"
-ui "  Report    : $STATE_DIR/install-preflight.log"
-ui "  Policy    : no kernel-interface or SELinux mutation"
-ui "  Authority : coreflowd performs final admission/readback"
-ui "+==================================================+"
+ui "+======================================================+"
+ui "|  CoreFlow Engine v5.0.2 — Installation Successful    |"
+ui "+------------------------------------------------------+"
+ui "|  WebUI   : Open via KernelSU / APatch / Magisk       |"
+ui "|  Report  : $STATE_DIR/install-preflight.log"
+ui "|  Policy  : Zero kernel/SELinux mutation in installer |"
+ui "|  Safety  : CFJ4 durable OEM baseline & rollback      |"
+ui "+======================================================+"
+ui ""

@@ -53,7 +53,9 @@ public:
         bool thermal_guard) noexcept;
 
 private:
-    bool write_managed_node(const std::string& path, const std::string& target) noexcept;
+    bool write_managed_node(const std::string& path,
+                            const std::string& target,
+                            uint64_t deadband = 0U) noexcept;
     void rollback_all_managed() noexcept;
 
     BaselineStore& baseline_;

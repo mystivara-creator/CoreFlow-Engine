@@ -73,7 +73,8 @@ private:
     bool write_managed_node(const std::string& path,
                             const std::string& target,
                             double numeric_tolerance = 0.0,
-                            bool verify_nonzero_mask = false) noexcept;
+                            bool verify_nonzero_mask = false,
+                            double deadband = 0.0) noexcept;
     void rollback_managed_node(const std::string& path) noexcept;
 
     BaselineStore& baseline_;

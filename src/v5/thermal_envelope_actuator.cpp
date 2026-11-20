@@ -101,7 +101,7 @@ std::pair<uint64_t, uint64_t> ThermalEnvelopeActuator::compute_kgsl_levels(
 }
 
 bool ThermalEnvelopeActuator::write_managed_node(
-    const std::string& path, const std::string& target) noexcept {
+    const std::string& path, const std::string& target, uint64_t deadband) noexcept {
     if (path.empty() || target.empty() || contended_paths_.contains(path)) return false;
 
     const std::string live = read_line_trimmed(path);
@@ -116,8 +116,17 @@ bool ThermalEnvelopeActuator::write_managed_node(
         last_written_[path] = target;
         return true;
     }
+    // Suppress minor PSI/load jitter writes so CFJ4 journal is not fsynced for negligible deltas.
+    if (deadband > 0U && prev != last_written_.end()) {
+        uint64_t cur_num = 0U, tgt_num = 0U;
+        if (parse_u64_exact(live, cur_num) && parse_u64_exact(target, tgt_num)) {
+            const uint64_t diff = cur_num > tgt_num ? (cur_num - tgt_num) : (tgt_num - cur_num);
+            if (diff <= deadband) return true;
+        }
+    }
 
-    if (!baseline_.capture_durable(path)) return false;
+    // BaselineStore::apply_mutation already performs durable write-ahead journaling before writing.
+    if (!baseline_.capture(path)) return false;
     if (!baseline_.apply_mutation(path, target)) return false;
     const std::string verify = read_line_trimmed(path);
     if (verify != target) {
@@ -203,7 +212,7 @@ void ThermalEnvelopeActuator::apply(
             // Smooth thermal backoff raises hispeed_load gradually as PID scale drops.
             target_load += (1.0 - scale) * 14.0;
             const uint32_t load = static_cast<uint32_t>(std::clamp(std::lround(target_load), 65L, 96L));
-            (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load));
+            (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load), 3U);
         }
 
         if (!cluster.up_rate_limit_path.empty()) {
@@ -213,7 +222,7 @@ void ThermalEnvelopeActuator::apply(
                 mode == ContextMode::Gaming ? 0.06 : 0.16;
             const uint64_t up_us = static_cast<uint64_t>(
                 std::clamp(std::lround((frame_us * up_frames) / std::clamp(scale, 0.50, 1.0)), 300L, 6000L));
-            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us));
+            (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us), 300U);
         }
 
         if (!cluster.down_rate_limit_path.empty()) {
@@ -223,7 +232,7 @@ void ThermalEnvelopeActuator::apply(
                 mode == ContextMode::Interactive ? (1.05 + cpu_psi_norm * 0.30) : 0.55;
             const uint64_t down_us = static_cast<uint64_t>(
                 std::clamp(std::lround(frame_us * down_frames * scale), 3000L, 30000L));
-            (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us));
+            (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us), 1500U);
         }
     }
 
@@ -235,7 +244,7 @@ void ThermalEnvelopeActuator::apply(
                 (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? (12.0 + gpu_norm * 6.0) : 7.0;
             const uint64_t idle_ms = static_cast<uint64_t>(
                 std::clamp(std::lround((frame_us / 1000.0) * frames * scale), 40L, 400L));
-            (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms));
+            (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms), 15U);
         }
 
         if (topo.gpu.is_kgsl &&

@@ -293,6 +293,23 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     const std::string content = read_small_file(top_app_procs_path, 16384U);
     if (content.empty()) return result;
 
+    auto process_has_render_thread = [&](int32_t pid) -> bool {
+        if (pid == cached_fg_pid_ && !cached_fg_tids_.empty()) {
+            // Fast path: already verified this PID owns a render thread (> 1 critical TID)
+            if (cached_fg_tids_.size() > 1U) return true;
+        }
+        const fs::path task_dir = fs::path(procfs_root_) / std::to_string(pid) / "task";
+        std::error_code tec;
+        size_t scanned = 0U;
+        for (fs::directory_iterator tit(task_dir, fs::directory_options::skip_permission_denied, tec), tend;
+             !tec && tit != tend && scanned++ < 192U; tit.increment(tec)) {
+            std::string comm = read_small_file(tit->path() / "comm", 64U);
+            while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
+            if (is_critical_render_thread_name(comm)) return true;
+        }
+        return false;
+    };
+
     const int32_t self_pid = static_cast<int32_t>(::getpid());
     std::istringstream ss(content);
     std::string line;
@@ -310,22 +327,29 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         if (cmd.name.empty() || !is_android_user_app_package(cmd.name, cmd.has_path_slash)) continue;
 
         // Android ActivityManager invariant:
-        //   adj == 0    -> FOREGROUND_APP_ADJ (true active visible foreground app)
+        //   adj == 0    -> FOREGROUND_APP_ADJ (visible foreground app OR bound BIND_ABOVE_CLIENT service)
         //   1..100      -> VISIBLE_APP_ADJ (split-screen / PiP / overlay)
-        //   >= 200      -> PERCEPTIBLE_APP_ADJ (IME keyboard like com.preff.kb.xm, foreground service)
-        //   < 0         -> PERSISTENT_PROC_ADJ (system_server, zygote, vendor QCC daemons)
+        //   >= 200      -> PERCEPTIBLE_APP_ADJ (IME keyboard, background service)
+        //   < 0         -> PERSISTENT_PROC_ADJ (system_server, zygote, vendor daemons)
+        // Real visible UI apps own a RenderThread/GLThread/UnityMain/GameThread, whereas bound
+        // services (e.g. com.google.android.gms) do not — zero hardcoded package lists needed.
         const auto adj = read_oom_score_adj(pdir);
         int rank = 0;
         if (adj.has_value()) {
             if (*adj < 0 || *adj >= 200) continue;
             if (*adj == 0) {
                 rank = cmd.has_service_suffix ? 3 : 4;
+                if (!cmd.has_service_suffix && process_has_render_thread(pid)) {
+                    rank = 6;
+                }
             } else {
                 rank = cmd.has_service_suffix ? 1 : 2;
             }
         } else {
-            // Host unit-test fixtures without oom_score_adj default to foreground rank.
             rank = cmd.has_service_suffix ? 3 : 4;
+            if (!cmd.has_service_suffix && process_has_render_thread(pid)) {
+                rank = 6;
+            }
         }
 
         // Tie-breaker: keep currently tracked foreground PID sticky so sibling processes

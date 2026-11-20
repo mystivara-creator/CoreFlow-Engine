@@ -963,7 +963,7 @@ export const App: React.FC = () => {
           color: 'var(--md-sys-color-on-surface-variant)',
         }}
       >
-        CoreFlow Engine v5.0.1 · Lean 4-Pillar Adaptive Android Framework · CFJ4 OEM Safe
+        CoreFlow Engine v5.0.2 · Lean 4-Pillar Adaptive Android Framework · CFJ4 OEM Safe
       </footer>
     </div>
   );

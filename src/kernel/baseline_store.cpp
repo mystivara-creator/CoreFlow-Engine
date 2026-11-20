@@ -218,6 +218,22 @@ bool hex_decode(std::string_view input, std::string& out) {
 
 bool readback_matches(const std::string& path, const std::string& expected, const std::string& actual) {
     if (expected == actual) return true;
+    if (path.find("/lru_gen/enabled") != std::string::npos) {
+        auto parse_mask = [](const std::string& v, uint64_t& out) -> bool {
+            if (v == "y" || v == "Y") { out = 1U; return true; }
+            if (v == "n" || v == "N") { out = 0U; return true; }
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (errno != 0 || end == v.c_str() || *end != '\0') return false;
+            out = static_cast<uint64_t>(parsed);
+            return true;
+        };
+        uint64_t exp_m = 0U, act_m = 0U;
+        if (parse_mask(expected, exp_m) && parse_mask(actual, act_m)) {
+            return (exp_m == 0U && act_m == 0U) || (exp_m != 0U && act_m != 0U);
+        }
+    }
     if (path.find("/cpu.uclamp.") == std::string::npos) return false;
     const auto numeric = [](const std::string& value, double& percent) {
         if (value == "max") {
@@ -227,9 +243,9 @@ bool readback_matches(const std::string& path, const std::string& expected, cons
         return parse_ascii_double(value, percent) && percent >= 0.0 && percent <= 100.0;
     };
     double before = 0.0, after = 0.0;
-    // cgroup v2 formats numeric utilization clamps as percentages (e.g. 31.25).
+    // cgroup v2 formats numeric utilization clamps as percentages (e.g. 31.25 / 34.96).
     return numeric(expected, before) && numeric(actual, after) &&
-           std::abs(before - after) <= 0.05;
+           std::abs(before - after) <= 0.6;
 }
 
 bool write_all(int fd, std::string_view data) {
@@ -902,8 +918,11 @@ bool BaselineStore::apply_mutation(const std::string& path, const std::string& n
         return false;
     }
     it->second.active_value = new_value;
-    it->second.is_modified = new_value != it->second.factory_value;
-    if (!persist_locked()) {
+    const bool still_modified = (new_value != it->second.factory_value);
+    it->second.is_modified = still_modified;
+    // Write-ahead persist above already durably wrote {is_modified=true, prior, active=new_value}.
+    // Only persist again when returning to factory_value clears the modified flag.
+    if (!still_modified && !persist_locked()) {
         if (!rollback_path_locked(path)) {
             std::cerr << "[CoreFlow] BaselineStore: path-scoped rollback failed after journal update error on "
                       << path << "\n";

@@ -49,12 +49,17 @@ int main() {
     assert(fg.critical_tids.size() == 3U); // 4321 (UI), 4322 (RenderThread), 4323 (UnityMain)
 
     // HyperOS / Android 15 regression: top-app contains persistent daemons (adj < 0),
-    // perceptible IME keyboard (adj = 200), helper shell binaries (/.../bash), and the real fg app (adj = 0).
-    write_file(root / "hyperos_top_app", "1312\n2523\n13821\n18000\n22235\n27597\n");
+    // perceptible IME keyboard (adj = 200), bound Play Services (adj = 0 without RenderThread),
+    // helper shell binaries (/.../bash), and the real fg app (adj = 0 with RenderThread).
+    write_file(root / "hyperos_top_app", "1312\n2523\n5393\n13821\n18000\n22235\n27597\n");
     write_file(proc / "1312/cmdline", std::string("zygote64\0", 9));
     write_file(proc / "1312/oom_score_adj", "-1000\n");
     write_file(proc / "2523/cmdline", std::string("system_server\0", 14));
     write_file(proc / "2523/oom_score_adj", "-900\n");
+    write_file(proc / "5393/cmdline", std::string("com.google.android.gms\0", 23));
+    write_file(proc / "5393/oom_score_adj", "0\n");
+    write_file(proc / "5393/task/5393/comm", "oid.gms\n");
+    write_file(proc / "5393/task/5394/comm", "Binder:5393_1\n");
     write_file(proc / "13821/cmdline", std::string("com.preff.kb.xm\0", 16));
     write_file(proc / "13821/oom_score_adj", "200\n");
     write_file(proc / "18000/cmdline", std::string("com.termux\0", 11));
