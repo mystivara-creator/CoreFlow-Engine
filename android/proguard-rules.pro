@@ -1,0 +1,7 @@
+# CoreFlow Companion R8 / ProGuard rules
+-keepattributes *Annotation*
+-keep class com.topjohnwu.superuser.** { *; }
+-dontwarn com.topjohnwu.superuser.**
+-keep class io.coreflow.CoreFlowTileService { *; }
+-keep class io.coreflow.CoreFlowThermalReceiver { *; }
+-keep class io.coreflow.CoreFlowOverlayService { *; }

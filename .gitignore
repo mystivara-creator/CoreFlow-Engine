@@ -23,3 +23,9 @@ public/assets/aistudio/
 # Rust build output
 rust/target/
 rust/Cargo.lock
+
+# Android Companion App
+android/.gradle/
+android/local.properties
+*.jks
+*.keystore
