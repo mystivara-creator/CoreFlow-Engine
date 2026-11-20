@@ -3,7 +3,7 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-ANDROID_MIN_API="${ANDROID_MIN_API:-35}"
+ANDROID_MIN_API="${ANDROID_MIN_API:-33}"
 ANDROID_ABI="${ANDROID_ABI:-arm64-v8a}"
 
 if [ -z "$NDK" ] || [ ! -f "$NDK/build/cmake/android.toolchain.cmake" ]; then
@@ -13,12 +13,12 @@ fi
 
 case "$ANDROID_MIN_API" in
     ''|*[!0-9]*)
-        echo "error: ANDROID_MIN_API must be a numeric Android API level >= 35 (got: $ANDROID_MIN_API)." >&2
+        echo "error: ANDROID_MIN_API must be a numeric Android API level >= 33 (got: $ANDROID_MIN_API)." >&2
         exit 2
         ;;
 esac
-if [ "$ANDROID_MIN_API" -lt 35 ]; then
-    echo "error: Android 15 / API 35+ is required (got: $ANDROID_MIN_API)." >&2
+if [ "$ANDROID_MIN_API" -lt 33 ]; then
+    echo "error: Android 13 / API 33+ is required (got: $ANDROID_MIN_API)." >&2
     exit 2
 fi
 if [ "$ANDROID_ABI" != "arm64-v8a" ]; then
@@ -34,7 +34,7 @@ if command -v rustup >/dev/null 2>&1; then
 fi
 BUILD_DIR="$ROOT/build/android-arm64"
 
-echo "CoreFlow Engine v5.0.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
+echo "CoreFlow Engine v5.1.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \

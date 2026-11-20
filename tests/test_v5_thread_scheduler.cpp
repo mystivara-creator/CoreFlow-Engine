@@ -55,6 +55,12 @@ int main() {
         ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, heavy_psi);
     assert(t_psi.util_min > t120.util_min);
 
+    ThreadDemandContext heavy_render = mid_soc;
+    heavy_render.render_pressure = 0.85;
+    const auto t_render = ThreadSchedulerActuator::compute_target(
+        ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, heavy_render);
+    assert(t_render.util_min > t120.util_min);
+
     const auto smooth_target = ThreadSchedulerActuator::compute_target(
         ContextMode::Interactive, PerformanceProfile::Smoothness, 1.0, false, mid_soc);
     const auto battery_target = ThreadSchedulerActuator::compute_target(

@@ -154,11 +154,19 @@ int main() {
     act.apply(topo, game_ctx, PerformanceProfile::Gaming, true, true, 21000, calm_tel);
     assert(act.stats().contended_nodes == 0U);
 
-    // 6. Real OEM contention on MGLRU is isolated instead of fighting external writers
+    // 6. Real OEM contention on MGLRU yields cleanly during cooldown, then recovers automatically after cooldown if OEM settles
     write_file(mglru, "250\n"); // Simulate OEM daemon overwrite
     act.apply(topo, launch_ctx, PerformanceProfile::Gaming, true, true, 25000, calm_tel);
     assert(read_file(mglru) == "250");
     assert(act.stats().contended_nodes >= 1U);
+    assert(!act.contended_paths().empty());
+    // Still inside 30s cooldown -> must remain yielded
+    act.apply(topo, launch_ctx, PerformanceProfile::Gaming, true, true, 40000, calm_tel);
+    assert(read_file(mglru) == "250");
+    // Past 30s cooldown with OEM settled -> recovers control automatically
+    act.apply(topo, launch_ctx, PerformanceProfile::Gaming, true, true, 60000, calm_tel);
+    assert(std::stoull(read_file(mglru)) >= 800U);
+    assert(act.stats().contended_nodes == 0U);
 
     // 7. Hardware-calibrated read_ahead reacts dynamically to queue geometry and io_psi
     StorageQueueInfo deep_ufs = ufs_q;

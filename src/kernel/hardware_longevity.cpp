@@ -105,9 +105,31 @@ DiscoveredBatteryPaths find_unambiguous_battery_supply(const fs::path& sys_root)
         matches.push_back(std::move(item));
     }
 
-    // Ambiguous multiple-battery layouts are not acted upon.
-    if (matches.size() != 1U) return {};
-    return matches.front();
+    if (matches.empty()) return {};
+    if (matches.size() == 1U) return matches.front();
+
+    // Dual-cell fast-charging phones often expose both an aggregate main "battery"
+    // supply and secondary fuel-gauge/sub-cell supplies (e.g. bms, sub_battery).
+    // Prefer a single unambiguous supply exposing writable charge control + telemetry,
+    // or a single canonical "battery" aggregate supply; otherwise fail closed.
+    std::vector<const DiscoveredBatteryPaths*> full_ctrl;
+    const DiscoveredBatteryPaths* canonical_main = nullptr;
+    size_t canonical_main_count = 0U;
+    for (const auto& item : matches) {
+        if (!item.charge_max_node.empty() &&
+            (!item.current_node.empty() || !item.voltage_node.empty()) &&
+            ::access(item.charge_max_node.c_str(), R_OK | W_OK) == 0) {
+            full_ctrl.push_back(&item);
+        }
+        const std::string base = fs::path(item.dir).filename().string();
+        if (base == "battery" || base == "BAT0") {
+            canonical_main = &item;
+            ++canonical_main_count;
+        }
+    }
+    if (full_ctrl.size() == 1U) return *full_ctrl.front();
+    if (canonical_main_count == 1U && canonical_main != nullptr) return *canonical_main;
+    return {};
 }
 
 BatteryPowerTelemetry read_battery_telemetry(

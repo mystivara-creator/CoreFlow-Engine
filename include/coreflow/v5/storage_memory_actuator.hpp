@@ -1,7 +1,7 @@
 /**
  * @file storage_memory_actuator.hpp
  * @brief CoreFlow v5 Pillar 3B: Zero-Fixed-Value Dynamic UFS/eMMC Burst, Background QoS, MGLRU Anti-Stutter, and Smart Pre-Read.
- * @license MIT
+ * @license Apache-2.0
  */
 #pragma once
 
@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
+#include <vector>
 
 namespace coreflow::v5 {
 
@@ -34,6 +34,9 @@ struct StorageMemoryStats {
 
 class StorageMemoryActuator {
 public:
+    static constexpr uint64_t kInitialContentionCooldownMs = 30000ULL;
+    static constexpr uint64_t kMaxContentionCooldownMs = 300000ULL;
+
     StorageMemoryActuator(BaselineStore& baseline,
                           std::string procfs_root = "/proc") noexcept;
 
@@ -55,6 +58,7 @@ public:
 
     void reset_contention() noexcept;
     [[nodiscard]] StorageMemoryStats stats() const noexcept { return stats_; }
+    [[nodiscard]] std::vector<std::string> contended_paths() const;
 
     // Hardware-calibrated dynamic read-ahead calculation from queue geometry & live I/O PSI.
     [[nodiscard]] static uint64_t compute_read_ahead_kb(
@@ -70,16 +74,27 @@ public:
         PerformanceProfile profile) noexcept;
 
 private:
+    struct ContentionEntry {
+        uint64_t retry_after_ms{0};
+        uint32_t strikes{0};
+        std::string observed_value;
+    };
+
+    void record_contention(const std::string& path,
+                           const std::string& observed,
+                           uint64_t now_ms) noexcept;
     bool write_managed_node(const std::string& path,
                             const std::string& target,
+                            uint64_t now_ms,
                             double numeric_tolerance = 0.0,
-                            bool verify_nonzero_mask = false) noexcept;
+                            bool verify_nonzero_mask = false,
+                            double deadband = 0.0) noexcept;
     void rollback_managed_node(const std::string& path) noexcept;
 
     BaselineStore& baseline_;
     std::string procfs_root_;
     std::unordered_map<std::string, std::string> last_written_;
-    std::unordered_set<std::string> contended_paths_;
+    std::unordered_map<std::string, ContentionEntry> contended_paths_;
     std::unordered_map<std::string, uint64_t> last_preread_ms_;
     StorageMemoryStats stats_{};
 };

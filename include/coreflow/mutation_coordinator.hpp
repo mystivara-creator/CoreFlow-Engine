@@ -1,7 +1,7 @@
 /**
  * @file mutation_coordinator.hpp
  * @brief Lightweight single-owner domain lease coordinator for safe kernel mutations.
- * @license MIT
+ * @license Apache-2.0
  */
 #pragma once
 

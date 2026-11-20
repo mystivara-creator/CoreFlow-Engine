@@ -1,6 +1,6 @@
-# CFAE System Framework v4.0.0 Security Model
+# CoreFlow Engine (CFAE) v5.1.0 Security Model
 
-CFAE System Framework (`coreflowd`) is a privileged Android 15+ (API 35+) daemon. It operates on verified kernel interfaces only.
+CoreFlow Engine (`coreflowd`) is a privileged Android 13+ (API 33+) daemon. It operates on verified kernel interfaces only.
 
 - The daemon is single-instance and checks operator `DISABLE`, `SAFE_MODE` and the module disable marker.
 - Any supported mutation must be journaled before the write and verified after read-back.
@@ -8,12 +8,12 @@ CFAE System Framework (`coreflowd`) is a privileged Android 15+ (API 35+) daemon
 - A fatal POSIX signal handler performs no mutex or C++ I/O; it terminates the process. A subsequent daemon restart performs the actual recovery.
 - Recovery is best-effort, non-atomic, and can fail if the vendor changes the interface, other root modules race, or hardware is unstable.
 - No unknown vendor display nodes are written. Automatic task migration and process OOM policy overrides are disabled.
-- A failed mutation triggers rollback and bounded retry; incomplete recovery stops tuning.
+- A failed mutation triggers rollback and bounded cooldown retry; incomplete recovery stops tuning.
 - Configuration inputs are bounded, and unrecognized or malformed values use defensive defaults.
 - SELinux is not set to permissive; rules are added only for verified device-specific denials.
 
 ## Reports
 
-Include `coreflowd --status`, the installed module version, kernel/ROM version,
+Include `coreflowd --diag` (or `--status`), the installed module version, kernel/ROM version,
 `/data/adb/coreflow/logs/coreflowd.log` and the outcome of `--rollback-baseline`.
 Do not delete `baseline.journal` as a troubleshooting shortcut.

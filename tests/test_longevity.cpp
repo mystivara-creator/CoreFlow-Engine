@@ -141,6 +141,27 @@ int main() {
         assert(full_probe.available);
         assert(full_probe.charging);
         assert(!full_probe.fast_charging);
+
+        // Dual-cell fast charging layout (main "battery" with charge control + secondary "bms" fuel gauge)
+        const auto dev_bms = real_sys / "devices/platform/pmic/power_supply/bms";
+        put(dev_bms / "type", "Battery");
+        put(dev_bms / "temp", "340");
+        put(dev_bms / "status", "Charging");
+        fs::create_directory_symlink(dev_bms, real_sys / "class/power_supply/bms");
+        const auto dual_probe = coreflow::HardwareLongevityManager::probe_battery_telemetry(real_sys.string());
+        assert(dual_probe.available);
+        assert(dual_probe.charge_limit_ua == 3000000U);
+
+        // Genuinely ambiguous twin anonymous batteries must still fail closed.
+        const auto amb_sys = root / "ambiguous_sys";
+        put(amb_sys / "class/power_supply/cell0/type", "Battery");
+        put(amb_sys / "class/power_supply/cell0/temp", "350");
+        put(amb_sys / "class/power_supply/cell0/status", "Charging");
+        put(amb_sys / "class/power_supply/cell1/type", "Battery");
+        put(amb_sys / "class/power_supply/cell1/temp", "360");
+        put(amb_sys / "class/power_supply/cell1/status", "Charging");
+        const auto amb_probe = coreflow::HardwareLongevityManager::probe_battery_telemetry(amb_sys.string());
+        assert(!amb_probe.available);
     }
 
     fs::remove_all(root);

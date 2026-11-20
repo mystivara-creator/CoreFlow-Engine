@@ -1,70 +1,90 @@
-# CFAE System Framework
+# CoreFlow Engine (CFAE)
 
-**CFAE System Framework (CoreFlow Engine)** adalah framework optimasi sistem Android berbasis kapabilitas perangkat. CoreFlow mengevaluasi workload, tekanan sistem, dan kondisi termal sebelum menerapkan perubahan kernel yang terukur.
+[![Version](https://img.shields.io/badge/version-v5.1.0-blue)](#)
+[![Platform](https://img.shields.io/badge/Android-13%2B%20(API%2033%2B)%20ARM64-3DDC84)](#instalasi)
+[![License](https://img.shields.io/badge/license-Apache--2.0-orange)](LICENSE)
 
-> OEM baseline is a reference, not an authority ceiling. CoreFlow earns operational authority through capability discovery, controlled actuation, and verified outcomes.
+**CoreFlow Engine** adalah framework sistem otonom berbasis **C++23 + Rust** untuk perangkat Android root (KernelSU / APatch / Magisk). CoreFlow melakukan deteksi topologi perangkat keras secara dinamis (**zero hardcoded path**) dan mengkalibrasi seluruh parameter langsung dari karakteristik silicon serta telemetri kernel real-time (**zero fixed tuning value**), dengan jaminan pemulihan penuh ke konfigurasi pabrik melalui jurnal **CFJ4 OEM Rollback**.
 
-## Prinsip inti
+---
 
-- **Discover before actuation:** kenali semantik, batas, dan kemampuan interface perangkat.
-- **Coordinate mutations:** controller berbagi ownership dan prioritas melalui transaction coordinator.
-- **Verify every change:** journal, readback, settling, dan evaluasi hasil mendahului retensi.
-- **Protect OEM ownership:** perubahan eksternal tidak ditimpa; recovery tetap menghormati baseline dan journal.
+## Arsitektur 4-Pilar Otonom
 
-## Engine
+| Pilar | Fokus | Mekanisme Inti |
+| :--- | :--- | :--- |
+| **1. Frame & UI Smoothness** | Respons sentuhan `< 5 ms` & animasi konsisten | Per-TID `SYS_sched_setattr` (`uclamp_min/max`) pada thread CFS kritis (`RenderThread`, `RenderEngine`, `hwuiTask`, `UnityMain`, `GameThread`, `EmuThread`, `CrRendererMain`) dengan umpan balik *closed-loop* saturasi thread render + kapasitas EAS (`little`/`mid`/`big`) + refresh rate layar — menghindari bentrok PowerHAL cgroup global. |
+| **2. Dynamic Storage Burst & QoS** | App launch & loading game cepat | Deteksi foreground cepat `200 ms`, penemuan otomatis antrean blok fisik (UFS/NVMe/eMMC) & `dm-*` aktif dari `/proc/self/mountinfo`; adaptasi `read_ahead_kb` sesuai geometri antrean (`max_sectors_kb`, `nr_requests`) + `io_psi`, serta isolasi cgroup `background`. |
+| **3. Anti-Stutter Memory & Smart Pre-Read** | Bebas lag saat multitasking | Aktivasi otomatis Linux **MGLRU**, adaptasi kontinu `min_ttl_ms`, `swappiness`, dan `compaction_proactiveness` dari `MemAvailable` + ZRAM + `mem_psi`, serta prefetch `posix_fadvise(POSIX_FADV_WILLNEED)` terukur khusus aplikasi UI foreground. |
+| **4. Thermal PID & Battery Longevity** | Performa stabil tanpa throttling kasar | **Rust PID controller** + prediktor termal **Online RLS + Micro-MLP (10 detik)** memodulasi amplop CPU/GPU (Adreno KGSL, devfreq Mali/Xclipse, dan MediaTek GED), pemutus darurat termal (`SoC ≥ 95 °C` / `Baterai ≥ 58 °C`), deteksi `ScreenOff` OLED/AOD (DRM DPMS & `bl_power`), serta step-charging baterai (termasuk *dual-cell*). |
 
-| Komponen | Tanggung jawab |
-|---|---|
-| C++23 | Native daemon, device profiling, kernel discovery, controller, transaction dan recovery |
-| Rust 2024 | Thermal/pressure state machine, hysteresis, dan slew-bounded PID |
-| Kotlin 2.1 | Integrasi Android, Quick Settings dan thermal receiver |
-| TypeScript / React | WebUI dan native daemon bridge |
+### Prinsip Desain
+- **Zero Fixed Tuning Values & Zero Hardcoded Paths** — setiap perangkat dikalibrasi dari hardware-nya sendiri saat startup & runtime.
+- **Anti-Contention OEM dengan Auto-Cooldown** — jika daemon vendor mengubah node sysfs eksternal, CoreFlow mundur secara elegan (tanpa bertarung dengan OEM) dan baru mencoba memulihkan kontrol setelah cooldown eksponensial (`30s → 300s`) jika OEM sudah tenang.
+- **CFJ4 Durable Rollback & A/B Pause Instan** — setiap mutasi kernel dicatat sebelum diterapkan dan dapat dibandingkan langsung (*Pause / Resume* 1-klik di WebUI) atau dipulihkan 100% ke baseline OEM tanpa reboot.
 
-CoreFlow mencakup CPUFreq/UClamp, cgroup v2, block I/O, VM pressure, thermal policy, serta hardware-longevity controls sesuai bukti dan dukungan kernel. GPU KGSL dapat diaktuasikan melalui kandidat GPU yang lolos admission thermal dan transaksi pasangan pwrlevel tervalidasi; GPU/Power HAL yang hanya terdeteksi tetap observation-only.
+---
 
-## Instalasi dan kompatibilitas
+## Instalasi
 
-- Android 15+ (API 35+), ARM64, dan akses root.
-- Paket flashable tersedia melalui [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases).
-- Dukungan controller ditentukan ulang saat runtime; fitur yang tidak lolos validasi akan tetap nonaktif.
+- **Syarat**: Android 13+ (API 33+), ARM64 (`arm64-v8a`), root via **KernelSU / KernelSU-Next / APatch / Magisk**.
+- Unduh `CFAE-System-Framework-package.zip` dari [GitHub Releases](https://github.com/mystivara-creator/CoreFlow-Engine/releases) atau tab **Artifacts** di GitHub Actions.
+- Flash melalui root manager lalu reboot.
+- Buka **WebUI MD3 Control Center**:
+  - **KernelSU / KernelSU-Next / APatch**: buka langsung tombol **WebUI** pada kartu modul.
+  - **Magisk**: gunakan aplikasi **KsuWebUI Standalone** atau **MMRL** untuk membuka WebUI modul.
+- Fitur utama WebUI:
+  - **Pause (A/B) / Resume & Start CoreFlow** langsung dari header kontrol.
+  - **Session Impact & 4-Pillar Readiness** (uptime, jumlah launch burst, MB pre-read, rata-rata/puncak suhu, status 4 pilar).
+  - **Installed App Picker** (pencarian otomatis aplikasi terinstal + 1-klik profil per-app: `Auto` / `Gaming` / `Smooth` / `Battery` / `Stock OEM`).
+  - **Inspect CFJ4** & **Export Diag** 1-klik untuk pelaporan bug yang rapi dan aman.
 
-## Status pengembangan
+---
 
-v4.0.0. [PR #29](https://github.com/mystivara-creator/CoreFlow-Engine/pull/29) tetap Draft sampai pengujian perangkat fisik. Implementasi mencakup GPU CandidateProvider dan KGSL pwrlevel-pair transaction, persistent Vulkan pipeline-cache interception, serta Perfetto SurfaceFlinger FrameTimeline jank windows yang menggerakkan RenderBooster secara non-blocking. HWUI/SkiaVK renderer switching, VRS, dan refresh-rate panel tetap nonaktif sampai memiliki backend dan bukti runtime tersendiri. CI hijau bukan pengganti validasi runtime pada perangkat.
+## CLI Operasional (Root / Termux)
 
-## Dokumentasi
+```sh
+coreflowd --status                             # Status live, mode, suhu, PID scale, session & aktuator
+coreflowd --capabilities                       # Inspeksi topologi hardware (read-only)
+coreflowd --journal                            # Audit seluruh node aktif di jurnal CFJ4
+coreflowd --diag                               # Bundel diagnostik lengkap (privacy-safe JSON)
+coreflowd --set-config profile=smoothness      # Ubah konfigurasi live tanpa restart
+coreflowd --set-config inspection_mode=true    # Pause instan ke baseline OEM (A/B compare)
+coreflowd --rollback-baseline                  # Hentikan daemon & pulihkan 100% baseline OEM
+```
 
-README ini sengaja ringkas. Penjelasan arsitektur, alur transaksi, controller, konfigurasi, lifecycle, serta sejarah refactor sejak PR #7 dipusatkan pada:
+> **Kill switch darurat**: buat file kosong `/data/adb/coreflow/DISABLE` atau nonaktifkan modul di root manager.
 
-- [CoreFlow — Website & Overview](https://github.com/mystivara-creator/CoreFlow-Engine/blob/website/cfae-landing-page/docs/index.html)
-- [Engineering Reference](https://github.com/mystivara-creator/CoreFlow-Engine/blob/website/cfae-landing-page/docs/reference.html)
+---
 
-## Operasional
+## Validasi Perangkat & Transparansi
 
-Jalankan sebagai root:
+CoreFlow tidak memaksa *unlock thermal* berbahaya dan tidak mengklaim "magic FPS boost" yang merusak baterai. Fokus utamanya adalah **frame pacing lebih konsisten, cold-launch lebih sigap, dan stabilitas termal jangka panjang**.
+- Panduan uji perangkat & metrik *Before vs After*: lihat [docs/DEVICE_TEST.md](docs/DEVICE_TEST.md) dan [docs/DEVICE_VALIDATION_SUITE.md](docs/DEVICE_VALIDATION_SUITE.md).
+- Bagikan hasil `coreflowd --diag` dan laporan benchmark perangkat Anda di grup komunitas untuk memperluas matriks perangkat teruji.
 
-- `coreflowd --status` — status daemon.
-- `coreflowd --capabilities` — inspeksi kapabilitas read-only.
-- `coreflowd --stop` — hentikan daemon.
-- `coreflowd --rollback-baseline` — hentikan dan pulihkan baseline terverifikasi.
+---
 
-Kill switch: `/data/adb/coreflow/DISABLE` atau nonaktifkan modul melalui root manager. Jangan menghapus `baseline.journal` secara manual untuk melewati recovery.
+## Build & Pengujian
+
+```sh
+cmake -S . -B build/host -G Ninja -DCORE_FLOW_BUILD_TESTS=ON
+cmake --build build/host --parallel && ctest --test-dir build/host --output-on-failure
+cargo test --manifest-path rust/Cargo.toml && npm run lint && npm run build
+```
+
+---
+
+## Lisensi, Hak Cipta & Aturan Fork
+
+Proyek ini dilisensikan di bawah **[Apache License 2.0](LICENSE)** — **Copyright © 2026 mystivara-creator**.
+
+Jika Anda melakukan **fork**, memodifikasi, atau mendistribusikan ulang kode ini (termasuk dalam bentuk modul/binary hasil kompilasi), Anda **wajib**:
+1. Menyertakan salinan penuh file [LICENSE](LICENSE) dan [NOTICE](NOTICE) serta mempertahankan seluruh pemberitahuan hak cipta asli milik **mystivara-creator**.
+2. Mencantumkan **catatan perubahan yang jelas** (*prominent notice of changes*) pada file atau dokumentasi yang dimodifikasi sesuai Pasal 4(b) Apache-2.0.
+3. Tidak menggunakan nama resmi **CoreFlow Engine / CFAE** untuk menyiratkan bahwa fork tidak resmi mendapat dukungan resmi dari pemilik asli.
+
+---
 
 ## Komunitas
 
-- [Telegram Channel](https://t.me/VaraProjects)
-- [Telegram Discussion](https://t.me/VaraProjectsDiscussion)
-- [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues)
-
-## Lisensi
-
-[MIT License](LICENSE).
-
-
-## Direct Adaptive runtime (V5)
-
-The production daemon composes TopologyScanner, Telemetry, SweetSpotEngine, KernelActuator and the existing Linux epoll/timerfd reactor through DirectAdaptiveRuntime. Only semantically discovered nodes with a durable OEM snapshot, known identity, writable access and verified readback are eligible for mutation. Missing optional PSI, refresh-rate or FrameTimeline evidence is reported as unavailable and does not suppress independent CPU, GPU, VM or storage capabilities.
-
-The directAdaptive object in /data/adb/coreflow/status.json publishes the selected operating mode, discovered CPU OPP clusters, resource topology, current values, OEM baseline values and ownership/readback health. coreflowd --journal prints a read-only baseline journal; coreflowd --rollback-baseline stops the daemon and restores CoreFlow-owned changes. KernelSU action.sh exposes status, journal and rollback commands.
-
-The production CI artifact is named CFAE-System-Framework-package.zip.
+- [Telegram Channel](https://t.me/VaraProjects) · [Telegram Discussion](https://t.me/VaraProjectsDiscussion) · [GitHub Issues](https://github.com/mystivara-creator/CoreFlow-Engine/issues)

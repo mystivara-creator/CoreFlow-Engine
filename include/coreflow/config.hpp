@@ -30,7 +30,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"5.0.1"};
+    std::string version{"5.1.0"};
     std::string profile{"balanced"}; // balanced | smoothness | battery | gaming
     std::string log_level{"info"};
     bool zero_polling_mode{true};
@@ -48,6 +48,8 @@ struct DaemonConfig {
 
     // [apps] Optional per-app overrides (comma-separated Android package names)
     std::string gaming_apps{};
+    std::string smoothness_apps{};
+    std::string battery_apps{};
     std::string excluded_apps{};
 
     // [direct_adaptive] Legacy compatibility fields
@@ -181,7 +183,8 @@ struct DaemonConfig {
             key == "enable_memory_guard" || key == "enable_thermal_pacing") {
             return "features";
         }
-        if (key == "gaming_apps" || key == "excluded_apps") {
+        if (key == "gaming_apps" || key == "smoothness_apps" ||
+            key == "battery_apps" || key == "excluded_apps") {
             return "apps";
         }
         if (key == "enable_direct_adaptive" || key == "direct_adaptive_policy") {
@@ -290,23 +293,18 @@ struct DaemonConfig {
             else if (key == "enable_thermal_pacing") cfg.enable_thermal_pacing = parse_bool(val);
 
             // [apps]
-            else if (key == "gaming_apps") {
+            else if (key == "gaming_apps" || key == "smoothness_apps" ||
+                     key == "battery_apps" || key == "excluded_apps") {
                 const auto pkgs = parse_package_list(val);
                 std::string joined;
                 for (size_t i = 0; i < pkgs.size(); ++i) {
                     if (i != 0U) joined.push_back(',');
                     joined += pkgs[i];
                 }
-                cfg.gaming_apps = std::move(joined);
-            }
-            else if (key == "excluded_apps") {
-                const auto pkgs = parse_package_list(val);
-                std::string joined;
-                for (size_t i = 0; i < pkgs.size(); ++i) {
-                    if (i != 0U) joined.push_back(',');
-                    joined += pkgs[i];
-                }
-                cfg.excluded_apps = std::move(joined);
+                if (key == "gaming_apps") cfg.gaming_apps = std::move(joined);
+                else if (key == "smoothness_apps") cfg.smoothness_apps = std::move(joined);
+                else if (key == "battery_apps") cfg.battery_apps = std::move(joined);
+                else cfg.excluded_apps = std::move(joined);
             }
 
             // [device_adaptation]
@@ -482,7 +480,8 @@ struct DaemonConfig {
     }
 
     static bool is_safe_config_value(std::string_view value, std::string_view key = {}) noexcept {
-        const bool is_app_list = (key == "gaming_apps" || key == "excluded_apps");
+        const bool is_app_list = (key == "gaming_apps" || key == "smoothness_apps" ||
+                                  key == "battery_apps" || key == "excluded_apps");
         if (is_app_list) {
             if (value.size() > 2048U) return false;
             for (const unsigned char ch : value) {

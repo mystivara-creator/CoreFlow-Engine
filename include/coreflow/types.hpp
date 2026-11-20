@@ -3,7 +3,7 @@
  * @brief CFAE System Framework v4.0.0 ISO C++23 Core Type Definitions
  *        and Coordinated Mutation Transaction Models.
  * @author mystivara-creator
- * @license MIT
+ * @license Apache-2.0
  */
 
 #pragma once

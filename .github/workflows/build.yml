@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       android_min_api:
-        description: "Minimum Android API supported by the native build (Android 15+ / API 35+)"
+        description: "Minimum Android API supported by the native build (Android 13+ / API 33+)"
         required: false
-        default: "35"
+        default: "33"
         type: string
 
 permissions:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANDROID_MIN_API: ${{ inputs.android_min_api || '35' }}
+  ANDROID_MIN_API: ${{ inputs.android_min_api || '33' }}
   ANDROID_ABI: arm64-v8a
   RUST_TOOLCHAIN: 1.85.1
 
@@ -253,7 +253,7 @@ jobs:
       - name: Configure Android ARM64 release
         run: |
           set -euo pipefail
-          test "${ANDROID_MIN_API}" -ge 35
+          test "${ANDROID_MIN_API}" -ge 33
           cmake -S . -B build/android-arm64 -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="${ANDROID_ABI}" \

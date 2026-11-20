@@ -2,14 +2,22 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AppWindow,
+  Battery,
   BatteryCharging,
+  CheckCircle2,
+  ClipboardCopy,
   Cpu,
+  FileJson,
   Flame,
   Gamepad2,
   HardDrive,
   MemoryStick,
+  Pause,
+  Play,
   Plus,
+  RefreshCw,
   RotateCcw,
+  Search,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -29,19 +37,26 @@ import { BaselineGuardianCard } from './components/BaselineGuardianCard';
 import { LiveReactionStream } from './components/LiveReactionStream';
 import { PixelHeader } from './components/PixelHeader';
 import {
+  AppRuleCategory,
+  assignPackageRule,
   buildSafeSetConfigArg,
   computeHealthScore,
+  computePillarReadiness,
+  CoreFlowAppRules,
   CoreFlowFeatures,
   CoreFlowV5Status,
   createPreviewStatus,
+  formatDuration,
+  getPackageRuleCategory,
   HistorySample,
   isValidPackageName,
   MODE_LABELS,
+  parseInstalledPackages,
   parseV5Status,
   PerformanceProfile,
+  PREVIEW_INSTALLED_PACKAGES,
   PROFILE_META,
   ReactionLogEvent,
-  sanitizePackageList,
   stepPreviewStatus,
 } from './engine/autonomousEngine';
 
@@ -51,6 +66,9 @@ const RESOLVE_BIN =
   '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
   '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
+const RESOLVE_SERVICE =
+  'SVC="/data/adb/modules/cfae_framework/service.sh"; ' +
+  '[ -f "$SVC" ] || SVC="/data/adb/modules_update/cfae_framework/service.sh"';
 const LOG_PATH = '/data/adb/coreflow/logs/coreflowd.log';
 
 const extractJsonObject = (raw: string): unknown => {
@@ -78,7 +96,7 @@ const execChecked = async (cmd: string): Promise<string> => {
 };
 
 const formatBytes = (bytes: number): string => {
-  if (!Number.isFinite(bytes) || bytes <= 0) return 'N/A';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
   const gb = bytes / (1024 * 1024 * 1024);
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${Math.round(bytes / (1024 * 1024))} MB`;
@@ -142,6 +160,14 @@ const ThermalSparkline: React.FC<{ samples: HistorySample[] }> = ({ samples }) =
 
 type NavTab = 'home' | 'apps' | 'system';
 
+const RULE_CATEGORY_OPTIONS: { id: AppRuleCategory; label: string }[] = [
+  { id: 'default', label: 'Auto' },
+  { id: 'gaming', label: 'Gaming' },
+  { id: 'smoothness', label: 'Smooth' },
+  { id: 'battery', label: 'Battery' },
+  { id: 'excluded', label: 'Stock' },
+];
+
 export const App: React.FC = () => {
   const [isNativeBridge] = useState(() => hasNativeKernelSuBridge());
   const [appearance, setAppearance] = useState(() => readAppearance());
@@ -152,10 +178,19 @@ export const App: React.FC = () => {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [journalJson, setJournalJson] = useState<string | null>(null);
+  const [diagJson, setDiagJson] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [logs, setLogs] = useState<ReactionLogEvent[]>([]);
-  const [newGamingPkg, setNewGamingPkg] = useState('');
-  const [newExcludedPkg, setNewExcludedPkg] = useState('');
+
+  // Per-App Picker & manual entry state
+  const [installedApps, setInstalledApps] = useState<string[]>(() =>
+    hasNativeKernelSuBridge() ? [] : PREVIEW_INSTALLED_PACKAGES
+  );
+  const [loadingApps, setLoadingApps] = useState(false);
+  const [appSearch, setAppSearch] = useState('');
+  const [manualPkg, setManualPkg] = useState('');
+  const [manualCategory, setManualCategory] = useState<Exclude<AppRuleCategory, 'default'>>('gaming');
 
   const isDark = resolveIsDark(appearance.theme);
   useEffect(() => {
@@ -198,11 +233,38 @@ export const App: React.FC = () => {
     setErrorMsg(null);
   }, []);
 
+  const loadInstalledApps = useCallback(async () => {
+    if (!isNativeBridge) {
+      setInstalledApps(PREVIEW_INSTALLED_PACKAGES);
+      return;
+    }
+    setLoadingApps(true);
+    try {
+      const res = await execNativeKsuShell(
+        '/system/bin/cmd package list packages -3 2>/dev/null || /system/bin/pm list packages -3 2>/dev/null',
+        12000
+      );
+      if (res.errno === 0 && res.stdout.trim()) {
+        setInstalledApps(parseInstalledPackages(res.stdout));
+      }
+    } catch {
+      // Keep manual fallback available
+    } finally {
+      setLoadingApps(false);
+    }
+  }, [isNativeBridge]);
+
+  useEffect(() => {
+    if (activeTab === 'apps' && installedApps.length === 0 && !loadingApps) {
+      void loadInstalledApps();
+    }
+  }, [activeTab, installedApps.length, loadingApps, loadInstalledApps]);
+
   useEffect(() => {
     if (!isNativeBridge) {
       let tick = 1;
       const timer = window.setInterval(() => {
-        setStatus((prev) => stepPreviewStatus(prev, tick++));
+        setStatus((prev) => (prev.running && !prev.inspectionMode ? stepPreviewStatus(prev, tick++) : prev));
       }, 2500);
       return () => window.clearInterval(timer);
     }
@@ -251,23 +313,26 @@ export const App: React.FC = () => {
     };
   }, [isNativeBridge, refreshNative]);
 
-  const applyConfigUpdate = async (
-    key: string,
-    value: string,
+  const applyConfigUpdates = async (
+    pairs: [string, string][],
     optimisticUpdate: (prev: CoreFlowV5Status) => CoreFlowV5Status,
     successNote: string
   ) => {
-    const safeArg = buildSafeSetConfigArg(key, value);
-    if (!safeArg) {
-      setErrorMsg(`Invalid configuration value for ${key}`);
-      return;
+    const args: string[] = [];
+    for (const [k, v] of pairs) {
+      const safeArg = buildSafeSetConfigArg(k, v);
+      if (!safeArg) {
+        setErrorMsg(`Invalid configuration value for ${k}`);
+        return;
+      }
+      args.push(safeArg);
     }
-    setSavingKey(key);
+    setSavingKey(pairs[0][0]);
     setFeedback(null);
     setErrorMsg(null);
     try {
       if (isNativeBridge) {
-        await execChecked(`${RESOLVE_BIN}; "$BIN" --set-config ${safeArg}`);
+        await execChecked(`${RESOLVE_BIN}; "$BIN" --set-config ${args.join(' ')}`);
       }
       setStatus(optimisticUpdate);
       setFeedback(successNote);
@@ -276,19 +341,52 @@ export const App: React.FC = () => {
         window.setTimeout(() => void refreshNative().catch(() => {}), 450);
       }
     } catch (err) {
-      setErrorMsg(`Failed to apply ${key}: ${String(err)}`);
+      setErrorMsg(`Failed to apply configuration: ${String(err)}`);
     } finally {
       setSavingKey(null);
     }
   };
 
   const handleSelectProfile = (profile: PerformanceProfile) => {
-    void applyConfigUpdate(
-      'profile',
-      profile,
-      (prev) => ({ ...prev, profile }),
+    void applyConfigUpdates(
+      [['profile', profile]],
+      (prev) => ({ ...prev, profile, effectiveProfile: profile }),
       `Profile switched to ${PROFILE_META[profile].label}`
     );
+  };
+
+  const handleTogglePause = () => {
+    const nextPaused = !status.inspectionMode;
+    void applyConfigUpdates(
+      [['inspection_mode', nextPaused ? 'true' : 'false']],
+      (prev) => ({ ...prev, inspectionMode: nextPaused }),
+      nextPaused
+        ? 'Paused (OEM Stock A/B compare active — all kernel nodes restored)'
+        : 'CoreFlow Autonomous Engine resumed'
+    );
+  };
+
+  const handleStartDaemon = async () => {
+    setStarting(true);
+    setErrorMsg(null);
+    setFeedback(null);
+    try {
+      if (isNativeBridge) {
+        await execChecked(
+          `${RESOLVE_SERVICE}; rm -f /data/adb/coreflow/DISABLE /data/adb/coreflow/SAFE_MODE; ` +
+            'COREFLOW_SKIP_BOOT_WAIT=1 sh "$SVC"'
+        );
+        await refreshNative();
+      } else {
+        setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
+      }
+      addLog('BOOST', 'Daemon', 'CoreFlow v5.1.0 daemon started.');
+      setFeedback('CoreFlow daemon started and active.');
+    } catch (err) {
+      setErrorMsg(`Unable to start daemon: ${String(err)}`);
+    } finally {
+      setStarting(false);
+    }
   };
 
   const handleToggleFeature = (
@@ -297,9 +395,8 @@ export const App: React.FC = () => {
     label: string
   ) => {
     const nextVal = !status.features[featureField];
-    void applyConfigUpdate(
-      configKey,
-      nextVal ? 'true' : 'false',
+    void applyConfigUpdates(
+      [[configKey, nextVal ? 'true' : 'false']],
       (prev) => ({
         ...prev,
         features: { ...prev.features, [featureField]: nextVal },
@@ -308,30 +405,30 @@ export const App: React.FC = () => {
     );
   };
 
-  const updateAppList = (listKind: 'gaming' | 'excluded', nextList: string[], note: string) => {
-    const sanitized = sanitizePackageList(nextList);
-    const configKey = listKind === 'gaming' ? 'gaming_apps' : 'excluded_apps';
-    void applyConfigUpdate(
-      configKey,
-      sanitized.join(','),
-      (prev) => ({
-        ...prev,
-        apps: { ...prev.apps, [listKind]: sanitized },
-      }),
-      note
-    );
-  };
-
-  const handleAddPackage = (listKind: 'gaming' | 'excluded', rawPkg: string) => {
-    const pkg = rawPkg.trim();
-    if (!isValidPackageName(pkg)) {
+  const handleAssignAppRule = (pkg: string, category: AppRuleCategory) => {
+    const trimmed = pkg.trim();
+    if (!isValidPackageName(trimmed)) {
       setErrorMsg('Enter a valid Android package name (e.g. com.miHoYo.GenshinImpact)');
       return;
     }
-    const existing = status.apps[listKind];
-    updateAppList(listKind, [...existing, pkg], `Added ${pkg} to ${listKind} list`);
-    if (listKind === 'gaming') setNewGamingPkg('');
-    else setNewExcludedPkg('');
+    const nextApps: CoreFlowAppRules = assignPackageRule(status.apps, trimmed, category);
+    const labelMap: Record<AppRuleCategory, string> = {
+      default: 'Auto (Global Profile)',
+      gaming: 'Gaming',
+      smoothness: 'Smoothness',
+      battery: 'Battery',
+      excluded: 'Excluded (OEM Stock)',
+    };
+    void applyConfigUpdates(
+      [
+        ['gaming_apps', nextApps.gaming.join(',')],
+        ['smoothness_apps', nextApps.smoothness.join(',')],
+        ['battery_apps', nextApps.battery.join(',')],
+        ['excluded_apps', nextApps.excluded.join(',')],
+      ],
+      (prev) => ({ ...prev, apps: nextApps }),
+      `${trimmed} → ${labelMap[category]}`
+    );
   };
 
   const handleViewJournal = async () => {
@@ -354,6 +451,37 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleExportDiag = async () => {
+    try {
+      let pretty = '';
+      if (!isNativeBridge) {
+        pretty = JSON.stringify(
+          {
+            reportFormat: 'coreflow-diag-v1',
+            version: status.version,
+            generatedAtMs: Date.now(),
+            status,
+          },
+          null,
+          2
+        );
+      } else {
+        const raw = await execChecked(`${RESOLVE_BIN}; "$BIN" --diag`);
+        pretty = JSON.stringify(extractJsonObject(raw), null, 2);
+      }
+      setDiagJson(pretty);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(pretty).catch(() => {});
+        setFeedback('Diagnostic report exported and copied to clipboard.');
+      } else {
+        setFeedback('Diagnostic report generated below.');
+      }
+      setErrorMsg(null);
+    } catch (err) {
+      setErrorMsg(`Unable to export diagnostics: ${String(err)}`);
+    }
+  };
+
   const handleRestoreBaseline = async () => {
     if (
       !window.confirm(
@@ -372,7 +500,7 @@ export const App: React.FC = () => {
         setStatus((prev) => ({ ...prev, running: false, baselineNodesSnapshotted: 0 }));
       }
       addLog('BASELINE', 'Rollback', 'OEM factory baseline restored cleanly.');
-      setFeedback('OEM baseline restored.');
+      setFeedback('OEM baseline restored. You can restart CoreFlow anytime.');
     } catch (err) {
       setErrorMsg(`Restore failed: ${String(err)}`);
     } finally {
@@ -381,7 +509,10 @@ export const App: React.FC = () => {
   };
 
   const healthScore = useMemo(() => computeHealthScore(status), [status]);
-  const modeMeta = MODE_LABELS[status.mode] ?? { label: status.mode, tone: 'neutral' as const };
+  const readiness = useMemo(() => computePillarReadiness(status), [status]);
+  const modeMeta = status.inspectionMode
+    ? { label: 'Paused (OEM Stock)', tone: 'warning' as const }
+    : MODE_LABELS[status.mode] ?? { label: status.mode, tone: 'neutral' as const };
   const modeBadgeClass =
     modeMeta.tone === 'error'
       ? 'md3-badge md3-badge-error'
@@ -390,6 +521,19 @@ export const App: React.FC = () => {
         : modeMeta.tone === 'success'
           ? 'md3-badge md3-badge-success'
           : 'md3-badge md3-badge-neutral';
+
+  const filteredInstalledApps = useMemo(() => {
+    const q = appSearch.trim().toLowerCase();
+    const list = q
+      ? installedApps.filter((pkg) => pkg.toLowerCase().includes(q))
+      : installedApps;
+    // Sort configured apps first so user immediately sees their overrides
+    return [...list].sort((a, b) => {
+      const ra = getPackageRuleCategory(status.apps, a) === 'default' ? 1 : 0;
+      const rb = getPackageRuleCategory(status.apps, b) === 'default' ? 1 : 0;
+      return ra !== rb ? ra - rb : a.localeCompare(b);
+    });
+  }, [installedApps, appSearch, status.apps]);
 
   const featureItems: {
     configKey: string;
@@ -402,28 +546,28 @@ export const App: React.FC = () => {
       configKey: 'enable_frame_smoothness',
       field: 'frameSmoothness',
       title: 'Per-Thread Frame Smoothness',
-      desc: 'Boosts SurfaceFlinger, RenderThread & UI threads via sched_setattr without fighting PowerHAL.',
+      desc: 'Closed-loop RenderThread & SurfaceFlinger UClamp via sched_setattr without fighting PowerHAL.',
       Icon: Sparkles,
     },
     {
       configKey: 'enable_storage_burst',
       field: 'storageBurst',
       title: 'UFS / eMMC Launch Burst & QoS',
-      desc: 'Dynamic read_ahead_kb burst on app launch + isolates background I/O & CPU contention.',
+      desc: '200ms foreground launch burst + isolates background I/O & CPU contention.',
       Icon: HardDrive,
     },
     {
       configKey: 'enable_memory_guard',
       field: 'memoryGuard',
       title: 'Anti-Stutter Memory & Pre-Read',
-      desc: 'MGLRU working-set guard, zero swap thrash, and bounded posix_fadvise app asset prefetch.',
+      desc: 'MGLRU working-set guard, dynamic swappiness, and bounded posix_fadvise app asset prefetch.',
       Icon: MemoryStick,
     },
     {
       configKey: 'enable_thermal_pacing',
       field: 'thermalPacing',
       title: 'Thermal PID Smooth Pacing',
-      desc: 'Rust PID + 10s thermal lookahead scales CPU/GPU envelopes smoothly before vendor cliff-throttling.',
+      desc: 'Rust PID + Online RLS/MLP 10s lookahead scales CPU/GPU envelopes smoothly before cliff-throttling.',
       Icon: Flame,
     },
     {
@@ -433,6 +577,18 @@ export const App: React.FC = () => {
       desc: 'Protects battery longevity by stepping down charge current only when hot while charging.',
       Icon: BatteryCharging,
     },
+  ];
+
+  const ruleBuckets: {
+    key: Exclude<AppRuleCategory, 'default'>;
+    title: string;
+    badgeClass: string;
+    Icon: React.FC<{ className?: string; style?: React.CSSProperties }>;
+  }[] = [
+    { key: 'gaming', title: 'Gaming Mode', badgeClass: 'md3-badge md3-badge-success', Icon: Gamepad2 },
+    { key: 'smoothness', title: 'Smoothness', badgeClass: 'md3-badge md3-badge-success', Icon: Sparkles },
+    { key: 'battery', title: 'Battery Saver', badgeClass: 'md3-badge md3-badge-neutral', Icon: Battery },
+    { key: 'excluded', title: 'Excluded (OEM Stock)', badgeClass: 'md3-badge md3-badge-warning', Icon: ShieldAlert },
   ];
 
   return (
@@ -495,7 +651,7 @@ export const App: React.FC = () => {
               color: 'var(--md-sys-color-on-warning-container)',
             }}
           >
-            Browser Preview Mode — interactive demo. On a rooted Android device (KernelSU / APatch / Magisk), changes apply live to <code>coreflowd</code>.
+            Browser Preview Mode — interactive demo. On a rooted Android 13+ device (KernelSU / APatch / Magisk + KsuWebUI), changes apply live to <code>coreflowd</code>.
           </div>
         )}
 
@@ -525,16 +681,19 @@ export const App: React.FC = () => {
 
         {activeTab === 'home' && (
           <div className="space-y-5">
-            {/* Live Context Hero */}
+            {/* Live Context Hero + Instant A/B Pause or Start Controls */}
             <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={modeBadgeClass}>{modeMeta.label}</span>
                     <span className="md3-badge md3-badge-neutral font-mono">
-                      {PROFILE_META[status.profile].label.toUpperCase()}
+                      {PROFILE_META[status.effectiveProfile].label.toUpperCase()}
                     </span>
-                    {status.actuators.storageBurstActive && (
+                    <span className="md3-badge md3-badge-success font-mono">
+                      {readiness.readyCount}/{readiness.total} PILLARS
+                    </span>
+                    {status.actuators.storageBurstActive && !status.inspectionMode && (
                       <span className="md3-badge md3-badge-success">UFS BURST</span>
                     )}
                   </div>
@@ -543,16 +702,51 @@ export const App: React.FC = () => {
                   </h1>
                   <p className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
                     {status.running
-                      ? `PID ${status.pid} · ${status.hardware.storageType} storage · ${status.hardware.refreshHz} Hz display`
+                      ? `PID ${status.pid} · ${status.hardware.storageType} · ${status.hardware.refreshHz} Hz · Render load ${Math.round(status.renderPressure * 100)}%`
                       : 'Daemon stopped — OEM factory baseline active'}
                   </p>
                 </div>
-                <div className="text-right">
-                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    PID Capacity Budget
-                  </div>
-                  <div className="font-mono text-2xl font-bold tabular-nums">
-                    {Math.round(status.capacityScale * 100)}%
+
+                <div className="flex items-center gap-3">
+                  {status.running ? (
+                    <button
+                      type="button"
+                      disabled={savingKey !== null}
+                      onClick={handleTogglePause}
+                      className={status.inspectionMode ? 'md3-btn-filled' : 'md3-btn-tonal'}
+                      title="Instant A/B Compare: Pause reverts to OEM Stock immediately without stopping daemon"
+                    >
+                      {status.inspectionMode ? (
+                        <>
+                          <Play className="h-4 w-4" />
+                          <span>Resume</span>
+                        </>
+                      ) : (
+                        <>
+                          <Pause className="h-4 w-4" />
+                          <span>Pause (A/B)</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={starting}
+                      onClick={() => void handleStartDaemon()}
+                      className="md3-btn-filled"
+                    >
+                      <Play className="h-4 w-4" />
+                      <span>{starting ? 'Starting...' : 'Start CoreFlow'}</span>
+                    </button>
+                  )}
+
+                  <div className="text-right">
+                    <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                      PID Budget
+                    </div>
+                    <div className="font-mono text-2xl font-bold tabular-nums">
+                      {Math.round(status.capacityScale * 100)}%
+                    </div>
                   </div>
                 </div>
               </div>
@@ -596,6 +790,77 @@ export const App: React.FC = () => {
               </div>
 
               <ThermalSparkline samples={status.history} />
+            </section>
+
+            {/* Shareable Session Impact & 4-Pillar Readiness */}
+            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+                  <h2 className="text-base font-bold">Session Impact & Pillar Readiness</h2>
+                </div>
+                <span className="font-mono text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                  Uptime {formatDuration(status.session.uptimeSec)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <div className="md3-card-filled p-3">
+                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                    Launch Bursts
+                  </div>
+                  <div className="mt-0.5 font-mono text-base font-bold">{status.session.launchBursts}x</div>
+                </div>
+                <div className="md3-card-filled p-3">
+                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                    Smart Pre-Read
+                  </div>
+                  <div className="mt-0.5 font-mono text-base font-bold">
+                    {formatBytes(status.actuators.prereadBytes)}
+                  </div>
+                </div>
+                <div className="md3-card-filled p-3">
+                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                    Avg / Peak SoC
+                  </div>
+                  <div className="mt-0.5 font-mono text-base font-bold">
+                    {status.session.avgSocTempCelsius !== null
+                      ? `${status.session.avgSocTempCelsius.toFixed(1)}° / ${(status.session.peakSocTempCelsius ?? status.session.avgSocTempCelsius).toFixed(1)}°`
+                      : 'N/A'}
+                  </div>
+                </div>
+                <div className="md3-card-filled p-3">
+                  <div className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                    Thermal Guards
+                  </div>
+                  <div className="mt-0.5 font-mono text-base font-bold">
+                    {status.session.thermalGuardEvents}x · CFJ4 {status.baselineNodesSnapshotted}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {readiness.pillars.map((pillar) => (
+                  <div
+                    key={pillar.id}
+                    className="flex items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5"
+                    style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold">{pillar.name}</div>
+                      <div
+                        className="truncate text-[11px]"
+                        style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                      >
+                        {pillar.detail}
+                      </div>
+                    </div>
+                    <span className={pillar.ready ? 'md3-badge md3-badge-success' : 'md3-badge md3-badge-warning'}>
+                      {pillar.ready ? 'READY' : 'LIMITED'}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </section>
 
             {/* Profile Selector */}
@@ -692,142 +957,193 @@ export const App: React.FC = () => {
                   </div>
                   <div className="font-mono text-sm font-bold">{status.foregroundPackage}</div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="md3-btn-filled"
-                    onClick={() => handleAddPackage('gaming', status.foregroundPackage)}
-                  >
-                    <Gamepad2 className="h-4 w-4" />
-                    <span>Mark Gaming</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="md3-btn-tonal"
-                    onClick={() => handleAddPackage('excluded', status.foregroundPackage)}
-                  >
-                    <ShieldAlert className="h-4 w-4" />
-                    <span>Exclude (OEM Stock)</span>
-                  </button>
+                <div className="flex flex-wrap gap-1.5">
+                  {RULE_CATEGORY_OPTIONS.map((opt) => {
+                    const current = getPackageRuleCategory(status.apps, status.foregroundPackage) === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        disabled={savingKey !== null}
+                        className={current ? 'md3-btn-filled' : 'md3-btn-tonal'}
+                        onClick={() => handleAssignAppRule(status.foregroundPackage, opt.id)}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             )}
 
-            {/* Gaming Apps */}
+            {/* Installed App Picker (1-Tap Per-App Profile Assignment) */}
             <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex items-center gap-2">
-                <Gamepad2 className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
-                <h2 className="text-base font-bold">Gaming Apps (Forced Gaming Mode)</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <AppWindow className="h-4 w-4" style={{ color: 'var(--md-sys-color-primary)' }} />
+                  <h2 className="text-base font-bold">Installed App Picker ({installedApps.length})</h2>
+                </div>
+                <button
+                  type="button"
+                  disabled={loadingApps}
+                  className="md3-btn-tonal"
+                  onClick={() => void loadInstalledApps()}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${loadingApps ? 'animate-spin' : ''}`} />
+                  <span>{loadingApps ? 'Scanning...' : 'Refresh Apps'}</span>
+                </button>
               </div>
               <p className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                Apps listed here immediately enter sustained Gaming pacing with strict background isolation and PID thermal protection.
+                Assign per-app profiles without typing package names: <strong>Gaming</strong>, <strong>Smooth</strong>, <strong>Battery</strong>, or <strong>Stock</strong> (OEM untouched).
               </p>
-              <div className="flex gap-2">
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
+                  style={{ color: 'var(--md-sys-color-on-surface-variant)' }}
+                />
                 <input
                   type="text"
-                  value={newGamingPkg}
-                  onChange={(e) => setNewGamingPkg(e.target.value)}
-                  placeholder="com.miHoYo.GenshinImpact"
-                  className="flex-1 rounded-xl px-3 py-2 font-mono text-xs"
+                  value={appSearch}
+                  onChange={(e) => setAppSearch(e.target.value)}
+                  placeholder="Search installed package (e.g. genshin, instagram, whatsapp)..."
+                  className="w-full rounded-xl py-2 pl-9 pr-3 font-mono text-xs"
                   style={{
                     background: 'var(--md-sys-color-surface-container)',
                     border: '1px solid var(--md-sys-color-outline-variant)',
                     color: 'var(--md-sys-color-on-surface)',
                   }}
                 />
-                <button
-                  type="button"
-                  className="md3-btn-filled"
-                  onClick={() => handleAddPackage('gaming', newGamingPkg)}
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>Add</span>
-                </button>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {status.apps.gaming.length === 0 ? (
-                  <span className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    No custom gaming overrides yet (auto-detected via GPU load).
-                  </span>
+
+              <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                {filteredInstalledApps.length === 0 ? (
+                  <div className="py-4 text-center text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                    {loadingApps ? 'Loading installed apps...' : 'No matching packages found. Use manual entry below.'}
+                  </div>
                 ) : (
-                  status.apps.gaming.map((pkg) => (
-                    <span key={pkg} className="md3-badge md3-badge-success gap-1.5 font-mono">
-                      {pkg}
-                      <button
-                        type="button"
-                        aria-label={`Remove ${pkg}`}
-                        onClick={() =>
-                          updateAppList(
-                            'gaming',
-                            status.apps.gaming.filter((x) => x !== pkg),
-                            `Removed ${pkg} from gaming list`
-                          )
-                        }
+                  filteredInstalledApps.slice(0, 60).map((pkg) => {
+                    const currentCat = getPackageRuleCategory(status.apps, pkg);
+                    return (
+                      <div
+                        key={pkg}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-2xl px-3.5 py-2.5"
+                        style={{ background: 'var(--md-sys-color-surface-container-low)' }}
                       >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))
+                        <span className="truncate font-mono text-xs font-medium">{pkg}</span>
+                        <div className="flex flex-wrap gap-1">
+                          {RULE_CATEGORY_OPTIONS.map((opt) => {
+                            const active = currentCat === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                disabled={savingKey !== null}
+                                onClick={() => handleAssignAppRule(pkg, opt.id)}
+                                className="rounded-lg px-2 py-1 text-[11px] font-semibold transition-colors"
+                                style={{
+                                  background: active
+                                    ? 'var(--md-sys-color-primary)'
+                                    : 'var(--md-sys-color-surface-container-high)',
+                                  color: active
+                                    ? 'var(--md-sys-color-on-primary)'
+                                    : 'var(--md-sys-color-on-surface-variant)',
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </section>
 
-            {/* Excluded Apps */}
-            <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4" style={{ color: 'var(--md-sys-color-warning)' }} />
-                <h2 className="text-base font-bold">Excluded Apps (Pure OEM Stock)</h2>
-              </div>
-              <p className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                CoreFlow yields completely to stock OEM defaults when these apps are in the foreground (ideal for Camera or Banking apps).
-              </p>
-              <div className="flex gap-2">
+            {/* Manual Package Entry + Active Rule Buckets */}
+            <section className="md3-card-elevated space-y-4 p-5 sm:p-6">
+              <h2 className="text-base font-bold">Active Overrides & Manual Entry</h2>
+              <div className="flex flex-wrap gap-2">
                 <input
                   type="text"
-                  value={newExcludedPkg}
-                  onChange={(e) => setNewExcludedPkg(e.target.value)}
-                  placeholder="com.android.camera"
-                  className="flex-1 rounded-xl px-3 py-2 font-mono text-xs"
+                  value={manualPkg}
+                  onChange={(e) => setManualPkg(e.target.value)}
+                  placeholder="com.example.package"
+                  className="min-w-[180px] flex-1 rounded-xl px-3 py-2 font-mono text-xs"
                   style={{
                     background: 'var(--md-sys-color-surface-container)',
                     border: '1px solid var(--md-sys-color-outline-variant)',
                     color: 'var(--md-sys-color-on-surface)',
                   }}
                 />
+                <select
+                  value={manualCategory}
+                  onChange={(e) =>
+                    setManualCategory(e.target.value as Exclude<AppRuleCategory, 'default'>)
+                  }
+                  className="rounded-xl px-3 py-2 text-xs font-semibold"
+                  style={{
+                    background: 'var(--md-sys-color-surface-container)',
+                    border: '1px solid var(--md-sys-color-outline-variant)',
+                    color: 'var(--md-sys-color-on-surface)',
+                  }}
+                >
+                  <option value="gaming">Gaming</option>
+                  <option value="smoothness">Smoothness</option>
+                  <option value="battery">Battery</option>
+                  <option value="excluded">Excluded (OEM)</option>
+                </select>
                 <button
                   type="button"
-                  className="md3-btn-tonal"
-                  onClick={() => handleAddPackage('excluded', newExcludedPkg)}
+                  className="md3-btn-filled"
+                  onClick={() => {
+                    handleAssignAppRule(manualPkg, manualCategory);
+                    setManualPkg('');
+                  }}
                 >
                   <Plus className="h-4 w-4" />
                   <span>Add</span>
                 </button>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {status.apps.excluded.length === 0 ? (
-                  <span className="text-xs" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                    No excluded apps configured.
-                  </span>
-                ) : (
-                  status.apps.excluded.map((pkg) => (
-                    <span key={pkg} className="md3-badge md3-badge-neutral gap-1.5 font-mono">
-                      {pkg}
-                      <button
-                        type="button"
-                        aria-label={`Remove ${pkg}`}
-                        onClick={() =>
-                          updateAppList(
-                            'excluded',
-                            status.apps.excluded.filter((x) => x !== pkg),
-                            `Removed ${pkg} from excluded list`
-                          )
-                        }
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))
-                )}
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {ruleBuckets.map(({ key, title, badgeClass, Icon }) => {
+                  const list = status.apps[key];
+                  return (
+                    <div
+                      key={key}
+                      className="rounded-2xl p-3.5 space-y-2"
+                      style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold">
+                        <Icon className="h-3.5 w-3.5" style={{ color: 'var(--md-sys-color-primary)' }} />
+                        <span>{title}</span>
+                        <span className="ml-auto font-mono opacity-70">{list.length}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {list.length === 0 ? (
+                          <span className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
+                            None configured
+                          </span>
+                        ) : (
+                          list.map((pkg) => (
+                            <span key={pkg} className={`${badgeClass} gap-1.5 font-mono`}>
+                              {pkg}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${pkg}`}
+                                onClick={() => handleAssignAppRule(pkg, 'default')}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           </div>
@@ -914,6 +1230,28 @@ export const App: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {status.actuators.contendedPaths.length > 0 && (
+                <div
+                  className="rounded-2xl p-3.5 text-xs space-y-1.5"
+                  style={{
+                    background: 'var(--md-sys-color-warning-container)',
+                    color: 'var(--md-sys-color-on-warning-container)',
+                  }}
+                >
+                  <div className="font-bold">
+                    OEM Coexistence Yield ({status.actuators.contendedPaths.length} nodes in auto-cooldown)
+                  </div>
+                  <p className="opacity-90">
+                    CoreFlow yielded cleanly to an OEM daemon on these sysfs nodes and will automatically retry after cooldown if the vendor daemon settles:
+                  </p>
+                  <ul className="list-disc pl-4 font-mono text-[11px]">
+                    {status.actuators.contendedPaths.map((p) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </section>
 
             {/* Safety & CFJ4 Rollback */}
@@ -925,20 +1263,37 @@ export const App: React.FC = () => {
 
             <section className="md3-card-elevated space-y-3 p-5 sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-base font-bold">CFJ4 Baseline Audit & Emergency Restore</h2>
+                <h2 className="text-base font-bold">CFJ4 Audit, Diagnostics & Emergency Restore</h2>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" className="md3-btn-tonal" onClick={() => void handleViewJournal()}>
-                    Inspect CFJ4 Journal
+                    <FileJson className="h-4 w-4" />
+                    <span>Inspect CFJ4</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled={restoring}
-                    className="md3-btn-filled"
-                    onClick={() => void handleRestoreBaseline()}
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    <span>{restoring ? 'Restoring...' : 'Restore OEM Baseline'}</span>
+                  <button type="button" className="md3-btn-tonal" onClick={() => void handleExportDiag()}>
+                    <ClipboardCopy className="h-4 w-4" />
+                    <span>Export Diag</span>
                   </button>
+                  {status.running ? (
+                    <button
+                      type="button"
+                      disabled={restoring}
+                      className="md3-btn-filled"
+                      onClick={() => void handleRestoreBaseline()}
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      <span>{restoring ? 'Restoring...' : 'Restore OEM Baseline'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={starting}
+                      className="md3-btn-filled"
+                      onClick={() => void handleStartDaemon()}
+                    >
+                      <Play className="h-4 w-4" />
+                      <span>{starting ? 'Starting...' : 'Start CoreFlow'}</span>
+                    </button>
+                  )}
                 </div>
               </div>
               {journalJson && (
@@ -947,6 +1302,14 @@ export const App: React.FC = () => {
                   style={{ background: 'var(--md-sys-color-surface-container-low)' }}
                 >
                   {journalJson}
+                </pre>
+              )}
+              {diagJson && (
+                <pre
+                  className="max-h-56 overflow-auto rounded-2xl p-3 font-mono text-[11px]"
+                  style={{ background: 'var(--md-sys-color-surface-container-low)' }}
+                >
+                  {diagJson}
                 </pre>
               )}
             </section>
@@ -963,11 +1326,10 @@ export const App: React.FC = () => {
           color: 'var(--md-sys-color-on-surface-variant)',
         }}
       >
-        CoreFlow Engine v5.0.1 · Lean 4-Pillar Adaptive Android Framework · CFJ4 OEM Safe
+        CoreFlow Engine v5.1.0 · Android 13+ Lean 4-Pillar Adaptive Framework · CFJ4 OEM Safe
       </footer>
     </div>
   );
 };
 
 export default App;
-

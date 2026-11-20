@@ -2,7 +2,7 @@
  * @file baseline_store.hpp
  * @brief Transactional Baseline Store and Automatic Rollback Engine
  * @author mystivara-creator
- * @license MIT
+ * @license Apache-2.0
  * 
  * Records pre-mutation values and attempts verified per-node restoration.
  * Same-boot process crashes are recovered on next start using a durable journal;

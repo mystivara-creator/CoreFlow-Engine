@@ -49,12 +49,17 @@ int main() {
     assert(fg.critical_tids.size() == 3U); // 4321 (UI), 4322 (RenderThread), 4323 (UnityMain)
 
     // HyperOS / Android 15 regression: top-app contains persistent daemons (adj < 0),
-    // perceptible IME keyboard (adj = 200), helper shell binaries (/.../bash), and the real fg app (adj = 0).
-    write_file(root / "hyperos_top_app", "1312\n2523\n13821\n18000\n22235\n27597\n");
+    // perceptible IME keyboard (adj = 200), bound Play Services (adj = 0 without RenderThread),
+    // helper shell binaries (/.../bash), and the real fg app (adj = 0 with RenderThread).
+    write_file(root / "hyperos_top_app", "1312\n2523\n5393\n13821\n18000\n22235\n27597\n");
     write_file(proc / "1312/cmdline", std::string("zygote64\0", 9));
     write_file(proc / "1312/oom_score_adj", "-1000\n");
     write_file(proc / "2523/cmdline", std::string("system_server\0", 14));
     write_file(proc / "2523/oom_score_adj", "-900\n");
+    write_file(proc / "5393/cmdline", std::string("com.google.android.gms\0", 23));
+    write_file(proc / "5393/oom_score_adj", "0\n");
+    write_file(proc / "5393/task/5393/comm", "oid.gms\n");
+    write_file(proc / "5393/task/5394/comm", "Binder:5393_1\n");
     write_file(proc / "13821/cmdline", std::string("com.preff.kb.xm\0", 16));
     write_file(proc / "13821/oom_score_adj", "200\n");
     write_file(proc / "18000/cmdline", std::string("com.termux\0", 11));
@@ -126,6 +131,41 @@ int main() {
     sig.now_ms = 13000;
     sig.screen_off = true;
     assert(engine.evaluate(sig).mode == ContextMode::ScreenOff);
+
+    // 8. 4-profile per-app rules (smoothness_apps & battery_apps set effective_profile cleanly)
+    engine.set_profile(PerformanceProfile::Balanced);
+    engine.set_app_rules(
+        {"com.example.forcedgame"},
+        {"com.android.camera"},
+        {"com.instagram.android"},
+        {"com.whatsapp"});
+    sig.screen_off = false;
+    sig.now_ms = 14000;
+    sig.foreground_pid = 7001;
+    sig.foreground_package = "com.instagram.android";
+    dec = engine.evaluate(sig);
+    assert(dec.effective_profile == PerformanceProfile::Smoothness);
+
+    sig.now_ms = 17000;
+    sig.foreground_pid = 7002;
+    sig.foreground_package = "com.whatsapp";
+    dec = engine.evaluate(sig);
+    assert(dec.effective_profile == PerformanceProfile::Battery);
+
+    // 9. GPU-less MediaTek/emulator auto-gaming via game engine thread + sustained CPU load
+    assert(ContextEngine::is_game_engine_thread_name("EmuThread"));
+    assert(ContextEngine::is_critical_render_thread_name("CrRendererMain"));
+    sig.gpu_busy_pct = std::nullopt;
+    sig.has_game_thread = true;
+    sig.cpu_util_pct = 62.0;
+    sig.foreground_pid = 7003;
+    sig.foreground_package = "org.ppsspp.ppsspp";
+    sig.now_ms = 20000;
+    assert(engine.evaluate(sig).mode == ContextMode::LaunchBurst);
+    sig.now_ms = 22500;
+    (void)engine.evaluate(sig);
+    sig.now_ms = 23500;
+    assert(engine.evaluate(sig).mode == ContextMode::Gaming);
 
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";

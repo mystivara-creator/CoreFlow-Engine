@@ -88,9 +88,21 @@ int main() {
     assert(hot_kgsl_max > gaming_kgsl_max);
     assert(hot_kgsl_max <= hot_kgsl_min);
 
-    // 3. Excluded app restores OEM baseline cleanly
-    act.apply(topo, ContextMode::Excluded, PerformanceProfile::Gaming, 1.0, false, true);
-    assert(read_file(hispeed) == "1800000");
+    // 3. OEM contention on hispeed_freq yields during 30s cooldown, then recovers once OEM settles
+    write_file(hispeed, "600000\n");
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0}, 1000);
+    assert(read_file(hispeed) == "600000");
+    assert(act.stats().contended_nodes == 1U);
+    assert(act.contended_paths().size() == 1U);
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0}, 15000);
+    assert(read_file(hispeed) == "600000");
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0}, 35000);
+    assert(std::stoull(read_file(hispeed)) >= 2200000U);
+    assert(act.stats().contended_nodes == 0U);
+
+    // 4. Excluded app restores OEM baseline cleanly (hispeed restores to the OEM-adopted 600000)
+    act.apply(topo, ContextMode::Excluded, PerformanceProfile::Gaming, 1.0, false, true, {}, 36000);
+    assert(read_file(hispeed) == "600000");
     assert(read_file(hispeed_load) == "90");
     assert(read_file(kgsl_max) == "0");
     assert(read_file(kgsl_min) == "5");

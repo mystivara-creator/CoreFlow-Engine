@@ -1,7 +1,7 @@
 /**
  * @file hardware_probe.hpp
  * @brief CoreFlow v5 Pillar 1: Single-pass capability-based hardware & kernel topology probe.
- * @license MIT
+ * @license Apache-2.0
  */
 #pragma once
 
@@ -43,6 +43,7 @@ struct CpuClusterInfo {
 struct GpuInfo {
     bool available{false};
     bool is_kgsl{false};
+    bool is_mtk_ged{false};
     std::string model{"unavailable"};
     std::string device_path;
     std::string busy_path;
@@ -124,6 +125,8 @@ struct HardwareTopology {
     VmNodesInfo vm;
     CgroupPathsInfo cgroups;
     std::vector<std::string> backlight_dirs;
+    std::vector<std::string> drm_dpms_paths;
+    std::vector<std::string> fb_blank_paths;
 };
 
 class HardwareProbe {
