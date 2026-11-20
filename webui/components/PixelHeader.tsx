@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Layers, Moon, Palette, ShieldCheck, Sun } from 'lucide-react';
+import { Cpu, Moon, Palette, ShieldCheck, Sun } from 'lucide-react';
 import { AccentSeed } from '../bridge/appearance';
 
 interface Props {
@@ -8,10 +8,9 @@ interface Props {
   accent?: AccentSeed;
   onSelectAccent?: (accent: AccentSeed) => void;
   modeLabel: string;
-  equilibriumScore?: number;
+  healthScore?: number;
   nativeMode?: boolean;
   nativeConnected?: boolean;
-  onOpenArchitectureStudio: () => void;
 }
 
 const ACCENT_OPTIONS: { id: AccentSeed; label: string; swatch: string }[] = [
@@ -26,10 +25,9 @@ export const PixelHeader: React.FC<Props> = ({
   accent = 'ocean',
   onSelectAccent,
   modeLabel,
-  equilibriumScore,
+  healthScore,
   nativeMode = false,
   nativeConnected = false,
-  onOpenArchitectureStudio,
 }) => {
   const statusBadgeClass =
     nativeMode && nativeConnected
@@ -38,17 +36,16 @@ export const PixelHeader: React.FC<Props> = ({
 
   const statusText = nativeMode
     ? nativeConnected
-      ? 'DAEMON LINKED'
-      : 'AWAITING PAYLOAD'
-    : 'SIMULATION PREVIEW';
+      ? 'LIVE'
+      : 'CONNECTING'
+    : 'DEMO';
 
   return (
     <header className="md3-top-app-bar sticky top-0 z-30">
-      <div className="mx-auto flex min-h-[4.25rem] max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-        {/* Brand Identity & Operating State */}
-        <div className="flex min-w-0 flex-1 items-center gap-3.5">
+      <div className="mx-auto flex min-h-[4rem] max-w-5xl items-center justify-between gap-3 px-4 py-2 sm:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <div
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl shadow-xs"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-xs"
             style={{
               backgroundColor: 'var(--md-sys-color-primary-container)',
               color: 'var(--md-sys-color-on-primary-container)',
@@ -60,11 +57,9 @@ export const PixelHeader: React.FC<Props> = ({
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="truncate text-sm font-bold tracking-tight sm:text-base">
-                CFAE System Framework
+                CoreFlow Engine
               </span>
-              <span className="md3-badge md3-badge-neutral font-mono">
-                v4.0.0
-              </span>
+              <span className="md3-badge md3-badge-neutral font-mono">v5.0.0</span>
               <span className={statusBadgeClass}>
                 <span
                   className="h-1.5 w-1.5 rounded-full"
@@ -85,30 +80,22 @@ export const PixelHeader: React.FC<Props> = ({
               <span className="font-semibold" style={{ color: 'var(--md-sys-color-on-surface)' }}>
                 {modeLabel}
               </span>
-              <span> · Coordinated Mutation Safety &amp; Autonomous Equilibrium</span>
+              <span> · Lean 4-Pillar Adaptive Runtime</span>
             </p>
           </div>
         </div>
 
-        {/* Material Design 3 Action Cluster & Dynamic Seed Selector */}
         <div className="flex shrink-0 items-center gap-2">
-          {typeof equilibriumScore === 'number' && (
+          {typeof healthScore === 'number' && (
             <div
-              className="hidden md:inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"
               style={{
                 backgroundColor: 'var(--md-sys-color-surface-container)',
                 border: '1px solid var(--md-sys-color-outline-variant)',
               }}
-              title="Composite equilibrium index derived from thermal headroom, PSI pressure, and ownership health"
             >
-              <ShieldCheck
-                className="h-3.5 w-3.5"
-                style={{ color: 'var(--md-sys-color-primary)' }}
-              />
-              <span className="font-mono tabular-nums">{equilibriumScore}%</span>
-              <span className="text-[11px]" style={{ color: 'var(--md-sys-color-on-surface-variant)' }}>
-                Equilibrium
-              </span>
+              <ShieldCheck className="h-3.5 w-3.5" style={{ color: 'var(--md-sys-color-primary)' }} />
+              <span className="font-mono tabular-nums">{healthScore}%</span>
             </div>
           )}
 
@@ -132,12 +119,10 @@ export const PixelHeader: React.FC<Props> = ({
                   <button
                     key={opt.id}
                     type="button"
-                    id={`btn-accent-${opt.id}`}
                     aria-pressed={active}
-                    aria-label={`${opt.label} Material 3 palette`}
-                    title={`${opt.label} Material 3 palette`}
+                    aria-label={`${opt.label} palette`}
                     onClick={() => onSelectAccent(opt.id)}
-                    className="h-5 w-5 rounded-full flex items-center justify-center transition-transform"
+                    className="h-5 w-5 rounded-full transition-transform"
                     style={{
                       backgroundColor: opt.swatch,
                       boxShadow: active
@@ -152,23 +137,10 @@ export const PixelHeader: React.FC<Props> = ({
 
           <button
             type="button"
-            id="btn-open-architecture-studio"
-            onClick={onOpenArchitectureStudio}
-            title="Open Architecture Studio"
-            aria-label="Open Architecture Studio"
-            className="md3-btn-tonal"
-          >
-            <Layers className="h-4 w-4" />
-            <span className="hidden sm:inline">Studio</span>
-          </button>
-
-          <button
-            type="button"
-            id="btn-toggle-theme"
             onClick={onToggleTheme}
             className="md3-icon-btn"
             aria-label="Toggle color theme"
-            title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={isDark ? 'Light mode' : 'Dark mode'}
           >
             {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>

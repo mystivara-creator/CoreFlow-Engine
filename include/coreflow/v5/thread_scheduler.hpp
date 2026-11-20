@@ -1,0 +1,78 @@
+/**
+ * @file thread_scheduler.hpp
+ * @brief CoreFlow v5 Pillar 3A: Per-Thread UClamp actuator via Linux SYS_sched_setattr.
+ *
+ * Targets SurfaceFlinger, RenderThread, HWUI, and foreground UI/game threads directly
+ * per-TID so animations and touch responses stay smooth without fighting PowerHAL's
+ * global top-app cgroup writes.
+ * @license MIT
+ */
+#pragma once
+
+#include "coreflow/v5/context_engine.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+
+namespace coreflow::v5 {
+
+struct ThreadUclampTarget {
+    uint32_t util_min{0};    // 0..1024
+    uint32_t util_max{1024}; // 0..1024
+};
+
+struct ThreadSchedulerStats {
+    bool supported{false};
+    uint32_t active_boosted_tids{0};
+    uint32_t last_util_min{0};
+    uint32_t last_util_max{1024};
+    uint64_t applied_calls{0};
+    uint64_t failed_calls{0};
+};
+
+class ThreadSchedulerActuator {
+public:
+    using ApplierFn = std::function<int(int32_t tid, uint32_t util_min, uint32_t util_max)>;
+
+    explicit ThreadSchedulerActuator(ApplierFn custom_applier = nullptr) noexcept;
+    ~ThreadSchedulerActuator();
+
+    ThreadSchedulerActuator(const ThreadSchedulerActuator&) = delete;
+    ThreadSchedulerActuator& operator=(const ThreadSchedulerActuator&) = delete;
+
+    // Probes whether the active kernel supports SCHED_FLAG_UTIL_CLAMP via sched_setattr.
+    [[nodiscard]] bool probe_support() noexcept;
+
+    // Computes the exact (util_min, util_max) target for a given context, profile, and PID thermal budget.
+    [[nodiscard]] static ThreadUclampTarget compute_target(
+        ContextMode mode,
+        PerformanceProfile profile,
+        double capacity_scale,
+        bool thermal_guard) noexcept;
+
+    // Applies per-TID uclamp to SurfaceFlinger + foreground app critical threads and
+    // cleanly resets any stale TIDs no longer in the active set.
+    void apply(ContextMode mode,
+               PerformanceProfile profile,
+               double capacity_scale,
+               bool thermal_guard,
+               bool enabled,
+               const std::vector<int32_t>& surfaceflinger_tids,
+               const std::vector<int32_t>& foreground_tids) noexcept;
+
+    // Restores all tracked TIDs to kernel defaults (0..1024).
+    void reset_all() noexcept;
+
+    [[nodiscard]] ThreadSchedulerStats stats() const noexcept { return stats_; }
+
+private:
+    int apply_tid_raw(int32_t tid, uint32_t util_min, uint32_t util_max) noexcept;
+
+    ApplierFn applier_;
+    std::unordered_map<int32_t, ThreadUclampTarget> applied_tids_;
+    ThreadSchedulerStats stats_{};
+};
+
+} // namespace coreflow::v5

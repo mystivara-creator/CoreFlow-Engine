@@ -67,6 +67,7 @@ public:
     [[nodiscard]] bool is_storage_paced() const noexcept;
     [[nodiscard]] std::string battery_node_path() const;
     [[nodiscard]] BatteryPowerTelemetry sample_battery_telemetry() const;
+    [[nodiscard]] static BatteryPowerTelemetry probe_battery_telemetry(std::string_view sys_root = "/sys");
 
 private:
     CentralMutationCoordinator& coordinator_;

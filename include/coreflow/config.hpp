@@ -9,15 +9,20 @@
 
 #include "types.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -25,7 +30,8 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"4.0.0"};
+    std::string version{"5.0.0"};
+    std::string profile{"balanced"}; // balanced | smoothness | battery | gaming
     std::string log_level{"info"};
     bool zero_polling_mode{true};
     bool enable_cgroups_v2{true};
@@ -34,7 +40,17 @@ struct DaemonConfig {
     bool inspection_mode{false};
     bool enable_tuner{true};
 
-    // [direct_adaptive] Capability-derived Direct Baseline + Sweet-Spot runtime.
+    // [features] CoreFlow v5 4-pillar feature toggles
+    bool enable_frame_smoothness{true};
+    bool enable_storage_burst{true};
+    bool enable_memory_guard{true};
+    bool enable_thermal_pacing{true};
+
+    // [apps] Optional per-app overrides (comma-separated Android package names)
+    std::string gaming_apps{};
+    std::string excluded_apps{};
+
+    // [direct_adaptive] Legacy compatibility fields
     bool enable_direct_adaptive{true};
     std::string direct_adaptive_policy{"auto"};
 
@@ -89,11 +105,28 @@ struct DaemonConfig {
     uint32_t burst_boost_duration_ms{120};
     uint32_t touch_boost_uclamp_min{380};
 
-    // [vulkan_engine]
-    std::string vulkan_layer_mode{"disabled"};
-    bool enable_skiavk_threaded{false};
-    bool enable_adaptive_vrs{false};
-    bool enable_pipeline_cache_prewarm{false};
+    static std::vector<std::string> parse_package_list(std::string_view raw) {
+        std::vector<std::string> out;
+        size_t pos = 0;
+        while (pos < raw.size() && out.size() < 64U) {
+            const size_t comma = raw.find(',', pos);
+            std::string tok = trim(std::string(
+                raw.substr(pos, comma == std::string_view::npos ? raw.size() - pos : comma - pos)));
+            bool valid = !tok.empty() && tok.size() <= 128U;
+            for (const unsigned char ch : tok) {
+                if (!std::isalnum(ch) && ch != '.' && ch != '_' && ch != '-') {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid && std::find(out.begin(), out.end(), tok) == out.end()) {
+                out.push_back(std::move(tok));
+            }
+            if (comma == std::string_view::npos) break;
+            pos = comma + 1U;
+        }
+        return out;
+    }
 
     static std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t\r\n");
@@ -138,10 +171,18 @@ struct DaemonConfig {
     }
 
     static std::string canonical_section_for_key(std::string_view key) {
-        if (key == "version" || key == "log_level" || key == "zero_polling_mode" ||
+        if (key == "version" || key == "profile" || key == "inspection_mode" ||
+            key == "log_level" || key == "zero_polling_mode" ||
             key == "enable_cgroups_v2" || key == "enable_uclamp" ||
             key == "enable_tuner") {
             return "general";
+        }
+        if (key == "enable_frame_smoothness" || key == "enable_storage_burst" ||
+            key == "enable_memory_guard" || key == "enable_thermal_pacing") {
+            return "features";
+        }
+        if (key == "gaming_apps" || key == "excluded_apps") {
+            return "apps";
         }
         if (key == "enable_direct_adaptive" || key == "direct_adaptive_policy") {
             return "direct_adaptive";
@@ -180,10 +221,6 @@ struct DaemonConfig {
             key == "touch_boost_uclamp_min") {
             return "render_pipeline";
         }
-        if (key == "vulkan_layer_mode" || key == "enable_skiavk_threaded" ||
-            key == "enable_adaptive_vrs" || key == "enable_pipeline_cache_prewarm") {
-            return "vulkan_engine";
-        }
         return "";
     }
 
@@ -191,6 +228,8 @@ struct DaemonConfig {
         const std::string expected = canonical_section_for_key(key);
         if (expected.empty()) return false;
         if (section == expected) return true;
+        // Accept [features] alias for enable_battery_step_charging
+        if (key == "enable_battery_step_charging" && section == "features") return true;
         // Accept legacy [stability] and [thermal_guardian] aliases for stability_policy keys
         if (expected == "stability_policy" &&
             (section == "stability" || section == "thermal_guardian")) {
@@ -231,11 +270,44 @@ struct DaemonConfig {
 
             // [general]
             if (key == "version") cfg.version = val;
+            else if (key == "profile") {
+                const auto p = to_lower_ascii(val);
+                if (p == "balanced" || p == "smoothness" || p == "battery" || p == "gaming") {
+                    cfg.profile = p;
+                }
+            }
+            else if (key == "inspection_mode") cfg.inspection_mode = parse_bool(val);
             else if (key == "log_level") cfg.log_level = val;
             else if (key == "zero_polling_mode") cfg.zero_polling_mode = parse_bool(val);
             else if (key == "enable_cgroups_v2") cfg.enable_cgroups_v2 = parse_bool(val);
             else if (key == "enable_uclamp") cfg.enable_uclamp = parse_bool(val);
             else if (key == "enable_tuner") cfg.enable_tuner = parse_bool(val);
+
+            // [features]
+            else if (key == "enable_frame_smoothness") cfg.enable_frame_smoothness = parse_bool(val);
+            else if (key == "enable_storage_burst") cfg.enable_storage_burst = parse_bool(val);
+            else if (key == "enable_memory_guard") cfg.enable_memory_guard = parse_bool(val);
+            else if (key == "enable_thermal_pacing") cfg.enable_thermal_pacing = parse_bool(val);
+
+            // [apps]
+            else if (key == "gaming_apps") {
+                const auto pkgs = parse_package_list(val);
+                std::string joined;
+                for (size_t i = 0; i < pkgs.size(); ++i) {
+                    if (i != 0U) joined.push_back(',');
+                    joined += pkgs[i];
+                }
+                cfg.gaming_apps = std::move(joined);
+            }
+            else if (key == "excluded_apps") {
+                const auto pkgs = parse_package_list(val);
+                std::string joined;
+                for (size_t i = 0; i < pkgs.size(); ++i) {
+                    if (i != 0U) joined.push_back(',');
+                    joined += pkgs[i];
+                }
+                cfg.excluded_apps = std::move(joined);
+            }
 
             // [device_adaptation]
             else if (key == "tier_override") cfg.tier_override = val;
@@ -386,21 +458,9 @@ struct DaemonConfig {
                 uint32_t v = 0;
                 if (parse_uint32_safe(val, v)) cfg.touch_boost_uclamp_min = v;
             }
-
-            // [vulkan_engine]
-            else if (key == "vulkan_layer_mode") {
-                if (val == "safe_hardware" || val == "full_capability_override") {
-                    cfg.vulkan_layer_mode = "safe_hardware";
-                } else if (val == "disabled") {
-                    cfg.vulkan_layer_mode = "disabled";
-                }
-            }
-            else if (key == "enable_skiavk_threaded") cfg.enable_skiavk_threaded = parse_bool(val);
-            else if (key == "enable_adaptive_vrs") cfg.enable_adaptive_vrs = parse_bool(val);
-            else if (key == "enable_pipeline_cache_prewarm") cfg.enable_pipeline_cache_prewarm = parse_bool(val);
         }
 
-        // Post-validation: ensure max >= min
+        // Post-validation: ensure max >= min and bounded render pipeline thresholds
         cfg.pid_target_celsius = std::clamp(cfg.pid_target_celsius, 25.0f, cfg.thermal_trip_celsius);
         cfg.pid_kp = std::clamp(cfg.pid_kp, 0.0f, 20.0f);
         cfg.pid_ki = std::clamp(cfg.pid_ki, 0.0f, 20.0f);
@@ -409,6 +469,9 @@ struct DaemonConfig {
         cfg.battery_step_temp_threshold = std::clamp(cfg.battery_step_temp_threshold, 30.0f, 45.0f);
         cfg.top_app_io_weight = std::clamp(cfg.top_app_io_weight, 1u, 10000u);
         cfg.background_io_weight = std::clamp(cfg.background_io_weight, 1u, 10000u);
+        cfg.jank_detection_threshold_ratio = std::clamp(cfg.jank_detection_threshold_ratio, 1.0f, 5.0f);
+        cfg.burst_boost_duration_ms = std::clamp(cfg.burst_boost_duration_ms, 50u, 1000u);
+        cfg.touch_boost_uclamp_min = std::clamp(cfg.touch_boost_uclamp_min, 0u, 1024u);
         cfg.top_app_interactive_max = std::max(cfg.top_app_interactive_max, cfg.top_app_interactive_min);
         cfg.top_app_game_max = std::max(cfg.top_app_game_max, cfg.top_app_game_min);
         if (cfg.thermal_recover_celsius >= cfg.thermal_trip_celsius) {
@@ -418,12 +481,37 @@ struct DaemonConfig {
         return cfg;
     }
 
+    static bool is_safe_config_value(std::string_view value, std::string_view key = {}) noexcept {
+        const bool is_app_list = (key == "gaming_apps" || key == "excluded_apps");
+        if (is_app_list) {
+            if (value.size() > 2048U) return false;
+            for (const unsigned char ch : value) {
+                if (!std::isalnum(ch) && ch != '.' && ch != '_' && ch != '-' && ch != ',' && ch != ' ') {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (value.empty() || value.size() > 256U) return false;
+        for (const unsigned char ch : value) {
+            if (ch == '\n' || ch == '\r' || ch == '\0' || ch < 0x20U) return false;
+        }
+        return true;
+    }
+
     // Surgical read-modify-write helper that updates specified keys in their canonical section
     // while preserving comments, formatting, and unknown keys/sections.
     static std::string merge_config_text(
         std::string_view existing_text,
         const std::vector<std::pair<std::string, std::string>>& updates) {
-        std::vector<bool> applied(updates.size(), false);
+        std::vector<std::pair<std::string, std::string>> safe_updates;
+        safe_updates.reserve(updates.size());
+        for (const auto& [k, v] : updates) {
+            if (!canonical_section_for_key(k).empty() && is_safe_config_value(v, k)) {
+                safe_updates.emplace_back(k, v);
+            }
+        }
+        std::vector<bool> applied(safe_updates.size(), false);
         std::istringstream in{std::string(existing_text)};
         std::ostringstream out;
         std::string raw_line;
@@ -431,13 +519,13 @@ struct DaemonConfig {
 
         auto flush_pending_for_section = [&](std::string_view section) {
             if (section.empty()) return;
-            for (size_t i = 0; i < updates.size(); ++i) {
+            for (size_t i = 0; i < safe_updates.size(); ++i) {
                 if (applied[i]) continue;
-                const std::string target_sec = canonical_section_for_key(updates[i].first);
+                const std::string target_sec = canonical_section_for_key(safe_updates[i].first);
                 const bool matches = (section == target_sec) ||
                                      (target_sec == "stability_policy" && section == "stability");
                 if (matches) {
-                    out << updates[i].first << " = " << updates[i].second << "\n";
+                    out << safe_updates[i].first << " = " << safe_updates[i].second << "\n";
                     applied[i] = true;
                 }
             }
@@ -463,10 +551,10 @@ struct DaemonConfig {
             }
             const std::string key = trim(trimmed.substr(0, eq_pos));
             bool replaced = false;
-            for (size_t i = 0; i < updates.size(); ++i) {
-                if (updates[i].first == key && section_accepts_key(current_section, key)) {
+            for (size_t i = 0; i < safe_updates.size(); ++i) {
+                if (safe_updates[i].first == key && section_accepts_key(current_section, key)) {
                     if (!applied[i]) {
-                        out << key << " = " << updates[i].second << "\n";
+                        out << key << " = " << safe_updates[i].second << "\n";
                         applied[i] = true;
                     }
                     replaced = true;
@@ -480,14 +568,14 @@ struct DaemonConfig {
         flush_pending_for_section(current_section);
 
         // Append any sections that were not present in existing_text
-        for (size_t i = 0; i < updates.size(); ++i) {
+        for (size_t i = 0; i < safe_updates.size(); ++i) {
             if (applied[i]) continue;
-            const std::string sec = canonical_section_for_key(updates[i].first);
+            const std::string sec = canonical_section_for_key(safe_updates[i].first);
             if (sec.empty()) continue;
             out << "\n[" << sec << "]\n";
-            for (size_t j = i; j < updates.size(); ++j) {
-                if (!applied[j] && canonical_section_for_key(updates[j].first) == sec) {
-                    out << updates[j].first << " = " << updates[j].second << "\n";
+            for (size_t j = i; j < safe_updates.size(); ++j) {
+                if (!applied[j] && canonical_section_for_key(safe_updates[j].first) == sec) {
+                    out << safe_updates[j].first << " = " << safe_updates[j].second << "\n";
                     applied[j] = true;
                 }
             }
@@ -498,26 +586,61 @@ struct DaemonConfig {
     static bool update_config_file(
         const std::string& path,
         const std::vector<std::pair<std::string, std::string>>& updates) {
+        if (path.empty() || updates.empty()) return false;
+        for (const auto& [k, v] : updates) {
+            if (canonical_section_for_key(k).empty() || !is_safe_config_value(v, k)) {
+                return false;
+            }
+        }
+        struct stat target_st{};
+        if (::lstat(path.c_str(), &target_st) == 0) {
+            if (!S_ISREG(target_st.st_mode) || S_ISLNK(target_st.st_mode)) return false;
+        } else if (errno != ENOENT) {
+            return false;
+        }
+
         std::string existing;
         {
-            std::ifstream in(path, std::ios::binary);
-            if (in.is_open()) {
-                std::ostringstream ss;
-                ss << in.rdbuf();
-                existing = ss.str();
+            const int in_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (in_fd >= 0) {
+                struct stat st{};
+                if (::fstat(in_fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 && st.st_size <= 262144) {
+                    existing.reserve(static_cast<size_t>(st.st_size));
+                    char buf[4096];
+                    for (;;) {
+                        const ssize_t n = ::read(in_fd, buf, sizeof(buf));
+                        if (n < 0 && errno == EINTR) continue;
+                        if (n <= 0) break;
+                        if (existing.size() + static_cast<size_t>(n) > 262144U) {
+                            (void)::close(in_fd);
+                            return false;
+                        }
+                        existing.append(buf, static_cast<size_t>(n));
+                    }
+                }
+                (void)::close(in_fd);
             }
         }
         const std::string merged = merge_config_text(existing, updates);
-        const std::string tmp_path = path + ".tmp";
-        {
-            std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-            if (!out.is_open()) return false;
-            out << merged;
-            out.flush();
-            if (!out.good()) return false;
+        static std::atomic<uint64_t> tmp_seq{0U};
+        const uint64_t seq = tmp_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        const std::string tmp_path = path + ".tmp." + std::to_string(::getpid()) + "." + std::to_string(seq);
+        const int out_fd = ::open(
+            tmp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (out_fd < 0) return false;
+
+        bool ok = true;
+        size_t offset = 0U;
+        while (offset < merged.size()) {
+            const ssize_t n = ::write(out_fd, merged.data() + offset, merged.size() - offset);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { ok = false; break; }
+            offset += static_cast<size_t>(n);
         }
-        if (::rename(tmp_path.c_str(), path.c_str()) != 0) {
-            (void)::remove(tmp_path.c_str());
+        if (ok) ok = (::fchmod(out_fd, 0600) == 0) && (::fsync(out_fd) == 0);
+        if (::close(out_fd) != 0) ok = false;
+        if (!ok || ::rename(tmp_path.c_str(), path.c_str()) != 0) {
+            (void)::unlink(tmp_path.c_str());
             return false;
         }
         return true;

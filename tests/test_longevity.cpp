@@ -1,6 +1,6 @@
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/baseline_store.hpp"
-#include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/mutation_coordinator.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -101,6 +101,48 @@ int main() {
     assert(get(top_app_weight) == "default 200");
     assert(coordinator.active_leases().empty());
     assert(!baseline.has_active_mutations());
+
+    // Real Linux/Android kernels expose /sys/class/power_supply/battery as a symlink
+    // to /sys/devices/.../power_supply/battery. Verify in-tree symlinks work, escaping
+    // symlinks are rejected, and low idle microampere currents (e.g. 15000 uA = 15 mA)
+    // are never misreported as multi-amp fast charging.
+    {
+        const auto real_sys = root / "android_sys";
+        const auto dev_batt = real_sys / "devices/platform/pmic/power_supply/battery";
+        put(dev_batt / "type", "Battery");
+        put(dev_batt / "temp", "345");
+        put(dev_batt / "status", "Charging");
+        put(dev_batt / "current_now", "15000");   // 15 mA in standard uA
+        put(dev_batt / "voltage_now", "4150000"); // 4150 mV in standard uV
+        put(dev_batt / "constant_charge_current_max", "3000000");
+        fs::create_directories(real_sys / "class/power_supply");
+        fs::create_directory_symlink(dev_batt, real_sys / "class/power_supply/battery");
+
+        // Escaping symlink outside sys_root must be ignored.
+        const auto outside = root / "outside_evil_batt";
+        put(outside / "type", "Battery");
+        put(outside / "temp", "400");
+        put(outside / "status", "Charging");
+        fs::create_directory_symlink(outside, real_sys / "class/power_supply/evil");
+
+        const auto ro_probe = coreflow::HardwareLongevityManager::probe_battery_telemetry(real_sys.string());
+        assert(ro_probe.available);
+        assert(ro_probe.charging);
+        assert(!ro_probe.fast_charging); // 15 mA is trickle/idle, NOT 15A fast charge!
+        assert(ro_probe.current_ma >= 14.5 && ro_probe.current_ma <= 15.5);
+        assert(ro_probe.voltage_mv >= 4149.0 && ro_probe.voltage_mv <= 4151.0);
+        assert(ro_probe.temperature_celsius >= 34.4 && ro_probe.temperature_celsius <= 34.6);
+        assert(ro_probe.charge_limit_ua == 3000000U);
+
+        // Full status must not report fast_charging even if current_now is momentarily high.
+        put(dev_batt / "status", "Full");
+        put(dev_batt / "current_now", "2600000");
+        const auto full_probe = coreflow::HardwareLongevityManager::probe_battery_telemetry(real_sys.string());
+        assert(full_probe.available);
+        assert(full_probe.charging);
+        assert(!full_probe.fast_charging);
+    }
+
     fs::remove_all(root);
 }
 

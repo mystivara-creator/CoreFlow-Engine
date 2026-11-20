@@ -1,0 +1,104 @@
+/**
+ * @file context_engine.hpp
+ * @brief CoreFlow v5 Pillar 2: 5-Mode Context Classifier, Foreground App & Critical Thread Resolver.
+ * @license MIT
+ */
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <vector>
+
+namespace coreflow::v5 {
+
+enum class PerformanceProfile : uint8_t {
+    Balanced = 0,
+    Smoothness = 1,
+    Battery = 2,
+    Gaming = 3,
+};
+
+enum class ContextMode : uint8_t {
+    Efficiency = 0,
+    Interactive = 1,
+    LaunchBurst = 2,
+    Gaming = 3,
+    ScreenOff = 4,
+    Excluded = 5,
+};
+
+struct ForegroundAppInfo {
+    int32_t pid{0};
+    std::string package_name;
+    std::vector<int32_t> critical_tids;
+};
+
+struct ContextSignalInput {
+    uint64_t now_ms{0};
+    bool screen_off{false};
+    bool thermal_guard{false};
+    double cpu_util_pct{0.0};
+    std::optional<double> gpu_busy_pct{};
+    int32_t foreground_pid{0};
+    std::string foreground_package;
+};
+
+struct ContextDecision {
+    ContextMode mode{ContextMode::Efficiency};
+    bool newly_launched_app{false};
+    bool app_excluded{false};
+    bool app_forced_gaming{false};
+    int32_t foreground_pid{0};
+    std::string foreground_package;
+    uint64_t launch_burst_remaining_ms{0};
+    uint64_t touch_hold_remaining_ms{0};
+};
+
+class ContextEngine {
+public:
+    explicit ContextEngine(std::string procfs_root = "/proc") noexcept;
+
+    void set_profile(PerformanceProfile profile) noexcept;
+    void set_app_rules(const std::vector<std::string>& gaming_apps,
+                       const std::vector<std::string>& excluded_apps);
+
+    // Called from epoll input path (< 5ms latency) on touch activity.
+    void notify_touch(uint64_t now_ms) noexcept;
+
+    // Evaluates current system signals into one clean context mode.
+    [[nodiscard]] ContextDecision evaluate(const ContextSignalInput& input) noexcept;
+
+    // Lightweight /proc readers (parameterized by procfs_root_ for unit tests).
+    [[nodiscard]] ForegroundAppInfo resolve_foreground_app(
+        const std::string& top_app_procs_path) const noexcept;
+    [[nodiscard]] std::vector<int32_t> resolve_surfaceflinger_tids() noexcept;
+
+    [[nodiscard]] PerformanceProfile profile() const noexcept { return profile_; }
+    [[nodiscard]] static PerformanceProfile parse_profile(std::string_view text) noexcept;
+    [[nodiscard]] static const char* profile_name(PerformanceProfile profile) noexcept;
+    [[nodiscard]] static const char* mode_name(ContextMode mode) noexcept;
+    [[nodiscard]] static bool is_critical_render_thread_name(std::string_view comm) noexcept;
+
+private:
+    std::string procfs_root_;
+    PerformanceProfile profile_{PerformanceProfile::Balanced};
+    std::unordered_set<std::string> gaming_apps_;
+    std::unordered_set<std::string> excluded_apps_;
+
+    uint64_t last_touch_ms_{0};
+    uint64_t launch_burst_until_ms_{0};
+    int32_t last_fg_pid_{0};
+    std::string last_fg_package_;
+    bool gaming_latched_{false};
+    uint32_t gpu_high_streak_{0};
+    uint32_t gpu_low_streak_{0};
+
+    int32_t cached_sf_pid_{0};
+    uint64_t cached_sf_checked_ms_{0};
+    std::vector<int32_t> cached_sf_tids_;
+};
+
+} // namespace coreflow::v5

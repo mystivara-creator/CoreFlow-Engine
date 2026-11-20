@@ -1,130 +1,67 @@
 #!/usr/bin/env python3
-"""Guard read-only CLI and deterministic composition-root lifecycle contracts."""
+"""Verify CoreFlow v5.0.0 lean 4-pillar daemon CLI & safety contracts."""
+import json
+import subprocess
+import sys
 from pathlib import Path
 
-source = (Path(__file__).resolve().parents[1] / "src/daemon/main.cpp").read_text()
-config = (Path(__file__).resolve().parents[1] / "include/coreflow/config.hpp").read_text()
-context = (Path(__file__).resolve().parents[1] / "src/kernel/coreflow_context.cpp").read_text()
+repo = Path(__file__).resolve().parents[1]
+source = (repo / "src/daemon/main.cpp").read_text()
+config = (repo / "include/coreflow/config.hpp").read_text()
 
-assert "finish_cli_process" not in source
-assert "::_exit(status);" not in source
-assert "CoreFlowContext context;" in source
-assert source.count("context.Start(CoreFlowContext::Mode::ReadOnly)") == 3
-
-for command, printer in (
-    ('if (command == "--status")', "print_status(context);"),
-    ('if (command == "--capabilities")', "print_capabilities(context);"),
-):
-    start = source.index(command)
-    # Bound the handler at the next sibling command. The live --status path
-    # intentionally returns early after printing the daemon snapshot, so using
-    # the first "return 0;" would truncate the read-only fallback under test.
-    next_command = source.find('\n        if (command ==', start + len(command))
-    stop = next_command if next_command >= 0 else len(source)
-    block = source[start:stop]
-    assert "CoreFlowContext::Mode::ReadOnly" in block
-    assert printer in block
-
-status_start = source.index("std::string build_status_json(")
-status_end = source.index("void print_capabilities(CoreFlowContext& context)", status_start)
-status = source[status_start:status_end]
-assert "infer_and_learn(" not in status
-assert "UclampGovernor " not in status
-assert "VulkanController::instance" not in status
-assert "AutonomousTuner::instance" not in status
-assert '.last_verdict = "NOT_STARTED"' in status
-assert '.backend = "not_started"' in status
-assert "tuner.last_verdict" in status
-assert "tunerRuntimeStarted" in status
-assert "tunerRuntimeStage" in status
-assert "context.autonomous_tuner().snapshot()" in status
-assert "context.neural_predictor().last_prediction()" in status
-assert "context.vulkan_controller().snapshot()" in status
-assert "cached->profile" in status
-assert "cached->thermal" in status
-assert "get_top_app_min()" in status
-assert "get_top_app_max()" in status
-assert "write_status_snapshot" in source
+# Core v5 architecture & safety invariants
+assert 'constexpr char kVersion[] = "5.0.0";' in source
+assert 'std::string version{"5.0.0"};' in config
+assert "VulkanController" not in source
+assert "DeviceValidationRecorder" not in source
+assert "ThreadSchedulerActuator" in source
+assert "StorageMemoryActuator" in source
+assert "ThermalEnvelopeActuator" in source
+assert "ContextEngine" in source
+assert "HardwareProbe" in source
 assert "O_EXCL" in source and "renameat" in source
-assert "print_live_status_snapshot(live_pid)" in source
-assert "std::chrono::milliseconds(500)" in source
+assert "baseline.recover_pending()" in source
+assert "baseline.rollback_all()" in source
+assert "thread_scheduler.reset_all()" in source
+assert "apply_storage_pacing()" in source
+assert "monitor_battery_thermals" in source
+assert "service_launcher_authorized()" in source
 
-# Direct Adaptive is the production composition root and starts after
-# CoreFlowContext has completed durable OEM journal recovery. Optional workload
-# telemetry never gates its independently discovered actuator domains.
-runtime_start = source.index("coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);")
-runtime_end = source.index("const auto pid_target_pressure", runtime_start)
-runtime = source[runtime_start:runtime_end]
-assert "direct_runtime.set_mutation_enabled" in runtime
-assert "const bool direct_runtime_ready = direct_runtime.start();" in runtime
-assert "Production composition ready" in runtime
-assert "daemon remains alive and direct actuators are skipped" in runtime
-assert "DIRECT_BASELINE: topology and journal recovery complete" in runtime
-assert "bool lifecycle_promoted = true;" in runtime
-assert "const bool workload_pipeline_ready = workload_pipeline.start();" in runtime
-assert "if (!workload_pipeline_ready)" in runtime
-assert "DirectAdaptiveRuntime continues from procfs/sysfs telemetry and timerfd cadence" in runtime
-assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);" in source
-assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
-assert "kStartupGrace" not in source
-assert "STAGE_OBSERVING" not in source
+# Live CLI execution against compiled coreflowd binary
+if len(sys.argv) >= 2:
+    binary = Path(sys.argv[1])
+    assert binary.is_file(), f"Missing coreflowd binary: {binary}"
+    for flag in ("--status", "--capabilities", "--journal"):
+        proc = subprocess.run(
+            [str(binary), flag],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert proc.returncode == 0, f"{flag} exited with {proc.returncode}: {proc.stderr}"
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        assert lines, f"{flag} produced empty stdout"
+        payload = json.loads(lines[-1])
+        assert isinstance(payload, dict), f"{flag} JSON root is not an object"
+        if flag == "--status":
+            assert payload.get("version") == "5.0.0"
+            assert "profile" in payload
+            assert "mode" in payload
+            assert "features" in payload and isinstance(payload["features"], dict)
+            assert "apps" in payload and isinstance(payload["apps"], dict)
+            assert "actuators" in payload and isinstance(payload["actuators"], dict)
+            assert "hardware" in payload and isinstance(payload["hardware"], dict)
+            assert "batteryPower" in payload and isinstance(payload["batteryPower"], dict)
+            assert "history" in payload and isinstance(payload["history"], list)
+            assert "vulkan" not in payload
+        elif flag == "--capabilities":
+            assert payload.get("version") == "5.0.0"
+            assert payload.get("rustPidEngine") is True
+            assert "perThreadUclampSupported" in payload
+            assert "storageType" in payload
+        elif flag == "--journal":
+            assert payload.get("format") == "CFJ4"
+            assert isinstance(payload.get("entries"), list)
 
-# OEM thermal severity is authoritative when available. Celsius trip points are
-# consulted only for the explicit generic-fallback path.
-thermal_start = source.index("const bool thermal_limit_hit")
-thermal_end = source.index("const WorkloadState desired", thermal_start)
-thermal_policy = source[thermal_start:thermal_end]
-assert "thermal.severity >= 3" in thermal_policy
-assert "thermal.pressure >= 85.0" in thermal_policy
-assert "thermal.pressure > 65.0" in thermal_policy
-assert "temp >= config.thermal_trip_celsius" in thermal_policy
-assert "thermal.fallback_active" in thermal_policy
-
-status_timer_start = source.index("const int status_timer_fd")
-status_timer_end = source.index('emit_log(false, "[CoreFlow] C++23', status_timer_start)
-assert "build_status_json" not in source[status_timer_start:status_timer_end]
-assert "bool inspection_mode{false};" in config
-assert "bool enable_tuner{true};" in config
-assert "vulkanProbeSkipped" in status
-assert "platformVendor" in status
-assert "executionTier" in status
-assert "tier1Eligible" in status
-
-assert "CoreFlowContext::~CoreFlowContext()" in context
-assert "coordinated_rollback(" in context
-assert "destroy_runtime_services();" in context
-assert "coordinator_" in context
-
-# Explicit workload probe is read-only and bounded to two one-second feature windows.
-assert 'if (command == "--workload-probe")' in source
-assert "return run_workload_probe();" in source
-probe_start = source.index("int run_workload_probe()")
-probe_end = source.index("bool ensure_secure_state_dir()", probe_start)
-probe = source[probe_start:probe_end]
-assert "WorkloadTelemetryPipeline pipeline;" in probe
-assert "std::chrono::milliseconds(10)" in probe
-assert "aggregate.event_drain_saturated" in probe
-assert "eventCount" in probe
-assert "eventDrainSaturated" in probe
-assert "begin_frame_timeline_capture(1000)" in probe
-assert "finish_frame_timeline_capture(aggregate)" in probe
-assert "gpu_busy_sum" in probe
-assert "frameDeadlineMissCount" in probe
-assert "pipeline.stop();" in probe
-assert "MutationCoordinator" not in probe
-
-
-# Direct Adaptive is the production runtime authority, not a detached unit-test-only contract.
-assert '#include "coreflow/direct_adaptive_runtime.hpp"' in source
-assert "coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);" in source
-assert "const bool direct_runtime_ready = direct_runtime.start();" in source
-assert "direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);" in source
-assert "directAdaptive" in source
-assert "if (!BaselineStore::instance().recover_pending()) return 1;" in source
-assert "context.autonomous_tuner().set_operational(false);" in source
-assert "frequencies.discover(false, config.enable_gpu_frequency_control)" not in source
-assert "apply_storage_pacing();" not in source
-assert 'if (command == "--journal")' in source
-assert "if (config.inspection_mode)" in source
-assert "direct_runtime.set_mutation_enabled(!config.inspection_mode" in source
-assert "std::clamp(65.0 + normalized * 20.0, 0.0, 85.0);" in source
+print("CoreFlow v5 CLI lifecycle contract PASS")

@@ -387,20 +387,34 @@ float ThermalMonitor::battery_celsius_locked() const {
         base_path = base_path.parent_path();
     }
     const fs::path supply_root = base_path.parent_path() / "power_supply";
+    const fs::path sys_root = base_path.parent_path().has_parent_path()
+        ? base_path.parent_path().parent_path()
+        : base_path.parent_path();
+    std::error_code root_ec;
+    const fs::path canonical_sys_root = fs::canonical(sys_root, root_ec);
+    if (root_ec) return -1.0f;
+
     std::error_code ec;
     float observed = -1.0f;
     unsigned battery_count = 0;
+    std::vector<std::string> seen_dirs;
     for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
          !ec && it != end; it.increment(ec)) {
-        std::error_code type_ec;
-        const auto status = it->symlink_status(type_ec);
-        if (type_ec || fs::is_symlink(status) || !fs::is_directory(status)) continue;
+        std::error_code canon_ec;
+        const fs::path resolved = fs::canonical(it->path(), canon_ec);
+        if (canon_ec || !fs::is_directory(resolved, canon_ec) || canon_ec) continue;
+        const fs::path rel = resolved.lexically_relative(canonical_sys_root);
+        if (rel.empty() || rel.native().rfind("..", 0) == 0) continue;
+        const std::string resolved_str = resolved.string();
+        if (std::find(seen_dirs.begin(), seen_dirs.end(), resolved_str) != seen_dirs.end()) continue;
+        seen_dirs.push_back(resolved_str);
+
         std::string type;
-        if (!read_sysfs_line((it->path() / "type").string(), type) || type != "Battery") continue;
+        if (!read_sysfs_line((resolved / "type").string(), type) || type != "Battery") continue;
         ++battery_count;
         std::string raw;
         double tenths = 0.0;
-        if (!read_sysfs_line((it->path() / "temp").string(), raw) ||
+        if (!read_sysfs_line((resolved / "temp").string(), raw) ||
             !parse_ascii_double(raw, tenths) || tenths <= 0.0 || tenths > 800.0) return -1.0f;
         observed = static_cast<float>(tenths / 10.0);
     }

@@ -67,18 +67,24 @@ object CoreFlowManager {
                 ?: throw IllegalStateException("Empty daemon output")
             val json = JSONObject(lastLine)
 
+            fun JSONObject.optFiniteFloat(key: String, fallback: Float = -1f): Float {
+                if (isNull(key)) return fallback
+                val v = optDouble(key, fallback.toDouble())
+                return if (v.isFinite()) v.toFloat() else fallback
+            }
+
             DaemonStatus(
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
                 uclampMin = json.optInt("uclampMin", 0),
                 uclampMax = json.optInt("uclampMax", 0),
                 uclampSupported = json.optBoolean("uclampSupported", false),
-                socTempCelsius = json.optDouble("socTempCelsius", -1.0).toFloat(),
-                socCompositeCelsius = json.optDouble("socCompositeCelsius", -1.0).toFloat(),
-                cpuAverageCelsius = json.optDouble("cpuAverageCelsius", -1.0).toFloat(),
-                cpuPeakCelsius = json.optDouble("cpuPeakCelsius", -1.0).toFloat(),
-                gpuTempCelsius = json.optDouble("gpuTempCelsius", -1.0).toFloat(),
-                batteryTempCelsius = json.optDouble("batteryTempCelsius", -1.0).toFloat(),
+                socTempCelsius = json.optFiniteFloat("socTempCelsius"),
+                socCompositeCelsius = json.optFiniteFloat("socCompositeCelsius"),
+                cpuAverageCelsius = json.optFiniteFloat("cpuAverageCelsius"),
+                cpuPeakCelsius = json.optFiniteFloat("cpuPeakCelsius"),
+                gpuTempCelsius = json.optFiniteFloat("gpuTempCelsius"),
+                batteryTempCelsius = json.optFiniteFloat("batteryTempCelsius"),
                 recoveryPending = json.optBoolean("recoveryPending", false),
                 thermalSource = json.optString("thermalSource", "oem_policy"),
                 thermalGuardActive = json.optBoolean("thermalGuardActive", false)

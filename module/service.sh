@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CFAE System Framework v4.0.0: post-boot Direct Adaptive daemon launcher.
+# CFAE System Framework v5.0.0: post-boot lean 4-pillar daemon launcher.
 # CoreFlow coexists with OEM thermal services; it never stops or disables them.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:${PATH:-/usr/bin:/bin}"
 umask 077

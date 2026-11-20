@@ -3,7 +3,7 @@
  * @brief Thread-safe cross-controller mutation ownership and preemption dispatch.
  * @license MIT
  */
-#include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/baseline_store.hpp"
 
 #include <algorithm>

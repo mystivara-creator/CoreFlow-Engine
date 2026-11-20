@@ -1,5 +1,5 @@
 #include "coreflow/hardware_longevity.hpp"
-#include "coreflow/autonomous_tuner.hpp"
+#include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/mount_topology.hpp"
 
@@ -34,6 +34,150 @@ const NodeSnapshot* find_snapshot(const std::vector<NodeSnapshot>& audit,
         return node.path == path;
     });
     return it == audit.end() ? nullptr : &*it;
+}
+
+fs::path canonical_under(const fs::path& input, const fs::path& root) {
+    std::error_code ec;
+    const auto canonical_root = fs::canonical(root, ec);
+    if (ec) return {};
+    const auto canonical = fs::canonical(input, ec);
+    if (ec || !fs::is_directory(canonical, ec) || ec) return {};
+    const auto relative = canonical.lexically_relative(canonical_root);
+    if (relative.empty() || relative.native().rfind("..", 0) == 0) return {};
+    return canonical;
+}
+
+bool regular_non_symlink(const fs::path& path) noexcept {
+    struct stat st{};
+    return ::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode);
+}
+
+struct DiscoveredBatteryPaths {
+    std::string dir;
+    std::string temp_node;
+    std::string status_node;
+    std::string current_node;
+    std::string voltage_node;
+    std::string charge_max_node;
+    bool valid{false};
+};
+
+DiscoveredBatteryPaths find_unambiguous_battery_supply(const fs::path& sys_root) {
+    const fs::path supply_root = sys_root / "class/power_supply";
+    std::error_code ec;
+    std::vector<fs::path> entries;
+    for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && entries.size() < 64U; it.increment(ec)) {
+        entries.push_back(it->path());
+    }
+    std::sort(entries.begin(), entries.end());
+
+    std::vector<DiscoveredBatteryPaths> matches;
+    for (const auto& entry : entries) {
+        // Linux /sys/class/power_supply/* entries are typically symlinks into
+        // /sys/devices/...; resolve strictly within sys_root to accept real
+        // kernel layouts while rejecting escaping symlinks.
+        const auto resolved = canonical_under(entry, sys_root);
+        if (resolved.empty()) continue;
+        const std::string resolved_str = resolved.string();
+        const bool duplicate = std::any_of(matches.begin(), matches.end(),
+            [&](const DiscoveredBatteryPaths& item) { return item.dir == resolved_str; });
+        if (duplicate) continue;
+
+        if (!regular_non_symlink(resolved / "type")) continue;
+        if (line((resolved / "type").string()) != "Battery") continue;
+
+        const auto temp_path = resolved / "temp";
+        const auto status_path = resolved / "status";
+        if (!regular_non_symlink(temp_path) || !regular_non_symlink(status_path)) continue;
+
+        DiscoveredBatteryPaths item{};
+        item.dir = resolved_str;
+        item.temp_node = temp_path.string();
+        item.status_node = status_path.string();
+        const auto current_now_path = resolved / "current_now";
+        const auto voltage_now_path = resolved / "voltage_now";
+        const auto charge_max_path = resolved / "constant_charge_current_max";
+        if (regular_non_symlink(current_now_path)) item.current_node = current_now_path.string();
+        if (regular_non_symlink(voltage_now_path)) item.voltage_node = voltage_now_path.string();
+        if (regular_non_symlink(charge_max_path)) item.charge_max_node = charge_max_path.string();
+        item.valid = true;
+        matches.push_back(std::move(item));
+    }
+
+    // Ambiguous multiple-battery layouts are not acted upon.
+    if (matches.size() != 1U) return {};
+    return matches.front();
+}
+
+BatteryPowerTelemetry read_battery_telemetry(
+    const std::string& battery_dir,
+    const std::string& temp_node,
+    const std::string& status_node,
+    const std::string& current_node,
+    const std::string& voltage_node,
+    bool thermal_step_active,
+    uint64_t charge_limit_ua,
+    uint64_t oem_baseline_ua) {
+    BatteryPowerTelemetry out{};
+    if (temp_node.empty() || status_node.empty()) return out;
+
+    double raw_temp = 0.0;
+    if (parse_ascii_double(line(temp_node), raw_temp) && raw_temp >= 0.0 && raw_temp <= 800.0) {
+        out.temperature_celsius = raw_temp / 10.0;
+        out.available = true;
+    }
+
+    const std::string st = line(status_node);
+    if (!st.empty()) {
+        out.status = st;
+        out.charging = (st == "Charging" || st == "Full");
+        out.available = true;
+    }
+
+    bool fuel_gauge_uses_micro_units = (oem_baseline_ua > 20000U);
+    const std::string volt_path = !voltage_node.empty()
+        ? voltage_node
+        : (!battery_dir.empty() ? (fs::path(battery_dir) / "voltage_now").string() : std::string{});
+    if (!volt_path.empty() && regular_non_symlink(volt_path)) {
+        double raw_volt = 0.0;
+        if (parse_ascii_double(line(volt_path), raw_volt) && raw_volt > 0.0) {
+            // Standard power_supply voltage_now is microvolts (uV).
+            if (raw_volt > 20000.0) {
+                fuel_gauge_uses_micro_units = true;
+                out.voltage_mv = raw_volt / 1000.0;
+            } else {
+                out.voltage_mv = raw_volt;
+            }
+        }
+    }
+
+    const std::string cur_path = !current_node.empty()
+        ? current_node
+        : (!battery_dir.empty() ? (fs::path(battery_dir) / "current_now").string() : std::string{});
+    if (!cur_path.empty() && regular_non_symlink(cur_path)) {
+        double raw_cur = 0.0;
+        if (parse_ascii_double(line(cur_path), raw_cur) && std::isfinite(raw_cur)) {
+            // Linux power_supply current_now is microamperes (uA). When voltage_now
+            // or constant_charge_current_max confirms standard micro-unit ABI, always
+            // divide by 1000 so low idle/trickle currents (e.g. 15000 uA = 15 mA) are
+            // never misreported as multi-amp fast charging.
+            const double abs_cur = std::abs(raw_cur);
+            out.current_ma = (fuel_gauge_uses_micro_units || abs_cur > 20000.0)
+                ? (raw_cur / 1000.0)
+                : raw_cur;
+        }
+    }
+
+    if (out.voltage_mv > 0.0 && std::abs(out.current_ma) > 0.0) {
+        out.power_mw = (std::abs(out.current_ma) * out.voltage_mv) / 1000.0;
+    }
+
+    out.fast_charging = (st == "Charging") && (std::abs(out.current_ma) >= 2200.0 || out.power_mw >= 10000.0);
+    out.thermal_step_active = thermal_step_active;
+    out.charge_limit_ua = charge_limit_ua;
+    out.oem_baseline_ua = oem_baseline_ua;
+    return out;
 }
 } // namespace
 
@@ -160,55 +304,30 @@ void HardwareLongevityManager::discover_battery_node() {
     // Enumerate power-supply devices and select by the power_supply type ABI,
     // never by a vendor device-directory name. Only the standardized charging
     // current control is promoted to an actuator.
-    const fs::path supply_root = fs::path(root_) / "class/power_supply";
-    std::error_code ec;
-    for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
-         !ec && it != end; it.increment(ec)) {
-        std::error_code type_ec;
-        const auto type_status = it->symlink_status(type_ec);
-        if (type_ec || fs::is_symlink(type_status) || !fs::is_directory(type_status)) continue;
-        const auto type = line((it->path() / "type").string());
-        if (type != "Battery") continue;
-        const auto current_path = it->path() / "constant_charge_current_max";
-        const auto temp_path = it->path() / "temp";
-        const auto status_path = it->path() / "status";
-        const auto current_now_path = it->path() / "current_now";
-        const auto voltage_now_path = it->path() / "voltage_now";
-        struct stat temp_stat{}, status_stat{};
-        if (::lstat(temp_path.c_str(), &temp_stat) != 0 || !S_ISREG(temp_stat.st_mode) ||
-            ::lstat(status_path.c_str(), &status_stat) != 0 || !S_ISREG(status_stat.st_mode)) continue;
+    const auto discovered = find_unambiguous_battery_supply(fs::path(root_));
+    if (!discovered.valid) return;
 
-        battery_dir_ = it->path().string();
-        battery_temp_node_ = temp_path.string();
-        battery_status_node_ = status_path.string();
-        struct stat cur_now_stat{}, volt_now_stat{};
-        if (::lstat(current_now_path.c_str(), &cur_now_stat) == 0 && S_ISREG(cur_now_stat.st_mode)) {
-            battery_current_node_ = current_now_path.string();
-        }
-        if (::lstat(voltage_now_path.c_str(), &volt_now_stat) == 0 && S_ISREG(volt_now_stat.st_mode)) {
-            battery_voltage_node_ = voltage_now_path.string();
-        }
+    battery_dir_ = discovered.dir;
+    battery_temp_node_ = discovered.temp_node;
+    battery_status_node_ = discovered.status_node;
+    battery_current_node_ = discovered.current_node;
+    battery_voltage_node_ = discovered.voltage_node;
 
-        if (config_.enable_battery_step_charging) {
-            struct stat current_stat{};
-            if (::lstat(current_path.c_str(), &current_stat) == 0 && S_ISREG(current_stat.st_mode)) {
-                const std::string candidate = current_path.string();
-                uint64_t current = 0;
-                auto& store = BaselineStore::instance();
-                if (::access(candidate.c_str(), R_OK | W_OK) == 0 &&
-                    positive(line(candidate), current) && current <= 20000000U &&
-                    store.capture(candidate)) {
-                    const auto audit = store.get_audit_trail();
-                    const auto* snapshot = find_snapshot(audit, candidate);
-                    if (snapshot && !snapshot->is_modified) {
-                        battery_node_ = candidate;
-                        charge_baseline_ua_ = current;
-                        last_charge_ua_ = current;
-                    }
-                }
+    if (config_.enable_battery_step_charging && !discovered.charge_max_node.empty()) {
+        const std::string& candidate = discovered.charge_max_node;
+        uint64_t current = 0;
+        auto& store = BaselineStore::instance();
+        if (::access(candidate.c_str(), R_OK | W_OK) == 0 &&
+            positive(line(candidate), current) && current <= 20000000U &&
+            store.capture(candidate)) {
+            const auto audit = store.get_audit_trail();
+            const auto* snapshot = find_snapshot(audit, candidate);
+            if (snapshot && !snapshot->is_modified) {
+                battery_node_ = candidate;
+                charge_baseline_ua_ = current;
+                last_charge_ua_ = current;
             }
         }
-        return; // Ambiguous multiple-battery layouts are not acted upon.
     }
 }
 
@@ -410,55 +529,27 @@ std::string HardwareLongevityManager::battery_node_path() const {
 
 BatteryPowerTelemetry HardwareLongevityManager::sample_battery_telemetry() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    BatteryPowerTelemetry out{};
-    if (battery_temp_node_.empty() || battery_status_node_.empty()) return out;
+    return read_battery_telemetry(
+        battery_dir_, battery_temp_node_, battery_status_node_,
+        battery_current_node_, battery_voltage_node_,
+        battery_stepped_, last_charge_ua_, charge_baseline_ua_);
+}
 
-    double raw_temp = 0.0;
-    if (parse_ascii_double(line(battery_temp_node_), raw_temp) && raw_temp >= 0.0 && raw_temp <= 800.0) {
-        out.temperature_celsius = raw_temp / 10.0;
-        out.available = true;
-    }
-
-    const std::string st = line(battery_status_node_);
-    if (!st.empty()) {
-        out.status = st;
-        out.charging = (st == "Charging" || st == "Full");
-        out.available = true;
-    }
-
-    const std::string cur_path = !battery_current_node_.empty()
-        ? battery_current_node_
-        : (!battery_dir_.empty() ? (fs::path(battery_dir_) / "current_now").string() : std::string{});
-    if (!cur_path.empty()) {
-        double raw_cur = 0.0;
-        if (parse_ascii_double(line(cur_path), raw_cur) && std::isfinite(raw_cur)) {
-            // Linux power_supply current_now is typically in microamperes (uA);
-            // fall back gracefully if a fuel gauge reports milliamperes directly.
-            const double abs_cur = std::abs(raw_cur);
-            out.current_ma = abs_cur > 20000.0 ? (raw_cur / 1000.0) : raw_cur;
+BatteryPowerTelemetry HardwareLongevityManager::probe_battery_telemetry(std::string_view sys_root) {
+    const fs::path root_path = sys_root.empty() ? fs::path("/sys") : fs::path(sys_root);
+    const auto discovered = find_unambiguous_battery_supply(root_path);
+    if (!discovered.valid) return {};
+    uint64_t charge_limit_ua = 0;
+    if (!discovered.charge_max_node.empty()) {
+        uint64_t parsed = 0;
+        if (positive(line(discovered.charge_max_node), parsed) && parsed <= 20000000U) {
+            charge_limit_ua = parsed;
         }
     }
-
-    const std::string volt_path = !battery_voltage_node_.empty()
-        ? battery_voltage_node_
-        : (!battery_dir_.empty() ? (fs::path(battery_dir_) / "voltage_now").string() : std::string{});
-    if (!volt_path.empty()) {
-        double raw_volt = 0.0;
-        if (parse_ascii_double(line(volt_path), raw_volt) && raw_volt > 0.0) {
-            // Standard power_supply voltage_now is microvolts (uV).
-            out.voltage_mv = raw_volt > 20000.0 ? (raw_volt / 1000.0) : raw_volt;
-        }
-    }
-
-    if (out.voltage_mv > 0.0 && std::abs(out.current_ma) > 0.0) {
-        out.power_mw = (std::abs(out.current_ma) * out.voltage_mv) / 1000.0;
-    }
-
-    out.fast_charging = out.charging && (std::abs(out.current_ma) >= 2200.0 || out.power_mw >= 10000.0);
-    out.thermal_step_active = battery_stepped_;
-    out.charge_limit_ua = last_charge_ua_;
-    out.oem_baseline_ua = charge_baseline_ua_;
-    return out;
+    return read_battery_telemetry(
+        discovered.dir, discovered.temp_node, discovered.status_node,
+        discovered.current_node, discovered.voltage_node,
+        false, charge_limit_ua, 0U);
 }
 
 } // namespace coreflow

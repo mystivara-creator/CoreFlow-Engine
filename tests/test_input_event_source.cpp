@@ -1,7 +1,4 @@
 #include "coreflow/input_event_source.hpp"
-#include "coreflow/foreground_task_resolver.hpp"
-#include "coreflow/autonomous_tuner.hpp"
-#include "coreflow/baseline_store.hpp"
 
 #include <array>
 #include <cassert>
@@ -167,58 +164,6 @@ static void run_inotify_hotplug_tests() {
     fs::remove_all(root);
 }
 
-static void put_file(const fs::path& path, const std::string& value) {
-    fs::create_directories(path.parent_path());
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    assert(output.good());
-    output << value;
-    assert(output.good());
-}
-
-static std::string proc_stat(pid_t pid, uint64_t start) {
-    std::string result = std::to_string(pid) + " (com.example.game) S";
-    for (unsigned field = 4; field <= 21; ++field) result += " 0";
-    result += ' ';
-    result += std::to_string(start);
-    result += " 0 0\n";
-    return result;
-}
-
-static void make_task(const fs::path& proc, pid_t pid, pid_t tid,
-                      const std::string& comm, uint64_t start) {
-    put_file(proc / std::to_string(pid) / "task" / std::to_string(tid) / "comm",
-             comm + "\n");
-    put_file(proc / std::to_string(pid) / "task" / std::to_string(tid) / "stat",
-             proc_stat(tid, start));
-    std::string status = "Name:\t";
-    status += comm;
-    status += "\nTgid:\t";
-    status += std::to_string(pid);
-    status += "\nUid:\t10000\t10000\t10000\t10000\n";
-    put_file(proc / std::to_string(tid) / "status", status);
-    put_file(proc / std::to_string(pid) / "task" / std::to_string(tid) / "cgroup",
-             "0::/top-app/render\n");
-}
-
-static void prepare_foreground_fixture(const fs::path& cgroup, const fs::path& proc) {
-    const fs::path top = cgroup / "top-app";
-    const fs::path render = top / "render";
-    put_file(cgroup / "cgroup.controllers", "cpu\n");
-    put_file(cgroup / "cgroup.type", "domain threaded\n");
-    put_file(cgroup / "cgroup.threads", "");
-    put_file(top / "cgroup.type", "threaded\n");
-    put_file(top / "cgroup.procs", "321\n");
-    put_file(top / "cgroup.threads", "321\n");
-    put_file(render / "cgroup.type", "threaded\n");
-    put_file(render / "cgroup.threads", "322\n");
-
-    put_file(proc / "321/cmdline", std::string("com.example.game\0", 17));
-    put_file(proc / "321/status",
-             "Name:\tcom.example.game\nTgid:\t321\nUid:\t10000\t10000\t10000\t10000\n");
-    make_task(proc, 321, 321, "main", 1001);
-    make_task(proc, 321, 322, "RenderThread", 1002);
-}
-
 static size_t count_open_fds() {
     DIR* directory = ::opendir("/proc/self/fd");
     assert(directory != nullptr);
@@ -241,25 +186,13 @@ static void run_fd_leak_regression() {
     assert(root_text != nullptr);
     const fs::path root(root_text);
     const fs::path input_dir = root / "input";
-    const fs::path cgroup = root / "cgroup";
-    const fs::path proc = root / "proc";
     fs::create_directories(input_dir);
 
-    assert(::setenv("COREFLOW_TEST_STATE_DIR", (root / "state").c_str(), 1) == 0);
-    assert(BaselineStore::instance().recover_pending());
-    // The controller probes cgroup.controllers in its constructor.
-    prepare_foreground_fixture(cgroup, proc);
-    CentralMutationCoordinator coordinator;
-    coordinator.reset();
     EpollReactor reactor;
-    CgroupV2Controller controller(coordinator, cgroup.string(), proc.string());
-    assert(controller.is_supported());
-    ForegroundTaskResolver resolver(controller, (cgroup / "top-app").string(), proc.string());
     NativeInputEventSource source(reactor, input_dir.string(), &accept_test_fifo);
 
     const size_t fd_count_before = count_open_fds();
     for (unsigned iteration = 0; iteration < 50; ++iteration) {
-        prepare_foreground_fixture(cgroup, proc);
         const fs::path event_path = input_dir / "event0";
         assert(::mkfifo(event_path.c_str(), 0600) == 0);
 
@@ -270,18 +203,6 @@ static void run_fd_leak_regression() {
         assert(::unlink(event_path.c_str()) == 0);
         NativeInputEventSourceTestAccess::scan(source);
         assert(!source.active());
-
-        assert(resolver.refresh(true));
-        assert(resolver.tracked_threads() == 2);
-
-        // Model kernel thread-membership readback after the migration.
-        put_file(cgroup / "top-app/render/cgroup.threads", "");
-        put_file(cgroup / "top-app/cgroup.threads", "321\n322\n");
-        put_file(proc / "321/task/322/cgroup", "0::/top-app\n");
-        assert(resolver.restore_all());
-        assert(resolver.tracked_threads() == 0);
-        assert(controller.pending_thread_migrations() == 0);
-        assert(coordinator.active_leases().empty());
 
         source.stop();
         assert(!source.active());
