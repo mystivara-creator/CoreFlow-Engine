@@ -35,6 +35,7 @@ struct ForegroundAppInfo {
     std::string package_name;
     std::vector<int32_t> critical_tids;
     bool has_game_thread{false};
+    bool has_render_thread{false};
 };
 
 struct ContextSignalInput {
@@ -87,6 +88,7 @@ public:
     [[nodiscard]] static const char* mode_name(ContextMode mode) noexcept;
     [[nodiscard]] static bool is_critical_render_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_game_engine_thread_name(std::string_view comm) noexcept;
+    [[nodiscard]] static bool is_background_system_service(std::string_view pkg) noexcept;
 
 private:
     std::string procfs_root_;

@@ -227,6 +227,50 @@ bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexce
            comm == "adreno-worker";
 }
 
+bool ContextEngine::is_background_system_service(std::string_view pkg) noexcept {
+    if (pkg.empty()) return true;
+    const std::string lower = to_lower_copy(pkg);
+    auto starts_with = [&](std::string_view prefix) {
+        return lower.size() >= prefix.size() && lower.compare(0, prefix.size(), prefix) == 0;
+    };
+    auto ends_with = [&](std::string_view suffix) {
+        return lower.size() >= suffix.size() &&
+               lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    if (ends_with(".service") || ends_with(".provider") || ends_with(".overlay") ||
+        ends_with(".providers") || ends_with(".daemon")) {
+        return true;
+    }
+    if (starts_with("com.android.providers.") ||
+        starts_with("com.qualcomm.") ||
+        starts_with("com.qti.") ||
+        starts_with("com.mediatek.")) {
+        return true;
+    }
+    return lower == "com.xiaomi.xmsf" ||
+           lower == "com.xiaomi.joyose" ||
+           lower == "com.xiaomi.metoknlp" ||
+           lower == "com.xiaomi.mi_connect_service" ||
+           lower == "com.xiaomi.finddevice" ||
+           lower == "com.xiaomi.location.fused" ||
+           lower == "com.miui.daemon" ||
+           lower == "com.miui.analytics" ||
+           lower == "com.miui.powerkeeper" ||
+           lower == "com.miui.wmsvc" ||
+           lower == "com.miui.securitycore" ||
+           lower == "com.android.externalstorage" ||
+           lower == "com.android.se" ||
+           lower == "com.android.keychain" ||
+           lower == "com.android.shell" ||
+           lower == "com.android.bluetooth" ||
+           lower == "com.android.nfc" ||
+           lower == "com.android.phone" ||
+           lower == "com.android.permissioncontroller" ||
+           lower == "com.google.android.gms" ||
+           lower == "com.google.android.gsf" ||
+           lower == "com.google.android.ext.services";
+}
+
 ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcept {
     ContextDecision out{};
     out.foreground_pid = input.foreground_pid;
@@ -373,30 +417,36 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         const auto cmd = read_cmdline_parsed(pdir);
         if (cmd.name.empty() || !is_android_user_app_package(cmd.name, cmd.has_path_slash)) continue;
 
+        const std::string pkg_lower = to_lower_copy(cmd.name);
+        const bool user_configured =
+            gaming_apps_.contains(pkg_lower) || smoothness_apps_.contains(pkg_lower) ||
+            battery_apps_.contains(pkg_lower) || excluded_apps_.contains(pkg_lower);
+        const bool is_bg_service =
+            !user_configured && (cmd.has_service_suffix || is_background_system_service(pkg_lower));
+
         // Android ActivityManager invariant:
         //   adj == 0    -> FOREGROUND_APP_ADJ (visible foreground app OR bound BIND_ABOVE_CLIENT service)
         //   1..100      -> VISIBLE_APP_ADJ (split-screen / PiP / overlay)
         //   >= 200      -> PERCEPTIBLE_APP_ADJ (IME keyboard, background service)
         //   < 0         -> PERSISTENT_PROC_ADJ (system_server, zygote, vendor daemons)
         // Real visible UI apps own a RenderThread/GLThread/UnityMain/GameThread, whereas bound
-        // services (e.g. com.google.android.gms) do not — zero hardcoded package lists needed.
+        // services (e.g. com.xiaomi.xmsf, com.milink.service, com.android.externalstorage) do not.
         const auto adj = read_oom_score_adj(pdir);
         int rank = 0;
         if (adj.has_value()) {
             if (*adj < 0 || *adj >= 200) continue;
             if (*adj == 0) {
-                rank = cmd.has_service_suffix ? 3 : 4;
-                if (!cmd.has_service_suffix && process_has_render_thread(pid)) {
-                    rank = 6;
-                }
+                const bool has_rt = !cmd.has_service_suffix && process_has_render_thread(pid);
+                if (is_bg_service && !has_rt) continue;
+                rank = has_rt ? 6 : (cmd.has_service_suffix ? 3 : 4);
             } else {
+                if (is_bg_service) continue;
                 rank = cmd.has_service_suffix ? 1 : 2;
             }
         } else {
-            rank = cmd.has_service_suffix ? 3 : 4;
-            if (!cmd.has_service_suffix && process_has_render_thread(pid)) {
-                rank = 6;
-            }
+            const bool has_rt = !cmd.has_service_suffix && process_has_render_thread(pid);
+            if (is_bg_service && !has_rt) continue;
+            rank = has_rt ? 6 : (cmd.has_service_suffix ? 3 : 4);
         }
 
         // Tie-breaker: keep currently tracked foreground PID sticky so sibling processes
@@ -412,12 +462,14 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     if (best_pid <= 0) return result;
     result.pid = best_pid;
     result.package_name = std::move(best_pkg);
+    result.has_render_thread = (best_rank == 6);
 
     const uint64_t now = steady_now_ms();
     if (best_pid == cached_fg_pid_ && now >= cached_fg_tids_ms_ &&
         now - cached_fg_tids_ms_ < 3000ULL && !cached_fg_tids_.empty()) {
         result.critical_tids = cached_fg_tids_;
         result.has_game_thread = cached_fg_has_game_thread_;
+        result.has_render_thread = result.has_render_thread || (cached_fg_tids_.size() > 1U);
         return result;
     }
 
@@ -436,8 +488,11 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         if (is_game_engine_thread_name(comm)) {
             result.has_game_thread = true;
         }
-        if (is_critical_render_thread_name(comm) && is_cfs_thread(tid, procfs_root_)) {
-            result.critical_tids.push_back(tid);
+        if (is_critical_render_thread_name(comm)) {
+            result.has_render_thread = true;
+            if (is_cfs_thread(tid, procfs_root_)) {
+                result.critical_tids.push_back(tid);
+            }
         }
     }
     cached_fg_pid_ = best_pid;

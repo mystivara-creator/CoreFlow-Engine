@@ -1,16 +1,17 @@
 package io.coreflow.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.CoreFlowManager
 import io.coreflow.InstalledAppEntry
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
@@ -64,6 +64,10 @@ fun AppsTab(
     var query by rememberSaveable { mutableStateOf("") }
     var filterMode by rememberSaveable { mutableIntStateOf(0) } // 0 = All, 1 = Games, 2 = Rules
     var expandedPackage by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val gamesCount = remember(apps, rules) {
+        apps.count { it.isGame || rules.bucketFor(it.packageName) == CoreFlowManager.AppRuleBucket.GAMING }
+    }
 
     val filtered = remember(apps, query, filterMode, rules) {
         val q = query.trim().lowercase()
@@ -105,36 +109,58 @@ fun AppsTab(
             )
         }
 
+        // HyperOS-style Uniform Segmented Filter Bar (strictly single-line, identical heights)
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MiuixTheme.colorScheme.surfaceContainer)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 val tabs = listOf(
                     "${strings.filterAll} (${apps.size})",
-                    strings.filterGames,
+                    "${strings.filterGames} ($gamesCount)",
                     "${strings.filterRules} (${rules.totalConfigured})",
                 )
                 tabs.forEachIndexed { idx, label ->
-                    TextButton(
-                        text = label,
-                        onClick = { filterMode = idx },
-                        colors = if (filterMode == idx) {
-                            ButtonDefaults.textButtonColorsPrimary()
-                        } else {
-                            ButtonDefaults.textButtonColors()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
+                    val selected = filterMode == idx
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (selected) MiuixTheme.colorScheme.primary else Color.Transparent,
+                            )
+                            .clickable { filterMode = idx }
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = label,
+                            fontSize = 12.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = if (selected) {
+                                MiuixTheme.colorScheme.onPrimary
+                            } else {
+                                MiuixTheme.colorScheme.onSurfaceVariantSummary
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
 
         if (loading) {
             item {
-                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(20.dp)) {
+                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
                     Text(
-                        text = "Loading installed apps and native icons...",
+                        text = strings.loadingApps,
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -142,32 +168,26 @@ fun AppsTab(
             }
         } else if (filtered.isEmpty()) {
             item {
-                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(20.dp)) {
-                    Text(text = "No matching apps found.", style = MiuixTheme.textStyles.body1)
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(text = "Reload App List", onClick = onReloadApps)
+                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
+                    Text(text = strings.noMatchingApps, style = MiuixTheme.textStyles.body1)
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(text = strings.reloadApps, onClick = onReloadApps)
                 }
             }
         } else {
             item {
-                SmallTitle(text = "INSTALLED APPS (${filtered.size})")
+                SmallTitle(text = "${strings.installedAppsHeader} (${filtered.size})")
             }
 
             items(items = filtered, key = { it.packageName }) { app ->
                 val currentBucket = rules.bucketFor(app.packageName)
                 val isExpanded = expandedPackage == app.packageName
                 val isOverride = currentBucket != CoreFlowManager.AppRuleBucket.AUTO
-                val stateColor = when (currentBucket) {
-                    CoreFlowManager.AppRuleBucket.GAMING -> Color(0xFFEF4444)
-                    CoreFlowManager.AppRuleBucket.SMOOTHNESS -> Color(0xFF38BDF8)
-                    CoreFlowManager.AppRuleBucket.BATTERY -> Color(0xFF22C55E)
-                    CoreFlowManager.AppRuleBucket.EXCLUDED -> Color(0xFFF59E0B)
-                    CoreFlowManager.AppRuleBucket.AUTO -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                }
+                val stateColor = bucketAccentColor(currentBucket)
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(14.dp),
+                    insideMargin = PaddingValues(13.dp),
                     onClick = {
                         expandedPackage = if (isExpanded) null else app.packageName
                     },
@@ -175,20 +195,20 @@ fun AppsTab(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(11.dp),
                     ) {
                         if (app.icon != null) {
                             Image(
                                 bitmap = app.icon,
                                 contentDescription = app.label,
                                 modifier = Modifier
-                                    .size(40.dp)
+                                    .size(38.dp)
                                     .clip(RoundedCornerShape(10.dp)),
                             )
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .size(40.dp)
+                                    .size(38.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)),
                                 contentAlignment = Alignment.Center,
@@ -219,13 +239,14 @@ fun AppsTab(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(6.dp))
                                             .background(Color(0xFFEF4444).copy(alpha = 0.16f))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            .padding(horizontal = 5.dp, vertical = 2.dp),
                                     ) {
                                         Text(
                                             text = "GAME",
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFEF4444),
+                                            maxLines = 1,
                                         )
                                     }
                                 }
@@ -255,7 +276,7 @@ fun AppsTab(
                         }
                     }
 
-                    // Deep Per-App Detail Panel (Effective State + 5-Mode Selector + Auto-Bypass Status)
+                    // Deep Per-App Detail Panel (Crisp Uniform 3x2 Chip Grid)
                     AnimatedVisibility(visible = isExpanded) {
                         Column(modifier = Modifier.padding(top = 12.dp)) {
                             val effectiveLabel = if (isOverride) {
@@ -272,7 +293,7 @@ fun AppsTab(
                             if (bypassOnGaming && (currentBucket == CoreFlowManager.AppRuleBucket.GAMING || app.isGame)) {
                                 Spacer(Modifier.height(2.dp))
                                 Text(
-                                    text = "Auto Bypass Charging will engage automatically when launched.",
+                                    text = strings.autoBypassHint,
                                     fontSize = 10.sp,
                                     color = Color(0xFF10B981),
                                 )
@@ -288,49 +309,44 @@ fun AppsTab(
                                 CoreFlowManager.AppRuleBucket.EXCLUDED,
                             )
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(IntrinsicSize.Min),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 for (b in firstRow) {
-                                    TextButton(
-                                        text = b.label,
+                                    BucketChip(
+                                        label = b.label,
+                                        selected = currentBucket == b,
+                                        accent = bucketAccentColor(b),
+                                        modifier = Modifier.weight(1f),
                                         onClick = { onAssignBucket(app.packageName, b) },
-                                        colors = if (currentBucket == b) {
-                                            ButtonDefaults.textButtonColorsPrimary()
-                                        } else {
-                                            ButtonDefaults.textButtonColors()
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight(),
                                     )
                                 }
                             }
                             Spacer(Modifier.height(6.dp))
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(IntrinsicSize.Min),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 for (b in secondRow) {
-                                    TextButton(
-                                        text = b.label,
+                                    BucketChip(
+                                        label = b.label,
+                                        selected = currentBucket == b,
+                                        accent = bucketAccentColor(b),
+                                        modifier = Modifier.weight(1f),
                                         onClick = { onAssignBucket(app.packageName, b) },
-                                        colors = if (currentBucket == b) {
-                                            ButtonDefaults.textButtonColorsPrimary()
-                                        } else {
-                                            ButtonDefaults.textButtonColors()
-                                        },
-                                        modifier = Modifier.weight(1f).fillMaxHeight(),
                                     )
                                 }
                                 if (isOverride) {
-                                    TextButton(
-                                        text = strings.resetToGlobal,
+                                    BucketChip(
+                                        label = strings.resetShort,
+                                        selected = false,
+                                        accent = Color(0xFF94A3B8),
+                                        outlined = true,
+                                        modifier = Modifier.weight(1f),
                                         onClick = { onAssignBucket(app.packageName, CoreFlowManager.AppRuleBucket.AUTO) },
-                                        modifier = Modifier.weight(1f).fillMaxHeight(),
                                     )
+                                } else {
+                                    Spacer(Modifier.weight(1f))
                                 }
                             }
                         }
@@ -340,5 +356,64 @@ fun AppsTab(
         }
 
         item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun bucketAccentColor(bucket: CoreFlowManager.AppRuleBucket): Color = when (bucket) {
+    CoreFlowManager.AppRuleBucket.GAMING -> Color(0xFFEF4444)
+    CoreFlowManager.AppRuleBucket.SMOOTHNESS -> Color(0xFF38BDF8)
+    CoreFlowManager.AppRuleBucket.BATTERY -> Color(0xFF22C55E)
+    CoreFlowManager.AppRuleBucket.EXCLUDED -> Color(0xFFF59E0B)
+    CoreFlowManager.AppRuleBucket.AUTO -> MiuixTheme.colorScheme.primary
+}
+
+@Composable
+private fun BucketChip(
+    label: String,
+    selected: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    outlined: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val bgColor = when {
+        selected -> accent
+        outlined -> Color.Transparent
+        else -> MiuixTheme.colorScheme.secondaryContainer.copy(alpha = 0.42f)
+    }
+    val textColor = when {
+        selected -> Color.White
+        outlined -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+        else -> MiuixTheme.colorScheme.onSurface
+    }
+    val borderMod = if (outlined) {
+        Modifier.border(
+            BorderStroke(1.dp, MiuixTheme.colorScheme.outline.copy(alpha = 0.45f)),
+            RoundedCornerShape(10.dp),
+        )
+    } else {
+        Modifier
+    }
+
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(bgColor)
+            .then(borderMod)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = textColor,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
