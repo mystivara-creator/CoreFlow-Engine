@@ -1,11 +1,7 @@
-# CFAE System Framework v4.0.0 WebUI Public Assets
+# CoreFlow Engine v5.0.0 WebUI
 
-Vite copies these static assets into `module/webroot` during build so both standard web preview deployments (`dist/`) and KernelSU / APatch / Magisk offline packaging remain 100% identical and synchronized.
+Lightweight Material Design 3 offline dashboard synchronized into `module/webroot` for KernelSU, APatch, and Magisk.
 
-Native mode is capability-driven and read-only for system policy: the dashboard explains `coreflowd --status`, thermal and PSI telemetry, semantic evidence, ownership journal state, and daemon audit decisions. The daemon owns CPU, memory, storage, thermal, and longevity adaptation. Vulkan layer mode is an explicit loader configuration; daemon-side installed/configured state does not prove an application process loaded the layer or reused a persisted cache. Browser mode is an explicitly labelled simulation of the Coordinated Mutation Safety architecture.
-
-Architecture Studio remains available as an in-app learning environment for the engine model, mutation safety, risk provenance, thermal simulation, and source-level architecture. It does not apply kernel policy.
-
-Perfetto FrameTimeline-derived jank is exposed only when fresh source samples exist. Missing or denied trace access leaves frame evidence unavailable; no synthetic FPS or frame-time values are emitted.
-
-CF-DVS is exposed in the WebUI as a read-only session-state and validation-coverage view. Session creation/finalization remains owned by the native runtime lifecycle; the WebUI does not expose start/stop/profile controls. The public `CoreFlow` JavaScript bridge intentionally exposes status and capability queries only, not arbitrary shell execution or policy/lifecycle mutators.
+- **Home**: Live 5-mode context monitor (`LAUNCH_BURST`, `INTERACTIVE`, `GAMING`, `EFFICIENCY`, `SCREEN_OFF`), active foreground app, SoC/Battery thermal telemetry, 4 performance profiles (`Balanced`, `Smoothness`, `Battery`, `Gaming`), and 5 core feature toggles.
+- **Apps**: Per-app override management (`Gaming Apps` and `Excluded / OEM Stock` apps) applied safely via `coreflowd --set-config`.
+- **System & Safety**: Dynamic hardware discovery summary (CPU clusters, GPU, UFS/eMMC storage, RAM/ZRAM, `sched_setattr` per-thread UClamp support, MGLRU), Battery Power telemetry, CFJ4 Baseline Journal viewer, and one-tap OEM Baseline Restore.

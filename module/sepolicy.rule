@@ -1,6 +1,149 @@
-# CFAE System Framework v4.0.0 — KernelSU capability policy notes.
-# No permissive mode or broad sysfs allow rule is installed.
-# The root-manager su domain supplies the authority used by coreflowd.
-# Nodes denied by the active SELinux policy are reported as per-actuator
-# PermissionDenied capabilities and skipped without blocking independent domains.
-# Do not add wildcard allow rules for sysfs, procfs, thermal, backlight or DRM.
+# CoreFlow Engine v5.0.0 — Scoped SELinux live policy rules (KernelSU / APatch / Magisk).
+# One target domain/type per rule so kernels missing vendor-specific types (e.g. sysfs_kgsl
+# on non-Qualcomm SoCs or legacy untrusted_app_25 on newer AOSP) skip only that line cleanly.
+# No permissive mode and no wildcard (*) rules are used.
+
+# ---------------------------------------------------------------------------
+# 1. Per-TID UClamp Scheduling (SYS_sched_setattr / sched_getattr)
+#    Allows coreflowd (running in su / magisk context) to read /proc/<pid>/task
+#    and apply per-thread uclamp_min/uclamp_max without HyperOS/OEM AVC denials.
+# ---------------------------------------------------------------------------
+allow su surfaceflinger process { getsched setsched }
+allow su untrusted_app process { getsched setsched }
+allow su untrusted_app_25 process { getsched setsched }
+allow su untrusted_app_27 process { getsched setsched }
+allow su untrusted_app_29 process { getsched setsched }
+allow su untrusted_app_30 process { getsched setsched }
+allow su untrusted_app_32 process { getsched setsched }
+allow su priv_app process { getsched setsched }
+allow su system_app process { getsched setsched }
+
+allow magisk surfaceflinger process { getsched setsched }
+allow magisk untrusted_app process { getsched setsched }
+allow magisk untrusted_app_25 process { getsched setsched }
+allow magisk untrusted_app_27 process { getsched setsched }
+allow magisk untrusted_app_29 process { getsched setsched }
+allow magisk untrusted_app_30 process { getsched setsched }
+allow magisk untrusted_app_32 process { getsched setsched }
+allow magisk priv_app process { getsched setsched }
+allow magisk system_app process { getsched setsched }
+
+# Read-only /proc/<pid>/task & comm enumeration for RenderThread / HWUI / game TID resolution
+allow su surfaceflinger dir { read open search getattr }
+allow su surfaceflinger file { read open getattr }
+allow su untrusted_app dir { read open search getattr }
+allow su untrusted_app file { read open getattr }
+allow su untrusted_app_25 dir { read open search getattr }
+allow su untrusted_app_25 file { read open getattr }
+allow su untrusted_app_27 dir { read open search getattr }
+allow su untrusted_app_27 file { read open getattr }
+allow su untrusted_app_29 dir { read open search getattr }
+allow su untrusted_app_29 file { read open getattr }
+allow su untrusted_app_30 dir { read open search getattr }
+allow su untrusted_app_30 file { read open getattr }
+allow su untrusted_app_32 dir { read open search getattr }
+allow su untrusted_app_32 file { read open getattr }
+allow su priv_app dir { read open search getattr }
+allow su priv_app file { read open getattr }
+allow su system_app dir { read open search getattr }
+allow su system_app file { read open getattr }
+
+allow magisk surfaceflinger dir { read open search getattr }
+allow magisk surfaceflinger file { read open getattr }
+allow magisk untrusted_app dir { read open search getattr }
+allow magisk untrusted_app file { read open getattr }
+allow magisk untrusted_app_25 dir { read open search getattr }
+allow magisk untrusted_app_25 file { read open getattr }
+allow magisk untrusted_app_27 dir { read open search getattr }
+allow magisk untrusted_app_27 file { read open getattr }
+allow magisk untrusted_app_29 dir { read open search getattr }
+allow magisk untrusted_app_29 file { read open getattr }
+allow magisk untrusted_app_30 dir { read open search getattr }
+allow magisk untrusted_app_30 file { read open getattr }
+allow magisk untrusted_app_32 dir { read open search getattr }
+allow magisk untrusted_app_32 file { read open getattr }
+allow magisk priv_app dir { read open search getattr }
+allow magisk priv_app file { read open getattr }
+allow magisk system_app dir { read open search getattr }
+allow magisk system_app file { read open getattr }
+
+# ---------------------------------------------------------------------------
+# 2. CPU, GPU, Thermal, Cgroup v2, and Block/Storage Queue Sysfs Access
+# ---------------------------------------------------------------------------
+# CPU clusters & cpufreq governors
+allow su sysfs_devices_system_cpu dir { read open search getattr }
+allow su sysfs_devices_system_cpu file { read write open getattr }
+allow magisk sysfs_devices_system_cpu dir { read open search getattr }
+allow magisk sysfs_devices_system_cpu file { read write open getattr }
+
+# GPU (Qualcomm KGSL & generic devfreq)
+allow su sysfs_kgsl dir { read open search getattr }
+allow su sysfs_kgsl file { read write open getattr }
+allow su sysfs_devfreq dir { read open search getattr }
+allow su sysfs_devfreq file { read write open getattr }
+allow magisk sysfs_kgsl dir { read open search getattr }
+allow magisk sysfs_kgsl file { read write open getattr }
+allow magisk sysfs_devfreq dir { read open search getattr }
+allow magisk sysfs_devfreq file { read write open getattr }
+
+# Thermal telemetry & thermal zones
+allow su sysfs_thermal dir { read open search getattr }
+allow su sysfs_thermal file { read write open getattr }
+allow magisk sysfs_thermal dir { read open search getattr }
+allow magisk sysfs_thermal file { read write open getattr }
+
+# Cgroup / Cgroup v2 background QoS (io.weight & cpu.uclamp.max)
+allow su cgroup dir { read open search getattr }
+allow su cgroup file { read write open getattr }
+allow su cgroup_v2 dir { read open search getattr }
+allow su cgroup_v2 file { read write open getattr }
+allow magisk cgroup dir { read open search getattr }
+allow magisk cgroup file { read write open getattr }
+allow magisk cgroup_v2 dir { read open search getattr }
+allow magisk cgroup_v2 file { read write open getattr }
+
+# Block devices & sysfs storage queue (dynamic UFS/eMMC read_ahead_kb & ZRAM/MGLRU)
+allow su block_device dir { read open search getattr }
+allow su block_device blk_file { read write open getattr }
+allow su block_device file { read write open getattr }
+allow su sysfs_block dir { read open search getattr }
+allow su sysfs_block file { read write open getattr }
+allow su sysfs_devices_block dir { read open search getattr }
+allow su sysfs_devices_block file { read write open getattr }
+allow su sysfs_ufs dir { read open search getattr }
+allow su sysfs_ufs file { read write open getattr }
+allow su sysfs_dm dir { read open search getattr }
+allow su sysfs_dm file { read write open getattr }
+allow su sysfs_zram dir { read open search getattr }
+allow su sysfs_zram file { read write open getattr }
+allow su sysfs dir { read open search getattr }
+allow su sysfs file { read write open getattr }
+
+allow magisk block_device dir { read open search getattr }
+allow magisk block_device blk_file { read write open getattr }
+allow magisk block_device file { read write open getattr }
+allow magisk sysfs_block dir { read open search getattr }
+allow magisk sysfs_block file { read write open getattr }
+allow magisk sysfs_devices_block dir { read open search getattr }
+allow magisk sysfs_devices_block file { read write open getattr }
+allow magisk sysfs_ufs dir { read open search getattr }
+allow magisk sysfs_ufs file { read write open getattr }
+allow magisk sysfs_dm dir { read open search getattr }
+allow magisk sysfs_dm file { read write open getattr }
+allow magisk sysfs_zram dir { read open search getattr }
+allow magisk sysfs_zram file { read write open getattr }
+allow magisk sysfs dir { read open search getattr }
+allow magisk sysfs file { read write open getattr }
+
+# Anti-stutter VM sysctl (swappiness, compaction) & native touch input detection
+allow su proc_vmstat file { read open getattr }
+allow su sysctl_vm dir { read open search getattr }
+allow su sysctl_vm file { read write open getattr }
+allow su input_device dir { read open search getattr }
+allow su input_device chr_file { read open getattr ioctl }
+
+allow magisk proc_vmstat file { read open getattr }
+allow magisk sysctl_vm dir { read open search getattr }
+allow magisk sysctl_vm file { read write open getattr }
+allow magisk input_device dir { read open search getattr }
+allow magisk input_device chr_file { read open getattr ioctl }

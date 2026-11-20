@@ -34,7 +34,7 @@ if command -v rustup >/dev/null 2>&1; then
 fi
 BUILD_DIR="$ROOT/build/android-arm64"
 
-echo "CFAE System Framework v4.0.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
+echo "CoreFlow Engine v5.0.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
@@ -50,12 +50,5 @@ if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
     echo "error: coreflowd was not produced." >&2
     exit 1
 fi
-VK_LAYER_SO="$(find "$BUILD_DIR" -type f -name libVkLayer_coreflow.so | head -n 1)"
-if [ -z "$VK_LAYER_SO" ] || [ ! -s "$VK_LAYER_SO" ]; then
-    echo "error: libVkLayer_coreflow.so was not produced." >&2
-    exit 1
-fi
-
 echo "Android ARM64 build: PASS"
 echo "Binary: $BINARY"
-echo "Vulkan layer: $VK_LAYER_SO"

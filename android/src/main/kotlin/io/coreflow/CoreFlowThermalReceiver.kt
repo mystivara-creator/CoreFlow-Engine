@@ -9,6 +9,7 @@ import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
@@ -17,10 +18,9 @@ import kotlinx.coroutines.launch
  */
 class CoreFlowThermalReceiver : BroadcastReceiver() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override fun onReceive(context: Context, intent: Intent) {
         val pendingResult = goAsync()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope.launch {
             try {
                 when (intent.action) {
@@ -53,6 +53,7 @@ class CoreFlowThermalReceiver : BroadcastReceiver() {
                 }
             } finally {
                 pendingResult.finish()
+                scope.cancel()
             }
         }
     }

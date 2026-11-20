@@ -1,33 +1,35 @@
-#include "coreflow/types.hpp"
-#include "coreflow/coreflow_context.hpp"
-#include "coreflow/config.hpp"
-#include "coreflow/stability_policy.hpp"
-#include "coreflow/reactor.hpp"
-#include "coreflow/render_booster.hpp"
-#include "coreflow/input_event_source.hpp"
-#include "coreflow/workload_intelligence.hpp"
-#include "coreflow/cgroup_v2.hpp"
-#include "coreflow/mount_topology.hpp"
-#include "coreflow/foreground_task_resolver.hpp"
-#include "coreflow/uclamp.hpp"
+/**
+ * @file main.cpp
+ * @brief CoreFlow Engine v5.0.0 — Lean 4-Pillar Adaptive Android Daemon.
+ *
+ * Pillars:
+ *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
+ *  2. ContextEngine (5-mode context + foreground app + critical render TIDs + per-app rules)
+ *  3. Focused Actuators:
+ *     - ThreadSchedulerActuator (per-TID sched_setattr UClamp on SurfaceFlinger/RenderThread/UI)
+ *     - StorageMemoryActuator (dynamic UFS/eMMC burst, background QoS, MGLRU, smart pre-read)
+ *     - ThermalEnvelopeActuator (Rust PID + Neural 10s lookahead CPU/GPU smooth pacing)
+ *     - HardwareLongevityManager (battery thermal step-charging & foreground io.weight)
+ *  4. Clean JSON status/config contract for the v5 MD3 WebUI.
+ * @license MIT
+ */
 #include "coreflow/baseline_store.hpp"
-#include "coreflow/direct_adaptive_runtime.hpp"
-#include "coreflow/recovery_monitor.hpp"
-#include "coreflow/thermal_monitor.hpp"
+#include "coreflow/config.hpp"
 #include "coreflow/cooling_feedback.hpp"
-#include "coreflow/unique_fd.hpp"
-#include "coreflow/device_validation.hpp"
-#include "coreflow/frequency_controller.hpp"
-#include "coreflow/power_bridge.hpp"
-#include "coreflow/device_profiler.hpp"
 #include "coreflow/hardware_longevity.hpp"
+#include "coreflow/input_event_source.hpp"
+#include "coreflow/mount_topology.hpp"
+#include "coreflow/mutation_coordinator.hpp"
 #include "coreflow/neural_predictor.hpp"
-#include "coreflow/autonomous_tuner.hpp"
-#include "coreflow/worker_pool.hpp"
-#include "coreflow/vulkan_controller.hpp"
-#include "coreflow/semantic/capability_resolver.hpp"
-#include "coreflow/semantic/linux_sysfs_discovery_adapter.hpp"
-#include "coreflow/semantic/semantic_evidence_serializer.hpp"
+#include "coreflow/reactor.hpp"
+#include "coreflow/thermal_monitor.hpp"
+#include "coreflow/types.hpp"
+#include "coreflow/unique_fd.hpp"
+#include "coreflow/v5/context_engine.hpp"
+#include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v5/storage_memory_actuator.hpp"
+#include "coreflow/v5/thermal_envelope_actuator.hpp"
+#include "coreflow/v5/thread_scheduler.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -43,45 +45,33 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
-#include <iterator>
-#include <limits>
-#include <mutex>
-#include <optional>
-#include <poll.h>
-#include <pthread.h>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <sys/file.h>
 #include <sys/signalfd.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <thread>
-#include <time.h>
-#include <utility>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
 
 using namespace coreflow;
+using namespace coreflow::v5;
 
 namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
+constexpr char kVersion[] = "5.0.1";
 
 void emit_log(bool is_error, const std::string& message) {
-    if (is_error) {
-        std::cerr << message << "\n";
-    } else {
-        std::cout << message << "\n";
-    }
+    if (is_error) std::cerr << message << "\n";
+    else std::cout << message << "\n";
 #ifdef __ANDROID__
     __android_log_write(
         is_error ? ANDROID_LOG_WARN : ANDROID_LOG_INFO,
@@ -90,56 +80,22 @@ void emit_log(bool is_error, const std::string& message) {
 #endif
 }
 
-// Fatal handlers use only async-signal-safe operations. The previous Android
-// disposition is restored before re-raising so debuggerd can capture the fault.
+// Async-signal-safe fatal handoff to Android debuggerd
 constexpr int kFatalSignalSlots = 128;
 struct sigaction old_sigaction[kFatalSignalSlots]{};
 sigset_t fatal_unblock_sets[kFatalSignalSlots]{};
 volatile sig_atomic_t old_sigaction_valid[kFatalSignalSlots]{};
 
 void on_fatal_signal(int signum) {
-    char message[128];
-    size_t length = 0;
-    constexpr char prefix[] = "[CoreFlow] Fatal signal ";
-    constexpr char suffix[] = "; handing off to Android debuggerd; next start will recover journal.\n";
-    for (size_t i = 0; i < sizeof(prefix) - 1U; ++i) message[length++] = prefix[i];
-
-    unsigned value = signum > 0 ? static_cast<unsigned>(signum) : 0U;
-    char digits[16];
-    size_t digit_count = 0;
-    do {
-        digits[digit_count++] = static_cast<char>('0' + (value % 10U));
-        value /= 10U;
-    } while (value != 0U && digit_count < sizeof(digits));
-    while (digit_count > 0U) message[length++] = digits[--digit_count];
-    for (size_t i = 0; i < sizeof(suffix) - 1U; ++i) message[length++] = suffix[i];
-    (void)::write(STDERR_FILENO, message, length);
-
-    if (signum <= 0 || signum >= kFatalSignalSlots ||
-        old_sigaction_valid[signum] == 0) {
-        ::_exit(128 + signum);
-    }
-    if (::sigaction(signum, &old_sigaction[signum], nullptr) != 0) {
-        ::_exit(128 + signum);
-    }
-    if (::sigprocmask(SIG_UNBLOCK, &fatal_unblock_sets[signum], nullptr) != 0) {
-        ::_exit(128 + signum);
-    }
-    if (::raise(signum) != 0) {
-        ::_exit(128 + signum);
+    constexpr char msg[] = "[CoreFlow] Fatal signal; handing off to debuggerd; next boot will recover CFJ4 journal.\n";
+    (void)::write(STDERR_FILENO, msg, sizeof(msg) - 1U);
+    if (signum > 0 && signum < kFatalSignalSlots && old_sigaction_valid[signum] != 0) {
+        if (::sigaction(signum, &old_sigaction[signum], nullptr) == 0 &&
+            ::sigprocmask(SIG_UNBLOCK, &fatal_unblock_sets[signum], nullptr) == 0) {
+            (void)::raise(signum);
+        }
     }
     ::_exit(128 + signum);
-}
-
-void install_fatal_signal_action(int signum, const struct sigaction& action) noexcept {
-    if (signum <= 0 || signum >= kFatalSignalSlots) return;
-    sigset_t unblock_set{};
-    if (::sigemptyset(&unblock_set) != 0 || ::sigaddset(&unblock_set, signum) != 0) return;
-    fatal_unblock_sets[signum] = unblock_set;
-    old_sigaction_valid[signum] = 0;
-    if (::sigaction(signum, &action, &old_sigaction[signum]) == 0) {
-        old_sigaction_valid[signum] = 1;
-    }
 }
 
 void install_signal_hardening() noexcept {
@@ -151,128 +107,68 @@ void install_signal_hardening() noexcept {
     struct sigaction fatal_sa{};
     fatal_sa.sa_handler = on_fatal_signal;
     sigemptyset(&fatal_sa.sa_mask);
-    fatal_sa.sa_flags = 0;
-    install_fatal_signal_action(SIGSEGV, fatal_sa);
-    install_fatal_signal_action(SIGABRT, fatal_sa);
-    install_fatal_signal_action(SIGBUS, fatal_sa);
-    install_fatal_signal_action(SIGFPE, fatal_sa);
-    install_fatal_signal_action(SIGILL, fatal_sa);
-    install_fatal_signal_action(SIGTRAP, fatal_sa);
-    install_fatal_signal_action(SIGSYS, fatal_sa);
+    for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTRAP, SIGSYS}) {
+        if (sig <= 0 || sig >= kFatalSignalSlots) continue;
+        sigset_t set{};
+        if (::sigemptyset(&set) == 0 && ::sigaddset(&set, sig) == 0) {
+            fatal_unblock_sets[sig] = set;
+            if (::sigaction(sig, &fatal_sa, &old_sigaction[sig]) == 0) {
+                old_sigaction_valid[sig] = 1;
+            }
+        }
+    }
 }
 
-bool marker(const char* path) noexcept {
+bool marker_exists(const char* path) noexcept {
     struct stat st{};
     return ::lstat(path, &st) == 0;
 }
 
 bool safety_halt_requested() noexcept {
-    return marker("/data/adb/coreflow/SAFE_MODE") ||
-           marker("/data/adb/coreflow/DISABLE") ||
-           marker("/data/adb/modules/cfae_framework/disable") ||
-           marker("/data/adb/modules/coreflow_engine/disable");
+    return marker_exists("/data/adb/coreflow/SAFE_MODE") ||
+           marker_exists("/data/adb/coreflow/DISABLE") ||
+           marker_exists("/data/adb/modules/cfae_framework/disable") ||
+           marker_exists("/data/adb/modules/coreflow_engine/disable");
 }
 
-std::optional<double> read_psi_avg10(const char* path) {
-    if (path == nullptr || *path == '\0') return std::nullopt;
-    constexpr unsigned kMaxBusyRetries = 3U;
-    UniqueFd fd;
-    for (unsigned attempt = 0; attempt <= kMaxBusyRetries;) {
-        fd = UniqueFd(::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-        if (fd.valid()) break;
-        if (errno == EINTR) continue;
-        if ((errno == EAGAIN || errno == EWOULDBLOCK) && attempt < kMaxBusyRetries) {
-            ++attempt;
-            continue;
-        }
-        return std::nullopt;
-    }
-    if (!fd.valid()) return std::nullopt;
-
-    struct stat st{};
-    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return std::nullopt;
-
-    char buf[512];
-    size_t total = 0;
-    unsigned read_busy_retries = 0U;
-    while (total < sizeof(buf)) {
-        const ssize_t n = ::read(fd.get(), buf + total, sizeof(buf) - total);
-        if (n > 0) {
-            total += static_cast<size_t>(n);
-            break;
-        }
-        if (n == 0) break;
-        if (errno == EINTR) continue;
-        if ((errno == EAGAIN || errno == EWOULDBLOCK) && read_busy_retries < kMaxBusyRetries) {
-            ++read_busy_retries;
-            continue;
-        }
-        if (total == 0) return std::nullopt;
-        break;
-    }
-    if (total == 0) return std::nullopt;
-
-    std::string_view content(buf, total);
-    size_t pos = 0;
-    while (pos < content.size()) {
-        const size_t eol = content.find('\n', pos);
-        const std::string_view line =
-            eol == std::string_view::npos ? content.substr(pos) : content.substr(pos, eol - pos);
-        pos = eol == std::string_view::npos ? content.size() : eol + 1;
-
-        if (line.rfind("some ", 0) != 0) continue;
-        const size_t at = line.find("avg10=");
-        if (at == std::string_view::npos) continue;
-        const std::string_view rest = line.substr(at + 6);
-        const size_t end_tok = rest.find_first_of(" \t\r");
-        const std::string_view token =
-            end_tok == std::string_view::npos ? rest : rest.substr(0, end_tok);
-        double value = 0.0;
-        if (parse_ascii_double(token, value) && value >= 0.0 && value <= 100.0) {
-            return value;
-        }
-    }
-    return std::nullopt;
+uint64_t steady_now_ms() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-const char* mutation_domain_name(MutationDomain domain) noexcept {
-    switch (domain) {
-        case MutationDomain::CpuPolicy: return "cpu";
-        case MutationDomain::BlockIo: return "io";
-        case MutationDomain::VmMemory: return "vm";
-        case MutationDomain::UclampCgroup: return "uclamp";
-        case MutationDomain::GpuDevfreq: return "gpu";
-        case MutationDomain::PowerLongevity: return "power";
-        case MutationDomain::ThermalCore: return "thermal";
-    }
-    return "unknown";
+uint64_t epoch_now_ms() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-const char* state_name(WorkloadState state) noexcept {
-    switch (state) {
-        case WorkloadState::Balanced: return "balanced";
-        case WorkloadState::SustainedLoad: return "sustained-load";
-        case WorkloadState::PressureGuard: return "pressure-guard";
-        case WorkloadState::ThermalGuard: return "thermal-guard";
-    }
-    return "unknown";
+double safe_num(double v, double fallback = 0.0) noexcept {
+    return std::isfinite(v) ? v : fallback;
 }
 
-bool process_matches(pid_t pid) {
+std::string json_str(std::string_view text) {
+    std::string out = "\"";
+    for (unsigned char c : text) {
+        if (c == '\"' || c == '\\') { out.push_back('\\'); out.push_back(static_cast<char>(c)); }
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c >= 32 && c < 127) out.push_back(static_cast<char>(c));
+        else out.push_back('?');
+    }
+    out.push_back('\"');
+    return out;
+}
+
+bool process_is_coreflowd(pid_t pid) {
     if (pid <= 0) return false;
     if (::kill(pid, 0) != 0 && errno != EPERM) return false;
-
     const std::string cmd_path = "/proc/" + std::to_string(pid) + "/cmdline";
     UniqueFd fd(::open(cmd_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
-
     char buf[256];
     ssize_t n = 0;
-    do {
-        n = ::read(fd.get(), buf, sizeof(buf));
-    } while (n < 0 && errno == EINTR);
+    do { n = ::read(fd.get(), buf, sizeof(buf)); } while (n < 0 && errno == EINTR);
     if (n <= 0) return false;
-
     const std::string_view raw(buf, static_cast<size_t>(n));
     const size_t nul = raw.find('\0');
     const std::string_view argv0 = nul == std::string_view::npos ? raw : raw.substr(0, nul);
@@ -281,949 +177,45 @@ bool process_matches(pid_t pid) {
     return base == "coreflowd";
 }
 
-bool service_launcher_authorized() {
-    const pid_t parent = ::getppid();
-    if (parent <= 1) return false;
-
-    UniqueFd state_dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-    if (!state_dir.valid()) return false;
-    UniqueFd service_lock(::openat(state_dir.get(), "service.lock",
-        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-    if (!service_lock.valid()) return false;
-    UniqueFd owner_fd(::openat(service_lock.get(), "owner.pid",
-        O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!owner_fd.valid()) return false;
-
-    struct stat owner_stat{};
-    if (::fstat(owner_fd.get(), &owner_stat) != 0 || !S_ISREG(owner_stat.st_mode)) return false;
-    char owner_text[32];
-    ssize_t count = 0;
-    do {
-        count = ::read(owner_fd.get(), owner_text, sizeof(owner_text));
-    } while (count < 0 && errno == EINTR);
-    if (count <= 0) return false;
-
-    const std::string owner_value = DaemonConfig::trim(
-        std::string(owner_text, static_cast<size_t>(count)));
-    long owner_pid = 0;
-    const auto parsed = std::from_chars(
-        owner_value.data(), owner_value.data() + owner_value.size(), owner_pid);
-    if (parsed.ec != std::errc{} ||
-        parsed.ptr != owner_value.data() + owner_value.size() ||
-        owner_pid != static_cast<long>(parent)) return false;
-    return ::kill(parent, 0) == 0 || errno == EPERM;
-}
-
 pid_t daemon_pid() {
     UniqueFd fd(::open(kPidPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return 0;
-
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return 0;
-
     char buf[32];
     ssize_t n = 0;
-    do {
-        n = ::read(fd.get(), buf, sizeof(buf));
-    } while (n < 0 && errno == EINTR);
+    do { n = ::read(fd.get(), buf, sizeof(buf)); } while (n < 0 && errno == EINTR);
     if (n <= 0) return 0;
-
     const std::string trimmed = DaemonConfig::trim(std::string(buf, static_cast<size_t>(n)));
-    if (trimmed.empty()) return 0;
-
     long value = 0;
-    const auto parsed = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), value);
-    if (parsed.ec != std::errc{} || parsed.ptr != trimmed.data() + trimmed.size()) return 0;
-    if (value < 1 || value > 2147483647L) return 0;
-
-    const auto pid = static_cast<pid_t>(value);
-    return process_matches(pid) ? pid : 0;
-}
-
-bool journal_clear() {
-    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
-    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) {
-        return errno == ENOENT;
-    }
-
-    struct stat st{};
-    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > 65536) {
-        return false;
-    }
-
-    char buf[4096];
-    std::string raw;
-    while (raw.size() <= 65536) {
-        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (n == 0) break;
-        raw.append(buf, static_cast<size_t>(n));
-    }
-    if (raw.size() > 65536) return false;
-
-    std::istringstream journal(raw);
-    std::string header;
-    if (!std::getline(journal, header) ||
-        (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
-         header.rfind("CFJ3\t", 0) != 0 && header.rfind("CFJ4\t", 0) != 0)) return false;
-    std::string line;
-    while (std::getline(journal, line)) {
-        if (!DaemonConfig::trim(line).empty()) return false;
-    }
-    return true;
-}
-
-size_t count_journal_entries() noexcept {
-    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
-    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return 0;
-
-    struct stat st{};
-    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 65536) {
+    const auto r = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), value);
+    if (r.ec != std::errc{} || r.ptr != trimmed.data() + trimmed.size() || value < 1 || value > 2147483647L) {
         return 0;
     }
-
-    char buf[4096];
-    std::string raw;
-    while (raw.size() <= 65536) {
-        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return 0;
-        }
-        if (n == 0) break;
-        raw.append(buf, static_cast<size_t>(n));
-    }
-    std::istringstream journal(raw);
-    std::string header;
-    if (!std::getline(journal, header) ||
-        (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
-         header.rfind("CFJ3\t", 0) != 0 && header.rfind("CFJ4\t", 0) != 0)) {
-        return 0;
-    }
-    size_t count = 0;
-    std::string line;
-    while (std::getline(journal, line)) {
-        if (!DaemonConfig::trim(line).empty()) ++count;
-    }
-    return count;
+    return process_is_coreflowd(static_cast<pid_t>(value)) ? static_cast<pid_t>(value) : 0;
 }
 
-int stop_daemon() {
-    const pid_t pid = daemon_pid();
-    if (pid > 0) {
-        if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) return 1;
-        for (int attempt = 0; attempt < 80; ++attempt) {
-            if (!process_matches(pid)) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        if (process_matches(pid)) return 1;
-    }
-    // If the daemon died before receiving SIGTERM, recover its durable journal.
-    // The secondary batch-intent WAL is retired only after OEM recovery succeeds.
-    if (!BaselineStore::instance().recover_pending()) return 1;
+bool service_launcher_authorized() {
+    const pid_t parent = ::getppid();
+    if (parent <= 1) return false;
     UniqueFd state_dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-    if (state_dir.valid()) {
-        if (::unlinkat(state_dir.get(), "direct-adaptive.wal", 0) != 0 && errno != ENOENT) return 1;
-        if (::fsync(state_dir.get()) != 0) return 1;
-    }
-    return journal_clear() ? 0 : 1;
-}
-
-std::string json_string(std::string_view text);
-
-const char* node_capability_state_name(NodeCapabilityState state) noexcept {
-    switch (state) {
-        case NodeCapabilityState::Discovered: return "DISCOVERED";
-        case NodeCapabilityState::Readable: return "READABLE";
-        case NodeCapabilityState::AccessChecked: return "ACCESS_CHECKED";
-        case NodeCapabilityState::SemanticsVerified: return "SEMANTICS_VERIFIED";
-        case NodeCapabilityState::ConstraintsVerified: return "CONSTRAINTS_VERIFIED";
-        case NodeCapabilityState::MutationEligible: return "MUTATION_ELIGIBLE";
-    }
-    return "UNKNOWN";
-}
-
-const char* node_rejection_reason_name(NodeRejectionReason reason) noexcept {
-    switch (reason) {
-        case NodeRejectionReason::None: return "NONE";
-        case NodeRejectionReason::EaccesSelinux: return "EACCES_SELINUX";
-        case NodeRejectionReason::NodeMissing: return "ENOENT";
-        case NodeRejectionReason::FormatMismatch: return "FORMAT_MISMATCH";
-        case NodeRejectionReason::BaselineCaptureFailed: return "BASELINE_CAPTURE_FAILED";
-        case NodeRejectionReason::BaselineNotCaptured: return "BASELINE_NOT_CAPTURED";
-        case NodeRejectionReason::ReadbackMismatch: return "READBACK_MISMATCH";
-        case NodeRejectionReason::PermissionDenied: return "PERMISSION_DENIED";
-        case NodeRejectionReason::SemanticsUnverified: return "SEMANTICS_UNVERIFIED";
-        case NodeRejectionReason::ConstraintsUnverified: return "CONSTRAINTS_UNVERIFIED";
-        case NodeRejectionReason::AmbiguousTarget: return "AMBIGUOUS_TARGET";
-        case NodeRejectionReason::IoError: return "IO_ERROR";
-    }
-    return "UNKNOWN";
-}
-
-const char* node_domain_name(HardwareDomain domain) noexcept {
-    switch (domain) {
-        case HardwareDomain::Cpu: return "cpu";
-        case HardwareDomain::Gpu: return "gpu";
-        case HardwareDomain::Thermal: return "thermal";
-        case HardwareDomain::Memory: return "memory";
-        case HardwareDomain::Storage: return "storage";
-        case HardwareDomain::Cgroup: return "cgroup";
-        case HardwareDomain::AndroidRuntime: return "android_runtime";
-        case HardwareDomain::Graphics: return "graphics";
-        case HardwareDomain::Power: return "power";
-        case HardwareDomain::Unknown: return "unknown";
-    }
-    return "unknown";
-}
-
-const char* node_source_name(ProfileSource source) noexcept {
-    switch (source) {
-        case ProfileSource::Sysfs: return "sysfs";
-        case ProfileSource::Procfs: return "procfs";
-        case ProfileSource::DeviceTree: return "device_tree";
-        case ProfileSource::AndroidProperty: return "android_property";
-        case ProfileSource::KernelApi: return "kernel_api";
-        case ProfileSource::Unknown: return "unknown";
-    }
-    return "unknown";
-}
-
-std::string serialize_node_capabilities(const DeviceProfileSnapshot& profile) {
-    std::ostringstream out;
-    out << '[';
-    const std::size_t count = std::min<std::size_t>(profile.node_capabilities.size(), 2048U);
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto& node = profile.node_capabilities[i];
-        if (i != 0U) out << ',';
-        out << "{\"path\":" << json_string(node.path)
-            << ",\"domain\":" << json_string(node_domain_name(node.domain))
-            << ",\"source\":" << json_string(node_source_name(node.source))
-            << ",\"state\":" << json_string(node_capability_state_name(node.state))
-            << ",\"classification\":" << json_string(kernel_node_classification_name(node.classification))
-            << ",\"semanticId\":" << json_string(node.semantic_id)
-            << ",\"unit\":" << json_string(node.unit)
-            << ",\"currentValue\":" << json_string(node.current_value)
-            << ",\"acceptedValues\":" << json_string(node.accepted_values)
-            << ",\"constraints\":" << json_string(node.constraints)
-            << ",\"evidence\":" << json_string(node.evidence)
-            << ",\"rejectionReason\":" << json_string(node_rejection_reason_name(node.rejection_code))
-            << ",\"rejectionDetail\":" << json_string(node.rejection_reason)
-            << ",\"mutationEligible\":" << (node.mutation_eligible() ? "true" : "false") << '}';
-    }
-    out << ']';
-    return out.str();
-}
-
-std::uint64_t monotonic_now_ns() noexcept {
-    timespec ts{};
-    if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0U;
-    return static_cast<std::uint64_t>(ts.tv_sec) * 1'000'000'000ULL +
-           static_cast<std::uint64_t>(ts.tv_nsec);
-}
-
-std::string collect_semantic_evidence_json() {
-    coreflow::platform::LinuxSysfsDiscoveryAdapter adapter{};
-    const auto endpoints = adapter.discover();
-    coreflow::semantic::CapabilityResolver resolver{};
-    std::vector<coreflow::semantic::DynamicSemanticDescriptor> descriptors{};
-    descriptors.reserve(endpoints.size());
-
-    for (const auto& endpoint : endpoints) {
-        const auto now_ns = monotonic_now_ns();
-        auto descriptor = resolver.resolveOne(
-            endpoint, adapter, endpoint.observed_generation, now_ns);
-        if (descriptor.has_value()) descriptors.push_back(std::move(*descriptor));
-    }
-
-    return coreflow::semantic::serializeSemanticEvidence(
-        descriptors, monotonic_now_ns());
-}
-
-double safe_json_double(double v, double fallback = 0.0) noexcept {
-    return std::isfinite(v) ? v : fallback;
-}
-
-std::string collect_semantic_evidence_json_cached() {
-    static std::mutex cache_mutex;
-    static std::string cached;
-    static bool initialized = false;
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    // Semantic capability evidence is a boot-scoped discovery snapshot. Never
-    // rescan sysfs from the 500 ms status timer and stall the control reactor.
-    if (!initialized) {
-        cached = collect_semantic_evidence_json();
-        initialized = true;
-    }
-    return cached;
-}
-
-struct StatusTelemetrySnapshot final {
-    DaemonConfig config{};
-    MultiSensorProfile profile{};
-    ThermalAssessment thermal{};
-    float temperature{-1.0F};
-    float battery{-1.0F};
-    float skin{-1.0F};
-    std::optional<double> cpu_psi{};
-    std::optional<double> memory_psi{};
-    std::optional<double> io_psi{};
-    std::string direct_adaptive_json{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"};
-};
-
-std::string build_status_json(
-    CoreFlowContext& context,
-    bool live_runtime = false,
-    bool daemon_running = true,
-    const StatusTelemetrySnapshot* cached = nullptr) {
-    // 1. Perform passive hardware/kernel inspection before writing the JSON payload
-    const pid_t pid = live_runtime ? (daemon_running ? ::getpid() : 0) : daemon_pid();
-    const auto& platform = context.platform_context();
-    const DaemonConfig cfg_status = cached != nullptr
-        ? cached->config : DaemonConfig::load_best_available(false);
-    const auto profile = cached != nullptr
-        ? cached->profile : context.thermal_monitor().multi_sensor_profile();
-    const float temp = cached != nullptr
-        ? cached->temperature
-        : (profile.composite_soc >= 0.0f ? profile.composite_soc : context.thermal_monitor().hottest_celsius());
-    auto thermal = cached != nullptr ? cached->thermal : context.thermal_monitor().assess(false);
-    if (cached == nullptr && !thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
-        thermal.available = true;
-        thermal.fallback_active = true;
-        thermal.source = "generic_fallback";
-        const double recover_deg = static_cast<double>(cfg_status.thermal_recover_celsius);
-        const double trip_deg = static_cast<double>(cfg_status.thermal_trip_celsius);
-        const double span = std::max(1.0, trip_deg - recover_deg);
-        const double norm = std::clamp((static_cast<double>(temp) - recover_deg) / span, 0.0, 3.0);
-        thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
-        if (temp >= cfg_status.thermal_trip_celsius + cfg_status.thermal_emergency_margin_celsius) {
-            thermal.emergency = true;
-        }
-    }
-    const bool thermal_guard_active = !thermal.fallback_active
-        ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0)
-        : (thermal.emergency || temp >= cfg_status.thermal_trip_celsius);
-    const auto battery = cached != nullptr ? cached->battery : context.thermal_monitor().battery_celsius();
-    const auto skin = cached != nullptr ? cached->skin : context.thermal_monitor().skin_celsius();
-    const auto cpu_psi = cached != nullptr ? cached->cpu_psi : read_psi_avg10("/proc/pressure/cpu");
-    const auto mem_psi = cached != nullptr ? cached->memory_psi : read_psi_avg10("/proc/pressure/memory");
-    const auto io_psi = cached != nullptr ? cached->io_psi : read_psi_avg10("/proc/pressure/io");
-    // Status JSON is built on the control thread from the current tick's telemetry.
-    // The 500 ms IPC timer only writes this serialized snapshot; it never probes sysfs.
-    const bool uclamp_supported = live_runtime && context.uclamp_governor().is_supported();
-    const uint32_t uclamp_min = uclamp_supported ? context.uclamp_governor().get_top_app_min() : 0U;
-    const uint32_t uclamp_max = uclamp_supported ? context.uclamp_governor().get_top_app_max() : 0U;
-    const std::string uclamp_target_path = uclamp_supported
-        ? std::string(context.uclamp_governor().target_path()) : std::string{};
-    const std::string uclamp_encoding = uclamp_supported
-        ? std::string(context.uclamp_governor().encoding_name()) : std::string{"unavailable"};
-    // Read-only status does not train models or create mutation-capable owners.
-    const NeuralPrediction ai = live_runtime ? context.neural_predictor().last_prediction() : NeuralPrediction{.backend = "not_started"};
-    AutonomousDecisionSnapshot tuner{
-        .stage = "READ_ONLY",
-        .runtime_stage = "READ_ONLY",
-        .active_intent = "ReadOnlyInspection",
-        .intent = "ReadOnlyInspection",
-        .workload_class = WorkloadClass::Idle,
-        .workload_name = "Unknown",
-        .bottleneck = BottleneckKind::None,
-        .bottleneck_name = "Unknown",
-        .objective = OptimizationObjective::HoldBaseline,
-        .objective_name = "NotEvaluated",
-        .capability_fingerprint = "not_started",
-        .active_candidate_id = "none",
-        .active_candidate_label = "Mutation runtime not started",
-        .decision_rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
-        .rationale = "Read-only CLI inspection; AutonomousTuner was not constructed.",
-        .last_verdict = "NOT_STARTED",
-        .verdict = TunerVerdict::Hold,
-        .last_utility_delta = 0.0,
-        .utility_delta = 0.0,
-        .noise_floor = 0.0,
-        .before_io_psi = 0.0,
-        .after_io_psi = 0.0,
-        .before_mem_psi = 0.0,
-        .after_mem_psi = 0.0,
-        .before_cpu_psi = 0.0,
-        .after_cpu_psi = 0.0,
-        .settling_ticks_remaining = 0,
-        .observation_tick = 0,
-        .observation_window = 0,
-        .total_trials = 0,
-        .total_improved = 0,
-        .improved_count = 0,
-        .total_rolled_back = 0,
-        .rolled_back_count = 0,
-        .total_inconclusive = 0,
-        .total_rejected = 0,
-        .ownership_contention_retries = 0,
-        .recovery_required = false,
-        .thermal_stabilization_active = false,
-        .thermal_recovery_active = false,
-        .current_temperature_celsius = -1.0,
-        .temperature_velocity_celsius_per_sec = 0.0,
-        .temperature_velocity_valid = false,
-        .thermal_pressure_velocity = 0.0,
-        .block_queues = {},
-        .candidates = {},
-        .discovered_resources = {},
-        .vm_page_cluster = {},
-        .vm_vfs_cache_pressure = {},
-        .evaluated_candidates = {},
-        .active_interventions = {},
-        .decision_plan_rationale = {},
-    };
-    if (live_runtime) tuner = context.autonomous_tuner().snapshot();
-    const VulkanCapabilitiesSnapshot vk = live_runtime ? context.vulkan_controller().snapshot() : VulkanCapabilitiesSnapshot{};
-    const bool recovery_pending = !journal_clear();
-    const size_t journal_nodes = count_journal_entries();
-    // The status contract uses the same live discovery and native resolver path as 2B.
-    // Discovery is strictly passive: the adapter exposes read access only.
-    const std::string semantic_evidence_json = live_runtime
-        ? collect_semantic_evidence_json_cached()
-        : collect_semantic_evidence_json();
-    const auto device_inventory = context.device_profiler().profile();
-    const std::string node_inventory_json = serialize_node_capabilities(*device_inventory);
-
-    // 2. Serialize complete JSON payload into an in-memory buffer so stdout is never split
-    std::ostringstream out;
-    out << "{\"running\":" << (pid ? "true" : "false")
-        << ",\"pid\":" << pid
-        << ",\"uclampMin\":" << uclamp_min
-        << ",\"uclampMax\":" << uclamp_max
-        << ",\"uclampPolicyMin\":" << cfg_status.top_app_interactive_min
-        << ",\"uclampPolicyMax\":" << cfg_status.top_app_interactive_max
-        << ",\"uclampTargetPath\":" << json_string(uclamp_target_path)
-        << ",\"uclampEncoding\":" << json_string(uclamp_encoding)
-        << ",\"uclampSupported\":" << (uclamp_supported ? "true" : "false")
-        << ",\"uclampProbeSkipped\":" << (live_runtime ? "false" : "true")
-        << ",\"inspectionMode\":" << (live_runtime ? "false" : "true")
-        << ",\"mutationRuntimeStarted\":" << (live_runtime ? "true" : "false")
-        << ",\"platformVendor\":\"" << platform_vendor_name(platform.identity.vendor) << "\""
-        << ",\"osFamily\":\"" << os_family_name(platform.identity.os_family) << "\""
-        << ",\"osMajor\":" << platform.identity.os_major
-        << ",\"executionTier\":\"" << execution_tier_name(platform.execution_tier) << "\""
-        << ",\"policyFamily\":\"" << policy_family_name(platform.policy_family) << "\""
-        << ",\"identityConfidence\":\"" << identity_confidence_name(platform.identity.confidence) << "\""
-        << ",\"tier1Eligible\":" << (platform.tier1_eligible ? "true" : "false")
-        << ",\"aiRuntimeStarted\":" << (live_runtime ? "true" : "false")
-        << ",\"tunerRuntimeStarted\":" << (live_runtime ? "true" : "false")
-        << ",\"tunerRuntimeStage\":" << json_string(tuner.runtime_stage)
-        << ",\"vulkanProbeSkipped\":" << (live_runtime && tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
-        << ",\"cpuPressurePct\":" << (cpu_psi ? std::to_string(safe_json_double(*cpu_psi)) : "null")
-        << ",\"memoryPressurePct\":" << (mem_psi ? std::to_string(safe_json_double(*mem_psi)) : "null")
-        << ",\"ioPressurePct\":" << (io_psi ? std::to_string(safe_json_double(*io_psi)) : "null")
-        << ",\"cpuPressureValid\":" << (cpu_psi.has_value() ? "true" : "false")
-        << ",\"memoryPressureValid\":" << (mem_psi.has_value() ? "true" : "false")
-        << ",\"ioPressureValid\":" << (io_psi.has_value() ? "true" : "false")
-        << ",\"baselineNodesSnapshotted\":" << journal_nodes
-        << ",\"socTempCelsius\":";
-    if (std::isfinite(temp) && temp >= 0.0f) {
-        char num[32];
-        const int whole = static_cast<int>(temp);
-        const int tenths = static_cast<int>(std::lround((temp - static_cast<float>(whole)) * 10.0f));
-        if (tenths >= 10) {
-            std::snprintf(num, sizeof(num), "%d.0", whole + 1);
-        } else {
-            std::snprintf(num, sizeof(num), "%d.%d", whole, std::max(0, tenths));
-        }
-        out << num;
-    } else {
-        out << "null";
-    }
-    out << ",\"thermalPolicyAvailable\":" << (thermal.available ? "true" : "false")
-        << ",\"thermalGuardActive\":" << (thermal_guard_active ? "true" : "false")
-        << ",\"thermalDataDegraded\":" << (thermal.degraded ? "true" : "false")
-        << ",\"thermalFallbackActive\":" << (thermal.fallback_active ? "true" : "false")
-        << ",\"thermalHeadroomValid\":" << (thermal.headroom_valid ? "true" : "false")
-        << ",\"thermalHeadroom\":" << (thermal.headroom_valid && std::isfinite(thermal.headroom_value) ? std::to_string(thermal.headroom_value) : "null")
-        << ",\"thermalSource\":" << json_string(thermal.source)
-        << ",\"thermalSensor\":" << json_string(thermal.sensor)
-        << ",\"thermalSeverity\":" << thermal.severity
-        << ",\"thermalPressure\":" << safe_json_double(thermal.pressure)
-        << ",\"socCompositeCelsius\":" << (std::isfinite(profile.composite_soc) && profile.composite_soc >= 0 ? std::to_string(profile.composite_soc) : "null")
-        << ",\"cpuAverageCelsius\":" << (std::isfinite(profile.cpu_average) && profile.cpu_average >= 0 ? std::to_string(profile.cpu_average) : "null")
-        << ",\"cpuPeakCelsius\":" << (std::isfinite(profile.cpu_peak) && profile.cpu_peak >= 0 ? std::to_string(profile.cpu_peak) : "null")
-        << ",\"gpuTempCelsius\":" << (std::isfinite(profile.gpu_average) && profile.gpu_average >= 0 ? std::to_string(profile.gpu_average) : "null");
-    out << ",\"thermalSensors\":[";
-    bool first_sensor = true;
-    for (const auto& reading : thermal.readings) {
-        if (!first_sensor) out << ',';
-        first_sensor = false;
-        out << "{\"id\":" << json_string(reading.id)
-            << ",\"type\":" << json_string(reading.type)
-            << ",\"category\":" << reading.category
-            << ",\"valid\":" << (reading.valid ? "true" : "false")
-            << ",\"celsius\":" << (reading.valid && std::isfinite(reading.celsius) ? std::to_string(reading.celsius) : "null")
-            << ",\"policyAvailable\":" << (reading.policy_available ? "true" : "false")
-            << ",\"velocityValid\":" << (reading.velocity_valid ? "true" : "false")
-            << ",\"velocityCelsiusPerSec\":" << (reading.velocity_valid ? std::to_string(reading.velocity_celsius_per_sec) : "null")
-            << ",\"velocitySamples\":" << reading.velocity_samples_count
-            << ",\"velocityDurationSec\":" << std::to_string(reading.velocity_sample_duration_sec) << '}';
-    }
-    out << "]"
-        << ",\"batteryTempCelsius\":" << (std::isfinite(battery) && battery >= 0 ? std::to_string(battery) : "null")
-        << ",\"skinTempCelsius\":" << (std::isfinite(skin) && skin >= 0 ? std::to_string(skin) : "null")
-        << ",\"aiBackend\":" << json_string(ai.backend)
-        << ",\"aiOnnxActive\":" << (ai.onnx_active ? "true" : "false")
-        << ",\"aiPredictedPressure10s\":" << safe_json_double(ai.predicted_pressure_10s)
-        << ",\"aiPredictedVelocity\":" << safe_json_double(ai.predicted_velocity)
-        << ",\"aiRecommendedScale\":" << safe_json_double(ai.recommended_scale, 1.0)
-        << ",\"aiConfidence\":" << safe_json_double(ai.confidence)
-        << ",\"aiSamples\":" << ai.samples_observed
-        << ",\"tunerStage\":" << json_string(AutonomousTuner::stage_name(tuner.stage))
-        << ",\"tunerIntent\":" << json_string(AutonomousTuner::intent_name(tuner.intent))
-        << ",\"tunerWorkload\":" << json_string(tuner.workload_name)
-        << ",\"tunerBottleneck\":" << json_string(tuner.bottleneck_name)
-        << ",\"tunerObjective\":" << json_string(tuner.objective_name)
-        << ",\"tunerCapabilityFingerprint\":" << json_string(tuner.capability_fingerprint)
-        << ",\"tunerCandidateId\":" << json_string(tuner.active_candidate_id)
-        << ",\"tunerCandidateLabel\":" << json_string(tuner.active_candidate_label)
-        << ",\"tunerRationale\":" << json_string(tuner.rationale)
-        << ",\"tunerVerdict\":" << json_string(tuner.last_verdict)
-        << ",\"tunerUtilityDelta\":" << safe_json_double(tuner.utility_delta)
-        << ",\"tunerNoiseFloor\":" << safe_json_double(tuner.noise_floor, 0.05)
-        << ",\"tunerTrials\":" << tuner.total_trials
-        << ",\"tunerImproved\":" << tuner.improved_count
-        << ",\"tunerRolledBack\":" << tuner.rolled_back_count
-        << ",\"tunerInconclusive\":" << tuner.total_inconclusive
-        << ",\"tunerRejected\":" << tuner.total_rejected
-        << ",\"tunerThermalStabilization\":" << (tuner.thermal_stabilization_active ? "true" : "false")
-        << ",\"tunerThermalRecovery\":" << (tuner.thermal_recovery_active ? "true" : "false")
-        << ",\"tunerThermalPressureVelocity\":" << safe_json_double(tuner.thermal_pressure_velocity)
-        << ",\"tunerTemperatureVelocity\":" << safe_json_double(tuner.temperature_velocity_celsius_per_sec)
-        << ",\"tunerTemperatureVelocityValid\":" << (tuner.temperature_velocity_valid ? "true" : "false")
-        << ",\"blockQueues\":[";
-    bool first_queue = true;
-    for (const auto& q : tuner.block_queues) {
-        if (!first_queue) out << ',';
-        first_queue = false;
-        out << "{\"device\":" << json_string(q.device_name)
-            << ",\"activeScheduler\":" << json_string(q.active_scheduler)
-            << ",\"baselineScheduler\":" << json_string(q.baseline_scheduler)
-            << ",\"readAheadKb\":" << q.read_ahead_kb
-            << ",\"nrRequests\":" << q.nr_requests
-            << ",\"rqAffinity\":" << q.rq_affinity
-            << ",\"readExpireMs\":" << q.read_expire_ms
-            << ",\"writesStarved\":" << q.writes_starved
-            << ",\"fifoBatch\":" << q.fifo_batch
-            << ",\"availableSchedulers\":[";
-        bool first_sched = true;
-        for (const auto& sched : q.available_schedulers) {
-            if (!first_sched) out << ',';
-            first_sched = false;
-            out << json_string(sched);
-        }
-        out << "]}";
-    }
-    out << "],\"tunerCandidates\":[";
-    bool first_cand = true;
-    for (const auto& c : tuner.candidates) {
-        if (!first_cand) out << ',';
-        first_cand = false;
-        out << "{\"id\":" << json_string(c.id)
-            << ",\"label\":" << json_string(c.label)
-            << ",\"domain\":" << json_string(c.domain)
-            << ",\"trials\":" << c.trials
-            << ",\"rewardSamples\":" << c.reward_samples
-            << ",\"successes\":" << c.successes
-            << ",\"rollbacks\":" << c.rollbacks
-            << ",\"inconclusive\":" << c.inconclusive_count
-            << ",\"rejected\":" << c.rejected_count
-            << ",\"adaptiveScale\":" << safe_json_double(c.adaptive_scale, 1.0)
-            << ",\"meanDelta\":" << safe_json_double(c.mean_utility_delta)
-            << ",\"ucbScore\":" << safe_json_double(c.ucb_score)
-            << ",\"cooldownTicks\":" << c.cooldown_ticks << '}';
-    }
-    out << "]"
-        << ",\"tunerDecisionPlanRationale\":" << json_string(tuner.decision_plan_rationale)
-        << ",\"tunerActiveInterventions\":[";
-    bool first_iv = true;
-    for (const auto& iv : tuner.active_interventions) {
-        if (!first_iv) out << ',';
-        first_iv = false;
-        out << "{\"candidateId\":" << json_string(iv.candidate_id)
-            << ",\"candidateLabel\":" << json_string(iv.candidate_label)
-            << ",\"domain\":" << json_string(mutation_domain_name(iv.domain))
-            << ",\"intent\":" << json_string(iv.intent)
-            << ",\"stage\":" << json_string(iv.stage)
-            << ",\"verdict\":" << json_string(iv.verdict)
-            << ",\"utilityDelta\":" << safe_json_double(iv.utility_delta)
-            << ",\"observationTick\":" << iv.observation_tick
-            << ",\"observationWindow\":" << iv.observation_window
-            << ",\"settlingTicksRemaining\":" << iv.settling_ticks_remaining << '}';
-    }
-    out << "],\"tunerEvaluatedCandidates\":[";
-    bool first_eval = true;
-    for (const auto& ev : tuner.evaluated_candidates) {
-        if (!first_eval) out << ',';
-        first_eval = false;
-        out << "{\"id\":" << json_string(ev.id)
-            << ",\"domain\":" << json_string(ev.domain)
-            << ",\"intent\":" << json_string(ev.intent)
-            << ",\"utilityScore\":" << safe_json_double(ev.utility_score)
-            << ",\"empiricalScore\":" << safe_json_double(ev.empirical_score, 0.5)
-            << ",\"confidence\":" << safe_json_double(ev.confidence)
-            << ",\"riskPenalty\":" << safe_json_double(ev.risk_penalty)
-            << ",\"thermalPenalty\":" << safe_json_double(ev.thermal_penalty)
-            << ",\"eligible\":" << (ev.eligible ? "true" : "false")
-            << ",\"selected\":" << (ev.selected ? "true" : "false")
-            << ",\"rejectionReason\":" << json_string(ev.rejection_reason) << '}';
-    }
-    out << "]"
-        << ",\"vulkan\":{\"available\":" << (vk.vulkan_available ? "true" : "false")
-        << ",\"layerInstalled\":" << (vk.layer_installed ? "true" : "false")
-        << ",\"layerActive\":" << (vk.layer_active ? "true" : "false")
-        << ",\"mode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"probeSkipped\":" << (tuner.runtime_stage == "STAGE_ACTIVE_TUNING" ? "false" : "true")
-        << ",\"vendor\":" << json_string(VulkanController::vendor_name(vk.vendor))
-        << ",\"deviceName\":" << json_string(vk.device_name)
-        << ",\"apiVersion\":" << json_string(vk.api_version)
-        << ",\"effectiveApiVersion\":" << json_string(vk.effective_api_version)
-        << ",\"driverVersion\":" << json_string(vk.driver_version_str)
-        << ",\"deviceExtensions\":" << vk.device_extensions_count
-        << ",\"effectiveDeviceExtensions\":" << vk.effective_device_extensions_count
-        << ",\"instanceExtensions\":" << vk.instance_extensions_count
-        << ",\"deviceUuid\":" << json_string(vk.device_uuid)
-        << ",\"driverUuid\":" << json_string(vk.driver_uuid)
-        << ",\"pipelineCacheUuid\":" << json_string(vk.pipeline_cache_uuid)
-        << ",\"rayTracing\":" << (vk.ray_tracing ? "true" : "false")
-        << ",\"meshShaders\":" << (vk.mesh_shaders ? "true" : "false")
-        << ",\"variableRateShading\":" << (vk.variable_rate_shading ? "true" : "false")
-        << ",\"cooperativeMatrix\":" << (vk.cooperative_matrix ? "true" : "false")
-        << ",\"rtPipeline\":" << (vk.rt_pipeline ? "true" : "false")
-        << ",\"rayQuery\":" << (vk.ray_query ? "true" : "false")
-        << ",\"accelerationStructure\":" << (vk.acceleration_structure ? "true" : "false")
-        << ",\"portabilitySubset\":" << (vk.portability_subset ? "true" : "false")
-        << ",\"robustBufferAccess\":" << (vk.robust_buffer_access ? "true" : "false")
-        << ",\"samplerAnisotropy\":" << (vk.sampler_anisotropy ? "true" : "false")
-        << ",\"shaderInt16\":" << (vk.shader_int16 ? "true" : "false")
-        << ",\"shaderFloat64\":" << (vk.shader_float64 ? "true" : "false")
-        << ",\"protectedMemory\":" << (vk.protected_memory ? "true" : "false")
-        << ",\"timelineSemaphore\":" << (vk.timeline_semaphore ? "true" : "false")
-        << ",\"descriptorIndexing\":" << (vk.descriptor_indexing ? "true" : "false")
-        << ",\"bufferDeviceAddress\":" << (vk.buffer_device_address ? "true" : "false")
-        << ",\"dynamicRendering\":" << (vk.dynamic_rendering ? "true" : "false")
-        << ",\"synchronization2\":" << (vk.synchronization2 ? "true" : "false")
-        << ",\"indexTypeUint8\":" << (vk.index_type_uint8 ? "true" : "false")
-        << ",\"lineRasterization\":" << (vk.line_rasterization ? "true" : "false")
-        << ",\"pushDescriptors\":" << (vk.push_descriptors ? "true" : "false")
-        << ",\"globalPriorityQuery\":" << (vk.global_priority_query ? "true" : "false")
-        << ",\"shaderFloatControls2\":" << (vk.shader_float_controls2 ? "true" : "false")
-        << ",\"maxPushDescriptors\":" << vk.max_push_descriptors
-        << ",\"maintenance5\":" << (vk.maintenance5 ? "true" : "false")
-        << ",\"maintenance6\":" << (vk.maintenance6 ? "true" : "false")
-        << ",\"maintenance7\":" << (vk.maintenance7 ? "true" : "false")
-        << ",\"descriptorBuffer\":" << (vk.descriptor_buffer ? "true" : "false")
-        << ",\"graphicsPipelineLibrary\":" << (vk.graphics_pipeline_library ? "true" : "false")
-        << ",\"hwRayTracing\":" << (vk.hw_ray_tracing ? "true" : "false")
-        << ",\"hwMeshShaders\":" << (vk.hw_mesh_shaders ? "true" : "false")
-        << ",\"hwVariableRateShading\":" << (vk.hw_variable_rate_shading ? "true" : "false")
-        << ",\"hwCooperativeMatrix\":" << (vk.hw_cooperative_matrix ? "true" : "false")
-        << ",\"hwRtPipeline\":" << (vk.hw_rt_pipeline ? "true" : "false")
-        << ",\"hwRayQuery\":" << (vk.hw_ray_query ? "true" : "false")
-        << ",\"hwAccelerationStructure\":" << (vk.hw_acceleration_structure ? "true" : "false")
-        << ",\"hwShaderFloat64\":" << (vk.hw_shader_float64 ? "true" : "false")
-        << ",\"hwIndexTypeUint8\":" << (vk.hw_index_type_uint8 ? "true" : "false")
-        << ",\"hwLineRasterization\":" << (vk.hw_line_rasterization ? "true" : "false")
-        << ",\"hwPushDescriptors\":" << (vk.hw_push_descriptors ? "true" : "false")
-        << ",\"hwGlobalPriorityQuery\":" << (vk.hw_global_priority_query ? "true" : "false")
-        << ",\"hwShaderFloatControls2\":" << (vk.hw_shader_float_controls2 ? "true" : "false")
-        << ",\"hwMaintenance5\":" << (vk.hw_maintenance5 ? "true" : "false")
-        << ",\"hwMaintenance6\":" << (vk.hw_maintenance6 ? "true" : "false")
-        << ",\"hwMaintenance7\":" << (vk.hw_maintenance7 ? "true" : "false")
-        << ",\"hwDescriptorBuffer\":" << (vk.hw_descriptor_buffer ? "true" : "false")
-        << ",\"hwGraphicsPipelineLibrary\":" << (vk.hw_graphics_pipeline_library ? "true" : "false")
-        << ",\"skiavkActive\":" << (vk.skiavk_active ? "true" : "false")
-        << ",\"adaptiveVrsActive\":" << (vk.adaptive_vrs_active ? "true" : "false")
-        << ",\"pipelineCachePersistenceInterceptionActive\":" << (vk.pipeline_cache_interception_active ? "true" : "false")
-        << ",\"pipelineCachePrewarmActive\":" << (vk.pipeline_cache_prewarm_active ? "true" : "false")
-        << ",\"gpuKernelAvailable\":" << (vk.gpu_surface.available ? "true" : "false")
-        << ",\"gpuKernelLabel\":" << json_string(vk.gpu_surface.vendor_label)
-        << ",\"gpuGovernor\":" << json_string(vk.gpu_surface.active_governor)
-        << ",\"gpuCurrentFreqMhz\":" << vk.gpu_surface.current_freq_mhz
-        << ",\"gpuMaxFreqMhz\":" << vk.gpu_surface.max_freq_mhz
-        << ",\"adrenoboostLevel\":" << vk.gpu_surface.adrenoboost_level << "}"
-        << ",\"recoveryPending\":" << (recovery_pending ? "true" : "false")
-        << ",\"semanticEvidence\":" << semantic_evidence_json
-        << ",\"node_capabilities\":" << node_inventory_json
-        << ",\"nodeCapabilityGeneration\":" << device_inventory->generation
-        << ",\"directAdaptive\":" << (cached == nullptr || cached->direct_adaptive_json.empty()
-            ? std::string{"{\"active\":false,\"discoveryComplete\":false,\"mode\":\"READ_ONLY\",\"screenState\":\"UNKNOWN\",\"thermalGuard\":false,\"cpuUtilizationPct\":0,\"thermalPressure\":0,\"ramBytes\":0,\"zramBytes\":0,\"refreshHz\":0,\"gpuModel\":\"unavailable\",\"storageType\":\"unavailable\",\"discoveredNodes\":0,\"baselineNodes\":0,\"verifiedMutations\":0,\"skippedNodes\":0,\"ownershipLosses\":0,\"journalFault\":false,\"cpuClusters\":[],\"appliedValues\":[]}"}
-            : cached->direct_adaptive_json)
-        << "}";
-
-    return out.str();
-}
-
-void print_status(CoreFlowContext& context) {
-    std::cout << "\n" << build_status_json(context, false) << "\n" << std::flush;
-}
-
-std::string json_string(std::string_view text) {
-    std::string out = "\"";
-    for (unsigned char c : text) {
-        if (c == '\"' || c == '\\') { out.push_back('\\'); out.push_back(static_cast<char>(c)); }
-        else if (c >= 32 && c < 127) out.push_back(static_cast<char>(c));
-        else out.push_back('?');
-    }
-    return out + "\"";
-}
-
-void print_journal(BaselineStore& baseline) {
-    const auto entries = baseline.get_audit_trail();
-    std::ostringstream out;
-    out << "{\"format\":\"CFJ4\",\"entryCount\":" << entries.size()
-        << ",\"entries\":[";
-    bool first = true;
-    for (const auto& entry : entries) {
-        if (!first) out << ',';
-        first = false;
-        out << "{\"path\":" << json_string(entry.path)
-            << ",\"factoryValue\":" << json_string(entry.factory_value)
-            << ",\"priorValue\":" << json_string(entry.prior_value)
-            << ",\"activeValue\":" << json_string(entry.active_value)
-            << ",\"modified\":" << (entry.is_modified ? "true" : "false")
-            << ",\"device\":" << entry.dev
-            << ",\"inode\":" << entry.ino << '}';
-    }
-    out << "]}";
-    std::cout << out.str() << "\n" << std::flush;
-}
-
-void print_capabilities(CoreFlowContext& context) {
-    const auto topology = context.device_profiler().probe();
-    const auto profile = context.device_profiler().profile();
-    const auto power = PowerBridge{}.probe();
-    // The profile includes an actual read-only cgroup/UClamp ABI scan.
-    const NeuralPrediction ai{.backend = "not_started"};
-    const VulkanCapabilitiesSnapshot vk{};
-    std::ostringstream out;
-    out << "{\"socModel\":" << json_string(topology.soc_name)
-        << ",\"kernelVersion\":" << json_string(topology.kernel_version)
-        << ",\"onlineCpus\":" << json_string(topology.online_cpus_mask)
-        << ",\"gpuType\":" << json_string(topology.gpu_type)
-        << ",\"rustEngine\":true,\"powerHalDetected\":" << (power.aidl_power_service ? "true" : "false")
-        << ",\"aiBackend\":" << json_string(ai.backend)
-        << ",\"onnxRuntimeLoaded\":" << (ai.onnx_active ? "true" : "false")
-        << ",\"vulkanLayerMode\":" << json_string(VulkanController::mode_name(vk.active_mode))
-        << ",\"aiProbeSkipped\":true,\"vulkanProbeSkipped\":true"
-        << ",\"uclampProbeSkipped\":false"
-        << ",\"uclampInterfaceAvailable\":" << (profile->uclamp_interface_available ? "true" : "false")
-        << ",\"cgroupV2Available\":" << (profile->cgroup_v2_available ? "true" : "false")
-        << ",\"nodeCapabilityGeneration\":" << profile->generation
-        << ",\"node_capabilities\":" << serialize_node_capabilities(*profile)
-        << ",\"vulkanEffectiveApi\":" << json_string(vk.effective_api_version)
-        << ",\"binderInterception\":false,\"npuOffload\":false,\"frameTelemetry\":false}";
-    std::cout << "\n" << out.str() << "\n" << std::flush;
-}
-
-bool ensure_secure_state_dir();
-constexpr char kDvsSocketPath[] = "/data/adb/coreflow/cf-dvs-control.sock";
-
-bool create_dvs_listener(UniqueFd& listener) noexcept {
-    if (!ensure_secure_state_dir()) return false;
+    if (!state_dir.valid()) return false;
+    UniqueFd service_lock(::openat(state_dir.get(), "service.lock", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!service_lock.valid()) return false;
+    UniqueFd owner_fd(::openat(service_lock.get(), "owner.pid", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!owner_fd.valid()) return false;
     struct stat st{};
-    if (::lstat(kDvsSocketPath, &st) == 0) {
-        if (!S_ISSOCK(st.st_mode) || ::unlink(kDvsSocketPath) != 0) return false;
-    } else if (errno != ENOENT) {
-        return false;
-    }
-    listener.reset(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
-    if (!listener.valid()) return false;
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
-    if (::bind(listener.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
-        ::chmod(kDvsSocketPath, 0600) != 0 || ::listen(listener.get(), 4) != 0) {
-        (void)::unlink(kDvsSocketPath);
-        listener.reset();
-        return false;
-    }
-    return true;
-}
-
-int send_dvs_command(std::string_view command) {
-    UniqueFd fd(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0));
-    if (!fd.valid()) return 1;
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::strncpy(address.sun_path, kDvsSocketPath, sizeof(address.sun_path) - 1);
-    if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        std::cerr << "CF-DVS daemon control socket unavailable; is coreflowd running?\n";
-        return 1;
-    }
-    if (::send(fd.get(), command.data(), command.size(), MSG_NOSIGNAL) !=
-        static_cast<ssize_t>(command.size())) {
-        std::cerr << "CF-DVS command delivery failed.\n";
-        return 1;
-    }
-    pollfd wait{fd.get(), POLLIN, 0};
-    if (::poll(&wait, 1, 3000) <= 0 || !(wait.revents & POLLIN)) {
-        std::cerr << "CF-DVS daemon did not acknowledge the command.\n";
-        return 1;
-    }
-    char response[512]{};
-    const ssize_t n = ::recv(fd.get(), response, sizeof(response) - 1, 0);
-    if (n <= 0) return 1;
-    response[static_cast<size_t>(n)] = '\0';
-    std::cout << response << "\n";
-    return std::string_view(response).rfind("OK ", 0) == 0 ? 0 : 1;
-}
-
-int run_workload_probe() {
-    WorkloadTelemetryPipeline pipeline;
-    if (!pipeline.start()) {
-        const auto caps = pipeline.bpf_capabilities();
-        pipeline.stop();
-        std::cout << "{\"available\":false,\"backend\":\"unavailable\",\"bpfSyscall\":"
-                  << static_cast<unsigned>(caps.syscall)
-                  << ",\"ringBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
-                  << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
-                  << ",\"loaderVerified\":false}\n";
-        return 1;
-    }
-    const auto monotonic_ns = []() noexcept -> uint64_t {
-        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
-    };
-    WorkloadClassifier classifier;
-    WorkloadClassification classification{};
-    WorkloadFeatureSnapshot features{};
-    const auto add_saturated = [](uint64_t& total, uint64_t value) noexcept {
-        total = value > std::numeric_limits<uint64_t>::max() - total
-            ? std::numeric_limits<uint64_t>::max() : total + value;
-    };
-    for (unsigned window = 0; window < 2; ++window) {
-        if (window == 1) (void)pipeline.begin_frame_timeline_capture(1000);
-        const uint64_t start_ns = monotonic_ns();
-        const uint64_t deadline_ns = start_ns + 1'000'000'000ULL;
-        WorkloadFeatureSnapshot aggregate{};
-        aggregate.window_start_ns = start_ns;
-        aggregate.source = pipeline.backend();
-        uint64_t poll_start_ns = start_ns;
-        uint64_t total_wakeups = 0;
-        uint64_t total_io_bytes = 0;
-        uint64_t total_events = 0;
-        uint64_t total_samples = 0;
-        uint64_t gpu_busy_samples = 0;
-        double gpu_busy_sum = 0.0;
-        while (poll_start_ns < deadline_ns) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            const uint64_t observed_ns = monotonic_ns();
-            const uint64_t poll_end_ns = std::min(observed_ns, deadline_ns);
-            if (poll_end_ns <= poll_start_ns) continue;
-
-            // Keep the full one-second window start so delayed ring records are
-            // still accepted when they are drained by a later 10 ms poll.
-            const WorkloadFeatureSnapshot part = pipeline.sample(start_ns, poll_end_ns);
-            aggregate.valid_features |= part.valid_features;
-            if (part.valid_features & FeatureCpuPressure)
-                aggregate.cpu_pressure_some_pct = part.cpu_pressure_some_pct;
-            if (part.valid_features & FeatureMemoryPressure)
-                aggregate.memory_pressure_some_pct = part.memory_pressure_some_pct;
-            if (part.valid_features & FeatureIoPressure)
-                aggregate.io_pressure_some_pct = part.io_pressure_some_pct;
-            if (part.valid_features & FeatureGpuBusy) {
-                gpu_busy_sum += part.gpu_busy_pct;
-                ++gpu_busy_samples;
-            }
-            if (part.valid_features & FeatureIoBytes)
-                add_saturated(total_io_bytes, part.io_bytes);
-            if (part.valid_features & FeatureWakeupRate)
-                add_saturated(total_wakeups, part.wakeup_count);
-            add_saturated(total_events, part.event_count);
-            add_saturated(total_samples, part.sample_count);
-            aggregate.event_drain_saturated =
-                aggregate.event_drain_saturated || part.event_drain_saturated;
-            poll_start_ns = poll_end_ns;
-        }
-        if (gpu_busy_samples > 0) {
-            aggregate.gpu_busy_pct = gpu_busy_sum / static_cast<double>(gpu_busy_samples);
-            aggregate.gpu_busy_sample_count = static_cast<uint32_t>(std::min<uint64_t>(
-                gpu_busy_samples, std::numeric_limits<uint32_t>::max()));
-            aggregate.valid_features |= FeatureGpuBusy;
-        }
-        if (window == 1) (void)pipeline.finish_frame_timeline_capture(aggregate);
-        aggregate.window_end_ns = monotonic_ns();
-        aggregate.io_bytes = total_io_bytes;
-        aggregate.wakeup_count = total_wakeups;
-        aggregate.event_count = static_cast<uint32_t>(std::min<uint64_t>(
-            total_events, std::numeric_limits<uint32_t>::max()));
-        aggregate.sample_count = static_cast<uint32_t>(std::min<uint64_t>(
-            total_samples, std::numeric_limits<uint32_t>::max()));
-        if (aggregate.window_end_ns > start_ns) {
-            aggregate.wakeup_rate_per_sec = static_cast<double>(total_wakeups) *
-                1'000'000'000.0 / static_cast<double>(aggregate.window_end_ns - start_ns);
-        }
-        features = aggregate;
-        classification = classifier.classify(features, classification, features.window_end_ns);
-    }
-    const TelemetryBackend backend = pipeline.backend();
-    const BpfCapabilitySnapshot caps = pipeline.bpf_capabilities();
-    const std::string gpu_source_name(pipeline.gpu_source_name());
-    const bool bpf_ready = caps.event_pipeline_ready();
-    pipeline.stop();
-    const char* backend_name = backend == TelemetryBackend::Ebpf ? "ebpf" :
-        (backend == TelemetryBackend::SysfsProcfs ? "sysfs-procfs" : "unavailable");
-    const auto workload_name = [](DetectedWorkloadClass value) noexcept -> const char* {
-        switch (value) {
-            case DetectedWorkloadClass::Gaming: return "gaming";
-            case DetectedWorkloadClass::IoHeavy: return "io-heavy";
-            case DetectedWorkloadClass::JankSensitive: return "jank-sensitive";
-            case DetectedWorkloadClass::CpuBound: return "cpu-bound";
-            case DetectedWorkloadClass::GpuBound: return "gpu-bound";
-            case DetectedWorkloadClass::MemoryPressure: return "memory-pressure";
-            case DetectedWorkloadClass::Mixed: return "mixed";
-            default: return "unknown";
-        }
-    };
-    const auto metric = [&](uint32_t bit, double value) {
-        return (features.valid_features & bit) ? std::to_string(value) : std::string("null");
-    };
-    std::ostringstream out;
-    out << "{\"available\":true"
-        << ",\"backend\":\"" << backend_name << "\""
-        << ",\"workload\":\"" << workload_name(classification.workload) << "\""
-        << ",\"pendingWorkload\":\"" << workload_name(classification.pending_workload) << "\""
-        << ",\"confidence\":" << classification.confidence
-        << ",\"stable\":" << (classification.stable ? "true" : "false")
-        << ",\"evidenceMask\":" << classification.evidence_mask
-        << ",\"validFeatures\":" << features.valid_features
-        << ",\"sampleCount\":" << features.sample_count
-        << ",\"eventCount\":" << features.event_count
-        << ",\"eventDrainSaturated\":" << (features.event_drain_saturated ? "true" : "false")
-        << ",\"gpuSource\":" << json_string(gpu_source_name)
-        << ",\"gpuBusySamples\":" << features.gpu_busy_sample_count
-        << ",\"frameTimelineCaptured\":" << ((features.valid_features & FeatureFrameDeadline) ? "true" : "false")
-        << ",\"frameDeadlineCount\":" << features.frame_deadline_count
-        << ",\"frameDeadlineMissCount\":" << features.frame_deadline_misses
-        << ",\"frameTimelineSource\":\"" << ((features.valid_features & FeatureFrameDeadline) ? "perfetto-surfaceflinger" : "unavailable") << "\""
-        << ",\"frameActualDurationSamples\":" << features.frame_actual_duration_count
-        << ",\"frameActualAverageDurationMs\":" << (features.frame_actual_duration_count > 0U
-            ? std::to_string(static_cast<double>(features.frame_actual_duration_ns_total) /
-                static_cast<double>(features.frame_actual_duration_count) / 1'000'000.0)
-            : "null")
-        << ",\"cpuPressurePct\":" << metric(FeatureCpuPressure, features.cpu_pressure_some_pct)
-        << ",\"memoryPressurePct\":" << metric(FeatureMemoryPressure, features.memory_pressure_some_pct)
-        << ",\"ioPressurePct\":" << metric(FeatureIoPressure, features.io_pressure_some_pct)
-        << ",\"ioBytes\":" << metric(FeatureIoBytes, static_cast<double>(features.io_bytes))
-        << ",\"wakeupCount\":" << metric(FeatureWakeupRate, static_cast<double>(features.wakeup_count))
-        << ",\"wakeupRatePerSec\":" << metric(FeatureWakeupRate, features.wakeup_rate_per_sec)
-        << ",\"frameDeadlineMissPct\":" << metric(FeatureFrameDeadline, features.frame_deadline_miss_pct)
-        << ",\"gpuBusyPct\":" << metric(FeatureGpuBusy, features.gpu_busy_pct)
-        << ",\"bpfSyscall\":" << static_cast<unsigned>(caps.syscall)
-        << ",\"bpfRingBuffer\":" << static_cast<unsigned>(caps.ring_buffer)
-        << ",\"selinuxLoadAllowed\":" << (caps.selinux_allows_load ? "true" : "false")
-        << ",\"loaderVerified\":" << (bpf_ready ? "true" : "false")
-        << "}\n";
-    std::cout << out.str() << std::flush;
-    return 0;
+    if (::fstat(owner_fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    char buf[32];
+    ssize_t n = 0;
+    do { n = ::read(owner_fd.get(), buf, sizeof(buf)); } while (n < 0 && errno == EINTR);
+    if (n <= 0) return false;
+    const std::string trimmed = DaemonConfig::trim(std::string(buf, static_cast<size_t>(n)));
+    long owner_pid = 0;
+    const auto r = std::from_chars(trimmed.data(), trimmed.data() + trimmed.size(), owner_pid);
+    return r.ec == std::errc{} && r.ptr == trimmed.data() + trimmed.size() &&
+           owner_pid == static_cast<long>(parent) &&
+           (::kill(parent, 0) == 0 || errno == EPERM);
 }
 
 bool ensure_secure_state_dir() {
@@ -1238,58 +230,98 @@ bool write_pid(UniqueFd& lock) {
     if (!ensure_secure_state_dir()) return false;
     lock.reset(::open(kPidPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
     if (!lock.valid()) return false;
-
     struct stat st{};
     if (::fstat(lock.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
     if (::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) return false;
     (void)::fchmod(lock.get(), 0600);
-
     const auto pid = std::to_string(::getpid());
-    if (::ftruncate(lock.get(), 0) != 0) return false;
-    if (::lseek(lock.get(), 0, SEEK_SET) < 0) return false;
+    if (::ftruncate(lock.get(), 0) != 0 || ::lseek(lock.get(), 0, SEEK_SET) < 0) return false;
     if (::write(lock.get(), pid.data(), pid.size()) != static_cast<ssize_t>(pid.size())) return false;
     return ::fsync(lock.get()) == 0;
 }
 
 void clear_pid(const UniqueFd& lock) noexcept {
-    if (!lock.valid()) return;
-    if (::ftruncate(lock.get(), 0) == 0) {
-        (void)::fsync(lock.get());
+    if (lock.valid() && ::ftruncate(lock.get(), 0) == 0) (void)::fsync(lock.get());
+}
+
+bool journal_clear() {
+    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
+    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return errno == ENOENT;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > 65536) {
+        return false;
     }
+    char buf[4096];
+    std::string raw;
+    while (raw.size() <= 65536U) {
+        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        raw.append(buf, static_cast<size_t>(n));
+    }
+    std::istringstream ss(raw);
+    std::string header;
+    if (!std::getline(ss, header) ||
+        (header.rfind("CFJ1\t", 0) != 0 && header.rfind("CFJ2\t", 0) != 0 &&
+         header.rfind("CFJ3\t", 0) != 0 && header.rfind("CFJ4\t", 0) != 0)) {
+        return false;
+    }
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!DaemonConfig::trim(line).empty()) return false;
+    }
+    return true;
+}
+
+size_t count_journal_entries() {
+    const std::string jpath = std::string(kStateDir) + "/baseline.journal";
+    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return 0;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 65536) {
+        return 0;
+    }
+    char buf[4096];
+    std::string raw;
+    while (raw.size() <= 65536U) {
+        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        raw.append(buf, static_cast<size_t>(n));
+    }
+    std::istringstream ss(raw);
+    std::string header;
+    if (!std::getline(ss, header) || header.rfind("CFJ", 0) != 0) return 0;
+    size_t count = 0;
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!DaemonConfig::trim(line).empty()) ++count;
+    }
+    return count;
 }
 
 bool write_status_snapshot(std::string_view payload) noexcept {
-    if (payload.empty() || payload.size() > 1024U * 1024U || !ensure_secure_state_dir()) return false;
+    if (payload.empty() || payload.size() > 512U * 1024U || !ensure_secure_state_dir()) return false;
     UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     if (!dir.valid()) return false;
     static std::atomic<uint64_t> nonce{0};
     const uint64_t seq = nonce.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    const std::string temp_name = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(seq);
-    UniqueFd temp(::openat(dir.get(), temp_name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
-    if (!temp.valid()) return false;
-    (void)::fchmod(temp.get(), 0600);
-    size_t offset = 0;
-    while (offset < payload.size()) {
-        const ssize_t n = ::write(temp.get(), payload.data() + offset, payload.size() - offset);
+    const std::string tmp = "status.json.tmp." + std::to_string(::getpid()) + "." + std::to_string(seq);
+    UniqueFd fd(::openat(dir.get(), tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!fd.valid()) return false;
+    size_t off = 0;
+    while (off < payload.size()) {
+        const ssize_t n = ::write(fd.get(), payload.data() + off, payload.size() - off);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { (void)::unlinkat(dir.get(), temp_name.c_str(), 0); return false; }
-        offset += static_cast<size_t>(n);
+        if (n <= 0) { (void)::unlinkat(dir.get(), tmp.c_str(), 0); return false; }
+        off += static_cast<size_t>(n);
     }
-    if (::fsync(temp.get()) != 0 || ::renameat(dir.get(), temp_name.c_str(), dir.get(), "status.json") != 0) {
-        (void)::unlinkat(dir.get(), temp_name.c_str(), 0);
+    if (::renameat(dir.get(), tmp.c_str(), dir.get(), "status.json") != 0) {
+        (void)::unlinkat(dir.get(), tmp.c_str(), 0);
         return false;
     }
-    (void)::fsync(dir.get());
     return true;
-}
-
-// Refreshes the status file mtime without rewriting identical content. The
-// live-status reader accepts only files modified within 3 s, so an unchanged
-// payload still needs a periodic heartbeat, but not an fsync'd data write.
-bool touch_status_snapshot() noexcept {
-    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
-    if (!dir.valid()) return false;
-    return ::utimensat(dir.get(), "status.json", nullptr, AT_SYMLINK_NOFOLLOW) == 0;
 }
 
 bool print_live_status_snapshot(pid_t expected_pid) {
@@ -1297,132 +329,47 @@ bool print_live_status_snapshot(pid_t expected_pid) {
     UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
     struct stat st{};
-    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 1024 * 1024) return false;
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 512 * 1024) {
+        return false;
+    }
     const auto now = std::chrono::system_clock::now();
-    const auto modified = std::chrono::system_clock::from_time_t(st.st_mtime);
-    if (now < modified || now - modified > std::chrono::seconds(3)) return false;
+    const auto mod = std::chrono::system_clock::from_time_t(st.st_mtime);
+    if (now < mod || now - mod > std::chrono::seconds(4)) return false;
     std::string payload(static_cast<size_t>(st.st_size), '\0');
-    size_t offset = 0;
-    while (offset < payload.size()) {
-        const ssize_t n = ::read(fd.get(), payload.data() + offset, payload.size() - offset);
+    size_t off = 0;
+    while (off < payload.size()) {
+        const ssize_t n = ::read(fd.get(), payload.data() + off, payload.size() - off);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
-        offset += static_cast<size_t>(n);
+        off += static_cast<size_t>(n);
     }
     const std::string pid_field = "\"pid\":" + std::to_string(expected_pid) + ",";
     if (payload.find("\"running\":true") == std::string::npos ||
-        payload.find(pid_field) == std::string::npos || payload.front() != '{' || payload.back() != '}') return false;
-    std::cout << "\n" << payload << "\n" << std::flush;
+        payload.find(pid_field) == std::string::npos ||
+        payload.front() != '{' || payload.back() != '}') {
+        return false;
+    }
+    std::cout << payload << "\n" << std::flush;
     return true;
 }
 
-std::vector<std::string> discover_lifecycle_membership_targets() {
-    // Lifecycle placement is resolved from the active mount topology. The
-    // controller ABI file is selected by presence, never by a vendor mount path.
+void escape_app_cgroups_and_protect_oom() {
+    const std::string pid_line = std::to_string(::getpid()) + "\n";
     MountTopologyResolver topology{};
-    std::vector<std::string> targets;
     for (const auto& mount : topology.discover_cgroup_mounts()) {
-        const std::string process_path = mount.mount_point + "/cgroup.procs";
-        const std::string task_path = mount.mount_point + "/tasks";
-        struct stat st{};
-        const std::string* selected = nullptr;
-        if (::lstat(process_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
-            selected = &process_path;
-        } else if (::lstat(task_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
-            selected = &task_path;
-        }
-        if (selected != nullptr &&
-            std::find(targets.begin(), targets.end(), *selected) == targets.end())
-            targets.push_back(*selected);
-    }
-    return targets;
-}
-
-bool is_allowlisted_lifecycle_target(
-    std::string_view path, const std::vector<std::string>& discovered_targets) noexcept {
-    if (std::find(discovered_targets.begin(), discovered_targets.end(), path) != discovered_targets.end())
-        return true;
-    // This is the current process's standardized OOM admission control, not a
-    // cgroup endpoint. Keep it separate from discovered cgroup membership files.
-    return path == "/proc/self/oom_score_adj";
-}
-
-bool lifecycle_readback_contains_line(int fd, std::string_view expected) {
-    if (fd < 0 || expected.empty() || expected.size() > 32) return false;
-    char buffer[4096];
-    std::string line;
-    bool overflow = false;
-    for (;;) {
-        ssize_t count = ::read(fd, buffer, sizeof(buffer));
-        if (count < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (count == 0) {
-            return !overflow && line == expected;
-        }
-        for (ssize_t i = 0; i < count; ++i) {
-            const char ch = buffer[i];
-            if (ch == '\n' || ch == '\r') {
-                if (!overflow && line == expected) return true;
-                line.clear();
-                overflow = false;
-            } else if (!overflow) {
-                if (line.size() < 32) line.push_back(ch);
-                else overflow = true;
+        for (const char* file : {"/cgroup.procs", "/tasks"}) {
+            const std::string path = mount.mount_point + file;
+            UniqueFd fd(::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+            if (fd.valid()) {
+                (void)::write(fd.get(), pid_line.data(), pid_line.size());
+                break;
             }
         }
     }
-}
-
-bool write_sys_node_verified(
-    std::string_view path,
-    std::string_view content,
-    std::string_view expected_readback_line,
-    const std::vector<std::string>& discovered_targets) {
-    if (!is_allowlisted_lifecycle_target(path, discovered_targets) || content.empty() ||
-        expected_readback_line.empty()) {
-        return false;
-    }
-
-    const std::string owned_path(path);
-    UniqueFd fd(::open(owned_path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return false;
-
-    // cgroup membership files are command interfaces: a short write is failure,
-    // not a partially successful lifecycle operation.
-    ssize_t written = -1;
-    do {
-        written = ::write(fd.get(), content.data(), content.size());
-    } while (written < 0 && errno == EINTR);
-    if (written < 0 || static_cast<size_t>(written) != content.size()) return false;
-    fd.reset();
-
-    UniqueFd verify_fd(::open(owned_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!verify_fd.valid()) return false;
-    struct stat st{};
-    if (::fstat(verify_fd.get(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    return lifecycle_readback_contains_line(verify_fd.get(), expected_readback_line);
-}
-
-void escape_app_cgroups_and_protect_oom() {
-    // This is a lifecycle-only operation, deliberately outside adaptive mutation
-    // domains. Every target is explicitly allowlisted and must pass readback.
-    const std::string pid_token = std::to_string(::getpid());
-    const std::string pid_command = pid_token + "\n";
-    const auto membership_targets = discover_lifecycle_membership_targets();
-    size_t verified_memberships = 0;
-    for (const auto& cg : membership_targets) {
-        if (write_sys_node_verified(cg, pid_command, pid_token, membership_targets)) {
-            ++verified_memberships;
-        }
-    }
-    if (verified_memberships == 0) {
-        emit_log(true, "[CoreFlow][Lifecycle] No allowlisted cgroup membership write passed readback; inherited membership remains in effect.");
-    }
-
-    if (!write_sys_node_verified("/proc/self/oom_score_adj", "-900\n", "-900", membership_targets)) {
-        emit_log(true, "[CoreFlow][Lifecycle] oom_score_adj write was not verified; retaining the kernel-provided value.");
+    UniqueFd oom(::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (oom.valid()) {
+        constexpr char val[] = "-900\n";
+        (void)::write(oom.get(), val, sizeof(val) - 1U);
     }
 }
 
@@ -1430,43 +377,359 @@ bool daemonize_process() noexcept {
     const pid_t first = ::fork();
     if (first < 0) return false;
     if (first > 0) ::_exit(0);
-
     if (::setsid() < 0) return false;
-
     const pid_t second = ::fork();
     if (second < 0) return false;
     if (second > 0) ::_exit(0);
-
     (void)::umask(0077);
     (void)::chdir("/");
-
-    // Close all inherited descriptors (such as WebView/ksu.exec pipes) above STDERR.
-    for (int fd = 3; fd < 256; ++fd) {
-        (void)::close(fd);
-    }
-
+    for (int fd = 3; fd < 256; ++fd) (void)::close(fd);
     const int null_fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (null_fd >= 0) {
         (void)::dup2(null_fd, STDIN_FILENO);
         if (null_fd > STDERR_FILENO) (void)::close(null_fd);
     }
-
     (void)ensure_secure_state_dir();
     const std::string logs_dir = std::string(kStateDir) + "/logs";
     (void)::mkdir(logs_dir.c_str(), 0700);
     (void)::chmod(logs_dir.c_str(), 0700);
-
     const std::string log_path = logs_dir + "/coreflowd.log";
-    const int log_fd = ::open(
-        log_path.c_str(),
-        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW,
-        0600);
+    const int log_fd = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (log_fd >= 0) {
         (void)::dup2(log_fd, STDOUT_FILENO);
         (void)::dup2(log_fd, STDERR_FILENO);
         if (log_fd > STDERR_FILENO) (void)::close(log_fd);
     }
     return true;
+}
+
+class CpuUtilSampler {
+public:
+    double sample() noexcept {
+        UniqueFd fd(::open("/proc/stat", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (!fd.valid()) return last_pct_;
+        char buf[512];
+        const ssize_t n = ::read(fd.get(), buf, sizeof(buf));
+        if (n <= 0) return last_pct_;
+        std::istringstream ss(std::string(buf, static_cast<size_t>(n)));
+        std::string label;
+        uint64_t u = 0, ni = 0, s = 0, id = 0, iw = 0, irq = 0, sirq = 0, st = 0;
+        if (!(ss >> label >> u >> ni >> s >> id >> iw >> irq >> sirq >> st) || label != "cpu") {
+            return last_pct_;
+        }
+        const uint64_t total = u + ni + s + id + iw + irq + sirq + st;
+        const uint64_t idle = id + iw;
+        if (prev_total_ > 0U && total > prev_total_ && idle >= prev_idle_) {
+            const double ratio = 1.0 - static_cast<double>(idle - prev_idle_) /
+                                       static_cast<double>(total - prev_total_);
+            last_pct_ = std::clamp(ratio * 100.0, 0.0, 100.0);
+        }
+        prev_total_ = total;
+        prev_idle_ = idle;
+        return last_pct_;
+    }
+
+private:
+    uint64_t prev_total_{0};
+    uint64_t prev_idle_{0};
+    double last_pct_{0.0};
+};
+
+struct HistoryPoint {
+    uint64_t ts_ms{0};
+    double soc_temp{-1.0};
+    double thermal_pressure{0.0};
+    double cpu_util_pct{0.0};
+    double capacity_scale{1.0};
+    std::string mode{"EFFICIENCY"};
+};
+
+struct RuntimeStatusData {
+    bool running{false};
+    pid_t pid{0};
+    DaemonConfig config{};
+    HardwareTopology topo{};
+    ContextDecision ctx{};
+    bool thermal_guard{false};
+    bool thermal_emergency{false};
+    double soc_temp{-1.0};
+    double battery_temp{-1.0};
+    double thermal_pressure{0.0};
+    std::string thermal_source{"unavailable"};
+    double cpu_util_pct{0.0};
+    std::optional<double> gpu_busy_pct{};
+    std::optional<double> cpu_psi{};
+    std::optional<double> mem_psi{};
+    std::optional<double> io_psi{};
+    double capacity_scale{1.0};
+    double ai_predicted_10s{0.0};
+    double ai_confidence{0.0};
+    ThreadSchedulerStats thread_stats{};
+    StorageMemoryStats storage_stats{};
+    ThermalEnvelopeStats envelope_stats{};
+    BatteryPowerTelemetry battery{};
+    size_t baseline_nodes{0};
+    bool recovery_pending{false};
+    std::vector<HistoryPoint> history{};
+};
+
+std::string serialize_string_array(const std::vector<std::string>& items) {
+    std::ostringstream out;
+    out << '[';
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i != 0U) out << ',';
+        out << json_str(items[i]);
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string build_status_json(const RuntimeStatusData& s) {
+    const auto gaming_list = DaemonConfig::parse_package_list(s.config.gaming_apps);
+    const auto excluded_list = DaemonConfig::parse_package_list(s.config.excluded_apps);
+
+    std::ostringstream out;
+    out << "{\"version\":" << json_str(kVersion)
+        << ",\"running\":" << (s.running ? "true" : "false")
+        << ",\"pid\":" << s.pid
+        << ",\"profile\":" << json_str(s.config.profile)
+        << ",\"inspectionMode\":" << (s.config.inspection_mode ? "true" : "false")
+        << ",\"mode\":" << json_str(s.thermal_emergency ? "THERMAL_EMERGENCY"
+                                    : s.thermal_guard ? "THERMAL_GUARD"
+                                    : ContextEngine::mode_name(s.ctx.mode))
+        << ",\"foregroundPackage\":" << json_str(s.ctx.foreground_package)
+        << ",\"foregroundPid\":" << s.ctx.foreground_pid
+        << ",\"capacityScale\":" << safe_num(s.capacity_scale, 1.0)
+        << ",\"thermalGuard\":" << (s.thermal_guard ? "true" : "false")
+        << ",\"socTempCelsius\":" << (std::isfinite(s.soc_temp) && s.soc_temp >= 0.0 ? std::to_string(s.soc_temp) : "null")
+        << ",\"batteryTempCelsius\":" << (std::isfinite(s.battery_temp) && s.battery_temp >= 0.0 ? std::to_string(s.battery_temp) : "null")
+        << ",\"thermalPressure\":" << safe_num(s.thermal_pressure)
+        << ",\"thermalSource\":" << json_str(s.thermal_source)
+        << ",\"cpuUtilPct\":" << safe_num(s.cpu_util_pct)
+        << ",\"gpuBusyPct\":" << (s.gpu_busy_pct ? std::to_string(safe_num(*s.gpu_busy_pct)) : "null")
+        << ",\"cpuPsi\":" << (s.cpu_psi ? std::to_string(safe_num(*s.cpu_psi)) : "null")
+        << ",\"memPsi\":" << (s.mem_psi ? std::to_string(safe_num(*s.mem_psi)) : "null")
+        << ",\"ioPsi\":" << (s.io_psi ? std::to_string(safe_num(*s.io_psi)) : "null")
+        << ",\"aiPredicted10s\":" << safe_num(s.ai_predicted_10s)
+        << ",\"aiConfidence\":" << safe_num(s.ai_confidence)
+        << ",\"baselineNodesSnapshotted\":" << s.baseline_nodes
+        << ",\"recoveryPending\":" << (s.recovery_pending ? "true" : "false")
+        << ",\"features\":{"
+        << "\"frameSmoothness\":" << (s.config.enable_frame_smoothness ? "true" : "false")
+        << ",\"storageBurst\":" << (s.config.enable_storage_burst ? "true" : "false")
+        << ",\"memoryGuard\":" << (s.config.enable_memory_guard ? "true" : "false")
+        << ",\"thermalPacing\":" << (s.config.enable_thermal_pacing ? "true" : "false")
+        << ",\"batteryStepCharging\":" << (s.config.enable_battery_step_charging ? "true" : "false")
+        << "}"
+        << ",\"apps\":{"
+        << "\"gaming\":" << serialize_string_array(gaming_list)
+        << ",\"excluded\":" << serialize_string_array(excluded_list)
+        << "}"
+        << ",\"actuators\":{"
+        << "\"perThreadUclampSupported\":" << (s.thread_stats.supported ? "true" : "false")
+        << ",\"boostedTids\":" << s.thread_stats.active_boosted_tids
+        << ",\"threadUclampMin\":" << s.thread_stats.last_util_min
+        << ",\"threadUclampMax\":" << s.thread_stats.last_util_max
+        << ",\"storageBurstActive\":" << (s.storage_stats.burst_active ? "true" : "false")
+        << ",\"readAheadKb\":" << s.storage_stats.active_read_ahead_kb
+        << ",\"backgroundIsolated\":" << (s.storage_stats.background_isolated ? "true" : "false")
+        << ",\"prereadFiles\":" << s.storage_stats.preread_files_total
+        << ",\"prereadBytes\":" << s.storage_stats.preread_bytes_total
+        << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
+        << ",\"contendedNodes\":" << (s.storage_stats.contended_nodes + s.envelope_stats.contended_nodes)
+        << "}"
+        << ",\"hardware\":{"
+        << "\"socModel\":" << json_str(s.topo.soc_model)
+        << ",\"kernelVersion\":" << json_str(s.topo.kernel_version)
+        << ",\"storageType\":" << json_str(HardwareProbe::storage_type_name(s.topo.primary_storage))
+        << ",\"gpuModel\":" << json_str(s.topo.gpu.model)
+        << ",\"ramBytes\":" << s.topo.total_ram_bytes
+        << ",\"zramBytes\":" << s.topo.zram_bytes
+        << ",\"refreshHz\":" << s.topo.refresh_hz
+        << ",\"cpuClusters\":" << s.topo.cpu_clusters.size()
+        << ",\"mglruAvailable\":" << (!s.topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (!s.topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << "}"
+        << ",\"batteryPower\":{"
+        << "\"available\":" << (s.battery.available ? "true" : "false")
+        << ",\"charging\":" << (s.battery.charging ? "true" : "false")
+        << ",\"fastCharging\":" << (s.battery.fast_charging ? "true" : "false")
+        << ",\"thermalStepActive\":" << (s.battery.thermal_step_active ? "true" : "false")
+        << ",\"temperatureCelsius\":" << (s.battery.temperature_celsius >= 0.0 ? std::to_string(safe_num(s.battery.temperature_celsius)) : "null")
+        << ",\"currentMa\":" << safe_num(s.battery.current_ma)
+        << ",\"voltageMv\":" << safe_num(s.battery.voltage_mv)
+        << ",\"powerMw\":" << safe_num(s.battery.power_mw)
+        << ",\"chargeLimitUa\":" << s.battery.charge_limit_ua
+        << ",\"oemBaselineUa\":" << s.battery.oem_baseline_ua
+        << ",\"status\":" << json_str(s.battery.status)
+        << "}"
+        << ",\"history\":[";
+    for (size_t i = 0; i < s.history.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& h = s.history[i];
+        out << "{\"ts\":" << h.ts_ms
+            << ",\"temp\":" << (std::isfinite(h.soc_temp) && h.soc_temp >= 0.0 ? std::to_string(h.soc_temp) : "null")
+            << ",\"pressure\":" << safe_num(h.thermal_pressure)
+            << ",\"cpu\":" << safe_num(h.cpu_util_pct)
+            << ",\"scale\":" << safe_num(h.capacity_scale, 1.0)
+            << ",\"mode\":" << json_str(h.mode) << '}';
+    }
+    out << "]}";
+    return out.str();
+}
+
+void print_readonly_status() {
+    HardwareProbe probe;
+    ThermalMonitor thermal_mon;
+    RuntimeStatusData data{};
+    data.running = false;
+    data.pid = 0;
+    data.config = DaemonConfig::load_best_available(false);
+    data.topo = probe.discover();
+    const auto tb = thermal_mon.sample_bundle(false);
+    data.soc_temp = tb.composite_celsius;
+    data.battery_temp = tb.battery_celsius;
+    data.thermal_pressure = tb.assessment.pressure;
+    data.thermal_source = tb.assessment.source;
+    data.gpu_busy_pct = probe.read_gpu_busy_pct(data.topo);
+    data.cpu_psi = probe.read_psi_avg10("cpu");
+    data.mem_psi = probe.read_psi_avg10("memory");
+    data.io_psi = probe.read_psi_avg10("io");
+    data.battery = HardwareLongevityManager::probe_battery_telemetry();
+    data.baseline_nodes = count_journal_entries();
+    data.recovery_pending = !journal_clear();
+    std::cout << build_status_json(data) << "\n" << std::flush;
+}
+
+void print_capabilities() {
+    HardwareProbe probe;
+    const auto topo = probe.discover();
+    ThreadSchedulerActuator probe_sched;
+    const bool per_thread_uclamp = probe_sched.probe_support();
+    std::ostringstream out;
+    out << "{\"version\":" << json_str(kVersion)
+        << ",\"socModel\":" << json_str(topo.soc_model)
+        << ",\"kernelVersion\":" << json_str(topo.kernel_version)
+        << ",\"storageType\":" << json_str(HardwareProbe::storage_type_name(topo.primary_storage))
+        << ",\"gpuModel\":" << json_str(topo.gpu.model)
+        << ",\"ramBytes\":" << topo.total_ram_bytes
+        << ",\"zramBytes\":" << topo.zram_bytes
+        << ",\"refreshHz\":" << topo.refresh_hz
+        << ",\"cpuClusters\":" << topo.cpu_clusters.size()
+        << ",\"rustPidEngine\":true"
+        << ",\"perThreadUclampSupported\":" << (per_thread_uclamp ? "true" : "false")
+        << ",\"mglruAvailable\":" << (!topo.vm.mglru_min_ttl_path.empty() ? "true" : "false")
+        << ",\"cgroupV2Available\":" << (!topo.cgroups.top_app_procs_path.empty() ? "true" : "false")
+        << "}";
+    std::cout << out.str() << "\n" << std::flush;
+}
+
+std::string hex_decode_journal_field(std::string_view hex) {
+    if ((hex.size() % 2U) != 0U) return {};
+    std::string out;
+    out.reserve(hex.size() / 2U);
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+    for (size_t i = 0; i < hex.size(); i += 2U) {
+        const int hi = nibble(hex[i]);
+        const int lo = nibble(hex[i + 1U]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return out;
+}
+
+void print_journal() {
+    struct JournalRow {
+        std::string path;
+        std::string factory_value;
+        std::string active_value;
+        bool modified{true};
+    };
+    std::vector<JournalRow> rows;
+    const char* env_dir = std::getenv("COREFLOW_STATE_DIR");
+    const std::string state_dir = (env_dir && env_dir[0] != '\0') ? std::string(env_dir) : std::string(kStateDir);
+    const std::string jpath = state_dir + "/baseline.journal";
+    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (fd.valid()) {
+        struct stat st{};
+        if (::fstat(fd.get(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= 262144) {
+            std::string raw(static_cast<size_t>(st.st_size), '\0');
+            size_t off = 0;
+            while (off < raw.size()) {
+                const ssize_t n = ::read(fd.get(), raw.data() + off, raw.size() - off);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                off += static_cast<size_t>(n);
+            }
+            raw.resize(off);
+            std::istringstream ss(raw);
+            std::string header;
+            if (std::getline(ss, header) && header.rfind("CFJ", 0) == 0) {
+                std::string line;
+                while (std::getline(ss, line)) {
+                    if (DaemonConfig::trim(line).empty()) continue;
+                    std::vector<std::string> cols;
+                    size_t start = 0;
+                    while (start <= line.size()) {
+                        const size_t tab = line.find('\t', start);
+                        if (tab == std::string::npos) {
+                            cols.push_back(line.substr(start));
+                            break;
+                        }
+                        cols.push_back(line.substr(start, tab - start));
+                        start = tab + 1U;
+                    }
+                    if (cols.size() >= 4U) {
+                        JournalRow r{};
+                        r.path = cols[0];
+                        r.factory_value = hex_decode_journal_field(cols[1]);
+                        r.active_value = hex_decode_journal_field(cols[3]);
+                        r.modified = true;
+                        rows.push_back(std::move(r));
+                    } else if (cols.size() >= 2U) {
+                        JournalRow r{};
+                        r.path = cols[0];
+                        r.factory_value = hex_decode_journal_field(cols[1]);
+                        r.active_value = r.factory_value;
+                        r.modified = true;
+                        rows.push_back(std::move(r));
+                    }
+                }
+            }
+        }
+    }
+
+    std::ostringstream out;
+    out << "{\"format\":\"CFJ4\",\"entryCount\":" << rows.size() << ",\"entries\":[";
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i != 0U) out << ',';
+        const auto& e = rows[i];
+        out << "{\"path\":" << json_str(e.path)
+            << ",\"factoryValue\":" << json_str(e.factory_value)
+            << ",\"activeValue\":" << json_str(e.active_value)
+            << ",\"modified\":" << (e.modified ? "true" : "false") << '}';
+    }
+    out << "]}";
+    std::cout << out.str() << "\n" << std::flush;
+}
+
+int stop_daemon() {
+    const pid_t pid = daemon_pid();
+    if (pid > 0) {
+        if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) return 1;
+        for (int i = 0; i < 80; ++i) {
+            if (!process_is_coreflowd(pid)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (process_is_coreflowd(pid)) return 1;
+    }
+    if (!BaselineStore::instance().recover_pending()) return 1;
+    return journal_clear() ? 0 : 1;
 }
 
 } // namespace
@@ -1477,20 +740,6 @@ int main(int argc, char* argv[]) {
     (void)std::setlocale(LC_ALL, "C");
 
     bool fork_daemon = false;
-    if (argc >= 2) {
-        const std::string_view command(argv[1]);
-        if (command == "--dvs-start") {
-            if (argc != 3) {
-                std::cerr << "Usage: coreflowd --dvs-start PROFILE\n";
-                return 2;
-            }
-            return send_dvs_command("START " + std::string(argv[2]));
-        }
-        if (command == "--dvs-stop" || command == "--dvs-status") {
-            if (argc != 2) return 2;
-            return send_dvs_command(command == "--dvs-stop" ? "STOP" : "STATUS");
-        }
-    }
     if (argc >= 2 && std::string_view(argv[1]) == "--set-config") {
         if (argc < 3) {
             std::cerr << "Usage: coreflowd --set-config key=value [key=value ...]\n";
@@ -1500,96 +749,70 @@ int main(int argc, char* argv[]) {
         for (int i = 2; i < argc; ++i) {
             const std::string_view arg(argv[i]);
             const size_t eq = arg.find('=');
-            if (eq == std::string_view::npos || eq == 0) {
+            if (eq == std::string_view::npos || eq == 0U) {
                 std::cerr << "Invalid key=value argument: " << arg << "\n";
                 return 2;
             }
             updates.emplace_back(
                 DaemonConfig::trim(std::string(arg.substr(0, eq))),
-                DaemonConfig::trim(std::string(arg.substr(eq + 1))));
+                DaemonConfig::trim(std::string(arg.substr(eq + 1U))));
         }
         (void)ensure_secure_state_dir();
         const std::string conf_path = std::string(kStateDir) + "/coreflow.conf";
         if (!DaemonConfig::update_config_file(conf_path, updates)) {
-            std::cerr << "Failed to update configuration file: " << conf_path << "\n";
+            std::cerr << "Rejected or failed configuration update.\n";
             return 1;
         }
         const pid_t pid = daemon_pid();
-        if (pid > 0) {
-            (void)::kill(pid, SIGHUP);
-        }
+        if (pid > 0) (void)::kill(pid, SIGHUP);
         return 0;
     }
+
     if (argc == 2) {
-        const std::string_view command(argv[1]);
-        if (command == "--workload-probe") {
-            if (argc != 2) return 2;
-            return run_workload_probe();
-        }
-        if (command == "--capabilities") {
-            CoreFlowContext context;
-            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
-            print_capabilities(context);
-            (void)context.Stop("Read-only capabilities inspection complete");
+        const std::string_view cmd(argv[1]);
+        if (cmd == "--status") {
+            const pid_t live = daemon_pid();
+            if (live > 0 && print_live_status_snapshot(live)) return 0;
+            print_readonly_status();
             return 0;
         }
-        if (command == "--status") {
-            const pid_t live_pid = daemon_pid();
-            if (live_pid > 0 && print_live_status_snapshot(live_pid)) return 0;
-            CoreFlowContext context;
-            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
-            print_status(context);
-            (void)context.Stop("Read-only status inspection complete");
+        if (cmd == "--capabilities") {
+            print_capabilities();
             return 0;
         }
-        if (command == "--journal") {
-            CoreFlowContext context;
-            if (!context.Start(CoreFlowContext::Mode::ReadOnly)) return 1;
-            print_journal(context.baseline_store());
-            (void)context.Stop("Read-only mutation journal inspection complete");
+        if (cmd == "--journal") {
+            print_journal();
             return 0;
         }
-        if (command == "--stop" || command == "--rollback-baseline") {
+        if (cmd == "--stop" || cmd == "--rollback-baseline") {
             return stop_daemon();
         }
-        if (command == "--daemon" || command == "-d") {
+        if (cmd == "--daemon" || cmd == "-d") {
             fork_daemon = true;
         } else {
-            std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+            std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--stop|--rollback-baseline|--set-config key=value ...]\n";
             return 2;
         }
     } else if (argc != 1) {
-        std::cerr << "Usage: coreflowd [--daemon|--status|--journal|--workload-probe|--stop|--rollback-baseline|--capabilities|--dvs-start PROFILE|--dvs-stop|--dvs-status|--set-config key=value ...]\n";
+        std::cerr << "Usage: coreflowd [--daemon|--status|--capabilities|--journal|--stop|--rollback-baseline|--set-config key=value ...]\n";
         return 2;
     }
 
     if (safety_halt_requested()) {
-        emit_log(true, "[CoreFlow] Safety marker active; refusing runtime mutation.");
+        emit_log(true, "[CoreFlow] Safety marker active; refusing runtime start.");
         return 2;
     }
-
-    // Existing daemon ownership is authoritative; do not spawn a second instance.
-    if (daemon_pid() > 0) {
-        return 0;
-    }
-    // service.sh is the sole launcher: it must own service.lock and be our parent.
+    if (daemon_pid() > 0) return 0;
     if (!service_launcher_authorized()) {
-        emit_log(true, "[CoreFlow] Daemon launch rejected: service.sh must hold service.lock.");
+        emit_log(true, "[CoreFlow] Launch rejected: service.sh must hold service.lock.");
         return 2;
     }
 
     if (fork_daemon) {
-        if (!daemonize_process()) {
-            emit_log(true, "[CoreFlow] Failed to detach background daemon session.");
-            return 1;
-        }
+        if (!daemonize_process()) return 1;
     } else {
-        // Even when launched without --daemon (e.g. via service.sh or nohup),
-        // detach from the caller's process group/session and close leaked descriptors.
         (void)::setsid();
-        for (int fd = 3; fd < 256; ++fd) {
-            (void)::close(fd);
-        }
+        for (int fd = 3; fd < 256; ++fd) (void)::close(fd);
     }
 
     escape_app_cgroups_and_protect_oom();
@@ -1597,165 +820,132 @@ int main(int argc, char* argv[]) {
 
     UniqueFd pid_lock;
     if (!write_pid(pid_lock)) {
-        const int lock_error = errno;
-        // A held flock means another daemon owns this PID inode. The failed
-        // contender has not truncated or rewritten the active owner's PID file.
-        if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) return 0;
-        emit_log(true, "[CoreFlow] Unable to acquire daemon singleton lock.");
+        if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
+        emit_log(true, "[CoreFlow] Unable to acquire PID singleton lock.");
         return 1;
     }
 
-    CoreFlowContext context;
-    if (!context.Start(CoreFlowContext::Mode::Daemon)) {
-        emit_log(true, "[CoreFlow] Context startup or durable recovery failed; refusing new mutations.");
+    auto& baseline = BaselineStore::instance();
+    if (!baseline.recover_pending()) {
+        emit_log(true, "[CoreFlow] Durable CFJ4 journal recovery failed; refusing new mutations.");
         clear_pid(pid_lock);
         return 1;
     }
-    auto& baseline = context.baseline_store();
-    auto& recovery_monitor = context.recovery_monitor();
 
+    // CoreFlow v5 4-Pillar Runtime Composition
     DaemonConfig config = DaemonConfig::load_best_available();
-    coreflow::runtime::DirectAdaptiveRuntime direct_runtime(baseline);
-    direct_runtime.set_mutation_enabled(!config.inspection_mode && config.enable_direct_adaptive && config.direct_adaptive_policy != "disabled");
-    const bool direct_runtime_ready = direct_runtime.start();
-    if (direct_runtime_ready) {
-        emit_log(false, "[CoreFlow][DirectAdaptive] Production composition ready: topology, telemetry, sweet-spot, durable WAL actuator and epoll/timerfd event path connected.");
-    } else {
-        emit_log(true, "[CoreFlow][DirectAdaptive] Discovery or durable baseline preparation incomplete; daemon remains alive and direct actuators are skipped.");
-    }
-    const DeviceProfileHandle device_profile = context.device_profile();
-    emit_log(false, "[CoreFlow] CDDP generation=" + std::to_string(device_profile->generation) +
-        " fingerprint=" + device_profile->fingerprint +
-        " CPU policies=" + std::to_string(device_profile->cpu_policies.size()) +
-        " GPU domains=" + std::to_string(device_profile->gpu_domains.size()));
-    auto& governor = context.uclamp_governor();
-    auto& frequencies = context.frequency_controller();
-    // CPU scaling_max_freq ownership is delegated exclusively to the tiered,
-    // LMh-gated TransactionalFrequencyActuator. FrequencyController retains GPU only.
-    frequencies.discover(false, false);
-    CgroupV2Controller cgroup_controller(context.mutation_coordinator());
-    ForegroundTaskResolver foreground_task_resolver(
-        cgroup_controller);
-    auto& autonomous_tuner = context.autonomous_tuner();
-    if (config.enable_cgroups_v2 && cgroup_controller.is_supported()) {
-        autonomous_tuner.configure_foreground_task_resolver(&foreground_task_resolver);
-    }
-    // V5 baseline activation is independent of optional workload/PSI telemetry.
-    // Journal recovery has already completed in CoreFlowContext::Start(); the
-    // first control tick may therefore enter the balanced operating profile.
-    autonomous_tuner.set_operational(false);
-    emit_log(false, "[CoreFlow][Lifecycle] DIRECT_BASELINE: topology and journal recovery complete; adaptive policy enabled without startup quorum.");
-    bool lifecycle_promoted = true;
-    WorkloadTelemetryPipeline workload_pipeline;
-    const bool workload_pipeline_ready = workload_pipeline.start();
-    WorkloadClassifier workload_classifier;
-    WorkloadClassification workload_classification{};
-    if (!workload_pipeline_ready) {
-        emit_log(true, "[CoreFlow][Workload] Optional eBPF workload stream unavailable; DirectAdaptiveRuntime continues from procfs/sysfs telemetry and timerfd cadence.");
-    } else {
-        emit_log(false, "[CoreFlow][Workload] Telemetry backend=" +
-            std::string(workload_pipeline.backend() == TelemetryBackend::Ebpf ? "eBPF" : "sysfs/procfs") +
-            "; tiered CPU admission requires fresh stable CPU-bound windows.");
-    }
-    const auto pid_target_pressure = [&config](bool generic_fallback) noexcept {
-        // Generic fallback pressure is defined by the same configured recovery/trip
-        // normalization used by ThermalMonitor's daemon fallback path. OEM severity
-        // and OEM trip pressure are not Celsius-convertible, so they retain index 70.
-        if (!generic_fallback) return 70.0;
-        const double recovery = static_cast<double>(config.thermal_recover_celsius);
-        const double trip = static_cast<double>(config.thermal_trip_celsius);
-        const double span = std::max(1.0, trip - recovery);
-        const double normalized = std::clamp(
-            (static_cast<double>(config.pid_target_celsius) - recovery) / span, 0.0, 1.0);
-        return std::clamp(65.0 + normalized * 20.0, 0.0, 85.0);
+    HardwareProbe probe;
+    HardwareTopology topo = probe.discover();
+    ThermalMonitor thermal_mon;
+    NeuralPredictor neural;
+    neural.initialize("/data/adb/coreflow/models");
+    CentralMutationCoordinator coordinator;
+    HardwareLongevityManager longevity(coordinator);
+
+    ContextEngine context_engine;
+    ThreadSchedulerActuator thread_scheduler;
+    (void)thread_scheduler.probe_support();
+    StorageMemoryActuator storage_memory(baseline);
+    ThermalEnvelopeActuator thermal_envelope(baseline);
+
+    const auto apply_config_to_subsystems = [&]() {
+        context_engine.set_profile(ContextEngine::parse_profile(config.profile));
+        context_engine.set_app_rules(
+            DaemonConfig::parse_package_list(config.gaming_apps),
+            DaemonConfig::parse_package_list(config.excluded_apps));
+        longevity.initialize({
+            config.enable_battery_step_charging,
+            config.enable_storage_burst,
+            config.battery_step_temp_threshold,
+            config.stepped_charge_current_ma,
+            config.top_app_io_weight,
+            config.background_io_weight});
     };
-    bool pid_target_initialized = false;
+    apply_config_to_subsystems();
+
+    const auto pid_target_pressure = [&config](bool generic_fallback) noexcept {
+        if (!generic_fallback) return 70.0;
+        const double rec = static_cast<double>(config.thermal_recover_celsius);
+        const double trip = static_cast<double>(config.thermal_trip_celsius);
+        const double span = std::max(1.0, trip - rec);
+        const double norm = std::clamp((static_cast<double>(config.pid_target_celsius) - rec) / span, 0.0, 1.0);
+        return std::clamp(65.0 + norm * 20.0, 0.0, 85.0);
+    };
     bool pid_target_fallback = false;
-    auto controller = engine::new_controller({
+    bool pid_initialized = false;
+    auto pid_controller = engine::new_controller({
         config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(false)});
-    context.hardware_longevity().initialize({
-        config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
-        config.battery_step_temp_threshold, config.stepped_charge_current_ma,
-        config.top_app_io_weight, config.background_io_weight});
-    const auto power = PowerBridge{}.probe();
-    emit_log(false, "[CoreFlow] CPU frequency authority=tiered transactional actuator; GPU domains=" +
-        std::to_string(frequencies.gpu_count()) +
-        " Power HAL detected=" + std::to_string(power.aidl_power_service) +
-        "; CPU scaling_max_freq writes are not shared with FrequencyController.");
+
     EpollReactor reactor;
-    NativeInputEventSource input_event_source(reactor);
-    PerfettoFrameTimelineEventSource frame_timeline_source;
-    RenderBooster render_booster(
-        governor, reactor,
-        config.touch_boost_uclamp_min,
-        config.burst_boost_duration_ms);
-    render_booster.set_foreground_task_resolver(&foreground_task_resolver);
-    if (!config.inspection_mode) {
-        if (config.enable_uclamp) {
-            if (!render_booster.connect_frame_source(input_event_source)) {
-                emit_log(true, "[CoreFlow][GracefulSkip] Touchscreen input source unavailable; RenderBooster input node skipped.");
-            }
-            if (!render_booster.connect_frame_source(frame_timeline_source)) {
-                emit_log(true, "[CoreFlow][GracefulSkip] FrameTimeline unavailable; frame-attributed boost node skipped.");
-            }
-        } else if (config.enable_tuner && !frame_timeline_source.start([](const FrameEvent&) {})) {
-            emit_log(true, "[CoreFlow][GracefulSkip] FrameTimeline unavailable; GPU/frame outcome attribution skipped.");
-        }
-        context.vulkan_controller().initialize({
-            .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-            .enable_skiavk_threaded = config.enable_skiavk_threaded,
-            .enable_adaptive_vrs = config.enable_adaptive_vrs,
-            .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-        });
-    }
-    DeviceValidationRecorder dvs_recorder;
-    UniqueFd dvs_listener;
-    if (create_dvs_listener(dvs_listener)) {
-        if (!reactor.register_fd(dvs_listener.get(), EPOLLIN, [&](uint32_t) {
-            for (;;) {
-                UniqueFd client(::accept4(dvs_listener.get(), nullptr, nullptr, SOCK_CLOEXEC));
-                if (!client.valid()) {
-                    if (errno == EINTR) continue;
-                    break;
-                }
-                timeval timeout{2, 0};
-                (void)::setsockopt(client.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-                char command[128]{};
-                const ssize_t received = ::recv(client.get(), command, sizeof(command) - 1, 0);
-                if (received <= 0) continue;
-                command[static_cast<size_t>(received)] = '\0';
-                const std::string_view request(command, static_cast<size_t>(received));
-                std::string response = "ERR invalid command";
-                if (request.rfind("START ", 0) == 0 && request.size() <= 80) {
-                    std::string error;
-                    const std::string_view profile_name = request.substr(6);
-                    if (dvs_recorder.start(profile_name, device_profile, &error)) {
-                        response = "OK ACTIVE " + dvs_recorder.session_id();
-                    } else {
-                        response = "ERR " + error;
-                    }
-                } else if (request == "STOP") {
-                    std::string path, error;
-                    if (dvs_recorder.stop(&path, &error)) response = "OK STOPPED " + path;
-                    else response = "ERR " + error;
-                } else if (request == "STATUS") {
-                    response = dvs_recorder.active()
-                        ? "OK ACTIVE " + dvs_recorder.session_id() : "OK INACTIVE";
-                }
-                (void)::send(client.get(), response.data(), response.size(), MSG_NOSIGNAL);
+    NativeInputEventSource input_source(reactor);
+    CpuUtilSampler cpu_sampler;
+
+    RuntimeStatusData live_status{};
+    live_status.running = true;
+    live_status.pid = ::getpid();
+    live_status.config = config;
+    live_status.topo = topo;
+    live_status.thread_stats = thread_scheduler.stats();
+    live_status.battery = longevity.sample_battery_telemetry();
+    bool last_screen_off = false;
+    ForegroundAppInfo last_fg{};
+    MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
+    auto last_thermal_tick = std::chrono::steady_clock::now();
+
+    const auto build_thread_demand = [&]() noexcept {
+        ThreadDemandContext d{};
+        d.little_capacity = topo.little_capacity;
+        d.mid_capacity = topo.mid_capacity;
+        d.big_capacity = topo.big_capacity;
+        d.refresh_hz = topo.refresh_hz;
+        d.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        d.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        return d;
+    };
+    const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
+        StorageMemoryTelemetry t{};
+        t.io_psi = live_status.io_psi.value_or(0.0);
+        t.mem_psi = live_status.mem_psi.value_or(0.0);
+        t.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        t.memory = mem;
+        return t;
+    };
+    const auto build_envelope_telemetry = [&]() noexcept {
+        EnvelopeTelemetry e{};
+        e.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        e.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        return e;
+    };
+
+    // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
+    if (!input_source.start([&](const FrameEvent&) {
+            if (config.inspection_mode || live_status.thermal_emergency || last_screen_off) return;
+            const uint64_t now_ms = steady_now_ms();
+            context_engine.notify_touch(now_ms);
+            if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
+                ContextSignalInput sig{};
+                sig.now_ms = now_ms;
+                sig.screen_off = false;
+                sig.thermal_guard = live_status.thermal_guard;
+                sig.cpu_util_pct = live_status.cpu_util_pct;
+                sig.gpu_busy_pct = live_status.gpu_busy_pct;
+                sig.foreground_pid = last_fg.pid;
+                sig.foreground_package = last_fg.package_name;
+                live_status.ctx = context_engine.evaluate(sig);
+                const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                thread_scheduler.apply(
+                    live_status.ctx.mode, context_engine.profile(),
+                    live_status.capacity_scale, live_status.thermal_guard,
+                    config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                    build_thread_demand());
+                live_status.thread_stats = thread_scheduler.stats();
             }
         })) {
-            emit_log(true, "[CoreFlow][CF-DVS] Unable to register control socket; session capture unavailable.");
-            (void)::unlink(kDvsSocketPath);
-            dvs_listener.reset();
-        } else {
-            emit_log(false, "[CoreFlow][CF-DVS] Local session control endpoint ready.");
-        }
-    } else {
-        emit_log(true, "[CoreFlow][CF-DVS] Local session control endpoint unavailable; optimizer remains unaffected.");
+        emit_log(false, "[CoreFlow] Touchscreen evdev unavailable; running timer-driven context path.");
     }
 
-    sigset_t mask;
+    // Signals: SIGINT, SIGTERM, SIGHUP
+    sigset_t mask{};
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
@@ -1765,76 +955,33 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int timer_fd = -1;
-    auto last_tick = std::chrono::steady_clock::now();
-    uint64_t last_workload_sample_ns = 0U;
-    bool applied = false;
-    CoolingFeedback cooling_feedback;
-    TemperatureTrendTracker temp_tracker(8);
-    bool thermal_ready = false;
-    bool unavailable_reported = false;
-    WorkloadState current = WorkloadState::Balanced;
-    uint32_t freq_resync_ticks = 0;
-    double last_capacity_scale = 1.0;
-    std::string last_tuner_candidate = "oem_baseline";
-    TunerVerdict last_tuner_verdict = TunerVerdict::Pending;
-    context.neural_predictor().initialize("/data/adb/coreflow/models");
-    // Vulkan activation is deferred until the OEM baseline grace period is accepted.
-
+    int thermal_timer_fd = -1;
     UniqueFd signal_fd(::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
     if (!signal_fd.valid() ||
         !reactor.register_fd(signal_fd.get(), EPOLLIN, [&](uint32_t) {
             signalfd_siginfo info{};
-            while (::read(signal_fd.get(), &info, sizeof(info)) ==
-                   static_cast<ssize_t>(sizeof(info))) {
+            while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
-                    render_booster.cancel_active_burst();
-                    const auto recovery = coordinated_rollback(context.mutation_coordinator(), baseline, "Configuration reload on SIGHUP");
-                    if (!recovery.recovered()) {
-                        emit_log(true, "[CoreFlow] SIGHUP reload deferred; recovery status=" +
-                                 std::string(recovery_status_name(recovery.status)));
-                        continue;
-                    }
+                    thread_scheduler.reset_all();
+                    longevity.restore_oem_baseline();
+                    (void)baseline.rollback_all();
+                    storage_memory.reset_contention();
+                    thermal_envelope.reset_contention();
                     config = DaemonConfig::load_best_available();
-                    render_booster.update_config(config.touch_boost_uclamp_min, config.burst_boost_duration_ms);
-                    if (!governor.resync()) {
-                        std::cerr << "[CoreFlow] UClamp resync failed; controller remains fail-closed until recovery.\n";
-                    }
-                    controller = engine::new_controller({config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
-                    pid_target_initialized = false;
-                    frequencies.discover(false, false);
-                    workload_classification = {};
-                    last_workload_sample_ns = 0U;
-                    context.hardware_longevity().initialize({
-                        config.enable_battery_step_charging, config.enable_ufs_burst_pacing,
-                        config.battery_step_temp_threshold, config.stepped_charge_current_ma,
-                        config.top_app_io_weight, config.background_io_weight});
-                    context.neural_predictor().initialize("/data/adb/coreflow/models");
-                    context.autonomous_tuner().discover();
-                    context.autonomous_tuner().set_operational(false);
-                    direct_runtime.set_mutation_enabled(!config.inspection_mode &&
-                        config.enable_direct_adaptive && config.direct_adaptive_policy != "disabled");
-                    direct_runtime.refresh();
-                    if (!config.inspection_mode) {
-                        context.vulkan_controller().configure({
-                            .mode = VulkanController::parse_mode(config.vulkan_layer_mode),
-                            .enable_skiavk_threaded = config.enable_skiavk_threaded,
-                            .enable_adaptive_vrs = config.enable_adaptive_vrs,
-                            .enable_pipeline_cache_prewarm = config.enable_pipeline_cache_prewarm,
-                        });
-                    }
-                    const uint32_t clamped_ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
-                    itimerspec timer{};
-                    timer.it_interval.tv_sec = clamped_ms / 1000;
-                    timer.it_interval.tv_nsec = (clamped_ms % 1000) * 1000000L;
-                    timer.it_value = timer.it_interval;
-                    (void)::timerfd_settime(timer_fd, 0, &timer, nullptr);
-                    last_tick = std::chrono::steady_clock::now();
-                    applied = false;
-                    thermal_ready = false;
-                    cooling_feedback.reset();
-                    temp_tracker.reset();
-                    emit_log(false, "[CoreFlow] Configuration reloaded on SIGHUP.");
+                    topo = probe.discover();
+                    apply_config_to_subsystems();
+                    pid_initialized = false;
+                    pid_controller = engine::new_controller({
+                        config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
+                    live_status.config = config;
+                    live_status.topo = topo;
+                    const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
+                    itimerspec ts{};
+                    ts.it_interval.tv_sec = ms / 1000;
+                    ts.it_interval.tv_nsec = (ms % 1000) * 1000000L;
+                    ts.it_value = ts.it_interval;
+                    if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
+                    emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile + ").");
                 } else {
                     reactor.stop();
                 }
@@ -1844,535 +991,251 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const auto interval = std::chrono::milliseconds(
-        std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
-    BoundedWorkerPool daemon_pool(0U, 64U, "coreflow-d");
-    AsyncSnapshotWriter status_writer([](const std::string& payload) noexcept {
-        return write_status_snapshot(payload);
+    // Fast path 2 (500 ms while screen ON): Foreground app change & launch burst trigger
+    (void)reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
+        if (last_screen_off || config.inspection_mode || live_status.thermal_emergency) return;
+        const auto fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
+        const bool changed = fg.pid != last_fg.pid || fg.package_name != last_fg.package_name;
+        if (!changed && live_status.ctx.mode != ContextMode::LaunchBurst &&
+            live_status.ctx.mode != ContextMode::Interactive) {
+            return;
+        }
+        last_fg = fg;
+        const uint64_t now_ms = steady_now_ms();
+        ContextSignalInput sig{};
+        sig.now_ms = now_ms;
+        sig.screen_off = false;
+        sig.thermal_guard = live_status.thermal_guard;
+        sig.cpu_util_pct = live_status.cpu_util_pct;
+        sig.gpu_busy_pct = live_status.gpu_busy_pct;
+        sig.foreground_pid = fg.pid;
+        sig.foreground_package = fg.package_name;
+        const ContextMode prev_mode = live_status.ctx.mode;
+        live_status.ctx = context_engine.evaluate(sig);
+        if (changed || live_status.ctx.mode != prev_mode) {
+            const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+            thread_scheduler.apply(
+                live_status.ctx.mode, context_engine.profile(),
+                live_status.capacity_scale, live_status.thermal_guard,
+                config.enable_frame_smoothness, sf_tids, fg.critical_tids,
+                build_thread_demand());
+            storage_memory.apply(
+                topo, live_status.ctx, context_engine.profile(),
+                config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                build_storage_telemetry(last_mem_snap));
+            thermal_envelope.apply(
+                topo, live_status.ctx.mode, context_engine.profile(),
+                live_status.capacity_scale, live_status.thermal_guard,
+                config.enable_thermal_pacing,
+                build_envelope_telemetry());
+            live_status.thread_stats = thread_scheduler.stats();
+            live_status.storage_stats = storage_memory.stats();
+            live_status.envelope_stats = thermal_envelope.stats();
+        }
     });
-    uint64_t prev_status_write_failures = 0U;
 
-    StatusTelemetrySnapshot status_inputs{};
-    status_inputs.config = config;
-    status_inputs.direct_adaptive_json = direct_runtime.status_json();
-    std::string latest_status_payload = build_status_json(context, true, true, &status_inputs);
-    const auto refresh_status_payload = [&]() {
-        status_inputs.direct_adaptive_json = direct_runtime.status_json();
-        latest_status_payload = build_status_json(context, true, true, &status_inputs);
-    };
-
-    timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
-        const auto run_tick = [&]() {
+    // Main control path (default 1000 ms): Thermal + PSI + Neural 10s + Rust PID + All 4 Pillars + Status JSON
+    const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
+    thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
         if (safety_halt_requested()) {
             reactor.stop();
             return;
         }
 
-        // The timerfd safety cadence shares the same tested recovery monitor as
-        // host stress tests. Failed journal restoration remains pending and is
-        // retried on the next tick without reopening mutation admission.
-        const auto monitor_recovery = recovery_monitor.on_timer_tick();
-        if (monitor_recovery.status != RecoveryStatus::NoRecoveryRequired) {
-            if (!monitor_recovery.recovered()) {
-                emit_log(true, "[CoreFlow][Safety] Detached-owner recovery pending; status=" +
-                         std::string(recovery_status_name(monitor_recovery.status)));
-                return;
-            }
-            applied = false;
-            thermal_ready = false;
-            controller->reset();
-            (void)governor.resync();
-            cooling_feedback.reset();
-            temp_tracker.reset();
-            last_tick = std::chrono::steady_clock::now();
-            last_workload_sample_ns = 0U;
-            return; // Re-enter normal policy only on a fresh telemetry tick.
-        }
+        const auto now_tp = std::chrono::steady_clock::now();
+        const double elapsed = std::clamp(
+            std::chrono::duration<double>(now_tp - last_thermal_tick).count(), 0.001, 60.0);
+        last_thermal_tick = now_tp;
+        const uint64_t now_ms = steady_now_ms();
 
-        // If an OEM PowerHAL touch boost temporarily wrote to UClamp, yield for the active boost
-        // and resynchronize ownership rather than terminating the daemon.
-        bool uclamp_yield_this_tick = false;
-        if (config.enable_uclamp) {
-            if (!governor.is_supported()) {
-                (void)governor.resync();
-            } else if (!governor.owned_values_intact()) {
-                (void)governor.resync();
-                uclamp_yield_this_tick = true;
-            }
-        }
+        const auto tb = thermal_mon.sample_bundle(true);
+        auto thermal = tb.assessment;
+        const float soc_temp = tb.composite_celsius;
+        const float batt_temp = tb.battery_celsius;
 
-        ThermalBundle thermal_bundle{};
-        std::optional<double> cpu_psi;
-        std::optional<double> memory_psi;
-        std::optional<double> io_psi;
-        {
-            TaskGroup telemetry_group;
-            daemon_pool.submit(telemetry_group, [&]() noexcept {
-                thermal_bundle = context.thermal_monitor().sample_bundle(true);
-            });
-            daemon_pool.submit(telemetry_group, [&]() noexcept {
-                cpu_psi = read_psi_avg10("/proc/pressure/cpu");
-                memory_psi = read_psi_avg10("/proc/pressure/memory");
-                io_psi = read_psi_avg10("/proc/pressure/io");
-            });
-            telemetry_group.wait();
-        }
-        auto thermal = std::move(thermal_bundle.assessment);
-        const auto profile = std::move(thermal_bundle.profile);
-        const float temp = thermal_bundle.composite_celsius;
-        const float battery_temp = thermal_bundle.battery_celsius;
-        const float skin_temp = thermal_bundle.skin_celsius;
-
-        const auto record_dvs_sample = [&](std::optional<double> prediction = std::nullopt,
-                                           std::optional<double> confidence = std::nullopt,
-                                           std::optional<double> temperature_velocity = std::nullopt,
-                                           bool recovery_pending_hint = false) {
-            if (!dvs_recorder.active()) return;
-            const auto tuner_state = autonomous_tuner.snapshot();
-            DeviceValidationSample sample;
-            sample.cpu_psi = cpu_psi;
-            sample.memory_psi = memory_psi;
-            sample.io_psi = io_psi;
-            if (thermal.available && std::isfinite(thermal.pressure)) sample.thermal_pressure = thermal.pressure;
-            if (std::isfinite(temp) && temp >= 0.0f) sample.temperature_celsius = temp;
-            sample.temperature_velocity_celsius_per_sec = temperature_velocity;
-            if (thermal.headroom_valid && std::isfinite(thermal.headroom_value)) {
-                sample.thermal_headroom = static_cast<double>(thermal.headroom_value);
-            }
-            sample.ai_prediction_10s = prediction;
-            sample.ai_confidence = confidence;
-            sample.thermal_source = thermal.available ? thermal.source : "unavailable";
-            sample.workload = state_name(current);
-            sample.tuner_stage = std::string(AutonomousTuner::stage_name(tuner_state.stage));
-            sample.tuner_verdict = std::string(AutonomousTuner::verdict_name(tuner_state.verdict));
-            sample.candidate = tuner_state.active_candidate_id;
-            sample.ownership_contention_retries = tuner_state.ownership_contention_retries;
-            sample.capacity_scale = last_capacity_scale;
-            sample.valid_thermal_sensors = static_cast<uint32_t>(std::min<size_t>(
-                profile.total_valid_sensors, std::numeric_limits<uint32_t>::max()));
-            sample.active_mutations = baseline.has_active_mutations();
-            sample.journal_clear = journal_clear();
-            sample.recovery_pending = recovery_pending_hint ||
-                (!sample.journal_clear && !sample.active_mutations);
-            sample.rollback_verified = sample.journal_clear && !sample.active_mutations;
-            if (!dvs_recorder.record_sample(sample)) {
-                std::string bundle, error;
-                (void)dvs_recorder.stop(&bundle, &error);
-                emit_log(true, "[CoreFlow][CF-DVS] Capture stopped safely after a recorder limit or I/O failure: " + error);
-            }
-        };
-
-
-        if (!thermal.available && (profile.total_valid_sensors > 0 || temp >= 0.0f)) {
-            const double recover_deg = static_cast<double>(config.thermal_recover_celsius);
-            const double trip_deg = static_cast<double>(config.thermal_trip_celsius);
-            const double span = std::max(1.0, trip_deg - recover_deg);
-            const double norm = std::clamp((static_cast<double>(temp) - recover_deg) / span, 0.0, 3.0);
+        if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f)) {
+            const double rec = static_cast<double>(config.thermal_recover_celsius);
+            const double trip = static_cast<double>(config.thermal_trip_celsius);
+            const double norm = std::clamp((static_cast<double>(soc_temp) - rec) / std::max(1.0, trip - rec), 0.0, 3.0);
             thermal.available = true;
             thermal.fallback_active = true;
             thermal.pressure = std::clamp(65.0 + norm * 20.0, 0.0, 130.0);
             thermal.source = "generic_fallback";
-            thermal.sensor = "SoC-Composite (" + std::to_string(profile.valid_cpu_count) + " cores)";
-            if (temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
+            if (soc_temp >= config.thermal_trip_celsius + config.thermal_emergency_margin_celsius) {
                 thermal.emergency = true;
             }
         }
-
-        if (!pid_target_initialized || pid_target_fallback != thermal.fallback_active) {
+        if (!pid_initialized || pid_target_fallback != thermal.fallback_active) {
             pid_target_fallback = thermal.fallback_active;
-            controller = engine::new_controller({
-                config.pid_kp, config.pid_ki, config.pid_kd,
-                pid_target_pressure(pid_target_fallback)});
-            pid_target_initialized = true;
+            pid_controller = engine::new_controller({
+                config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
+            pid_initialized = true;
         }
 
-        status_inputs.config = config;
-        status_inputs.profile = profile;
-        status_inputs.thermal = thermal;
-        status_inputs.temperature = temp;
-        status_inputs.battery = battery_temp;
-        status_inputs.skin = skin_temp;
-        status_inputs.cpu_psi = cpu_psi;
-        status_inputs.memory_psi = memory_psi;
-        status_inputs.io_psi = io_psi;
+        const bool screen_off = probe.is_screen_off(topo);
+        last_screen_off = screen_off;
+        const double cpu_util = cpu_sampler.sample();
+        const auto gpu_busy = probe.read_gpu_busy_pct(topo);
+        const auto cpu_psi = probe.read_psi_avg10("cpu");
+        const auto mem_psi = probe.read_psi_avg10("memory");
+        const auto io_psi = probe.read_psi_avg10("io");
+        last_mem_snap = probe.read_memory_snapshot();
 
-        if (!thermal.available) {
-            // A missing/SELinux-denied thermal source is an isolated capability
-            // loss, not a daemon-wide stop condition. Thermal-dependent frequency
-            // admission remains unavailable in ThermalSafetyAuthority; independent
-            // CPU scheduling, memory, storage and other supported nodes continue.
-            if (!unavailable_reported) {
-                emit_log(true, "[CoreFlow][GracefulSkip] Thermal telemetry unavailable; skipping thermal-dependent nodes while independent policy continues.");
-                unavailable_reported = true;
+        live_status.soc_temp = soc_temp;
+        live_status.battery_temp = batt_temp;
+        live_status.thermal_pressure = thermal.pressure;
+        live_status.thermal_source = thermal.source;
+        live_status.cpu_util_pct = cpu_util;
+        live_status.gpu_busy_pct = gpu_busy;
+        live_status.cpu_psi = cpu_psi;
+        live_status.mem_psi = mem_psi;
+        live_status.io_psi = io_psi;
+
+        const auto record_history_and_publish = [&]() {
+            live_status.battery = longevity.sample_battery_telemetry();
+            size_t active_nodes = 0U;
+            for (const auto& entry : baseline.get_audit_trail()) {
+                if (entry.is_modified) ++active_nodes;
             }
-            thermal_ready = false;
-            cooling_feedback.reset();
-            temp_tracker.reset();
-        } else if (!thermal_ready) {
-            frequencies.discover(false, false);
-            controller->reset();
-            thermal_ready = true; unavailable_reported = false;
-        }
-
-        // Use the daemon's fused OEM/fallback thermal decision so severity-based
-        // thermal protection is identical across legacy and Direct Adaptive actuators.
-        const bool thermal_limit_hit = !thermal.fallback_active
-            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
-               (current == WorkloadState::ThermalGuard && thermal.pressure > 65.0))
-            : (thermal.emergency || temp >= config.thermal_trip_celsius ||
-               (current == WorkloadState::ThermalGuard && temp > config.thermal_recover_celsius));
-
-        // Direct Adaptive consumes the same fused thermal decision; optional
-        // OEM thermal/PSI sources still never gate independent policy domains.
-        direct_runtime.tick(thermal.pressure, thermal.available, thermal.emergency, thermal_limit_hit);
-
-        // Catastrophic hardware safety check (battery >= 58C or SoC >= 95C)
-        const float batt = battery_temp;
-        if ((batt > 0.0f && batt >= 58.0f) || temp >= 95.0f) {
-            emit_log(true, "[CoreFlow][Safety] Extreme physical thermal threshold reached (battery=" +
-                     std::to_string(batt) + "°C, soc=" + std::to_string(temp) +
-                     "°C). Rolling back mutations to hardware fail-safe baseline.");
-            const auto recovery = coordinated_rollback(
-                context.mutation_coordinator(), baseline, "Extreme physical thermal threshold reached.");
-            if (!recovery.recovered()) {
-                emit_log(true, "[CoreFlow][Safety] Extreme thermal rollback pending; status=" +
-                         std::string(recovery_status_name(recovery.status)));
-                record_dvs_sample(std::nullopt, std::nullopt, std::nullopt, true);
-                return;
+            live_status.baseline_nodes = active_nodes;
+            live_status.recovery_pending = active_nodes > 0U;
+            live_status.history.push_back(HistoryPoint{
+                .ts_ms = epoch_now_ms(),
+                .soc_temp = soc_temp >= 0.0f ? static_cast<double>(soc_temp) : -1.0,
+                .thermal_pressure = thermal.pressure,
+                .cpu_util_pct = cpu_util,
+                .capacity_scale = live_status.capacity_scale,
+                .mode = live_status.thermal_emergency ? "THERMAL_EMERGENCY"
+                        : live_status.thermal_guard ? "THERMAL_GUARD"
+                        : ContextEngine::mode_name(live_status.ctx.mode),
+            });
+            if (live_status.history.size() > 60U) {
+                live_status.history.erase(live_status.history.begin());
             }
-            applied = false;
-            record_dvs_sample();
-            return;
-        }
-
-        const PressureSnapshot pressure{
-            .cpu = cpu_psi.value_or(0.0),
-            .memory = memory_psi.value_or(0.0),
-            .io = io_psi.value_or(0.0),
-            .cpu_valid = cpu_psi.has_value(),
-            .memory_valid = memory_psi.has_value(),
-            .io_valid = io_psi.has_value(),
+            (void)write_status_snapshot(build_status_json(live_status));
         };
 
-        const auto now_tick = std::chrono::steady_clock::now();
-        const auto now_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                now_tick.time_since_epoch()).count());
-        if (temp >= 0.0f && std::isfinite(temp)) {
-            temp_tracker.record_sample(temp, now_ns);
-        }
-        auto temp_vel = temp_tracker.evaluate_velocity();
-        // A composite average can hide one rapidly warming die. Use the fastest
-        // valid compute/board sensor trend as the conservative physical trend.
-        for (const auto& reading : thermal.readings) {
-            if (!reading.velocity_valid || (reading.category != 1 && reading.category != 4)) continue;
-            if (!temp_vel.valid || reading.velocity_celsius_per_sec > temp_vel.velocity_celsius_per_sec) {
-                temp_vel.velocity_celsius_per_sec = reading.velocity_celsius_per_sec;
-                temp_vel.valid = true;
-                temp_vel.valid_samples_count = reading.velocity_samples_count;
-                temp_vel.sample_duration_sec = reading.velocity_sample_duration_sec;
-                temp_vel.current_temperature_celsius = reading.celsius;
-            }
-        }
-        const double raw_elapsed = std::chrono::duration<double>(now_tick - last_tick).count();
-        const double elapsed = std::clamp(raw_elapsed, 0.001, 60.0);
-        last_tick = now_tick;
-
-        if (config.inspection_mode) {
-            autonomous_tuner.set_operational(false);
-            record_dvs_sample();
+        // Hard hardware safety cutoff (battery >= 58C or SoC >= 95C)
+        if ((batt_temp > 0.0f && batt_temp >= 58.0f) || soc_temp >= 95.0f) {
+            live_status.thermal_emergency = true;
+            live_status.thermal_guard = true;
+            live_status.capacity_scale = 0.25;
+            thread_scheduler.reset_all();
+            longevity.restore_oem_baseline();
+            (void)baseline.rollback_all();
+            emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
+            record_history_and_publish();
             return;
         }
+        live_status.thermal_emergency = false;
 
-        // Real-time Hybrid ONNX / Online RLS-MLP 10-second horizon inference
-        const auto ai_pred = context.neural_predictor().infer_and_learn({
+        const bool thermal_guard = !thermal.fallback_active
+            ? (thermal.emergency || thermal.severity >= 3 || thermal.pressure >= 85.0 ||
+               (live_status.thermal_guard && thermal.pressure > 65.0))
+            : (thermal.emergency || soc_temp >= config.thermal_trip_celsius ||
+               (live_status.thermal_guard && soc_temp > config.thermal_recover_celsius));
+        live_status.thermal_guard = thermal_guard;
+
+        // 10s Neural thermal lookahead + Rust PID capacity scale
+        const auto ai = neural.infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
-            .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
-            .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
-            .io_psi = std::clamp(pressure.io, 0.0, 100.0),
+            .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
+            .memory_psi = std::clamp(mem_psi.value_or(0.0), 0.0, 100.0),
+            .io_psi = std::clamp(io_psi.value_or(0.0), 0.0, 100.0),
             .cpu_psi_valid = cpu_psi.has_value(),
-            .memory_psi_valid = memory_psi.has_value(),
+            .memory_psi_valid = mem_psi.has_value(),
             .io_psi_valid = io_psi.has_value(),
-            .current_scale = last_capacity_scale,
+            .current_scale = live_status.capacity_scale,
             .elapsed_seconds = elapsed,
         });
+        live_status.ai_predicted_10s = ai.valid ? ai.predicted_pressure_10s : 0.0;
+        live_status.ai_confidence = ai.valid ? ai.confidence : 0.0;
 
-        double effective_pressure = std::clamp(thermal.pressure, 0.0, 130.0);
-        if (ai_pred.valid && ai_pred.confidence >= 0.55 &&
-            ai_pred.predicted_pressure_10s > effective_pressure) {
-            // Proactive 10s horizon lookahead: blend predicted thermal surge into PID input
-            effective_pressure = std::clamp(
-                0.70 * effective_pressure + 0.30 * ai_pred.predicted_pressure_10s,
-                0.0,
-                130.0);
+        double eff_pressure = std::clamp(thermal.pressure, 0.0, 130.0);
+        if (ai.valid && ai.confidence >= 0.55 && ai.predicted_pressure_10s > eff_pressure) {
+            eff_pressure = std::clamp(0.70 * eff_pressure + 0.30 * ai.predicted_pressure_10s, 0.0, 130.0);
         }
 
-        const auto decision = controller->step({
-            effective_pressure, elapsed,
-            std::clamp(pressure.cpu, 0.0, 100.0),
-            std::clamp(pressure.memory, 0.0, 100.0),
-            std::clamp(pressure.io, 0.0, 100.0),
-            cpu_psi.has_value(), memory_psi.has_value(), io_psi.has_value(),
+        const auto pid_dec = pid_controller->step({
+            eff_pressure, elapsed,
+            std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
+            std::clamp(mem_psi.value_or(0.0), 0.0, 100.0),
+            std::clamp(io_psi.value_or(0.0), 0.0, 100.0),
+            cpu_psi.has_value(), mem_psi.has_value(), io_psi.has_value(),
             85.0, 65.0, 15.0, config.cpu_pressure_boost_pct,
             config.memory_pressure_guard_pct, config.io_pressure_guard_pct,
             config.enable_pid_equilibrium});
-        if (!decision.valid) {
-            controller->reset();
-            record_dvs_sample(
-                ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
-                ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
-                temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
-            return;
-        }
-
-        const WorkloadState desired = thermal_limit_hit ? WorkloadState::ThermalGuard : static_cast<WorkloadState>(decision.state);
-        const bool render_thermal_guard = thermal_limit_hit || thermal.emergency ||
-            (thermal.available && temp_vel.valid &&
-             temp_vel.velocity_celsius_per_sec >= 1.0 &&
-             temp >= config.pid_target_celsius - 1.0f);
-        render_booster.set_thermal_guard(render_thermal_guard);
-        double active_capacity_scale = decision.capacity_scale;
-        if (ai_pred.valid && ai_pred.confidence >= 0.60 && ai_pred.predicted_pressure_10s >= 80.0) {
-            // Advisory pre-cooling bound: never raises capacity above deterministic safety policy
-            active_capacity_scale = std::min(active_capacity_scale, ai_pred.recommended_scale);
-        }
-        if (thermal_limit_hit) {
-            active_capacity_scale = std::min(active_capacity_scale, 0.75);
-            static auto last_guard_log = std::chrono::steady_clock::time_point::min();
-            const auto now_t = std::chrono::steady_clock::now();
-            if (now_t - last_guard_log > std::chrono::seconds(10)) {
-                emit_log(true, "[CoreFlow][ThermalGuard] Active thermal mitigation engaged: reducing workload/power demand ("
-                         "composite=" + std::to_string(temp) + "°C, source=" + thermal.source +
-                         ", pressure=" + std::to_string(thermal.pressure) + ").");
-                last_guard_log = now_t;
+        if (pid_dec.valid) {
+            double scale = pid_dec.capacity_scale;
+            if (ai.valid && ai.confidence >= 0.60 && ai.predicted_pressure_10s >= 80.0) {
+                scale = std::min(scale, ai.recommended_scale);
             }
-        }
-        last_capacity_scale = active_capacity_scale;
-
-        // Periodically re-discover frequency domains if OEM PowerHAL temporarily retired them.
-        if (config.enable_gpu_frequency_control && frequencies.gpu_count() == 0) {
-            if (++freq_resync_ticks >= 5) {
-                freq_resync_ticks = 0;
-                frequencies.discover(false, false);
-            }
+            if (thermal_guard) scale = std::min(scale, 0.75);
+            live_status.capacity_scale = std::clamp(scale, 0.25, 1.0);
         } else {
-            freq_resync_ticks = 0;
+            pid_controller->reset();
         }
 
-        // The Rust budget is a system capacity signal. FrequencyController
-        // excludes paired KGSL power-level domains from this generic path; they
-        // require apply_gpu_frame_policy() with fresh GPU + FrameTimeline evidence.
-        if (!frequencies.apply(active_capacity_scale, thermal_limit_hit || thermal.emergency)) {
-            frequencies.discover(false, false);
-        }
-        // Storage tuning ownership belongs to DirectAdaptiveRuntime; legacy pacing is disabled to avoid dual actuators.
-        context.hardware_longevity().monitor_battery_thermals(temp);
-        if (lifecycle_promoted) {
-            (void)context.vulkan_controller().apply_workload_policy(
-                desired, active_capacity_scale, thermal_limit_hit);
+        if (!screen_off) {
+            last_fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
         }
 
-        // Build a fresh sliding workload window for the tiered CPU policy.
-        const uint64_t workload_now_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
-        const uint64_t fallback_start_ns = workload_now_ns > 1'000'000'000ULL ? workload_now_ns - 1'000'000'000ULL : 1ULL;
-        const uint64_t workload_window_start_ns = (last_workload_sample_ns != 0U && last_workload_sample_ns < workload_now_ns && workload_now_ns - last_workload_sample_ns <= 3'000'000'000ULL) ? last_workload_sample_ns : fallback_start_ns;
-        WorkloadFeatureSnapshot workload_features{};
-        if (workload_pipeline_ready) {
-            workload_features = workload_pipeline.sample(workload_window_start_ns, workload_now_ns);
-            last_workload_sample_ns = workload_now_ns;
-        }
-        WorkloadFeatureSnapshot frame_timeline_features{};
-        if (frame_timeline_source.latest_snapshot(frame_timeline_features) &&
-            frame_timeline_features.window_end_ns <= workload_now_ns &&
-            workload_now_ns - frame_timeline_features.window_end_ns <= 3'000'000'000ULL) {
-            workload_features.frame_deadline_count = frame_timeline_features.frame_deadline_count;
-            workload_features.frame_deadline_misses = frame_timeline_features.frame_deadline_misses;
-            workload_features.frame_deadline_miss_pct = frame_timeline_features.frame_deadline_miss_pct;
-            workload_features.valid_features |= FeatureFrameDeadline;
-        }
-        workload_classification = workload_classifier.classify(
-            workload_features, workload_classification, workload_now_ns);
-        PolicyEvidence frequency_policy_evidence{};
-        frequency_policy_evidence.telemetry = workload_features;
-        frequency_policy_evidence.classification = workload_classification;
-        frequency_policy_evidence.evaluated_at_ns = workload_now_ns;
-        frequency_policy_evidence.max_telemetry_age_ns = 3'000'000'000ULL;
-        frequency_policy_evidence.telemetry_fresh =
-            workload_pipeline_ready && workload_features.window_end_ns != 0U &&
-            workload_features.window_end_ns <= workload_now_ns &&
-            workload_now_ns - workload_features.window_end_ns <= 3'000'000'000ULL &&
-            workload_features.source != TelemetryBackend::Unavailable;
-        frequency_policy_evidence.event_stream_saturated =
-            workload_features.event_drain_saturated;
-        frequency_policy_evidence.thermal_headroom_valid =
-            thermal.available && std::isfinite(temp) && temp >= 0.0f &&
-            std::isfinite(config.thermal_trip_celsius) &&
-            static_cast<double>(config.thermal_trip_celsius) > static_cast<double>(temp);
-        frequency_policy_evidence.thermal_headroom_c =
-            frequency_policy_evidence.thermal_headroom_valid
-                ? static_cast<double>(config.thermal_trip_celsius) - static_cast<double>(temp)
-                : 0.0;
-        frequency_policy_evidence.thermal_recovery_required =
-            thermal_limit_hit || thermal.emergency;
-        frequency_policy_evidence.mutation_runtime_ready =
-            context.mutation_runtime_started();
+        ContextSignalInput sig{};
+        sig.now_ms = now_ms;
+        sig.screen_off = screen_off;
+        sig.thermal_guard = thermal_guard;
+        sig.cpu_util_pct = cpu_util;
+        sig.gpu_busy_pct = gpu_busy;
+        sig.foreground_pid = screen_off ? 0 : last_fg.pid;
+        sig.foreground_package = screen_off ? std::string{} : last_fg.package_name;
+        live_status.ctx = context_engine.evaluate(sig);
 
-        // Multi-domain autonomous scheduler, VM & active thermal stabilization evaluation
-        const double remaining_headroom = thermal.headroom_valid
-            ? std::max(0.0, 1.0 - static_cast<double>(thermal.headroom_value))
-            : -1.0;
-        const auto tuner_snap = config.enable_tuner ? autonomous_tuner.step({
-            .cpu_psi = std::clamp(pressure.cpu, 0.0, 100.0),
-            .memory_psi = std::clamp(pressure.memory, 0.0, 100.0),
-            .io_psi = std::clamp(pressure.io, 0.0, 100.0),
-            .cpu_psi_valid = cpu_psi.has_value(),
-            .memory_psi_valid = memory_psi.has_value(),
-            .io_psi_valid = io_psi.has_value(),
-            .thermal_pressure_valid = thermal.available && std::isfinite(thermal.pressure),
-            .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
-            .thermal_pressure_velocity = ai_pred.valid ? ai_pred.predicted_velocity : 0.0,
-            .current_temperature_celsius = temp,
-            .temperature_velocity_celsius_per_sec = temp_vel.valid ? temp_vel.velocity_celsius_per_sec : 0.0,
-            .temperature_velocity_valid = temp_vel.valid,
-            .temperature_samples_count = temp_vel.valid_samples_count,
-            .temperature_sample_duration_sec = temp_vel.sample_duration_sec,
-            .thermal_guard_active = thermal_limit_hit,
-            .thermal_emergency = thermal.emergency,
-            .thermal_headroom = remaining_headroom,
-            .thermal_trend_celsius = temp_vel.valid ? temp_vel.velocity_celsius_per_sec : 0.0,
-            .frequency_policy_evidence = frequency_policy_evidence,
-            .frequency_policy_evidence_valid =
-                config.enable_cpu_frequency_control && workload_pipeline_ready,
-            .gpu_busy_pct = workload_features.gpu_busy_pct,
-            .gpu_busy_valid = (workload_features.valid_features & FeatureGpuBusy) != 0U &&
-                workload_features.gpu_busy_sample_count > 0U && std::isfinite(workload_features.gpu_busy_pct),
-            .frame_deadline_miss_pct = workload_features.frame_deadline_miss_pct,
-            .frame_deadline_count = workload_features.frame_deadline_count,
-            .frame_deadline_misses = workload_features.frame_deadline_misses,
-            .frame_deadline_window_end_ns = frame_timeline_features.window_end_ns,
-            .frame_deadline_valid = (workload_features.valid_features & FeatureFrameDeadline) != 0U &&
-                frame_timeline_features.window_end_ns != 0U &&
-                workload_features.frame_deadline_count > 0U &&
-                workload_features.frame_deadline_misses <= workload_features.frame_deadline_count &&
-                std::isfinite(workload_features.frame_deadline_miss_pct),
-        }) : autonomous_tuner.snapshot();
-        record_dvs_sample(
-            ai_pred.valid ? std::optional<double>{ai_pred.predicted_pressure_10s} : std::nullopt,
-            ai_pred.valid ? std::optional<double>{ai_pred.confidence} : std::nullopt,
-            temp_vel.valid ? std::optional<double>{temp_vel.velocity_celsius_per_sec} : std::nullopt);
-        if (tuner_snap.active_candidate_id != last_tuner_candidate ||
-            tuner_snap.verdict != last_tuner_verdict) {
-            last_tuner_candidate = tuner_snap.active_candidate_id;
-            last_tuner_verdict = tuner_snap.verdict;
-            emit_log(false, "[CoreFlow][Tuner] stage=" +
-                     std::string(AutonomousTuner::stage_name(tuner_snap.stage)) +
-                     " intent=" + std::string(AutonomousTuner::intent_name(tuner_snap.intent)) +
-                     " candidate=" + tuner_snap.active_candidate_id +
-                     " verdict=" + std::string(AutonomousTuner::verdict_name(tuner_snap.verdict)) +
-                     " delta_u=" + std::to_string(tuner_snap.utility_delta) +
-                     " rationale=\"" + tuner_snap.rationale + "\"");
-        }
-
-        const auto capacity = static_cast<uint32_t>(std::lround(active_capacity_scale * 1024.0));
-        if (config.enable_uclamp && !uclamp_yield_this_tick && governor.is_supported()) {
-            if (!governor.apply_budget(desired,
-                    config.top_app_interactive_min, config.top_app_interactive_max, capacity)) {
-                (void)governor.resync();
+        if (!config.inspection_mode) {
+            const auto sf_tids = screen_off ? std::vector<int32_t>{} : context_engine.resolve_surfaceflinger_tids();
+            thread_scheduler.apply(
+                live_status.ctx.mode, context_engine.profile(),
+                live_status.capacity_scale, thermal_guard,
+                config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                build_thread_demand());
+            storage_memory.apply(
+                topo, live_status.ctx, context_engine.profile(),
+                config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                build_storage_telemetry(last_mem_snap));
+            thermal_envelope.apply(
+                topo, live_status.ctx.mode, context_engine.profile(),
+                live_status.capacity_scale, thermal_guard,
+                config.enable_thermal_pacing,
+                build_envelope_telemetry());
+            if (config.enable_storage_burst && live_status.ctx.mode != ContextMode::Excluded) {
+                (void)longevity.apply_storage_pacing();
             }
-        }
-        const auto trend = cooling_feedback.sample(thermal,
-            std::chrono::duration<double>(now_tick.time_since_epoch()).count(),
-            active_capacity_scale < 0.999 || desired == WorkloadState::ThermalGuard);
-        if (trend) {
-            emit_log(true, "[CoreFlow][Cooling] observed=" + *trend +
-                " sensors=" + std::to_string(thermal.readings.size()) +
-                " pressure=" + std::to_string(thermal.pressure) +
-                " requested_capacity=" + std::to_string(decision.capacity_scale) +
-                " applied_capacity=" + std::to_string(active_capacity_scale));
-        }
-        if (!applied || current != desired) {
-            {
-                current = desired;
-                applied = true;
-                std::ostringstream line;
-                line << "[CoreFlow][Stability] state=" << state_name(current)
-                     << " compute_temp=" << temp
-                     << " thermal_source=" << thermal.source
-                     << " thermal_sensor=" << thermal.sensor
-                     << " thermal_pressure=" << thermal.pressure
-                     << " ai_pred_10s=" << ai_pred.predicted_pressure_10s
-                     << " ai_conf=" << ai_pred.confidence
-                     << " cpu_psi=" << pressure.cpu
-                     << " mem_psi=" << pressure.memory
-                     << " io_psi=" << pressure.io;
-                emit_log(true, line.str());
-            }
-        }
-        };
-        run_tick();
-        refresh_status_payload();
-    });
-    if (timer_fd < 0) {
-        clear_pid(pid_lock);
-        return 1;
-    }
-    // The payload changes only on control ticks (default 1 s), so rewriting it
-    // every 500 ms caused two identical fsync'd atomic writes per second.
-    std::string last_enqueued_payload;
-    const int status_timer_fd = reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
-        const uint64_t failures = status_writer.failed_writes();
-        if (failures > prev_status_write_failures) {
-            prev_status_write_failures = failures;
-            // A failed atomic write must be retried, so forget what was last written.
-            last_enqueued_payload.clear();
-            static auto last_status_write_warning = std::chrono::steady_clock::time_point{};
-            const auto now = std::chrono::steady_clock::now();
-            if (last_status_write_warning == std::chrono::steady_clock::time_point{} ||
-                now - last_status_write_warning > std::chrono::seconds(30)) {
-                emit_log(true, "[CoreFlow][IPC] Atomic status snapshot write failed; control loop continues.");
-                last_status_write_warning = now;
-            }
-        }
-        if (latest_status_payload != last_enqueued_payload) {
-            status_writer.enqueue(latest_status_payload);
-            last_enqueued_payload = latest_status_payload;
+            longevity.monitor_battery_thermals(soc_temp);
         } else {
-            (void)touch_status_snapshot();
+            thread_scheduler.reset_all();
         }
-    });
-    (void)status_timer_fd;
-    (void)write_status_snapshot(latest_status_payload);
 
-    emit_log(false, "[CoreFlow] C++23 / Rust 2024 reactor active; Direct Baseline and OEM rollback ledger armed.");
+        live_status.thread_stats = thread_scheduler.stats();
+        live_status.storage_stats = storage_memory.stats();
+        live_status.envelope_stats = thermal_envelope.stats();
+        record_history_and_publish();
+    });
+
+    (void)write_status_snapshot(build_status_json(live_status));
+    emit_log(false, "[CoreFlow] v5.0.1 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
+             ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
+             ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") + ").");
+
     reactor.run();
-    if (dvs_recorder.active()) {
-        std::string bundle, error;
-        if (dvs_recorder.stop(&bundle, &error)) {
-            emit_log(false, "[CoreFlow][CF-DVS] Session finalized during daemon shutdown: " + bundle);
-        } else {
-            emit_log(true, "[CoreFlow][CF-DVS] Session finalization incomplete: " + error);
-        }
-    }
-    dvs_listener.reset();
-    (void)::unlink(kDvsSocketPath);
-    input_event_source.stop();
-    render_booster.disconnect_frame_source();
-    workload_pipeline.stop();
-    status_writer.stop();
-    daemon_pool.shutdown();
-    (void)write_status_snapshot(build_status_json(context, true, false, &status_inputs));
-    const bool stopped = context.Stop("Daemon shutdown");
-    // CoreFlowContext teardown asks AutonomousTuner to restore its resolver journal;
-    // verify the external controller has no remaining thread placements before exit.
-    const bool foreground_restored = foreground_task_resolver.restore_all();
-    const bool thread_journal_clear = cgroup_controller.pending_thread_migrations() == 0U;
-    if (!foreground_restored || !thread_journal_clear) {
-        emit_log(true, "[CoreFlow][CgroupV2] Foreground thread rollback remains pending at daemon shutdown.");
-    }
-    const bool restored = stopped && foreground_restored && thread_journal_clear &&
-        !baseline.has_active_mutations() && journal_clear();
+
+    // Guaranteed clean shutdown & OEM baseline restoration
+    input_source.stop();
+    thread_scheduler.reset_all();
+    longevity.restore_oem_baseline();
+    (void)baseline.rollback_all();
+    live_status.running = false;
+    live_status.pid = 0;
+    (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    return restored ? 0 : 1;
+    emit_log(false, "[CoreFlow] v5.0.1 Daemon stopped; OEM baseline restored.");
+    return 0;
 }

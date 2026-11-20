@@ -282,7 +282,10 @@ bool is_excluded_non_thermal_peripheral(std::string_view raw_type) {
 
 void ThermalMonitor::discover_sensors_locked() const {
     const auto now = std::chrono::steady_clock::now();
-    if (!sensors_.empty() && now - discovery_at_ < std::chrono::seconds(30)) return;
+    const auto refresh_period = (sysfs_root_ == "/sys/class/thermal")
+        ? std::chrono::seconds(180)
+        : std::chrono::seconds(30);
+    if (!sensors_.empty() && now - discovery_at_ < refresh_period) return;
     discovery_at_ = now;
     sensors_.clear();
     // Sensor topology may have changed; never carry a trend across a rediscovery boundary.
@@ -301,13 +304,13 @@ void ThermalMonitor::discover_sensors_locked() const {
         if (is_excluded_non_thermal_peripheral(type)) continue;
         const int category = classify_thermal_type(type);
         if (category > 0) {
-            sensors_.push_back({
-                it->path().string(),
-                it->path().string() + "/temp",
-                type,
-                category,
-                false,
-            });
+            Sensor s{};
+            s.path = it->path().string();
+            s.temp_path = s.path + "/temp";
+            s.type = std::move(type);
+            s.category = category;
+            s.is_hwmon = false;
+            sensors_.push_back(std::move(s));
         }
     }
 
@@ -387,20 +390,34 @@ float ThermalMonitor::battery_celsius_locked() const {
         base_path = base_path.parent_path();
     }
     const fs::path supply_root = base_path.parent_path() / "power_supply";
+    const fs::path sys_root = base_path.parent_path().has_parent_path()
+        ? base_path.parent_path().parent_path()
+        : base_path.parent_path();
+    std::error_code root_ec;
+    const fs::path canonical_sys_root = fs::canonical(sys_root, root_ec);
+    if (root_ec) return -1.0f;
+
     std::error_code ec;
     float observed = -1.0f;
     unsigned battery_count = 0;
+    std::vector<std::string> seen_dirs;
     for (fs::directory_iterator it(supply_root, fs::directory_options::skip_permission_denied, ec), end;
          !ec && it != end; it.increment(ec)) {
-        std::error_code type_ec;
-        const auto status = it->symlink_status(type_ec);
-        if (type_ec || fs::is_symlink(status) || !fs::is_directory(status)) continue;
+        std::error_code canon_ec;
+        const fs::path resolved = fs::canonical(it->path(), canon_ec);
+        if (canon_ec || !fs::is_directory(resolved, canon_ec) || canon_ec) continue;
+        const fs::path rel = resolved.lexically_relative(canonical_sys_root);
+        if (rel.empty() || rel.native().rfind("..", 0) == 0) continue;
+        const std::string resolved_str = resolved.string();
+        if (std::find(seen_dirs.begin(), seen_dirs.end(), resolved_str) != seen_dirs.end()) continue;
+        seen_dirs.push_back(resolved_str);
+
         std::string type;
-        if (!read_sysfs_line((it->path() / "type").string(), type) || type != "Battery") continue;
+        if (!read_sysfs_line((resolved / "type").string(), type) || type != "Battery") continue;
         ++battery_count;
         std::string raw;
         double tenths = 0.0;
-        if (!read_sysfs_line((it->path() / "temp").string(), raw) ||
+        if (!read_sysfs_line((resolved / "temp").string(), raw) ||
             !parse_ascii_double(raw, tenths) || tenths <= 0.0 || tenths > 800.0) return -1.0f;
         observed = static_cast<float>(tenths / 10.0);
     }
@@ -643,7 +660,8 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
     const uint64_t sample_timestamp_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-    for (const auto& sensor : sensors_) {
+    const bool cache_trips = (sysfs_root_ == "/sys/class/thermal");
+    for (auto& sensor : sensors_) {
         std::string raw; float temp = -1.0f;
         uint64_t source_mtime_ns = 0;
         const bool valid_temperature =
@@ -651,22 +669,36 @@ ThermalBundle ThermalMonitor::sample_bundle_locked(bool use_headroom) const {
         float passive = -1, critical = -1, hot = -1, hyst = 0;
         // Never assume a global degree threshold or reinterpret active cooling trips.
         if (!sensor.is_hwmon) {
-            std::error_code ec;
-            size_t visited = 0;
-            for (std::filesystem::directory_iterator it(sensor.path, ec), end;
-                 !ec && it != end && visited++ < 256; it.increment(ec)) {
-                const auto name = it->path().filename().string();
-                if (name.rfind("trip_point_", 0) != 0 || !name.ends_with("_type")) continue;
-                const auto prefix = sensor.path + "/" + name.substr(0, name.size() - 5);
-                std::string type; float value;
-                if (!read_sysfs_line(prefix + "_type", type) || !read_sysfs_line(prefix + "_temp", raw) ||
-                    !parse_celsius(raw, value) || value <= 0) continue;
-                if (type == "passive" && (passive < 0 || value < passive)) {
-                    passive = value; float h = 0;
-                    hyst = read_sysfs_line(prefix + "_hyst", raw) && parse_celsius(raw, h) ? h : 0;
+            if (cache_trips && sensor.trips_cached) {
+                passive = sensor.cached_passive;
+                hot = sensor.cached_hot;
+                critical = sensor.cached_critical;
+                hyst = sensor.cached_hyst;
+            } else {
+                std::error_code ec;
+                size_t visited = 0;
+                for (std::filesystem::directory_iterator it(sensor.path, ec), end;
+                     !ec && it != end && visited++ < 256; it.increment(ec)) {
+                    const auto name = it->path().filename().string();
+                    if (name.rfind("trip_point_", 0) != 0 || !name.ends_with("_type")) continue;
+                    const auto prefix = sensor.path + "/" + name.substr(0, name.size() - 5);
+                    std::string type; float value;
+                    if (!read_sysfs_line(prefix + "_type", type) || !read_sysfs_line(prefix + "_temp", raw) ||
+                        !parse_celsius(raw, value) || value <= 0) continue;
+                    if (type == "passive" && (passive < 0 || value < passive)) {
+                        passive = value; float h = 0;
+                        hyst = read_sysfs_line(prefix + "_hyst", raw) && parse_celsius(raw, h) ? h : 0;
+                    }
+                    if (type == "hot" && (hot < 0 || value < hot)) hot = value;
+                    if (type == "critical" && (critical < 0 || value < critical)) critical = value;
                 }
-                if (type == "hot" && (hot < 0 || value < hot)) hot = value;
-                if (type == "critical" && (critical < 0 || value < critical)) critical = value;
+                if (cache_trips) {
+                    sensor.cached_passive = passive;
+                    sensor.cached_hot = hot;
+                    sensor.cached_critical = critical;
+                    sensor.cached_hyst = hyst;
+                    sensor.trips_cached = true;
+                }
             }
         }
         ThermalSensorReading reading{sensor.path, sensor.type, sensor.category,

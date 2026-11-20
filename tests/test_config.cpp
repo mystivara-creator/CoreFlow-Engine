@@ -35,7 +35,6 @@ int main() {
     assert(c.top_app_interactive_max == 1024u);
     assert(c.ui_adaptive_bias == "responsiveness");
     assert(c.ui_balanced_uclamp_min == 480u);
-    assert(c.vulkan_layer_mode == "disabled");
     assert(c.cpu_pressure_boost_pct == 50.0f);
     assert(c.memory_pressure_guard_pct == 0.5f);
     assert(c.io_pressure_guard_pct == 5.0f);
@@ -50,9 +49,7 @@ int main() {
              "thermal_trip_celsius = 55.0\n"
              "top_app_interactive_min = 600\n"
              "[stability]\n"
-             "cpu_pressure_boost_pct = 12.5\n"
-             "[vulkan_engine]\n"
-             "vulkan_layer_mode = full_capability_override\n";
+             "cpu_pressure_boost_pct = 12.5\n";
     }
     auto c2 = coreflow::DaemonConfig::load_from_file(path.string());
     assert(!c2.enable_tuner); // explicit tuner opt-out is honored in [general]
@@ -60,7 +57,6 @@ int main() {
     assert(c2.thermal_trip_celsius == 44.0f); // ignored under [general]
     assert(c2.top_app_interactive_min == 320u); // ignored under [general]
     assert(c2.cpu_pressure_boost_pct == 12.5f); // accepted under [stability] alias
-    assert(c2.vulkan_layer_mode == "safe_hardware"); // full_capability_override clamped to safe_hardware
 
     // All audited uclamp keys load from their canonical section and clamp to [0, 1024].
     {
@@ -104,7 +100,7 @@ int main() {
         {
             {"top_app_interactive_min", "400"},
             {"ui_adaptive_bias", "battery"},
-            {"vulkan_layer_mode", "safe_hardware"},
+            {"direct_adaptive_policy", "auto"},
         });
 
     assert(merged.find("# Header comment") != std::string::npos);
@@ -113,8 +109,8 @@ int main() {
     assert(merged.find("oem_hint = 42") != std::string::npos);
     assert(merged.find("top_app_interactive_min = 400") != std::string::npos);
     assert(merged.find("ui_adaptive_bias = battery") != std::string::npos);
-    assert(merged.find("[vulkan_engine]") != std::string::npos);
-    assert(merged.find("vulkan_layer_mode = safe_hardware") != std::string::npos);
+    assert(merged.find("[direct_adaptive]") != std::string::npos);
+    assert(merged.find("direct_adaptive_policy = auto") != std::string::npos);
 
     {
         std::ofstream f(path);
@@ -158,12 +154,7 @@ int main() {
     assert(updated_uclamp.top_app_game_max == 960u);
     assert(updated_uclamp.sched_util_clamp_min_rt_default == 144u);
 
-    // Default Vulkan sub-features are opt-in (false) and top_app_game_max clamps >= top_app_game_min.
-    const coreflow::DaemonConfig default_cfg{};
-    assert(default_cfg.vulkan_layer_mode == "disabled");
-    assert(!default_cfg.enable_skiavk_threaded);
-    assert(!default_cfg.enable_adaptive_vrs);
-    assert(!default_cfg.enable_pipeline_cache_prewarm);
+    // top_app_game_max clamps >= top_app_game_min.
     {
         std::ofstream f(path);
         f << "[uclamp_tuning]\n"
@@ -173,6 +164,47 @@ int main() {
     const auto inverted_game_uclamp = coreflow::DaemonConfig::load_from_file(path.string());
     assert(inverted_game_uclamp.top_app_game_min == 700u);
     assert(inverted_game_uclamp.top_app_game_max == 700u);
+
+    // Render pipeline bounds clamping and injection-resistant update_config_file checks.
+    {
+        std::ofstream f(path);
+        f << "[render_pipeline]\n"
+             "jank_detection_threshold_ratio=99.0\n"
+             "burst_boost_duration_ms=999999\n"
+             "touch_boost_uclamp_min=4096\n";
+    }
+    const auto clamped_render = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(clamped_render.jank_detection_threshold_ratio == 5.0f);
+    assert(clamped_render.burst_boost_duration_ms == 1000u);
+    assert(clamped_render.touch_boost_uclamp_min == 1024u);
+
+    assert(!coreflow::DaemonConfig::update_config_file(
+        path.string(), {{"unknown_key_xyz", "1"}}));
+    assert(!coreflow::DaemonConfig::update_config_file(
+        path.string(), {{"log_level", "info\n[general]\nenable_uclamp=false"}}));
+
+    // v5 profile, feature toggles, and per-app list validation/clearing
+    assert(coreflow::DaemonConfig::update_config_file(
+        path.string(),
+        {
+            {"profile", "smoothness"},
+            {"enable_frame_smoothness", "true"},
+            {"enable_storage_burst", "false"},
+            {"enable_memory_guard", "true"},
+            {"enable_thermal_pacing", "true"},
+            {"gaming_apps", "com.miHoYo.GenshinImpact,com.tencent.ig"},
+            {"excluded_apps", "com.android.camera"},
+        }));
+    const auto v5_cfg = coreflow::DaemonConfig::load_from_file(path.string());
+    assert(v5_cfg.profile == "smoothness");
+    assert(v5_cfg.enable_frame_smoothness);
+    assert(!v5_cfg.enable_storage_burst);
+    assert(v5_cfg.gaming_apps == "com.miHoYo.GenshinImpact,com.tencent.ig");
+    assert(v5_cfg.excluded_apps == "com.android.camera");
+    // Clearing per-app list to empty string must succeed, while shell/INI metacharacters must be rejected.
+    assert(coreflow::DaemonConfig::update_config_file(path.string(), {{"excluded_apps", ""}}));
+    assert(coreflow::DaemonConfig::load_from_file(path.string()).excluded_apps.empty());
+    assert(!coreflow::DaemonConfig::update_config_file(path.string(), {{"gaming_apps", "com.app;rm -rf /"}}));
 
     // CoreFlowError integrates with std::error_code without throwing exceptions.
     const std::error_code ok_ec = coreflow::CoreFlowError::Success;

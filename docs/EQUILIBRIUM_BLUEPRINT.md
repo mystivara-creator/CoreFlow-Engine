@@ -36,6 +36,6 @@ For every mutation, `BaselineStore` records the baseline value, written value, l
 
 - **CPU/GPU Ceilings**: Discovered from `cpufreq` and `devfreq` frequency tables. Missing tables disable that domain.
 - **Battery Step-Charging**: Uses standard `constant_charge_current_max`, evaluates battery temperature exclusively while charging, and never raises an OEM current ceiling.
-- **Storage I/O Weighting & Relative Queue Scaling**: Uses documented cgroup v2 `io.weight` (`default N` format) and scales block queue tunables (`read_ahead_kb`, `nr_requests`, `iosched/*`) relative to captured OEM baselines.
-- **Truthful Vulkan Pass-Through**: `libVkLayer_coreflow.so` reports only physical GPU ICD capabilities (`safe_hardware`) without spoofing API versions or unsupported features.
+- **Storage I/O Weighting & Relative Queue Scaling**: Uses documented cgroup v2 `io.weight` (`default N` format) and scales block queue tunables (`read_ahead_kb`, `nr_requests`, `iosched/*`) relative to captured OEM baselines while preserving `queue/iostats` for `/proc/diskstats` telemetry.
+- **Unified Closed-Loop Coordination**: `DirectAdaptiveRuntime` yields closed-loop empirical domains (`cpu.up/down_rate_limit_us`, `vm.page_cluster`, `vm.lru_gen_min_ttl_ms`, `storage.read_ahead_kb`, `gpu.kgsl.*`, `gpu.devfreq.max_freq`) to `AutonomousTuner` + `GlobalDecisionEngine` + `FrequencyController` while modulating complementary controls (`cpu.hispeed_freq`, `cpu.hispeed_load`, `vm.swappiness`, `gpu.idle_timer`) with the fused Rust PID + 10s `NeuralPredictor` capacity budget.
 

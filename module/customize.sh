@@ -149,9 +149,9 @@ count_input_nodes() {
 
 ui ""
 ui "+==================================================+"
-ui "|          CFAE SYSTEM FRAMEWORK  v4.0.0            |"
-ui "|          DEVICE PREFLIGHT & INSTALLER             |"
-ui "|          by mystivara-creator                     |"
+ui "|          COREFLOW ENGINE  v5.0.1                 |"
+ui "|          LEAN 4-PILLAR INSTALLER                 |"
+ui "|          by mystivara-creator                    |"
 ui "+==================================================+"
 ui "  Preparing a read-only capability inventory..."
 
@@ -167,7 +167,7 @@ LIVE_MOD="${COREFLOW_LIVE_MOD_DIR:-/data/adb/modules/cfae_framework}"
 mkdir -p "$STATE_DIR" || die "Cannot prepare runtime state directory."
 chmod 0700 "$STATE_DIR" 2>/dev/null
 
-PREFLIGHT_REPORT="CFAE System Framework v4.0.0 — read-only installer preflight"
+PREFLIGHT_REPORT="CoreFlow Engine v5.0.1 — read-only installer preflight"
 section "01 / DEVICE & PLATFORM"
 report "Preflight: package and platform identity"
 
@@ -425,8 +425,6 @@ set_file_perm "$MODPATH/customize.sh" 0755
 set_file_perm "$MODPATH/module.prop" 0644
 set_file_perm "$MODPATH/sepolicy.rule" 0644
 set_file_perm "$MODPATH/system/etc/coreflow/default.conf" 0644
-set_file_perm "$MODPATH/system/lib64/libVkLayer_coreflow.so" 0644
-set_file_perm "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" 0644
 set_webroot_perm "$MODPATH/webroot"
 
 if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
@@ -434,8 +432,6 @@ if [ -d "$LIVE_MOD" ] && [ "$MODPATH" != "$LIVE_MOD" ]; then
     UPGRADE_OK=1
 
     stage_and_replace "$CORE_BIN" "$LIVE_MOD/system/bin/coreflowd" 0755 || UPGRADE_OK=0
-    stage_optional "$MODPATH/system/lib64/libVkLayer_coreflow.so" "$LIVE_MOD/system/lib64/libVkLayer_coreflow.so" 0644 || UPGRADE_OK=0
-    stage_optional "$MODPATH/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" "$LIVE_MOD/system/etc/vulkan/implicit_layer.d/coreflow_vulkan_layer.json" 0644 || UPGRADE_OK=0
     stage_optional "$MODPATH/system/etc/coreflow/default.conf" "$LIVE_MOD/system/etc/coreflow/default.conf" 0644 || UPGRADE_OK=0
     stage_optional "$MODPATH/module.prop" "$LIVE_MOD/module.prop" 0644 || UPGRADE_OK=0
     stage_optional "$MODPATH/service.sh" "$LIVE_MOD/service.sh" 0755 || UPGRADE_OK=0

@@ -106,6 +106,12 @@
       var res = await execCommand(RESOLVE_BIN + '; "$BIN" --dvs-status');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return String(res.stdout || '').trim();
+    },
+    getFlightRecorder: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --flight-recorder');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      var status = parseCleanJson(res.stdout);
+      return Array.isArray(status && status.flightRecorder) ? status.flightRecorder : [];
     }
   };
 

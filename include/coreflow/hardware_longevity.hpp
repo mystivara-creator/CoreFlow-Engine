@@ -29,6 +29,20 @@ struct LongevityConfig {
     uint32_t background_io_weight{50};           ///< cgroups v2 I/O limit for background apps
 };
 
+struct BatteryPowerTelemetry {
+    bool available{false};
+    bool charging{false};
+    bool fast_charging{false};
+    bool thermal_step_active{false};
+    double temperature_celsius{-1.0};
+    double current_ma{0.0};
+    double voltage_mv{0.0};
+    double power_mw{0.0};
+    uint64_t charge_limit_ua{0};
+    uint64_t oem_baseline_ua{0};
+    std::string status{"Unknown"};
+};
+
 class HardwareLongevityManager {
 public:
     explicit HardwareLongevityManager(CentralMutationCoordinator& coordinator, std::string sys_root = "/sys",
@@ -52,6 +66,8 @@ public:
     [[nodiscard]] bool is_battery_guarded() const noexcept;
     [[nodiscard]] bool is_storage_paced() const noexcept;
     [[nodiscard]] std::string battery_node_path() const;
+    [[nodiscard]] BatteryPowerTelemetry sample_battery_telemetry() const;
+    [[nodiscard]] static BatteryPowerTelemetry probe_battery_telemetry(std::string_view sys_root = "/sys");
 
 private:
     CentralMutationCoordinator& coordinator_;
@@ -61,9 +77,12 @@ private:
     mutable std::mutex mutex_;
 
     LongevityConfig config_;
+    std::string battery_dir_;
     std::string battery_node_;
     std::string battery_temp_node_;
     std::string battery_status_node_;
+    std::string battery_current_node_;
+    std::string battery_voltage_node_;
     bool battery_stepped_{false};
     bool storage_paced_{false};
     uint64_t charge_baseline_ua_{0};

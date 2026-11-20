@@ -1,7 +1,7 @@
 id=cfae_framework
-name=CFAE System Framework
-version=v4.0.0
-versionCode=40000
+name=CoreFlow Engine (CFAE)
+version=v5.0.1
+versionCode=50100
 author=mystivara-creator
-description=Direct Baseline and capability-derived Adaptive Sweet-Spot optimization with durable OEM recovery and verified kernel actuators.
+description=Lean 4-pillar adaptive Android framework: per-thread render smoothness, dynamic UFS/eMMC launch burst, anti-stutter memory guard, and Rust PID thermal pacing with CFJ4 OEM rollback.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json
