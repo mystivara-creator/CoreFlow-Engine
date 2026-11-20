@@ -1,12 +1,16 @@
 package io.coreflow.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.CoreFlowManager
@@ -85,10 +90,10 @@ fun HomeTab(
                 else -> Color(0xFF22C55E)
             }
             val headline = when {
-                status == null -> "Connecting to coreflowd..."
+                status == null -> "Connecting..."
                 !isRunning -> "Engine Stopped"
-                isPaused -> "Paused · OEM A/B Mode"
-                status.thermalGuardActive -> "Thermal Guard Active"
+                isPaused -> "Paused · OEM Mode"
+                status.thermalGuardActive -> "Thermal Guard"
                 else -> "${status.effectiveProfile.label} · ${status.mode}"
             }
 
@@ -101,7 +106,11 @@ fun HomeTab(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(10.dp)
@@ -112,14 +121,24 @@ fun HomeTab(
                             text = headline,
                             style = MiuixTheme.textStyles.headline1,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Text(
-                        text = status?.let { "${it.activePillars}/4 Pillars" } ?: "--/4",
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = status?.let { "${it.activePillars}/4 Pillars" } ?: "--/4",
+                            fontSize = 11.sp,
+                            color = MiuixTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -127,35 +146,83 @@ fun HomeTab(
                     text = status?.foregroundPackage?.takeIf { it.isNotBlank() }?.let { "Foreground: $it" }
                         ?: status?.hardware?.socModel
                         ?: "Waiting for CoreFlow Engine v5.1.0 telemetry",
-                    style = MiuixTheme.textStyles.body2,
+                    style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
 
+                // Uniform 4-Metric Row (strictly aligned equal heights & single-line labels)
                 Spacer(Modifier.height(14.dp))
+                val tempColor = when {
+                    (status?.socTempCelsius ?: 0f) >= 55f -> Color(0xFFEF4444)
+                    (status?.socTempCelsius ?: 0f) >= 46f -> Color(0xFFF59E0B)
+                    else -> Color(0xFF22C55E)
+                }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     MetricPill(
                         label = "SoC Temp",
                         value = status?.socTempCelsius?.takeIf { it >= 0f }
                             ?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--",
-                        modifier = Modifier.weight(1f),
+                        accent = tempColor,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "Render Load",
+                        label = "Render",
                         value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        modifier = Modifier.weight(1f),
+                        accent = Color(0xFF38BDF8),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "UClamp Min",
+                        label = "UClamp",
                         value = status?.let { "${it.uclampMin}" } ?: "--",
-                        modifier = Modifier.weight(1f),
+                        accent = Color(0xFFA78BFA),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
                         label = "Headroom",
                         value = status?.let { "${(it.capacityScale * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        modifier = Modifier.weight(1f),
+                        accent = Color(0xFF34D399),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                    )
+                }
+
+                // 4-Pillar Compact Strip
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    PillarChip("UClamp", status?.uclampSupported == true, Modifier.weight(1f).fillMaxHeight())
+                    PillarChip(
+                        "Storage",
+                        (status?.readAheadKb ?: 0) > 0 || status?.storageBurstActive == true,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    PillarChip(
+                        "MGLRU",
+                        status?.hardware?.mglruAvailable == true || (status?.prereadBytes ?: 0L) > 0L,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    PillarChip(
+                        "Thermal",
+                        (status?.managedEnvelopeNodes ?: 0) > 0 || !status?.thermalSource.isNullOrBlank(),
+                        Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
 
@@ -189,7 +256,7 @@ fun HomeTab(
             }
         }
 
-        // 4-Profile Selector
+        // 4-Profile Selector (Strictly Equal-Height 2x2 Cards)
         item {
             SmallTitle(text = "AUTONOMOUS PROFILE")
         }
@@ -200,7 +267,9 @@ fun HomeTab(
                 val pairs = CoreFlowManager.Profile.primaryProfiles.chunked(2)
                 for (rowProfiles in pairs) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         for (profile in rowProfiles) {
@@ -212,27 +281,56 @@ fun HomeTab(
                             } else {
                                 CardDefaults.defaultColors()
                             }
+                            val borderMod = if (selected) {
+                                Modifier.border(
+                                    BorderStroke(1.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                                    RoundedCornerShape(16.dp),
+                                )
+                            } else {
+                                Modifier
+                            }
                             Card(
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .then(borderMod),
                                 insideMargin = PaddingValues(14.dp),
                                 colors = cardColors,
                                 onClick = { if (!busy) onSelectProfile(profile) },
                             ) {
-                                Text(
-                                    text = profile.label,
-                                    style = MiuixTheme.textStyles.headline2,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selected) {
-                                        MiuixTheme.colorScheme.primary
-                                    } else {
-                                        MiuixTheme.colorScheme.onSurface
-                                    },
-                                )
-                                Spacer(Modifier.height(3.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        text = profile.label,
+                                        style = MiuixTheme.textStyles.headline2,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (selected) {
+                                            MiuixTheme.colorScheme.primary
+                                        } else {
+                                            MiuixTheme.colorScheme.onSurface
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (selected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(MiuixTheme.colorScheme.primary),
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(4.dp))
                                 Text(
                                     text = profile.tagline,
                                     style = MiuixTheme.textStyles.footnote1,
                                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -241,7 +339,7 @@ fun HomeTab(
             }
         }
 
-        // Session Impact Card
+        // Session Impact Card (Strictly Equal-Height 3x2 Pills)
         item {
             SmallTitle(text = "SESSION IMPACT")
         }
@@ -251,31 +349,41 @@ fun HomeTab(
             val prereadMb = (status?.prereadBytes ?: 0L) / (1024.0 * 1024.0)
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
+                insideMargin = PaddingValues(14.dp),
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     MetricPill(
                         label = "Uptime",
                         value = formatUptime(session?.uptimeSec ?: 0L),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "Launch Bursts",
+                        label = "Bursts",
                         value = "${session?.launchBursts ?: 0}",
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
                         label = "Pre-Read",
                         value = String.format(Locale.US, "%.1f MB", prereadMb),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     MetricPill(
@@ -290,17 +398,23 @@ fun HomeTab(
                         } else {
                             "--"
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
-                        label = "Thermal Guard",
+                        label = "Guards",
                         value = "${session?.thermalGuardEvents ?: 0}",
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                     MetricPill(
                         label = "CFJ4 Nodes",
                         value = "${status?.baselineNodesSnapshotted ?: 0}",
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
                     )
                 }
             }
@@ -315,24 +429,76 @@ private fun MetricPill(
     label: String,
     value: String,
     modifier: Modifier = Modifier,
+    accent: Color? = null,
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MiuixTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(
-            text = label,
-            fontSize = 10.sp,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-        Spacer(Modifier.height(2.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            if (accent != null) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(accent),
+                )
+            }
+            Text(
+                text = label,
+                fontSize = 10.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
         Text(
             text = value,
             style = MiuixTheme.textStyles.body2,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Bold,
             color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun PillarChip(
+    label: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val dotColor = if (active) Color(0xFF22C55E) else Color(0xFF64748B)
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(MiuixTheme.colorScheme.secondaryContainer.copy(alpha = 0.30f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Spacer(Modifier.size(5.dp))
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

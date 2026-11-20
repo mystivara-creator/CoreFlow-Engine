@@ -97,6 +97,14 @@ object CoreFlowManager {
             get() = gaming.size + smoothness.size + battery.size + excluded.size
     }
 
+    data class EngineFeatures(
+        val frameSmoothness: Boolean = true,
+        val storageBurst: Boolean = true,
+        val memoryGuard: Boolean = true,
+        val thermalPacing: Boolean = true,
+        val batteryStepCharging: Boolean = true,
+    )
+
     data class DaemonStatus(
         val version: String,
         val isRunning: Boolean,
@@ -124,6 +132,7 @@ object CoreFlowManager {
         val recoveryPending: Boolean,
         val thermalSource: String,
         val thermalGuardActive: Boolean = false,
+        val features: EngineFeatures = EngineFeatures(),
         val hardware: HardwareInfo = HardwareInfo(),
         val session: SessionMetrics = SessionMetrics(),
         val apps: AppRules = AppRules(),
@@ -153,6 +162,7 @@ object CoreFlowManager {
                 ?: throw IllegalStateException("Empty daemon output")
             val json = JSONObject(lastLine)
             val actuators = json.optJSONObject("actuators")
+            val featuresJson = json.optJSONObject("features")
             val hardwareJson = json.optJSONObject("hardware")
             val sessionJson = json.optJSONObject("session")
             val appsJson = json.optJSONObject("apps")
@@ -202,6 +212,13 @@ object CoreFlowManager {
                 recoveryPending = json.optBoolean("recoveryPending", false),
                 thermalSource = json.optString("thermalSource", "oem_policy"),
                 thermalGuardActive = json.optBoolean("thermalGuard", false),
+                features = EngineFeatures(
+                    frameSmoothness = featuresJson?.optBoolean("frameSmoothness", true) ?: true,
+                    storageBurst = featuresJson?.optBoolean("storageBurst", true) ?: true,
+                    memoryGuard = featuresJson?.optBoolean("memoryGuard", true) ?: true,
+                    thermalPacing = featuresJson?.optBoolean("thermalPacing", true) ?: true,
+                    batteryStepCharging = featuresJson?.optBoolean("batteryStepCharging", true) ?: true,
+                ),
                 hardware = HardwareInfo(
                     socModel = hardwareJson?.optString("socModel", "Unknown SoC").orEmpty().ifBlank { "Unknown SoC" },
                     kernelVersion = hardwareJson?.optString("kernelVersion", "").orEmpty(),
@@ -267,6 +284,23 @@ object CoreFlowManager {
         runCatching {
             val valStr = if (paused) "true" else "false"
             execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --set-config 'inspection_mode=$valStr'")
+            Unit
+        }
+    }
+
+    private val ALLOWED_FEATURE_KEYS = setOf(
+        "enable_frame_smoothness",
+        "enable_storage_burst",
+        "enable_memory_guard",
+        "enable_thermal_pacing",
+        "enable_battery_step_charging",
+    )
+
+    suspend fun setFeatureToggle(key: String, enabled: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(key in ALLOWED_FEATURE_KEYS) { "Unsupported feature key: $key" }
+            val valStr = if (enabled) "true" else "false"
+            execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --set-config '$key=$valStr'")
             Unit
         }
     }
