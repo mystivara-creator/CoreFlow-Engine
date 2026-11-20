@@ -12,6 +12,12 @@ on:
       - "android/**"
       - ".github/workflows/build-apk.yml"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing GitHub Release tag (e.g. v5.1.0) to attach the built Release APK to"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -94,3 +100,34 @@ jobs:
           path: artifacts/apk/*-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  attach-release:
+    name: Attach Companion APK to GitHub Release
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: [build-apk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download built Release APK
+        uses: actions/download-artifact@v8
+        with:
+          name: CoreFlow-Companion-APK-Release
+          path: release-apk
+
+      - name: Upload APK asset to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Invalid semver release tag: $TAG"
+            exit 1
+          }
+          APK_FILE="$(find release-apk -type f -name 'CoreFlow-Companion-*-release.apk' | head -n1)"
+          test -s "$APK_FILE"
+          gh release upload "$TAG" "$APK_FILE" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Attached $APK_FILE to GitHub Release $TAG"
