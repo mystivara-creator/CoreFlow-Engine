@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import io.coreflow.AppCatalog
+import io.coreflow.AppPreferences
 import io.coreflow.CoreFlowManager
 import io.coreflow.InstalledAppEntry
 import kotlinx.coroutines.delay
@@ -41,12 +42,16 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.io.File
 
 @Composable
-fun CoreFlowApp() {
+fun CoreFlowApp(
+    themeModeIndex: Int,
+    onThemeModeChange: (Int) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var pollIntervalIndex by remember { mutableIntStateOf(AppPreferences.getPollIntervalIndex(context)) }
     var hasRoot by remember { mutableStateOf<Boolean?>(null) }
     var status by remember { mutableStateOf<CoreFlowManager.DaemonStatus?>(null) }
     var lastError by remember { mutableStateOf<String?>(null) }
@@ -72,11 +77,12 @@ fun CoreFlowApp() {
             }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(pollIntervalIndex) {
         hasRoot = CoreFlowManager.checkRootAccess()
+        val intervalMs = AppPreferences.pollIntervalValuesMs[pollIntervalIndex]
         while (isActive) {
             refreshStatus()
-            delay(2500L)
+            delay(intervalMs)
         }
     }
 
@@ -89,12 +95,12 @@ fun CoreFlowApp() {
     }
 
     val scrollBehavior = MiuixScrollBehavior()
-    val tabTitles = listOf("CoreFlow", "Per-App Rules", "HUD & Device", "System")
+    val tabTitles = listOf("CoreFlow", "Per-App Rules", "HUD & Device", "Settings")
     val tabSubtitles = listOf(
         status?.let { "v${it.version} · ${if (it.isRunning) "PID ${it.pid}" else "Stopped"}" } ?: "CFAE Companion",
         "${status?.apps?.totalConfigured ?: 0} active overrides",
         "Floating Overlay & Quick Tile",
-        "CFJ4 Journal & Diagnostics",
+        "Engine, Theme & Credits",
     )
 
     Scaffold(
@@ -146,7 +152,7 @@ fun CoreFlowApp() {
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
                     icon = MiuixIcons.Settings,
-                    label = "System",
+                    label = "Settings",
                 )
             }
         },
@@ -250,7 +256,36 @@ fun CoreFlowApp() {
                     status = status,
                     journalText = journalText,
                     busy = busyAction,
+                    themeModeIndex = themeModeIndex,
+                    pollIntervalIndex = pollIntervalIndex,
                     scrollBehavior = scrollBehavior,
+                    onThemeModeChange = { newIdx ->
+                        onThemeModeChange(newIdx)
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Theme: ${AppPreferences.themeModeLabels[newIdx]}")
+                        }
+                    },
+                    onPollIntervalChange = { newIdx ->
+                        pollIntervalIndex = newIdx
+                        AppPreferences.setPollIntervalIndex(context, newIdx)
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Refresh rate: ${AppPreferences.pollIntervalLabels[newIdx]}")
+                        }
+                    },
+                    onToggleFeature = { key, label, enabled ->
+                        scope.launch {
+                            busyAction = true
+                            CoreFlowManager.setFeatureToggle(key, enabled)
+                                .onSuccess {
+                                    refreshStatus()
+                                    snackbarHostState.showSnackbar("$label ${if (enabled) "enabled" else "disabled"}")
+                                }
+                                .onFailure { err ->
+                                    snackbarHostState.showSnackbar(err.message ?: "Failed to update $label")
+                                }
+                            busyAction = false
+                        }
+                    },
                     onLoadJournal = {
                         scope.launch {
                             busyAction = true
