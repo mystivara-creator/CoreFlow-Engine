@@ -32,6 +32,15 @@ struct ThreadSchedulerStats {
     uint64_t failed_calls{0};
 };
 
+struct ThreadDemandContext {
+    uint32_t little_capacity{0};  // Discovered EAS little cluster capacity (0..1024)
+    uint32_t mid_capacity{0};     // Discovered EAS mid cluster capacity (0..1024)
+    uint32_t big_capacity{1024};  // Discovered EAS big cluster capacity (0..1024)
+    uint32_t refresh_hz{60};      // Discovered display refresh rate
+    double cpu_psi{0.0};          // Live CPU PSI avg10 (0..100)
+    double gpu_busy_pct{0.0};     // Live GPU busy percentage (0..100)
+};
+
 class ThreadSchedulerActuator {
 public:
     using ApplierFn = std::function<int(int32_t tid, uint32_t util_min, uint32_t util_max)>;
@@ -45,12 +54,14 @@ public:
     // Probes whether the active kernel supports SCHED_FLAG_UTIL_CLAMP via sched_setattr.
     [[nodiscard]] bool probe_support() noexcept;
 
-    // Computes the exact (util_min, util_max) target for a given context, profile, and PID thermal budget.
+    // Computes hardware-calibrated (util_min, util_max) target from EAS silicon capacities,
+    // display refresh budget, live PSI/GPU load, context, profile, and PID thermal budget.
     [[nodiscard]] static ThreadUclampTarget compute_target(
         ContextMode mode,
         PerformanceProfile profile,
         double capacity_scale,
-        bool thermal_guard) noexcept;
+        bool thermal_guard,
+        const ThreadDemandContext& demand = {}) noexcept;
 
     // Applies per-TID uclamp to SurfaceFlinger + foreground app critical threads and
     // cleanly resets any stale TIDs no longer in the active set.
@@ -60,7 +71,8 @@ public:
                bool thermal_guard,
                bool enabled,
                const std::vector<int32_t>& surfaceflinger_tids,
-               const std::vector<int32_t>& foreground_tids) noexcept;
+               const std::vector<int32_t>& foreground_tids,
+               const ThreadDemandContext& demand = {}) noexcept;
 
     // Restores all tracked TIDs to kernel defaults (0..1024).
     void reset_all() noexcept;

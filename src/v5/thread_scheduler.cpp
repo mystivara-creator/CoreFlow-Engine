@@ -83,7 +83,8 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
     ContextMode mode,
     PerformanceProfile profile,
     double capacity_scale,
-    bool thermal_guard) noexcept {
+    bool thermal_guard,
+    const ThreadDemandContext& demand) noexcept {
     const double bounded_scale = std::isfinite(capacity_scale)
         ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
 
@@ -92,38 +93,56 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
         return {0U, 1024U};
     }
 
-    // Base util_min floor designed to keep critical UI/Render threads off stalled little cores
-    // without pinning CPU clocks to max frequency.
-    uint32_t base_min = 0U;
+    // Derive EAS migration anchors directly from the device's discovered CPU capacities.
+    const double big_cap = static_cast<double>(std::clamp(demand.big_capacity, 512U, 1024U));
+    const double little_cap = demand.little_capacity > 0U
+        ? static_cast<double>(std::clamp(demand.little_capacity, 128U, static_cast<uint32_t>(big_cap * 0.75)))
+        : big_cap * 0.40;
+    const double mid_cap = demand.mid_capacity > static_cast<uint32_t>(little_cap)
+        ? static_cast<double>(std::clamp(demand.mid_capacity, static_cast<uint32_t>(little_cap), static_cast<uint32_t>(big_cap)))
+        : (little_cap + big_cap) * 0.50;
+
+    // Continuous frame-budget urgency (60 Hz = 1.00x, 90 Hz = 1.11x, 120 Hz = 1.18x, 144 Hz = 1.23x).
+    const double hz = static_cast<double>(std::clamp(demand.refresh_hz, 60U, 240U));
+    const double hz_factor = std::clamp(1.0 + std::log2(hz / 60.0) * 0.18, 1.0, 1.28);
+
+    // Live scheduling contention feedback from PSI & GPU utilization.
+    const double psi_norm = std::isfinite(demand.cpu_psi) ? std::clamp(demand.cpu_psi / 100.0, 0.0, 1.0) : 0.0;
+    const double gpu_norm = std::isfinite(demand.gpu_busy_pct) ? std::clamp(demand.gpu_busy_pct / 100.0, 0.0, 1.0) : 0.0;
+
+    const double profile_bias =
+        profile == PerformanceProfile::Smoothness ? 1.18 :
+        profile == PerformanceProfile::Gaming ? 1.15 :
+        profile == PerformanceProfile::Battery ? 0.78 : 1.00;
+
+    double anchor_floor = 0.0;
     switch (mode) {
         case ContextMode::LaunchBurst:
-            base_min = (profile == PerformanceProfile::Battery) ? 384U :
-                       (profile == PerformanceProfile::Smoothness) ? 640U :
-                       (profile == PerformanceProfile::Gaming) ? 640U : 512U;
+            // Place cold-start UI/Render threads cleanly above little_cap onto mid/big cores.
+            anchor_floor = (mid_cap * 0.82 + little_cap * 0.18) * (1.0 + psi_norm * 0.15);
             break;
         case ContextMode::Interactive:
-            base_min = (profile == PerformanceProfile::Battery) ? 192U :
-                       (profile == PerformanceProfile::Smoothness) ? 416U :
-                       (profile == PerformanceProfile::Gaming) ? 384U : 288U;
+            // Hover smoothly around little_cap knee; lift across cluster boundary under high-Hz or PSI.
+            anchor_floor = little_cap * (0.68 + psi_norm * 0.35) * hz_factor;
             break;
         case ContextMode::Gaming:
-            base_min = (profile == PerformanceProfile::Battery) ? 288U :
-                       (profile == PerformanceProfile::Gaming) ? 512U : 384U;
+            // Scale dynamically between little_cap and mid_cap with live GPU + CPU pressure.
+            anchor_floor = (little_cap + (mid_cap - little_cap) * std::clamp(0.35 + gpu_norm * 0.45 + psi_norm * 0.25, 0.20, 1.0)) * hz_factor;
             break;
         default:
             return {0U, 1024U};
     }
 
     // Smooth PID thermal ceiling: prevents sudden vendor cliff-throttling.
-    uint32_t target_max = static_cast<uint32_t>(std::lround(1024.0 * bounded_scale));
+    uint32_t target_max = static_cast<uint32_t>(std::lround(big_cap * bounded_scale));
+    double raw_min = anchor_floor * profile_bias * std::clamp(bounded_scale, 0.50, 1.0);
     if (thermal_guard) {
-        target_max = std::min(target_max, 768U);
-        // Under thermal guard, gently relax the floor so we never fight thermal pacing.
-        base_min = std::min(base_min, 256U);
+        target_max = std::min(target_max, static_cast<uint32_t>(std::lround(big_cap * 0.75)));
+        raw_min = std::min(raw_min, little_cap * 0.70);
     }
-    const uint32_t scaled_min = static_cast<uint32_t>(
-        std::lround(static_cast<double>(base_min) * std::clamp(bounded_scale, 0.50, 1.0)));
-    const uint32_t final_min = std::min(scaled_min, target_max);
+    const uint32_t final_min = std::min(
+        static_cast<uint32_t>(std::clamp(std::lround(raw_min), 0L, 1024L)),
+        target_max);
     return {final_min, std::max(final_min, target_max)};
 }
 
@@ -134,7 +153,8 @@ void ThreadSchedulerActuator::apply(
     bool thermal_guard,
     bool enabled,
     const std::vector<int32_t>& surfaceflinger_tids,
-    const std::vector<int32_t>& foreground_tids) noexcept {
+    const std::vector<int32_t>& foreground_tids,
+    const ThreadDemandContext& demand) noexcept {
     if (!enabled || !stats_.supported) {
         if (!applied_tids_.empty()) reset_all();
         stats_.last_util_min = 0U;
@@ -143,7 +163,7 @@ void ThreadSchedulerActuator::apply(
         return;
     }
 
-    const ThreadUclampTarget target = compute_target(mode, profile, capacity_scale, thermal_guard);
+    const ThreadUclampTarget target = compute_target(mode, profile, capacity_scale, thermal_guard, demand);
     const bool neutral = (target.util_min == 0U && target.util_max == 1024U);
     if (neutral) {
         if (!applied_tids_.empty()) reset_all();

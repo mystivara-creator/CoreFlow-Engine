@@ -143,7 +143,8 @@ void ThermalEnvelopeActuator::apply(
     PerformanceProfile profile,
     double capacity_scale,
     bool thermal_guard,
-    bool enabled) noexcept {
+    bool enabled,
+    const EnvelopeTelemetry& telemetry) noexcept {
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
     stats_.last_capacity_scale = scale;
 
@@ -153,59 +154,75 @@ void ThermalEnvelopeActuator::apply(
     }
 
     const double frame_us = topo.refresh_hz > 0U ? (1000000.0 / static_cast<double>(topo.refresh_hz)) : 16666.0;
+    const double cpu_psi_norm = std::isfinite(telemetry.cpu_psi) ? std::clamp(telemetry.cpu_psi / 100.0, 0.0, 1.0) : 0.0;
+    const double gpu_norm = std::isfinite(telemetry.gpu_busy_pct) ? std::clamp(telemetry.gpu_busy_pct / 100.0, 0.0, 1.0) : 0.0;
     const double profile_bias =
         profile == PerformanceProfile::Smoothness ? 1.08 :
         profile == PerformanceProfile::Gaming ? 1.10 :
         profile == PerformanceProfile::Battery ? 0.85 : 1.00;
+    const double max_cluster_cap = static_cast<double>(std::max<uint32_t>(topo.big_capacity, 512U));
 
-    // 1. CPU Governor Envelopes (single-owner, PID capacity_scale modulated)
+    // 1. CPU Governor Envelopes (single-owner, silicon-capacity + frame_us + PSI + PID modulated)
     for (const auto& cluster : topo.cpu_clusters) {
-        const bool is_big = cluster.role == ClusterRole::Big;
-        const bool is_mid = cluster.role == ClusterRole::Mid;
+        const double cap_ratio = cluster.capacity > 0U
+            ? std::clamp(static_cast<double>(cluster.capacity) / max_cluster_cap, 0.25, 1.0)
+            : (cluster.role == ClusterRole::Big ? 1.0 : cluster.role == ClusterRole::Mid ? 0.65 : 0.40);
 
         if (!cluster.hispeed_freq_path.empty() && !cluster.opps_khz.empty()) {
-            double base_tier = 0.65;
+            // Higher-capacity clusters scale deeper in Efficiency to save power and higher in Burst/Gaming.
+            double mode_demand = 0.55;
             if (thermal_guard) {
-                base_tier = is_big ? 0.50 : is_mid ? 0.56 : 0.60;
+                mode_demand = 0.56 - (cap_ratio * 0.08);
             } else if (mode == ContextMode::ScreenOff) {
-                base_tier = 0.30;
+                mode_demand = 0.30;
             } else if (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) {
-                base_tier = is_big ? 0.85 : 0.80;
+                mode_demand = 0.78 + (cap_ratio * 0.10) + (cpu_psi_norm * 0.08);
             } else if (mode == ContextMode::Interactive) {
-                base_tier = is_big ? 0.72 : is_mid ? 0.74 : 0.76;
+                mode_demand = 0.68 + (cpu_psi_norm * 0.12);
             } else { // Efficiency
-                base_tier = is_big ? 0.48 : is_mid ? 0.54 : 0.60;
+                mode_demand = 0.60 - (cap_ratio * 0.12) + (cpu_psi_norm * 0.10);
             }
-            const double effective_tier = std::clamp(base_tier * profile_bias * scale, 0.25, 1.0);
+            const double effective_tier = std::clamp(mode_demand * profile_bias * scale, 0.25, 1.0);
             const uint64_t freq = select_opp(cluster.opps_khz, effective_tier);
             if (freq > 0U) (void)write_managed_node(cluster.hispeed_freq_path, std::to_string(freq));
         }
 
         if (!cluster.hispeed_load_path.empty()) {
-            uint32_t load = 88U;
-            if (thermal_guard || mode == ContextMode::ScreenOff) load = 95U;
-            else if (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) load = 72U;
-            else if (mode == ContextMode::Interactive) load = (profile == PerformanceProfile::Smoothness) ? 76U : 82U;
-            else load = (profile == PerformanceProfile::Battery) ? 92U : 88U;
+            // Lower load threshold when latency-sensitive or PSI rises; higher when thermal-guarded or saving power.
+            double target_load = 88.0;
+            if (thermal_guard || mode == ContextMode::ScreenOff) {
+                target_load = 95.0;
+            } else if (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) {
+                target_load = 76.0 - (cpu_psi_norm * 10.0);
+            } else if (mode == ContextMode::Interactive) {
+                target_load = 84.0 - (cpu_psi_norm * 10.0);
+            } else {
+                target_load = 90.0 - (cpu_psi_norm * 8.0);
+            }
+            target_load = target_load / std::clamp(profile_bias, 0.90, 1.10);
+            // Smooth thermal backoff raises hispeed_load gradually as PID scale drops.
+            target_load += (1.0 - scale) * 14.0;
+            const uint32_t load = static_cast<uint32_t>(std::clamp(std::lround(target_load), 65L, 96L));
             (void)write_managed_node(cluster.hispeed_load_path, std::to_string(load));
         }
 
         if (!cluster.up_rate_limit_path.empty()) {
-            const uint64_t up_us = thermal_guard ? 4000U :
-                (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive)
-                    ? static_cast<uint64_t>(std::clamp(frame_us * 0.05, 400.0, 1000.0))
-                    : mode == ContextMode::Gaming ? 1000U : 2500U;
+            // Derived continuously from frame_us (e.g. 0.04..0.25 frames) & PID scale.
+            const double up_frames = thermal_guard ? 0.25 :
+                (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? 0.04 :
+                mode == ContextMode::Gaming ? 0.06 : 0.16;
+            const uint64_t up_us = static_cast<uint64_t>(
+                std::clamp(std::lround((frame_us * up_frames) / std::clamp(scale, 0.50, 1.0)), 300L, 6000L));
             (void)write_managed_node(cluster.up_rate_limit_path, std::to_string(up_us));
         }
 
         if (!cluster.down_rate_limit_path.empty()) {
-            const uint64_t down_us = thermal_guard ? 5000U :
-                mode == ContextMode::ScreenOff ? 5000U :
-                (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming)
-                    ? static_cast<uint64_t>(std::clamp(frame_us * 1.5, 15000.0, 25000.0))
-                    : mode == ContextMode::Interactive
-                        ? static_cast<uint64_t>(std::clamp(frame_us * 1.1, 10000.0, 18000.0))
-                        : 8000U;
+            // Hold frequencies cleanly across frame boundaries without excessive tail burn.
+            const double down_frames = (thermal_guard || mode == ContextMode::ScreenOff) ? 0.35 :
+                (mode == ContextMode::LaunchBurst || mode == ContextMode::Gaming) ? (1.40 + gpu_norm * 0.40) :
+                mode == ContextMode::Interactive ? (1.05 + cpu_psi_norm * 0.30) : 0.55;
+            const uint64_t down_us = static_cast<uint64_t>(
+                std::clamp(std::lround(frame_us * down_frames * scale), 3000L, 30000L));
             (void)write_managed_node(cluster.down_rate_limit_path, std::to_string(down_us));
         }
     }
@@ -213,11 +230,11 @@ void ThermalEnvelopeActuator::apply(
     // 2. GPU Idle Timer & Smooth Thermal Frequency Envelope
     if (topo.gpu.available) {
         if (!topo.gpu.idle_timer_path.empty()) {
-            const double frames = (thermal_guard || mode == ContextMode::ScreenOff) ? 6.0 :
-                mode == ContextMode::Gaming ? 22.0 :
-                (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? 14.0 : 8.0;
+            const double frames = (thermal_guard || mode == ContextMode::ScreenOff) ? 5.0 :
+                mode == ContextMode::Gaming ? (18.0 + gpu_norm * 8.0) :
+                (mode == ContextMode::LaunchBurst || mode == ContextMode::Interactive) ? (12.0 + gpu_norm * 6.0) : 7.0;
             const uint64_t idle_ms = static_cast<uint64_t>(
-                std::clamp((frame_us / 1000.0) * frames, 40.0, 400.0));
+                std::clamp(std::lround((frame_us / 1000.0) * frames * scale), 40L, 400L));
             (void)write_managed_node(topo.gpu.idle_timer_path, std::to_string(idle_ms));
         }
 
@@ -241,8 +258,8 @@ void ThermalEnvelopeActuator::apply(
             if (thermal_guard) base_tier = 0.62;
             else if (mode == ContextMode::ScreenOff) base_tier = 0.35;
             else if (mode == ContextMode::Gaming || mode == ContextMode::LaunchBurst) base_tier = 1.00;
-            else if (mode == ContextMode::Interactive) base_tier = 0.85;
-            else base_tier = 0.65;
+            else if (mode == ContextMode::Interactive) base_tier = 0.80 + gpu_norm * 0.15;
+            else base_tier = 0.60 + gpu_norm * 0.15;
             const double tier = std::clamp(base_tier * profile_bias * scale, 0.30, 1.0);
             const uint64_t freq = select_opp(topo.gpu.devfreq_opps_hz, tier);
             if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq));

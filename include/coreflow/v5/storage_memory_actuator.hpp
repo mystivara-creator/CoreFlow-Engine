@@ -1,6 +1,6 @@
 /**
  * @file storage_memory_actuator.hpp
- * @brief CoreFlow v5 Pillar 3B: Dynamic UFS/eMMC Burst, Background QoS, MGLRU Anti-Stutter, and Smart Pre-Read.
+ * @brief CoreFlow v5 Pillar 3B: Zero-Fixed-Value Dynamic UFS/eMMC Burst, Background QoS, MGLRU Anti-Stutter, and Smart Pre-Read.
  * @license MIT
  */
 #pragma once
@@ -15,6 +15,13 @@
 #include <unordered_set>
 
 namespace coreflow::v5 {
+
+struct StorageMemoryTelemetry {
+    double io_psi{0.0};
+    double mem_psi{0.0};
+    double cpu_psi{0.0};
+    MemorySnapshot memory{};
+};
 
 struct StorageMemoryStats {
     uint64_t active_read_ahead_kb{0};
@@ -35,26 +42,38 @@ public:
                PerformanceProfile profile,
                bool enable_storage_burst,
                bool enable_memory_guard,
-               uint64_t now_ms) noexcept;
+               uint64_t now_ms,
+               const StorageMemoryTelemetry& telemetry = {}) noexcept;
 
     // Smart asynchronous kernel page-cache prefetch for a newly launched foreground app.
     // Returns total bytes advised via posix_fadvise(POSIX_FADV_WILLNEED).
     uint64_t prefetch_app_assets(int32_t pid,
                                  const std::string& package_name,
-                                 uint64_t total_ram_bytes,
+                                 uint64_t available_or_total_ram_bytes,
                                  uint64_t now_ms,
                                  bool allow_any_path_for_test = false) noexcept;
 
     void reset_contention() noexcept;
     [[nodiscard]] StorageMemoryStats stats() const noexcept { return stats_; }
 
+    // Hardware-calibrated dynamic read-ahead calculation from queue geometry & live I/O PSI.
+    [[nodiscard]] static uint64_t compute_read_ahead_kb(
+        const StorageQueueInfo& queue,
+        ContextMode mode,
+        PerformanceProfile profile,
+        double io_psi = 0.0) noexcept;
+
+    // Convenience overload for generic callers/unit tests.
     [[nodiscard]] static uint64_t compute_read_ahead_kb(
         StorageType type,
         ContextMode mode,
         PerformanceProfile profile) noexcept;
 
 private:
-    bool write_managed_node(const std::string& path, const std::string& target) noexcept;
+    bool write_managed_node(const std::string& path,
+                            const std::string& target,
+                            double numeric_tolerance = 0.0,
+                            bool verify_nonzero_mask = false) noexcept;
     void rollback_managed_node(const std::string& path) noexcept;
 
     BaselineStore& baseline_;

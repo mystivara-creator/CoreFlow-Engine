@@ -48,6 +48,29 @@ int main() {
     assert(fg.package_name == "com.example.game");
     assert(fg.critical_tids.size() == 3U); // 4321 (UI), 4322 (RenderThread), 4323 (UnityMain)
 
+    // HyperOS / Android 15 regression: top-app contains persistent daemons (adj < 0),
+    // perceptible IME keyboard (adj = 200), helper shell binaries (/.../bash), and the real fg app (adj = 0).
+    write_file(root / "hyperos_top_app", "1312\n2523\n13821\n18000\n22235\n27597\n");
+    write_file(proc / "1312/cmdline", std::string("zygote64\0", 9));
+    write_file(proc / "1312/oom_score_adj", "-1000\n");
+    write_file(proc / "2523/cmdline", std::string("system_server\0", 14));
+    write_file(proc / "2523/oom_score_adj", "-900\n");
+    write_file(proc / "13821/cmdline", std::string("com.preff.kb.xm\0", 16));
+    write_file(proc / "13821/oom_score_adj", "200\n");
+    write_file(proc / "18000/cmdline", std::string("com.termux\0", 11));
+    write_file(proc / "18000/oom_score_adj", "0\n");
+    write_file(proc / "18000/task/18000/comm", "com.termux\n");
+    write_file(proc / "18000/task/18005/comm", "RenderThread\n");
+    write_file(proc / "22235/cmdline", std::string("/data/data/com.termux/files/usr/bin/bash\0", 41));
+    write_file(proc / "22235/oom_score_adj", "0\n");
+    write_file(proc / "27597/cmdline", std::string("com.qti.qcc\0", 12));
+    write_file(proc / "27597/oom_score_adj", "-800\n");
+
+    const auto hyperos_fg = engine.resolve_foreground_app((root / "hyperos_top_app").string());
+    assert(hyperos_fg.pid == 18000);
+    assert(hyperos_fg.package_name == "com.termux");
+    assert(hyperos_fg.critical_tids.size() == 2U);
+
     const auto sf_tids = engine.resolve_surfaceflinger_tids();
     assert(sf_tids.size() == 2U); // 900, 901
 

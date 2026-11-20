@@ -243,29 +243,43 @@ HardwareTopology HardwareProbe::discover() const noexcept {
     }
     if (!soc.empty()) topo.soc_model = soc;
 
-    // 2. RAM & ZRAM
+    // 2. RAM & ZRAM (untruncated /sys/block scan + dynamic /proc/swaps discovery)
     {
-        const auto meminfo = read_bounded(proc / "meminfo", 8192U);
-        std::istringstream ss(meminfo);
-        std::string key, unit;
-        uint64_t val = 0;
-        while (ss >> key >> val >> unit) {
-            if (key == "MemTotal:") {
-                topo.total_ram_bytes = val * 1024ULL;
-                break;
-            }
-        }
-        for (const auto& blk : child_dirs(sys / "block", 64U)) {
-            if (blk.filename().string().rfind("zram", 0) != 0) continue;
+        const auto mem = read_memory_snapshot();
+        topo.total_ram_bytes = mem.total_bytes;
+
+        std::set<std::string> seen_zram;
+        for (const auto& blk : child_dirs(sys / "block", 512U)) {
+            const std::string name = blk.filename().string();
+            if (name.rfind("zram", 0) != 0) continue;
             uint64_t sz = 0;
             if (parse_u64(read_first_line(blk / "disksize"), sz) && sz > 0U) {
+                seen_zram.insert(name);
                 topo.zram_bytes += sz;
+                topo.zram_active = true;
+            }
+        }
+        // Dynamic /proc/swaps fallback (catches zram even when /sys/block differs)
+        const auto swaps = read_bounded(proc / "swaps", 8192U);
+        std::istringstream sw_ss(swaps);
+        std::string sw_line;
+        while (std::getline(sw_ss, sw_line)) {
+            if (sw_line.find("zram") == std::string::npos) continue;
+            std::istringstream row(sw_line);
+            std::string dev_path, sw_type;
+            uint64_t size_kb = 0;
+            if (row >> dev_path >> sw_type >> size_kb && size_kb > 0U) {
+                const auto slash = dev_path.find_last_of('/');
+                const std::string dev_name = slash != std::string::npos ? dev_path.substr(slash + 1U) : dev_path;
+                if (seen_zram.insert(dev_name).second) {
+                    topo.zram_bytes += size_kb * 1024ULL;
+                }
                 topo.zram_active = true;
             }
         }
     }
 
-    // 3. CPU Clusters
+    // 3. CPU Clusters & Real EAS Silicon Capacities
     {
         const fs::path cpufreq_root = sys / "devices/system/cpu/cpufreq";
         std::set<uint64_t> cap_levels;
@@ -324,12 +338,35 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             const uint64_t lo = *max_freqs.begin();
             const uint64_t hi = *max_freqs.rbegin();
             for (auto& c : topo.cpu_clusters) {
+                if (c.capacity == 0U && hi > 0U) {
+                    c.capacity = std::clamp<uint64_t>((c.opps_khz.back() * 1024ULL) / hi, 128ULL, 1024ULL);
+                }
                 if (c.opps_khz.back() == lo) c.role = ClusterRole::Little;
                 else if (c.opps_khz.back() == hi) c.role = ClusterRole::Big;
                 else c.role = ClusterRole::Mid;
             }
         } else if (topo.cpu_clusters.size() == 1U) {
             topo.cpu_clusters[0].role = ClusterRole::Big;
+            if (topo.cpu_clusters[0].capacity == 0U) topo.cpu_clusters[0].capacity = 1024U;
+        }
+
+        // Normalize discovered EAS capacities onto Linux 0..1024 scale for self-calibrating actuators.
+        uint64_t max_cap = 0U;
+        for (const auto& c : topo.cpu_clusters) max_cap = std::max(max_cap, c.capacity);
+        if (max_cap > 0U) {
+            for (const auto& c : topo.cpu_clusters) {
+                const uint32_t norm = static_cast<uint32_t>(
+                    std::clamp<uint64_t>((c.capacity * 1024ULL) / max_cap, 128ULL, 1024ULL));
+                if (c.role == ClusterRole::Little) {
+                    topo.little_capacity = topo.little_capacity == 0U ? norm : std::min(topo.little_capacity, norm);
+                } else if (c.role == ClusterRole::Mid) {
+                    topo.mid_capacity = std::max(topo.mid_capacity, norm);
+                } else if (c.role == ClusterRole::Big) {
+                    topo.big_capacity = std::max(topo.big_capacity, norm);
+                }
+            }
+            if (topo.little_capacity == 0U) topo.little_capacity = std::min<uint32_t>(topo.big_capacity / 2U, 448U);
+            if (topo.mid_capacity == 0U) topo.mid_capacity = (topo.little_capacity + topo.big_capacity) / 2U;
         }
     }
 
@@ -398,25 +435,50 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         }
     }
 
-    // 5. Physical Storage Discovery (UFS / NVMe / eMMC — never touches iostats)
+    // 5. Dynamic Physical + Active Mapper Storage Discovery (UFS / NVMe / eMMC + mounted /data,/system dm-*)
     {
-        for (const auto& entry : child_dirs(sys / "class/block", 64U)) {
+        // Discover block major:minor IDs backing active Android partitions dynamically from mountinfo.
+        std::set<std::string> active_mount_maj_min;
+        const auto mountinfo = read_bounded(proc / "self/mountinfo", 65536U);
+        std::istringstream mss(mountinfo);
+        std::string mline;
+        while (std::getline(mss, mline)) {
+            std::istringstream row(mline);
+            std::string id, parent, maj_min, root, mpoint;
+            if (!(row >> id >> parent >> maj_min >> root >> mpoint)) continue;
+            if (mpoint == "/data" || mpoint == "/system" || mpoint == "/" ||
+                mpoint == "/vendor" || mpoint == "/product" || mpoint == "/system_ext") {
+                active_mount_maj_min.insert(maj_min);
+            }
+        }
+
+        std::set<std::string> seen_queue_paths;
+        for (const auto& entry : child_dirs(sys / "class/block", 512U)) {
             const auto resolved = canonical_under(entry, sys);
             if (resolved.empty()) continue;
             const std::string res_str = resolved.string();
-            if (res_str.find("/devices/virtual/") != std::string::npos) continue;
             const auto name = entry.filename().string();
-            if (name.rfind("loop", 0) == 0 || name.rfind("zram", 0) == 0 ||
-                name.rfind("ram", 0) == 0 || name.rfind("dm-", 0) == 0) {
+            if (name.rfind("loop", 0) == 0 || name.rfind("zram", 0) == 0 || name.rfind("ram", 0) == 0) {
                 continue;
             }
+            const bool is_dm = (name.rfind("dm-", 0) == 0);
+            if (is_dm) {
+                // Only manage dm-* queues that actively back /data or OS partitions discovered via mountinfo.
+                const std::string dev_id = read_first_line(resolved / "dev");
+                if (dev_id.empty() || !active_mount_maj_min.contains(dev_id)) continue;
+            } else if (res_str.find("/devices/virtual/") != std::string::npos) {
+                continue;
+            }
+
             const fs::path qdir = resolved / "queue";
             if (read_first_line(qdir / "rotational") != "0") continue;
             const fs::path ra_path = qdir / "read_ahead_kb";
             if (!is_regular_writable(ra_path)) continue;
+            if (!seen_queue_paths.insert(ra_path.string()).second) continue;
 
             StorageQueueInfo qi{};
             qi.device_name = name;
+            qi.is_mapper = is_dm;
             const std::string folded = to_lower_copy(res_str + "/" + name);
             if (folded.find("ufshc") != std::string::npos || folded.find("ufs") != std::string::npos) {
                 qi.type = StorageType::UFS;
@@ -428,19 +490,30 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 qi.type = StorageType::SolidState;
             }
             qi.read_ahead_kb_path = ra_path.string();
-            uint64_t base_ra = 128U;
-            if (parse_u64(read_first_line(ra_path), base_ra)) qi.baseline_read_ahead_kb = base_ra;
+            uint64_t val = 0U;
+            if (parse_u64(read_first_line(ra_path), val) && val > 0U) qi.baseline_read_ahead_kb = val;
+            if (parse_u64(read_first_line(qdir / "max_sectors_kb"), val) && val > 0U) qi.max_sectors_kb = val;
+            if (parse_u64(read_first_line(qdir / "nr_requests"), val) && val > 0U) qi.nr_requests = val;
+            if (parse_u64(read_first_line(qdir / "logical_block_size"), val) && val > 0U) qi.logical_block_size = val;
             if (is_regular_writable(qdir / "nr_requests")) {
                 qi.nr_requests_path = (qdir / "nr_requests").string();
             }
             if (is_regular_writable(qdir / "scheduler")) {
                 qi.scheduler_path = (qdir / "scheduler").string();
             }
-            if (topo.primary_storage == StorageType::Unknown ||
-                (topo.primary_storage == StorageType::SolidState && qi.type != StorageType::SolidState)) {
+            if (!is_dm && (topo.primary_storage == StorageType::Unknown ||
+                (topo.primary_storage == StorageType::SolidState && qi.type != StorageType::SolidState))) {
                 topo.primary_storage = qi.type;
             }
             topo.storage_queues.push_back(std::move(qi));
+        }
+        // Inherit discovered physical storage media type onto mounted dm-* queues.
+        if (topo.primary_storage != StorageType::Unknown) {
+            for (auto& qi : topo.storage_queues) {
+                if (qi.is_mapper && qi.type == StorageType::SolidState) {
+                    qi.type = topo.primary_storage;
+                }
+            }
         }
     }
 
@@ -452,11 +525,13 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         if (is_regular_writable(vm_root / "vfs_cache_pressure")) topo.vm.vfs_cache_pressure_path = (vm_root / "vfs_cache_pressure").string();
         if (is_regular_writable(vm_root / "compaction_proactiveness")) topo.vm.compaction_proactiveness_path = (vm_root / "compaction_proactiveness").string();
         if (is_regular_writable(vm_root / "watermark_scale_factor")) topo.vm.watermark_scale_factor_path = (vm_root / "watermark_scale_factor").string();
+        const fs::path mglru_en = sys / "kernel/mm/lru_gen/enabled";
+        if (is_regular_writable(mglru_en)) topo.vm.mglru_enabled_path = mglru_en.string();
         const fs::path mglru = sys / "kernel/mm/lru_gen/min_ttl_ms";
         if (is_regular_writable(mglru)) topo.vm.mglru_min_ttl_path = mglru.string();
     }
 
-    // 7. Backlights & Display Refresh Rate
+    // 7. Backlights & Display Refresh Rate (fully dynamic scan across DRM & graphics nodes)
     {
         for (const auto& bl : child_dirs(sys / "class/backlight", 16U)) {
             const auto resolved = canonical_under(bl, sys);
@@ -466,26 +541,42 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         }
         uint32_t detected_hz = 0;
         for (const auto& root : std::array<fs::path, 2>{sys / "class/drm", sys / "class/graphics"}) {
-            for (const auto& dev : child_dirs(root, 16U)) {
+            for (const auto& dev : child_dirs(root, 32U)) {
                 const auto resolved = canonical_under(dev, sys);
                 if (resolved.empty()) continue;
-                for (const char* leaf : {"refresh_rate", "current_mode", "modes", "available_modes"}) {
-                    const auto txt = read_first_line(resolved / leaf);
+                for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "measured_fps",
+                                         "current_mode", "modes", "available_modes", "msm_fb_panel_info"}) {
+                    const fs::path leaf_path = resolved / leaf;
+                    const auto txt = read_bounded(leaf_path, 2048U);
                     if (txt.empty()) continue;
-                    uint64_t direct_hz = 0;
-                    if (std::string_view(leaf) == "refresh_rate" &&
-                        parse_u64(txt, direct_hz) && direct_hz >= 30U && direct_hz <= 240U) {
-                        detected_hz = static_cast<uint32_t>(direct_hz);
-                        break;
-                    }
-                    if (const auto parsed = parse_refresh_from_text(txt)) {
-                        detected_hz = *parsed;
-                        break;
+                    std::istringstream lss(txt);
+                    std::string line;
+                    while (std::getline(lss, line)) {
+                        const std::string trimmed = trim_copy(line);
+                        uint64_t direct_hz = 0;
+                        if (parse_u64(trimmed, direct_hz) && direct_hz >= 30U && direct_hz <= 240U) {
+                            detected_hz = std::max(detected_hz, static_cast<uint32_t>(direct_hz));
+                            continue;
+                        }
+                        if (const auto parsed = parse_refresh_from_text(trimmed)) {
+                            detected_hz = std::max(detected_hz, *parsed);
+                            continue;
+                        }
+                        // Handle key=value formats such as "panel_max_fps=120" or "fps=120"
+                        const auto eq = trimmed.find('=');
+                        if (eq != std::string::npos) {
+                            const std::string key = to_lower_copy(trimmed.substr(0, eq));
+                            if (key.find("fps") != std::string::npos || key.find("refresh") != std::string::npos) {
+                                uint64_t kv_hz = 0;
+                                if (parse_u64(trim_copy(trimmed.substr(eq + 1U)), kv_hz) &&
+                                    kv_hz >= 30U && kv_hz <= 240U) {
+                                    detected_hz = std::max(detected_hz, static_cast<uint32_t>(kv_hz));
+                                }
+                            }
+                        }
                     }
                 }
-                if (detected_hz != 0U) break;
             }
-            if (detected_hz != 0U) break;
         }
         if (detected_hz != 0U) topo.refresh_hz = detected_hz;
     }
@@ -582,6 +673,39 @@ std::optional<double> HardwareProbe::read_psi_avg10(const std::string& resource)
         }
     }
     return std::nullopt;
+}
+
+MemorySnapshot HardwareProbe::read_memory_snapshot() const noexcept {
+    MemorySnapshot snap{};
+    const auto meminfo = read_bounded(fs::path(procfs_root_) / "meminfo", 8192U);
+    if (meminfo.empty()) return snap;
+    std::istringstream ss(meminfo);
+    std::string line;
+    int found = 0;
+    while (std::getline(ss, line) && found < 4) {
+        std::istringstream row(line);
+        std::string key;
+        uint64_t val_kb = 0;
+        if (!(row >> key >> val_kb)) continue;
+        if (key == "MemTotal:") {
+            snap.total_bytes = val_kb * 1024ULL;
+            ++found;
+        } else if (key == "MemAvailable:") {
+            snap.available_bytes = val_kb * 1024ULL;
+            ++found;
+        } else if (key == "SwapTotal:") {
+            snap.swap_total_bytes = val_kb * 1024ULL;
+            ++found;
+        } else if (key == "SwapFree:") {
+            snap.swap_free_bytes = val_kb * 1024ULL;
+            ++found;
+        }
+    }
+    snap.valid = (snap.total_bytes > 0U);
+    if (snap.valid && snap.available_bytes == 0U) {
+        snap.available_bytes = snap.total_bytes / 2U;
+    }
+    return snap;
 }
 
 } // namespace coreflow::v5

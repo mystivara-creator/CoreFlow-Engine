@@ -63,12 +63,17 @@ struct StorageQueueInfo {
     std::string nr_requests_path;
     std::string scheduler_path;
     uint64_t baseline_read_ahead_kb{128};
+    uint64_t max_sectors_kb{0};
+    uint64_t nr_requests{0};
+    uint64_t logical_block_size{4096};
+    bool is_mapper{false};
 };
 
 struct VmNodesInfo {
     std::string swappiness_path;
     std::string page_cluster_path;
     std::string vfs_cache_pressure_path;
+    std::string mglru_enabled_path;
     std::string mglru_min_ttl_path;
     std::string compaction_proactiveness_path;
     std::string watermark_scale_factor_path;
@@ -83,6 +88,25 @@ struct CgroupPathsInfo {
     bool uclamp_uses_percent{true};
 };
 
+struct MemorySnapshot {
+    uint64_t total_bytes{0};
+    uint64_t available_bytes{0};
+    uint64_t swap_total_bytes{0};
+    uint64_t swap_free_bytes{0};
+    bool valid{false};
+
+    [[nodiscard]] double available_ratio() const noexcept {
+        return (valid && total_bytes > 0U)
+            ? static_cast<double>(available_bytes) / static_cast<double>(total_bytes)
+            : 0.5;
+    }
+    [[nodiscard]] double swap_used_ratio() const noexcept {
+        return (valid && swap_total_bytes > 0U && swap_total_bytes >= swap_free_bytes)
+            ? static_cast<double>(swap_total_bytes - swap_free_bytes) / static_cast<double>(swap_total_bytes)
+            : 0.0;
+    }
+};
+
 struct HardwareTopology {
     std::string soc_model{"Unknown SoC"};
     std::string kernel_version{"Unknown"};
@@ -90,6 +114,9 @@ struct HardwareTopology {
     uint64_t zram_bytes{0};
     bool zram_active{false};
     uint32_t refresh_hz{60};
+    uint32_t little_capacity{0};
+    uint32_t mid_capacity{0};
+    uint32_t big_capacity{1024};
     StorageType primary_storage{StorageType::Unknown};
     std::vector<CpuClusterInfo> cpu_clusters;
     GpuInfo gpu;
@@ -110,6 +137,7 @@ public:
     [[nodiscard]] bool is_screen_off(const HardwareTopology& topo) const noexcept;
     [[nodiscard]] std::optional<double> read_gpu_busy_pct(const HardwareTopology& topo) const noexcept;
     [[nodiscard]] std::optional<double> read_psi_avg10(const std::string& resource) const noexcept;
+    [[nodiscard]] MemorySnapshot read_memory_snapshot() const noexcept;
 
     [[nodiscard]] static const char* storage_type_name(StorageType type) noexcept;
     [[nodiscard]] static const char* cluster_role_name(ClusterRole role) noexcept;

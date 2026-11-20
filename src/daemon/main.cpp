@@ -67,7 +67,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "5.0.0";
+constexpr char kVersion[] = "5.0.1";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -317,11 +317,10 @@ bool write_status_snapshot(std::string_view payload) noexcept {
         if (n <= 0) { (void)::unlinkat(dir.get(), tmp.c_str(), 0); return false; }
         off += static_cast<size_t>(n);
     }
-    if (::fsync(fd.get()) != 0 || ::renameat(dir.get(), tmp.c_str(), dir.get(), "status.json") != 0) {
+    if (::renameat(dir.get(), tmp.c_str(), dir.get(), "status.json") != 0) {
         (void)::unlinkat(dir.get(), tmp.c_str(), 0);
         return false;
     }
-    (void)::fsync(dir.get());
     return true;
 }
 
@@ -625,17 +624,95 @@ void print_capabilities() {
     std::cout << out.str() << "\n" << std::flush;
 }
 
+std::string hex_decode_journal_field(std::string_view hex) {
+    if ((hex.size() % 2U) != 0U) return {};
+    std::string out;
+    out.reserve(hex.size() / 2U);
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+    for (size_t i = 0; i < hex.size(); i += 2U) {
+        const int hi = nibble(hex[i]);
+        const int lo = nibble(hex[i + 1U]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return out;
+}
+
 void print_journal() {
-    const auto entries = BaselineStore::instance().get_audit_trail();
+    struct JournalRow {
+        std::string path;
+        std::string factory_value;
+        std::string active_value;
+        bool modified{true};
+    };
+    std::vector<JournalRow> rows;
+    const char* env_dir = std::getenv("COREFLOW_STATE_DIR");
+    const std::string state_dir = (env_dir && env_dir[0] != '\0') ? std::string(env_dir) : std::string(kStateDir);
+    const std::string jpath = state_dir + "/baseline.journal";
+    UniqueFd fd(::open(jpath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (fd.valid()) {
+        struct stat st{};
+        if (::fstat(fd.get(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= 262144) {
+            std::string raw(static_cast<size_t>(st.st_size), '\0');
+            size_t off = 0;
+            while (off < raw.size()) {
+                const ssize_t n = ::read(fd.get(), raw.data() + off, raw.size() - off);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                off += static_cast<size_t>(n);
+            }
+            raw.resize(off);
+            std::istringstream ss(raw);
+            std::string header;
+            if (std::getline(ss, header) && header.rfind("CFJ", 0) == 0) {
+                std::string line;
+                while (std::getline(ss, line)) {
+                    if (DaemonConfig::trim(line).empty()) continue;
+                    std::vector<std::string> cols;
+                    size_t start = 0;
+                    while (start <= line.size()) {
+                        const size_t tab = line.find('\t', start);
+                        if (tab == std::string::npos) {
+                            cols.push_back(line.substr(start));
+                            break;
+                        }
+                        cols.push_back(line.substr(start, tab - start));
+                        start = tab + 1U;
+                    }
+                    if (cols.size() >= 4U) {
+                        JournalRow r{};
+                        r.path = cols[0];
+                        r.factory_value = hex_decode_journal_field(cols[1]);
+                        r.active_value = hex_decode_journal_field(cols[3]);
+                        r.modified = true;
+                        rows.push_back(std::move(r));
+                    } else if (cols.size() >= 2U) {
+                        JournalRow r{};
+                        r.path = cols[0];
+                        r.factory_value = hex_decode_journal_field(cols[1]);
+                        r.active_value = r.factory_value;
+                        r.modified = true;
+                        rows.push_back(std::move(r));
+                    }
+                }
+            }
+        }
+    }
+
     std::ostringstream out;
-    out << "{\"format\":\"CFJ4\",\"entryCount\":" << entries.size() << ",\"entries\":[";
-    for (size_t i = 0; i < entries.size(); ++i) {
+    out << "{\"format\":\"CFJ4\",\"entryCount\":" << rows.size() << ",\"entries\":[";
+    for (size_t i = 0; i < rows.size(); ++i) {
         if (i != 0U) out << ',';
-        const auto& e = entries[i];
+        const auto& e = rows[i];
         out << "{\"path\":" << json_str(e.path)
             << ",\"factoryValue\":" << json_str(e.factory_value)
             << ",\"activeValue\":" << json_str(e.active_value)
-            << ",\"modified\":" << (e.is_modified ? "true" : "false") << '}';
+            << ",\"modified\":" << (e.modified ? "true" : "false") << '}';
     }
     out << "]}";
     std::cout << out.str() << "\n" << std::flush;
@@ -812,7 +889,33 @@ int main(int argc, char* argv[]) {
     live_status.battery = longevity.sample_battery_telemetry();
     bool last_screen_off = false;
     ForegroundAppInfo last_fg{};
+    MemorySnapshot last_mem_snap = probe.read_memory_snapshot();
     auto last_thermal_tick = std::chrono::steady_clock::now();
+
+    const auto build_thread_demand = [&]() noexcept {
+        ThreadDemandContext d{};
+        d.little_capacity = topo.little_capacity;
+        d.mid_capacity = topo.mid_capacity;
+        d.big_capacity = topo.big_capacity;
+        d.refresh_hz = topo.refresh_hz;
+        d.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        d.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        return d;
+    };
+    const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
+        StorageMemoryTelemetry t{};
+        t.io_psi = live_status.io_psi.value_or(0.0);
+        t.mem_psi = live_status.mem_psi.value_or(0.0);
+        t.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        t.memory = mem;
+        return t;
+    };
+    const auto build_envelope_telemetry = [&]() noexcept {
+        EnvelopeTelemetry e{};
+        e.cpu_psi = live_status.cpu_psi.value_or(0.0);
+        e.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        return e;
+    };
 
     // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
     if (!input_source.start([&](const FrameEvent&) {
@@ -833,7 +936,8 @@ int main(int argc, char* argv[]) {
                 thread_scheduler.apply(
                     live_status.ctx.mode, context_engine.profile(),
                     live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_frame_smoothness, sf_tids, last_fg.critical_tids);
+                    config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                    build_thread_demand());
                 live_status.thread_stats = thread_scheduler.stats();
             }
         })) {
@@ -887,8 +991,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Fast path 2 (250 ms while screen ON): Foreground app change & launch burst trigger
-    (void)reactor.create_timerfd(std::chrono::milliseconds(250), [&](uint32_t) {
+    // Fast path 2 (500 ms while screen ON): Foreground app change & launch burst trigger
+    (void)reactor.create_timerfd(std::chrono::milliseconds(500), [&](uint32_t) {
         if (last_screen_off || config.inspection_mode || live_status.thermal_emergency) return;
         const auto fg = context_engine.resolve_foreground_app(topo.cgroups.top_app_procs_path);
         const bool changed = fg.pid != last_fg.pid || fg.package_name != last_fg.package_name;
@@ -913,14 +1017,17 @@ int main(int argc, char* argv[]) {
             thread_scheduler.apply(
                 live_status.ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_frame_smoothness, sf_tids, fg.critical_tids);
+                config.enable_frame_smoothness, sf_tids, fg.critical_tids,
+                build_thread_demand());
             storage_memory.apply(
                 topo, live_status.ctx, context_engine.profile(),
-                config.enable_storage_burst, config.enable_memory_guard, now_ms);
+                config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
                 topo, live_status.ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_thermal_pacing);
+                config.enable_thermal_pacing,
+                build_envelope_telemetry());
             live_status.thread_stats = thread_scheduler.stats();
             live_status.storage_stats = storage_memory.stats();
             live_status.envelope_stats = thermal_envelope.stats();
@@ -972,6 +1079,7 @@ int main(int argc, char* argv[]) {
         const auto cpu_psi = probe.read_psi_avg10("cpu");
         const auto mem_psi = probe.read_psi_avg10("memory");
         const auto io_psi = probe.read_psi_avg10("io");
+        last_mem_snap = probe.read_memory_snapshot();
 
         live_status.soc_temp = soc_temp;
         live_status.battery_temp = batt_temp;
@@ -985,8 +1093,12 @@ int main(int argc, char* argv[]) {
 
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
-            live_status.baseline_nodes = count_journal_entries();
-            live_status.recovery_pending = !journal_clear();
+            size_t active_nodes = 0U;
+            for (const auto& entry : baseline.get_audit_trail()) {
+                if (entry.is_modified) ++active_nodes;
+            }
+            live_status.baseline_nodes = active_nodes;
+            live_status.recovery_pending = active_nodes > 0U;
             live_status.history.push_back(HistoryPoint{
                 .ts_ms = epoch_now_ms(),
                 .soc_temp = soc_temp >= 0.0f ? static_cast<double>(soc_temp) : -1.0,
@@ -1083,14 +1195,17 @@ int main(int argc, char* argv[]) {
             thread_scheduler.apply(
                 live_status.ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, thermal_guard,
-                config.enable_frame_smoothness, sf_tids, last_fg.critical_tids);
+                config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                build_thread_demand());
             storage_memory.apply(
                 topo, live_status.ctx, context_engine.profile(),
-                config.enable_storage_burst, config.enable_memory_guard, now_ms);
+                config.enable_storage_burst, config.enable_memory_guard, now_ms,
+                build_storage_telemetry(last_mem_snap));
             thermal_envelope.apply(
                 topo, live_status.ctx.mode, context_engine.profile(),
                 live_status.capacity_scale, thermal_guard,
-                config.enable_thermal_pacing);
+                config.enable_thermal_pacing,
+                build_envelope_telemetry());
             if (config.enable_storage_burst && live_status.ctx.mode != ContextMode::Excluded) {
                 (void)longevity.apply_storage_pacing();
             }
@@ -1106,7 +1221,7 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v5.0.0 Lean 4-Pillar Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v5.0.1 Autonomous 4-Pillar Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") + ").");
 
@@ -1121,6 +1236,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v5.0.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v5.0.1 Daemon stopped; OEM baseline restored.");
     return 0;
 }

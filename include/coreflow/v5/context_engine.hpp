@@ -99,6 +99,10 @@ private:
     int32_t cached_sf_pid_{0};
     uint64_t cached_sf_checked_ms_{0};
     std::vector<int32_t> cached_sf_tids_;
+
+    mutable int32_t cached_fg_pid_{0};
+    mutable uint64_t cached_fg_tids_ms_{0};
+    mutable std::vector<int32_t> cached_fg_tids_;
 };
 
 } // namespace coreflow::v5

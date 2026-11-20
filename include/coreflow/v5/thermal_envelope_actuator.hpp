@@ -22,6 +22,11 @@ struct ThermalEnvelopeStats {
     double last_capacity_scale{1.0};
 };
 
+struct EnvelopeTelemetry {
+    double cpu_psi{0.0};
+    double gpu_busy_pct{0.0};
+};
+
 class ThermalEnvelopeActuator {
 public:
     explicit ThermalEnvelopeActuator(BaselineStore& baseline) noexcept;
@@ -31,7 +36,8 @@ public:
                PerformanceProfile profile,
                double capacity_scale,
                bool thermal_guard,
-               bool enabled) noexcept;
+               bool enabled,
+               const EnvelopeTelemetry& telemetry = {}) noexcept;
 
     void reset_contention() noexcept;
     [[nodiscard]] ThermalEnvelopeStats stats() const noexcept { return stats_; }

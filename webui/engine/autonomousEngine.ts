@@ -1,5 +1,5 @@
 /**
- * CoreFlow Engine v5.0.0 — Lean 4-Pillar WebUI Data Contract, Validators & Preview Simulator.
+ * CoreFlow Engine v5.0.1 — Lean 4-Pillar WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
@@ -236,7 +236,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const historyRaw = Array.isArray(raw.history) ? raw.history : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '5.0.0',
+    version: typeof raw.version === 'string' ? raw.version : '5.0.1',
     running: raw.running,
     pid: raw.pid,
     profile,
@@ -334,7 +334,7 @@ export function computeHealthScore(status: CoreFlowV5Status): number {
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '5.0.0',
+    version: '5.0.1',
     running: true,
     pid: 1428,
     profile: 'balanced',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify CoreFlow v5.0.0 lean 4-pillar daemon CLI & safety contracts."""
+"""Verify CoreFlow v5.0.1 lean 4-pillar daemon CLI & safety contracts."""
 import json
 import subprocess
 import sys
@@ -10,8 +10,8 @@ source = (repo / "src/daemon/main.cpp").read_text()
 config = (repo / "include/coreflow/config.hpp").read_text()
 
 # Core v5 architecture & safety invariants
-assert 'constexpr char kVersion[] = "5.0.0";' in source
-assert 'std::string version{"5.0.0"};' in config
+assert 'constexpr char kVersion[] = "5.0.1";' in source
+assert 'std::string version{"5.0.1"};' in config
 assert "VulkanController" not in source
 assert "DeviceValidationRecorder" not in source
 assert "ThreadSchedulerActuator" in source
@@ -45,7 +45,7 @@ if len(sys.argv) >= 2:
         payload = json.loads(lines[-1])
         assert isinstance(payload, dict), f"{flag} JSON root is not an object"
         if flag == "--status":
-            assert payload.get("version") == "5.0.0"
+            assert payload.get("version") == "5.0.1"
             assert "profile" in payload
             assert "mode" in payload
             assert "features" in payload and isinstance(payload["features"], dict)
@@ -56,7 +56,7 @@ if len(sys.argv) >= 2:
             assert "history" in payload and isinstance(payload["history"], list)
             assert "vulkan" not in payload
         elif flag == "--capabilities":
-            assert payload.get("version") == "5.0.0"
+            assert payload.get("version") == "5.0.1"
             assert payload.get("rustPidEngine") is True
             assert "perThreadUclampSupported" in payload
             assert "storageType" in payload

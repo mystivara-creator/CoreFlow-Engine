@@ -68,20 +68,23 @@ int main() {
 
     ThermalEnvelopeActuator act(baseline);
 
-    // 1. Gaming at full capacity scale -> high hispeed, low hispeed_load, fast KGSL max_pwrlevel (0)
-    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true);
+    // 1. Gaming at full capacity scale -> high hispeed, responsive hispeed_load, fast KGSL max_pwrlevel (0)
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0});
     const uint64_t gaming_hispeed = std::stoull(read_file(hispeed));
+    const uint64_t gaming_load = std::stoull(read_file(hispeed_load));
     const uint64_t gaming_kgsl_max = std::stoull(read_file(kgsl_max));
     assert(gaming_hispeed >= 2200000U);
-    assert(read_file(hispeed_load) == "72");
+    assert(gaming_load >= 65U && gaming_load <= 78U);
     assert(gaming_kgsl_max == 0U);
 
-    // 2. PID capacity_scale drop + thermal_guard smoothly lowers hispeed and raises KGSL ceiling index (slower/cooler)
-    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.55, true, true);
+    // 2. PID capacity_scale drop + thermal_guard smoothly lowers hispeed, raises hispeed_load, and raises KGSL ceiling index (slower/cooler)
+    act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.55, true, true, {10.0, 50.0});
     const uint64_t hot_hispeed = std::stoull(read_file(hispeed));
+    const uint64_t hot_load = std::stoull(read_file(hispeed_load));
     const uint64_t hot_kgsl_max = std::stoull(read_file(kgsl_max));
     const uint64_t hot_kgsl_min = std::stoull(read_file(kgsl_min));
     assert(hot_hispeed < gaming_hispeed);
+    assert(hot_load > gaming_load);
     assert(hot_kgsl_max > gaming_kgsl_max);
     assert(hot_kgsl_max <= hot_kgsl_min);
 

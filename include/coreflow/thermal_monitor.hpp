@@ -153,6 +153,11 @@ private:
         std::string type;
         int category{0};
         bool is_hwmon{false};
+        bool trips_cached{false};
+        float cached_passive{-1.0f};
+        float cached_hot{-1.0f};
+        float cached_critical{-1.0f};
+        float cached_hyst{0.0f};
     };
     std::string sysfs_root_;
     mutable std::mutex monitor_mutex_;
