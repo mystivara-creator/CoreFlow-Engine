@@ -52,6 +52,7 @@ int main() {
     const fs::path page_cluster = root / "proc/sys/vm/page-cluster";
     const fs::path swappiness = root / "proc/sys/vm/swappiness";
     const fs::path compaction = root / "proc/sys/vm/compaction_proactiveness";
+    const fs::path watermark = root / "proc/sys/vm/watermark_scale_factor";
 
     write_file(ra_path, "128\n");
     write_file(bg_io, "default 100\n");
@@ -61,6 +62,7 @@ int main() {
     write_file(page_cluster, "3\n");
     write_file(swappiness, "100\n");
     write_file(compaction, "20\n");
+    write_file(watermark, "10\n");
 
     StorageQueueInfo ufs_q{};
     ufs_q.device_name = "sda";
@@ -79,6 +81,8 @@ int main() {
     topo.vm.page_cluster_path = page_cluster.string();
     topo.vm.swappiness_path = swappiness.string();
     topo.vm.compaction_proactiveness_path = compaction.string();
+    topo.vm.watermark_scale_factor_path = watermark.string();
+    topo.vm.baseline_watermark_scale_factor = 10U;
 
     StorageMemoryActuator act(baseline, (root / "proc").string());
 
@@ -87,7 +91,7 @@ int main() {
     calm_tel.memory.available_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL; // 50% free
     calm_tel.memory.valid = true;
 
-    // 1. LaunchBurst -> UFS burst widens dynamically above baseline, background isolated, MGLRU enabled, compaction paused
+    // 1. LaunchBurst -> UFS burst widens dynamically above baseline, background isolated safely, MGLRU enabled, gentle watermark <= 50
     ContextDecision launch_ctx{};
     launch_ctx.mode = ContextMode::LaunchBurst;
     launch_ctx.newly_launched_app = true;
@@ -98,19 +102,21 @@ int main() {
     const uint64_t burst_ra = std::stoull(read_file(ra_path));
     assert(burst_ra > 128U && burst_ra <= 512U);
     assert(read_file(bg_io).rfind("default ", 0) == 0 && read_file(bg_io) != "default 100");
-    assert(read_file(bg_uclamp) != "max");
+    assert(read_file(bg_uclamp) != "max" && std::stod(read_file(bg_uclamp)) >= 30.0);
     assert(read_file(mglru_en) == "y");
     const uint64_t calm_ttl = std::stoull(read_file(mglru));
-    assert(calm_ttl >= 800U);
+    assert(calm_ttl >= 800U && calm_ttl <= 1000U);
     assert(read_file(page_cluster) == "0");
     const uint64_t calm_swap = std::stoull(read_file(swappiness));
     assert(calm_swap >= 30U && calm_swap <= 90U);
     assert(read_file(compaction) == "0");
+    const uint64_t calm_wm = std::stoull(read_file(watermark));
+    assert(calm_wm > 10U && calm_wm <= 50U);
     assert(act.stats().burst_active);
     assert(act.stats().background_isolated);
     assert(act.stats().contended_nodes == 0U);
 
-    // 2. Dynamic memory pressure adaptation: tighter available RAM + higher mem_psi raises swappiness and lowers MGLRU TTL
+    // 2. Dynamic memory pressure adaptation: tight RAM + high mem_psi raises swappiness, drops MGLRU TTL to 0, and rolls back watermark to OEM baseline
     StorageMemoryTelemetry tight_tel = calm_tel;
     tight_tel.memory.available_bytes = 1ULL * 1024ULL * 1024ULL * 1024ULL; // 12.5% free
     tight_tel.mem_psi = 30.0;
@@ -120,7 +126,8 @@ int main() {
     const uint64_t tight_swap = std::stoull(read_file(swappiness));
     const uint64_t tight_ttl = std::stoull(read_file(mglru));
     assert(tight_swap > calm_swap);
-    assert(tight_ttl < calm_ttl);
+    assert(tight_ttl == 0U && tight_ttl < calm_ttl);
+    assert(read_file(watermark) == "10");
 
     // 3. Steady-state ScreenOff -> UFS drops down to low-latency steady read_ahead, background limits restored, MGLRU TTL=0
     ContextDecision off_ctx{};
@@ -132,6 +139,7 @@ int main() {
     assert(read_file(bg_io) == "default 100");
     assert(read_file(bg_uclamp) == "max");
     assert(read_file(mglru) == "0");
+    assert(read_file(watermark) == "10");
     assert(std::stoull(read_file(compaction)) > 0U);
     assert(!act.stats().background_isolated);
 

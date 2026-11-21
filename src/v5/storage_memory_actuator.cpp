@@ -312,25 +312,26 @@ void StorageMemoryActuator::apply(
         if (isolate_bg) {
             bool any_bg = false;
             if (!topo.cgroups.background_io_weight_path.empty()) {
-                // Scale background I/O weight inversely with live io_psi & foreground urgency.
-                const double base_w = (ctx.mode == ContextMode::LaunchBurst) ? 18.0 :
-                                      (ctx.mode == ContextMode::Gaming) ? 24.0 : 35.0;
+                // Scale background I/O weight inversely with live io_psi & foreground urgency,
+                // keeping a safe floor (>= 20) so synchronous SystemUI/Binder helpers never starve.
+                const double base_w = (ctx.mode == ContextMode::LaunchBurst) ? 28.0 :
+                                      (ctx.mode == ContextMode::Gaming) ? 32.0 : 45.0;
                 const uint32_t weight_val = static_cast<uint32_t>(
-                    std::clamp(std::lround(base_w * (1.0 - std::clamp(io_psi / 120.0, 0.0, 0.5))), 10L, 50L));
+                    std::clamp(std::lround(base_w * (1.0 - std::clamp(io_psi / 160.0, 0.0, 0.35))), 20L, 60L));
                 any_bg = write_managed_node(topo.cgroups.background_io_weight_path,
                                             "default " + std::to_string(weight_val), now_ms) || any_bg;
             }
             if (!topo.cgroups.background_uclamp_max_path.empty()) {
-                // Scale background CPU ceiling inversely with live cpu_psi & gaming/burst urgency.
-                const double base_pct = (ctx.mode == ContextMode::Gaming) ? 25.0 :
-                                        (ctx.mode == ContextMode::LaunchBurst) ? 31.25 : 37.50;
-                const double adapted_pct = std::clamp(base_pct - (cpu_psi * 0.15), 15.625, 50.0);
+                // Keep background isolated without starving Binder/system helpers on HyperOS/Android 15+.
+                const double base_pct = (ctx.mode == ContextMode::Gaming) ? 37.50 :
+                                        (ctx.mode == ContextMode::LaunchBurst) ? 40.00 : 50.00;
+                const double adapted_pct = std::clamp(base_pct - (cpu_psi * 0.12), 30.0, 60.0);
                 if (topo.cgroups.uclamp_uses_percent) {
                     const std::string bg_cap = format_quantized_uclamp_pct(adapted_pct);
                     any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path, bg_cap, now_ms, 0.6, false, 2.5) || any_bg;
                 } else {
                     const uint32_t raw_cap = static_cast<uint32_t>(
-                        std::clamp(std::lround(adapted_pct * 10.24), 160L, 512L));
+                        std::clamp(std::lround(adapted_pct * 10.24), 307L, 614L));
                     any_bg = write_managed_node(topo.cgroups.background_uclamp_max_path,
                                                 std::to_string(raw_cap), now_ms, 4.0, false, 24.0) || any_bg;
                 }
@@ -369,16 +370,17 @@ void StorageMemoryActuator::apply(
 
         if (!topo.vm.mglru_min_ttl_path.empty()) {
             uint32_t ttl_ms = 0U;
-            if (ctx.mode != ContextMode::ScreenOff) {
+            // Release reclaim protection immediately on ScreenOff or real memory pressure so kswapd/lmkd never stall.
+            if (ctx.mode != ContextMode::ScreenOff && mem_psi < 15.0 && avail_ratio >= 0.18) {
                 const double urgency = (ctx.mode == ContextMode::Gaming || ctx.mode == ContextMode::LaunchBurst)
-                    ? 1.25 : (ctx.mode == ContextMode::Interactive ? 1.00 : 0.60);
-                // Protect hot UI/game pages longer when RAM is plentiful; shrink smoothly under memory pressure.
-                const double raw_ttl = 1400.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) *
-                                       (1.0 - mem_psi_norm * 0.65) * urgency;
+                    ? 1.15 : (ctx.mode == ContextMode::Interactive ? 1.00 : 0.60);
+                // Protect hot UI/game pages within Android's safe <= 1000ms envelope when RAM is plentiful.
+                const double raw_ttl = 950.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) *
+                                       (1.0 - mem_psi_norm * 0.70) * urgency;
                 ttl_ms = static_cast<uint32_t>(
-                    std::clamp(std::lround(raw_ttl / 50.0) * 50L, 150L, 1500L));
+                    std::clamp(std::lround(raw_ttl / 50.0) * 50L, 100L, 1000L));
             }
-            const double ttl_deadband = (ctx.mode == ContextMode::ScreenOff) ? 0.0 : 100.0;
+            const double ttl_deadband = (ttl_ms == 0U) ? 0.0 : 100.0;
             (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms), now_ms, 0.0, false, ttl_deadband);
         }
 
@@ -406,10 +408,21 @@ void StorageMemoryActuator::apply(
             - mem_psi_norm * 40.0;
         stats_.memory_health_pct = static_cast<uint32_t>(std::clamp(std::lround(health_raw), 10L, 100L));
 
-        // Keep high-order DMA-BUF / GPU / Camera allocations stall-free via gentle watermark headroom
-        if (!topo.vm.watermark_scale_factor_path.empty() && ctx.mode != ContextMode::ScreenOff) {
-            const uint32_t wm = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active) ? 180U : 120U;
-            (void)write_managed_node(topo.vm.watermark_scale_factor_path, std::to_string(wm), now_ms, 0.0, false, 20.0);
+        // Gentle, baseline-relative watermark headroom ONLY when RAM is plentiful; never force
+        // oversized watermarks (e.g. 120..180) that trigger kswapd thrashing and lmkd SystemUI kills.
+        if (!topo.vm.watermark_scale_factor_path.empty()) {
+            const uint32_t base_wm = topo.vm.baseline_watermark_scale_factor > 0U
+                ? topo.vm.baseline_watermark_scale_factor
+                : 10U;
+            const bool plentiful_ram = (ctx.mode != ContextMode::ScreenOff &&
+                                        avail_ratio >= 0.30 && mem_psi < 8.0);
+            if (plentiful_ram && base_wm < 50U) {
+                const uint32_t delta = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active) ? 15U : 10U;
+                const uint32_t wm = std::min<uint32_t>(base_wm + delta, 50U);
+                (void)write_managed_node(topo.vm.watermark_scale_factor_path, std::to_string(wm), now_ms, 0.0, false, 5.0);
+            } else if (ctx.mode == ContextMode::ScreenOff || avail_ratio < 0.25 || mem_psi >= 8.0 || base_wm >= 50U) {
+                rollback_managed_node(topo.vm.watermark_scale_factor_path);
+            }
         }
 
         if (!topo.vm.compaction_proactiveness_path.empty()) {

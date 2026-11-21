@@ -210,6 +210,45 @@ int main() {
     const auto media_dec = engine.evaluate(media_sig);
     assert(media_dec.mode == ContextMode::Interactive && media_dec.media_pipeline_active);
 
+    // 12. Play Protect / HyperOS verifier & MSA background services are filtered, and rapid 200ms ticks
+    // with one stale GPU spike cannot falsely latch Gaming mode within < 1.6s.
+    assert(ContextEngine::is_background_system_service("com.google.android.verifier"));
+    assert(ContextEngine::is_background_system_service("com.miui.guardprovider"));
+    assert(ContextEngine::is_background_system_service("com.miui.msa.global"));
+    ContextSignalInput fast_sig{};
+    fast_sig.foreground_pid = 8002;
+    fast_sig.foreground_package = "com.example.notes";
+    fast_sig.now_ms = 50000;
+    (void)engine.evaluate(fast_sig); // LaunchBurst
+    fast_sig.gpu_busy_pct = 62.0;
+    fast_sig.now_ms = 52000;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 1
+    fast_sig.now_ms = 52200;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // ignored (< 800ms)
+    fast_sig.now_ms = 52400;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // ignored (< 800ms)
+    fast_sig.now_ms = 53000;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Efficiency); // streak 2
+    fast_sig.now_ms = 54000;
+    assert(engine.evaluate(fast_sig).mode == ContextMode::Gaming);     // streak 3 (>= 2s sustained)
+
+    // 13. Gaming profile uses hysteresis and does NOT flap EFFICIENCY <-> GAMING on a single 32% CPU tick
+    engine.set_profile(PerformanceProfile::Gaming);
+    ContextSignalInput gprof{};
+    gprof.foreground_pid = 8003;
+    gprof.foreground_package = "com.example.reader";
+    gprof.now_ms = 60000;
+    (void)engine.evaluate(gprof); // LaunchBurst
+    gprof.now_ms = 63000;
+    gprof.gpu_busy_pct = 10.0;
+    gprof.cpu_util_pct = 33.0;
+    assert(engine.evaluate(gprof).mode == ContextMode::Efficiency);
+    gprof.now_ms = 64000;
+    gprof.cpu_util_pct = 45.0;
+    assert(engine.evaluate(gprof).mode == ContextMode::Efficiency); // streak 1 (needs 2 ticks)
+    gprof.now_ms = 65000;
+    assert(engine.evaluate(gprof).mode == ContextMode::Gaming);     // streak 2 -> latched cleanly
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

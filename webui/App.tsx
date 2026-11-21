@@ -62,13 +62,14 @@ import {
 
 const RESOLVE_BIN =
   'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
-  '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
-  '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
-  '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-  '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
+  '[ -x "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+  '[ -x "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+  '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+  '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
 const RESOLVE_SERVICE =
-  'SVC="/data/adb/modules/cfae_framework/service.sh"; ' +
-  '[ -f "$SVC" ] || SVC="/data/adb/modules_update/cfae_framework/service.sh"';
+  'SVC="/data/adb/modules_update/cfae_framework/service.sh"; ' +
+  '[ -f "$SVC" ] || SVC="/data/adb/modules/cfae_framework/service.sh"; ' +
+  '[ -f "$SVC" ] || SVC="/data/adb/modules/coreflow_engine/service.sh"';
 const LOG_PATH = '/data/adb/coreflow/logs/coreflowd.log';
 const LANG_KEY = 'coreflow_webui_lang';
 

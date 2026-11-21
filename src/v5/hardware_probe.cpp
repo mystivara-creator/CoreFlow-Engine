@@ -338,6 +338,15 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 info.up_rate_limit_path = find_governor_tunable(pdir, info.governor, "up_rate_limit_us").string();
                 info.down_rate_limit_path = find_governor_tunable(pdir, info.governor, "down_rate_limit_us").string();
                 info.boost_path = find_governor_tunable(pdir, info.governor, "boost").string();
+                uint64_t rate_val = 0U;
+                if (!info.up_rate_limit_path.empty() && parse_u64(read_first_line(info.up_rate_limit_path), rate_val)) {
+                    info.baseline_up_rate_limit_us = rate_val;
+                    info.has_baseline_up_rate_limit = true;
+                }
+                if (!info.down_rate_limit_path.empty() && parse_u64(read_first_line(info.down_rate_limit_path), rate_val)) {
+                    info.baseline_down_rate_limit_us = rate_val;
+                    info.has_baseline_down_rate_limit = true;
+                }
             }
             topo.cpu_clusters.push_back(std::move(info));
         }
@@ -577,7 +586,14 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         if (is_regular_writable(vm_root / "page-cluster")) topo.vm.page_cluster_path = (vm_root / "page-cluster").string();
         if (is_regular_writable(vm_root / "vfs_cache_pressure")) topo.vm.vfs_cache_pressure_path = (vm_root / "vfs_cache_pressure").string();
         if (is_regular_writable(vm_root / "compaction_proactiveness")) topo.vm.compaction_proactiveness_path = (vm_root / "compaction_proactiveness").string();
-        if (is_regular_writable(vm_root / "watermark_scale_factor")) topo.vm.watermark_scale_factor_path = (vm_root / "watermark_scale_factor").string();
+        if (is_regular_writable(vm_root / "watermark_scale_factor")) {
+            topo.vm.watermark_scale_factor_path = (vm_root / "watermark_scale_factor").string();
+            uint64_t wm_val = 0U;
+            if (parse_u64(read_first_line(vm_root / "watermark_scale_factor"), wm_val) &&
+                wm_val >= 1U && wm_val <= 1000U) {
+                topo.vm.baseline_watermark_scale_factor = static_cast<uint32_t>(wm_val);
+            }
+        }
         if (is_regular_writable(vm_root / "compact_memory")) topo.vm.compact_memory_path = (vm_root / "compact_memory").string();
         if (is_regular_writable(vm_root / "extra_free_kbytes")) topo.vm.extra_free_kbytes_path = (vm_root / "extra_free_kbytes").string();
         const fs::path mglru_en = sys / "kernel/mm/lru_gen/enabled";

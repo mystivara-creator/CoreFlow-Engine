@@ -8,12 +8,12 @@
 
   var RESOLVE_BIN =
     'BIN="/data/adb/modules_update/cfae_framework/system/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
-    '[ -f "$BIN" ] || BIN="/system/bin/coreflowd"';
+    '[ -x "$BIN" ] || BIN="/data/adb/modules/cfae_framework/system/bin/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/system/bin/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/data/adb/modules/cfae_framework/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/data/adb/modules/coreflow_engine/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/system_ext/bin/coreflowd"; ' +
+    '[ -x "$BIN" ] || BIN="/system/bin/coreflowd"';
 
   function parseCleanJson(raw) {
     var trimmed = String(raw || '').trim();
@@ -97,6 +97,17 @@
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return parseCleanJson(res.stdout);
     },
+    getAtlas: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --atlas');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      return parseCleanJson(res.stdout);
+    },
+    getEpisodes: async function () {
+      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --episodes');
+      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
+      var payload = parseCleanJson(res.stdout);
+      return Array.isArray(payload && payload.episodes) ? payload.episodes : [];
+    },
     getJournal: async function () {
       var res = await execCommand(RESOLVE_BIN + '; "$BIN" --journal');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
@@ -106,17 +117,6 @@
       var res = await execCommand(RESOLVE_BIN + '; "$BIN" --diag');
       if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
       return parseCleanJson(res.stdout);
-    },
-    getDvsStatus: async function () {
-      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --dvs-status');
-      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
-      return String(res.stdout || '').trim();
-    },
-    getFlightRecorder: async function () {
-      var res = await execCommand(RESOLVE_BIN + '; "$BIN" --flight-recorder');
-      if (res.errno !== 0) throw new Error(res.stderr || 'Command failed');
-      var status = parseCleanJson(res.stdout);
-      return Array.isArray(status && status.flightRecorder) ? status.flightRecorder : [];
     }
   };
 

@@ -158,26 +158,30 @@ bool path_safe(const std::string& path) {
         is_thread_cgroup_snapshot_path(path)) return true;
 
     // A cgroup controller mounted below /dev is authorized by its discovered
-    // ABI contract, never by a hierarchy/group basename. Require the paired
-    // UClamp controls and at least one membership interface in the same group.
+    // ABI contract, never by a hierarchy/group basename. Require the matching
+    // controller interface and at least one membership interface in the same group.
     if (path.rfind("/dev/", 0) == 0) {
         const std::filesystem::path node(path);
         const auto leaf = node.filename().string();
-        const bool clamp_leaf = leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max" ||
-                                leaf == "io.weight";
-        if (clamp_leaf) {
+        const bool is_uclamp_leaf = leaf == "cpu.uclamp.min" || leaf == "cpu.uclamp.max";
+        const bool is_io_weight_leaf = leaf == "io.weight";
+        if (is_uclamp_leaf || is_io_weight_leaf) {
             const auto group = node.parent_path();
             const auto regular_nofollow = [](const std::filesystem::path& candidate) {
                 struct stat st{};
                 return ::lstat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
                        !S_ISLNK(st.st_mode);
             };
-            const bool clamp_pair = regular_nofollow(group / "cpu.uclamp.min") &&
-                                    regular_nofollow(group / "cpu.uclamp.max");
             const bool membership = regular_nofollow(group / "cgroup.threads") ||
                                     regular_nofollow(group / "tasks") ||
                                     regular_nofollow(group / "cgroup.procs");
-            if (clamp_pair && membership && regular_nofollow(node)) return true;
+            if (is_uclamp_leaf) {
+                const bool clamp_pair = regular_nofollow(group / "cpu.uclamp.min") &&
+                                        regular_nofollow(group / "cpu.uclamp.max");
+                if (clamp_pair && membership && regular_nofollow(node)) return true;
+            } else if (membership && regular_nofollow(node)) {
+                return true;
+            }
         }
     }
 

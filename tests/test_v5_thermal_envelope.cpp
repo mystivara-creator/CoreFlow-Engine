@@ -43,20 +43,31 @@ int main() {
 
     const fs::path hispeed = root / "cpu/hispeed_freq";
     const fs::path hispeed_load = root / "cpu/hispeed_load";
+    const fs::path up_rate = root / "cpu/up_rate_limit_us";
+    const fs::path down_rate = root / "cpu/down_rate_limit_us";
     const fs::path gpu_idle = root / "gpu/idle_timer";
     const fs::path kgsl_max = root / "gpu/max_pwrlevel";
     const fs::path kgsl_min = root / "gpu/min_pwrlevel";
     write_file(hispeed, "1800000\n");
     write_file(hispeed_load, "90\n");
+    write_file(up_rate, "0\n");
+    write_file(down_rate, "0\n");
     write_file(gpu_idle, "80\n");
     write_file(kgsl_max, "0\n");
     write_file(kgsl_min, "5\n");
 
     CpuClusterInfo big{};
     big.role = ClusterRole::Big;
+    big.governor = "walt";
     big.opps_khz = {600000, 1000000, 1400000, 1800000, 2200000, 2600000};
     big.hispeed_freq_path = hispeed.string();
     big.hispeed_load_path = hispeed_load.string();
+    big.up_rate_limit_path = up_rate.string();
+    big.down_rate_limit_path = down_rate.string();
+    big.baseline_up_rate_limit_us = 0U;
+    big.has_baseline_up_rate_limit = true;
+    big.baseline_down_rate_limit_us = 0U;
+    big.has_baseline_down_rate_limit = true;
     topo.cpu_clusters.push_back(big);
 
     topo.gpu.available = true;
@@ -68,14 +79,21 @@ int main() {
 
     ThermalEnvelopeActuator act(baseline);
 
-    // 1. Gaming at full capacity scale -> high hispeed, responsive hispeed_load, fast KGSL max_pwrlevel (0)
+    // 1. Gaming at full capacity scale -> high hispeed (below max OPP), responsive hispeed_load, fast KGSL max_pwrlevel (0), WALT 0 us preserved
     act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, {20.0, 70.0});
     const uint64_t gaming_hispeed = std::stoull(read_file(hispeed));
     const uint64_t gaming_load = std::stoull(read_file(hispeed_load));
     const uint64_t gaming_kgsl_max = std::stoull(read_file(kgsl_max));
-    assert(gaming_hispeed >= 2200000U);
-    assert(gaming_load >= 65U && gaming_load <= 78U);
+    assert(gaming_hispeed >= 2200000U && gaming_hispeed < 2600000U);
+    assert(gaming_load >= 70U && gaming_load <= 80U);
     assert(gaming_kgsl_max == 0U);
+    assert(read_file(up_rate) == "0");
+    assert(read_file(down_rate) == "0");
+
+    // 1b. Cool Interactive/Efficiency keep KGSL ceiling unrestricted (0) for heavy UI blurs while saving power on min_pwrlevel
+    act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {5.0, 15.0});
+    assert(std::stoull(read_file(kgsl_max)) == 0U);
+    assert(std::stoull(read_file(kgsl_min)) >= 4U);
 
     // 2. PID capacity_scale drop + thermal_guard smoothly lowers hispeed, raises hispeed_load, and raises KGSL ceiling index (slower/cooler)
     act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.55, true, true, {10.0, 50.0});

@@ -618,8 +618,9 @@ object CoreFlowManager {
             if (updates.isNotEmpty()) {
                 val cmd = buildString {
                     append(RESOLVE_DAEMON)
+                    append("; \"\$BIN\" --set-config")
                     for (arg in updates) {
-                        append("; \"\$BIN\" --set-config '")
+                        append(" '")
                         append(arg)
                         append("'")
                     }
@@ -645,6 +646,9 @@ object CoreFlowManager {
                     put("enable_memory_guard", status.features.memoryGuard)
                     put("enable_thermal_pacing", status.features.thermalPacing)
                     put("enable_battery_step_charging", status.features.batteryStepCharging)
+                    put("enable_idle_compaction", status.features.idleCompaction)
+                    put("enable_predictive_preload", status.features.predictivePreload)
+                    put("enable_camera_boost", status.features.cameraBoost)
                 },
             )
             put(
@@ -716,8 +720,9 @@ object CoreFlowManager {
             if (updates.isNotEmpty()) {
                 val cmd = buildString {
                     append(RESOLVE_DAEMON)
+                    append("; \"\$BIN\" --set-config")
                     for (u in updates) {
-                        append("; \"\$BIN\" --set-config '")
+                        append(" '")
                         append(u)
                         append("'")
                     }
@@ -735,9 +740,10 @@ object CoreFlowManager {
     suspend fun startDaemon(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             execRootCommand(
-                "$RESOLVE_SERVICE_SCRIPT; $RESOLVE_DAEMON; " +
-                    "if [ -f \"\$SVC\" ]; then sh \"\$SVC\" >/dev/null 2>&1 & " +
-                    "elif [ -x \"\$BIN\" ]; then nohup \"\$BIN\" >/dev/null 2>&1 & fi",
+                "$RESOLVE_SERVICE_SCRIPT; " +
+                    "[ -f \"\$SVC\" ] || { echo 'service.sh not found'; exit 1; }; " +
+                    "rm -f /data/adb/coreflow/DISABLE /data/adb/coreflow/SAFE_MODE; " +
+                    "COREFLOW_SKIP_BOOT_WAIT=1 sh \"\$SVC\"",
             )
             Unit
         }
@@ -826,8 +832,10 @@ object CoreFlowManager {
             val totalMs = Regex("TotalTime:\\s*(\\d+)").find(out)?.groupValues?.get(1)?.toLongOrNull()
                 ?: Regex("WaitTime:\\s*(\\d+)").find(out)?.groupValues?.get(1)?.toLongOrNull()
                 ?: error("Could not parse TotalTime from am start -W")
-            // Return smoothly to Companion App so user immediately sees results
-            Shell.cmd("am start -a android.intent.action.MAIN -n io.coreflow.companion/io.coreflow.MainActivity >/dev/null 2>&1").exec()
+            // Return smoothly to Companion App (supports both release & .debug applicationId)
+            Shell.cmd(
+                "am start -a android.intent.action.MAIN -n ${BuildConfig.APPLICATION_ID}/io.coreflow.MainActivity >/dev/null 2>&1",
+            ).exec()
             totalMs
         }
     }

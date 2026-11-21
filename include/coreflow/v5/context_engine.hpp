@@ -114,6 +114,7 @@ private:
     bool gaming_latched_{false};
     uint32_t gpu_high_streak_{0};
     uint32_t gpu_low_streak_{0};
+    uint64_t last_gaming_eval_ms_{0};
 
     int32_t cached_sf_pid_{0};
     uint64_t cached_sf_checked_ms_{0};

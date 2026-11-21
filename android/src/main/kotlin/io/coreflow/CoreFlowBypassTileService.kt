@@ -37,9 +37,9 @@ class CoreFlowBypassTileService : TileService() {
     }
 
     private fun refreshTile() {
-        val tile = qsTile ?: return
         scope.launch {
             val status = CoreFlowManager.getStatus().getOrNull()
+            val tile = qsTile ?: return@launch
             val supported = status?.batteryPower?.bypassSupported == true
             val active = status?.batteryPower?.bypassActive == true
             lastSupported = supported

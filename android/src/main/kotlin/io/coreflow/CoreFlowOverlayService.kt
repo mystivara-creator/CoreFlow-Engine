@@ -7,10 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.provider.Settings
@@ -84,13 +86,18 @@ class CoreFlowOverlayService : Service() {
 
     private var lastFlipCount: Long? = null
     private var lastFlipTimeMs: Long = 0L
+    private var lastFpsText: String = "-- FPS"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIF_ID, buildNotification())
+        }
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -331,20 +338,25 @@ class CoreFlowOverlayService : Service() {
 
     private suspend fun refreshOnce() {
         val nowMs = SystemClock.elapsedRealtime()
-        val flips = CoreFlowManager.readSurfaceFlingerFlipCount()
-        var fpsText = "-- FPS"
-        if (flips != null && lastFlipCount != null && nowMs > lastFlipTimeMs) {
-            val dFrames = flips - lastFlipCount!!
-            val dtSec = (nowMs - lastFlipTimeMs) / 1000.0
-            if (dFrames >= 0L && dtSec >= 0.25) {
-                val fps = (dFrames / dtSec).roundToInt().coerceIn(0, 240)
-                fpsText = "$fps FPS"
+        val elapsedMs = nowMs - lastFlipTimeMs
+        if (lastFlipCount == null || elapsedMs >= 450L) {
+            val flips = CoreFlowManager.readSurfaceFlingerFlipCount()
+            if (flips != null && lastFlipCount != null && elapsedMs >= 450L) {
+                val dFrames = flips - lastFlipCount!!
+                val dtSec = elapsedMs / 1000.0
+                if (dFrames >= 0L) {
+                    val fps = (dFrames / dtSec).roundToInt().coerceIn(0, 240)
+                    lastFpsText = "$fps FPS"
+                }
+            } else if (flips == null) {
+                lastFpsText = "-- FPS"
+            }
+            if (flips != null) {
+                lastFlipCount = flips
+                lastFlipTimeMs = nowMs
             }
         }
-        if (flips != null) {
-            lastFlipCount = flips
-            lastFlipTimeMs = nowMs
-        }
+        val fpsText = lastFpsText
 
         val status = CoreFlowManager.getStatus().getOrNull()
         if (status == null) {

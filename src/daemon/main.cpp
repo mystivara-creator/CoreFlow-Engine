@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine v5.1.0 — Lean 4-Pillar Adaptive Android Daemon.
+ * @brief CoreFlow Engine v6.0.0 — NextGen HyperFluid 4-Pillar Adaptive Android Daemon.
  *
  * Pillars:
  *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
@@ -90,7 +90,7 @@ volatile sig_atomic_t old_sigaction_valid[kFatalSignalSlots]{};
 
 void on_fatal_signal(int signum) {
     constexpr char msg[] = "[CoreFlow] Fatal signal; handing off to debuggerd; next boot will recover CFJ4 journal.\n";
-    (void)::write(STDERR_FILENO, msg, sizeof(msg) - 1U);
+    if (::write(STDERR_FILENO, msg, sizeof(msg) - 1U) < 0) {}
     if (signum > 0 && signum < kFatalSignalSlots && old_sigaction_valid[signum] != 0) {
         if (::sigaction(signum, &old_sigaction[signum], nullptr) == 0 &&
             ::sigprocmask(SIG_UNBLOCK, &fatal_unblock_sets[signum], nullptr) == 0) {
@@ -326,7 +326,7 @@ bool write_status_snapshot(std::string_view payload) noexcept {
     return true;
 }
 
-bool print_live_status_snapshot(pid_t expected_pid) {
+bool read_live_status_snapshot_str(pid_t expected_pid, std::string& out_payload) {
     if (expected_pid <= 0) return false;
     UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!fd.valid()) return false;
@@ -334,9 +334,6 @@ bool print_live_status_snapshot(pid_t expected_pid) {
     if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 512 * 1024) {
         return false;
     }
-    const auto now = std::chrono::system_clock::now();
-    const auto mod = std::chrono::system_clock::from_time_t(st.st_mtime);
-    if (now < mod || now - mod > std::chrono::seconds(4)) return false;
     std::string payload(static_cast<size_t>(st.st_size), '\0');
     size_t off = 0;
     while (off < payload.size()) {
@@ -351,6 +348,13 @@ bool print_live_status_snapshot(pid_t expected_pid) {
         payload.front() != '{' || payload.back() != '}') {
         return false;
     }
+    out_payload = std::move(payload);
+    return true;
+}
+
+bool print_live_status_snapshot(pid_t expected_pid) {
+    std::string payload;
+    if (!read_live_status_snapshot_str(expected_pid, payload)) return false;
     std::cout << payload << "\n" << std::flush;
     return true;
 }
@@ -363,7 +367,7 @@ void escape_app_cgroups_and_protect_oom() {
             const std::string path = mount.mount_point + file;
             UniqueFd fd(::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
             if (fd.valid()) {
-                (void)::write(fd.get(), pid_line.data(), pid_line.size());
+                if (::write(fd.get(), pid_line.data(), pid_line.size()) > 0) {}
                 break;
             }
         }
@@ -371,7 +375,7 @@ void escape_app_cgroups_and_protect_oom() {
     UniqueFd oom(::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (oom.valid()) {
         constexpr char val[] = "-900\n";
-        (void)::write(oom.get(), val, sizeof(val) - 1U);
+        if (::write(oom.get(), val, sizeof(val) - 1U) > 0) {}
     }
 }
 
@@ -384,7 +388,7 @@ bool daemonize_process() noexcept {
     if (second < 0) return false;
     if (second > 0) ::_exit(0);
     (void)::umask(0077);
-    (void)::chdir("/");
+    if (::chdir("/") != 0) {}
     for (int fd = 3; fd < 256; ++fd) (void)::close(fd);
     const int null_fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (null_fd >= 0) {
@@ -1043,35 +1047,6 @@ void print_journal() {
     std::cout << build_journal_json() << "\n" << std::flush;
 }
 
-bool read_live_status_snapshot_str(pid_t expected_pid, std::string& out_payload) {
-    if (expected_pid <= 0) return false;
-    UniqueFd fd(::open("/data/adb/coreflow/status.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-    if (!fd.valid()) return false;
-    struct stat st{};
-    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 512 * 1024) {
-        return false;
-    }
-    const auto now = std::chrono::system_clock::now();
-    const auto mod = std::chrono::system_clock::from_time_t(st.st_mtime);
-    if (now < mod || now - mod > std::chrono::seconds(4)) return false;
-    std::string payload(static_cast<size_t>(st.st_size), '\0');
-    size_t off = 0;
-    while (off < payload.size()) {
-        const ssize_t n = ::read(fd.get(), payload.data() + off, payload.size() - off);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return false;
-        off += static_cast<size_t>(n);
-    }
-    const std::string pid_field = "\"pid\":" + std::to_string(expected_pid) + ",";
-    if (payload.find("\"running\":true") == std::string::npos ||
-        payload.find(pid_field) == std::string::npos ||
-        payload.front() != '{' || payload.back() != '}') {
-        return false;
-    }
-    out_payload = std::move(payload);
-    return true;
-}
-
 void print_episodes() {
     std::string status_json;
     const pid_t live = daemon_pid();
@@ -1426,7 +1401,11 @@ int main(int argc, char* argv[]) {
 
     // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
     if (!input_source.start([&](const FrameEvent&) {
-            if (config.inspection_mode || live_status.thermal_emergency || last_screen_off) return;
+            if (config.inspection_mode || live_status.thermal_emergency) return;
+            if (last_screen_off) {
+                last_screen_off = probe.is_screen_off(topo);
+                if (last_screen_off) return;
+            }
             const uint64_t now_ms = steady_now_ms();
             context_engine.notify_touch(now_ms);
             if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
@@ -1439,12 +1418,15 @@ int main(int argc, char* argv[]) {
                 sig.foreground_pid = last_fg.pid;
                 sig.foreground_package = last_fg.package_name;
                 sig.has_game_thread = last_fg.has_game_thread;
+                sig.is_camera_app = config.enable_camera_boost && last_fg.is_camera_app;
+                sig.has_media_thread = last_fg.has_media_thread;
                 live_status.ctx = context_engine.evaluate(sig);
                 const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+                const auto chain_tids = build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
                 thread_scheduler.apply(
                     live_status.ctx.mode, live_status.ctx.effective_profile,
                     live_status.capacity_scale, live_status.thermal_guard,
-                    config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                    config.enable_frame_smoothness, sf_tids, chain_tids,
                     build_thread_demand());
                 live_status.thread_stats = thread_scheduler.stats();
             }
@@ -1472,6 +1454,7 @@ int main(int argc, char* argv[]) {
                 if (info.ssi_signo == SIGHUP) {
                     thread_scheduler.reset_all();
                     longevity.restore_oem_baseline();
+                    prev_bypass_active = false;
                     (void)baseline.rollback_all();
                     storage_memory.reset_contention();
                     thermal_envelope.reset_contention();
@@ -1488,7 +1471,9 @@ int main(int argc, char* argv[]) {
                     itimerspec ts{};
                     ts.it_interval.tv_sec = ms / 1000;
                     ts.it_interval.tv_nsec = (ms % 1000) * 1000000L;
-                    ts.it_value = ts.it_interval;
+                    // Fire the first post-reload actuation tick promptly (50 ms) so new settings apply immediately.
+                    ts.it_value.tv_sec = 0;
+                    ts.it_value.tv_nsec = 50'000'000L;
                     if (thermal_timer_fd >= 0) (void)::timerfd_settime(thermal_timer_fd, 0, &ts, nullptr);
                     emit_log(false, "[CoreFlow] Configuration reloaded (profile=" + config.profile +
                              ", paused=" + (config.inspection_mode ? "yes" : "no") + ").");
@@ -1498,6 +1483,8 @@ int main(int argc, char* argv[]) {
                                                : ("Profile=" + config.profile +
                                                   (config.bypass_charging ? " · Bypass ON" : "")),
                         "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                    live_status.episodes = decision_journal.recent(16U);
+                    (void)write_status_snapshot(build_status_json(live_status));
                 } else {
                     reactor.stop();
                 }
@@ -1703,8 +1690,9 @@ int main(int argc, char* argv[]) {
                 live_status.history.erase(live_status.history.begin());
             }
             // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
+            // using monotonic steady_clock timestamps so NTP/NITZ wall-clock jumps never skew the slope.
             const auto trend = thermal_trend->push_sample(
-                sample_ts,
+                now_ms,
                 static_cast<double>(soc_temp),
                 static_cast<double>(config.thermal_trip_celsius));
             live_status.thermal_velocity_cpm = trend.velocity_cpm;
@@ -1713,6 +1701,7 @@ int main(int argc, char* argv[]) {
 
         // Hard hardware safety cutoff (battery >= 58C or SoC >= 95C)
         if ((batt_temp > 0.0f && batt_temp >= 58.0f) || soc_temp >= 95.0f) {
+            const bool entering_emergency = !live_status.thermal_emergency;
             live_status.thermal_emergency = true;
             live_status.thermal_guard = true;
             if (!live_status.session.prev_thermal_guard) {
@@ -1720,14 +1709,17 @@ int main(int argc, char* argv[]) {
                 live_status.session.prev_thermal_guard = true;
             }
             live_status.capacity_scale = 0.25;
-            thread_scheduler.reset_all();
-            longevity.restore_oem_baseline();
-            (void)baseline.rollback_all();
-            decision_journal.record(
-                epoch_now_ms(), "thermal", "EmergencyCutoff",
-                "Extreme thermal limit reached; restored OEM baseline",
-                "rolled_back", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
-            emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
+            if (entering_emergency) {
+                thread_scheduler.reset_all();
+                longevity.restore_oem_baseline();
+                prev_bypass_active = false;
+                (void)baseline.rollback_all();
+                decision_journal.record(
+                    epoch_now_ms(), "thermal", "EmergencyCutoff",
+                    "Extreme thermal limit reached; restored OEM baseline",
+                    "rolled_back", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                emit_log(true, "[CoreFlow][Safety] Extreme thermal threshold reached; rolled back to OEM baseline.");
+            }
             record_history_and_publish();
             return;
         }

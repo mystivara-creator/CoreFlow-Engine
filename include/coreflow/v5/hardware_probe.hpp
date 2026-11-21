@@ -40,6 +40,10 @@ struct CpuClusterInfo {
     std::string up_rate_limit_path;
     std::string down_rate_limit_path;
     std::string boost_path;
+    uint64_t baseline_up_rate_limit_us{0};
+    bool has_baseline_up_rate_limit{false};
+    uint64_t baseline_down_rate_limit_us{0};
+    bool has_baseline_down_rate_limit{false};
 };
 
 struct GpuInfo {
@@ -80,6 +84,7 @@ struct VmNodesInfo {
     std::string mglru_min_ttl_path;
     std::string compaction_proactiveness_path;
     std::string watermark_scale_factor_path;
+    uint32_t baseline_watermark_scale_factor{10};
     std::string compact_memory_path;
     std::string extra_free_kbytes_path;
 };

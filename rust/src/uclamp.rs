@@ -31,7 +31,7 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     }
 
     let big_cap = f64::from(input.big_capacity.clamp(512, 1024));
-    let max_little = (big_cap * 0.75) as u32;
+    let max_little = (big_cap * 0.55) as u32;
     let little_cap = if input.little_capacity > 0 {
         f64::from(input.little_capacity.clamp(128, max_little.max(128)))
     } else {
@@ -102,7 +102,9 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
     };
 
     let mut target_max = (big_cap * bounded_scale).round().clamp(0.0, 1024.0) as u32;
-    let mut raw_min = anchor_floor * profile_bias * bounded_scale.clamp(0.50, 1.0) * velocity_damping;
+    let max_safe_floor = big_cap * 0.75;
+    let base_min = (anchor_floor * profile_bias * bounded_scale.clamp(0.50, 1.0)).min(max_safe_floor);
+    let mut raw_min = base_min * velocity_damping;
 
     if input.thermal_guard {
         let guard_cap = (big_cap * 0.75).round().clamp(0.0, 1024.0) as u32;
@@ -187,5 +189,19 @@ mod tests {
         bad.thermal_velocity_cpm = f64::NAN;
         let out = compute_uclamp_target(bad);
         assert!(out.util_min <= out.util_max && out.util_max <= 1024);
+    }
+
+    #[test]
+    fn launch_burst_never_pins_util_min_to_full_capacity() {
+        let mut burst = base_input(MODE_LAUNCH_BURST);
+        burst.profile = PROFILE_GAMING;
+        burst.little_capacity = 770;
+        burst.mid_capacity = 0;
+        burst.big_capacity = 1024;
+        burst.cpu_psi = 60.0;
+        burst.render_pressure = 0.9;
+        let out = compute_uclamp_target(burst);
+        assert!(out.util_min <= 768, "util_min should stay <= 75% big capacity, got {}", out.util_min);
+        assert_eq!(out.util_max, 1024);
     }
 }
