@@ -66,6 +66,8 @@ object AppPreferences {
     }
 
     private const val KEY_PRE_POWERSAVE_PROFILE = "pre_powersave_profile"
+    private const val KEY_FLOATING_NAV_BAR = "floating_nav_bar"
+    private const val KEY_NAV_BADGES = "nav_badges_enabled"
 
     fun getLanguageIndex(context: Context): Int =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -76,6 +78,28 @@ object AppPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_LANGUAGE_IDX, index.coerceIn(0, languageLabels.lastIndex))
+            .apply()
+    }
+
+    fun getFloatingNavBar(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_FLOATING_NAV_BAR, true)
+
+    fun setFloatingNavBar(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_FLOATING_NAV_BAR, enabled)
+            .apply()
+    }
+
+    fun getNavBadgesEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_NAV_BADGES, true)
+
+    fun setNavBadgesEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_NAV_BADGES, enabled)
             .apply()
     }
 

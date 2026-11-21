@@ -232,7 +232,12 @@ object CoreFlowManager {
         val readAheadKb: Int,
         val prereadBytes: Long,
         val managedEnvelopeNodes: Int,
+        val semanticKnobsDiscovered: Int = 0,
+        val semanticKnobsActive: Int = 0,
+        val semanticKnobLeaves: List<String> = emptyList(),
         val contendedPaths: List<String>,
+        val oemYieldedNodes: Int = 0,
+        val oemYieldedPaths: List<String> = emptyList(),
         val socTempCelsius: Float,
         val batteryTempCelsius: Float,
         val capacityScale: Float,
@@ -418,7 +423,12 @@ object CoreFlowManager {
                 readAheadKb = actuators?.optInt("readAheadKb", 0) ?: 0,
                 prereadBytes = actuators?.optLong("prereadBytes", 0L) ?: 0L,
                 managedEnvelopeNodes = actuators?.optInt("managedEnvelopeNodes", 0) ?: 0,
+                semanticKnobsDiscovered = actuators?.optInt("semanticKnobsDiscovered", 0) ?: 0,
+                semanticKnobsActive = actuators?.optInt("semanticKnobsActive", 0) ?: 0,
+                semanticKnobLeaves = actuators?.optJSONArray("semanticKnobLeaves").toStringList(),
                 contendedPaths = actuators?.optJSONArray("contendedPaths").toStringList(),
+                oemYieldedNodes = actuators?.optInt("oemYieldedNodes", 0) ?: 0,
+                oemYieldedPaths = actuators?.optJSONArray("oemYieldedPaths").toStringList(),
                 socTempCelsius = json.optFiniteFloat("socTempCelsius"),
                 batteryTempCelsius = json.optFiniteFloat("batteryTempCelsius"),
                 capacityScale = json.optFiniteFloat("capacityScale", 1.0f),
@@ -752,6 +762,13 @@ object CoreFlowManager {
     suspend fun rollbackBaseline(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             execRootCommand("$RESOLVE_DAEMON; \"\$BIN\" --rollback-baseline")
+            Unit
+        }
+    }
+
+    suspend fun resetOemCollaborationMap(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            execRootCommand("rm -f /data/adb/coreflow/oem_collab.map /data/adb/coreflow/oem_collab.map.tmp")
             Unit
         }
     }
