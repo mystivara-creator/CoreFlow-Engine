@@ -1398,10 +1398,21 @@ int main(int argc, char* argv[]) {
         t.memory = mem;
         return t;
     };
+    const auto is_passive_media_only = [&](const ContextDecision& ctx) noexcept {
+        return ctx.mode == ContextMode::Interactive &&
+               ctx.media_pipeline_active &&
+               !ctx.camera_boost_active &&
+               ctx.touch_hold_remaining_ms == 0U &&
+               live_status.render_pressure < 0.35 &&
+               live_status.cpu_psi.value_or(0.0) < 4.0 &&
+               live_status.gpu_busy_pct.value_or(0.0) < 25.0;
+    };
     const auto build_envelope_telemetry = [&]() noexcept {
         EnvelopeTelemetry e{};
         e.cpu_psi = live_status.cpu_psi.value_or(0.0);
         e.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
+        e.render_pressure = live_status.render_pressure;
+        e.passive_media_only = is_passive_media_only(live_status.ctx);
         return e;
     };
 
@@ -1585,7 +1596,8 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_thermal_pacing || config.enable_storage_burst,
                 last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
-                live_status.mem_psi.value_or(0.0), now_ms);
+                live_status.mem_psi.value_or(0.0), now_ms,
+                is_passive_media_only(live_status.ctx));
             if (config.bypass_on_gaming) {
                 (void)longevity.apply_power_control(
                     config.bypass_charging,
@@ -1940,7 +1952,8 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, thermal_guard,
                 config.enable_thermal_pacing || config.enable_storage_burst,
                 last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
-                storage_tel.mem_psi, now_ms);
+                storage_tel.mem_psi, now_ms,
+                is_passive_media_only(live_status.ctx));
             longevity.monitor_battery_thermals(soc_temp);
             (void)longevity.apply_power_control(
                 config.bypass_charging,
@@ -1970,7 +1983,7 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v6.1.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v6.0.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", hz=" + std::to_string(topo.refresh_hz) +
              ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
@@ -1990,6 +2003,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v6.1.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v6.0.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }

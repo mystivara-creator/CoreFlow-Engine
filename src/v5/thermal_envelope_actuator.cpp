@@ -223,10 +223,14 @@ void ThermalEnvelopeActuator::apply(
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
     stats_.last_capacity_scale = scale;
 
-    // Release-on-Calm: when disabled, excluded, or calm (Efficiency/ScreenOff) without active
-    // thermal pacing, restore OEM CPU/GPU governor baselines cleanly (zero lingering mutations).
-    const bool calm_cool = (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff) &&
-                           !thermal_guard && scale >= 0.95;
+    // Release-on-Calm & Passive Video Playback:
+    // When disabled, excluded, calm (Efficiency/ScreenOff), or hands-off hardware video playback
+    // without active thermal pacing, restore OEM CPU/GPU governor baselines cleanly (per-TID UClamp
+    // already protects MediaCodec/SurfaceFlinger pacing with zero wasted Big-core frequency burn).
+    const bool calm_cool =
+        (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff ||
+         (mode == ContextMode::Interactive && telemetry.passive_media_only)) &&
+        !thermal_guard && scale >= 0.95;
     if (!enabled || mode == ContextMode::Excluded || calm_cool) {
         if (!last_written_.empty()) rollback_all_managed();
         return;

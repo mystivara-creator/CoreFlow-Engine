@@ -167,16 +167,16 @@ void SemanticKnobEngine::try_register_node(
 
     // 1. CPU / WALT / EAS Boost & Latency Family
     if (lower == "boost" || lower == "sched_boost") {
+        // Silicon physics: walt/boost & sched_boost pin clusters to hispeed/big cores even at low load.
+        // Strictly limit to short transient LaunchBurst (1.2-2.4s) — NEVER hold during sustained Gaming.
         if (!parse_bool_token(base, bval, uses_yn)) return;
         knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::BoolToggle;
         knob.uses_yn_bool = uses_yn;
         knob.active_burst_value = 1;
-        knob.active_gaming_value = 1;
         knob.apply_in_launch_burst = true;
-        knob.apply_in_gaming = true;
     } else if (lower == "pl") {
-        // Qualcomm WALT Predictive Load (0/1)
+        // Qualcomm WALT Predictive Load (0/1) — workload-proportional, safe for active modes.
         if (!parse_bool_token(base, bval, uses_yn)) return;
         knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::BoolToggle;
@@ -213,8 +213,11 @@ void SemanticKnobEngine::try_register_node(
         }
         knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::MigratePair;
-        knob.active_burst_value = -10; // -10% relative to OEM -> faster big-core promotion
-        knob.active_gaming_value = -8;
+        // Maintain WALT's strict sched_downmigrate <= sched_upmigrate kernel invariant:
+        // downmigrate lowers slightly more than upmigrate, and rollback restores upmigrate first.
+        const bool is_down = (lower == "sched_downmigrate");
+        knob.active_burst_value = is_down ? -10 : -8;
+        knob.active_gaming_value = is_down ? -8 : -6;
         knob.apply_in_launch_burst = true;
         knob.apply_in_gaming = true;
     } else if (lower == "sched_min_task_util_for_boost" ||
@@ -268,6 +271,7 @@ void SemanticKnobEngine::try_register_node(
     }
     // 3. UFS / Block Queue Latency Family
     else if (lower == "inflight_low_latency") {
+        // Zero idle power penalty: only affects in-flight UFS commands.
         if (!parse_bool_token(base, bval, uses_yn)) return;
         knob.family = KnobFamily::StorageLatency;
         knob.kind = KnobValueKind::BoolToggle;
@@ -296,25 +300,15 @@ void SemanticKnobEngine::try_register_node(
         knob.active_gaming_value = 2;
         knob.apply_in_launch_burst = true;
         knob.apply_in_gaming = true;
-    } else if (lower == "nr_requests") {
-        if (!parse_i64_exact(base, ival) || ival < 16 || ival >= 128) return;
-        knob.family = KnobFamily::StorageLatency;
-        knob.kind = KnobValueKind::RelativeInt;
-        knob.baseline_int = ival;
-        knob.active_burst_value = std::min<int64_t>(ival * 2, 128);
-        knob.active_gaming_value = std::min<int64_t>((ival * 3) / 2, 128);
-        knob.apply_in_launch_burst = true;
-        knob.apply_in_gaming = true;
     } else if (lower == "clkgate_enable" || lower == "hibern8_on_idle_enable") {
-        // Temporarily keep UFS link awake ONLY during short LaunchBurst/Gaming; rollback on calm!
+        // UFS PHY physics: keeping link awake saves wake latency ONLY during short LaunchBurst
+        // sequential reads; never hold disabled during sustained Gaming when flash is 99% idle.
         if (!parse_bool_token(base, bval, uses_yn)) return;
         knob.family = KnobFamily::StorageLatency;
         knob.kind = KnobValueKind::BoolToggle;
         knob.uses_yn_bool = uses_yn;
         knob.active_burst_value = 0;
-        knob.active_gaming_value = 0;
         knob.apply_in_launch_burst = true;
-        knob.apply_in_gaming = true;
     }
     // 4. Memory Cache Preservation Family
     else if (lower == "vfs_cache_pressure") {
@@ -397,6 +391,7 @@ void SemanticKnobEngine::discover(
         try_register_node(topo.vm.vfs_cache_pressure_path, "vfs_cache_pressure", {}, seen);
     }
 
+    // Sorted ascending: sched_downmigrate precedes sched_upmigrate during activation (lowering).
     std::sort(knobs_.begin(), knobs_.end(), [](const DiscoveredKnob& a, const DiscoveredKnob& b) {
         return a.path < b.path;
     });
@@ -434,8 +429,9 @@ bool SemanticKnobEngine::write_knob(
         return false;
     }
 
+    // If the kernel already holds the target value and we never mutated this node,
+    // leave it completely untouched so stats stay honest and OEM changes never false-contend.
     if (live == target) {
-        last_written_[knob.path] = live;
         return true;
     }
 
@@ -459,7 +455,15 @@ void SemanticKnobEngine::rollback_knob(const std::string& path) noexcept {
 }
 
 void SemanticKnobEngine::rollback_all() noexcept {
+    // Deterministic reverse-lexicographical rollback ensures sched_upmigrate restores UP
+    // BEFORE sched_downmigrate restores UP (preserving WALT's down <= up invariant).
+    std::vector<std::string> paths;
+    paths.reserve(last_written_.size());
     for (const auto& [path, _] : last_written_) {
+        paths.push_back(path);
+    }
+    std::sort(paths.begin(), paths.end(), std::greater<std::string>());
+    for (const auto& path : paths) {
         (void)baseline_.rollback(path);
     }
     last_written_.clear();
@@ -474,16 +478,18 @@ void SemanticKnobEngine::apply(
     bool enabled,
     double avail_ram_ratio,
     double mem_psi,
-    uint64_t now_ms) noexcept {
+    uint64_t now_ms,
+    bool passive_media_only) noexcept {
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
 
-    // Release-on-Calm & Thermal Safety:
+    // Release-on-Calm & Thermal Safety & Passive Video Playback:
     // Release ALL semantic boost/latency knobs cleanly to OEM baseline when calm, screen off,
-    // excluded, thermally guarded, or PID thermal pacing is active.
+    // passive hands-off video playback, excluded, thermally guarded, or PID thermal pacing active.
     const bool release_all =
         !enabled ||
         thermal_guard ||
         scale < 0.90 ||
+        passive_media_only ||
         mode == v5::ContextMode::Excluded ||
         mode == v5::ContextMode::ScreenOff ||
         mode == v5::ContextMode::Efficiency;
@@ -497,27 +503,35 @@ void SemanticKnobEngine::apply(
     const bool is_interactive = (mode == v5::ContextMode::Interactive);
     const bool battery_profile = (profile == v5::PerformanceProfile::Battery);
 
-    for (const auto& knob : knobs_) {
+    // Phase 1: Roll back any knobs that should no longer be active (reverse order preserves up >= down).
+    std::vector<size_t> to_apply;
+    to_apply.reserve(knobs_.size());
+    for (size_t idx = knobs_.size(); idx > 0U; --idx) {
+        const auto& knob = knobs_[idx - 1U];
         bool should_apply =
             (is_burst && knob.apply_in_launch_burst) ||
             (is_gaming && knob.apply_in_gaming) ||
             (is_interactive && knob.apply_in_interactive);
 
-        // Keep Battery profile conservative: skip heavy CPU/GPU boost toggles in Gaming/Interactive
         if (battery_profile && !is_burst &&
             (knob.family == KnobFamily::CpuBoost || knob.family == KnobFamily::GpuLatency)) {
             should_apply = false;
         }
-        // Only lower vfs_cache_pressure when RAM is genuinely plentiful
         if (knob.family == KnobFamily::MemoryCache && (avail_ram_ratio < 0.30 || mem_psi >= 8.0)) {
             should_apply = false;
         }
 
         if (!should_apply) {
             rollback_knob(knob.path);
-            continue;
+        } else {
+            to_apply.push_back(idx - 1U);
         }
+    }
 
+    // Phase 2: Apply active knobs in ascending order (downmigrate lowers before upmigrate).
+    std::reverse(to_apply.begin(), to_apply.end());
+    for (size_t idx : to_apply) {
+        const auto& knob = knobs_[idx];
         std::string target;
         switch (knob.kind) {
             case KnobValueKind::BoolToggle: {

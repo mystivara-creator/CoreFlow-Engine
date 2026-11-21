@@ -26,6 +26,8 @@ struct ThermalEnvelopeStats {
 struct EnvelopeTelemetry {
     double cpu_psi{0.0};
     double gpu_busy_pct{0.0};
+    double render_pressure{0.0};
+    bool passive_media_only{false};
 };
 
 class ThermalEnvelopeActuator {

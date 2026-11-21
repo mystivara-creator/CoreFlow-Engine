@@ -166,7 +166,7 @@ int main() {
     assert(read_file(walt_boost) == "1");
     assert(read_file(walt_pl) == "1");
     assert(std::stoull(read_file(walt_rtg)) > 1000000U);
-    assert(read_file(proc_walt_upmig) == "77 86");
+    assert(read_file(proc_walt_upmig) == "78 87");
     assert(read_file(proc_ctx_burst) == "4");
     assert(read_file(ufs_ll) == "1");
     assert(read_file(ufs_iostats) == "0");
@@ -176,12 +176,20 @@ int main() {
     assert(read_file(bad_volt) == "900");
     assert(read_file(bad_thermal) == "1");
 
-    // Gaming -> bus_split unified (0) & adrenoboost=2
+    // Gaming -> bus_split unified (0) & adrenoboost=2, while transient LaunchBurst-only walt/boost releases to 0!
     engine.apply(ContextMode::Gaming, PerformanceProfile::Gaming, 1.0, false, true, 0.50, 0.5, 2000);
+    assert(read_file(walt_boost) == "0");
     assert(read_file(gpu_bus_split) == "0");
     assert(read_file(gpu_adrenoboost) == "2");
 
-    // Release-on-Calm (Efficiency) -> ALL semantic knobs cleanly restored to OEM baselines!
+    // Passive hands-off video playback -> releases ALL semantic knobs cleanly to OEM so VPU stays cool!
+    engine.apply(ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 2500, true);
+    assert(engine.stats().active_managed == 0U);
+    assert(read_file(gpu_adrenoboost) == "0");
+    assert(read_file(walt_pl) == "0");
+
+    // Re-activate then test Release-on-Calm (Efficiency) -> ALL semantic knobs cleanly restored to OEM baselines!
+    engine.apply(ContextMode::LaunchBurst, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 2800);
     engine.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 3000);
     assert(engine.stats().active_managed == 0U);
     assert(read_file(walt_boost) == "0");

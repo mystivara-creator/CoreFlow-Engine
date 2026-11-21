@@ -81,7 +81,8 @@ public:
                bool enabled,
                double avail_ram_ratio,
                double mem_psi,
-               uint64_t now_ms) noexcept;
+               uint64_t now_ms,
+               bool passive_media_only = false) noexcept;
 
     void rollback_all() noexcept;
 
