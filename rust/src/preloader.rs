@@ -83,15 +83,15 @@ impl AppPreloader {
         let Some(curr) = self.intern_slot(pkg_hash) else {
             return;
         };
-        if let Some(prev) = self.last_slot
-            && prev != curr
-        {
-            let cell = &mut self.transitions[prev][curr];
-            *cell = cell.saturating_add(1);
-            // Gentle halving decay keeps weights responsive to changing daily habits.
-            if *cell >= 32 {
-                for count in &mut self.transitions[prev] {
-                    *count /= 2;
+        if let Some(prev) = self.last_slot {
+            if prev != curr {
+                let cell = &mut self.transitions[prev][curr];
+                *cell = cell.saturating_add(1);
+                // Gentle halving decay keeps weights responsive to changing daily habits.
+                if *cell >= 32 {
+                    for count in &mut self.transitions[prev] {
+                        *count /= 2;
+                    }
                 }
             }
         }
