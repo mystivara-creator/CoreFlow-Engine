@@ -129,7 +129,7 @@ bool SemanticKnobEngine::is_forbidden_knob_name(std::string_view leaf) noexcept 
         "voltage", "volt", "regulator", "thermal", "trip", "throttl",
         "suspend", "reset", "panic", "reboot", "fuse", "clock", "pll",
         "freq_limit", "scaling_max", "scaling_min", "force_clk", "force_rail",
-        "force_bus", "debug", "trace", "dump", "power_down", "offline",
+        "force_bus", "sched_boost", "debug", "trace", "dump", "power_down", "offline",
         "hotplug", "kill", "uevent", "modalias", "dev", "subsystem",
     };
     for (const auto bad : kForbidden) {
@@ -166,10 +166,11 @@ void SemanticKnobEngine::try_register_node(
     int64_t ival = 0;
 
     // 1. CPU / WALT / EAS Boost & Latency Family
-    if (lower == "boost" || lower == "sched_boost") {
-        // Silicon physics: walt/boost & sched_boost pin clusters to hispeed/big cores even at low load.
-        // Strictly limit to short transient LaunchBurst (1.2-2.4s) — NEVER hold during sustained Gaming.
-        if (!parse_bool_token(base, bval, uses_yn)) return;
+    if (lower == "boost") {
+        // Silicon physics: per-cluster walt/boost pins cluster to hispeed even at low load.
+        // Strictly limit to short transient LaunchBurst (1.2-2.4s) when OEM baseline is 0 —
+        // NEVER touch Qualcomm's refcounted /proc/sys/walt/sched_boost or hold during Gaming.
+        if (!parse_bool_token(base, bval, uses_yn) || bval) return;
         knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::BoolToggle;
         knob.uses_yn_bool = uses_yn;
@@ -197,14 +198,15 @@ void SemanticKnobEngine::try_register_node(
         knob.apply_in_launch_burst = true;
         knob.apply_in_gaming = true;
     } else if (lower == "rtg_boost_freq" && !cluster_opps.empty()) {
-        if (!parse_i64_exact(base, ival)) return;
+        // Respect OEM disabled rtg_boost_freq == 0 (e.g. Big cluster intentionally unboosted).
+        // Only apply gentle OEM-relative uplift during LaunchBurst/Gaming on OEM-enabled clusters.
+        if (!parse_i64_exact(base, ival) || ival <= 0) return;
         knob.family = KnobFamily::CpuBoost;
         knob.kind = KnobValueKind::OppFreq;
         knob.baseline_int = ival;
         knob.opp_table_khz = cluster_opps;
         knob.apply_in_launch_burst = true;
         knob.apply_in_gaming = true;
-        knob.apply_in_interactive = true;
     } else if (lower == "sched_upmigrate" || lower == "sched_downmigrate") {
         std::vector<int64_t> nums;
         if (!parse_int_list(base, nums)) return;
@@ -555,10 +557,21 @@ void SemanticKnobEngine::apply(
                 break;
             }
             case KnobValueKind::OppFreq: {
-                const double frac = is_burst ? 0.72 : (is_gaming ? 0.68 : 0.55);
-                const uint64_t opp = select_opp_by_fraction(knob.opp_table_khz, frac);
-                if (opp > 0U && static_cast<int64_t>(opp) > knob.baseline_int) {
-                    target = std::to_string(opp);
+                const double frac = is_burst ? 0.60 : 0.55;
+                const uint64_t opp_cap = select_opp_by_fraction(knob.opp_table_khz, frac);
+                const double rel_mult = is_burst ? 1.30 : 1.20;
+                const uint64_t rel_cap = knob.baseline_int > 0
+                    ? static_cast<uint64_t>(std::llround(static_cast<double>(knob.baseline_int) * rel_mult))
+                    : 0U;
+                const uint64_t ceiling = (rel_cap > 0U && opp_cap > 0U) ? std::min(opp_cap, rel_cap) : opp_cap;
+                uint64_t chosen = 0U;
+                for (uint64_t freq : knob.opp_table_khz) {
+                    if (freq <= ceiling && static_cast<int64_t>(freq) > knob.baseline_int) {
+                        chosen = freq;
+                    }
+                }
+                if (chosen > 0U) {
+                    target = std::to_string(chosen);
                 } else {
                     rollback_knob(knob.path);
                     continue;

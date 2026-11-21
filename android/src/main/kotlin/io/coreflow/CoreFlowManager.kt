@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * CoreFlowManager: Root-bridged Android client for CoreFlow Engine v6.0.0 NextGen (coreflowd).
+ * CoreFlowManager: Root-bridged Android client for CoreFlow Engine v6.1.0 NextGen (coreflowd).
  * Uses libsu persistent root shell for fast, zero-intermediary access on Magisk, KernelSU,
  * KernelSU-Next, and APatch.
  */
@@ -405,7 +405,7 @@ object CoreFlowManager {
             }
 
             DaemonStatus(
-                version = json.optString("version", "6.0.0"),
+                version = json.optString("version", "6.1.0"),
                 isRunning = json.optBoolean("running", false),
                 pid = json.optInt("pid", 0),
                 profile = Profile.fromConfigValue(json.optString("profile", "balanced")),

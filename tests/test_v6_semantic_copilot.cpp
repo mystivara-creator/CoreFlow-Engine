@@ -114,13 +114,18 @@ int main() {
     const fs::path ufs_iostats = ufs_q / "iostats";
     const fs::path ufs_rq = ufs_q / "rq_affinity";
     const fs::path vfs_cp = proc / "sys/vm/vfs_cache_pressure";
+    const fs::path proc_sched_boost = proc / "sys/walt/sched_boost";
+    const fs::path pol0 = sys / "devices/system/cpu/cpufreq/policy0";
+    const fs::path pol0_rtg_zero = pol0 / "walt/rtg_boost_freq";
 
     write_file(walt_boost, "0\n");
     write_file(walt_pl, "0\n");
     write_file(walt_rtg, "1000000\n");
+    write_file(pol0_rtg_zero, "0\n");
     write_file(bad_volt, "900\n");
     write_file(proc_walt_upmig, "85 95\n");
     write_file(proc_ctx_burst, "2\n");
+    write_file(proc_sched_boost, "0\n");
     write_file(gpu_adrenoboost, "0\n");
     write_file(gpu_bus_split, "1\n");
     write_file(bad_thermal, "1\n");
@@ -131,10 +136,15 @@ int main() {
     write_file(vfs_cp, "100\n");
 
     HardwareTopology synth{};
+    CpuClusterInfo little{};
+    little.policy_path = pol0.string();
+    little.governor = "walt";
+    little.opps_khz = {691200, 1000000, 1248000, 1497600, 1804800};
+    synth.cpu_clusters.push_back(little);
     CpuClusterInfo big{};
     big.policy_path = pol4.string();
     big.governor = "walt";
-    big.opps_khz = {691200, 1000000, 1497600, 1804800, 2112000, 2400000};
+    big.opps_khz = {691200, 1000000, 1248000, 1497600, 1804800, 2112000, 2400000};
     synth.cpu_clusters.push_back(big);
     synth.gpu.available = true;
     synth.gpu.device_path = gpu_dir.string();
@@ -150,7 +160,8 @@ int main() {
     SemanticKnobEngine engine(baseline, oem_map);
     engine.discover(synth, sys.string(), proc.string());
 
-    // Must discover all safe semantic knobs while rejecting voltage_limit & throttling!
+    // Must discover all safe semantic knobs while rejecting voltage_limit, throttling,
+    // Qualcomm's refcounted sched_boost, and OEM-disabled rtg_boost_freq == 0!
     assert(engine.stats().discovered_total >= 11U);
     assert(engine.stats().cpu_knobs >= 5U);
     assert(engine.stats().gpu_knobs >= 2U);
@@ -159,13 +170,17 @@ int main() {
     for (const auto& k : engine.knobs()) {
         assert(k.leaf != "voltage_limit");
         assert(k.leaf != "throttling");
+        assert(k.leaf != "sched_boost");
+        assert(k.path != pol0_rtg_zero.string());
     }
 
     // LaunchBurst -> instant reflex across CPU boost, WALT pl, upmigrate, context_burst_count, UFS latency, GPU
     engine.apply(ContextMode::LaunchBurst, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 1000);
     assert(read_file(walt_boost) == "1");
     assert(read_file(walt_pl) == "1");
-    assert(std::stoull(read_file(walt_rtg)) > 1000000U);
+    assert(read_file(walt_rtg) == "1248000"); // OEM-relative <= 1.30x baseline (1.0 MHz -> 1.248 MHz)
+    assert(read_file(pol0_rtg_zero) == "0");  // OEM-disabled RTG boost never touched
+    assert(read_file(proc_sched_boost) == "0");
     assert(read_file(proc_walt_upmig) == "78 87");
     assert(read_file(proc_ctx_burst) == "4");
     assert(read_file(ufs_ll) == "1");

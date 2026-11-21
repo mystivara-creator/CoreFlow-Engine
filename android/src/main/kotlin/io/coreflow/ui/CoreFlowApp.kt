@@ -509,7 +509,7 @@ fun CoreFlowApp(
                             AppPreferences.setNavBadgesEnabled(context, enabled)
                         },
                         onExportProfile = {
-                            exportProfileLauncher.launch("coreflow-profile-v6.0.0.json")
+                            exportProfileLauncher.launch("coreflow-profile-v6.1.0.json")
                         },
                         onImportProfile = {
                             importProfileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
@@ -532,7 +532,7 @@ fun CoreFlowApp(
                                     .onSuccess { diagJson ->
                                         runCatching {
                                             val dir = File(context.cacheDir, "diag").apply { mkdirs() }
-                                            val outFile = File(dir, "coreflow-diag-v6.0.0.json")
+                                            val outFile = File(dir, "coreflow-diag-v6.1.0.json")
                                             outFile.writeText(diagJson)
                                             val uri = FileProvider.getUriForFile(
                                                 context,
@@ -542,7 +542,7 @@ fun CoreFlowApp(
                                             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                                 type = "application/json"
                                                 putExtra(Intent.EXTRA_STREAM, uri)
-                                                putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v6.0.0 Diagnostics")
+                                                putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v6.1.0 Diagnostics")
                                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                             }
                                             context.startActivity(

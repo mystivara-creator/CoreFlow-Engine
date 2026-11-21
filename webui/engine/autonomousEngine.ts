@@ -1,5 +1,5 @@
 /**
- * CoreFlow Engine v6.0.0 — NextGen WebUI Data Contract, Validators & Preview Simulator.
+ * CoreFlow Engine v6.1.0 — NextGen WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
@@ -451,7 +451,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const episodesRaw = Array.isArray(raw.episodes) ? raw.episodes : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '6.0.0',
+    version: typeof raw.version === 'string' ? raw.version : '6.1.0',
     running: raw.running,
     pid: raw.pid,
     profile,
@@ -634,7 +634,7 @@ export const PREVIEW_INSTALLED_PACKAGES: string[] = [
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '6.0.0',
+    version: '6.1.0',
     running: true,
     pid: 1428,
     profile: 'balanced',

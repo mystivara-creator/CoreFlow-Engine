@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine v6.0.0 — NextGen HyperFluid 4-Pillar Adaptive Android Daemon.
+ * @brief CoreFlow Engine v6.1.0 — NextGen HyperFluid 4-Pillar Adaptive Android Daemon.
  *
  * Pillars:
  *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
@@ -71,7 +71,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "6.0.0";
+constexpr char kVersion[] = "6.1.0";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -1324,7 +1324,7 @@ int main(int argc, char* argv[]) {
     live_status.memory = last_mem_snap;
     decision_journal.record(
         epoch_now_ms(), "context", "Boot",
-        "CoreFlow v6.0.0 initialized (profile=" + config.profile + ")",
+        "CoreFlow v6.1.0 initialized (profile=" + config.profile + ")",
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
@@ -1336,13 +1336,13 @@ int main(int argc, char* argv[]) {
         if (fg.critical_tids.size() <= 1U) {
             out.newly_launched_app = false;
         }
-        // Anti-flap hysteresis for disk-journaled sysfs actuators: hold Interactive for 4s
-        // before relaxing to Efficiency so typing/scrolling does not thrash 25 CFJ4 nodes/sec.
+        // Anti-flap hysteresis for disk-journaled sysfs actuators: hold Interactive for 3s
+        // before relaxing to Efficiency so typing/scrolling does not thrash CFJ4 nodes.
         if (raw.mode == ContextMode::Interactive || raw.mode == ContextMode::LaunchBurst ||
             raw.mode == ContextMode::Gaming) {
             last_sysfs_active_ms = now_ms;
         } else if (raw.mode == ContextMode::Efficiency && last_sysfs_active_ms > 0U &&
-                   now_ms >= last_sysfs_active_ms && now_ms - last_sysfs_active_ms < 4000ULL) {
+                   now_ms >= last_sysfs_active_ms && now_ms - last_sysfs_active_ms < 3000ULL) {
             out.mode = ContextMode::Interactive;
         }
         return out;
@@ -1983,7 +1983,7 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v6.0.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v6.1.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", hz=" + std::to_string(topo.refresh_hz) +
              ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
@@ -2003,6 +2003,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v6.0.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v6.1.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }
