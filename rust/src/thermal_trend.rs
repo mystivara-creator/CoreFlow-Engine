@@ -41,7 +41,8 @@ impl ThermalTrendAnalyzer {
 
         if self.len > 0 {
             let last_idx = (self.head + WINDOW_CAPACITY - 1) % WINDOW_CAPACITY;
-            if ts_ms <= self.buf[last_idx].ts_ms {
+            let last_ts = self.buf[last_idx].ts_ms;
+            if ts_ms <= last_ts || ts_ms.saturating_sub(last_ts) > 120_000 {
                 self.reset();
             }
         }
@@ -150,5 +151,17 @@ mod tests {
         let bad = analyzer.push_sample(1000, f64::NAN, 55.0);
         assert_eq!(bad.velocity_cpm, 0.0);
         assert_eq!(bad.stability_score, 100);
+    }
+
+    #[test]
+    fn resets_window_across_long_sleep_gap() {
+        let mut analyzer = new_thermal_trend_analyzer();
+        for i in 0..6u64 {
+            analyzer.push_sample(1_000 + i * 1_000, 40.0 + (i as f64) * 0.2, 55.0);
+        }
+        // Jump forward by 5 minutes (deep sleep): window must reset instead of computing a stale slope.
+        let after_wake = analyzer.push_sample(310_000, 32.0, 55.0);
+        assert_eq!(after_wake.velocity_cpm, 0.0);
+        assert_eq!(after_wake.stability_score, 100);
     }
 }

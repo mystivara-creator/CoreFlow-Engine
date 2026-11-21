@@ -65,6 +65,8 @@ object AppPreferences {
             .apply()
     }
 
+    private const val KEY_PRE_POWERSAVE_PROFILE = "pre_powersave_profile"
+
     fun getLanguageIndex(context: Context): Int =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getInt(KEY_LANGUAGE_IDX, 0)
@@ -74,6 +76,20 @@ object AppPreferences {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_LANGUAGE_IDX, index.coerceIn(0, languageLabels.lastIndex))
+            .apply()
+    }
+
+    fun getPrePowerSaveProfile(context: Context): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_PRE_POWERSAVE_PROFILE, null)
+
+    fun setPrePowerSaveProfile(context: Context, configValue: String?) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .apply {
+                if (configValue.isNullOrBlank()) remove(KEY_PRE_POWERSAVE_PROFILE)
+                else putString(KEY_PRE_POWERSAVE_PROFILE, configValue)
+            }
             .apply()
     }
 }

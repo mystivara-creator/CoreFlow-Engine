@@ -58,9 +58,9 @@ class CoreFlowTileService : TileService() {
     }
 
     private fun updateTileState() {
-        val tile = qsTile ?: return
         scope.launch {
             val status = CoreFlowManager.getStatus().getOrNull()
+            val tile = qsTile ?: return@launch
             val isRunning = status?.isRunning == true
             val temp = status?.socTempCelsius ?: -1f
 

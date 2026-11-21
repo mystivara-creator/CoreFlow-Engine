@@ -119,8 +119,8 @@ bool is_cfs_thread(int32_t tid, const std::string& procfs_root) noexcept {
     const int policy = ::sched_getscheduler(static_cast<pid_t>(tid));
     if (policy < 0) return true; // Let sched_setattr decide if inaccessible
     const int base_policy = policy & ~SCHED_RESET_ON_FORK;
-    // Never clamp down RT (SCHED_FIFO / SCHED_RR) threads like surfaceflinger main thread.
-    return base_policy != SCHED_FIFO && base_policy != SCHED_RR;
+    // Never clamp down RT (SCHED_FIFO / SCHED_RR) or SCHED_DEADLINE threads.
+    return base_policy == SCHED_OTHER || base_policy == SCHED_BATCH || base_policy == SCHED_IDLE;
 }
 
 uint64_t steady_now_ms() noexcept {

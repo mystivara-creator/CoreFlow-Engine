@@ -1,5 +1,8 @@
 package io.coreflow.ui
 
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,13 +28,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.CoreFlowManager
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
@@ -62,6 +68,7 @@ fun BenchmarkCard(
     strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var targetIdx by remember { mutableIntStateOf(0) } // 0 = Camera, 1 = Foreground App
     var running by remember { mutableStateOf(false) }
@@ -69,13 +76,24 @@ fun BenchmarkCard(
     var launchResult by remember { mutableStateOf<AbLaunchResult?>(null) }
     var jankResult by remember { mutableStateOf<AbJankResult?>(null) }
 
+    val defaultCameraPkg = remember(context) {
+        runCatching {
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            val resolved = context.packageManager.resolveActivity(
+                intent,
+                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()),
+            )
+            resolved?.activityInfo?.packageName?.takeIf { it.isNotBlank() && it != "android" }
+        }.getOrNull() ?: "com.android.camera"
+    }
+
     val fgPkg = status?.foregroundPackage?.takeIf {
-        it.isNotBlank() && it != "io.coreflow.companion"
+        it.isNotBlank() && it != context.packageName && it != "io.coreflow.companion"
     }
     val targetPkg = if (targetIdx == 0) {
-        "com.android.camera"
+        defaultCameraPkg
     } else {
-        fgPkg ?: "com.android.camera"
+        fgPkg ?: defaultCameraPkg
     }
 
     Card(
@@ -157,28 +175,33 @@ fun BenchmarkCard(
                     scope.launch {
                         running = true
                         val wasPaused = status?.inspectionMode == true
-                        progressMsg = if (strings.isIndonesian) "Mengukur Stock OEM ($targetPkg)..." else "Measuring Stock OEM ($targetPkg)..."
-                        CoreFlowManager.setPaused(true)
-                        delay(500L)
-                        val oemMs = CoreFlowManager.measureColdLaunchMs(targetPkg).getOrNull()
+                        try {
+                            progressMsg = if (strings.isIndonesian) "Mengukur Stock OEM ($targetPkg)..." else "Measuring Stock OEM ($targetPkg)..."
+                            CoreFlowManager.setPaused(true)
+                            delay(500L)
+                            val oemMs = CoreFlowManager.measureColdLaunchMs(targetPkg).getOrNull()
 
-                        progressMsg = if (strings.isIndonesian) "Mengukur CoreFlow HyperFluid..." else "Measuring CoreFlow HyperFluid..."
-                        CoreFlowManager.setPaused(false)
-                        delay(500L)
-                        val cfMs = CoreFlowManager.measureColdLaunchMs(targetPkg).getOrNull()
+                            progressMsg = if (strings.isIndonesian) "Mengukur CoreFlow HyperFluid..." else "Measuring CoreFlow HyperFluid..."
+                            CoreFlowManager.setPaused(false)
+                            delay(500L)
+                            val cfMs = CoreFlowManager.measureColdLaunchMs(targetPkg).getOrNull()
 
-                        if (wasPaused) CoreFlowManager.setPaused(true)
-                        if (oemMs != null && cfMs != null) {
-                            launchResult = AbLaunchResult(targetPkg, oemMs, cfMs)
-                            progressMsg = null
-                        } else {
-                            progressMsg = if (strings.isIndonesian) {
-                                "Paket $targetPkg tidak ditemukan / gagal diukur."
+                            if (oemMs != null && cfMs != null) {
+                                launchResult = AbLaunchResult(targetPkg, oemMs, cfMs)
+                                progressMsg = null
                             } else {
-                                "Package $targetPkg not found or could not be launched."
+                                progressMsg = if (strings.isIndonesian) {
+                                    "Paket $targetPkg tidak ditemukan / gagal diukur."
+                                } else {
+                                    "Package $targetPkg not found or could not be launched."
+                                }
                             }
+                        } finally {
+                            withContext(NonCancellable) {
+                                CoreFlowManager.setPaused(wasPaused)
+                            }
+                            running = false
                         }
-                        running = false
                     }
                 },
                 enabled = !running,
@@ -190,35 +213,38 @@ fun BenchmarkCard(
                 onClick = {
                     scope.launch {
                         running = true
-                        progressMsg = if (strings.isIndonesian) "Membaca dumpsys gfxinfo..." else "Reading dumpsys gfxinfo..."
-                        val stats = CoreFlowManager.measureGfxFrameDrops(targetPkg).getOrNull()
-                        if (stats != null && stats.totalFrames > 0) {
-                            val isPausedNow = status?.inspectionMode == true
-                            val prev = jankResult
-                            jankResult = if (isPausedNow) {
-                                AbJankResult(
-                                    packageName = stats.packageName,
-                                    oemJankPct = stats.jankPct,
-                                    coreflowJankPct = prev?.takeIf { it.packageName == stats.packageName }?.coreflowJankPct ?: stats.jankPct,
-                                    totalFrames = stats.totalFrames,
-                                )
+                        try {
+                            progressMsg = if (strings.isIndonesian) "Membaca dumpsys gfxinfo..." else "Reading dumpsys gfxinfo..."
+                            val stats = CoreFlowManager.measureGfxFrameDrops(targetPkg).getOrNull()
+                            if (stats != null && stats.totalFrames > 0) {
+                                val isPausedNow = status?.inspectionMode == true
+                                val prev = jankResult
+                                jankResult = if (isPausedNow) {
+                                    AbJankResult(
+                                        packageName = stats.packageName,
+                                        oemJankPct = stats.jankPct,
+                                        coreflowJankPct = prev?.takeIf { it.packageName == stats.packageName }?.coreflowJankPct ?: stats.jankPct,
+                                        totalFrames = stats.totalFrames,
+                                    )
+                                } else {
+                                    AbJankResult(
+                                        packageName = stats.packageName,
+                                        oemJankPct = prev?.takeIf { it.packageName == stats.packageName }?.oemJankPct ?: stats.jankPct,
+                                        coreflowJankPct = stats.jankPct,
+                                        totalFrames = stats.totalFrames,
+                                    )
+                                }
+                                progressMsg = null
                             } else {
-                                AbJankResult(
-                                    packageName = stats.packageName,
-                                    oemJankPct = prev?.takeIf { it.packageName == stats.packageName }?.oemJankPct ?: stats.jankPct,
-                                    coreflowJankPct = stats.jankPct,
-                                    totalFrames = stats.totalFrames,
-                                )
+                                progressMsg = if (strings.isIndonesian) {
+                                    "Belum ada data frame gfxinfo untuk $targetPkg — buka & scroll dulu."
+                                } else {
+                                    "No gfxinfo frames yet for $targetPkg — open & scroll it first."
+                                }
                             }
-                            progressMsg = null
-                        } else {
-                            progressMsg = if (strings.isIndonesian) {
-                                "Belum ada data frame gfxinfo untuk $targetPkg — buka & scroll dulu."
-                            } else {
-                                "No gfxinfo frames yet for $targetPkg — open & scroll it first."
-                            }
+                        } finally {
+                            running = false
                         }
-                        running = false
                     }
                 },
                 enabled = !running,
@@ -240,8 +266,9 @@ fun BenchmarkCard(
             val maxVal = maxOf(res.oemMs, res.coreflowMs, 1L).toFloat()
             val deltaPct = if (res.oemMs > 0L) ((res.oemMs - res.coreflowMs) * 100f / res.oemMs.toFloat()) else 0f
             DualComparisonBlock(
-                title = "${if (strings.isIndonesian) "Cold Launch" else "Cold Launch"} · ${res.packageName.substringAfterLast('.')}",
+                title = "Cold Launch · ${res.packageName.substringAfterLast('.')}",
                 badge = if (deltaPct >= 0f) String.format(Locale.US, "-%.1f%%", deltaPct) else String.format(Locale.US, "+%.1f%%", -deltaPct),
+                badgeColor = if (deltaPct >= 0f) Color(0xFF22C55E) else Color(0xFFF59E0B),
                 oemLabel = "Stock OEM",
                 oemValue = "${res.oemMs} ms",
                 oemFrac = (res.oemMs.toFloat() / maxVal).coerceIn(0.15f, 1f),
@@ -255,8 +282,9 @@ fun BenchmarkCard(
             Spacer(Modifier.height(12.dp))
             val maxVal = maxOf(res.oemJankPct, res.coreflowJankPct, 1f)
             DualComparisonBlock(
-                title = "${if (strings.isIndonesian) "Frame Drop Rate" else "Frame Drop Rate"} (${res.totalFrames} frames)",
+                title = "Frame Drop Rate (${res.totalFrames} frames)",
                 badge = String.format(Locale.US, "%.2f%%", res.coreflowJankPct),
+                badgeColor = if (res.coreflowJankPct <= res.oemJankPct) Color(0xFF22C55E) else Color(0xFFF59E0B),
                 oemLabel = "Stock OEM (Paused)",
                 oemValue = String.format(Locale.US, "%.2f%%", res.oemJankPct),
                 oemFrac = (res.oemJankPct / maxVal).coerceIn(0.08f, 1f),
@@ -272,6 +300,7 @@ fun BenchmarkCard(
 private fun DualComparisonBlock(
     title: String,
     badge: String,
+    badgeColor: Color,
     oemLabel: String,
     oemValue: String,
     oemFrac: Float,
@@ -304,7 +333,7 @@ private fun DualComparisonBlock(
                 text = badge,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF22C55E),
+                color = badgeColor,
             )
         }
 

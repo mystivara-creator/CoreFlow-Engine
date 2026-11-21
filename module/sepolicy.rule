@@ -137,13 +137,60 @@ allow magisk sysfs file { read write open getattr }
 
 # Anti-stutter VM sysctl (swappiness, compaction) & native touch input detection
 allow su proc_vmstat file { read open getattr }
+allow su proc_pressure file { read open getattr }
 allow su sysctl_vm dir { read open search getattr }
 allow su sysctl_vm file { read write open getattr }
 allow su input_device dir { read open search getattr }
 allow su input_device chr_file { read open getattr ioctl }
 
 allow magisk proc_vmstat file { read open getattr }
+allow magisk proc_pressure file { read open getattr }
 allow magisk sysctl_vm dir { read open search getattr }
 allow magisk sysctl_vm file { read write open getattr }
 allow magisk input_device dir { read open search getattr }
 allow magisk input_device chr_file { read open getattr ioctl }
+
+# ---------------------------------------------------------------------------
+# 3. HyperFluid Camera/Media Pipeline UClamp & CFJ4 Power Supply Controls
+# ---------------------------------------------------------------------------
+# Camera HAL & MediaCodec per-TID UClamp + /proc/<pid>/task enumeration
+allow su cameraserver process { getsched setsched }
+allow su cameraserver dir { read open search getattr }
+allow su cameraserver file { read open getattr }
+allow su hal_camera_default process { getsched setsched }
+allow su hal_camera_default dir { read open search getattr }
+allow su hal_camera_default file { read open getattr }
+allow su mediaserver process { getsched setsched }
+allow su mediaserver dir { read open search getattr }
+allow su mediaserver file { read open getattr }
+allow su mediacodec process { getsched setsched }
+allow su mediacodec dir { read open search getattr }
+allow su mediacodec file { read open getattr }
+
+allow magisk cameraserver process { getsched setsched }
+allow magisk cameraserver dir { read open search getattr }
+allow magisk cameraserver file { read open getattr }
+allow magisk hal_camera_default process { getsched setsched }
+allow magisk hal_camera_default dir { read open search getattr }
+allow magisk hal_camera_default file { read open getattr }
+allow magisk mediaserver process { getsched setsched }
+allow magisk mediaserver dir { read open search getattr }
+allow magisk mediaserver file { read open getattr }
+allow magisk mediacodec process { getsched setsched }
+allow magisk mediacodec dir { read open search getattr }
+allow magisk mediacodec file { read open getattr }
+
+# Battery telemetry, thermal step-charging & CFJ4 bypass charging nodes
+allow su sysfs_batteryinfo dir { read open search getattr }
+allow su sysfs_batteryinfo file { read write open getattr }
+allow su sysfs_power dir { read open search getattr }
+allow su sysfs_power file { read write open getattr }
+allow su sysfs_battery_supply dir { read open search getattr }
+allow su sysfs_battery_supply file { read write open getattr }
+
+allow magisk sysfs_batteryinfo dir { read open search getattr }
+allow magisk sysfs_batteryinfo file { read write open getattr }
+allow magisk sysfs_power dir { read open search getattr }
+allow magisk sysfs_power file { read write open getattr }
+allow magisk sysfs_battery_supply dir { read open search getattr }
+allow magisk sysfs_battery_supply file { read write open getattr }

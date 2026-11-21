@@ -183,6 +183,7 @@ fun LiveFeedTab(
                     "power" -> Color(0xFF10B981)
                     "thermal" -> Color(0xFFF59E0B)
                     "storage" -> Color(0xFF38BDF8)
+                    "memory" -> Color(0xFF06B6D4)
                     "uclamp" -> Color(0xFFA78BFA)
                     else -> MiuixTheme.colorScheme.primary
                 }

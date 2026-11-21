@@ -34,7 +34,7 @@ if command -v rustup >/dev/null 2>&1; then
 fi
 BUILD_DIR="$ROOT/build/android-arm64"
 
-echo "CoreFlow Engine v5.1.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
+echo "CoreFlow Engine v6.0.0 Android build: min API=${ANDROID_MIN_API}, ABI=${ANDROID_ABI}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \

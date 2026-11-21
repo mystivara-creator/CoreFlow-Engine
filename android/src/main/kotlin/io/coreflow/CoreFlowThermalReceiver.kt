@@ -27,12 +27,19 @@ class CoreFlowThermalReceiver : BroadcastReceiver() {
                     PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> {
                         val pm = context.getSystemService(PowerManager::class.java)
                             ?: context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                        val profile = if (pm?.isPowerSaveMode == true) {
-                            CoreFlowManager.Profile.BATTERY
+                        if (pm?.isPowerSaveMode == true) {
+                            val current = CoreFlowManager.readActiveProfile().getOrNull()
+                            if (current != null && current != CoreFlowManager.Profile.BATTERY) {
+                                AppPreferences.setPrePowerSaveProfile(context, current.configValue)
+                            }
+                            CoreFlowManager.applyProfile(CoreFlowManager.Profile.BATTERY)
                         } else {
-                            CoreFlowManager.Profile.BALANCED
+                            val saved = AppPreferences.getPrePowerSaveProfile(context)
+                            val restore = saved?.let { CoreFlowManager.Profile.fromConfigValue(it) }
+                                ?: CoreFlowManager.Profile.BALANCED
+                            AppPreferences.setPrePowerSaveProfile(context, null)
+                            CoreFlowManager.applyProfile(restore)
                         }
-                        CoreFlowManager.applyProfile(profile)
                     }
                     Intent.ACTION_POWER_CONNECTED,
                     Intent.ACTION_POWER_DISCONNECTED,

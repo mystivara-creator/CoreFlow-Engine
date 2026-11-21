@@ -20,7 +20,14 @@ std::string line(const std::string& path) {
     std::ifstream file(path);
     std::string value;
     std::getline(file, value);
-    return value;
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' ' || value.back() == '\t')) {
+        value.pop_back();
+    }
+    size_t start = 0;
+    while (start < value.size() && (value[start] == ' ' || value[start] == '\t')) {
+        ++start;
+    }
+    return start > 0 ? value.substr(start) : value;
 }
 
 bool positive(const std::string& text, uint64_t& value) {
