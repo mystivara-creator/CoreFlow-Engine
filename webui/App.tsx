@@ -510,7 +510,7 @@ export const App: React.FC = () => {
       } else {
         setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
       }
-      addLog('BOOST', 'Daemon', 'CoreFlow v6.1.0 daemon started.');
+      addLog('BOOST', 'Daemon', 'CoreFlow v6.2.0 daemon started.');
       setFeedback(isId ? 'Daemon CoreFlow aktif.' : 'CoreFlow daemon started.');
     } catch (err) {
       setErrorMsg(`Unable to start daemon: ${String(err)}`);
@@ -1228,6 +1228,34 @@ export const App: React.FC = () => {
                     <div className="cf-metric-value">{status.hyperFluid.predictivePreloads}</div>
                   </div>
                 </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Frame Pacing</div>
+                    <div className="cf-metric-value">
+                      {status.hyperFluid.measuredFps >= 12 && status.hyperFluid.jankRatio !== null
+                        ? `${Math.round(status.hyperFluid.measuredFps)} FPS · ${Math.round(status.hyperFluid.jankRatio * 100)}%`
+                        : status.hyperFluid.framePacingAvailable
+                          ? 'Ready'
+                          : 'RT Proxy'}
+                    </div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">App DNA</div>
+                    <div className="cf-metric-value">
+                      {status.hyperFluid.appDnaLearned} · {status.hyperFluid.activeAppBias.toFixed(2)}x
+                    </div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Thermal Eq</div>
+                    <div className="cf-metric-value">
+                      {status.batteryPower.bypassActive
+                        ? 'Bypass'
+                        : status.hyperFluid.chargingDamped
+                          ? 'Chg Damped'
+                          : 'Optimal'}
+                    </div>
+                  </div>
+                </div>
                 <FeatureRow
                   Icon={HardDrive}
                   title={`${status.hardware.storageType} Launch Burst`}
@@ -1651,6 +1679,50 @@ export const App: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {status.actuators.semanticKnobsDiscovered > 0 && (
+                  <div className="rounded-xl p-3 text-xs space-y-2" style={{ background: 'var(--md-sys-color-surface-container)' }}>
+                    <div className="flex items-center justify-between font-bold">
+                      <span>
+                        Co-Pilot Knobs ({status.actuators.semanticKnobsActive}/{status.actuators.semanticKnobsDiscovered})
+                      </span>
+                      <span className="font-mono text-[10.5px] opacity-80">
+                        OEM Yield: {status.actuators.oemYieldedNodes}
+                      </span>
+                    </div>
+                    {status.actuators.semanticKnobLeaves.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {status.actuators.semanticKnobLeaves.slice(0, 12).map((leaf) => (
+                          <span
+                            key={leaf}
+                            className="rounded-md px-2 py-0.5 font-mono text-[10px]"
+                            style={{ background: 'var(--md-sys-color-secondary-container)' }}
+                          >
+                            {leaf}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {status.actuators.oemYieldedPaths.length > 0 && (
+                  <div
+                    className="rounded-xl p-3 text-xs space-y-1"
+                    style={{ background: 'var(--md-sys-color-surface-container)' }}
+                  >
+                    <div className="font-bold">
+                      {isId
+                        ? `Kolaborasi OEM (${status.actuators.oemYieldedPaths.length} node diserahkan)`
+                        : `OEM Collaboration (${status.actuators.oemYieldedPaths.length} nodes yielded)`}
+                    </div>
+                    <ul className="list-disc pl-4 font-mono text-[10.5px] opacity-85">
+                      {status.actuators.oemYieldedPaths.map((p) => (
+                        <li key={p} className="truncate">{p}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {status.actuators.contendedPaths.length > 0 && (
                   <div

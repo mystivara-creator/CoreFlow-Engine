@@ -2,6 +2,28 @@
 
 # CFAE System Framework Release History
 
+## v6.2.0 — Closed-Loop Intelligence & Cross-SoC Architecture
+
+> **Closed-Loop Milestone (`v6.2.0`, `versionCode=62000`)**: Evolves CoreFlow from open-loop heuristics into a true closed-loop, self-calibrating Android system engine — trimming power automatically when frames are locked, rescuing micro-stutters on demand, remembering per-app behavioral DNA & Markov launch patterns across reboots, balancing fast die bursts against slow chassis/charging heat, and adding a 1-tap **Device Health Self-Audit**.
+
+### Closed-Loop Performance & Behavioral Learning (`coreflowd v6.2.0`)
+- **Zero-Fork Display Frame Pacing Sensor (`FramePacingSensor` + `AndroidFrameEventBridge`)**: Reads live kernel presentation cadence across Qualcomm SDE (`sde-crtc-*/measured_fps`), Xiaomi `mi_display`, MediaTek `fpsgo`, and Exynos/Pixel panel nodes with natural cadence anchoring (`30/60/90/120 Hz`) and static-screen protection (`< 12 FPS` neutral) so static reading never triggers false boosts.
+- **Closed-Loop Rust UClamp Feedback (`compute_uclamp_target`)**: Automatically trims UClamp floors (`0.84x–0.88x`) when frame delivery is rock-solid (`jank < 1.5%`) to save battery & heat, and smoothly rescues frames (`+18%`, capped at `75%` silicon capacity) when real jank spikes (`>= 5%`).
+- **Role-Tiered Asymmetric Per-TID UClamp**: Separates Tier-1 primary UI/Render/Game threads (`100%` target floor) from Tier-2 pipeline workers (`hwuiTask`, `MediaCodec`, `AudioTrack`, `CrRendererMain`, GPU workers at `65%` floor) for silky smoothness without waking unnecessary big cores.
+- **Persistent Cross-Reboot Markov Preloader & Per-App Behavioral DNA (`AppDnaStore`)**: Persists both Rust Markov launch transitions (`CFM1` -> `/data/adb/coreflow/preloader.state`) and per-app EWMA optimal UClamp bias (`CFDNA1` -> `/data/adb/coreflow/app_dna.map`, bounded 64-entry LRU) atomically on `ScreenOff` (max once per 10 min) and clean shutdown.
+- **Dual-Timescale Thermal Equilibrium (`compute_thermal_equilibrium`)**: Separates brief CPU die launch-burst spikes on a cool chassis (`< 38.5°C`) from slow battery/skin heat equilibrium (`>= 40°C`), with automatic charging-aware damping (`charging_damped`) that unlocks when CFJ4 Bypass Charging is active.
+- **Cross-SoC Semantic Discovery**: Added MediaTek GED (`ged_boost_enable`, `boost_gpu_enable`, `boost_extra`, `gpu_boost_level`) & FPSGO (`boost_affinity`, `fpsgo_enable`) semantic knobs plus `/sys/class/panel` refresh-rate probing for Samsung Exynos / OnePlus / Oppo panels.
+
+### Companion App v6.2.0 & WebUI Parity
+- **1-Tap Device Health Self-Audit (`SystemTab`)**: Verifies daemon PID, Per-TID UClamp, live Hz / Frame Pacing, zero SELinux AVC denials (`dmesg`), CFJ4 Release-on-Calm cleanliness, and OEM Coexistence / App DNA counts with 1-tap shareable summary.
+- **Closed-Loop Intelligence Telemetry (`ControlHubTab` & WebUI)**: Live Frame Pacing FPS & Jank %, learned App DNA count & active bias multiplier, Dual-Timescale Thermal status, plus full WebUI parity for Semantic Co-Pilot knob chips and Persistent OEM Yield paths.
+
+## v6.1.0 — Autonomous Co-Pilot & HyperOS 4 Companion Overhaul
+
+- **Dynamic Semantic Knob Discovery (`SemanticKnobEngine`)**: Autonomously scans safe WALT/Adreno/UFS/VM kernel knobs, applies instant LaunchBurst/Gaming reflexes, and restores every node cleanly to OEM baseline on calm (`Release-on-Calm`), while explicitly denylisting Qualcomm refcounted `sched_boost` and respecting OEM-disabled `rtg_boost_freq == 0`.
+- **Persistent OEM-Collaboration Map (`OemCollaborationMap`)**: Escalating cooldown (`30s -> 2m -> 10m -> permanent yield`) persisted across reboots and auto-reset on kernel/ROM OTA changes.
+- **HyperOS 4 Companion App Polish**: New obsidian silicon Tux adaptive icon, native Miuix `PullToRefresh`, playful `PressFeedbackType.Tilt` 3D cards (decoupled from refresh), Floating Frosted-Glass Pill Bar, dedicated `AboutScreen`, and dark-mode luminance fix.
+
 ## v6.0.0 — CoreFlow v6 NextGen (Atlas, Live AI Feed, Control Hub, Bypass Charging & Real FPS Game HUD)
 
 > **Next-Generation Milestone (`v6.0.0`, `versionCode=60000`)**: Combines CoreFlow's lean native **C++20 + Rust** 4-pillar daemon (`~600 KB`, `~0.0%` idle battery) with capability-driven kernel discovery (**CoreFlow Atlas**), transparent **Verified Decision Episodes**, **CFJ4-Protected Bypass Charging & Charge Ceiling**, and a redesigned 5-tab **Miuix Compose Companion App** with **Real FPS Game HUD**.

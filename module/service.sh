@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# CFAE System Framework v6.0.0: post-boot HyperFluid 4-pillar daemon launcher.
+# CFAE System Framework v6.2.0: post-boot Closed-Loop Intelligence daemon launcher.
 # CoreFlow coexists with OEM thermal services; it never stops or disables them.
 export PATH="/system/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:${PATH:-/usr/bin:/bin}"
 umask 077

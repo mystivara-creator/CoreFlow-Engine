@@ -1,5 +1,5 @@
 /**
- * CoreFlow Engine v6.1.0 — NextGen WebUI Data Contract, Validators & Preview Simulator.
+ * CoreFlow Engine v6.2.0 — Closed-Loop Intelligence WebUI Data Contract, Validators & Preview Simulator.
  */
 
 export type PerformanceProfile = 'balanced' | 'smoothness' | 'battery' | 'gaming';
@@ -33,6 +33,12 @@ export interface HyperFluidTelemetry {
   cameraChainActive: boolean;
   mediaPipelineActive: boolean;
   memoryHealthPct: number;
+  framePacingAvailable: boolean;
+  measuredFps: number;
+  jankRatio: number | null;
+  appDnaLearned: number;
+  activeAppBias: number;
+  chargingDamped: boolean;
 }
 
 export interface CoreFlowPowerConfig {
@@ -59,8 +65,13 @@ export interface CoreFlowActuatorStats {
   prereadFiles: number;
   prereadBytes: number;
   managedEnvelopeNodes: number;
+  semanticKnobsDiscovered: number;
+  semanticKnobsActive: number;
+  semanticKnobLeaves: string[];
   contendedNodes: number;
   contendedPaths: string[];
+  oemYieldedNodes: number;
+  oemYieldedPaths: string[];
 }
 
 export interface CoreFlowHardwareInfo {
@@ -451,7 +462,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const episodesRaw = Array.isArray(raw.episodes) ? raw.episodes : [];
 
   return {
-    version: typeof raw.version === 'string' ? raw.version : '6.1.0',
+    version: typeof raw.version === 'string' ? raw.version : '6.2.0',
     running: raw.running,
     pid: raw.pid,
     profile,
@@ -494,6 +505,12 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       cameraChainActive: hf.cameraChainActive === true,
       mediaPipelineActive: hf.mediaPipelineActive === true,
       memoryHealthPct: isFiniteNum(hf.memoryHealthPct) ? hf.memoryHealthPct : 100,
+      framePacingAvailable: hf.framePacingAvailable === true,
+      measuredFps: isFiniteNum(hf.measuredFps) ? hf.measuredFps : 0,
+      jankRatio: isFiniteNum(hf.jankRatio) ? hf.jankRatio : null,
+      appDnaLearned: isFiniteNum(hf.appDnaLearned) ? hf.appDnaLearned : 0,
+      activeAppBias: isFiniteNum(hf.activeAppBias) ? hf.activeAppBias : 1.0,
+      chargingDamped: hf.chargingDamped === true,
     },
     powerConfig: {
       bypassCharging: powerCfg.bypassCharging === true,
@@ -517,9 +534,18 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       prereadFiles: isFiniteNum(actuators.prereadFiles) ? actuators.prereadFiles : 0,
       prereadBytes: isFiniteNum(actuators.prereadBytes) ? actuators.prereadBytes : 0,
       managedEnvelopeNodes: isFiniteNum(actuators.managedEnvelopeNodes) ? actuators.managedEnvelopeNodes : 0,
+      semanticKnobsDiscovered: isFiniteNum(actuators.semanticKnobsDiscovered) ? actuators.semanticKnobsDiscovered : 0,
+      semanticKnobsActive: isFiniteNum(actuators.semanticKnobsActive) ? actuators.semanticKnobsActive : 0,
+      semanticKnobLeaves: Array.isArray(actuators.semanticKnobLeaves)
+        ? actuators.semanticKnobLeaves.filter((x): x is string => typeof x === 'string')
+        : [],
       contendedNodes: isFiniteNum(actuators.contendedNodes) ? actuators.contendedNodes : 0,
       contendedPaths: Array.isArray(actuators.contendedPaths)
         ? actuators.contendedPaths.filter((x): x is string => typeof x === 'string')
+        : [],
+      oemYieldedNodes: isFiniteNum(actuators.oemYieldedNodes) ? actuators.oemYieldedNodes : 0,
+      oemYieldedPaths: Array.isArray(actuators.oemYieldedPaths)
+        ? actuators.oemYieldedPaths.filter((x): x is string => typeof x === 'string')
         : [],
     },
     hardware: {
@@ -634,7 +660,7 @@ export const PREVIEW_INSTALLED_PACKAGES: string[] = [
 export function createPreviewStatus(): CoreFlowV5Status {
   const now = Date.now();
   return {
-    version: '6.1.0',
+    version: '6.2.0',
     running: true,
     pid: 1428,
     profile: 'balanced',
@@ -677,6 +703,12 @@ export function createPreviewStatus(): CoreFlowV5Status {
       cameraChainActive: false,
       mediaPipelineActive: false,
       memoryHealthPct: 94,
+      framePacingAvailable: true,
+      measuredFps: 119.4,
+      jankRatio: 0.008,
+      appDnaLearned: 12,
+      activeAppBias: 0.94,
+      chargingDamped: false,
     },
     powerConfig: {
       bypassCharging: false,
@@ -700,8 +732,13 @@ export function createPreviewStatus(): CoreFlowV5Status {
       prereadFiles: 18,
       prereadBytes: 42 * 1024 * 1024,
       managedEnvelopeNodes: 8,
+      semanticKnobsDiscovered: 25,
+      semanticKnobsActive: 6,
+      semanticKnobLeaves: ['boost', 'pl', 'bus_split', 'adrenoboost', 'iostats', 'vfs_cache_pressure'],
       contendedNodes: 0,
       contendedPaths: [],
+      oemYieldedNodes: 2,
+      oemYieldedPaths: ['/proc/sys/walt/sched_min_task_util_for_boost', '/sys/devices/system/cpu/cpufreq/policy0/walt/pl'],
     },
     hardware: {
       socModel: 'Preview ARM64 SoC',

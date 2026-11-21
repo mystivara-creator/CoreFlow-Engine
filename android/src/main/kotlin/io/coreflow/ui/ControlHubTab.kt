@@ -127,6 +127,7 @@ fun ControlHubTab(
                 val active = status?.semanticKnobsActive ?: 0
                 val yielded = status?.oemYieldedNodes ?: 0
                 val leaves = status?.semanticKnobLeaves.orEmpty()
+                val hf = status?.hyperFluid ?: CoreFlowManager.HyperFluidStats()
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -157,6 +158,56 @@ fun ControlHubTab(
                             value = "$yielded",
                             accent = if (yielded > 0) Color(0xFFF59E0B) else Color(0xFF22C55E),
                             modifier = Modifier.weight(0.9f).fillMaxHeight(),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val fpsValue = when {
+                        hf.measuredFps >= 12f && hf.jankRatio != null -> {
+                            val jankPct = (hf.jankRatio * 100f).toInt().coerceIn(0, 100)
+                            "${hf.measuredFps.toInt()} FPS · ${jankPct}%"
+                        }
+                        hf.framePacingAvailable -> "Ready"
+                        else -> "RT Proxy"
+                    }
+                    val fpsAccent = when {
+                        hf.jankRatio != null && hf.jankRatio >= 0.05f -> Color(0xFFF59E0B)
+                        hf.framePacingAvailable -> Color(0xFF22C55E)
+                        else -> Color(0xFF38BDF8)
+                    }
+                    val dnaValue = String.format(Locale.US, "%d · %.2fx", hf.appDnaLearned, hf.activeAppBias)
+                    val thermalEqValue = when {
+                        batt.bypassActive -> "Bypass"
+                        hf.chargingDamped -> "Chg Damped"
+                        else -> "Optimal"
+                    }
+                    val thermalEqAccent = when {
+                        batt.bypassActive -> Color(0xFF10B981)
+                        hf.chargingDamped -> Color(0xFFF59E0B)
+                        else -> Color(0xFF22C55E)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = strings.labelFramePacing,
+                            value = fpsValue,
+                            accent = fpsAccent,
+                            modifier = Modifier.weight(1.15f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = strings.labelAppDna,
+                            value = dnaValue,
+                            accent = Color(0xFFA78BFA),
+                            modifier = Modifier.weight(1.05f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = strings.labelThermalEq,
+                            value = thermalEqValue,
+                            accent = thermalEqAccent,
+                            modifier = Modifier.weight(0.95f).fillMaxHeight(),
                         )
                     }
                     if (leaves.isNotEmpty()) {

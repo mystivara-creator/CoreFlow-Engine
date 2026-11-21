@@ -695,8 +695,8 @@ HardwareTopology HardwareProbe::discover() const noexcept {
             }
         };
 
-        for (const auto& root : std::array<fs::path, 3>{
-                 sys / "class/mi_display", sys / "class/drm", sys / "class/graphics"}) {
+        for (const auto& root : std::array<fs::path, 4>{
+                 sys / "class/mi_display", sys / "class/drm", sys / "class/graphics", sys / "class/panel"}) {
             for (const auto& dev : child_dirs(root, 32U)) {
                 const auto resolved = canonical_under(dev, sys);
                 if (resolved.empty()) continue;

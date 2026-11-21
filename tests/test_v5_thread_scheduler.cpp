@@ -74,20 +74,26 @@ int main() {
     assert(hot_target.util_min < mid_soc.little_capacity);
     assert(hot_target.util_min <= hot_target.util_max);
 
-    // 4. Switching foreground app automatically resets old app TIDs back to 0..1024
+    // 4. Role-tiered asymmetric UClamp: Tier-2 helper_tids receive ~65% of Tier-1 util_min
+    //    and switching foreground app automatically resets old Tier-1 & Tier-2 TIDs back to 0..1024
     sched.apply(ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, true,
-                {900, 901}, {5500}, mid_soc);
+                {900, 901}, {5500}, mid_soc, {5501, 5502});
     assert(kernel_state[4321].first == 0U && kernel_state[4321].second == 1024U);
     assert(kernel_state[4322].first == 0U && kernel_state[4322].second == 1024U);
     assert(kernel_state[5500].first > 0U && kernel_state[5500].first < 1024U);
+    assert(kernel_state[5501].first > 0U && kernel_state[5501].first < kernel_state[5500].first);
+    assert(kernel_state[5502].first == kernel_state[5501].first);
+    assert(sched.stats().active_boosted_tids == 5U);
 
-    // 5. Entering Efficiency or Excluded resets all tracked TIDs cleanly
+    // 5. Entering Efficiency or Excluded resets all Tier-1 and Tier-2 tracked TIDs cleanly
     sched.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true,
-                {900, 901}, {5500}, mid_soc);
+                {900, 901}, {5500}, mid_soc, {5501, 5502});
     assert(sched.stats().active_boosted_tids == 0U);
     assert(kernel_state[900].first == 0U && kernel_state[900].second == 1024U);
     assert(kernel_state[5500].first == 0U && kernel_state[5500].second == 1024U);
+    assert(kernel_state[5501].first == 0U && kernel_state[5501].second == 1024U);
+    assert(kernel_state[5502].first == 0U && kernel_state[5502].second == 1024U);
 
-    std::cout << "v5 ThreadSchedulerActuator tests passed\n";
+    std::cout << "v6.2 Role-Tiered ThreadSchedulerActuator tests passed\n";
     return 0;
 }

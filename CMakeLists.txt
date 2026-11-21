@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 6.1.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 6.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,7 +44,7 @@ if(NOT COREFLOW_BUILD_COMMIT MATCHES "^[a-f0-9]+$")
     set(COREFLOW_BUILD_COMMIT "unknown")
 endif()
 
-# CoreFlow v6.1 Autonomous Co-Pilot & 4-Pillar Sources
+# CoreFlow v6.2 Closed-Loop Intelligence & Autonomous Co-Pilot Sources
 set(COREFLOW_V5_SOURCES
     src/v5/hardware_probe.cpp
     src/v5/context_engine.cpp
@@ -53,6 +53,8 @@ set(COREFLOW_V5_SOURCES
     src/v5/thermal_envelope_actuator.cpp
     src/v6/oem_collaboration_map.cpp
     src/v6/semantic_knob_engine.cpp
+    src/v6/frame_pacing_sensor.cpp
+    src/v6/app_dna_store.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
     src/kernel/mount_topology.cpp
@@ -82,7 +84,7 @@ if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
     add_compile_options(-UNDEBUG)
 
-    # CoreFlow v5/v6.1 Unit Tests
+    # CoreFlow v5/v6.2 Unit Tests
     add_executable(test_v5_hardware_probe
         tests/test_v5_hardware_probe.cpp
         src/v5/hardware_probe.cpp
@@ -145,6 +147,17 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_v6_semantic_copilot PRIVATE pthread)
     endif()
     add_test(NAME V6SemanticCopilotTest COMMAND test_v6_semantic_copilot)
+
+    add_executable(test_v6_closed_loop_intelligence
+        tests/test_v6_closed_loop_intelligence.cpp
+        src/v6/frame_pacing_sensor.cpp
+        src/v6/app_dna_store.cpp
+        src/kernel/frame_bridge.cpp
+    )
+    if(NOT ANDROID)
+        target_link_libraries(test_v6_closed_loop_intelligence PRIVATE pthread)
+    endif()
+    add_test(NAME V6ClosedLoopIntelligenceTest COMMAND test_v6_closed_loop_intelligence)
 
     # Foundational Infrastructure & Safety Tests
     add_executable(test_mount_topology

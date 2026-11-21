@@ -30,7 +30,7 @@ namespace coreflow {
 
 struct DaemonConfig {
     // [general]
-    std::string version{"6.1.0"};
+    std::string version{"6.2.0"};
     std::string profile{"balanced"}; // balanced | smoothness | battery | gaming
     std::string log_level{"info"};
     bool zero_polling_mode{true};

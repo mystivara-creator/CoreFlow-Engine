@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify CoreFlow v6.1.0 NextGen daemon CLI & safety contracts."""
+"""Verify CoreFlow v6.2.0 Closed-Loop Intelligence daemon CLI & safety contracts."""
 import json
 import subprocess
 import sys
@@ -9,9 +9,9 @@ repo = Path(__file__).resolve().parents[1]
 source = (repo / "src/daemon/main.cpp").read_text()
 config = (repo / "include/coreflow/config.hpp").read_text()
 
-# Core v6 architecture & safety invariants
-assert 'constexpr char kVersion[] = "6.1.0";' in source
-assert 'std::string version{"6.1.0"};' in config
+# Core v6.2 architecture & safety invariants
+assert 'constexpr char kVersion[] = "6.2.0";' in source
+assert 'std::string version{"6.2.0"};' in config
 assert "VulkanController" not in source
 assert "DeviceValidationRecorder" not in source
 assert "ThreadSchedulerActuator" in source
@@ -21,6 +21,9 @@ assert "ContextEngine" in source
 assert "HardwareProbe" in source
 assert "RenderLoadSampler" in source
 assert "DecisionJournal" in source
+assert "FramePacingSensor" in source
+assert "AppDnaStore" in source
+assert "compute_thermal_equilibrium" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "baseline.recover_pending()" in source
 assert "baseline.rollback_all()" in source
@@ -49,11 +52,21 @@ if len(sys.argv) >= 2:
         payload = json.loads(lines[-1])
         assert isinstance(payload, dict), f"{flag} JSON root is not an object"
         if flag == "--status":
-            assert payload.get("version") == "6.1.0"
+            assert payload.get("version") == "6.2.0"
             assert "profile" in payload
             assert "effectiveProfile" in payload
             assert "mode" in payload
             assert "features" in payload and isinstance(payload["features"], dict)
+            assert "hyperFluid" in payload and isinstance(payload["hyperFluid"], dict)
+            for hf_key in (
+                "framePacingAvailable",
+                "measuredFps",
+                "jankRatio",
+                "appDnaLearned",
+                "activeAppBias",
+                "chargingDamped",
+            ):
+                assert hf_key in payload["hyperFluid"], f"Missing hyperFluid.{hf_key}"
             assert "powerConfig" in payload and isinstance(payload["powerConfig"], dict)
             assert "apps" in payload and isinstance(payload["apps"], dict)
             for bucket in ("gaming", "smoothness", "battery", "excluded"):
@@ -71,30 +84,30 @@ if len(sys.argv) >= 2:
             assert "history" in payload and isinstance(payload["history"], list)
             assert "vulkan" not in payload
         elif flag == "--capabilities":
-            assert payload.get("version") == "6.1.0"
+            assert payload.get("version") == "6.2.0"
             assert payload.get("rustPidEngine") is True
             assert "perThreadUclampSupported" in payload
             assert "bypassChargingSupported" in payload
             assert "storageType" in payload
         elif flag == "--atlas":
             assert payload.get("atlasFormat") == "coreflow-atlas-v6"
-            assert payload.get("version") == "6.1.0"
+            assert payload.get("version") == "6.2.0"
             assert isinstance(payload.get("cpuClusters"), list)
             assert isinstance(payload.get("gpu"), dict)
             assert isinstance(payload.get("powerControl"), dict)
             assert isinstance(payload.get("thermalZones"), list)
         elif flag == "--episodes":
-            assert payload.get("version") == "6.1.0"
+            assert payload.get("version") == "6.2.0"
             assert isinstance(payload.get("episodes"), list)
         elif flag == "--journal":
             assert payload.get("format") == "CFJ4"
             assert isinstance(payload.get("entries"), list)
         elif flag == "--diag":
             assert payload.get("reportFormat") == "coreflow-diag-v6"
-            assert payload.get("version") == "6.1.0"
+            assert payload.get("version") == "6.2.0"
             assert isinstance(payload.get("capabilities"), dict)
             assert isinstance(payload.get("atlas"), dict)
             assert isinstance(payload.get("status"), dict)
             assert isinstance(payload.get("journal"), dict)
 
-print("CoreFlow v6.1.0 CLI lifecycle contract PASS")
+print("CoreFlow v6.2.0 CLI lifecycle contract PASS")
