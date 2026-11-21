@@ -1,39 +1,24 @@
 package io.coreflow.ui
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.AppPreferences
@@ -41,52 +26,31 @@ import io.coreflow.BuildConfig
 import io.coreflow.CoreFlowManager
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Backup
+import top.yukonga.miuix.kmp.icon.extended.File
+import top.yukonga.miuix.kmp.icon.extended.HorizontalSplit
+import top.yukonga.miuix.kmp.icon.extended.Import
+import top.yukonga.miuix.kmp.icon.extended.Info
+import top.yukonga.miuix.kmp.icon.extended.Layers
+import top.yukonga.miuix.kmp.icon.extended.Share
+import top.yukonga.miuix.kmp.icon.extended.Theme
+import top.yukonga.miuix.kmp.icon.extended.Timer
+import top.yukonga.miuix.kmp.icon.extended.Translate
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-private data class SponsorEntry(
-    val name: String,
-    val role: String,
-    val badge: String,
-    val accent: Color,
-    val url: String,
-)
-
-private val AI_AND_PLATFORM_SPONSORS = listOf(
-    SponsorEntry(
-        name = "Claude",
-        role = "Anthropic · Systems & Architecture",
-        badge = "CL",
-        accent = Color(0xFFD97757),
-        url = "https://claude.ai",
-    ),
-    SponsorEntry(
-        name = "ChatGPT",
-        role = "OpenAI · Prototyping & Ideation",
-        badge = "AI",
-        accent = Color(0xFF10A37F),
-        url = "https://chatgpt.com",
-    ),
-    SponsorEntry(
-        name = "Gemini",
-        role = "Google DeepMind · Engine & Miuix UI",
-        badge = "GM",
-        accent = Color(0xFF4285F4),
-        url = "https://gemini.google.com",
-    ),
-    SponsorEntry(
-        name = "GitHub",
-        role = "Actions CI/CD & Hosting",
-        badge = "GH",
-        accent = Color(0xFF8B5CF6),
-        url = "https://github.com/mystivara-creator/CoreFlow-Engine",
-    ),
-)
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 @Composable
 fun SystemTab(
@@ -94,321 +58,303 @@ fun SystemTab(
     status: CoreFlowManager.DaemonStatus?,
     journalText: String?,
     busy: Boolean,
+    isRefreshing: Boolean,
     themeModeIndex: Int,
     pollIntervalIndex: Int,
     languageIndex: Int,
+    floatingNavBar: Boolean,
+    navBadgesEnabled: Boolean,
+    contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
+    onRefresh: () -> Unit,
     onThemeModeChange: (Int) -> Unit,
     onPollIntervalChange: (Int) -> Unit,
     onLanguageChange: (Int) -> Unit,
+    onFloatingNavBarChange: (Boolean) -> Unit,
+    onNavBadgesChange: (Boolean) -> Unit,
     onExportProfile: () -> Unit,
     onImportProfile: () -> Unit,
     onLoadJournal: () -> Unit,
     onShareDiag: () -> Unit,
+    onResetOemMap: () -> Unit,
     onRollback: () -> Unit,
+    onOpenAbout: () -> Unit,
 ) {
-    val context = LocalContext.current
     var confirmRollback by remember { mutableStateOf(false) }
+    val pullState = rememberPullToRefreshState()
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    PullToRefresh(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        pullToRefreshState = pullState,
+        topAppBarScrollBehavior = scrollBehavior,
+        contentPadding = PaddingValues(top = contentPadding.calculateTopPadding()),
+        refreshTexts = strings.pullToRefreshTexts,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // App Preferences (Theme, Language, Polling)
-        item { SmallTitle(text = strings.sectionAppSettings) }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                OverlayDropdownPreference(
-                    items = AppPreferences.languageLabels,
-                    selectedIndex = languageIndex,
-                    title = "Language / Bahasa",
-                    summary = "Instant switch between English and Bahasa Indonesia",
-                    onSelectedIndexChange = onLanguageChange,
-                )
-                OverlayDropdownPreference(
-                    items = AppPreferences.themeModeLabels,
-                    selectedIndex = themeModeIndex,
-                    title = "Appearance & Monet Theme",
-                    summary = "Customize Miuix light, dark, or dynamic wallpaper palette",
-                    onSelectedIndexChange = onThemeModeChange,
-                )
-                OverlayDropdownPreference(
-                    items = AppPreferences.pollIntervalLabels,
-                    selectedIndex = pollIntervalIndex,
-                    title = "Telemetry Refresh Rate",
-                    summary = "How often live daemon stats update while app is open",
-                    onSelectedIndexChange = onPollIntervalChange,
-                )
-            }
-        }
-
-        // Profile Backup & Share (SAF with SoC Provenance)
-        item { SmallTitle(text = strings.sectionProfileTransfer) }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                ArrowPreference(
-                    title = strings.exportProfileTitle,
-                    summary = strings.exportProfileSummary,
-                    enabled = !busy && status != null,
-                    onClick = onExportProfile,
-                )
-                ArrowPreference(
-                    title = strings.importProfileTitle,
-                    summary = strings.importProfileSummary,
-                    enabled = !busy,
-                    onClick = onImportProfile,
-                )
-            }
-        }
-
-        // OEM Coexistence & Diagnostics
-        item { SmallTitle(text = strings.sectionCoexistence) }
-        item {
-            val contended = status?.contendedPaths.orEmpty()
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
-            ) {
-                Text(
-                    text = if (contended.isEmpty()) {
-                        "Zero OEM Contention · Full Ownership"
-                    } else {
-                        "${contended.size} Node(s) in Auto-Cooldown Backoff"
-                    },
-                    style = MiuixTheme.textStyles.headline2,
-                    color = if (contended.isEmpty()) Color(0xFF22C55E) else Color(0xFFF59E0B),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (contended.isEmpty()) {
-                        "CoreFlow v6.0.0 is cleanly cooperating with OEM thermal & storage policies."
-                    } else {
-                        contended.joinToString("\n")
-                    },
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                ArrowPreference(
-                    title = "Export & Share Diagnostics (--diag)",
-                    summary = "Generate coreflow-diag-v6.0.0.json (Atlas + Status + CFJ4 Journal)",
-                    enabled = !busy,
-                    onClick = onShareDiag,
-                )
-                ArrowPreference(
-                    title = "Inspect CFJ4 Baseline Journal",
-                    summary = "${status?.baselineNodesSnapshotted ?: 0} OEM sysfs nodes safely snapshotted",
-                    enabled = !busy,
-                    onClick = onLoadJournal,
-                )
-            }
-        }
-
-        if (!journalText.isNullOrBlank()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // App Preferences & HyperOS 4 Visual Style
+            item { SmallTitle(text = strings.sectionAppSettings) }
             item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    OverlayDropdownPreference(
+                        items = AppPreferences.languageLabels,
+                        selectedIndex = languageIndex,
+                        title = "Language / Bahasa",
+                        summary = "Instant switch between English and Bahasa Indonesia",
+                        startAction = { SettingLeadingIcon(MiuixIcons.Translate) },
+                        onSelectedIndexChange = onLanguageChange,
+                    )
+                    OverlayDropdownPreference(
+                        items = AppPreferences.themeModeLabels,
+                        selectedIndex = themeModeIndex,
+                        title = if (strings.isIndonesian) "Tema & Monet" else "Appearance & Monet Theme",
+                        summary = if (strings.isIndonesian) {
+                            "Sesuaikan tema Miuix terang, gelap, atau warna dinamis Monet"
+                        } else {
+                            "Customize Miuix light, dark, or dynamic wallpaper palette"
+                        },
+                        startAction = { SettingLeadingIcon(MiuixIcons.Theme) },
+                        onSelectedIndexChange = onThemeModeChange,
+                    )
+                    OverlayDropdownPreference(
+                        items = AppPreferences.pollIntervalLabels,
+                        selectedIndex = pollIntervalIndex,
+                        title = if (strings.isIndonesian) "Interval Telemetri" else "Telemetry Refresh Rate",
+                        summary = if (strings.isIndonesian) {
+                            "Seberapa sering statistik daemon diperbarui saat aplikasi dibuka"
+                        } else {
+                            "How often live daemon stats update while app is open"
+                        },
+                        startAction = { SettingLeadingIcon(MiuixIcons.Timer) },
+                        onSelectedIndexChange = onPollIntervalChange,
+                    )
+                    SwitchPreference(
+                        checked = floatingNavBar,
+                        onCheckedChange = onFloatingNavBarChange,
+                        title = strings.floatingBarTitle,
+                        summary = strings.floatingBarSummary,
+                        startAction = { SettingLeadingIcon(MiuixIcons.HorizontalSplit) },
+                    )
+                    SwitchPreference(
+                        checked = navBadgesEnabled,
+                        onCheckedChange = onNavBadgesChange,
+                        title = strings.navBadgesTitle,
+                        summary = strings.navBadgesSummary,
+                        startAction = { SettingLeadingIcon(MiuixIcons.Layers) },
+                    )
+                }
+            }
+
+            // Profile Backup & Share (SAF with SoC Provenance)
+            item { SmallTitle(text = strings.sectionProfileTransfer) }
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = strings.exportProfileTitle,
+                        summary = strings.exportProfileSummary,
+                        startAction = { SettingLeadingIcon(MiuixIcons.Backup) },
+                        enabled = !busy && status != null,
+                        onClick = onExportProfile,
+                    )
+                    ArrowPreference(
+                        title = strings.importProfileTitle,
+                        summary = strings.importProfileSummary,
+                        startAction = { SettingLeadingIcon(MiuixIcons.Import) },
+                        enabled = !busy,
+                        onClick = onImportProfile,
+                    )
+                }
+            }
+
+            // Persistent OEM-Collaboration Map & Diagnostics
+            item { SmallTitle(text = strings.sectionCoexistence) }
+            item {
+                val contended = status?.contendedPaths.orEmpty()
+                val yielded = status?.oemYieldedPaths.orEmpty()
+                val headerText = when {
+                    contended.isNotEmpty() -> "${contended.size} Node(s) in Auto-Cooldown Backoff"
+                    yielded.isNotEmpty() -> "${strings.oemCooperatingTitle} · ${yielded.size} Yielded"
+                    else -> "Zero OEM Contention · Full Ownership"
+                }
+                val headerColor = when {
+                    contended.isNotEmpty() -> Color(0xFFF59E0B)
+                    yielded.isNotEmpty() -> Color(0xFF38BDF8)
+                    else -> Color(0xFF22C55E)
+                }
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(14.dp),
+                    insideMargin = PaddingValues(16.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
                 ) {
                     Text(
-                        text = journalText.take(2400),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        text = headerText,
+                        style = MiuixTheme.textStyles.headline2,
+                        color = headerColor,
                     )
-                }
-            }
-        }
-
-        // Emergency Recovery
-        item { SmallTitle(text = strings.sectionRecovery) }
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
-            ) {
-                Text(
-                    text = "CFJ4 Zero-Trace OEM Rollback",
-                    style = MiuixTheme.textStyles.headline2,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Stops CoreFlow actuation and restores every modified sysfs & charging node to its exact factory OEM value.",
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-                Spacer(Modifier.height(12.dp))
-                if (!confirmRollback) {
-                    TextButton(
-                        text = "Restore OEM Baseline",
-                        onClick = { confirmRollback = true },
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    TextButton(
-                        text = "Confirm Rollback Now",
-                        onClick = {
-                            confirmRollback = false
-                            onRollback()
-                        },
-                        enabled = !busy,
-                        colors = ButtonDefaults.textButtonColorsPrimary(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-        }
-
-        // Creator Identity & GitHub Profile
-        item { SmallTitle(text = strings.sectionCreator) }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                    Spacer(Modifier.height(4.dp))
+                    if (contended.isEmpty() && yielded.isEmpty()) {
                         Text(
-                            text = "MC",
-                            style = MiuixTheme.textStyles.headline1,
-                            fontWeight = FontWeight.Bold,
-                            color = MiuixTheme.colorScheme.primary,
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Mystivara Creator",
-                            style = MiuixTheme.textStyles.headline1,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = "@mystivara-creator · Creator & Maintainer of CoreFlow Engine",
+                            text = if (strings.isIndonesian) {
+                                "CoreFlow Autonomous Co-Pilot berjalan harmonis bersama OEM tanpa konflik."
+                            } else {
+                                "CoreFlow Autonomous Co-Pilot is cleanly cooperating with OEM thermal & storage policies."
+                            },
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
-                    }
-                }
-                ArrowPreference(
-                    title = "GitHub Profile",
-                    summary = "github.com/mystivara-creator",
-                    onClick = { openUrl(context, "https://github.com/mystivara-creator") },
-                )
-                ArrowPreference(
-                    title = "CoreFlow-Engine Repository",
-                    summary = "Releases, Atlas docs & issue tracker (v${BuildConfig.VERSION_NAME})",
-                    onClick = { openUrl(context, "https://github.com/mystivara-creator/CoreFlow-Engine") },
-                )
-            }
-        }
-
-        // AI Partners & Platform Sponsors
-        item { SmallTitle(text = strings.sectionSponsors) }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val rows = AI_AND_PLATFORM_SPONSORS.chunked(2)
-                for (pair in rows) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        for (sponsor in pair) {
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight(),
-                                insideMargin = PaddingValues(14.dp),
-                                onClick = { openUrl(context, sponsor.url) },
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(sponsor.accent.copy(alpha = 0.18f)),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            text = sponsor.badge,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = sponsor.accent,
-                                        )
-                                    }
-                                    Text(
-                                        text = sponsor.name,
-                                        style = MiuixTheme.textStyles.headline2,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    text = sponsor.role,
-                                    style = MiuixTheme.textStyles.footnote1,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
+                    } else {
+                        if (contended.isNotEmpty()) {
+                            Text(
+                                text = contended.joinToString("\n"),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = Color(0xFFF59E0B),
+                            )
+                        }
+                        if (yielded.isNotEmpty()) {
+                            if (contended.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = strings.oemCooperatingSummary,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = yielded.joinToString("\n"),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = MiuixTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            TextButton(
+                                text = strings.resetOemMap,
+                                onClick = onResetOemMap,
+                                enabled = !busy,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                         }
                     }
                 }
             }
-        }
 
-        // Humble Source-Available License Statement
-        item { SmallTitle(text = strings.sectionLicense) }
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
-            ) {
-                Text(
-                    text = "CoreFlow Companion v${BuildConfig.VERSION_NAME} NextGen",
-                    style = MiuixTheme.textStyles.headline2,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "CoreFlow Community Source-Available License — Free for personal use, learning, and security auditing. Authored by Mystivara Creator with transparent AI collaboration (Claude, ChatGPT, Gemini). Please do not rebrand, resell, or redistribute as your own work without permission.",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = "Export & Share Diagnostics (--diag)",
+                        summary = "Generate coreflow-diag-v${BuildConfig.VERSION_NAME}.json (Atlas + Status + CFJ4 Journal)",
+                        startAction = { SettingLeadingIcon(MiuixIcons.Share) },
+                        enabled = !busy,
+                        onClick = onShareDiag,
+                    )
+                    ArrowPreference(
+                        title = "Inspect CFJ4 Baseline Journal",
+                        summary = "${status?.baselineNodesSnapshotted ?: 0} OEM sysfs nodes currently held",
+                        startAction = { SettingLeadingIcon(MiuixIcons.File) },
+                        enabled = !busy,
+                        onClick = onLoadJournal,
+                    )
+                }
             }
-        }
 
-        item { Spacer(Modifier.height(12.dp)) }
+            if (!journalText.isNullOrBlank()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(14.dp),
+                    ) {
+                        Text(
+                            text = journalText.take(2400),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+            }
+
+            // Emergency Recovery
+            item { SmallTitle(text = strings.sectionRecovery) }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    insideMargin = PaddingValues(16.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = { if (!busy) confirmRollback = !confirmRollback },
+                ) {
+                    Text(
+                        text = "CFJ4 Zero-Trace OEM Rollback",
+                        style = MiuixTheme.textStyles.headline2,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Stops CoreFlow actuation and restores every modified sysfs & charging node to its exact factory OEM value.",
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    if (!confirmRollback) {
+                        TextButton(
+                            text = "Restore OEM Baseline",
+                            onClick = { confirmRollback = true },
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        TextButton(
+                            text = "Confirm Rollback Now",
+                            onClick = {
+                                confirmRollback = false
+                                onRollback()
+                            },
+                            enabled = !busy,
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
+            // Dedicated About Entry (KernelSU / HyperOS 4 Style)
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    ArrowPreference(
+                        title = strings.aboutTitle,
+                        summary = "${strings.aboutSummary} · v${BuildConfig.VERSION_NAME}",
+                        startAction = { SettingLeadingIcon(MiuixIcons.Info) },
+                        onClick = onOpenAbout,
+                    )
+                }
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+        }
     }
 }
 
-private fun openUrl(context: Context, url: String) {
-    runCatching {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
-    }
+@Composable
+private fun SettingLeadingIcon(icon: ImageVector) {
+    Icon(
+        imageVector = icon,
+        contentDescription = null,
+        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        modifier = Modifier
+            .padding(end = 14.dp)
+            .size(22.dp),
+    )
 }

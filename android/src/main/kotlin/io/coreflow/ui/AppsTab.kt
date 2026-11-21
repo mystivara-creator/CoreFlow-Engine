@@ -40,14 +40,19 @@ import io.coreflow.CoreFlowManager
 import io.coreflow.InstalledAppEntry
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 @Composable
 fun AppsTab(
@@ -57,6 +62,8 @@ fun AppsTab(
     globalProfile: CoreFlowManager.Profile,
     bypassOnGaming: Boolean,
     rules: CoreFlowManager.AppRules,
+    isRefreshing: Boolean,
+    contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
     onReloadApps: () -> Unit,
     onAssignBucket: (String, CoreFlowManager.AppRuleBucket) -> Unit,
@@ -84,114 +91,133 @@ fun AppsTab(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        item {
-            TextField(
-                value = query,
-                onValueChange = { query = it },
-                label = strings.searchAppsHint,
-                useLabelAsPlaceholder = true,
-                leadingIcon = {
-                    Icon(
-                        imageVector = MiuixIcons.Search,
-                        contentDescription = "Search",
-                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(start = 12.dp),
-                    )
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+    val pullState = rememberPullToRefreshState()
 
-        // HyperOS-style Uniform Segmented Filter Bar (strictly single-line, identical heights)
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainer)
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                val tabs = listOf(
-                    "${strings.filterAll} (${apps.size})",
-                    "${strings.filterGames} ($gamesCount)",
-                    "${strings.filterRules} (${rules.totalConfigured})",
-                )
-                tabs.forEachIndexed { idx, label ->
-                    val selected = filterMode == idx
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (selected) MiuixTheme.colorScheme.primary else Color.Transparent,
-                            )
-                            .clickable { filterMode = idx }
-                            .padding(horizontal = 6.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = label,
-                            fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = if (selected) {
-                                MiuixTheme.colorScheme.onPrimary
-                            } else {
-                                MiuixTheme.colorScheme.onSurfaceVariantSummary
-                            },
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
+    PullToRefresh(
+        isRefreshing = isRefreshing || loading,
+        onRefresh = onReloadApps,
+        pullToRefreshState = pullState,
+        topAppBarScrollBehavior = scrollBehavior,
+        contentPadding = PaddingValues(top = contentPadding.calculateTopPadding()),
+        refreshTexts = strings.pullToRefreshTexts,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = strings.searchAppsHint,
+                    useLabelAsPlaceholder = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = MiuixIcons.Search,
+                            contentDescription = "Search",
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(start = 12.dp),
                         )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // HyperOS-style Uniform Segmented Filter Bar (strictly single-line, identical heights)
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainer)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val tabs = listOf(
+                        "${strings.filterAll} (${apps.size})",
+                        "${strings.filterGames} ($gamesCount)",
+                        "${strings.filterRules} (${rules.totalConfigured})",
+                    )
+                    tabs.forEachIndexed { idx, label ->
+                        val selected = filterMode == idx
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (selected) MiuixTheme.colorScheme.primary else Color.Transparent,
+                                )
+                                .clickable { filterMode = idx }
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (selected) {
+                                    MiuixTheme.colorScheme.onPrimary
+                                } else {
+                                    MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                },
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        if (loading) {
-            item {
-                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
-                    Text(
-                        text = strings.loadingApps,
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
+            if (loading) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
+                        Text(
+                            text = strings.loadingApps,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
                 }
-            }
-        } else if (filtered.isEmpty()) {
-            item {
-                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
-                    Text(text = strings.noMatchingApps, style = MiuixTheme.textStyles.body1)
-                    Spacer(Modifier.height(10.dp))
-                    TextButton(text = strings.reloadApps, onClick = onReloadApps)
+            } else if (filtered.isEmpty()) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(18.dp)) {
+                        Text(text = strings.noMatchingApps, style = MiuixTheme.textStyles.body1)
+                        Spacer(Modifier.height(10.dp))
+                        TextButton(text = strings.reloadApps, onClick = onReloadApps)
+                    }
                 }
-            }
-        } else {
-            item {
-                SmallTitle(text = "${strings.installedAppsHeader} (${filtered.size})")
-            }
+            } else {
+                item {
+                    SmallTitle(text = "${strings.installedAppsHeader} (${filtered.size})")
+                }
 
-            items(items = filtered, key = { it.packageName }) { app ->
-                val currentBucket = rules.bucketFor(app.packageName)
-                val isExpanded = expandedPackage == app.packageName
-                val isOverride = currentBucket != CoreFlowManager.AppRuleBucket.AUTO
-                val stateColor = bucketAccentColor(currentBucket)
+                items(items = filtered, key = { it.packageName }) { app ->
+                    val currentBucket = rules.bucketFor(app.packageName)
+                    val isExpanded = expandedPackage == app.packageName
+                    val isOverride = currentBucket != CoreFlowManager.AppRuleBucket.AUTO
+                    val stateColor = bucketAccentColor(currentBucket)
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(13.dp),
-                    onClick = {
-                        expandedPackage = if (isExpanded) null else app.packageName
-                    },
-                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(13.dp),
+                        pressFeedbackType = PressFeedbackType.Tilt,
+                        onClick = {
+                            expandedPackage = if (isExpanded) null else app.packageName
+                        },
+                    ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -355,7 +381,8 @@ fun AppsTab(
             }
         }
 
-        item { Spacer(Modifier.height(12.dp)) }
+            item { Spacer(Modifier.height(12.dp)) }
+        }
     }
 }
 

@@ -82,6 +82,7 @@ struct VmNodesInfo {
     std::string vfs_cache_pressure_path;
     std::string mglru_enabled_path;
     std::string mglru_min_ttl_path;
+    bool mglru_oem_enabled{false};
     std::string compaction_proactiveness_path;
     std::string watermark_scale_factor_path;
     uint32_t baseline_watermark_scale_factor{10};
@@ -136,6 +137,7 @@ struct HardwareTopology {
     std::vector<std::string> backlight_dirs;
     std::vector<std::string> drm_dpms_paths;
     std::vector<std::string> fb_blank_paths;
+    std::vector<std::string> refresh_rate_paths;
 };
 
 class HardwareProbe {
@@ -147,6 +149,7 @@ public:
 
     // Lightweight live telemetry readers (strictly read-only, bounded I/O)
     [[nodiscard]] bool is_screen_off(const HardwareTopology& topo) const noexcept;
+    [[nodiscard]] std::optional<uint32_t> read_live_refresh_hz(const HardwareTopology& topo) const noexcept;
     [[nodiscard]] std::optional<double> read_gpu_busy_pct(const HardwareTopology& topo) const noexcept;
     [[nodiscard]] std::optional<double> read_psi_avg10(const std::string& resource) const noexcept;
     [[nodiscard]] MemorySnapshot read_memory_snapshot() const noexcept;

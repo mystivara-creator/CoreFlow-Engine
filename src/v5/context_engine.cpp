@@ -308,11 +308,24 @@ bool ContextEngine::is_background_system_service(std::string_view pkg) noexcept 
            lower == "com.android.se" ||
            lower == "com.android.keychain" ||
            lower == "com.android.shell" ||
+           lower == "com.android.smspush" ||
+           lower == "com.android.ims" ||
+           lower == "com.android.ons" ||
+           lower == "com.android.stk" ||
+           lower == "com.android.server.telecom" ||
+           lower == "com.android.cellbroadcastreceiver" ||
+           lower == "com.android.dynsystem" ||
+           lower == "com.android.localtransport" ||
+           lower == "com.android.systemui" ||
            lower == "com.android.bluetooth" ||
            lower == "com.android.nfc" ||
            lower == "com.android.phone" ||
            lower == "com.android.permissioncontroller" ||
            lower == "com.android.networkstack" ||
+           lower == "com.miui.securityadd" ||
+           lower == "com.miui.cit" ||
+           lower == "com.xiaomi.otrpbroker" ||
+           lower == "com.xiaomi.bluetooth" ||
            lower == "com.google.android.gms" ||
            lower == "com.google.android.gsf" ||
            lower == "com.google.android.ext.services" ||

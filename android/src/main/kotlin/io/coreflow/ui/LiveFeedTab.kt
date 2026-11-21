@@ -31,10 +31,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.CoreFlowManager
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,162 +48,63 @@ import java.util.Locale
 fun LiveFeedTab(
     strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
+    isRefreshing: Boolean,
+    contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
+    onRefresh: () -> Unit,
 ) {
     val episodes = status?.episodes.orEmpty()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
+    val pullState = rememberPullToRefreshState()
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    PullToRefresh(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        pullToRefreshState = pullState,
+        topAppBarScrollBehavior = scrollBehavior,
+        contentPadding = PaddingValues(top = contentPadding.calculateTopPadding()),
+        refreshTexts = strings.pullToRefreshTexts,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        item { SmallTitle(text = strings.sectionAiBrain) }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item { SmallTitle(text = strings.sectionAiBrain) }
 
-        item {
-            val contendedCount = status?.contendedPaths?.size ?: 0
-            val sourceLabel = status?.let {
-                strings.humanizeThermalSource(it.thermalSource, contendedCount)
-            } ?: "--"
-            val sourceColor = when {
-                contendedCount > 0 -> Color(0xFFF59E0B)
-                status?.isRunning == true -> Color(0xFF22C55E)
-                else -> Color(0xFF64748B)
-            }
-            val vel = status?.thermalVelocityCpm ?: 0f
-            val trendColor = when {
-                vel >= 0.6f -> Color(0xFFEF4444)
-                vel <= -0.6f -> Color(0xFF38BDF8)
-                else -> Color(0xFF22C55E)
-            }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(15.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(9.dp)
-                                .clip(CircleShape)
-                                .background(sourceColor),
-                        )
-                        Text(
-                            text = status?.let {
-                                "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
-                            } ?: "Offline",
-                            style = MiuixTheme.textStyles.headline1,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Spacer(Modifier.size(8.dp))
-                    BadgeTag(sourceLabel, sourceColor)
-                }
-
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    MetricPill(
-                        label = strings.labelForecast10s,
-                        value = status?.let { "${it.aiPredicted10s.toInt().coerceIn(0, 130)}%" } ?: "--",
-                        accent = Color(0xFFF59E0B),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = strings.labelConfidence,
-                        value = status?.let { "${(it.aiConfidence * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        accent = Color(0xFF38BDF8),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = strings.labelCpuLoad,
-                        value = status?.let { "${it.cpuUtilPct.toInt().coerceIn(0, 100)}%" } ?: "--",
-                        accent = Color(0xFFA78BFA),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                }
-
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    MetricPill(
-                        label = strings.labelTrend,
-                        value = strings.formatTrend(vel),
-                        accent = trendColor,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Render",
-                        value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        accent = Color(0xFF10B981),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                }
-            }
-        }
-
-        item {
-            BenchmarkCard(strings = strings, status = status)
-        }
-
-        item { SmallTitle(text = "${strings.sectionEpisodes} (${episodes.size})") }
-
-        if (episodes.isEmpty()) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(18.dp),
-                ) {
-                    Text(
-                        text = strings.emptyEpisodes,
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
+                val contendedCount = (status?.contendedPaths?.size ?: 0) + (status?.oemYieldedNodes ?: 0)
+                val sourceLabel = status?.let {
+                    strings.humanizeThermalSource(it.thermalSource, contendedCount)
+                } ?: "--"
+                val sourceColor = when {
+                    (status?.contendedPaths?.size ?: 0) > 0 -> Color(0xFFF59E0B)
+                    (status?.oemYieldedNodes ?: 0) > 0 -> Color(0xFF38BDF8)
+                    status?.isRunning == true -> Color(0xFF22C55E)
+                    else -> Color(0xFF64748B)
                 }
-            }
-        } else {
-            items(items = episodes, key = { it.id }) { ep ->
-                val domainColor = when (ep.domain) {
-                    "power" -> Color(0xFF10B981)
-                    "thermal" -> Color(0xFFF59E0B)
-                    "storage" -> Color(0xFF38BDF8)
-                    "memory" -> Color(0xFF06B6D4)
-                    "uclamp" -> Color(0xFFA78BFA)
-                    else -> MiuixTheme.colorScheme.primary
-                }
-                val outcomeColor = when (ep.outcome) {
-                    "oem_yield" -> Color(0xFFF59E0B)
-                    "rolled_back" -> Color(0xFFEF4444)
-                    "skipped" -> Color(0xFF64748B)
+                val vel = status?.thermalVelocityCpm ?: 0f
+                val trendColor = when {
+                    vel >= 0.6f -> Color(0xFFEF4444)
+                    vel <= -0.6f -> Color(0xFF38BDF8)
                     else -> Color(0xFF22C55E)
                 }
-                val outcomeText = strings.humanizeOutcome(ep.outcome)
-                val tsLabel = if (ep.tsMs > 0L) timeFmt.format(Date(ep.tsMs)) else "--:--:--"
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(13.dp),
+                    insideMargin = PaddingValues(15.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -208,58 +114,184 @@ fun LiveFeedTab(
                         Row(
                             modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            BadgeTag(ep.domain.uppercase(Locale.US), domainColor)
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(sourceColor),
+                            )
                             Text(
-                                text = ep.trigger,
-                                style = MiuixTheme.textStyles.body2,
+                                text = status?.let {
+                                    "${strings.humanizeMode(it.mode)} · ${it.effectiveProfile.label}"
+                                } ?: "Offline",
+                                style = MiuixTheme.textStyles.headline1,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
                         Spacer(Modifier.size(8.dp))
-                        BadgeTag(outcomeText, outcomeColor)
+                        BadgeTag(sourceLabel, sourceColor)
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = ep.action,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        color = MiuixTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(6.dp))
+
+                    Spacer(Modifier.height(12.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(
-                            text = tsLabel,
-                            fontSize = 10.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        MetricPill(
+                            label = strings.labelForecast10s,
+                            value = status?.let { "${it.aiPredicted10s.toInt().coerceIn(0, 130)}%" } ?: "--",
+                            accent = Color(0xFFF59E0B),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
-                        val meta = buildString {
-                            ep.socTempC?.let { append(String.format(Locale.US, "%.1f°C · ", it)) }
-                            append("RP ${(ep.renderPressure * 100f).toInt().coerceIn(0, 100)}% · ")
-                            append("Scale ${(ep.capacityScale * 100f).toInt().coerceIn(0, 100)}%")
-                        }
-                        Text(
-                            text = meta,
-                            fontSize = 10.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        MetricPill(
+                            label = strings.labelConfidence,
+                            value = status?.let { "${(it.aiConfidence * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFF38BDF8),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = strings.labelCpuLoad,
+                            value = status?.let { "${it.cpuUtilPct.toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFFA78BFA),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = strings.labelTrend,
+                            value = strings.formatTrend(vel),
+                            accent = trendColor,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Render",
+                            value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFF10B981),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                     }
                 }
             }
-        }
 
-        item { Spacer(Modifier.height(12.dp)) }
+            item {
+                BenchmarkCard(strings = strings, status = status)
+            }
+
+            item { SmallTitle(text = "${strings.sectionEpisodes} (${episodes.size})") }
+
+            if (episodes.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(18.dp),
+                    ) {
+                        Text(
+                            text = strings.emptyEpisodes,
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+            } else {
+                items(items = episodes, key = { it.id }) { ep ->
+                    val domainColor = when (ep.domain) {
+                        "power" -> Color(0xFF10B981)
+                        "thermal" -> Color(0xFFF59E0B)
+                        "storage" -> Color(0xFF38BDF8)
+                        "memory" -> Color(0xFF06B6D4)
+                        "uclamp" -> Color(0xFFA78BFA)
+                        "semantic", "copilot" -> Color(0xFF6366F1)
+                        else -> MiuixTheme.colorScheme.primary
+                    }
+                    val outcomeColor = when (ep.outcome) {
+                        "oem_yield" -> Color(0xFFF59E0B)
+                        "rolled_back" -> Color(0xFFEF4444)
+                        "skipped" -> Color(0xFF64748B)
+                        else -> Color(0xFF22C55E)
+                    }
+                    val outcomeText = strings.humanizeOutcome(ep.outcome)
+                    val tsLabel = if (ep.tsMs > 0L) timeFmt.format(Date(ep.tsMs)) else "--:--:--"
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(13.dp),
+                        pressFeedbackType = PressFeedbackType.Tilt,
+                        onClick = {},
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                BadgeTag(ep.domain.uppercase(Locale.US), domainColor)
+                                Text(
+                                    text = ep.trigger,
+                                    style = MiuixTheme.textStyles.body2,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Spacer(Modifier.size(8.dp))
+                            BadgeTag(outcomeText, outcomeColor)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = ep.action,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = MiuixTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = tsLabel,
+                                fontSize = 10.sp,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                            val meta = buildString {
+                                ep.socTempC?.let { append(String.format(Locale.US, "%.1f°C · ", it)) }
+                                append("RP ${(ep.renderPressure * 100f).toInt().coerceIn(0, 100)}% · ")
+                                append("Scale ${(ep.capacityScale * 100f).toInt().coerceIn(0, 100)}%")
+                            }
+                            Text(
+                                text = meta,
+                                fontSize = 10.sp,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            item { Spacer(Modifier.height(12.dp)) }
+        }
     }
 }
 

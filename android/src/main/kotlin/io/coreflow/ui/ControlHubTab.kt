@@ -10,6 +10,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -44,26 +46,35 @@ import io.coreflow.CoreFlowOverlayService
 import io.coreflow.CoreFlowTileService
 import io.coreflow.R
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import java.util.Locale
 
 /**
- * CoreFlow v6 Capability-Driven Control Hub.
+ * CoreFlow v6.1 Autonomous Co-Pilot Control Hub.
  * Follows the strict "Absent, Not Disabled" principle: hardware controls appear only
  * when CoreFlow Atlas proves the underlying kernel interface exists on this device.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ControlHubTab(
     strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
     busy: Boolean,
+    isRefreshing: Boolean,
+    contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
+    onRefresh: () -> Unit,
     onToggleFeature: (key: String, label: String, enabled: Boolean) -> Unit,
     onSetPowerControl: (key: String, value: String, msg: String) -> Unit,
     onMessage: (String) -> Unit,
@@ -84,70 +95,44 @@ fun ControlHubTab(
     val chargeLimitOptions = remember { listOf("Off", "80%", "85%", "90%") }
     val chargeLimitValues = remember { listOf(0, 80, 85, 90) }
     val chargeLimitIdx = chargeLimitValues.indexOf(powerCfg.chargeLimitPct).coerceAtLeast(0)
+    val pullState = rememberPullToRefreshState()
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    PullToRefresh(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        pullToRefreshState = pullState,
+        topAppBarScrollBehavior = scrollBehavior,
+        contentPadding = PaddingValues(top = contentPadding.calculateTopPadding()),
+        refreshTexts = strings.pullToRefreshTexts,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // 1. CPU & EAS Scheduler Domain
-        item { SmallTitle(text = strings.sectionCpu) }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                if (clusters.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        for (c in clusters) {
-                            val curMhz = if (c.curKhz > 0L) "${c.curKhz / 1000L} MHz" else "--"
-                            val rangeMhz = if (c.maxKhz > 0L) "${c.minKhz / 1000L}–${c.maxKhz / 1000L} MHz" else "--"
-                            val frac = if (c.maxKhz > 0L && c.curKhz > 0L) {
-                                (c.curKhz.toFloat() / c.maxKhz.toFloat()).coerceIn(0.05f, 1f)
-                            } else {
-                                0f
-                            }
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        text = "${c.role.uppercase(Locale.US)} · ${c.governor}",
-                                        style = MiuixTheme.textStyles.body2,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
-                                    Text(
-                                        text = "$curMhz  ($rangeMhz)",
-                                        fontSize = 11.sp,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    )
-                                }
-                                UsageBar(fraction = frac, color = MiuixTheme.colorScheme.primary)
-                            }
-                        }
-                    }
-                }
-                SwitchPreference(
-                    checked = features.frameSmoothness,
-                    onCheckedChange = { onToggleFeature("enable_frame_smoothness", "Frame Smoothness", it) },
-                    title = "Per-TID Frame Smoothness",
-                    summary = "Closed-loop RenderThread/GameThread UClamp (${status?.uclampMin ?: 0}..${status?.uclampMax ?: 1024})",
-                    enabled = !busy,
-                )
-            }
-        }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // 0. Autonomous Co-Pilot Dynamic Subsystem Knobs
+            item { SmallTitle(text = strings.sectionCopilot) }
+            item {
+                val discovered = status?.semanticKnobsDiscovered ?: 0
+                val active = status?.semanticKnobsActive ?: 0
+                val yielded = status?.oemYieldedNodes ?: 0
+                val leaves = status?.semanticKnobLeaves.orEmpty()
 
-        // 2. GPU & Thermal Zones Domain
-        item { SmallTitle(text = strings.sectionGpuThermal) }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    insideMargin = PaddingValues(14.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
                 ) {
                     Row(
                         modifier = Modifier
@@ -156,22 +141,141 @@ fun ControlHubTab(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         MetricPill(
-                            label = "GPU Model",
-                            value = status?.hardware?.gpuModel?.ifBlank { "Devfreq" } ?: "--",
+                            label = "Discovered",
+                            value = "$discovered",
                             accent = Color(0xFF38BDF8),
-                            modifier = Modifier
-                                .weight(1.4f)
-                                .fillMaxHeight(),
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         MetricPill(
-                            label = "GPU Busy",
-                            value = status?.gpuBusyPct?.let { "${it.toInt().coerceIn(0, 100)}%" } ?: "--",
-                            accent = Color(0xFFA78BFA),
-                            modifier = Modifier
-                                .weight(0.8f)
-                                .fillMaxHeight(),
+                            label = "Co-Pilot",
+                            value = if (active > 0) "$active ${strings.copilotActive}" else strings.copilotStandby,
+                            accent = if (active > 0) Color(0xFF22C55E) else Color(0xFFA78BFA),
+                            modifier = Modifier.weight(1.25f).fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "OEM Yield",
+                            value = "$yielded",
+                            accent = if (yielded > 0) Color(0xFFF59E0B) else Color(0xFF22C55E),
+                            modifier = Modifier.weight(0.9f).fillMaxHeight(),
                         )
                     }
+                    if (leaves.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            for (leaf in leaves.take(12)) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MiuixTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                ) {
+                                    Text(
+                                        text = leaf,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MiuixTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1. CPU & EAS Scheduler Domain
+            item { SmallTitle(text = strings.sectionCpu) }
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    if (clusters.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            for (c in clusters) {
+                                val curMhz = if (c.curKhz > 0L) "${c.curKhz / 1000L} MHz" else "--"
+                                val rangeMhz = if (c.maxKhz > 0L) "${c.minKhz / 1000L}–${c.maxKhz / 1000L} MHz" else "--"
+                                val frac = if (c.maxKhz > 0L && c.curKhz > 0L) {
+                                    (c.curKhz.toFloat() / c.maxKhz.toFloat()).coerceIn(0.05f, 1f)
+                                } else {
+                                    0f
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = "${c.role.uppercase(Locale.US)} · ${c.governor}",
+                                            style = MiuixTheme.textStyles.body2,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Text(
+                                            text = "$curMhz  ($rangeMhz)",
+                                            fontSize = 11.sp,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        )
+                                    }
+                                    UsageBar(fraction = frac, color = MiuixTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+                    }
+                    SwitchPreference(
+                        checked = features.frameSmoothness,
+                        onCheckedChange = { onToggleFeature("enable_frame_smoothness", "Frame Smoothness", it) },
+                        title = "Per-TID Frame Smoothness",
+                        summary = "Closed-loop RenderThread/GameThread UClamp (${status?.uclampMin ?: 0}..${status?.uclampMax ?: 1024})",
+                        enabled = !busy,
+                    )
+                }
+            }
+
+            // 2. GPU, Display & Thermal Zones Domain
+            item { SmallTitle(text = strings.sectionGpuThermal) }
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            MetricPill(
+                                label = "GPU Model",
+                                value = status?.hardware?.gpuModel?.ifBlank { "Devfreq" } ?: "--",
+                                accent = Color(0xFF38BDF8),
+                                modifier = Modifier
+                                    .weight(1.25f)
+                                    .fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = "GPU Busy",
+                                value = status?.gpuBusyPct?.let { "${it.toInt().coerceIn(0, 100)}%" } ?: "--",
+                                accent = Color(0xFFA78BFA),
+                                modifier = Modifier
+                                    .weight(0.8f)
+                                    .fillMaxHeight(),
+                            )
+                            MetricPill(
+                                label = "Refresh",
+                                value = status?.hardware?.refreshHz?.let { "$it Hz" } ?: "--",
+                                accent = Color(0xFF22C55E),
+                                modifier = Modifier
+                                    .weight(0.8f)
+                                    .fillMaxHeight(),
+                            )
+                        }
                     if (zones.isNotEmpty()) {
                         val zonePairs = zones.take(6).chunked(2)
                         for (pair in zonePairs) {
@@ -533,6 +637,7 @@ fun ControlHubTab(
         }
 
         item { Spacer(Modifier.height(12.dp)) }
+        }
     }
 }
 

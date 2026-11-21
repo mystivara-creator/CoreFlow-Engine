@@ -8,6 +8,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v6/oem_collaboration_map.hpp"
 
 #include <cstdint>
 #include <string>
@@ -25,6 +26,8 @@ struct ThermalEnvelopeStats {
 struct EnvelopeTelemetry {
     double cpu_psi{0.0};
     double gpu_busy_pct{0.0};
+    double render_pressure{0.0};
+    bool passive_media_only{false};
 };
 
 class ThermalEnvelopeActuator {
@@ -32,7 +35,9 @@ public:
     static constexpr uint64_t kInitialContentionCooldownMs = 30000ULL;
     static constexpr uint64_t kMaxContentionCooldownMs = 300000ULL;
 
-    explicit ThermalEnvelopeActuator(BaselineStore& baseline) noexcept;
+    explicit ThermalEnvelopeActuator(
+        BaselineStore& baseline,
+        v6::OemCollaborationMap* oem_map = nullptr) noexcept;
 
     void apply(const HardwareTopology& topo,
                ContextMode mode,
@@ -71,9 +76,11 @@ private:
                             const std::string& target,
                             uint64_t now_ms,
                             uint64_t deadband = 0U) noexcept;
+    void rollback_managed_node(const std::string& path) noexcept;
     void rollback_all_managed() noexcept;
 
     BaselineStore& baseline_;
+    v6::OemCollaborationMap* oem_map_{nullptr};
     std::unordered_map<std::string, std::string> last_written_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;
     ThermalEnvelopeStats stats_{};

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(CoreFlowEngine VERSION 6.0.0 LANGUAGES CXX)
+project(CoreFlowEngine VERSION 6.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,13 +44,15 @@ if(NOT COREFLOW_BUILD_COMMIT MATCHES "^[a-f0-9]+$")
     set(COREFLOW_BUILD_COMMIT "unknown")
 endif()
 
-# CoreFlow v5 Lean 4-Pillar Sources
+# CoreFlow v6.1 Autonomous Co-Pilot & 4-Pillar Sources
 set(COREFLOW_V5_SOURCES
     src/v5/hardware_probe.cpp
     src/v5/context_engine.cpp
     src/v5/thread_scheduler.cpp
     src/v5/storage_memory_actuator.cpp
     src/v5/thermal_envelope_actuator.cpp
+    src/v6/oem_collaboration_map.cpp
+    src/v6/semantic_knob_engine.cpp
     src/kernel/baseline_store.cpp
     src/kernel/mutation_coordinator.cpp
     src/kernel/mount_topology.cpp
@@ -80,7 +82,7 @@ if(CORE_FLOW_BUILD_TESTS)
     enable_testing()
     add_compile_options(-UNDEBUG)
 
-    # CoreFlow v5 4-Pillar Unit Tests
+    # CoreFlow v5/v6.1 Unit Tests
     add_executable(test_v5_hardware_probe
         tests/test_v5_hardware_probe.cpp
         src/v5/hardware_probe.cpp
@@ -104,6 +106,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_v5_storage_memory_actuator
         tests/test_v5_storage_memory_actuator.cpp
         src/v5/storage_memory_actuator.cpp
+        src/v6/oem_collaboration_map.cpp
         src/kernel/baseline_store.cpp
     )
     if(NOT ANDROID)
@@ -114,6 +117,7 @@ if(CORE_FLOW_BUILD_TESTS)
     add_executable(test_v5_thermal_envelope
         tests/test_v5_thermal_envelope.cpp
         src/v5/thermal_envelope_actuator.cpp
+        src/v6/oem_collaboration_map.cpp
         src/kernel/baseline_store.cpp
     )
     if(NOT ANDROID)
@@ -128,6 +132,19 @@ if(CORE_FLOW_BUILD_TESTS)
         target_link_libraries(test_v6_decision_journal PRIVATE pthread)
     endif()
     add_test(NAME V6DecisionJournalTest COMMAND test_v6_decision_journal)
+
+    add_executable(test_v6_semantic_copilot
+        tests/test_v6_semantic_copilot.cpp
+        src/v6/oem_collaboration_map.cpp
+        src/v6/semantic_knob_engine.cpp
+        src/v5/hardware_probe.cpp
+        src/kernel/mount_topology.cpp
+        src/kernel/baseline_store.cpp
+    )
+    if(NOT ANDROID)
+        target_link_libraries(test_v6_semantic_copilot PRIVATE pthread)
+    endif()
+    add_test(NAME V6SemanticCopilotTest COMMAND test_v6_semantic_copilot)
 
     # Foundational Infrastructure & Safety Tests
     add_executable(test_mount_topology

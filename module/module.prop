@@ -1,7 +1,7 @@
 id=cfae_framework
 name=CoreFlow Engine (CFAE)
-version=v6.0.0
-versionCode=60000
+version=v6.1.0
+versionCode=61000
 author=mystivara-creator
-description=CoreFlow v6 NextGen (Android 13+): Capability-driven Atlas, per-TID closed-loop UClamp, UFS launch burst, MGLRU memory guard, Rust PID thermal pacing, CFJ4 Bypass Charging & live verified decision episodes.
+description=CoreFlow v6.1 Autonomous Co-Pilot (Android 13+): Dynamic Semantic Knob Discovery, Release-on-Calm OEM rollback, Persistent OEM-Collaboration Map, live 120Hz/144Hz pacing, per-TID UClamp, Rust PID thermal & CFJ4 Bypass Charging.
 updateJson=https://github.com/mystivara-creator/CoreFlow-Engine/releases/latest/download/update.json

@@ -43,6 +43,7 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import java.util.Locale
 
 private data class AbLaunchResult(
@@ -88,7 +89,35 @@ fun BenchmarkCard(
     }
 
     val fgPkg = status?.foregroundPackage?.takeIf {
-        it.isNotBlank() && it != context.packageName && it != "io.coreflow.companion"
+        it.isNotBlank() &&
+            it != "android" &&
+            it != "com.android.systemui" &&
+            it != context.packageName &&
+            it != "io.coreflow.companion" &&
+            !it.startsWith("io.coreflow.companion")
+    }
+    val fgLabel = remember(fgPkg, strings.isIndonesian) {
+        if (fgPkg == null) {
+            if (strings.isIndonesian) "App Aktif" else "Active App"
+        } else {
+            runCatching {
+                val appInfo = context.packageManager.getApplicationInfo(
+                    fgPkg,
+                    PackageManager.ApplicationInfoFlags.of(0L),
+                )
+                context.packageManager.getApplicationLabel(appInfo).toString()
+            }.getOrNull()?.takeIf { it.isNotBlank() && !it.equals("android", ignoreCase = true) }
+                ?: run {
+                    val parts = fgPkg.split('.').filter { it.isNotBlank() }
+                    val tail = parts.lastOrNull().orEmpty()
+                    val candidate = if (tail.lowercase(Locale.US) in setOf("android", "app", "global", "mobile", "client") && parts.size >= 2) {
+                        parts[parts.size - 2]
+                    } else {
+                        tail
+                    }
+                    candidate.replaceFirstChar { it.uppercaseChar() }
+                }
+        }
     }
     val targetPkg = if (targetIdx == 0) {
         defaultCameraPkg
@@ -99,6 +128,8 @@ fun BenchmarkCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         insideMargin = PaddingValues(15.dp),
+        pressFeedbackType = PressFeedbackType.Tilt,
+        onClick = {},
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -136,7 +167,7 @@ fun BenchmarkCard(
         ) {
             val targets = listOf(
                 if (strings.isIndonesian) "Kamera" else "Camera",
-                fgPkg?.substringAfterLast('.') ?: (if (strings.isIndonesian) "App Aktif" else "Active App"),
+                fgLabel,
             )
             targets.forEachIndexed { idx, label ->
                 val sel = targetIdx == idx

@@ -510,7 +510,7 @@ export const App: React.FC = () => {
       } else {
         setStatus((prev) => ({ ...prev, running: true, pid: 1428, inspectionMode: false }));
       }
-      addLog('BOOST', 'Daemon', 'CoreFlow v6.0.0 daemon started.');
+      addLog('BOOST', 'Daemon', 'CoreFlow v6.1.0 daemon started.');
       setFeedback(isId ? 'Daemon CoreFlow aktif.' : 'CoreFlow daemon started.');
     } catch (err) {
       setErrorMsg(`Unable to start daemon: ${String(err)}`);

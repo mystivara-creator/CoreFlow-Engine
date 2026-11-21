@@ -597,12 +597,25 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         if (is_regular_writable(vm_root / "compact_memory")) topo.vm.compact_memory_path = (vm_root / "compact_memory").string();
         if (is_regular_writable(vm_root / "extra_free_kbytes")) topo.vm.extra_free_kbytes_path = (vm_root / "extra_free_kbytes").string();
         const fs::path mglru_en = sys / "kernel/mm/lru_gen/enabled";
-        if (is_regular_writable(mglru_en)) topo.vm.mglru_enabled_path = mglru_en.string();
+        if (is_regular_writable(mglru_en) || is_regular_readable(mglru_en)) {
+            topo.vm.mglru_enabled_path = mglru_en.string();
+            const std::string cur = read_first_line(mglru_en);
+            if (cur == "y" || cur == "Y" || cur == "1") {
+                topo.vm.mglru_oem_enabled = true;
+            } else if (!cur.empty()) {
+                char* end = nullptr;
+                errno = 0;
+                const unsigned long long mask = std::strtoull(cur.c_str(), &end, 0);
+                if (errno == 0 && end != cur.c_str() && *end == '\0' && mask != 0ULL) {
+                    topo.vm.mglru_oem_enabled = true;
+                }
+            }
+        }
         const fs::path mglru = sys / "kernel/mm/lru_gen/min_ttl_ms";
         if (is_regular_writable(mglru)) topo.vm.mglru_min_ttl_path = mglru.string();
     }
 
-    // 7. Backlights, Display Power (OLED/DRM/FB) & Refresh Rate (fully dynamic scan)
+    // 7. Backlights, Display Power (OLED/DRM/FB) & Live Refresh Rate (DRM + Graphics + Xiaomi mi_display + SDE CRTC)
     {
         for (const auto& bl : child_dirs(sys / "class/backlight", 16U)) {
             const auto resolved = canonical_under(bl, sys);
@@ -610,57 +623,96 @@ HardwareTopology HardwareProbe::discover() const noexcept {
                 topo.backlight_dirs.push_back(resolved.string());
             }
         }
-        uint32_t detected_hz = 0;
-        for (const auto& root : std::array<fs::path, 2>{sys / "class/drm", sys / "class/graphics"}) {
-            for (const auto& dev : child_dirs(root, 32U)) {
-                const auto resolved = canonical_under(dev, sys);
-                if (resolved.empty()) continue;
-                const fs::path dpms_path = resolved / "dpms";
-                if (is_regular_readable(dpms_path)) {
-                    const std::string conn_status = to_lower_copy(read_first_line(resolved / "status"));
-                    if (conn_status.empty() || conn_status == "connected") {
-                        topo.drm_dpms_paths.push_back(dpms_path.string());
-                    }
+
+        auto parse_hz_from_text_blob = [](const std::string& txt) -> uint32_t {
+            uint32_t best = 0U;
+            std::istringstream lss(txt);
+            std::string line;
+            while (std::getline(lss, line)) {
+                const std::string trimmed = trim_copy(line);
+                if (trimmed.empty()) continue;
+                uint64_t direct_hz = 0;
+                if (parse_u64(trimmed, direct_hz) && direct_hz >= 30U && direct_hz <= 240U) {
+                    best = std::max(best, static_cast<uint32_t>(direct_hz));
+                    continue;
                 }
-                const fs::path blank_path = resolved / "blank";
-                if (is_regular_readable(blank_path)) {
-                    topo.fb_blank_paths.push_back(blank_path.string());
+                if (const auto parsed = parse_refresh_from_text(trimmed)) {
+                    best = std::max(best, *parsed);
+                    continue;
                 }
-                for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "measured_fps",
-                                         "current_mode", "modes", "available_modes", "msm_fb_panel_info"}) {
-                    const fs::path leaf_path = resolved / leaf;
-                    const auto txt = read_bounded(leaf_path, 2048U);
-                    if (txt.empty()) continue;
-                    std::istringstream lss(txt);
-                    std::string line;
-                    while (std::getline(lss, line)) {
-                        const std::string trimmed = trim_copy(line);
-                        uint64_t direct_hz = 0;
-                        if (parse_u64(trimmed, direct_hz) && direct_hz >= 30U && direct_hz <= 240U) {
-                            detected_hz = std::max(detected_hz, static_cast<uint32_t>(direct_hz));
-                            continue;
-                        }
-                        if (const auto parsed = parse_refresh_from_text(trimmed)) {
-                            detected_hz = std::max(detected_hz, *parsed);
-                            continue;
-                        }
-                        // Handle key=value formats such as "panel_max_fps=120" or "fps=120"
-                        const auto eq = trimmed.find('=');
-                        if (eq != std::string::npos) {
-                            const std::string key = to_lower_copy(trimmed.substr(0, eq));
-                            if (key.find("fps") != std::string::npos || key.find("refresh") != std::string::npos) {
-                                uint64_t kv_hz = 0;
-                                if (parse_u64(trim_copy(trimmed.substr(eq + 1U)), kv_hz) &&
-                                    kv_hz >= 30U && kv_hz <= 240U) {
-                                    detected_hz = std::max(detected_hz, static_cast<uint32_t>(kv_hz));
-                                }
-                            }
+                // Handle key=value or key: value formats (e.g. "panel_max_fps=120", "fps: 120.0", "dfps_max:120")
+                const auto sep = trimmed.find_first_of("=:");
+                if (sep != std::string::npos) {
+                    const std::string key = to_lower_copy(trimmed.substr(0, sep));
+                    if (key.find("fps") != std::string::npos || key.find("refresh") != std::string::npos) {
+                        double kv_hz = 0.0;
+                        std::string val = trim_copy(trimmed.substr(sep + 1U));
+                        // Strip trailing unit tokens like "Hz" or spaces
+                        const auto sp = val.find_first_of(" \t");
+                        if (sp != std::string::npos) val.resize(sp);
+                        if (parse_ascii_double(val, kv_hz) && kv_hz >= 30.0 && kv_hz <= 240.0) {
+                            best = std::max(best, static_cast<uint32_t>(std::lround(kv_hz)));
                         }
                     }
                 }
             }
+            return best;
+        };
+
+        std::set<std::string> seen_hz_paths;
+        auto scan_display_dir = [&](const fs::path& resolved) {
+            const fs::path dpms_path = resolved / "dpms";
+            if (is_regular_readable(dpms_path)) {
+                const std::string conn_status = to_lower_copy(read_first_line(resolved / "status"));
+                if (conn_status.empty() || conn_status == "connected") {
+                    topo.drm_dpms_paths.push_back(dpms_path.string());
+                }
+            }
+            const fs::path blank_path = resolved / "blank";
+            if (is_regular_readable(blank_path)) {
+                topo.fb_blank_paths.push_back(blank_path.string());
+            }
+            for (const char* leaf : {"dynamic_fps", "refresh_rate", "fps", "measured_fps",
+                                     "current_mode", "modes", "available_modes", "msm_fb_panel_info",
+                                     "panel_info"}) {
+                const fs::path leaf_path = resolved / leaf;
+                const auto txt = read_bounded(leaf_path, 2048U);
+                if (txt.empty()) continue;
+                const uint32_t hz = parse_hz_from_text_blob(txt);
+                if (hz >= 30U && hz <= 240U) {
+                    if (hz > topo.refresh_hz || topo.refresh_rate_paths.empty()) {
+                        topo.refresh_hz = std::max(topo.refresh_hz, hz);
+                    }
+                    const bool is_live_leaf =
+                        std::string_view(leaf) == "dynamic_fps" ||
+                        std::string_view(leaf) == "refresh_rate" ||
+                        std::string_view(leaf) == "fps" ||
+                        std::string_view(leaf) == "measured_fps";
+                    if (is_live_leaf && seen_hz_paths.insert(leaf_path.string()).second) {
+                        topo.refresh_rate_paths.push_back(leaf_path.string());
+                    }
+                }
+            }
+        };
+
+        for (const auto& root : std::array<fs::path, 3>{
+                 sys / "class/mi_display", sys / "class/drm", sys / "class/graphics"}) {
+            for (const auto& dev : child_dirs(root, 32U)) {
+                const auto resolved = canonical_under(dev, sys);
+                if (resolved.empty()) continue;
+                scan_display_dir(resolved);
+                // Also inspect Qualcomm SDE CRTC subdirs (e.g. /sys/class/drm/card0/sde-crtc-0/measured_fps)
+                for (const auto& sub : child_dirs(resolved, 16U)) {
+                    const std::string sub_name = to_lower_copy(sub.filename().string());
+                    if (sub_name.find("crtc") != std::string::npos ||
+                        sub_name.find("dsi") != std::string::npos ||
+                        sub_name.find("disp") != std::string::npos) {
+                        const auto sub_res = canonical_under(sub, sys);
+                        if (!sub_res.empty()) scan_display_dir(sub_res);
+                    }
+                }
+            }
         }
-        if (detected_hz != 0U) topo.refresh_hz = detected_hz;
     }
 
     // 8. Cgroup v2 topology (dynamic via MountTopologyResolver, never hardcoded vendor paths)
@@ -746,6 +798,36 @@ bool HardwareProbe::is_screen_off(const HardwareTopology& topo) const noexcept {
         if (blank == 0U) all_fb_blank = false;
     }
     return have_fb && all_fb_blank;
+}
+
+std::optional<uint32_t> HardwareProbe::read_live_refresh_hz(
+    const HardwareTopology& topo) const noexcept {
+    uint32_t best = 0U;
+    for (const auto& path : topo.refresh_rate_paths) {
+        const std::string raw = read_first_line(path);
+        if (raw.empty()) continue;
+        uint64_t direct = 0U;
+        if (parse_u64(raw, direct) && direct >= 30U && direct <= 240U) {
+            best = std::max(best, static_cast<uint32_t>(direct));
+            continue;
+        }
+        if (const auto parsed = parse_refresh_from_text(raw)) {
+            best = std::max(best, *parsed);
+            continue;
+        }
+        const auto sep = raw.find_first_of("=:");
+        if (sep != std::string::npos) {
+            std::string val = trim_copy(raw.substr(sep + 1U));
+            const auto sp = val.find_first_of(" \t");
+            if (sp != std::string::npos) val.resize(sp);
+            double f = 0.0;
+            if (parse_ascii_double(val, f) && f >= 30.0 && f <= 240.0) {
+                best = std::max(best, static_cast<uint32_t>(std::lround(f)));
+            }
+        }
+    }
+    if (best >= 30U && best <= 240U) return best;
+    return std::nullopt;
 }
 
 std::optional<double> HardwareProbe::read_gpu_busy_pct(const HardwareTopology& topo) const noexcept {

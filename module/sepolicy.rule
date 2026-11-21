@@ -194,3 +194,11 @@ allow magisk sysfs_power dir { read open search getattr }
 allow magisk sysfs_power file { read write open getattr }
 allow magisk sysfs_battery_supply dir { read open search getattr }
 allow magisk sysfs_battery_supply file { read write open getattr }
+
+# v6.1 Live Display Refresh Rate (mi_display / DRM / graphics) & WALT/Sched semantic knobs
+allow su sysfs_graphics dir { read open search getattr }
+allow su sysfs_graphics file { read open getattr }
+allow su proc_sched file { read write open getattr }
+allow magisk sysfs_graphics dir { read open search getattr }
+allow magisk sysfs_graphics file { read open getattr }
+allow magisk proc_sched file { read write open getattr }

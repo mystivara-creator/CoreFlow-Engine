@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,11 +40,20 @@ import io.coreflow.CoreFlowManager
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Ok
+import top.yukonga.miuix.kmp.icon.extended.Pause
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import java.util.Locale
 
 @Composable
@@ -53,412 +63,510 @@ fun HomeTab(
     status: CoreFlowManager.DaemonStatus?,
     lastError: String?,
     busy: Boolean,
+    isRefreshing: Boolean,
+    contentPadding: PaddingValues,
     scrollBehavior: ScrollBehavior,
+    onRefresh: () -> Unit,
     onSelectProfile: (CoreFlowManager.Profile) -> Unit,
     onTogglePause: (Boolean) -> Unit,
     onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    val pullState = rememberPullToRefreshState()
+
+    PullToRefresh(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        pullToRefreshState = pullState,
+        topAppBarScrollBehavior = scrollBehavior,
+        contentPadding = PaddingValues(top = contentPadding.calculateTopPadding()),
+        refreshTexts = strings.pullToRefreshTexts,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        if (hasRoot == false || lastError != null) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    insideMargin = PaddingValues(16.dp),
-                ) {
-                    Text(
-                        text = if (hasRoot == false) "Root Permission Needed" else "Daemon Connection Notice",
-                        style = MiuixTheme.textStyles.headline1,
-                        color = Color(0xFFEF4444),
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = lastError ?: "Grant root access to CoreFlow Companion in Magisk, KernelSU, or APatch.",
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                }
-            }
-        }
-
-        // Hero Status Card
-        item {
-            val isRunning = status?.isRunning == true
-            val isPaused = status?.inspectionMode == true
-            val dotColor = when {
-                !isRunning -> Color(0xFFEF4444)
-                isPaused -> Color(0xFFF59E0B)
-                status?.thermalGuardActive == true -> Color(0xFFF97316)
-                else -> Color(0xFF22C55E)
-            }
-            val headline = when {
-                status == null -> if (strings.isIndonesian) "Menghubungkan..." else "Connecting..."
-                !isRunning -> if (strings.isIndonesian) "Engine Berhenti" else "Engine Stopped"
-                isPaused -> if (strings.isIndonesian) "Dijeda · Mode OEM" else "Paused · OEM Mode"
-                status.thermalGuardActive -> strings.humanizeMode("THERMAL_GUARD")
-                else -> "${status.effectiveProfile.label} · ${strings.humanizeMode(status.mode)}"
-            }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(16.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = contentPadding.calculateTopPadding() + 8.dp,
+                bottom = contentPadding.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (hasRoot == false || lastError != null) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        insideMargin = PaddingValues(16.dp),
+                        pressFeedbackType = PressFeedbackType.Tilt,
+                        onClick = onRefresh,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(dotColor),
-                        )
                         Text(
-                            text = headline,
+                            text = if (hasRoot == false) "Root Permission Needed" else "Daemon Connection Notice",
                             style = MiuixTheme.textStyles.headline1,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            color = Color(0xFFEF4444),
                         )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    ) {
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            text = status?.let { "${it.activePillars}/4 Pillars" } ?: "--/4",
-                            fontSize = 11.sp,
-                            color = MiuixTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
+                            text = lastError ?: "Grant root access to CoreFlow Companion in Magisk, KernelSU, or APatch.",
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
                 }
+            }
 
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = status?.foregroundPackage?.takeIf { it.isNotBlank() }?.let { "Foreground: $it" }
-                        ?: status?.hardware?.socModel
-                        ?: "Waiting for CoreFlow v6.0.0 telemetry",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
-                // Uniform 4-Metric Row
-                Spacer(Modifier.height(14.dp))
-                val tempColor = when {
-                    (status?.socTempCelsius ?: 0f) >= 55f -> Color(0xFFEF4444)
-                    (status?.socTempCelsius ?: 0f) >= 46f -> Color(0xFFF59E0B)
+            // Hero Status Card (HyperOS 4 / KernelSU 3D Perspective Tilt Style)
+            item {
+                val isRunning = status?.isRunning == true
+                val isPaused = status?.inspectionMode == true
+                val isThermalGuard = status?.thermalGuardActive == true
+                val dotColor = when {
+                    !isRunning -> Color(0xFFEF4444)
+                    isPaused -> Color(0xFFF59E0B)
+                    isThermalGuard -> Color(0xFFF97316)
                     else -> Color(0xFF22C55E)
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    MetricPill(
-                        label = "SoC Temp",
-                        value = status?.socTempCelsius?.takeIf { it >= 0f }
-                            ?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--",
-                        accent = tempColor,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Render",
-                        value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        accent = Color(0xFF38BDF8),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "UClamp",
-                        value = status?.let { "${it.uclampMin}" } ?: "--",
-                        accent = Color(0xFFA78BFA),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Headroom",
-                        value = status?.let { "${(it.capacityScale * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
-                        accent = Color(0xFF34D399),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
+                val heroBgColor = when {
+                    !isRunning -> if (dark) Color(0xFF331B1E) else Color(0xFFFDECEC)
+                    isPaused -> if (dark) Color(0xFF332917) else Color(0xFFFEF6E4)
+                    isThermalGuard -> if (dark) Color(0xFF382316) else Color(0xFFFFF1E6)
+                    else -> if (dark) Color(0xFF1E3628) else Color(0xFFE7F6ED)
+                }
+                val headline = when {
+                    status == null -> if (strings.isIndonesian) "Menghubungkan..." else "Connecting..."
+                    !isRunning -> if (strings.isIndonesian) "Engine Berhenti" else "Engine Stopped"
+                    isPaused -> if (strings.isIndonesian) "Dijeda · Mode OEM" else "Paused · OEM Mode"
+                    isThermalGuard -> strings.humanizeMode("THERMAL_GUARD")
+                    else -> "${status.effectiveProfile.label} · ${strings.humanizeMode(status.mode)}"
                 }
 
-                // 4-Pillar Compact Strip
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    PillarChip("UClamp", status?.uclampSupported == true, Modifier.weight(1f).fillMaxHeight())
-                    PillarChip(
-                        "Storage",
-                        (status?.readAheadKb ?: 0) > 0 || status?.storageBurstActive == true,
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    PillarChip(
-                        "MGLRU",
-                        status?.hardware?.mglruAvailable == true || (status?.prereadBytes ?: 0L) > 0L,
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    PillarChip(
-                        "Thermal",
-                        (status?.managedEnvelopeNodes ?: 0) > 0 || !status?.thermalSource.isNullOrBlank(),
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
-                }
-
-                // Action Row: Pause A/B + Capability-Driven Bypass Quick Toggle
-                Spacer(Modifier.height(14.dp))
-                val bypassSupported = status?.batteryPower?.bypassSupported == true
-                val bypassActive = status?.batteryPower?.bypassActive == true
-                Row(
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    colors = CardDefaults.defaultColors(color = heroBgColor),
+                    insideMargin = PaddingValues(16.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
                 ) {
-                    if (isRunning) {
-                        TextButton(
-                            text = if (isPaused) strings.resumeEngine else strings.pauseCompare,
-                            onClick = { onTogglePause(!isPaused) },
-                            enabled = !busy,
-                            colors = if (isPaused) {
-                                ButtonDefaults.textButtonColorsPrimary()
-                            } else {
-                                ButtonDefaults.textButtonColors()
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (bypassSupported) {
-                            TextButton(
-                                text = if (bypassActive) strings.bypassOn else strings.bypassOff,
-                                onClick = { onToggleBypass(!(status?.powerConfig?.bypassCharging == true)) },
-                                enabled = !busy,
-                                colors = if (bypassActive) {
-                                    ButtonDefaults.textButtonColorsPrimary()
-                                } else {
-                                    ButtonDefaults.textButtonColors()
-                                },
-                                modifier = Modifier.weight(0.75f),
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        // Subtle HyperOS Watermark Emblem (KernelSU style)
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(54.dp)
+                                .clip(CircleShape)
+                                .border(2.5.dp, dotColor.copy(alpha = 0.30f), CircleShape)
+                                .background(dotColor.copy(alpha = 0.08f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = if (isPaused) MiuixIcons.Pause else MiuixIcons.Ok,
+                                contentDescription = null,
+                                tint = dotColor.copy(alpha = 0.55f),
+                                modifier = Modifier.size(28.dp),
                             )
                         }
-                    } else {
-                        TextButton(
-                            text = strings.startEngine,
-                            onClick = onStartDaemon,
-                            enabled = !busy && hasRoot == true,
-                            colors = ButtonDefaults.textButtonColorsPrimary(),
-                            modifier = Modifier.weight(1f),
-                        )
+
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(end = 62.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(dotColor),
+                                )
+                                Text(
+                                    text = headline,
+                                    style = MiuixTheme.textStyles.headline1,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+
+                            Spacer(Modifier.height(5.dp))
+                            Text(
+                                text = status?.foregroundPackage?.takeIf { it.isNotBlank() }?.let { "Foreground: $it" }
+                                    ?: status?.hardware?.socModel
+                                    ?: "Waiting for CoreFlow v6 telemetry",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(end = 62.dp),
+                            )
+
+                            // Compact Live Badges: Refresh Hz + Co-Pilot Knobs + Pillars
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val hz = status?.hardware?.refreshHz ?: 60
+                                HeroStatusBadge(
+                                    text = "$hz Hz",
+                                    accent = Color(0xFF38BDF8),
+                                )
+                                val discovered = status?.semanticKnobsDiscovered ?: 0
+                                val activeKnobs = status?.semanticKnobsActive ?: 0
+                                HeroStatusBadge(
+                                    text = if (activeKnobs > 0) {
+                                        "Co-Pilot $activeKnobs/$discovered"
+                                    } else if (discovered > 0) {
+                                        "${strings.copilotStandby} ($discovered)"
+                                    } else {
+                                        strings.copilotStandby
+                                    },
+                                    accent = if (activeKnobs > 0) Color(0xFF22C55E) else Color(0xFFA78BFA),
+                                )
+                                HeroStatusBadge(
+                                    text = status?.let { "${it.activePillars}/4 Pillars" } ?: "--/4",
+                                    accent = dotColor,
+                                )
+                            }
+                        }
                     }
-                }
-            }
-        }
 
-        // Live Telemetry Sparkline Card (shown once history has >= 2 samples)
-        val history = status?.history.orEmpty()
-        if (history.size >= 2) {
-            item {
-                SmallTitle(text = strings.sectionSparkline)
-            }
-            item {
-                LiveSparklineCard(
-                    history = history,
-                    trendLabel = strings.formatTrend(status?.thermalVelocityCpm ?: 0f),
-                )
-            }
-        }
-
-        // 4-Profile Selector (Strictly Equal-Height 2x2 Cards)
-        item {
-            SmallTitle(text = strings.sectionProfile)
-        }
-
-        item {
-            val activeProfile = status?.profile
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val pairs = CoreFlowManager.Profile.primaryProfiles.chunked(2)
-                for (rowProfiles in pairs) {
+                    // Uniform 4-Metric Row
+                    Spacer(Modifier.height(14.dp))
+                    val tempColor = when {
+                        (status?.socTempCelsius ?: 0f) >= 55f -> Color(0xFFEF4444)
+                        (status?.socTempCelsius ?: 0f) >= 46f -> Color(0xFFF59E0B)
+                        else -> Color(0xFF22C55E)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        for (profile in rowProfiles) {
-                            val selected = activeProfile == profile
-                            val cardColors = if (selected) {
-                                CardDefaults.defaultColors(
-                                    color = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
+                        MetricPill(
+                            label = "SoC Temp",
+                            value = status?.socTempCelsius?.takeIf { it >= 0f }
+                                ?.let { String.format(Locale.US, "%.1f°C", it) } ?: "--",
+                            accent = tempColor,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Render",
+                            value = status?.let { "${(it.renderPressure * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFF38BDF8),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "UClamp",
+                            value = status?.let { "${it.uclampMin}" } ?: "--",
+                            accent = Color(0xFFA78BFA),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Headroom",
+                            value = status?.let { "${(it.capacityScale * 100f).toInt().coerceIn(0, 100)}%" } ?: "--",
+                            accent = Color(0xFF34D399),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                    }
+
+                    // 4-Pillar Compact Strip
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        PillarChip("UClamp", status?.uclampSupported == true, Modifier.weight(1f).fillMaxHeight())
+                        PillarChip(
+                            "Storage",
+                            (status?.readAheadKb ?: 0) > 0 || status?.storageBurstActive == true,
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        PillarChip(
+                            "MGLRU",
+                            status?.hardware?.mglruAvailable == true || (status?.prereadBytes ?: 0L) > 0L,
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        PillarChip(
+                            "Thermal",
+                            (status?.managedEnvelopeNodes ?: 0) > 0 || !status?.thermalSource.isNullOrBlank(),
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+
+                    // Action Row: Pause A/B + Capability-Driven Bypass Quick Toggle
+                    Spacer(Modifier.height(14.dp))
+                    val bypassSupported = status?.batteryPower?.bypassSupported == true
+                    val bypassActive = status?.batteryPower?.bypassActive == true
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (isRunning) {
+                            TextButton(
+                                text = if (isPaused) strings.resumeEngine else strings.pauseCompare,
+                                onClick = { onTogglePause(!isPaused) },
+                                enabled = !busy,
+                                colors = if (isPaused) {
+                                    ButtonDefaults.textButtonColorsPrimary()
+                                } else {
+                                    ButtonDefaults.textButtonColors()
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (bypassSupported) {
+                                TextButton(
+                                    text = if (bypassActive) strings.bypassOn else strings.bypassOff,
+                                    onClick = { onToggleBypass(!status.powerConfig.bypassCharging) },
+                                    enabled = !busy,
+                                    colors = if (bypassActive) {
+                                        ButtonDefaults.textButtonColorsPrimary()
+                                    } else {
+                                        ButtonDefaults.textButtonColors()
+                                    },
+                                    modifier = Modifier.weight(0.75f),
                                 )
-                            } else {
-                                CardDefaults.defaultColors()
                             }
-                            val borderMod = if (selected) {
-                                Modifier.border(
-                                    BorderStroke(1.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                                    RoundedCornerShape(16.dp),
-                                )
-                            } else {
-                                Modifier
-                            }
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .then(borderMod),
-                                insideMargin = PaddingValues(14.dp),
-                                colors = cardColors,
-                                onClick = { if (!busy) onSelectProfile(profile) },
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                        } else {
+                            TextButton(
+                                text = strings.startEngine,
+                                onClick = onStartDaemon,
+                                enabled = !busy && hasRoot == true,
+                                colors = ButtonDefaults.textButtonColorsPrimary(),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Live Telemetry Sparkline Card (shown once history has >= 2 samples)
+            val history = status?.history.orEmpty()
+            if (history.size >= 2) {
+                item {
+                    SmallTitle(text = strings.sectionSparkline)
+                }
+                item {
+                    LiveSparklineCard(
+                        history = history,
+                        trendLabel = strings.formatTrend(status?.thermalVelocityCpm ?: 0f),
+                    )
+                }
+            }
+
+            // 4-Profile Selector (Strictly Equal-Height 2x2 Cards with 3D Tilt Feedback)
+            item {
+                SmallTitle(text = strings.sectionProfile)
+            }
+
+            item {
+                val activeProfile = status?.profile
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val pairs = CoreFlowManager.Profile.primaryProfiles.chunked(2)
+                    for (rowProfiles in pairs) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            for (profile in rowProfiles) {
+                                val selected = activeProfile == profile
+                                val cardColors = if (selected) {
+                                    CardDefaults.defaultColors(
+                                        color = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                    )
+                                } else {
+                                    CardDefaults.defaultColors()
+                                }
+                                val borderMod = if (selected) {
+                                    Modifier.border(
+                                        BorderStroke(1.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                                        RoundedCornerShape(16.dp),
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .then(borderMod),
+                                    insideMargin = PaddingValues(14.dp),
+                                    colors = cardColors,
+                                    pressFeedbackType = PressFeedbackType.Tilt,
+                                    onClick = { if (!busy) onSelectProfile(profile) },
                                 ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text = profile.label,
+                                            style = MiuixTheme.textStyles.headline2,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (selected) {
+                                                MiuixTheme.colorScheme.primary
+                                            } else {
+                                                MiuixTheme.colorScheme.onSurface
+                                            },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (selected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(MiuixTheme.colorScheme.primary),
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(4.dp))
                                     Text(
-                                        text = profile.label,
-                                        style = MiuixTheme.textStyles.headline2,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) {
-                                            MiuixTheme.colorScheme.primary
-                                        } else {
-                                            MiuixTheme.colorScheme.onSurface
-                                        },
-                                        maxLines = 1,
+                                        text = profile.tagline,
+                                        style = MiuixTheme.textStyles.footnote1,
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    if (selected) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(8.dp)
-                                                .clip(CircleShape)
-                                                .background(MiuixTheme.colorScheme.primary),
-                                        )
-                                    }
                                 }
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    text = profile.tagline,
-                                    style = MiuixTheme.textStyles.footnote1,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Session Impact Card
-        item {
-            SmallTitle(text = strings.sectionSession)
-        }
+            // Session Impact Card
+            item {
+                SmallTitle(text = strings.sectionSession)
+            }
 
-        item {
-            val session = status?.session
-            val prereadMb = (status?.prereadBytes ?: 0L) / (1024.0 * 1024.0)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                insideMargin = PaddingValues(14.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+            item {
+                val session = status?.session
+                val prereadMb = (status?.prereadBytes ?: 0L) / (1024.0 * 1024.0)
+                val cfjNodes = status?.baselineNodesSnapshotted ?: 0
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    insideMargin = PaddingValues(14.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
                 ) {
-                    MetricPill(
-                        label = "Uptime",
-                        value = formatUptime(session?.uptimeSec ?: 0L),
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Bursts",
-                        value = "${session?.launchBursts ?: 0}",
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = "Uptime",
+                            value = formatUptime(session?.uptimeSec ?: 0L),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Bursts",
+                            value = "${session?.launchBursts ?: 0}",
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "Pre-Read",
+                            value = String.format(Locale.US, "%.1f MB", prereadMb),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Pre-Read",
-                        value = String.format(Locale.US, "%.1f MB", prereadMb),
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    MetricPill(
-                        label = "Avg / Peak",
-                        value = if (session != null && session.avgSocTempCelsius >= 0f) {
-                            String.format(
-                                Locale.US,
-                                "%.0f/%.0f°C",
-                                session.avgSocTempCelsius,
-                                session.peakSocTempCelsius.coerceAtLeast(session.avgSocTempCelsius),
-                            )
-                        } else {
-                            "--"
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "Guards",
-                        value = "${session?.thermalGuardEvents ?: 0}",
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
-                    MetricPill(
-                        label = "CFJ4 Nodes",
-                        value = "${status?.baselineNodesSnapshotted ?: 0}",
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                    )
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MetricPill(
+                            label = "Avg / Peak",
+                            value = if (session != null && session.avgSocTempCelsius >= 0f) {
+                                String.format(
+                                    Locale.US,
+                                    "%.0f/%.0f°C",
+                                    session.avgSocTempCelsius,
+                                    session.peakSocTempCelsius.coerceAtLeast(session.avgSocTempCelsius),
+                                )
+                            } else {
+                                "--"
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "OEM Yield",
+                            value = "${status?.oemYieldedNodes ?: 0}",
+                            accent = if ((status?.oemYieldedNodes ?: 0) > 0) Color(0xFF38BDF8) else Color(0xFF22C55E),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                        MetricPill(
+                            label = "CFJ4 Active",
+                            value = if (cfjNodes == 0) "0 (OEM)" else "$cfjNodes",
+                            accent = if (cfjNodes == 0) Color(0xFF22C55E) else Color(0xFFA78BFA),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                        )
+                    }
                 }
             }
-        }
 
-        item { Spacer(Modifier.height(12.dp)) }
+            item { Spacer(Modifier.height(12.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun HeroStatusBadge(
+    text: String,
+    accent: Color,
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(accent.copy(alpha = 0.16f))
+            .padding(horizontal = 9.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = accent,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -475,6 +583,8 @@ private fun LiveSparklineCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         insideMargin = PaddingValues(14.dp),
+        pressFeedbackType = PressFeedbackType.Tilt,
+        onClick = {},
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
