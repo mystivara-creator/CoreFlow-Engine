@@ -46,7 +46,7 @@ jobs:
         with:
           gradle-version: "9.7.1"
 
-      - name: Configure optional release signing
+      - name: Configure persistent release signing
         id: signing
         shell: bash
         env:
@@ -56,26 +56,30 @@ jobs:
           if [ -n "${KEYSTORE_B64}" ]; then
             echo "${KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/release.jks"
             echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.jks" >> "$GITHUB_ENV"
-            echo "Release signing keystore configured."
+            echo "Persistent release signing keystore configured."
+          elif [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is required on main/release builds to prevent APK signature conflicts."
+            exit 1
           else
-            echo "No ANDROID_KEYSTORE_BASE64 secret configured; release APK will use debug signing so it remains directly installable."
+            echo "Fork/unprivileged PR without keystore secret; falling back to debug signing."
           fi
 
       - name: Build Debug and Release APKs
         working-directory: android
         env:
+          CI_BUILD_NUMBER: ${{ github.run_number }}
           KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           gradle assembleDebug assembleRelease --stacktrace
 
-      - name: Stage versioned APK outputs
+      - name: Stage and verify versioned APK outputs
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/build.gradle.kts | head -n1)"
-          VERSION="${VERSION:-5.1.0}"
+          VERSION="${VERSION:-6.0.0}"
           mkdir -p artifacts/apk
           RELEASE_APK="$(find android/build/outputs/apk/release -name '*.apk' | head -n1)"
           DEBUG_APK="$(find android/build/outputs/apk/debug -name '*.apk' | head -n1)"
@@ -83,6 +87,8 @@ jobs:
           test -s "$DEBUG_APK"
           cp "$RELEASE_APK" "artifacts/apk/CoreFlow-Companion-v${VERSION}-release.apk"
           cp "$DEBUG_APK" "artifacts/apk/CoreFlow-Companion-v${VERSION}-debug.apk"
+          echo "Release APK signing certificate:"
+          keytool -printcert -jarfile "artifacts/apk/CoreFlow-Companion-v${VERSION}-release.apk" | grep -E "Owner:|SHA256:" || true
           ls -lh artifacts/apk/
 
       - name: Upload Release APK

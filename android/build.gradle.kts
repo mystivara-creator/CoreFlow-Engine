@@ -13,6 +13,8 @@ val keystorePass: String? = localProps.getProperty("KEYSTORE_PASS") ?: System.ge
 val keyAliasProp: String? = localProps.getProperty("KEY_ALIAS") ?: System.getenv("KEY_ALIAS")
 val keyPassProp: String? = localProps.getProperty("KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD")
 
+val ciBuildNumber: Int = (System.getenv("CI_BUILD_NUMBER")?.toIntOrNull() ?: 0).coerceIn(0, 9999)
+
 android {
     namespace = "io.coreflow"
     compileSdk = 37
@@ -21,7 +23,7 @@ android {
         applicationId = "io.coreflow.companion"
         minSdk = 33
         targetSdk = 36
-        versionCode = 60000
+        versionCode = 60000 + ciBuildNumber
         versionName = "6.0.0"
     }
 
@@ -32,6 +34,7 @@ android {
                 storePassword = keystorePass
                 keyAlias = keyAliasProp
                 keyPassword = keyPassProp
+                enableV2Signing = true
                 enableV3Signing = true
                 enableV4Signing = true
             }
