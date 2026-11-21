@@ -1346,6 +1346,8 @@ int main(int argc, char* argv[]) {
         return out;
     };
 
+    auto thermal_trend = engine::new_thermal_trend_analyzer();
+
     const auto build_thread_demand = [&]() noexcept {
         ThreadDemandContext d{};
         d.little_capacity = topo.little_capacity;
@@ -1355,6 +1357,7 @@ int main(int argc, char* argv[]) {
         d.cpu_psi = live_status.cpu_psi.value_or(0.0);
         d.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
         d.render_pressure = live_status.render_pressure;
+        d.thermal_velocity_cpm = live_status.thermal_velocity_cpm;
         return d;
     };
     const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
@@ -1649,19 +1652,12 @@ int main(int argc, char* argv[]) {
             if (live_status.history.size() > 60U) {
                 live_status.history.erase(live_status.history.begin());
             }
-            // Compute smoothed thermal rise/cool velocity (°C/min) over the last ~10-15 samples
-            double vel_cpm = 0.0;
-            if (soc_temp > 0.0f && live_status.history.size() >= 4U) {
-                const size_t lookback = std::min<size_t>(live_status.history.size() - 1U, 12U);
-                const auto& ref = live_status.history[live_status.history.size() - 1U - lookback];
-                if (ref.soc_temp > 0.0 && sample_ts > ref.ts_ms) {
-                    const double dt_min = static_cast<double>(sample_ts - ref.ts_ms) / 60000.0;
-                    if (dt_min >= 0.04) {
-                        vel_cpm = std::clamp((static_cast<double>(soc_temp) - ref.soc_temp) / dt_min, -25.0, 25.0);
-                    }
-                }
-            }
-            live_status.thermal_velocity_cpm = vel_cpm;
+            // Compute jitter-free thermal rise/cool velocity (°C/min) via Rust OLS ring buffer
+            const auto trend = thermal_trend->push_sample(
+                sample_ts,
+                static_cast<double>(soc_temp),
+                static_cast<double>(config.thermal_trip_celsius));
+            live_status.thermal_velocity_cpm = trend.velocity_cpm;
             (void)write_status_snapshot(build_status_json(live_status));
         };
 

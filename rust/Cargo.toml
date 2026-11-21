@@ -17,3 +17,5 @@ cxx-build = "=1.0.194"
 [profile.release]
 panic = "abort"
 opt-level = 2
+lto = "thin"
+codegen-units = 1

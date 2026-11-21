@@ -4,6 +4,7 @@
  * @license Apache-2.0
  */
 #include "coreflow/v5/thread_scheduler.hpp"
+#include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -85,67 +86,22 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
     double capacity_scale,
     bool thermal_guard,
     const ThreadDemandContext& demand) noexcept {
-    const double bounded_scale = std::isfinite(capacity_scale)
-        ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
-
-    if (mode == ContextMode::ScreenOff || mode == ContextMode::Excluded ||
-        mode == ContextMode::Efficiency) {
-        return {0U, 1024U};
-    }
-
-    // Derive EAS migration anchors directly from the device's discovered CPU capacities.
-    const double big_cap = static_cast<double>(std::clamp(demand.big_capacity, 512U, 1024U));
-    const double little_cap = demand.little_capacity > 0U
-        ? static_cast<double>(std::clamp(demand.little_capacity, 128U, static_cast<uint32_t>(big_cap * 0.75)))
-        : big_cap * 0.40;
-    const double mid_cap = demand.mid_capacity > static_cast<uint32_t>(little_cap)
-        ? static_cast<double>(std::clamp(demand.mid_capacity, static_cast<uint32_t>(little_cap), static_cast<uint32_t>(big_cap)))
-        : (little_cap + big_cap) * 0.50;
-
-    // Continuous frame-budget urgency (60 Hz = 1.00x, 90 Hz = 1.11x, 120 Hz = 1.18x, 144 Hz = 1.23x).
-    const double hz = static_cast<double>(std::clamp(demand.refresh_hz, 60U, 240U));
-    const double hz_factor = std::clamp(1.0 + std::log2(hz / 60.0) * 0.18, 1.0, 1.28);
-
-    // Live scheduling contention & closed-loop RenderThread saturation feedback.
-    const double psi_norm = std::isfinite(demand.cpu_psi) ? std::clamp(demand.cpu_psi / 100.0, 0.0, 1.0) : 0.0;
-    const double gpu_norm = std::isfinite(demand.gpu_busy_pct) ? std::clamp(demand.gpu_busy_pct / 100.0, 0.0, 1.0) : 0.0;
-    const double render_norm = std::isfinite(demand.render_pressure) ? std::clamp(demand.render_pressure, 0.0, 1.0) : 0.0;
-
-    const double profile_bias =
-        profile == PerformanceProfile::Smoothness ? 1.18 :
-        profile == PerformanceProfile::Gaming ? 1.15 :
-        profile == PerformanceProfile::Battery ? 0.78 : 1.00;
-
-    double anchor_floor = 0.0;
-    switch (mode) {
-        case ContextMode::LaunchBurst:
-            // Place cold-start UI/Render threads cleanly above little_cap onto mid/big cores.
-            anchor_floor = (mid_cap * 0.82 + little_cap * 0.18) * (1.0 + psi_norm * 0.15 + render_norm * 0.12);
-            break;
-        case ContextMode::Interactive:
-            // Hover smoothly around little_cap knee; lift across cluster boundary under high-Hz, PSI, or render load.
-            anchor_floor = little_cap * (0.68 + psi_norm * 0.35 + render_norm * 0.42) * hz_factor;
-            break;
-        case ContextMode::Gaming:
-            // Scale dynamically between little_cap and mid_cap with live GPU + CPU + RenderThread pressure.
-            anchor_floor = (little_cap + (mid_cap - little_cap) *
-                std::clamp(0.35 + gpu_norm * 0.45 + psi_norm * 0.25 + render_norm * 0.30, 0.20, 1.0)) * hz_factor;
-            break;
-        default:
-            return {0U, 1024U};
-    }
-
-    // Smooth PID thermal ceiling: prevents sudden vendor cliff-throttling.
-    uint32_t target_max = static_cast<uint32_t>(std::lround(big_cap * bounded_scale));
-    double raw_min = anchor_floor * profile_bias * std::clamp(bounded_scale, 0.50, 1.0);
-    if (thermal_guard) {
-        target_max = std::min(target_max, static_cast<uint32_t>(std::lround(big_cap * 0.75)));
-        raw_min = std::min(raw_min, little_cap * 0.70);
-    }
-    const uint32_t final_min = std::min(
-        static_cast<uint32_t>(std::clamp(std::lround(raw_min), 0L, 1024L)),
-        target_max);
-    return {final_min, std::max(final_min, target_max)};
+    const coreflow::engine::UclampInput in{
+        .mode = static_cast<uint8_t>(mode),
+        .profile = static_cast<uint8_t>(profile),
+        .capacity_scale = capacity_scale,
+        .thermal_guard = thermal_guard,
+        .little_capacity = demand.little_capacity,
+        .mid_capacity = demand.mid_capacity,
+        .big_capacity = demand.big_capacity,
+        .refresh_hz = demand.refresh_hz,
+        .cpu_psi = demand.cpu_psi,
+        .gpu_busy_pct = demand.gpu_busy_pct,
+        .render_pressure = demand.render_pressure,
+        .thermal_velocity_cpm = demand.thermal_velocity_cpm,
+    };
+    const auto out = coreflow::engine::compute_uclamp_target(in);
+    return {out.util_min, out.util_max};
 }
 
 void ThreadSchedulerActuator::apply(

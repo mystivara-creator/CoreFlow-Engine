@@ -98,6 +98,7 @@ if(CORE_FLOW_BUILD_TESTS)
         tests/test_v5_thread_scheduler.cpp
         src/v5/thread_scheduler.cpp
     )
+    target_link_libraries(test_v5_thread_scheduler PRIVATE coreflow_rust m)
     add_test(NAME V5ThreadSchedulerTest COMMAND test_v5_thread_scheduler)
 
     add_executable(test_v5_storage_memory_actuator

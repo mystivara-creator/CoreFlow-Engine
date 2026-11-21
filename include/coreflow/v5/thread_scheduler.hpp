@@ -40,6 +40,7 @@ struct ThreadDemandContext {
     double cpu_psi{0.0};          // Live CPU PSI avg10 (0..100)
     double gpu_busy_pct{0.0};     // Live GPU busy percentage (0..100)
     double render_pressure{0.0};  // Closed-loop RenderThread/GameThread CPU saturation (0.0..1.0)
+    double thermal_velocity_cpm{0.0}; // Live SoC thermal slope (°C/min) from Rust OLS analyzer
 };
 
 class ThreadSchedulerActuator {
