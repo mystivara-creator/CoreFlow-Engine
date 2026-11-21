@@ -21,6 +21,18 @@ export interface CoreFlowFeatures {
   memoryGuard: boolean;
   thermalPacing: boolean;
   batteryStepCharging: boolean;
+  idleCompaction: boolean;
+  predictivePreload: boolean;
+  cameraBoost: boolean;
+}
+
+export interface HyperFluidTelemetry {
+  idleCompactions: number;
+  predictivePreloads: number;
+  lastPredictedPackage: string;
+  cameraChainActive: boolean;
+  mediaPipelineActive: boolean;
+  memoryHealthPct: number;
 }
 
 export interface CoreFlowPowerConfig {
@@ -163,6 +175,7 @@ export interface CoreFlowV5Status {
   baselineNodesSnapshotted: number;
   recoveryPending: boolean;
   features: CoreFlowFeatures;
+  hyperFluid: HyperFluidTelemetry;
   powerConfig: CoreFlowPowerConfig;
   apps: CoreFlowAppRules;
   actuators: CoreFlowActuatorStats;
@@ -368,6 +381,9 @@ const ALLOWED_SET_CONFIG_KEYS = new Set([
   'enable_memory_guard',
   'enable_thermal_pacing',
   'enable_battery_step_charging',
+  'enable_idle_compaction',
+  'enable_predictive_preload',
+  'enable_camera_boost',
   'bypass_charging',
   'bypass_on_gaming',
   'charge_limit_pct',
@@ -421,6 +437,7 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
   const effectiveProfile = typeof raw.effectiveProfile === 'string' ? parseProfile(raw.effectiveProfile) : profile;
 
   const features = raw.features;
+  const hf = isRecord(raw.hyperFluid) ? raw.hyperFluid : {};
   const powerCfg = isRecord(raw.powerConfig) ? raw.powerConfig : {};
   const apps = raw.apps;
   const actuators = raw.actuators;
@@ -466,6 +483,17 @@ export function parseV5Status(raw: unknown): CoreFlowV5Status {
       memoryGuard: features.memoryGuard !== false,
       thermalPacing: features.thermalPacing !== false,
       batteryStepCharging: features.batteryStepCharging !== false,
+      idleCompaction: features.idleCompaction !== false,
+      predictivePreload: features.predictivePreload !== false,
+      cameraBoost: features.cameraBoost !== false,
+    },
+    hyperFluid: {
+      idleCompactions: isFiniteNum(hf.idleCompactions) ? hf.idleCompactions : 0,
+      predictivePreloads: isFiniteNum(hf.predictivePreloads) ? hf.predictivePreloads : 0,
+      lastPredictedPackage: typeof hf.lastPredictedPackage === 'string' ? hf.lastPredictedPackage : '',
+      cameraChainActive: hf.cameraChainActive === true,
+      mediaPipelineActive: hf.mediaPipelineActive === true,
+      memoryHealthPct: isFiniteNum(hf.memoryHealthPct) ? hf.memoryHealthPct : 100,
     },
     powerConfig: {
       bypassCharging: powerCfg.bypassCharging === true,
@@ -638,6 +666,17 @@ export function createPreviewStatus(): CoreFlowV5Status {
       memoryGuard: true,
       thermalPacing: true,
       batteryStepCharging: true,
+      idleCompaction: true,
+      predictivePreload: true,
+      cameraBoost: true,
+    },
+    hyperFluid: {
+      idleCompactions: 2,
+      predictivePreloads: 5,
+      lastPredictedPackage: 'com.whatsapp',
+      cameraChainActive: false,
+      mediaPipelineActive: false,
+      memoryHealthPct: 94,
     },
     powerConfig: {
       bypassCharging: false,

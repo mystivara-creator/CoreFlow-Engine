@@ -398,11 +398,25 @@ void StorageMemoryActuator::apply(
             (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val), now_ms, 0.0, false, 5.0);
         }
 
+        // Compute live Memory Health % (100 = plentiful unfragmented RAM, drops with RAM/swap/PSI pressure)
+        const double swap_used = telemetry.memory.valid ? telemetry.memory.swap_used_ratio() : 0.0;
+        const double health_raw = 100.0
+            - std::clamp((0.45 - avail_ratio) / 0.35, 0.0, 1.0) * 35.0
+            - std::clamp((swap_used - 0.35) / 0.55, 0.0, 1.0) * 25.0
+            - mem_psi_norm * 40.0;
+        stats_.memory_health_pct = static_cast<uint32_t>(std::clamp(std::lround(health_raw), 10L, 100L));
+
+        // Keep high-order DMA-BUF / GPU / Camera allocations stall-free via gentle watermark headroom
+        if (!topo.vm.watermark_scale_factor_path.empty() && ctx.mode != ContextMode::ScreenOff) {
+            const uint32_t wm = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active) ? 180U : 120U;
+            (void)write_managed_node(topo.vm.watermark_scale_factor_path, std::to_string(wm), now_ms, 0.0, false, 20.0);
+        }
+
         if (!topo.vm.compaction_proactiveness_path.empty()) {
-            // Pause proactive compaction stalls during latency-critical LaunchBurst & Gaming;
+            // Pause proactive compaction stalls during latency-critical LaunchBurst, Camera & Gaming;
             // allow gentle background compaction scaled to available memory when calm.
             uint32_t comp = 0U;
-            if (ctx.mode != ContextMode::LaunchBurst && ctx.mode != ContextMode::Gaming) {
+            if (ctx.mode != ContextMode::LaunchBurst && ctx.mode != ContextMode::Gaming && !ctx.camera_boost_active) {
                 const double raw_comp = 20.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) * (1.0 - mem_psi_norm * 0.5);
                 comp = static_cast<uint32_t>(std::clamp(std::lround(raw_comp / 5.0) * 5L, 5L, 25L));
             }
@@ -426,6 +440,7 @@ void StorageMemoryActuator::apply(
         rollback_managed_node(topo.vm.page_cluster_path);
         rollback_managed_node(topo.vm.swappiness_path);
         rollback_managed_node(topo.vm.compaction_proactiveness_path);
+        rollback_managed_node(topo.vm.watermark_scale_factor_path);
     }
 }
 
@@ -457,6 +472,8 @@ uint64_t StorageMemoryActuator::prefetch_app_assets(
     if (maps.empty()) return 0U;
 
     std::unordered_set<std::string> seen;
+    std::vector<std::string> discovered_paths;
+    discovered_paths.reserve(10U);
     uint64_t total_advised = 0U;
     size_t files_advised = 0U;
     std::istringstream ss(maps);
@@ -482,11 +499,98 @@ uint64_t StorageMemoryActuator::prefetch_app_assets(
                 ++files_advised;
                 ++stats_.preread_files_total;
                 stats_.preread_bytes_total += len;
+                if (discovered_paths.size() < 10U) {
+                    discovered_paths.push_back(file_path);
+                }
             }
         }
         (void)::close(fd);
     }
+    if (!discovered_paths.empty()) {
+        if (cached_pkg_assets_.size() >= 16U && !cached_pkg_assets_.contains(package_name)) {
+            cached_pkg_assets_.erase(cached_pkg_assets_.begin());
+        }
+        cached_pkg_assets_[package_name] = std::move(discovered_paths);
+    }
     return total_advised;
+}
+
+uint64_t StorageMemoryActuator::prefetch_cached_package(
+    const std::string& package_name,
+    uint64_t available_or_total_ram_bytes,
+    uint64_t now_ms,
+    bool allow_any_path_for_test) noexcept {
+    if (package_name.empty()) return 0U;
+    const auto it = cached_pkg_assets_.find(package_name);
+    if (it == cached_pkg_assets_.end() || it->second.empty()) return 0U;
+
+    const auto prev = last_predictive_ms_.find(package_name);
+    if (prev != last_predictive_ms_.end() && now_ms >= prev->second &&
+        now_ms - prev->second < kPredictivePreloadCooldownMs) {
+        return 0U;
+    }
+    last_predictive_ms_[package_name] = now_ms;
+    if (last_predictive_ms_.size() > 64U) last_predictive_ms_.clear();
+
+    // Lean predictive budget: up to 8 MiB so background warm-up never causes kswapd pressure.
+    const uint64_t byte_budget = std::clamp<uint64_t>(
+        available_or_total_ram_bytes / 256ULL,
+        2ULL * 1024ULL * 1024ULL,
+        8ULL * 1024ULL * 1024ULL);
+    constexpr uint64_t kMaxBytesPerFile = 4ULL * 1024ULL * 1024ULL;
+
+    uint64_t total_advised = 0U;
+    for (const auto& file_path : it->second) {
+        if (total_advised >= byte_budget) break;
+        if (!is_prefetchable_asset_path(file_path, allow_any_path_for_test)) continue;
+        const int fd = ::open(file_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0) continue;
+        struct stat st{};
+        if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+            const uint64_t remaining = byte_budget - total_advised;
+            const uint64_t len = std::min<uint64_t>({static_cast<uint64_t>(st.st_size), kMaxBytesPerFile, remaining});
+            if (len > 0U && ::posix_fadvise(fd, 0, static_cast<off_t>(len), POSIX_FADV_WILLNEED) == 0) {
+                total_advised += len;
+                ++stats_.preread_files_total;
+                stats_.preread_bytes_total += len;
+            }
+        }
+        (void)::close(fd);
+    }
+    if (total_advised > 0U) {
+        ++stats_.predictive_preloads_total;
+    }
+    return total_advised;
+}
+
+bool StorageMemoryActuator::maybe_run_idle_compaction(
+    const HardwareTopology& topo,
+    const StorageMemoryTelemetry& telemetry,
+    float soc_temp_celsius,
+    uint64_t now_ms) noexcept {
+    if (topo.vm.compact_memory_path.empty()) return false;
+    if (std::isfinite(soc_temp_celsius) && soc_temp_celsius >= 42.0f) return false;
+    if (last_compaction_ms_ > 0U && now_ms >= last_compaction_ms_ &&
+        now_ms - last_compaction_ms_ < kIdleCompactionCooldownMs) {
+        return false;
+    }
+
+    const double avail_ratio = telemetry.memory.valid ? telemetry.memory.available_ratio() : 0.5;
+    const double swap_used = telemetry.memory.valid ? telemetry.memory.swap_used_ratio() : 0.0;
+    const bool needs_compaction = (avail_ratio < 0.45) || (swap_used > 0.35);
+    if (!needs_compaction) return false;
+
+    // One-shot non-persistent kernel compaction trigger (write "1" to /proc/sys/vm/compact_memory).
+    const int fd = ::open(topo.vm.compact_memory_path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    const char one = '1';
+    const ssize_t n = ::write(fd, &one, 1);
+    (void)::close(fd);
+    if (n != 1) return false;
+
+    last_compaction_ms_ = now_ms;
+    ++stats_.idle_compactions_total;
+    return true;
 }
 
 } // namespace coreflow::v5

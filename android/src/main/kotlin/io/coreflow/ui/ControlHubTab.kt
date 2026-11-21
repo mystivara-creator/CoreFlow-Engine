@@ -366,6 +366,33 @@ fun ControlHubTab(
                         )
                     }
                 }
+                val hf = status?.hyperFluid ?: CoreFlowManager.HyperFluidStats()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MetricPill(
+                        label = if (strings.isIndonesian) "Mem Health" else "Mem Health",
+                        value = "${hf.memoryHealthPct}%",
+                        accent = if (hf.memoryHealthPct >= 75) Color(0xFF22C55E) else Color(0xFFF59E0B),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    MetricPill(
+                        label = "Compactions",
+                        value = "${hf.idleCompactions}",
+                        accent = Color(0xFF38BDF8),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    MetricPill(
+                        label = "Preloads",
+                        value = "${hf.predictivePreloads}",
+                        accent = Color(0xFFA78BFA),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
                 SwitchPreference(
                     checked = features.storageBurst,
                     onCheckedChange = { onToggleFeature("enable_storage_burst", "Storage Burst", it) },
@@ -381,6 +408,41 @@ fun ControlHubTab(
                         "Linux MGLRU active · Working-set anti-stutter guard"
                     } else {
                         "Working-set anti-stutter & posix_fadvise pre-warm"
+                    },
+                    enabled = !busy,
+                )
+                SwitchPreference(
+                    checked = features.idleCompaction,
+                    onCheckedChange = { onToggleFeature("enable_idle_compaction", "Idle Compaction", it) },
+                    title = if (strings.isIndonesian) "Anti-Aging Memory Compaction" else "9-Hour Anti-Aging Compaction",
+                    summary = if (strings.isIndonesian) {
+                        "Defragmentasi RAM otomatis saat layar mati & dingin (< 42°C)"
+                    } else {
+                        "Proactive RAM defragmentation during cool ScreenOff idle (< 42°C)"
+                    },
+                    enabled = !busy,
+                )
+                SwitchPreference(
+                    checked = features.predictivePreload,
+                    onCheckedChange = { onToggleFeature("enable_predictive_preload", "Predictive Preloader", it) },
+                    title = if (strings.isIndonesian) "Rust Predictive App Preloader" else "Rust Predictive App Preloader",
+                    summary = if (hf.lastPredictedPackage.isNotBlank()) {
+                        "Last pre-warmed: ${hf.lastPredictedPackage}"
+                    } else if (strings.isIndonesian) {
+                        "Prediksi Markov (<1 KB RAM) menghangatkan APK/SO sebelum dibuka"
+                    } else {
+                        "Markov predictor (<1 KB RAM) pre-warms APK/SO pages before launch"
+                    },
+                    enabled = !busy,
+                )
+                SwitchPreference(
+                    checked = features.cameraBoost,
+                    onCheckedChange = { onToggleFeature("enable_camera_boost", "Camera Full-Chain", it) },
+                    title = if (strings.isIndonesian) "Fast-Launch Kamera & Video Chain" else "Fast-Launch Camera & Video Chain",
+                    summary = if (strings.isIndonesian) {
+                        "Boost Per-TID UClamp untuk cameraserver, Camera HAL & MediaCodec"
+                    } else {
+                        "Per-TID UClamp full-chain boost for cameraserver, Camera HAL & MediaCodec"
                     },
                     enabled = !busy,
                 )

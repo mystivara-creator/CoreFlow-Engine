@@ -578,6 +578,8 @@ HardwareTopology HardwareProbe::discover() const noexcept {
         if (is_regular_writable(vm_root / "vfs_cache_pressure")) topo.vm.vfs_cache_pressure_path = (vm_root / "vfs_cache_pressure").string();
         if (is_regular_writable(vm_root / "compaction_proactiveness")) topo.vm.compaction_proactiveness_path = (vm_root / "compaction_proactiveness").string();
         if (is_regular_writable(vm_root / "watermark_scale_factor")) topo.vm.watermark_scale_factor_path = (vm_root / "watermark_scale_factor").string();
+        if (is_regular_writable(vm_root / "compact_memory")) topo.vm.compact_memory_path = (vm_root / "compact_memory").string();
+        if (is_regular_writable(vm_root / "extra_free_kbytes")) topo.vm.extra_free_kbytes_path = (vm_root / "extra_free_kbytes").string();
         const fs::path mglru_en = sys / "kernel/mm/lru_gen/enabled";
         if (is_regular_writable(mglru_en)) topo.vm.mglru_enabled_path = mglru_en.string();
         const fs::path mglru = sys / "kernel/mm/lru_gen/min_ttl_ms";

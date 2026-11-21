@@ -186,6 +186,30 @@ int main() {
     assert(bg_fg.pid == 0);
     assert(bg_fg.package_name.empty());
 
+    // 11. HyperFluid Camera fast-launch & MediaCodec full-chain detection
+    assert(ContextEngine::is_camera_package("com.android.camera"));
+    assert(ContextEngine::is_camera_package("com.miui.camera"));
+    assert(!ContextEngine::is_camera_package("com.whatsapp"));
+    assert(ContextEngine::is_media_pipeline_thread_name("MediaCodec_loop"));
+    assert(ContextEngine::is_media_pipeline_thread_name("ExoPlayer:Playback"));
+
+    write_file(proc / "4100/cmdline", std::string("/system/bin/cameraserver\0", 25));
+    write_file(proc / "4100/task/4100/comm", "cameraserver\n");
+    write_file(proc / "4100/task/4101/comm", "Binder:4100_1\n");
+    const auto cam_tids = engine.resolve_camera_hal_tids();
+    assert(cam_tids.size() >= 2U);
+
+    // Media playback stays smoothly Interactive without touch
+    ContextSignalInput media_sig{};
+    media_sig.now_ms = 40000;
+    media_sig.foreground_pid = 8001;
+    media_sig.foreground_package = "com.google.android.youtube";
+    media_sig.has_media_thread = true;
+    (void)engine.evaluate(media_sig); // LaunchBurst
+    media_sig.now_ms = 45000;
+    const auto media_dec = engine.evaluate(media_sig);
+    assert(media_dec.mode == ContextMode::Interactive && media_dec.media_pipeline_active);
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

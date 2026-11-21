@@ -49,6 +49,9 @@ test('buildSafeSetConfigArg allowlists only v5.1 keys and safe single-quoted val
   assert.equal(buildSafeSetConfigArg('gaming_apps', 'com.app$(whoami)'), null);
   assert.equal(buildSafeSetConfigArg('bypass_charging', 'true'), "'bypass_charging=true'");
   assert.equal(buildSafeSetConfigArg('bypass_on_gaming', 'false'), "'bypass_on_gaming=false'");
+  assert.equal(buildSafeSetConfigArg('enable_idle_compaction', 'true'), "'enable_idle_compaction=true'");
+  assert.equal(buildSafeSetConfigArg('enable_predictive_preload', 'true'), "'enable_predictive_preload=true'");
+  assert.equal(buildSafeSetConfigArg('enable_camera_boost', 'false'), "'enable_camera_boost=false'");
   assert.equal(buildSafeSetConfigArg('charge_limit_pct', '85'), "'charge_limit_pct=85'");
   assert.equal(buildSafeSetConfigArg('charge_limit_pct', '0'), "'charge_limit_pct=0'");
   assert.equal(buildSafeSetConfigArg('charge_limit_pct', '45'), null);
