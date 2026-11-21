@@ -44,10 +44,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,9 +76,9 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.ListView
-import top.yukonga.miuix.kmp.icon.extended.MindMap
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.icon.extended.Stopwatch
 import top.yukonga.miuix.kmp.icon.extended.Tune
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.io.File
@@ -253,7 +256,7 @@ fun CoreFlowApp(
                 strings.tabControl,
                 badgeCount = if (navBadgesEnabled) (status?.semanticKnobsActive ?: 0) else 0,
             ),
-            NavTabSpec(2, MiuixIcons.MindMap, strings.tabLive),
+            NavTabSpec(2, MiuixIcons.Stopwatch, strings.tabLive),
             NavTabSpec(
                 3,
                 MiuixIcons.ListView,
@@ -606,12 +609,14 @@ private fun HyperOsFloatingPillNavBar(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
 ) {
+    val haptic = LocalHapticFeedback.current
     val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    val surface = MiuixTheme.colorScheme.surface
     val pillShape = RoundedCornerShape(999.dp)
     val glassBg = if (dark) {
-        Color(0xFF1A1B20).copy(alpha = 0.88f)
+        Color(0xFF1A1C22).copy(alpha = 0.94f)
     } else {
-        MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f)
+        MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.96f)
     }
     val rimColor = if (dark) {
         Color.White.copy(alpha = 0.14f)
@@ -622,6 +627,15 @@ private fun HyperOsFloatingPillNavBar(
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        surface.copy(alpha = 0.72f),
+                        surface.copy(alpha = 0.94f),
+                    ),
+                ),
+            )
             .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
@@ -630,14 +644,14 @@ private fun HyperOsFloatingPillNavBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .shadow(
-                    elevation = 14.dp,
+                    elevation = 16.dp,
                     shape = pillShape,
-                    ambientColor = Color.Black.copy(alpha = 0.35f),
-                    spotColor = Color.Black.copy(alpha = 0.35f),
+                    ambientColor = Color.Black.copy(alpha = 0.40f),
+                    spotColor = Color.Black.copy(alpha = 0.40f),
                 )
                 .clip(pillShape)
                 .background(glassBg)
-                .border(BorderStroke(0.8.dp, rimColor), pillShape)
+                .border(BorderStroke(0.85.dp, rimColor), pillShape)
                 .padding(horizontal = 6.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -646,7 +660,7 @@ private fun HyperOsFloatingPillNavBar(
                 val selected = tab.index == selectedIndex
                 val activeIndicator by animateColorAsState(
                     targetValue = if (selected) {
-                        if (dark) Color.White.copy(alpha = 0.12f) else MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        if (dark) Color.White.copy(alpha = 0.13f) else MiuixTheme.colorScheme.primary.copy(alpha = 0.13f)
                     } else {
                         Color.Transparent
                     },
@@ -671,7 +685,12 @@ private fun HyperOsFloatingPillNavBar(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            onClick = { onSelect(tab.index) },
+                            onClick = {
+                                if (!selected) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onSelect(tab.index)
+                                }
+                            },
                         )
                         .padding(vertical = 6.dp, horizontal = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,

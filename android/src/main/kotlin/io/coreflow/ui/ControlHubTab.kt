@@ -132,7 +132,7 @@ fun ControlHubTab(
                     modifier = Modifier.fillMaxWidth(),
                     insideMargin = PaddingValues(14.dp),
                     pressFeedbackType = PressFeedbackType.Tilt,
-                    onClick = onRefresh,
+                    onClick = {},
                 ) {
                     Row(
                         modifier = Modifier

@@ -151,7 +151,7 @@ fun HomeTab(
                     colors = CardDefaults.defaultColors(color = heroBgColor),
                     insideMargin = PaddingValues(16.dp),
                     pressFeedbackType = PressFeedbackType.Tilt,
-                    onClick = onRefresh,
+                    onClick = {},
                 ) {
                     Box(modifier = Modifier.fillMaxWidth()) {
                         // Subtle HyperOS Watermark Emblem (KernelSU style)
@@ -469,7 +469,7 @@ fun HomeTab(
                     modifier = Modifier.fillMaxWidth(),
                     insideMargin = PaddingValues(14.dp),
                     pressFeedbackType = PressFeedbackType.Tilt,
-                    onClick = onRefresh,
+                    onClick = {},
                 ) {
                     Row(
                         modifier = Modifier

@@ -104,7 +104,7 @@ fun LiveFeedTab(
                     modifier = Modifier.fillMaxWidth(),
                     insideMargin = PaddingValues(15.dp),
                     pressFeedbackType = PressFeedbackType.Tilt,
-                    onClick = onRefresh,
+                    onClick = {},
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),

@@ -200,7 +200,7 @@ fun SystemTab(
                     modifier = Modifier.fillMaxWidth(),
                     insideMargin = PaddingValues(16.dp),
                     pressFeedbackType = PressFeedbackType.Tilt,
-                    onClick = onRefresh,
+                    onClick = {},
                 ) {
                     Text(
                         text = headerText,
