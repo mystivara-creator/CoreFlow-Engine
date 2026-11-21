@@ -16,7 +16,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -606,7 +606,7 @@ private fun HyperOsFloatingPillNavBar(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
     val pillShape = RoundedCornerShape(999.dp)
     val glassBg = if (dark) {
         Color(0xFF1A1B20).copy(alpha = 0.88f)

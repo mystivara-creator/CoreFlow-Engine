@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,7 +72,7 @@ fun HomeTab(
     onToggleBypass: (Boolean) -> Unit,
     onStartDaemon: () -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
     val pullState = rememberPullToRefreshState()
 
     PullToRefresh(
@@ -335,7 +335,7 @@ fun HomeTab(
                             if (bypassSupported) {
                                 TextButton(
                                     text = if (bypassActive) strings.bypassOn else strings.bypassOff,
-                                    onClick = { onToggleBypass(!(status?.powerConfig?.bypassCharging == true)) },
+                                    onClick = { onToggleBypass(!status.powerConfig.bypassCharging) },
                                     enabled = !busy,
                                     colors = if (bypassActive) {
                                         ButtonDefaults.textButtonColorsPrimary()
