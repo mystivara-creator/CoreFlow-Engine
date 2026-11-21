@@ -31,6 +31,8 @@
 #include "coreflow/v5/thermal_envelope_actuator.hpp"
 #include "coreflow/v5/thread_scheduler.hpp"
 #include "coreflow/v6/decision_journal.hpp"
+#include "coreflow/v6/oem_collaboration_map.hpp"
+#include "coreflow/v6/semantic_knob_engine.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
 
 #include <algorithm>
@@ -573,7 +575,10 @@ struct RuntimeStatusData {
     ThreadSchedulerStats thread_stats{};
     StorageMemoryStats storage_stats{};
     ThermalEnvelopeStats envelope_stats{};
+    v6::SemanticKnobStats semantic_stats{};
+    std::vector<std::string> semantic_knob_leaves{};
     std::vector<std::string> contended_paths{};
+    std::vector<std::string> oem_yielded_paths{};
     BatteryPowerTelemetry battery{};
     MemorySnapshot memory{};
     std::vector<uint64_t> cluster_cur_khz{};
@@ -723,8 +728,13 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"prereadFiles\":" << s.storage_stats.preread_files_total
         << ",\"prereadBytes\":" << s.storage_stats.preread_bytes_total
         << ",\"managedEnvelopeNodes\":" << s.envelope_stats.managed_nodes
-        << ",\"contendedNodes\":" << (s.storage_stats.contended_nodes + s.envelope_stats.contended_nodes)
+        << ",\"semanticKnobsDiscovered\":" << s.semantic_stats.discovered_total
+        << ",\"semanticKnobsActive\":" << s.semantic_stats.active_managed
+        << ",\"semanticKnobLeaves\":" << serialize_string_array(s.semantic_knob_leaves)
+        << ",\"contendedNodes\":" << s.contended_paths.size()
         << ",\"contendedPaths\":" << serialize_string_array(s.contended_paths)
+        << ",\"oemYieldedNodes\":" << s.oem_yielded_paths.size()
+        << ",\"oemYieldedPaths\":" << serialize_string_array(s.oem_yielded_paths)
         << "}"
         << ",\"hardware\":{"
         << "\"socModel\":" << json_str(s.topo.soc_model)
@@ -1253,8 +1263,13 @@ int main(int argc, char* argv[]) {
     ContextEngine context_engine;
     ThreadSchedulerActuator thread_scheduler;
     (void)thread_scheduler.probe_support();
-    StorageMemoryActuator storage_memory(baseline);
-    ThermalEnvelopeActuator thermal_envelope(baseline);
+    v6::OemCollaborationMap oem_map;
+    oem_map.initialize(kStateDir, topo.kernel_version,
+                       v6::OemCollaborationMap::discover_rom_fingerprint());
+    StorageMemoryActuator storage_memory(baseline, "/proc", &oem_map);
+    ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map);
+    v6::SemanticKnobEngine semantic_knobs(baseline, oem_map);
+    semantic_knobs.discover(topo);
 
     const auto apply_config_to_subsystems = [&]() {
         context_engine.set_profile(ContextEngine::parse_profile(config.profile));
@@ -1390,13 +1405,22 @@ int main(int argc, char* argv[]) {
         return e;
     };
 
+    const auto collect_semantic_leaves = [&]() {
+        std::vector<std::string> leaves;
+        for (const auto& k : semantic_knobs.knobs()) {
+            if (std::find(leaves.begin(), leaves.end(), k.leaf) == leaves.end()) {
+                leaves.push_back(k.leaf);
+            }
+        }
+        return leaves;
+    };
+    live_status.semantic_stats = semantic_knobs.stats();
+    live_status.semantic_knob_leaves = collect_semantic_leaves();
+    live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
+    uint64_t last_refresh_check_ms = 0U;
+
     const auto collect_contended_paths = [&]() {
-        std::vector<std::string> merged = storage_memory.contended_paths();
-        const auto env_paths = thermal_envelope.contended_paths();
-        merged.insert(merged.end(), env_paths.begin(), env_paths.end());
-        std::sort(merged.begin(), merged.end());
-        merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
-        return merged;
+        return oem_map.active_contended_paths(steady_now_ms());
     };
 
     // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
@@ -1453,19 +1477,25 @@ int main(int argc, char* argv[]) {
             while (::read(signal_fd.get(), &info, sizeof(info)) == static_cast<ssize_t>(sizeof(info))) {
                 if (info.ssi_signo == SIGHUP) {
                     thread_scheduler.reset_all();
+                    semantic_knobs.rollback_all();
                     longevity.restore_oem_baseline();
                     prev_bypass_active = false;
                     (void)baseline.rollback_all();
+                    oem_map.reset_transient_cooldowns();
                     storage_memory.reset_contention();
                     thermal_envelope.reset_contention();
                     config = DaemonConfig::load_best_available();
                     topo = probe.discover();
+                    semantic_knobs.discover(topo);
                     apply_config_to_subsystems();
                     pid_initialized = false;
                     pid_controller = engine::new_controller({
                         config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
                     live_status.config = config;
                     live_status.topo = topo;
+                    live_status.semantic_stats = semantic_knobs.stats();
+                    live_status.semantic_knob_leaves = collect_semantic_leaves();
+                    live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
                     live_status.ctx.effective_profile = context_engine.profile();
                     const uint32_t ms = std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u);
                     itimerspec ts{};
@@ -1550,6 +1580,12 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry(), now_ms);
+            semantic_knobs.apply(
+                sysfs_ctx.mode, live_status.ctx.effective_profile,
+                live_status.capacity_scale, live_status.thermal_guard,
+                config.enable_thermal_pacing || config.enable_storage_burst,
+                last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                live_status.mem_psi.value_or(0.0), now_ms);
             if (config.bypass_on_gaming) {
                 (void)longevity.apply_power_control(
                     config.bypass_charging,
@@ -1560,7 +1596,9 @@ int main(int argc, char* argv[]) {
             live_status.thread_stats = thread_scheduler.stats();
             live_status.storage_stats = storage_memory.stats();
             live_status.envelope_stats = thermal_envelope.stats();
+            live_status.semantic_stats = semantic_knobs.stats();
             live_status.contended_paths = collect_contended_paths();
+            live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
         }
     });
 
@@ -1607,6 +1645,13 @@ int main(int argc, char* argv[]) {
 
         const bool screen_off = probe.is_screen_off(topo);
         last_screen_off = screen_off;
+        if (!screen_off && (last_refresh_check_ms == 0U || now_ms >= last_refresh_check_ms + 5000ULL)) {
+            last_refresh_check_ms = now_ms;
+            if (const auto live_hz = probe.read_live_refresh_hz(topo)) {
+                topo.refresh_hz = *live_hz;
+                live_status.topo.refresh_hz = *live_hz;
+            }
+        }
         const double cpu_util = cpu_sampler.sample();
         const auto gpu_busy = probe.read_gpu_busy_pct(topo);
         const auto cpu_psi = probe.read_psi_avg10("cpu");
@@ -1643,6 +1688,7 @@ int main(int argc, char* argv[]) {
         const auto record_history_and_publish = [&]() {
             live_status.battery = longevity.sample_battery_telemetry();
             live_status.contended_paths = collect_contended_paths();
+            live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
             if (live_status.contended_paths.size() > prev_contended_count) {
                 std::string node_label = std::to_string(live_status.contended_paths.size()) + " sysfs node(s)";
                 if (!live_status.contended_paths.empty()) {
@@ -1711,6 +1757,7 @@ int main(int argc, char* argv[]) {
             live_status.capacity_scale = 0.25;
             if (entering_emergency) {
                 thread_scheduler.reset_all();
+                semantic_knobs.rollback_all();
                 longevity.restore_oem_baseline();
                 prev_bypass_active = false;
                 (void)baseline.rollback_all();
@@ -1888,6 +1935,12 @@ int main(int argc, char* argv[]) {
                 live_status.capacity_scale, thermal_guard,
                 config.enable_thermal_pacing,
                 build_envelope_telemetry(), now_ms);
+            semantic_knobs.apply(
+                sysfs_ctx.mode, live_status.ctx.effective_profile,
+                live_status.capacity_scale, thermal_guard,
+                config.enable_thermal_pacing || config.enable_storage_burst,
+                last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                storage_tel.mem_psi, now_ms);
             longevity.monitor_battery_thermals(soc_temp);
             (void)longevity.apply_power_control(
                 config.bypass_charging,
@@ -1906,17 +1959,22 @@ int main(int argc, char* argv[]) {
             }
         } else {
             thread_scheduler.reset_all();
+            semantic_knobs.rollback_all();
         }
 
         live_status.thread_stats = thread_scheduler.stats();
         live_status.storage_stats = storage_memory.stats();
         live_status.envelope_stats = thermal_envelope.stats();
+        live_status.semantic_stats = semantic_knobs.stats();
         record_history_and_publish();
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v6.0.0 NextGen Autonomous 4-Pillar Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v6.1.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
+             ", hz=" + std::to_string(topo.refresh_hz) +
+             ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
+             ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
              ", bypassSupported=" + (longevity.is_bypass_supported() ? "yes" : "no") + ").");
 
@@ -1925,12 +1983,13 @@ int main(int argc, char* argv[]) {
     // Guaranteed clean shutdown & OEM baseline restoration
     input_source.stop();
     thread_scheduler.reset_all();
+    semantic_knobs.rollback_all();
     longevity.restore_oem_baseline();
     (void)baseline.rollback_all();
     live_status.running = false;
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v6.0.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v6.1.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }

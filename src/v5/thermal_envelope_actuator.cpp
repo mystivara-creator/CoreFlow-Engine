@@ -39,17 +39,20 @@ bool parse_u64_exact(std::string_view text, uint64_t& out) noexcept {
 
 } // namespace
 
-ThermalEnvelopeActuator::ThermalEnvelopeActuator(BaselineStore& baseline) noexcept
-    : baseline_(baseline) {}
+ThermalEnvelopeActuator::ThermalEnvelopeActuator(
+    BaselineStore& baseline,
+    v6::OemCollaborationMap* oem_map) noexcept
+    : baseline_(baseline), oem_map_(oem_map) {}
 
 void ThermalEnvelopeActuator::reset_contention() noexcept {
     contended_paths_.clear();
     last_written_.clear();
-    stats_.contended_nodes = 0U;
+    stats_.contended_nodes = oem_map_ ? oem_map_->active_count() : 0U;
     stats_.managed_nodes = 0U;
 }
 
 std::vector<std::string> ThermalEnvelopeActuator::contended_paths() const {
+    if (oem_map_) return oem_map_->active_contended_paths();
     std::vector<std::string> out;
     out.reserve(contended_paths_.size());
     for (const auto& [path, _] : contended_paths_) {
@@ -64,8 +67,14 @@ void ThermalEnvelopeActuator::record_contention(
     const std::string& observed,
     uint64_t now_ms) noexcept {
     // Adopt OEM's external value in CFJ4 without overwriting it, so journal stays clean
-    // and post-cooldown recovery can safely re-acquire ownership once OEM settles.
+    // and persistent OEM collaboration escalates cleanly without repeated tug-of-war.
     (void)baseline_.rollback(path);
+    last_written_.erase(path);
+    if (oem_map_) {
+        oem_map_->record_contention(path, observed, now_ms);
+        stats_.contended_nodes = oem_map_->active_count(now_ms);
+        return;
+    }
     auto& entry = contended_paths_[path];
     ++entry.strikes;
     const uint32_t shift = std::min<uint32_t>(entry.strikes - 1U, 4U);
@@ -73,7 +82,6 @@ void ThermalEnvelopeActuator::record_contention(
         kMaxContentionCooldownMs, kInitialContentionCooldownMs << shift);
     entry.retry_after_ms = now_ms + backoff;
     entry.observed_value = observed;
-    last_written_.erase(path);
     stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
 }
 
@@ -135,16 +143,28 @@ bool ThermalEnvelopeActuator::write_managed_node(
     const std::string live = read_line_trimmed(path);
     if (live.empty()) return false;
 
-    const auto cit = contended_paths_.find(path);
-    if (cit != contended_paths_.end()) {
-        if (now_ms < cit->second.retry_after_ms) return false;
-        if (live != cit->second.observed_value) {
-            // OEM daemon is still mutating this node; extend cooldown without writing.
-            record_contention(path, live, now_ms);
+    if (oem_map_) {
+        if (oem_map_->is_blocked(path, now_ms)) {
+            stats_.contended_nodes = oem_map_->active_count(now_ms);
             return false;
         }
-        contended_paths_.erase(cit);
-        stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        if (!oem_map_->check_cooldown_expired(path, live, now_ms)) {
+            stats_.contended_nodes = oem_map_->active_count(now_ms);
+            return false;
+        }
+        stats_.contended_nodes = oem_map_->active_count(now_ms);
+    } else {
+        const auto cit = contended_paths_.find(path);
+        if (cit != contended_paths_.end()) {
+            if (now_ms < cit->second.retry_after_ms) return false;
+            if (live != cit->second.observed_value) {
+                // OEM daemon is still mutating this node; extend cooldown without writing.
+                record_contention(path, live, now_ms);
+                return false;
+            }
+            contended_paths_.erase(cit);
+            stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        }
     }
 
     const auto prev = last_written_.find(path);
@@ -177,6 +197,12 @@ bool ThermalEnvelopeActuator::write_managed_node(
     return true;
 }
 
+void ThermalEnvelopeActuator::rollback_managed_node(const std::string& path) noexcept {
+    if (path.empty() || !last_written_.contains(path)) return;
+    (void)baseline_.rollback(path);
+    last_written_.erase(path);
+}
+
 void ThermalEnvelopeActuator::rollback_all_managed() noexcept {
     for (const auto& [path, _] : last_written_) {
         (void)baseline_.rollback(path);
@@ -197,7 +223,11 @@ void ThermalEnvelopeActuator::apply(
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
     stats_.last_capacity_scale = scale;
 
-    if (!enabled || mode == ContextMode::Excluded) {
+    // Release-on-Calm: when disabled, excluded, or calm (Efficiency/ScreenOff) without active
+    // thermal pacing, restore OEM CPU/GPU governor baselines cleanly (zero lingering mutations).
+    const bool calm_cool = (mode == ContextMode::Efficiency || mode == ContextMode::ScreenOff) &&
+                           !thermal_guard && scale >= 0.95;
+    if (!enabled || mode == ContextMode::Excluded || calm_cool) {
         if (!last_written_.empty()) rollback_all_managed();
         return;
     }
@@ -228,7 +258,7 @@ void ThermalEnvelopeActuator::apply(
                 mode_demand = 0.78 + (cap_ratio * 0.10) + (cpu_psi_norm * 0.08);
             } else if (mode == ContextMode::Interactive) {
                 mode_demand = 0.68 + (cpu_psi_norm * 0.12);
-            } else { // Efficiency
+            } else { // Efficiency under thermal pacing
                 mode_demand = 0.60 - (cap_ratio * 0.12) + (cpu_psi_norm * 0.10);
             }
             const double effective_tier = std::clamp(mode_demand * profile_bias * scale, 0.25, 0.82);
@@ -281,7 +311,7 @@ void ThermalEnvelopeActuator::apply(
         }
     }
 
-    // 2. GPU Idle Timer & Smooth Thermal Frequency Envelope
+    // 2. GPU Idle Timer & Smooth Thermal Frequency Envelope (OEM-Collaborative)
     if (topo.gpu.available) {
         if (!topo.gpu.idle_timer_path.empty()) {
             const double frames = (thermal_guard || mode == ContextMode::ScreenOff) ? 4.0 :
@@ -297,24 +327,41 @@ void ThermalEnvelopeActuator::apply(
             !topo.gpu.kgsl_min_pwrlevel_path.empty()) {
             const auto [target_max, target_min] = compute_kgsl_levels(
                 topo.gpu.kgsl_num_pwrlevels, mode, profile, scale, thermal_guard);
-            uint64_t live_min = target_min;
-            (void)parse_u64_exact(read_line_trimmed(topo.gpu.kgsl_min_pwrlevel_path), live_min);
-            // Order writes from the live interval so KGSL never clamps one against the stale peer.
-            if (target_max <= live_min) {
-                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
-                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
+            // Collaborate with OEM GPU daemon (perfd): only touch min_pwrlevel during active
+            // Gaming or thermal pacing; otherwise leave OEM min_pwrlevel untouched to avoid contention.
+            const bool manage_min = (mode == ContextMode::Gaming || thermal_guard || scale < 0.95);
+            if (!manage_min) {
+                rollback_managed_node(topo.gpu.kgsl_min_pwrlevel_path);
+                if (target_max == 0U) {
+                    rollback_managed_node(topo.gpu.kgsl_max_pwrlevel_path);
+                } else {
+                    (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
+                }
             } else {
-                (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
-                (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
+                uint64_t live_min = target_min;
+                (void)parse_u64_exact(read_line_trimmed(topo.gpu.kgsl_min_pwrlevel_path), live_min);
+                // Order writes from the live interval so KGSL never clamps one against the stale peer.
+                if (target_max <= live_min) {
+                    (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
+                    (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
+                } else {
+                    (void)write_managed_node(topo.gpu.kgsl_min_pwrlevel_path, std::to_string(target_min), now_ms);
+                    (void)write_managed_node(topo.gpu.kgsl_max_pwrlevel_path, std::to_string(target_max), now_ms);
+                }
             }
         } else if (!topo.gpu.devfreq_max_freq_path.empty() && !topo.gpu.devfreq_opps_hz.empty()) {
-            double base_tier = 1.00;
-            if (thermal_guard) base_tier = 0.65;
-            else if (mode == ContextMode::ScreenOff) base_tier = 0.35;
-            else if (mode == ContextMode::Efficiency && profile == PerformanceProfile::Battery) base_tier = 0.85;
-            const double tier = std::clamp(base_tier * scale, 0.30, 1.0);
-            const uint64_t freq = select_opp(topo.gpu.devfreq_opps_hz, tier);
-            if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq), now_ms);
+            if (!thermal_guard && scale >= 0.95 &&
+                !(mode == ContextMode::Efficiency && profile == PerformanceProfile::Battery)) {
+                rollback_managed_node(topo.gpu.devfreq_max_freq_path);
+            } else {
+                double base_tier = 1.00;
+                if (thermal_guard) base_tier = 0.65;
+                else if (mode == ContextMode::ScreenOff) base_tier = 0.35;
+                else if (mode == ContextMode::Efficiency && profile == PerformanceProfile::Battery) base_tier = 0.85;
+                const double tier = std::clamp(base_tier * scale, 0.30, 1.0);
+                const uint64_t freq = select_opp(topo.gpu.devfreq_opps_hz, tier);
+                if (freq > 0U) (void)write_managed_node(topo.gpu.devfreq_max_freq_path, std::to_string(freq), now_ms);
+            }
         }
     }
 

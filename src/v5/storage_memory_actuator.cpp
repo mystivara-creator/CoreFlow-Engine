@@ -122,16 +122,19 @@ std::string format_quantized_uclamp_pct(double pct) {
 } // namespace
 
 StorageMemoryActuator::StorageMemoryActuator(
-    BaselineStore& baseline, std::string procfs_root) noexcept
-    : baseline_(baseline), procfs_root_(std::move(procfs_root)) {}
+    BaselineStore& baseline,
+    std::string procfs_root,
+    v6::OemCollaborationMap* oem_map) noexcept
+    : baseline_(baseline), procfs_root_(std::move(procfs_root)), oem_map_(oem_map) {}
 
 void StorageMemoryActuator::reset_contention() noexcept {
     contended_paths_.clear();
     last_written_.clear();
-    stats_.contended_nodes = 0U;
+    stats_.contended_nodes = oem_map_ ? oem_map_->active_count() : 0U;
 }
 
 std::vector<std::string> StorageMemoryActuator::contended_paths() const {
+    if (oem_map_) return oem_map_->active_contended_paths();
     std::vector<std::string> out;
     out.reserve(contended_paths_.size());
     for (const auto& [path, _] : contended_paths_) {
@@ -146,8 +149,14 @@ void StorageMemoryActuator::record_contention(
     const std::string& observed,
     uint64_t now_ms) noexcept {
     // Adopt OEM's external value in CFJ4 without overwriting it, so journal stays clean
-    // and post-cooldown recovery can safely re-acquire ownership once OEM settles.
+    // and persistent OEM collaboration escalates cleanly without repeated tug-of-war.
     (void)baseline_.rollback(path);
+    last_written_.erase(path);
+    if (oem_map_) {
+        oem_map_->record_contention(path, observed, now_ms);
+        stats_.contended_nodes = oem_map_->active_count(now_ms);
+        return;
+    }
     auto& entry = contended_paths_[path];
     ++entry.strikes;
     const uint32_t shift = std::min<uint32_t>(entry.strikes - 1U, 4U);
@@ -155,7 +164,6 @@ void StorageMemoryActuator::record_contention(
         kMaxContentionCooldownMs, kInitialContentionCooldownMs << shift);
     entry.retry_after_ms = now_ms + backoff;
     entry.observed_value = observed;
-    last_written_.erase(path);
     stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
 }
 
@@ -191,17 +199,14 @@ uint64_t StorageMemoryActuator::compute_read_ahead_kb(
 
     if (mode == ContextMode::Gaming) {
         // Stay lean when GPU/CPU is steady; widen smoothly when io_psi signals level streaming.
-        const double game_base = (q.type == StorageType::eMMC ? 192.0 : 128.0) * psi_scale;
-        return round_kb_step(game_base * profile_scale, 64U, std::min<uint64_t>(hw_ceiling, 512U));
+        const double game_base = std::max<double>(static_cast<double>(base),
+            (q.type == StorageType::eMMC ? 192.0 : 128.0)) * psi_scale;
+        return round_kb_step(game_base * profile_scale, base, std::min<uint64_t>(hw_ceiling, 768U));
     }
 
-    // Steady-state Interactive / Efficiency / ScreenOff: keep random-read latency crisp.
-    // On fast UFS/NVMe, excessive read-ahead causes read amplification; on eMMC, keep a bit more.
-    const double steady_anchor = (q.type == StorageType::eMMC)
-        ? std::clamp(static_cast<double>(base), 128.0, 256.0)
-        : std::clamp(static_cast<double>(base) * 0.5, 64.0, 128.0);
-    const uint64_t steady_hi = std::min<uint64_t>(hw_ceiling, q.type == StorageType::eMMC ? 384U : 256U);
-    return round_kb_step(steady_anchor * psi_scale, 64U, steady_hi);
+    // Calm / steady state: preserve OEM baseline rather than statically slashing read_ahead_kb.
+    const uint64_t steady_hi = std::min<uint64_t>(hw_ceiling, std::max<uint64_t>(base, 512U));
+    return round_kb_step(static_cast<double>(base) * psi_scale, base, steady_hi);
 }
 
 uint64_t StorageMemoryActuator::compute_read_ahead_kb(
@@ -226,19 +231,35 @@ bool StorageMemoryActuator::write_managed_node(
     const std::string live = read_first_line_raw(path);
     if (live.empty()) return false;
 
-    // Timed exponential backoff for OEM-contended nodes: yield cleanly during cooldown,
-    // then recover automatically if the external daemon has stopped modifying the node.
-    const auto cit = contended_paths_.find(path);
-    if (cit != contended_paths_.end()) {
-        if (now_ms < cit->second.retry_after_ms) return false;
-        if (!values_equivalent(live, cit->second.observed_value,
-                               std::max(numeric_tolerance, 0.6), verify_nonzero_mask)) {
-            // OEM daemon is still actively mutating this node; extend cooldown without writing.
-            record_contention(path, live, now_ms);
+    if (oem_map_) {
+        if (oem_map_->is_blocked(path, now_ms)) {
+            stats_.contended_nodes = oem_map_->active_count(now_ms);
             return false;
         }
-        contended_paths_.erase(cit);
-        stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        if (const std::string* obs = oem_map_->observed_value_for(path)) {
+            const bool equiv = values_equivalent(
+                live, *obs, std::max(numeric_tolerance, 0.6), verify_nonzero_mask);
+            if (!oem_map_->check_cooldown_expired(path, live, equiv, now_ms)) {
+                stats_.contended_nodes = oem_map_->active_count(now_ms);
+                return false;
+            }
+            stats_.contended_nodes = oem_map_->active_count(now_ms);
+        }
+    } else {
+        // Timed exponential backoff for OEM-contended nodes: yield cleanly during cooldown,
+        // then recover automatically if the external daemon has stopped modifying the node.
+        const auto cit = contended_paths_.find(path);
+        if (cit != contended_paths_.end()) {
+            if (now_ms < cit->second.retry_after_ms) return false;
+            if (!values_equivalent(live, cit->second.observed_value,
+                                   std::max(numeric_tolerance, 0.6), verify_nonzero_mask)) {
+                // OEM daemon is still actively mutating this node; extend cooldown without writing.
+                record_contention(path, live, now_ms);
+                return false;
+            }
+            contended_paths_.erase(cit);
+            stats_.contended_nodes = static_cast<uint32_t>(contended_paths_.size());
+        }
     }
 
     const auto prev = last_written_.find(path);
@@ -293,22 +314,36 @@ void StorageMemoryActuator::apply(
     const double io_psi = std::isfinite(telemetry.io_psi) ? std::clamp(telemetry.io_psi, 0.0, 100.0) : 0.0;
     const double mem_psi = std::isfinite(telemetry.mem_psi) ? std::clamp(telemetry.mem_psi, 0.0, 100.0) : 0.0;
     const double cpu_psi = std::isfinite(telemetry.cpu_psi) ? std::clamp(telemetry.cpu_psi, 0.0, 100.0) : 0.0;
+    const bool calm_mode = (ctx.mode == ContextMode::Efficiency || ctx.mode == ContextMode::ScreenOff);
 
-    // 1. Dynamic UFS/eMMC/dm-* Burst Readahead + Adaptive Background Isolation
+    // 1. Demand-Driven UFS/eMMC Burst Readahead + Adaptive Background Isolation (Release-on-Calm)
     if (enable_storage_burst && ctx.mode != ContextMode::Excluded) {
+        const bool need_ra_burst = (ctx.mode == ContextMode::LaunchBurst) || (io_psi >= 5.0);
         stats_.burst_active = (ctx.mode == ContextMode::LaunchBurst);
         uint64_t primary_ra = 0U;
         for (const auto& q : topo.storage_queues) {
-            const uint64_t target_ra = compute_read_ahead_kb(q, ctx.mode, profile, io_psi);
-            if (write_managed_node(q.read_ahead_kb_path, std::to_string(target_ra), now_ms, 0.0, false, 32.0)) {
-                if (primary_ra == 0U || !q.is_mapper) primary_ra = target_ra;
+            if (need_ra_burst) {
+                const uint64_t target_ra = compute_read_ahead_kb(q, ctx.mode, profile, io_psi);
+                if (target_ra > q.baseline_read_ahead_kb) {
+                    if (write_managed_node(q.read_ahead_kb_path, std::to_string(target_ra), now_ms, 0.0, false, 32.0)) {
+                        if (primary_ra == 0U || !q.is_mapper) primary_ra = target_ra;
+                    }
+                } else {
+                    rollback_managed_node(q.read_ahead_kb_path);
+                    if (primary_ra == 0U || !q.is_mapper) primary_ra = q.baseline_read_ahead_kb;
+                }
+            } else {
+                // Release-on-Calm: preserve OEM baseline read_ahead_kb instead of statically cutting it.
+                rollback_managed_node(q.read_ahead_kb_path);
+                if (primary_ra == 0U || !q.is_mapper) primary_ra = q.baseline_read_ahead_kb;
             }
         }
         if (primary_ra > 0U) stats_.active_read_ahead_kb = primary_ra;
 
+        // Isolate background cgroup ONLY during LaunchBurst, Gaming, or loaded Interactive (real PSI).
         const bool isolate_bg = (ctx.mode == ContextMode::LaunchBurst ||
-                                 ctx.mode == ContextMode::Interactive ||
-                                 ctx.mode == ContextMode::Gaming);
+                                 ctx.mode == ContextMode::Gaming ||
+                                 (ctx.mode == ContextMode::Interactive && (cpu_psi >= 4.0 || io_psi >= 3.0)));
         if (isolate_bg) {
             bool any_bg = false;
             if (!topo.cgroups.background_io_weight_path.empty()) {
@@ -338,7 +373,7 @@ void StorageMemoryActuator::apply(
             }
             stats_.background_isolated = any_bg;
         } else {
-            // Screen-off / Efficiency: let background syncs and Android maintenance run cleanly.
+            // Release-on-Calm: let background syncs and Android maintenance run cleanly at OEM defaults.
             rollback_managed_node(topo.cgroups.background_io_weight_path);
             rollback_managed_node(topo.cgroups.background_uclamp_max_path);
             stats_.background_isolated = false;
@@ -351,54 +386,13 @@ void StorageMemoryActuator::apply(
         rollback_managed_node(topo.cgroups.background_uclamp_max_path);
     }
 
-    // 2. Self-Calibrating Anti-Stutter Memory Guard (MGLRU enable + dynamic TTL + ZRAM + live MemAvailable)
+    // 2. Demand-Driven Anti-Stutter Memory Guard (Respect OEM MGLRU Policy + Release-on-Calm)
     if (enable_memory_guard && ctx.mode != ContextMode::Excluded) {
         const double avail_ratio = telemetry.memory.valid ? telemetry.memory.available_ratio() : 0.45;
         const double mem_psi_norm = std::clamp(mem_psi / 100.0, 0.0, 1.0);
         const double zram_ratio = (topo.total_ram_bytes > 0U && topo.zram_active)
             ? std::clamp(static_cast<double>(topo.zram_bytes) / static_cast<double>(topo.total_ram_bytes), 0.0, 1.5)
             : 0.0;
-
-        // Enable Linux Multi-Gen LRU if kernel exposes it disabled (e.g. HyperOS 0x0000).
-        if (!topo.vm.mglru_enabled_path.empty()) {
-            uint64_t live_mask = 0U;
-            const std::string cur = read_first_line_raw(topo.vm.mglru_enabled_path);
-            if (!parse_hex_or_dec_mask(cur, live_mask) || live_mask == 0U) {
-                (void)write_managed_node(topo.vm.mglru_enabled_path, "y", now_ms, 0.0, true);
-            }
-        }
-
-        if (!topo.vm.mglru_min_ttl_path.empty()) {
-            uint32_t ttl_ms = 0U;
-            // Release reclaim protection immediately on ScreenOff or real memory pressure so kswapd/lmkd never stall.
-            if (ctx.mode != ContextMode::ScreenOff && mem_psi < 15.0 && avail_ratio >= 0.18) {
-                const double urgency = (ctx.mode == ContextMode::Gaming || ctx.mode == ContextMode::LaunchBurst)
-                    ? 1.15 : (ctx.mode == ContextMode::Interactive ? 1.00 : 0.60);
-                // Protect hot UI/game pages within Android's safe <= 1000ms envelope when RAM is plentiful.
-                const double raw_ttl = 950.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) *
-                                       (1.0 - mem_psi_norm * 0.70) * urgency;
-                ttl_ms = static_cast<uint32_t>(
-                    std::clamp(std::lround(raw_ttl / 50.0) * 50L, 100L, 1000L));
-            }
-            const double ttl_deadband = (ttl_ms == 0U) ? 0.0 : 100.0;
-            (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms), now_ms, 0.0, false, ttl_deadband);
-        }
-
-        if (topo.zram_active && !topo.vm.page_cluster_path.empty()) {
-            (void)write_managed_node(topo.vm.page_cluster_path, "0", now_ms);
-        }
-
-        if (!topo.vm.swappiness_path.empty()) {
-            // Continuous swappiness derived from live RAM headroom, ZRAM ratio, and mem_psi:
-            // Abundant RAM -> keep hot pages uncompressed; tight RAM with ZRAM -> reclaim proactively before stutter.
-            const double base_swap = topo.zram_active ? (45.0 + 25.0 * std::min(zram_ratio, 1.0)) : 35.0;
-            const double scarcity = std::clamp((0.40 - avail_ratio) / 0.30, 0.0, 1.0);
-            const double adapted_swap = base_swap + scarcity * (topo.zram_active ? 35.0 : 25.0) +
-                                        mem_psi_norm * 15.0;
-            const uint32_t swap_val = static_cast<uint32_t>(
-                std::clamp(std::lround(adapted_swap / 5.0) * 5L, 30L, topo.zram_active ? 100L : 80L));
-            (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val), now_ms, 0.0, false, 5.0);
-        }
 
         // Compute live Memory Health % (100 = plentiful unfragmented RAM, drops with RAM/swap/PSI pressure)
         const double swap_used = telemetry.memory.valid ? telemetry.memory.swap_used_ratio() : 0.0;
@@ -408,33 +402,78 @@ void StorageMemoryActuator::apply(
             - mem_psi_norm * 40.0;
         stats_.memory_health_pct = static_cast<uint32_t>(std::clamp(std::lround(health_raw), 10L, 100L));
 
-        // Gentle, baseline-relative watermark headroom ONLY when RAM is plentiful; never force
-        // oversized watermarks (e.g. 120..180) that trigger kswapd thrashing and lmkd SystemUI kills.
+        // Respect OEM kernel MM policy: only tune MGLRU min_ttl_ms if the kernel/ROM already has
+        // MGLRU enabled (never force-flip OEM 0x0000 on HyperOS 4 / custom mi_reclaim kernels).
+        if (!topo.vm.mglru_min_ttl_path.empty() && topo.vm.mglru_oem_enabled) {
+            if (calm_mode) {
+                rollback_managed_node(topo.vm.mglru_min_ttl_path);
+            } else {
+                uint32_t ttl_ms = 0U;
+                // Release reclaim protection immediately under real memory pressure so kswapd/lmkd never stall.
+                if (mem_psi < 15.0 && avail_ratio >= 0.18) {
+                    const double urgency = (ctx.mode == ContextMode::Gaming || ctx.mode == ContextMode::LaunchBurst)
+                        ? 1.15 : 1.00;
+                    const double raw_ttl = 950.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) *
+                                           (1.0 - mem_psi_norm * 0.70) * urgency;
+                    ttl_ms = static_cast<uint32_t>(
+                        std::clamp(std::lround(raw_ttl / 50.0) * 50L, 100L, 1000L));
+                }
+                const double ttl_deadband = (ttl_ms == 0U) ? 0.0 : 100.0;
+                (void)write_managed_node(topo.vm.mglru_min_ttl_path, std::to_string(ttl_ms), now_ms, 0.0, false, ttl_deadband);
+            }
+        } else {
+            rollback_managed_node(topo.vm.mglru_min_ttl_path);
+        }
+
+        if (topo.zram_active && !topo.vm.page_cluster_path.empty()) {
+            if (calm_mode) {
+                rollback_managed_node(topo.vm.page_cluster_path);
+            } else {
+                (void)write_managed_node(topo.vm.page_cluster_path, "0", now_ms);
+            }
+        }
+
+        if (!topo.vm.swappiness_path.empty()) {
+            // Demand-driven swappiness: release to OEM when calm and RAM is healthy;
+            // adapt dynamically only when active workload or memory scarcity warrants intervention.
+            const bool need_swap_adapt = !calm_mode || avail_ratio < 0.30 || mem_psi >= 5.0;
+            if (need_swap_adapt) {
+                const double base_swap = topo.zram_active ? (45.0 + 25.0 * std::min(zram_ratio, 1.0)) : 35.0;
+                const double scarcity = std::clamp((0.40 - avail_ratio) / 0.30, 0.0, 1.0);
+                const double adapted_swap = base_swap + scarcity * (topo.zram_active ? 35.0 : 25.0) +
+                                            mem_psi_norm * 15.0;
+                const uint32_t swap_val = static_cast<uint32_t>(
+                    std::clamp(std::lround(adapted_swap / 5.0) * 5L, 30L, topo.zram_active ? 100L : 80L));
+                (void)write_managed_node(topo.vm.swappiness_path, std::to_string(swap_val), now_ms, 0.0, false, 5.0);
+            } else {
+                rollback_managed_node(topo.vm.swappiness_path);
+            }
+        }
+
+        // Gentle, baseline-relative watermark headroom ONLY during active Gaming/Camera burst when
+        // RAM is plentiful and OEM baseline < 50; rollback to OEM on calm/pressure.
         if (!topo.vm.watermark_scale_factor_path.empty()) {
             const uint32_t base_wm = topo.vm.baseline_watermark_scale_factor > 0U
                 ? topo.vm.baseline_watermark_scale_factor
                 : 10U;
-            const bool plentiful_ram = (ctx.mode != ContextMode::ScreenOff &&
-                                        avail_ratio >= 0.30 && mem_psi < 8.0);
-            if (plentiful_ram && base_wm < 50U) {
-                const uint32_t delta = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active) ? 15U : 10U;
-                const uint32_t wm = std::min<uint32_t>(base_wm + delta, 50U);
+            const bool active_dma_burst = (ctx.mode == ContextMode::Gaming || ctx.camera_boost_active);
+            const bool plentiful_ram = (avail_ratio >= 0.30 && mem_psi < 8.0);
+            if (active_dma_burst && plentiful_ram && base_wm < 50U) {
+                const uint32_t wm = std::min<uint32_t>(base_wm + 15U, 50U);
                 (void)write_managed_node(topo.vm.watermark_scale_factor_path, std::to_string(wm), now_ms, 0.0, false, 5.0);
-            } else if (ctx.mode == ContextMode::ScreenOff || avail_ratio < 0.25 || mem_psi >= 8.0 || base_wm >= 50U) {
+            } else {
                 rollback_managed_node(topo.vm.watermark_scale_factor_path);
             }
         }
 
         if (!topo.vm.compaction_proactiveness_path.empty()) {
-            // Pause proactive compaction stalls during latency-critical LaunchBurst, Camera & Gaming;
-            // allow gentle background compaction scaled to available memory when calm.
-            uint32_t comp = 0U;
-            if (ctx.mode != ContextMode::LaunchBurst && ctx.mode != ContextMode::Gaming && !ctx.camera_boost_active) {
-                const double raw_comp = 20.0 * std::clamp(avail_ratio * 2.0, 0.25, 1.0) * (1.0 - mem_psi_norm * 0.5);
-                comp = static_cast<uint32_t>(std::clamp(std::lround(raw_comp / 5.0) * 5L, 5L, 25L));
+            // Pause proactive compaction stalls ONLY during latency-critical LaunchBurst, Camera & Gaming;
+            // release cleanly back to OEM baseline when calm/interactive.
+            if (ctx.mode == ContextMode::LaunchBurst || ctx.mode == ContextMode::Gaming || ctx.camera_boost_active) {
+                (void)write_managed_node(topo.vm.compaction_proactiveness_path, "0", now_ms, 0.0, false, 0.0);
+            } else {
+                rollback_managed_node(topo.vm.compaction_proactiveness_path);
             }
-            const double comp_deadband = (comp == 0U) ? 0.0 : 5.0;
-            (void)write_managed_node(topo.vm.compaction_proactiveness_path, std::to_string(comp), now_ms, 0.0, false, comp_deadband);
         }
 
         // 3. Smart asynchronous UFS/eMMC page-cache pre-read on newly launched foreground app

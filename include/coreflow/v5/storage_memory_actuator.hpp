@@ -8,6 +8,7 @@
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/v5/context_engine.hpp"
 #include "coreflow/v5/hardware_probe.hpp"
+#include "coreflow/v6/oem_collaboration_map.hpp"
 
 #include <cstdint>
 #include <string>
@@ -43,7 +44,8 @@ public:
     static constexpr uint64_t kPredictivePreloadCooldownMs = 180000ULL; // 3 minutes
 
     StorageMemoryActuator(BaselineStore& baseline,
-                          std::string procfs_root = "/proc") noexcept;
+                          std::string procfs_root = "/proc",
+                          v6::OemCollaborationMap* oem_map = nullptr) noexcept;
 
     void apply(const HardwareTopology& topo,
                const ContextDecision& ctx,
@@ -110,6 +112,7 @@ private:
 
     BaselineStore& baseline_;
     std::string procfs_root_;
+    v6::OemCollaborationMap* oem_map_{nullptr};
     std::unordered_map<std::string, std::string> last_written_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;
     std::unordered_map<std::string, uint64_t> last_preread_ms_;

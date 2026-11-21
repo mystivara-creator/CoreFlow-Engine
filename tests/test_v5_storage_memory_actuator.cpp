@@ -57,7 +57,7 @@ int main() {
     write_file(ra_path, "128\n");
     write_file(bg_io, "default 100\n");
     write_file(bg_uclamp, "max\n");
-    write_file(mglru_en, "0x0000\n");
+    write_file(mglru_en, "0x0007\n");
     write_file(mglru, "0\n");
     write_file(page_cluster, "3\n");
     write_file(swappiness, "100\n");
@@ -78,6 +78,7 @@ int main() {
     topo.cgroups.uclamp_uses_percent = true;
     topo.vm.mglru_enabled_path = mglru_en.string();
     topo.vm.mglru_min_ttl_path = mglru.string();
+    topo.vm.mglru_oem_enabled = true; // Kernel already enabled MGLRU
     topo.vm.page_cluster_path = page_cluster.string();
     topo.vm.swappiness_path = swappiness.string();
     topo.vm.compaction_proactiveness_path = compaction.string();
@@ -91,7 +92,7 @@ int main() {
     calm_tel.memory.available_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL; // 50% free
     calm_tel.memory.valid = true;
 
-    // 1. LaunchBurst -> UFS burst widens dynamically above baseline, background isolated safely, MGLRU enabled, gentle watermark <= 50
+    // 1. LaunchBurst -> UFS burst widens dynamically above baseline, background isolated safely, MGLRU TTL active (OEM enabled), compaction paused
     ContextDecision launch_ctx{};
     launch_ctx.mode = ContextMode::LaunchBurst;
     launch_ctx.newly_launched_app = true;
@@ -103,18 +104,24 @@ int main() {
     assert(burst_ra > 128U && burst_ra <= 512U);
     assert(read_file(bg_io).rfind("default ", 0) == 0 && read_file(bg_io) != "default 100");
     assert(read_file(bg_uclamp) != "max" && std::stod(read_file(bg_uclamp)) >= 30.0);
-    assert(read_file(mglru_en) == "y");
+    assert(read_file(mglru_en) == "0x0007");
     const uint64_t calm_ttl = std::stoull(read_file(mglru));
     assert(calm_ttl >= 800U && calm_ttl <= 1000U);
     assert(read_file(page_cluster) == "0");
     const uint64_t calm_swap = std::stoull(read_file(swappiness));
     assert(calm_swap >= 30U && calm_swap <= 90U);
     assert(read_file(compaction) == "0");
-    const uint64_t calm_wm = std::stoull(read_file(watermark));
-    assert(calm_wm > 10U && calm_wm <= 50U);
+    assert(read_file(watermark) == "10"); // Watermark only nudged during Gaming/Camera burst
     assert(act.stats().burst_active);
     assert(act.stats().background_isolated);
     assert(act.stats().contended_nodes == 0U);
+
+    // 1b. Gaming burst nudges watermark gently <= 50 when OEM baseline < 50 and RAM plentiful
+    ContextDecision gaming_wm_ctx{};
+    gaming_wm_ctx.mode = ContextMode::Gaming;
+    act.apply(topo, gaming_wm_ctx, PerformanceProfile::Gaming, true, true, 1500, calm_tel);
+    const uint64_t gaming_wm = std::stoull(read_file(watermark));
+    assert(gaming_wm > 10U && gaming_wm <= 50U);
 
     // 2. Dynamic memory pressure adaptation: tight RAM + high mem_psi raises swappiness, drops MGLRU TTL to 0, and rolls back watermark to OEM baseline
     StorageMemoryTelemetry tight_tel = calm_tel;
@@ -129,18 +136,19 @@ int main() {
     assert(tight_ttl == 0U && tight_ttl < calm_ttl);
     assert(read_file(watermark) == "10");
 
-    // 3. Steady-state ScreenOff -> UFS drops down to low-latency steady read_ahead, background limits restored, MGLRU TTL=0
+    // 3. Release-on-Calm (ScreenOff / Efficiency) -> ALL storage/background/VM nodes restore cleanly to OEM baseline
     ContextDecision off_ctx{};
     off_ctx.mode = ContextMode::ScreenOff;
     act.apply(topo, off_ctx, PerformanceProfile::Balanced, true, true, 5000, calm_tel);
 
-    const uint64_t off_ra = std::stoull(read_file(ra_path));
-    assert(off_ra <= 128U && off_ra >= 64U);
+    assert(read_file(ra_path) == "128");
     assert(read_file(bg_io) == "default 100");
     assert(read_file(bg_uclamp) == "max");
     assert(read_file(mglru) == "0");
+    assert(read_file(page_cluster) == "3");
+    assert(read_file(swappiness) == "100");
     assert(read_file(watermark) == "10");
-    assert(std::stoull(read_file(compaction)) > 0U);
+    assert(read_file(compaction) == "20");
     assert(!act.stats().background_isolated);
 
     // 4. Smart pre-read via posix_fadvise on mapped app assets with 60s cooldown
@@ -208,7 +216,9 @@ int main() {
     assert(act.stats().predictive_preloads_total == 1U);
 
     assert(baseline.rollback_all() > 0U);
-    assert(read_file(mglru_en) == "0x0000");
+    assert(read_file(mglru_en) == "0x0007");
+    assert(read_file(mglru) == "250");
+    assert(read_file(ra_path) == "128");
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");
     fs::remove_all(root);
     std::cout << "v5 StorageMemoryActuator tests passed\n";

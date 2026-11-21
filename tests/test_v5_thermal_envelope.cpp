@@ -90,10 +90,12 @@ int main() {
     assert(read_file(up_rate) == "0");
     assert(read_file(down_rate) == "0");
 
-    // 1b. Cool Interactive/Efficiency keep KGSL ceiling unrestricted (0) for heavy UI blurs while saving power on min_pwrlevel
+    // 1b. Release-on-Calm: cool Efficiency restores all CPU/GPU nodes cleanly to OEM baseline (zero lingering mutations)
     act.apply(topo, ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, {5.0, 15.0});
-    assert(std::stoull(read_file(kgsl_max)) == 0U);
-    assert(std::stoull(read_file(kgsl_min)) >= 4U);
+    assert(act.stats().managed_nodes == 0U);
+    assert(read_file(hispeed) == "1800000");
+    assert(read_file(kgsl_max) == "0");
+    assert(read_file(kgsl_min) == "5");
 
     // 2. PID capacity_scale drop + thermal_guard smoothly lowers hispeed, raises hispeed_load, and raises KGSL ceiling index (slower/cooler)
     act.apply(topo, ContextMode::Gaming, PerformanceProfile::Gaming, 0.55, true, true, {10.0, 50.0});
