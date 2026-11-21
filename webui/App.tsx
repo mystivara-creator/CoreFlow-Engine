@@ -1213,6 +1213,20 @@ export const App: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Mem Health</div>
+                    <div className="cf-metric-value">{status.hyperFluid.memoryHealthPct}%</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Compactions</div>
+                    <div className="cf-metric-value">{status.hyperFluid.idleCompactions}</div>
+                  </div>
+                  <div className="cf-metric-tile">
+                    <div className="cf-metric-label">Preloads</div>
+                    <div className="cf-metric-value">{status.hyperFluid.predictivePreloads}</div>
+                  </div>
+                </div>
                 <FeatureRow
                   Icon={HardDrive}
                   title={`${status.hardware.storageType} Launch Burst`}
@@ -1228,6 +1242,46 @@ export const App: React.FC = () => {
                   enabled={status.features.memoryGuard}
                   disabled={savingKey !== null}
                   onToggle={() => handleToggleFeature('enable_memory_guard', 'memoryGuard', 'Memory Guard')}
+                />
+                <FeatureRow
+                  Icon={MemoryStick}
+                  title={isId ? 'Anti-Aging Memory Compaction' : '9-Hour Anti-Aging Compaction'}
+                  desc={
+                    isId
+                      ? 'Defragmentasi RAM otomatis saat layar mati & dingin (< 42°C)'
+                      : 'Proactive RAM defragmentation during cool ScreenOff idle (< 42°C)'
+                  }
+                  enabled={status.features.idleCompaction}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_idle_compaction', 'idleCompaction', 'Idle Compaction')}
+                />
+                <FeatureRow
+                  Icon={Sparkles}
+                  title="Rust Predictive App Preloader"
+                  desc={
+                    status.hyperFluid.lastPredictedPackage
+                      ? `Last pre-warmed: ${status.hyperFluid.lastPredictedPackage}`
+                      : isId
+                        ? 'Prediksi Markov (<1 KB RAM) hangatkan APK/SO sebelum dibuka'
+                        : 'Markov predictor (<1 KB RAM) warms APK/SO pages before launch'
+                  }
+                  enabled={status.features.predictivePreload}
+                  disabled={savingKey !== null}
+                  onToggle={() =>
+                    handleToggleFeature('enable_predictive_preload', 'predictivePreload', 'Predictive Preloader')
+                  }
+                />
+                <FeatureRow
+                  Icon={Activity}
+                  title={isId ? 'Fast-Launch Kamera & Video Chain' : 'Fast-Launch Camera & Video Chain'}
+                  desc={
+                    isId
+                      ? 'Boost Per-TID UClamp untuk cameraserver, Camera HAL & MediaCodec'
+                      : 'Per-TID UClamp full-chain boost for cameraserver, Camera HAL & MediaCodec'
+                  }
+                  enabled={status.features.cameraBoost}
+                  disabled={savingKey !== null}
+                  onToggle={() => handleToggleFeature('enable_camera_boost', 'cameraBoost', 'Camera Full-Chain')}
                 />
               </section>
             </div>

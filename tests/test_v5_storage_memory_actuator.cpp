@@ -178,6 +178,27 @@ int main() {
         deep_ufs, ContextMode::Interactive, PerformanceProfile::Balanced, 0.0);
     assert(deep_burst > calm_steady);
 
+    // 8. HyperFluid 9-hour anti-aging idle compaction (gated by temp, RAM pressure, and 10m cooldown)
+    const fs::path compact_mem = root / "vm/compact_memory";
+    write_file(compact_mem, "0\n");
+    topo.vm.compact_memory_path = compact_mem.string();
+    StorageMemoryTelemetry aging_tel = calm_tel;
+    aging_tel.memory.valid = true;
+    aging_tel.memory.total_bytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+    aging_tel.memory.available_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL; // 25% available -> needs compaction
+    // Hot phone (>= 42C) must skip compaction
+    assert(!act.maybe_run_idle_compaction(topo, aging_tel, 45.0f, 700000));
+    // Cool phone (< 42C) triggers compaction once, then honors 10m cooldown
+    assert(act.maybe_run_idle_compaction(topo, aging_tel, 34.0f, 700000));
+    assert(read_file(compact_mem) == "1");
+    assert(act.stats().idle_compactions_total == 1U);
+    assert(!act.maybe_run_idle_compaction(topo, aging_tel, 34.0f, 800000));
+
+    // 9. HyperFluid predictive cached asset prefetch warms previously learned package assets
+    const uint64_t predicted_bytes = act.prefetch_cached_package("com.example.test", 4ULL * 1024ULL * 1024ULL * 1024ULL, 900000, true);
+    assert(predicted_bytes == 4096U);
+    assert(act.stats().predictive_preloads_total == 1U);
+
     assert(baseline.rollback_all() > 0U);
     assert(read_file(mglru_en) == "0x0000");
     (void)::unsetenv("COREFLOW_TEST_STATE_DIR");

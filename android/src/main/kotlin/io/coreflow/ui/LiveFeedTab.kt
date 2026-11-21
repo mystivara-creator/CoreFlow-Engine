@@ -158,6 +158,10 @@ fun LiveFeedTab(
             }
         }
 
+        item {
+            BenchmarkCard(strings = strings, status = status)
+        }
+
         item { SmallTitle(text = "${strings.sectionEpisodes} (${episodes.size})") }
 
         if (episodes.isEmpty()) {

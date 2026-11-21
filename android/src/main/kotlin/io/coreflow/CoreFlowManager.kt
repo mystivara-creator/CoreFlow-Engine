@@ -36,6 +36,9 @@ object CoreFlowManager {
         "enable_memory_guard",
         "enable_thermal_pacing",
         "enable_battery_step_charging",
+        "enable_idle_compaction",
+        "enable_predictive_preload",
+        "enable_camera_boost",
     )
 
     private val ALLOWED_POWER_KEYS = setOf(
@@ -190,6 +193,26 @@ object CoreFlowManager {
         val memoryGuard: Boolean = true,
         val thermalPacing: Boolean = true,
         val batteryStepCharging: Boolean = true,
+        val idleCompaction: Boolean = true,
+        val predictivePreload: Boolean = true,
+        val cameraBoost: Boolean = true,
+    )
+
+    data class HyperFluidStats(
+        val idleCompactions: Long = 0L,
+        val predictivePreloads: Long = 0L,
+        val lastPredictedPackage: String = "",
+        val cameraChainActive: Boolean = false,
+        val mediaPipelineActive: Boolean = false,
+        val memoryHealthPct: Int = 100,
+    )
+
+    data class GfxFrameStats(
+        val packageName: String,
+        val totalFrames: Int,
+        val jankyFrames: Int,
+        val jankPct: Float,
+        val p95Ms: Int?,
     )
 
     data class DaemonStatus(
@@ -227,6 +250,7 @@ object CoreFlowManager {
         val thermalVelocityCpm: Float = 0f,
         val thermalGuardActive: Boolean = false,
         val features: EngineFeatures = EngineFeatures(),
+        val hyperFluid: HyperFluidStats = HyperFluidStats(),
         val powerConfig: PowerConfig = PowerConfig(),
         val batteryPower: BatteryPower = BatteryPower(),
         val hardware: HardwareInfo = HardwareInfo(),
@@ -417,7 +441,21 @@ object CoreFlowManager {
                     memoryGuard = featuresJson?.optBoolean("memoryGuard", true) ?: true,
                     thermalPacing = featuresJson?.optBoolean("thermalPacing", true) ?: true,
                     batteryStepCharging = featuresJson?.optBoolean("batteryStepCharging", true) ?: true,
+                    idleCompaction = featuresJson?.optBoolean("idleCompaction", true) ?: true,
+                    predictivePreload = featuresJson?.optBoolean("predictivePreload", true) ?: true,
+                    cameraBoost = featuresJson?.optBoolean("cameraBoost", true) ?: true,
                 ),
+                hyperFluid = run {
+                    val hf = json.optJSONObject("hyperFluid")
+                    HyperFluidStats(
+                        idleCompactions = hf?.optLong("idleCompactions", 0L) ?: 0L,
+                        predictivePreloads = hf?.optLong("predictivePreloads", 0L) ?: 0L,
+                        lastPredictedPackage = hf?.optString("lastPredictedPackage", "") ?: "",
+                        cameraChainActive = hf?.optBoolean("cameraChainActive", false) ?: false,
+                        mediaPipelineActive = hf?.optBoolean("mediaPipelineActive", false) ?: false,
+                        memoryHealthPct = hf?.optInt("memoryHealthPct", 100) ?: 100,
+                    )
+                },
                 powerConfig = PowerConfig(
                     bypassCharging = powerCfgJson?.optBoolean("bypassCharging", false) ?: false,
                     bypassOnGaming = powerCfgJson?.optBoolean("bypassOnGaming", false) ?: false,
@@ -742,6 +780,56 @@ object CoreFlowManager {
             val match = Regex("Parcel\\(\\s*([0-9a-fA-F]{8})").find(text) ?: return@runCatching null
             match.groupValues[1].toLong(16)
         }.getOrNull()
+    }
+
+    /**
+     * Reads genuine Android HWUI frame-drop stats via `dumpsys gfxinfo <pkg>`.
+     */
+    suspend fun measureGfxFrameDrops(packageName: String): Result<GfxFrameStats> = withContext(Dispatchers.IO) {
+        runCatching {
+            val pkg = packageName.trim()
+            require(PACKAGE_REGEX.matches(pkg)) { "Invalid package: $pkg" }
+            val out = execRootCommand("dumpsys gfxinfo '$pkg'")
+            val totalMatch = Regex("Total frames rendered:\\s*(\\d+)").find(out)
+            val jankMatch = Regex("Janky frames:\\s*(\\d+)\\s*\\(([0-9.]+)%\\)").find(out)
+            val p95Match = Regex("95th percentile:\\s*(\\d+)ms").find(out)
+            val total = totalMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val janky = jankMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val jankPct = jankMatch?.groupValues?.get(2)?.toFloatOrNull()
+                ?: if (total > 0) (janky * 100f / total.toFloat()) else 0f
+            GfxFrameStats(
+                packageName = pkg,
+                totalFrames = total,
+                jankyFrames = janky,
+                jankPct = jankPct,
+                p95Ms = p95Match?.groupValues?.get(1)?.toIntOrNull(),
+            )
+        }
+    }
+
+    /**
+     * Measures genuine cold-launch latency in milliseconds via `am force-stop` + `am start -W`.
+     * Returns null/failure if package has no launchable activity.
+     */
+    suspend fun measureColdLaunchMs(packageName: String): Result<Long> = withContext(Dispatchers.IO) {
+        runCatching {
+            val pkg = packageName.trim()
+            require(PACKAGE_REGEX.matches(pkg)) { "Invalid package: $pkg" }
+            val resolved = execRootCommand("cmd package resolve-activity --brief '$pkg' | tail -n 1").trim()
+            require(resolved.contains("/") && !resolved.contains(" ")) {
+                "No launchable activity for $pkg"
+            }
+            val safeComp = resolved.replace("'", "")
+            val out = execRootCommand(
+                "am force-stop '$pkg'; sleep 0.35; am start -W -n '$safeComp'",
+            )
+            val totalMs = Regex("TotalTime:\\s*(\\d+)").find(out)?.groupValues?.get(1)?.toLongOrNull()
+                ?: Regex("WaitTime:\\s*(\\d+)").find(out)?.groupValues?.get(1)?.toLongOrNull()
+                ?: error("Could not parse TotalTime from am start -W")
+            // Return smoothly to Companion App so user immediately sees results
+            Shell.cmd("am start -a android.intent.action.MAIN -n io.coreflow.companion/io.coreflow.MainActivity >/dev/null 2>&1").exec()
+            totalMs
+        }
     }
 
     private fun execRootCommand(command: String): String {

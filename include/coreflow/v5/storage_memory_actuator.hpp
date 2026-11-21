@@ -29,6 +29,9 @@ struct StorageMemoryStats {
     bool background_isolated{false};
     uint64_t preread_files_total{0};
     uint64_t preread_bytes_total{0};
+    uint64_t idle_compactions_total{0};
+    uint64_t predictive_preloads_total{0};
+    uint32_t memory_health_pct{100};
     uint32_t contended_nodes{0};
 };
 
@@ -36,6 +39,8 @@ class StorageMemoryActuator {
 public:
     static constexpr uint64_t kInitialContentionCooldownMs = 30000ULL;
     static constexpr uint64_t kMaxContentionCooldownMs = 300000ULL;
+    static constexpr uint64_t kIdleCompactionCooldownMs = 600000ULL; // 10 minutes
+    static constexpr uint64_t kPredictivePreloadCooldownMs = 180000ULL; // 3 minutes
 
     StorageMemoryActuator(BaselineStore& baseline,
                           std::string procfs_root = "/proc") noexcept;
@@ -49,12 +54,24 @@ public:
                const StorageMemoryTelemetry& telemetry = {}) noexcept;
 
     // Smart asynchronous kernel page-cache prefetch for a newly launched foreground app.
-    // Returns total bytes advised via posix_fadvise(POSIX_FADV_WILLNEED).
+    // Also caches discovered APK/ODEX/SO paths for future predictive preloading.
     uint64_t prefetch_app_assets(int32_t pid,
                                  const std::string& package_name,
                                  uint64_t available_or_total_ram_bytes,
                                  uint64_t now_ms,
                                  bool allow_any_path_for_test = false) noexcept;
+
+    // Proactively warms cached APK/ODEX/SO pages for a Rust-predicted next app during cool idle.
+    uint64_t prefetch_cached_package(const std::string& package_name,
+                                     uint64_t available_or_total_ram_bytes,
+                                     uint64_t now_ms,
+                                     bool allow_any_path_for_test = false) noexcept;
+
+    // 9-hour anti-aging guard: runs one-shot kernel memory compaction during cool ScreenOff idle.
+    bool maybe_run_idle_compaction(const HardwareTopology& topo,
+                                   const StorageMemoryTelemetry& telemetry,
+                                   float soc_temp_celsius,
+                                   uint64_t now_ms) noexcept;
 
     void reset_contention() noexcept;
     [[nodiscard]] StorageMemoryStats stats() const noexcept { return stats_; }
@@ -96,6 +113,9 @@ private:
     std::unordered_map<std::string, std::string> last_written_;
     std::unordered_map<std::string, ContentionEntry> contended_paths_;
     std::unordered_map<std::string, uint64_t> last_preread_ms_;
+    std::unordered_map<std::string, uint64_t> last_predictive_ms_;
+    std::unordered_map<std::string, std::vector<std::string>> cached_pkg_assets_;
+    uint64_t last_compaction_ms_{0};
     StorageMemoryStats stats_{};
 };
 

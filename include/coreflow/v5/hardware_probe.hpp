@@ -80,6 +80,8 @@ struct VmNodesInfo {
     std::string mglru_min_ttl_path;
     std::string compaction_proactiveness_path;
     std::string watermark_scale_factor_path;
+    std::string compact_memory_path;
+    std::string extra_free_kbytes_path;
 };
 
 struct CgroupPathsInfo {

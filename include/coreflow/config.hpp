@@ -40,11 +40,14 @@ struct DaemonConfig {
     bool inspection_mode{false};
     bool enable_tuner{true};
 
-    // [features] CoreFlow v5/v6 4-pillar feature toggles
+    // [features] CoreFlow v5/v6 4-pillar + HyperFluid feature toggles
     bool enable_frame_smoothness{true};
     bool enable_storage_burst{true};
     bool enable_memory_guard{true};
     bool enable_thermal_pacing{true};
+    bool enable_idle_compaction{true};
+    bool enable_predictive_preload{true};
+    bool enable_camera_boost{true};
 
     // [power] CoreFlow v6 CFJ4-protected power & bypass charging controls
     bool bypass_charging{false};
@@ -185,7 +188,9 @@ struct DaemonConfig {
             return "general";
         }
         if (key == "enable_frame_smoothness" || key == "enable_storage_burst" ||
-            key == "enable_memory_guard" || key == "enable_thermal_pacing") {
+            key == "enable_memory_guard" || key == "enable_thermal_pacing" ||
+            key == "enable_idle_compaction" || key == "enable_predictive_preload" ||
+            key == "enable_camera_boost") {
             return "features";
         }
         if (key == "bypass_charging" || key == "bypass_on_gaming" ||
@@ -300,6 +305,9 @@ struct DaemonConfig {
             else if (key == "enable_storage_burst") cfg.enable_storage_burst = parse_bool(val);
             else if (key == "enable_memory_guard") cfg.enable_memory_guard = parse_bool(val);
             else if (key == "enable_thermal_pacing") cfg.enable_thermal_pacing = parse_bool(val);
+            else if (key == "enable_idle_compaction") cfg.enable_idle_compaction = parse_bool(val);
+            else if (key == "enable_predictive_preload") cfg.enable_predictive_preload = parse_bool(val);
+            else if (key == "enable_camera_boost") cfg.enable_camera_boost = parse_bool(val);
 
             // [apps]
             else if (key == "gaming_apps" || key == "smoothness_apps" ||

@@ -227,6 +227,35 @@ bool ContextEngine::is_critical_render_thread_name(std::string_view comm) noexce
            comm == "adreno-worker";
 }
 
+bool ContextEngine::is_media_pipeline_thread_name(std::string_view comm) noexcept {
+    if (comm.empty()) return false;
+    return comm == "MediaCodec_loop" ||
+           comm == "CodecLooper" ||
+           comm == "NuPlayerDriver" ||
+           comm == "AudioTrack" ||
+           comm == "OMXCallbackDisp" ||
+           comm.rfind("ExoPlayer:Playb", 0) == 0 ||
+           comm.rfind("ExoPlayer:Load", 0) == 0 ||
+           comm.rfind("c2.qti.", 0) == 0 ||
+           comm.rfind("c2.mtk.", 0) == 0 ||
+           comm.rfind("c2.android.", 0) == 0;
+}
+
+bool ContextEngine::is_camera_package(std::string_view pkg) noexcept {
+    if (pkg.empty()) return false;
+    const std::string lower = to_lower_copy(pkg);
+    return lower == "com.android.camera" ||
+           lower == "com.miui.camera" ||
+           lower == "com.google.android.googlecamera" ||
+           lower == "org.codeaurora.snapcam" ||
+           lower == "com.sec.android.app.camera" ||
+           lower == "com.oplus.camera" ||
+           lower == "com.oneplus.camera" ||
+           lower == "net.sourceforge.opencamera" ||
+           lower.find(".camera") != std::string::npos ||
+           lower.find("gcam") != std::string::npos;
+}
+
 bool ContextEngine::is_background_system_service(std::string_view pkg) noexcept {
     if (pkg.empty()) return true;
     const std::string lower = to_lower_copy(pkg);
@@ -279,6 +308,10 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
     const std::string pkg_lower = to_lower_copy(input.foreground_package);
     out.app_excluded = !pkg_lower.empty() && excluded_apps_.contains(pkg_lower);
     out.app_forced_gaming = !pkg_lower.empty() && gaming_apps_.contains(pkg_lower);
+    const bool is_cam = !out.app_excluded &&
+        (input.is_camera_app || is_camera_package(input.foreground_package));
+    out.camera_boost_active = is_cam && !input.screen_off;
+    out.media_pipeline_active = !out.app_excluded && !input.screen_off && input.has_media_thread;
 
     PerformanceProfile eff_profile = profile_;
     if (out.app_forced_gaming) {
@@ -302,7 +335,8 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
         gpu_high_streak_ = 0;
         gpu_low_streak_ = 0;
         if (!input.screen_off && !out.app_excluded) {
-            const uint64_t burst_ms = eff_profile == PerformanceProfile::Battery ? 1200ULL :
+            const uint64_t burst_ms = is_cam ? 2400ULL :
+                eff_profile == PerformanceProfile::Battery ? 1200ULL :
                 eff_profile == PerformanceProfile::Smoothness ? 2000ULL : 1600ULL;
             launch_burst_until_ms_ = input.now_ms + burst_ms;
             out.newly_launched_app = true;
@@ -368,7 +402,8 @@ ContextDecision ContextEngine::evaluate(const ContextSignalInput& input) noexcep
     } else if (out.app_forced_gaming || gaming_latched_ ||
                (eff_profile == PerformanceProfile::Gaming && input.cpu_util_pct >= 30.0)) {
         out.mode = ContextMode::Gaming;
-    } else if (out.touch_hold_remaining_ms > 0U || input.cpu_util_pct >= 55.0) {
+    } else if (out.touch_hold_remaining_ms > 0U || input.cpu_util_pct >= 55.0 ||
+               out.camera_boost_active || out.media_pipeline_active) {
         out.mode = ContextMode::Interactive;
     } else {
         out.mode = ContextMode::Efficiency;
@@ -462,6 +497,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     if (best_pid <= 0) return result;
     result.pid = best_pid;
     result.package_name = std::move(best_pkg);
+    result.is_camera_app = is_camera_package(result.package_name);
     result.has_render_thread = (best_rank == 6);
 
     const uint64_t now = steady_now_ms();
@@ -469,6 +505,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         now - cached_fg_tids_ms_ < 3000ULL && !cached_fg_tids_.empty()) {
         result.critical_tids = cached_fg_tids_;
         result.has_game_thread = cached_fg_has_game_thread_;
+        result.has_media_thread = cached_fg_has_media_thread_;
         result.has_render_thread = result.has_render_thread || (cached_fg_tids_.size() > 1U);
         return result;
     }
@@ -488,6 +525,13 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
         if (is_game_engine_thread_name(comm)) {
             result.has_game_thread = true;
         }
+        if (is_media_pipeline_thread_name(comm)) {
+            result.has_media_thread = true;
+            if (is_cfs_thread(tid, procfs_root_)) {
+                result.critical_tids.push_back(tid);
+            }
+            continue;
+        }
         if (is_critical_render_thread_name(comm)) {
             result.has_render_thread = true;
             if (is_cfs_thread(tid, procfs_root_)) {
@@ -499,6 +543,7 @@ ForegroundAppInfo ContextEngine::resolve_foreground_app(
     cached_fg_tids_ms_ = now;
     cached_fg_tids_ = result.critical_tids;
     cached_fg_has_game_thread_ = result.has_game_thread;
+    cached_fg_has_media_thread_ = result.has_media_thread;
     return result;
 }
 
@@ -541,6 +586,53 @@ std::vector<int32_t> ContextEngine::resolve_surfaceflinger_tids() noexcept {
         break;
     }
     return cached_sf_tids_;
+}
+
+std::vector<int32_t> ContextEngine::resolve_camera_hal_tids() noexcept {
+    const uint64_t now = steady_now_ms();
+    if (!cached_cam_tids_.empty() && now >= cached_cam_checked_ms_ &&
+        now - cached_cam_checked_ms_ < 15000ULL) {
+        return cached_cam_tids_;
+    }
+
+    cached_cam_checked_ms_ = now;
+    cached_cam_tids_.clear();
+
+    std::error_code ec;
+    for (fs::directory_iterator it(procfs_root_, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end && cached_cam_tids_.size() < 12U; it.increment(ec)) {
+        int32_t pid = 0;
+        if (!parse_i32(it->path().filename().string(), pid)) continue;
+        const auto cmd = read_cmdline_parsed(it->path());
+        const std::string lower = to_lower_copy(cmd.name);
+        const bool is_cam_daemon =
+            lower == "cameraserver" ||
+            lower.find("camera.provider") != std::string::npos ||
+            lower.find("camerahalserver") != std::string::npos ||
+            lower.find("miuicamera") != std::string::npos;
+        if (!is_cam_daemon) continue;
+
+        if (is_cfs_thread(pid, procfs_root_)) {
+            cached_cam_tids_.push_back(pid);
+        }
+        const fs::path task_dir = it->path() / "task";
+        std::error_code tec;
+        size_t scanned = 0U;
+        for (fs::directory_iterator tit(task_dir, fs::directory_options::skip_permission_denied, tec), tend;
+             !tec && tit != tend && cached_cam_tids_.size() < 12U && scanned++ < 64U; tit.increment(tec)) {
+            int32_t tid = 0;
+            if (!parse_i32(tit->path().filename().string(), tid) || tid == pid) continue;
+            std::string comm = read_small_file(tit->path() / "comm", 64U);
+            while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
+            if ((comm.rfind("Binder:", 0) == 0 || comm.rfind("HwBinder:", 0) == 0 ||
+                 comm.find("Cam") != std::string::npos || comm.find("ISP") != std::string::npos ||
+                 comm.find("HDR") != std::string::npos) &&
+                is_cfs_thread(tid, procfs_root_)) {
+                cached_cam_tids_.push_back(tid);
+            }
+        }
+    }
+    return cached_cam_tids_;
 }
 
 } // namespace coreflow::v5

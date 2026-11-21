@@ -578,6 +578,7 @@ struct RuntimeStatusData {
     SessionMetrics session{};
     size_t baseline_nodes{0};
     bool recovery_pending{false};
+    std::string last_predicted_pkg{};
     std::vector<HistoryPoint> history{};
 };
 
@@ -684,6 +685,17 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"memoryGuard\":" << (s.config.enable_memory_guard ? "true" : "false")
         << ",\"thermalPacing\":" << (s.config.enable_thermal_pacing ? "true" : "false")
         << ",\"batteryStepCharging\":" << (s.config.enable_battery_step_charging ? "true" : "false")
+        << ",\"idleCompaction\":" << (s.config.enable_idle_compaction ? "true" : "false")
+        << ",\"predictivePreload\":" << (s.config.enable_predictive_preload ? "true" : "false")
+        << ",\"cameraBoost\":" << (s.config.enable_camera_boost ? "true" : "false")
+        << "}"
+        << ",\"hyperFluid\":{"
+        << "\"idleCompactions\":" << s.storage_stats.idle_compactions_total
+        << ",\"predictivePreloads\":" << s.storage_stats.predictive_preloads_total
+        << ",\"lastPredictedPackage\":" << json_str(s.last_predicted_pkg)
+        << ",\"cameraChainActive\":" << (s.ctx.camera_boost_active ? "true" : "false")
+        << ",\"mediaPipelineActive\":" << (s.ctx.media_pipeline_active ? "true" : "false")
+        << ",\"memoryHealthPct\":" << s.storage_stats.memory_health_pct
         << "}"
         << ",\"powerConfig\":{"
         << "\"bypassCharging\":" << (s.config.bypass_charging ? "true" : "false")
@@ -1347,6 +1359,34 @@ int main(int argc, char* argv[]) {
     };
 
     auto thermal_trend = engine::new_thermal_trend_analyzer();
+    auto preloader = engine::new_app_preloader();
+    std::unordered_map<uint64_t, std::string> preloader_pkg_map;
+    const auto hash_pkg_fnv1a = [](std::string_view pkg) noexcept -> uint64_t {
+        if (pkg.empty()) return 0ULL;
+        uint64_t h = 14695981039346656037ULL;
+        for (const unsigned char c : pkg) {
+            h ^= static_cast<uint64_t>(c);
+            h *= 1099511628211ULL;
+        }
+        return h == 0ULL ? 1ULL : h;
+    };
+    const auto record_preloader_launch = [&](const std::string& pkg) {
+        if (pkg.empty()) return;
+        const uint64_t h = hash_pkg_fnv1a(pkg);
+        if (preloader_pkg_map.size() >= 64U && !preloader_pkg_map.contains(h)) {
+            preloader_pkg_map.erase(preloader_pkg_map.begin());
+        }
+        preloader_pkg_map[h] = pkg;
+        preloader->record_launch(h);
+    };
+    const auto build_fg_chain_tids = [&](const ForegroundAppInfo& fg, bool camera_active) {
+        auto tids = fg.critical_tids;
+        if (camera_active && config.enable_camera_boost) {
+            const auto cam_tids = context_engine.resolve_camera_hal_tids();
+            tids.insert(tids.end(), cam_tids.begin(), cam_tids.end());
+        }
+        return tids;
+    };
 
     const auto build_thread_demand = [&]() noexcept {
         ThreadDemandContext d{};
@@ -1487,21 +1527,31 @@ int main(int argc, char* argv[]) {
         sig.foreground_pid = fg.pid;
         sig.foreground_package = fg.package_name;
         sig.has_game_thread = fg.has_game_thread;
+        sig.is_camera_app = config.enable_camera_boost && fg.is_camera_app;
+        sig.has_media_thread = fg.has_media_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
         if (live_status.ctx.newly_launched_app && (fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
+            if (config.enable_predictive_preload) {
+                record_preloader_launch(fg.package_name);
+            }
+            const bool cam_launch = live_status.ctx.camera_boost_active && config.enable_camera_boost;
             decision_journal.record(
-                epoch_now_ms(), "storage", "LaunchBurst",
-                "Boosted " + (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
+                epoch_now_ms(),
+                cam_launch ? "uclamp" : "storage",
+                cam_launch ? "CameraBoost" : "LaunchBurst",
+                (cam_launch ? "Camera HAL + UI fast-launch: " : "Boosted ") +
+                    (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
         if (changed || live_status.ctx.mode != prev_mode) {
             const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
+            const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
             thread_scheduler.apply(
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, live_status.thermal_guard,
-                config.enable_frame_smoothness, sf_tids, fg.critical_tids,
+                config.enable_frame_smoothness, sf_tids, chain_tids,
                 build_thread_demand());
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
             storage_memory.apply(
@@ -1767,11 +1817,16 @@ int main(int argc, char* argv[]) {
         sig.foreground_pid = screen_off ? 0 : last_fg.pid;
         sig.foreground_package = screen_off ? std::string{} : last_fg.package_name;
         sig.has_game_thread = !screen_off && last_fg.has_game_thread;
+        sig.is_camera_app = !screen_off && config.enable_camera_boost && last_fg.is_camera_app;
+        sig.has_media_thread = !screen_off && last_fg.has_media_thread;
         const ContextMode prev_mode = live_status.ctx.mode;
         live_status.ctx = context_engine.evaluate(sig);
         if (live_status.ctx.newly_launched_app &&
             (last_fg.has_render_thread || live_status.ctx.app_forced_gaming)) {
             ++live_status.session.launch_bursts;
+            if (config.enable_predictive_preload) {
+                record_preloader_launch(last_fg.package_name);
+            }
         }
         if (live_status.ctx.mode != prev_mode) {
             decision_journal.record(
@@ -1784,16 +1839,58 @@ int main(int argc, char* argv[]) {
 
         if (!config.inspection_mode) {
             const auto sf_tids = screen_off ? std::vector<int32_t>{} : context_engine.resolve_surfaceflinger_tids();
+            const auto chain_tids = screen_off
+                ? std::vector<int32_t>{}
+                : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
             thread_scheduler.apply(
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, thermal_guard,
-                config.enable_frame_smoothness, sf_tids, last_fg.critical_tids,
+                config.enable_frame_smoothness, sf_tids, chain_tids,
                 build_thread_demand());
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
+            const auto storage_tel = build_storage_telemetry(last_mem_snap);
             storage_memory.apply(
                 topo, sysfs_ctx, live_status.ctx.effective_profile,
                 config.enable_storage_burst, config.enable_memory_guard, now_ms,
-                build_storage_telemetry(last_mem_snap));
+                storage_tel);
+
+            // HyperFluid 9-Hour Anti-Aging Guard: proactive idle memory compaction during cool ScreenOff
+            if (screen_off && config.enable_memory_guard && config.enable_idle_compaction) {
+                if (storage_memory.maybe_run_idle_compaction(topo, storage_tel, soc_temp, now_ms)) {
+                    decision_journal.record(
+                        epoch_now_ms(), "memory", "IdleCompaction",
+                        "Defragmented RAM during cool ScreenOff idle (anti-aging guard)",
+                        "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                }
+            }
+
+            // HyperFluid Rust Predictive Preloader: warm top predicted next app during calm cool Efficiency
+            if (!screen_off && config.enable_memory_guard && config.enable_predictive_preload &&
+                live_status.ctx.mode == ContextMode::Efficiency &&
+                !last_fg.package_name.empty() &&
+                (!std::isfinite(soc_temp) || soc_temp < 42.0f) &&
+                storage_tel.mem_psi < 8.0 &&
+                (!last_mem_snap.valid || last_mem_snap.available_ratio() >= 0.25)) {
+                const auto pred = preloader->predict_next(hash_pkg_fnv1a(last_fg.package_name));
+                if (pred.has_prediction) {
+                    const auto pit = preloader_pkg_map.find(pred.target_hash);
+                    if (pit != preloader_pkg_map.end() && pit->second != last_fg.package_name) {
+                        const uint64_t basis = last_mem_snap.valid
+                            ? last_mem_snap.available_bytes
+                            : topo.total_ram_bytes;
+                        const uint64_t warmed = storage_memory.prefetch_cached_package(pit->second, basis, now_ms);
+                        if (warmed > 0U) {
+                            live_status.last_predicted_pkg = pit->second;
+                            decision_journal.record(
+                                epoch_now_ms(), "storage", "PredictivePreload",
+                                "Pre-warmed " + pit->second + " (" +
+                                    std::to_string(static_cast<unsigned>(pred.confidence * 100.0)) + "% match)",
+                                "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+                        }
+                    }
+                }
+            }
+
             thermal_envelope.apply(
                 topo, sysfs_ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, thermal_guard,

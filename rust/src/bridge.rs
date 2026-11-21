@@ -1,4 +1,5 @@
 use crate::controller::{Controller, new_controller};
+use crate::preloader::{AppPreloader, new_app_preloader};
 use crate::thermal_trend::{ThermalTrendAnalyzer, new_thermal_trend_analyzer};
 use crate::uclamp::compute_uclamp_target;
 
@@ -55,6 +56,11 @@ pub mod ffi {
         stability_score: u32,
         seconds_to_trip: f64,
     }
+    struct PreloadPrediction {
+        has_prediction: bool,
+        target_hash: u64,
+        confidence: f64,
+    }
     extern "Rust" {
         type Controller;
         fn new_controller(parameters: Parameters) -> Box<Controller>;
@@ -72,5 +78,11 @@ pub mod ffi {
             trip_c: f64,
         ) -> ThermalTrendResult;
         fn reset(self: &mut ThermalTrendAnalyzer);
+
+        type AppPreloader;
+        fn new_app_preloader() -> Box<AppPreloader>;
+        fn record_launch(self: &mut AppPreloader, pkg_hash: u64);
+        fn predict_next(self: &AppPreloader, current_pkg_hash: u64) -> PreloadPrediction;
+        fn reset(self: &mut AppPreloader);
     }
 }

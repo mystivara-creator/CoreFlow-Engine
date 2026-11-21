@@ -36,6 +36,8 @@ struct ForegroundAppInfo {
     std::vector<int32_t> critical_tids;
     bool has_game_thread{false};
     bool has_render_thread{false};
+    bool is_camera_app{false};
+    bool has_media_thread{false};
 };
 
 struct ContextSignalInput {
@@ -47,6 +49,8 @@ struct ContextSignalInput {
     int32_t foreground_pid{0};
     std::string foreground_package;
     bool has_game_thread{false};
+    bool is_camera_app{false};
+    bool has_media_thread{false};
 };
 
 struct ContextDecision {
@@ -55,6 +59,8 @@ struct ContextDecision {
     bool newly_launched_app{false};
     bool app_excluded{false};
     bool app_forced_gaming{false};
+    bool camera_boost_active{false};
+    bool media_pipeline_active{false};
     int32_t foreground_pid{0};
     std::string foreground_package;
     uint64_t launch_burst_remaining_ms{0};
@@ -81,6 +87,7 @@ public:
     [[nodiscard]] ForegroundAppInfo resolve_foreground_app(
         const std::string& top_app_procs_path) const noexcept;
     [[nodiscard]] std::vector<int32_t> resolve_surfaceflinger_tids() noexcept;
+    [[nodiscard]] std::vector<int32_t> resolve_camera_hal_tids() noexcept;
 
     [[nodiscard]] PerformanceProfile profile() const noexcept { return profile_; }
     [[nodiscard]] static PerformanceProfile parse_profile(std::string_view text) noexcept;
@@ -88,6 +95,8 @@ public:
     [[nodiscard]] static const char* mode_name(ContextMode mode) noexcept;
     [[nodiscard]] static bool is_critical_render_thread_name(std::string_view comm) noexcept;
     [[nodiscard]] static bool is_game_engine_thread_name(std::string_view comm) noexcept;
+    [[nodiscard]] static bool is_media_pipeline_thread_name(std::string_view comm) noexcept;
+    [[nodiscard]] static bool is_camera_package(std::string_view pkg) noexcept;
     [[nodiscard]] static bool is_background_system_service(std::string_view pkg) noexcept;
 
 private:
@@ -110,10 +119,14 @@ private:
     uint64_t cached_sf_checked_ms_{0};
     std::vector<int32_t> cached_sf_tids_;
 
+    uint64_t cached_cam_checked_ms_{0};
+    std::vector<int32_t> cached_cam_tids_;
+
     mutable int32_t cached_fg_pid_{0};
     mutable uint64_t cached_fg_tids_ms_{0};
     mutable std::vector<int32_t> cached_fg_tids_;
     mutable bool cached_fg_has_game_thread_{false};
+    mutable bool cached_fg_has_media_thread_{false};
 };
 
 } // namespace coreflow::v5

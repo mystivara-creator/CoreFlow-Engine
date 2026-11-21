@@ -38,6 +38,16 @@ int main() {
     assert(res.seconds_to_trip > 100.0);
     trend->reset();
 
-    std::cout << "Rust bridge integration tests passed (PID + UClamp + OLS ThermalTrend)\n";
+    // 4. Rust Markov AppPreloader
+    auto preloader = new_app_preloader();
+    for (int i = 0; i < 4; ++i) {
+        preloader->record_launch(0x101ULL);
+        preloader->record_launch(0x202ULL);
+    }
+    auto pred = preloader->predict_next(0x101ULL);
+    assert(pred.has_prediction && pred.target_hash == 0x202ULL && pred.confidence >= 0.99);
+    preloader->reset();
+
+    std::cout << "Rust bridge integration tests passed (PID + UClamp + OLS ThermalTrend + AppPreloader)\n";
     return 0;
 }
