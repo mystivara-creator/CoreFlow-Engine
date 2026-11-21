@@ -1,4 +1,6 @@
 use crate::controller::{Controller, new_controller};
+use crate::thermal_trend::{ThermalTrendAnalyzer, new_thermal_trend_analyzer};
+use crate::uclamp::compute_uclamp_target;
 
 #[cxx::bridge(namespace = "coreflow::engine")]
 pub mod ffi {
@@ -30,10 +32,45 @@ pub mod ffi {
         state: u8,
         capacity_scale: f64,
     }
+    struct UclampInput {
+        mode: u8,
+        profile: u8,
+        capacity_scale: f64,
+        thermal_guard: bool,
+        little_capacity: u32,
+        mid_capacity: u32,
+        big_capacity: u32,
+        refresh_hz: u32,
+        cpu_psi: f64,
+        gpu_busy_pct: f64,
+        render_pressure: f64,
+        thermal_velocity_cpm: f64,
+    }
+    struct UclampTarget {
+        util_min: u32,
+        util_max: u32,
+    }
+    struct ThermalTrendResult {
+        velocity_cpm: f64,
+        stability_score: u32,
+        seconds_to_trip: f64,
+    }
     extern "Rust" {
         type Controller;
         fn new_controller(parameters: Parameters) -> Box<Controller>;
         fn step(self: &mut Controller, input: Snapshot) -> Decision;
         fn reset(self: &mut Controller);
+
+        fn compute_uclamp_target(input: UclampInput) -> UclampTarget;
+
+        type ThermalTrendAnalyzer;
+        fn new_thermal_trend_analyzer() -> Box<ThermalTrendAnalyzer>;
+        fn push_sample(
+            self: &mut ThermalTrendAnalyzer,
+            ts_ms: u64,
+            temp_c: f64,
+            trip_c: f64,
+        ) -> ThermalTrendResult;
+        fn reset(self: &mut ThermalTrendAnalyzer);
     }
 }
