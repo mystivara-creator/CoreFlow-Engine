@@ -99,6 +99,8 @@ ThreadUclampTarget ThreadSchedulerActuator::compute_target(
         .gpu_busy_pct = demand.gpu_busy_pct,
         .render_pressure = demand.render_pressure,
         .thermal_velocity_cpm = demand.thermal_velocity_cpm,
+        .jank_ratio = demand.jank_ratio,
+        .app_uclamp_bias = demand.app_uclamp_bias,
     };
     const auto out = coreflow::engine::compute_uclamp_target(in);
     return {out.util_min, out.util_max};
@@ -112,7 +114,8 @@ void ThreadSchedulerActuator::apply(
     bool enabled,
     const std::vector<int32_t>& surfaceflinger_tids,
     const std::vector<int32_t>& foreground_tids,
-    const ThreadDemandContext& demand) noexcept {
+    const ThreadDemandContext& demand,
+    const std::vector<int32_t>& helper_tids) noexcept {
     if (!enabled || !stats_.supported) {
         if (!applied_tids_.empty()) reset_all();
         stats_.last_util_min = 0U;
@@ -121,8 +124,8 @@ void ThreadSchedulerActuator::apply(
         return;
     }
 
-    const ThreadUclampTarget target = compute_target(mode, profile, capacity_scale, thermal_guard, demand);
-    const bool neutral = (target.util_min == 0U && target.util_max == 1024U);
+    const ThreadUclampTarget primary_target = compute_target(mode, profile, capacity_scale, thermal_guard, demand);
+    const bool neutral = (primary_target.util_min == 0U && primary_target.util_max == 1024U);
     if (neutral) {
         if (!applied_tids_.empty()) reset_all();
         stats_.last_util_min = 0U;
@@ -131,18 +134,27 @@ void ThreadSchedulerActuator::apply(
         return;
     }
 
-    std::unordered_set<int32_t> desired_set;
-    desired_set.reserve(surfaceflinger_tids.size() + foreground_tids.size());
+    const uint32_t helper_min = static_cast<uint32_t>(
+        std::clamp<long>(std::lround(static_cast<double>(primary_target.util_min) * 0.65),
+                         0L, static_cast<long>(primary_target.util_max)));
+    const ThreadUclampTarget helper_target{helper_min, primary_target.util_max};
+
+    std::unordered_map<int32_t, ThreadUclampTarget> desired_targets;
+    desired_targets.reserve(surfaceflinger_tids.size() + foreground_tids.size() + helper_tids.size());
+    for (int32_t tid : helper_tids) {
+        if (tid > 0) desired_targets[tid] = helper_target;
+    }
+    // Tier 1 overrides Tier 2 if a TID appears in both lists.
     for (int32_t tid : surfaceflinger_tids) {
-        if (tid > 0) desired_set.insert(tid);
+        if (tid > 0) desired_targets[tid] = primary_target;
     }
     for (int32_t tid : foreground_tids) {
-        if (tid > 0) desired_set.insert(tid);
+        if (tid > 0) desired_targets[tid] = primary_target;
     }
 
-    // Reset any previously boosted TIDs that are no longer in the active foreground set.
+    // Reset any previously boosted TIDs that are no longer in the active set.
     for (auto it = applied_tids_.begin(); it != applied_tids_.end();) {
-        if (!desired_set.contains(it->first)) {
+        if (!desired_targets.contains(it->first)) {
             (void)apply_tid_raw(it->first, 0U, 1024U);
             it = applied_tids_.erase(it);
         } else {
@@ -150,8 +162,8 @@ void ThreadSchedulerActuator::apply(
         }
     }
 
-    // Apply target to active critical TIDs only when the target changed.
-    for (int32_t tid : desired_set) {
+    // Apply role-tiered target to active TIDs only when the target changed.
+    for (const auto& [tid, target] : desired_targets) {
         const auto existing = applied_tids_.find(tid);
         if (existing != applied_tids_.end() &&
             existing->second.util_min == target.util_min &&
@@ -173,8 +185,8 @@ void ThreadSchedulerActuator::apply(
         }
     }
 
-    stats_.last_util_min = target.util_min;
-    stats_.last_util_max = target.util_max;
+    stats_.last_util_min = primary_target.util_min;
+    stats_.last_util_max = primary_target.util_max;
     stats_.active_boosted_tids = static_cast<uint32_t>(applied_tids_.size());
 }
 

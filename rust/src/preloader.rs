@@ -148,6 +148,92 @@ impl AppPreloader {
             confidence,
         }
     }
+
+    /// Exports the compact 16-slot Markov transition state for atomic cross-reboot persistence.
+    pub fn export_state(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::with_capacity(512);
+        let _ = writeln!(out, "CFM1 {}", self.tick);
+        for i in 0..MAX_SLOTS {
+            if self.hashes[i] != 0 {
+                let _ = writeln!(out, "S {} {} {}", i, self.hashes[i], self.recency[i]);
+            }
+        }
+        for from in 0..MAX_SLOTS {
+            if self.hashes[from] == 0 {
+                continue;
+            }
+            for to in 0..MAX_SLOTS {
+                let cnt = self.transitions[from][to];
+                if cnt > 0 && self.hashes[to] != 0 {
+                    let _ = writeln!(out, "E {} {} {}", from, to, cnt);
+                }
+            }
+        }
+        out
+    }
+
+    /// Restores a previously exported Markov state. Rejects malformed payloads safely.
+    pub fn import_state(&mut self, payload: &str) -> bool {
+        let mut lines = payload.lines();
+        let Some(header) = lines.next() else {
+            return false;
+        };
+        let mut h_parts = header.split_whitespace();
+        if h_parts.next() != Some("CFM1") {
+            return false;
+        }
+        let Ok(parsed_tick) = h_parts.next().unwrap_or("0").parse::<u64>() else {
+            return false;
+        };
+
+        let mut next_hashes = [0u64; MAX_SLOTS];
+        let mut next_recency = [0u64; MAX_SLOTS];
+        let mut next_trans = [[0u16; MAX_SLOTS]; MAX_SLOTS];
+
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            match parts.as_slice() {
+                ["S", idx_s, hash_s, rec_s] => {
+                    let (Ok(idx), Ok(hash), Ok(rec)) = (
+                        idx_s.parse::<usize>(),
+                        hash_s.parse::<u64>(),
+                        rec_s.parse::<u64>(),
+                    ) else {
+                        continue;
+                    };
+                    if idx < MAX_SLOTS && hash != 0 {
+                        next_hashes[idx] = hash;
+                        next_recency[idx] = rec;
+                    }
+                }
+                ["E", from_s, to_s, cnt_s] => {
+                    let (Ok(from), Ok(to), Ok(cnt)) = (
+                        from_s.parse::<usize>(),
+                        to_s.parse::<usize>(),
+                        cnt_s.parse::<u16>(),
+                    ) else {
+                        continue;
+                    };
+                    if from < MAX_SLOTS && to < MAX_SLOTS && from != to && cnt > 0 {
+                        next_trans[from][to] = cnt.min(64);
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        self.hashes = next_hashes;
+        self.recency = next_recency;
+        self.transitions = next_trans;
+        self.last_slot = None;
+        self.tick = parsed_tick;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +269,23 @@ mod tests {
         assert!(pred2.has_prediction);
         assert_eq!(pred2.target_hash, whatsapp);
         assert!((pred2.confidence - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn export_and_import_preserves_markov_predictions_across_reboot() {
+        let mut p1 = new_app_preloader();
+        for _ in 0..4 {
+            p1.record_launch(0xAAAA);
+            p1.record_launch(0xBBBB);
+        }
+        let blob = p1.export_state();
+        let mut p2 = new_app_preloader();
+        assert!(p2.import_state(&blob));
+        let pred = p2.predict_next(0xAAAA);
+        assert!(pred.has_prediction);
+        assert_eq!(pred.target_hash, 0xBBBB);
+        assert!((pred.confidence - 1.0).abs() < 1e-9);
+        assert!(!p2.import_state("CORRUPT_HEADER"));
     }
 
     #[test]

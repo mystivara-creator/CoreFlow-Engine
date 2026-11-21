@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import io.coreflow.AppCatalog
 import io.coreflow.AppPreferences
+import io.coreflow.BuildConfig
 import io.coreflow.CoreFlowManager
 import io.coreflow.InstalledAppEntry
 import kotlinx.coroutines.delay
@@ -116,6 +117,8 @@ fun CoreFlowApp(
     var installedApps by remember { mutableStateOf<List<InstalledAppEntry>>(emptyList()) }
     var appsLoading by remember { mutableStateOf(false) }
     var journalText by remember { mutableStateOf<String?>(null) }
+    var selfAuditReport by remember { mutableStateOf<CoreFlowManager.SelfAuditReport?>(null) }
+    var auditBusy by remember { mutableStateOf(false) }
 
     suspend fun refreshStatus() {
         val rootOk = hasRoot ?: CoreFlowManager.checkRootAccess().also { hasRoot = it }
@@ -470,6 +473,8 @@ fun CoreFlowApp(
                         strings = strings,
                         status = status,
                         journalText = journalText,
+                        selfAuditReport = selfAuditReport,
+                        auditBusy = auditBusy,
                         busy = busyAction,
                         isRefreshing = isManualRefreshing,
                         themeModeIndex = themeModeIndex,
@@ -509,10 +514,40 @@ fun CoreFlowApp(
                             AppPreferences.setNavBadgesEnabled(context, enabled)
                         },
                         onExportProfile = {
-                            exportProfileLauncher.launch("coreflow-profile-v6.1.0.json")
+                            exportProfileLauncher.launch("coreflow-profile-v${BuildConfig.VERSION_NAME}.json")
                         },
                         onImportProfile = {
                             importProfileLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        },
+                        onRunSelfAudit = {
+                            scope.launch {
+                                auditBusy = true
+                                CoreFlowManager.runSelfAudit(status, strings.isIndonesian)
+                                    .onSuccess { report ->
+                                        selfAuditReport = report
+                                        snackbarHostState.showSnackbar(
+                                            if (report.passedAll) strings.auditPassAll else strings.auditAttention,
+                                        )
+                                    }
+                                    .onFailure { err ->
+                                        snackbarHostState.showSnackbar(err.message ?: "Self-audit failed")
+                                    }
+                                auditBusy = false
+                            }
+                        },
+                        onShareSelfAudit = { summary ->
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v${BuildConfig.VERSION_NAME} Health Audit")
+                                    putExtra(Intent.EXTRA_TEXT, summary)
+                                }
+                                context.startActivity(Intent.createChooser(intent, strings.shareAudit))
+                            }.onFailure { err ->
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(err.message ?: "Failed to share audit")
+                                }
+                            }
                         },
                         onLoadJournal = {
                             scope.launch {
@@ -532,7 +567,7 @@ fun CoreFlowApp(
                                     .onSuccess { diagJson ->
                                         runCatching {
                                             val dir = File(context.cacheDir, "diag").apply { mkdirs() }
-                                            val outFile = File(dir, "coreflow-diag-v6.1.0.json")
+                                            val outFile = File(dir, "coreflow-diag-v${BuildConfig.VERSION_NAME}.json")
                                             outFile.writeText(diagJson)
                                             val uri = FileProvider.getUriForFile(
                                                 context,
@@ -542,7 +577,7 @@ fun CoreFlowApp(
                                             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                                 type = "application/json"
                                                 putExtra(Intent.EXTRA_STREAM, uri)
-                                                putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v6.1.0 Diagnostics")
+                                                putExtra(Intent.EXTRA_SUBJECT, "CoreFlow Engine v${BuildConfig.VERSION_NAME} Diagnostics")
                                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                             }
                                             context.startActivity(

@@ -1,21 +1,24 @@
 /**
  * @file main.cpp
- * @brief CoreFlow Engine v6.1.0 — NextGen HyperFluid 4-Pillar Adaptive Android Daemon.
+ * @brief CoreFlow Engine v6.2.0 — Closed-Loop Intelligence & Cross-SoC Autonomous Daemon.
  *
  * Pillars:
  *  1. HardwareProbe + CFJ4 BaselineStore (single-pass discovery & OEM rollback safety)
- *  2. ContextEngine (5-mode context + foreground app + critical render TIDs + 4-profile per-app rules)
- *  3. Focused Actuators:
- *     - ThreadSchedulerActuator (per-TID sched_setattr UClamp with closed-loop render pressure)
+ *  2. ContextEngine (5-mode context + foreground app + role-tiered critical/helper TIDs + 4-profile per-app rules)
+ *  3. Focused Actuators & Closed-Loop Intelligence:
+ *     - ThreadSchedulerActuator (role-tiered per-TID sched_setattr UClamp with live jank & App DNA feedback)
+ *     - FramePacingSensor + AndroidFrameEventBridge (zero-fork display FPS & jank feedback)
+ *     - AppDnaStore + Persistent Rust Markov Preloader (cross-reboot behavioral learning)
  *     - StorageMemoryActuator (dynamic UFS/eMMC burst, background QoS, MGLRU, smart pre-read, timed contention recovery)
- *     - ThermalEnvelopeActuator (Rust PID + Online RLS/MLP 10s lookahead CPU/GPU smooth pacing)
- *     - HardwareLongevityManager (battery thermal step-charging with dual-cell primary selection)
- *  4. Clean JSON status/config/diag contract for the v5 MD3 WebUI & Android QS Tile.
+ *     - ThermalEnvelopeActuator (Dual-Timescale Equilibrium + Rust PID + Online RLS/MLP 10s lookahead)
+ *     - HardwareLongevityManager (battery thermal step-charging & charging-aware thermal budget)
+ *  4. Clean JSON status/config/diag contract for the HyperOS 4 Companion App & WebUI.
  * @license Apache-2.0
  */
 #include "coreflow/baseline_store.hpp"
 #include "coreflow/config.hpp"
 #include "coreflow/cooling_feedback.hpp"
+#include "coreflow/frame_bridge.hpp"
 #include "coreflow/hardware_longevity.hpp"
 #include "coreflow/input_event_source.hpp"
 #include "coreflow/mount_topology.hpp"
@@ -30,7 +33,9 @@
 #include "coreflow/v5/storage_memory_actuator.hpp"
 #include "coreflow/v5/thermal_envelope_actuator.hpp"
 #include "coreflow/v5/thread_scheduler.hpp"
+#include "coreflow/v6/app_dna_store.hpp"
 #include "coreflow/v6/decision_journal.hpp"
+#include "coreflow/v6/frame_pacing_sensor.hpp"
 #include "coreflow/v6/oem_collaboration_map.hpp"
 #include "coreflow/v6/semantic_knob_engine.hpp"
 #include "coreflow-engine/src/bridge.rs.h"
@@ -71,7 +76,7 @@ namespace {
 
 constexpr char kStateDir[] = "/data/adb/coreflow";
 constexpr char kPidPath[] = "/data/adb/coreflow/coreflowd.pid";
-constexpr char kVersion[] = "6.1.0";
+constexpr char kVersion[] = "6.2.0";
 
 void emit_log(bool is_error, const std::string& message) {
     if (is_error) std::cerr << message << "\n";
@@ -326,6 +331,82 @@ bool write_status_snapshot(std::string_view payload) noexcept {
         return false;
     }
     return true;
+}
+
+bool save_preloader_state(const engine::AppPreloader& preloader,
+                          const std::unordered_map<uint64_t, std::string>& pkg_map) noexcept {
+    if (!ensure_secure_state_dir()) return false;
+    const rust::String exported = preloader.export_state();
+    std::ostringstream out;
+    out << std::string_view(exported.data(), exported.size());
+    for (const auto& [hash, pkg] : pkg_map) {
+        if (hash == 0ULL || pkg.empty() || pkg.find('\n') != std::string::npos || pkg.find('\t') != std::string::npos) {
+            continue;
+        }
+        out << "P\t" << hash << '\t' << pkg << '\n';
+    }
+    const std::string payload = out.str();
+    if (payload.empty() || payload.size() > 64U * 1024U) return false;
+
+    UniqueFd dir(::open(kStateDir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!dir.valid()) return false;
+    const std::string tmp = "preloader.state.tmp." + std::to_string(::getpid());
+    UniqueFd fd(::openat(dir.get(), tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600));
+    if (!fd.valid()) return false;
+    size_t off = 0;
+    while (off < payload.size()) {
+        const ssize_t n = ::write(fd.get(), payload.data() + off, payload.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { (void)::unlinkat(dir.get(), tmp.c_str(), 0); return false; }
+        off += static_cast<size_t>(n);
+    }
+    (void)::fsync(fd.get());
+    if (::renameat(dir.get(), tmp.c_str(), dir.get(), "preloader.state") != 0) {
+        (void)::unlinkat(dir.get(), tmp.c_str(), 0);
+        return false;
+    }
+    return true;
+}
+
+void load_preloader_state(engine::AppPreloader& preloader,
+                          std::unordered_map<uint64_t, std::string>& pkg_map) noexcept {
+    const std::string path = std::string(kStateDir) + "/preloader.state";
+    UniqueFd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!fd.valid()) return;
+    struct stat st{};
+    if (::fstat(fd.get(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > 65536) {
+        return;
+    }
+    std::string raw(static_cast<size_t>(st.st_size), '\0');
+    size_t off = 0;
+    while (off < raw.size()) {
+        const ssize_t n = ::read(fd.get(), raw.data() + off, raw.size() - off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    raw.resize(off);
+    std::istringstream ss(raw);
+    std::ostringstream rust_payload;
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line.rfind("P\t", 0) == 0) {
+            const size_t tab2 = line.find('\t', 2U);
+            if (tab2 != std::string::npos && tab2 > 2U && tab2 + 1U < line.size()) {
+                uint64_t h = 0ULL;
+                const auto r = std::from_chars(line.data() + 2U, line.data() + tab2, h);
+                if (r.ec == std::errc{} && r.ptr == line.data() + tab2 && h != 0ULL && pkg_map.size() < 64U) {
+                    pkg_map[h] = line.substr(tab2 + 1U);
+                }
+            }
+        } else {
+            rust_payload << line << '\n';
+        }
+    }
+    const std::string payload = rust_payload.str();
+    if (!payload.empty()) {
+        (void)preloader.import_state(rust::Str(payload.data(), payload.size()));
+    }
 }
 
 bool read_live_status_snapshot_str(pid_t expected_pid, std::string& out_payload) {
@@ -588,6 +669,12 @@ struct RuntimeStatusData {
     size_t baseline_nodes{0};
     bool recovery_pending{false};
     std::string last_predicted_pkg{};
+    bool frame_pacing_available{false};
+    double measured_fps{0.0};
+    double jank_ratio{-1.0};
+    size_t app_dna_learned{0};
+    double active_app_bias{1.0};
+    bool charging_damped{false};
     std::vector<HistoryPoint> history{};
 };
 
@@ -705,6 +792,12 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"cameraChainActive\":" << (s.ctx.camera_boost_active ? "true" : "false")
         << ",\"mediaPipelineActive\":" << (s.ctx.media_pipeline_active ? "true" : "false")
         << ",\"memoryHealthPct\":" << s.storage_stats.memory_health_pct
+        << ",\"framePacingAvailable\":" << (s.frame_pacing_available ? "true" : "false")
+        << ",\"measuredFps\":" << safe_num(s.measured_fps)
+        << ",\"jankRatio\":" << (s.jank_ratio >= 0.0 ? std::to_string(safe_num(s.jank_ratio)) : "null")
+        << ",\"appDnaLearned\":" << s.app_dna_learned
+        << ",\"activeAppBias\":" << safe_num(s.active_app_bias, 1.0)
+        << ",\"chargingDamped\":" << (s.charging_damped ? "true" : "false")
         << "}"
         << ",\"powerConfig\":{"
         << "\"bypassCharging\":" << (s.config.bypass_charging ? "true" : "false")
@@ -1270,6 +1363,11 @@ int main(int argc, char* argv[]) {
     ThermalEnvelopeActuator thermal_envelope(baseline, &oem_map);
     v6::SemanticKnobEngine semantic_knobs(baseline, oem_map);
     semantic_knobs.discover(topo);
+    v6::FramePacingSensor frame_pacing;
+    frame_pacing.discover();
+    AndroidFrameEventBridge frame_bridge;
+    v6::AppDnaStore app_dna;
+    app_dna.initialize(kStateDir);
 
     const auto apply_config_to_subsystems = [&]() {
         context_engine.set_profile(ContextEngine::parse_profile(config.profile));
@@ -1315,6 +1413,8 @@ int main(int argc, char* argv[]) {
     live_status.topo = topo;
     live_status.thread_stats = thread_scheduler.stats();
     live_status.battery = longevity.sample_battery_telemetry();
+    live_status.frame_pacing_available = frame_pacing.supported();
+    live_status.app_dna_learned = app_dna.learned_count();
     live_status.session.started_steady_ms = steady_now_ms();
     bool last_screen_off = false;
     bool prev_bypass_active = false;
@@ -1324,10 +1424,11 @@ int main(int argc, char* argv[]) {
     live_status.memory = last_mem_snap;
     decision_journal.record(
         epoch_now_ms(), "context", "Boot",
-        "CoreFlow v6.1.0 initialized (profile=" + config.profile + ")",
+        "CoreFlow v6.2.0 initialized (profile=" + config.profile + ")",
         "verified", -1.0, 0.0, 1.0);
     live_status.episodes = decision_journal.recent(16U);
     uint64_t last_sysfs_active_ms = 0U;
+    uint64_t last_state_persist_ms = 0U;
     auto last_thermal_tick = std::chrono::steady_clock::now();
 
     const auto build_sysfs_ctx = [&](const ContextDecision& raw, uint64_t now_ms, const ForegroundAppInfo& fg) noexcept {
@@ -1351,6 +1452,8 @@ int main(int argc, char* argv[]) {
     auto thermal_trend = engine::new_thermal_trend_analyzer();
     auto preloader = engine::new_app_preloader();
     std::unordered_map<uint64_t, std::string> preloader_pkg_map;
+    load_preloader_state(*preloader, preloader_pkg_map);
+    bool preloader_dirty = false;
     const auto hash_pkg_fnv1a = [](std::string_view pkg) noexcept -> uint64_t {
         if (pkg.empty()) return 0ULL;
         uint64_t h = 14695981039346656037ULL;
@@ -1368,6 +1471,7 @@ int main(int argc, char* argv[]) {
         }
         preloader_pkg_map[h] = pkg;
         preloader->record_launch(h);
+        preloader_dirty = true;
     };
     const auto build_fg_chain_tids = [&](const ForegroundAppInfo& fg, bool camera_active) {
         auto tids = fg.critical_tids;
@@ -1388,6 +1492,8 @@ int main(int argc, char* argv[]) {
         d.gpu_busy_pct = live_status.gpu_busy_pct.value_or(0.0);
         d.render_pressure = live_status.render_pressure;
         d.thermal_velocity_cpm = live_status.thermal_velocity_cpm;
+        d.jank_ratio = live_status.jank_ratio;
+        d.app_uclamp_bias = live_status.active_app_bias;
         return d;
     };
     const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
@@ -1462,7 +1568,7 @@ int main(int argc, char* argv[]) {
                     live_status.ctx.mode, live_status.ctx.effective_profile,
                     live_status.capacity_scale, live_status.thermal_guard,
                     config.enable_frame_smoothness, sf_tids, chain_tids,
-                    build_thread_demand());
+                    build_thread_demand(), last_fg.helper_tids);
                 live_status.thread_stats = thread_scheduler.stats();
             }
         })) {
@@ -1564,6 +1670,8 @@ int main(int argc, char* argv[]) {
             if (config.enable_predictive_preload) {
                 record_preloader_launch(fg.package_name);
             }
+            app_dna.record_launch(fg.package_name, now_ms);
+            live_status.app_dna_learned = app_dna.learned_count();
             const bool cam_launch = live_status.ctx.camera_boost_active && config.enable_camera_boost;
             decision_journal.record(
                 epoch_now_ms(),
@@ -1573,6 +1681,9 @@ int main(int argc, char* argv[]) {
                     (fg.package_name.empty() ? std::string("foreground app") : fg.package_name),
                 "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
         }
+        if (changed) {
+            live_status.active_app_bias = app_dna.uclamp_bias_for(fg.package_name);
+        }
         if (changed || live_status.ctx.mode != prev_mode) {
             const auto sf_tids = context_engine.resolve_surfaceflinger_tids();
             const auto chain_tids = build_fg_chain_tids(fg, live_status.ctx.camera_boost_active);
@@ -1580,7 +1691,7 @@ int main(int argc, char* argv[]) {
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand());
+                build_thread_demand(), fg.helper_tids);
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
             storage_memory.apply(
                 topo, sysfs_ctx, live_status.ctx.effective_profile,
@@ -1614,7 +1725,7 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + All 4 Pillars + Status JSON
+    // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + Dual-Timescale Equilibrium + All 4 Pillars + Status JSON
     const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
     thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
         if (safety_halt_requested()) {
@@ -1635,6 +1746,12 @@ int main(int argc, char* argv[]) {
         auto thermal = tb.assessment;
         const float soc_temp = tb.composite_celsius;
         const float batt_temp = tb.battery_celsius;
+        double skin_temp = -1.0;
+        for (const auto& r : tb.assessment.readings) {
+            if (r.valid && r.category == 3 && std::isfinite(r.celsius) && r.celsius > 0.0f && r.celsius < 100.0f) {
+                skin_temp = std::max(skin_temp, static_cast<double>(r.celsius));
+            }
+        }
 
         if (!thermal.available && (tb.profile.total_valid_sensors > 0 || soc_temp >= 0.0f)) {
             const double rec = static_cast<double>(config.thermal_recover_celsius);
@@ -1804,7 +1921,7 @@ int main(int argc, char* argv[]) {
         live_status.session.prev_thermal_guard = thermal_guard;
         live_status.thermal_guard = thermal_guard;
 
-        // 10s Online RLS + Micro-MLP thermal lookahead + Rust PID capacity scale
+        // 10s Online RLS + Micro-MLP thermal lookahead + Rust PID + Dual-Timescale Equilibrium
         const auto ai = neural.infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
@@ -1839,9 +1956,20 @@ int main(int argc, char* argv[]) {
                 scale = std::min(scale, ai.recommended_scale);
             }
             if (thermal_guard) scale = std::min(scale, 0.75);
-            live_status.capacity_scale = std::clamp(scale, 0.25, 1.0);
+            const auto eq = engine::compute_thermal_equilibrium({
+                static_cast<double>(soc_temp),
+                static_cast<double>(batt_temp),
+                skin_temp,
+                live_status.thermal_velocity_cpm,
+                scale,
+                live_status.battery.charging,
+                longevity.is_bypass_active(),
+                live_status.ctx.mode == ContextMode::LaunchBurst});
+            live_status.charging_damped = eq.charging_damped;
+            live_status.capacity_scale = std::clamp(eq.effective_scale, 0.25, 1.0);
         } else {
             pid_controller->reset();
+            live_status.charging_damped = false;
         }
 
         if (!screen_off) {
@@ -1878,7 +2006,45 @@ int main(int argc, char* argv[]) {
             if (config.enable_predictive_preload) {
                 record_preloader_launch(last_fg.package_name);
             }
+            app_dna.record_launch(last_fg.package_name, now_ms);
         }
+
+        // Closed-loop Display Frame Pacing Sensor + Per-App Behavioral DNA learning
+        if (!screen_off) {
+            const bool active_workload =
+                live_status.ctx.mode == ContextMode::Interactive ||
+                live_status.ctx.mode == ContextMode::LaunchBurst ||
+                live_status.ctx.mode == ContextMode::Gaming;
+            const auto fps_sample = frame_pacing.sample(
+                topo.refresh_hz, now_ms, active_workload, &frame_bridge);
+            live_status.frame_pacing_available = fps_sample.available || frame_pacing.supported();
+            live_status.measured_fps = fps_sample.measured_fps;
+            live_status.jank_ratio = fps_sample.jank_ratio;
+            if (!last_fg.package_name.empty()) {
+                if (active_workload) {
+                    app_dna.observe(last_fg.package_name, live_status.jank_ratio,
+                                    live_status.thermal_velocity_cpm, now_ms);
+                }
+                live_status.active_app_bias = app_dna.uclamp_bias_for(last_fg.package_name);
+                live_status.app_dna_learned = app_dna.learned_count();
+            } else {
+                live_status.active_app_bias = 1.0;
+            }
+        } else {
+            frame_pacing.reset();
+            live_status.measured_fps = 0.0;
+            live_status.jank_ratio = -1.0;
+            live_status.active_app_bias = 1.0;
+            // Lazy cross-reboot persistence during ScreenOff (throttled to <= once per 10 min)
+            if (last_state_persist_ms == 0U || now_ms >= last_state_persist_ms + 600'000ULL) {
+                last_state_persist_ms = now_ms;
+                (void)app_dna.flush_if_dirty();
+                if (preloader_dirty && save_preloader_state(*preloader, preloader_pkg_map)) {
+                    preloader_dirty = false;
+                }
+            }
+        }
+
         if (live_status.ctx.mode != prev_mode) {
             decision_journal.record(
                 epoch_now_ms(), "context", "ModeShift",
@@ -1893,11 +2059,12 @@ int main(int argc, char* argv[]) {
             const auto chain_tids = screen_off
                 ? std::vector<int32_t>{}
                 : build_fg_chain_tids(last_fg, live_status.ctx.camera_boost_active);
+            const auto helper_tids = screen_off ? std::vector<int32_t>{} : last_fg.helper_tids;
             thread_scheduler.apply(
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, thermal_guard,
                 config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand());
+                build_thread_demand(), helper_tids);
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
             const auto storage_tel = build_storage_telemetry(last_mem_snap);
             storage_memory.apply(
@@ -1983,9 +2150,11 @@ int main(int argc, char* argv[]) {
     });
 
     (void)write_status_snapshot(build_status_json(live_status));
-    emit_log(false, "[CoreFlow] v6.1.0 Autonomous Co-Pilot Daemon started (profile=" + config.profile +
+    emit_log(false, "[CoreFlow] v6.2.0 Closed-Loop Intelligence Daemon started (profile=" + config.profile +
              ", storage=" + HardwareProbe::storage_type_name(topo.primary_storage) +
              ", hz=" + std::to_string(topo.refresh_hz) +
+             ", framePacing=" + (frame_pacing.supported() ? "yes" : "no") +
+             ", appDna=" + std::to_string(app_dna.learned_count()) +
              ", semanticKnobs=" + std::to_string(semantic_knobs.stats().discovered_total) +
              ", oemYielded=" + std::to_string(oem_map.yielded_count()) +
              ", perThreadUclamp=" + (thread_scheduler.stats().supported ? "yes" : "no") +
@@ -1993,8 +2162,12 @@ int main(int argc, char* argv[]) {
 
     reactor.run();
 
-    // Guaranteed clean shutdown & OEM baseline restoration
+    // Guaranteed clean shutdown, cross-reboot state persistence & OEM baseline restoration
     input_source.stop();
+    (void)app_dna.flush_if_dirty();
+    if (preloader_dirty) {
+        (void)save_preloader_state(*preloader, preloader_pkg_map);
+    }
     thread_scheduler.reset_all();
     semantic_knobs.rollback_all();
     longevity.restore_oem_baseline();
@@ -2003,6 +2176,6 @@ int main(int argc, char* argv[]) {
     live_status.pid = 0;
     (void)write_status_snapshot(build_status_json(live_status));
     clear_pid(pid_lock);
-    emit_log(false, "[CoreFlow] v6.1.0 Daemon stopped; OEM baseline restored.");
+    emit_log(false, "[CoreFlow] v6.2.0 Daemon stopped; OEM baseline restored.");
     return 0;
 }

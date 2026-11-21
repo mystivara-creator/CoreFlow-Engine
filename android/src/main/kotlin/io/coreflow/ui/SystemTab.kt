@@ -1,7 +1,11 @@
 package io.coreflow.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,16 +13,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.coreflow.AppPreferences
@@ -57,6 +65,8 @@ fun SystemTab(
     strings: AppStrings,
     status: CoreFlowManager.DaemonStatus?,
     journalText: String?,
+    selfAuditReport: CoreFlowManager.SelfAuditReport?,
+    auditBusy: Boolean,
     busy: Boolean,
     isRefreshing: Boolean,
     themeModeIndex: Int,
@@ -74,6 +84,8 @@ fun SystemTab(
     onNavBadgesChange: (Boolean) -> Unit,
     onExportProfile: () -> Unit,
     onImportProfile: () -> Unit,
+    onRunSelfAudit: () -> Unit,
+    onShareSelfAudit: (String) -> Unit,
     onLoadJournal: () -> Unit,
     onShareDiag: () -> Unit,
     onResetOemMap: () -> Unit,
@@ -177,6 +189,96 @@ fun SystemTab(
                         enabled = !busy,
                         onClick = onImportProfile,
                     )
+                }
+            }
+
+            // 1-Tap Device Health Self-Audit (v6.2 Cross-Device Readiness Check)
+            item { SmallTitle(text = strings.sectionSelfAudit) }
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    insideMargin = PaddingValues(16.dp),
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                    onClick = {},
+                ) {
+                    if (selfAuditReport != null) {
+                        Text(
+                            text = if (selfAuditReport.passedAll) strings.auditPassAll else strings.auditAttention,
+                            style = MiuixTheme.textStyles.headline2,
+                            color = if (selfAuditReport.passedAll) Color(0xFF22C55E) else Color(0xFFF59E0B),
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for (check in selfAuditReport.checks) {
+                                val dotColor = when (check.level) {
+                                    CoreFlowManager.AuditLevel.PASS -> Color(0xFF22C55E)
+                                    CoreFlowManager.AuditLevel.WARN -> Color(0xFFF59E0B)
+                                    CoreFlowManager.AuditLevel.FAIL -> Color(0xFFEF4444)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(dotColor),
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = check.title,
+                                            style = MiuixTheme.textStyles.body2,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Text(
+                                            text = check.detail,
+                                            style = MiuixTheme.textStyles.footnote1,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            TextButton(
+                                text = if (auditBusy) strings.runningAudit else strings.runSelfAudit,
+                                onClick = onRunSelfAudit,
+                                enabled = !busy && !auditBusy,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                text = strings.shareAudit,
+                                onClick = { onShareSelfAudit(selfAuditReport.shareableSummary) },
+                                enabled = !busy && !auditBusy,
+                                colors = ButtonDefaults.textButtonColorsPrimary(),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (strings.isIndonesian) {
+                                "Verifikasi otomatis daemon, Per-TID UClamp, Hz/Frame Pacing, SELinux AVC, CFJ4 & Peta OEM dalam 1 ketukan."
+                            } else {
+                                "Automatically verifies daemon health, Per-TID UClamp, live Hz/Frame Pacing, SELinux AVC, CFJ4 & OEM Map in 1 tap."
+                            },
+                            style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(
+                            text = if (auditBusy) strings.runningAudit else strings.runSelfAudit,
+                            onClick = onRunSelfAudit,
+                            enabled = !busy && !auditBusy,
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
 
