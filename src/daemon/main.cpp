@@ -1364,7 +1364,7 @@ int main(int argc, char* argv[]) {
     v6::SemanticKnobEngine semantic_knobs(baseline, oem_map);
     semantic_knobs.discover(topo);
     v6::FramePacingSensor frame_pacing;
-    frame_pacing.discover();
+    frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
     AndroidFrameEventBridge frame_bridge;
     v6::AppDnaStore app_dna;
     app_dna.initialize(kStateDir);
@@ -1501,7 +1501,22 @@ int main(int argc, char* argv[]) {
         return tids;
     };
 
-    const auto build_thread_demand = [&]() noexcept {
+    auto to_dna_signature = [](AppEngineClass cls) noexcept -> v6::EngineSignature {
+        return cls == AppEngineClass::HeavyGame3D
+            ? v6::EngineSignature::HeavyGame3D
+            : v6::EngineSignature::StandardUi;
+    };
+
+    // Feed-Forward Pre-Emptive Cancel & Orthogonal Symbiotic Orchestrator state
+    uint64_t feedforward_freeze_until_ms = 0U;
+    double prev_gpu_busy_ff = -1.0;
+    double prev_cpu_psi_ff = -1.0;
+    double prev_io_psi_ff = -1.0;
+    engine::SymbioticPlan symbiotic_plan{0, 0.0, 1.0, 0.65, false, false, false};
+    uint8_t prev_symbiotic_regime = 0U;
+    uint64_t last_symbiotic_episode_ms = 0U;
+
+    const auto build_thread_demand = [&](uint64_t now_ms) noexcept {
         ThreadDemandContext d{};
         d.little_capacity = topo.little_capacity;
         d.mid_capacity = topo.mid_capacity;
@@ -1513,6 +1528,10 @@ int main(int argc, char* argv[]) {
         d.thermal_velocity_cpm = live_status.thermal_velocity_cpm;
         d.jank_ratio = live_status.jank_ratio;
         d.app_uclamp_bias = live_status.active_app_bias;
+        d.feedforward_freeze = (now_ms <= feedforward_freeze_until_ms) ||
+                               (live_status.ctx.touch_hold_remaining_ms > 0U);
+        d.symbiotic_cpu_scale = symbiotic_plan.cpu_uclamp_scale;
+        d.helper_uclamp_ratio = symbiotic_plan.helper_uclamp_ratio;
         return d;
     };
     const auto build_storage_telemetry = [&](const MemorySnapshot& mem) noexcept {
@@ -1521,7 +1540,14 @@ int main(int argc, char* argv[]) {
         t.mem_psi = live_status.mem_psi.value_or(0.0);
         t.cpu_psi = live_status.cpu_psi.value_or(0.0);
         t.memory = mem;
+        t.io_supply_boost = symbiotic_plan.io_supply_boost || symbiotic_plan.boost_gpu_memory_supply;
         return t;
+    };
+    const auto build_symbiotic_hints = [&]() noexcept {
+        v6::SymbioticHints h{};
+        h.boost_gpu_memory_supply = symbiotic_plan.boost_gpu_memory_supply;
+        h.encourage_cluster_spread = symbiotic_plan.encourage_cluster_spread;
+        return h;
     };
     const auto is_passive_media_only = [&](const ContextDecision& ctx) noexcept {
         return ctx.mode == ContextMode::Interactive &&
@@ -1559,7 +1585,7 @@ int main(int argc, char* argv[]) {
         return oem_map.active_contended_paths(steady_now_ms());
     };
 
-    // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost
+    // Fast path 1 (< 5 ms): Touchscreen event -> instant per-TID UI/RenderThread boost + 700ms feed-forward guard
     if (!input_source.start([&](const FrameEvent&) {
             if (config.inspection_mode || live_status.thermal_emergency) return;
             if (last_screen_off) {
@@ -1567,6 +1593,7 @@ int main(int argc, char* argv[]) {
                 if (last_screen_off) return;
             }
             const uint64_t now_ms = steady_now_ms();
+            feedforward_freeze_until_ms = std::max<uint64_t>(feedforward_freeze_until_ms, now_ms + uint64_t{700});
             context_engine.notify_touch(now_ms);
             if (live_status.ctx.mode == ContextMode::Efficiency && !live_status.ctx.app_excluded) {
                 ContextSignalInput sig{};
@@ -1587,7 +1614,7 @@ int main(int argc, char* argv[]) {
                     live_status.ctx.mode, live_status.ctx.effective_profile,
                     live_status.capacity_scale, live_status.thermal_guard,
                     config.enable_frame_smoothness, sf_tids, chain_tids,
-                    build_thread_demand(), last_fg.helper_tids);
+                    build_thread_demand(now_ms), last_fg.helper_tids);
                 live_status.thread_stats = thread_scheduler.stats();
             }
         })) {
@@ -1622,6 +1649,7 @@ int main(int argc, char* argv[]) {
                     thermal_envelope.reset_contention();
                     config = DaemonConfig::load_best_available();
                     topo = probe.discover();
+                    frame_pacing.discover("/sys", "/proc", topo.vblank_irq_token);
                     semantic_knobs.discover(topo);
                     apply_config_to_subsystems();
                     pid_initialized = false;
@@ -1629,6 +1657,7 @@ int main(int argc, char* argv[]) {
                         config.pid_kp, config.pid_ki, config.pid_kd, pid_target_pressure(pid_target_fallback)});
                     live_status.config = config;
                     live_status.topo = topo;
+                    live_status.frame_pacing_available = frame_pacing.supported();
                     live_status.semantic_stats = semantic_knobs.stats();
                     live_status.semantic_knob_leaves = collect_semantic_leaves();
                     live_status.oem_yielded_paths = oem_map.permanently_yielded_paths();
@@ -1689,7 +1718,7 @@ int main(int argc, char* argv[]) {
             if (config.enable_predictive_preload) {
                 record_preloader_launch(fg.package_name);
             }
-            app_dna.record_launch(fg.package_name, now_ms);
+            app_dna.record_launch(fg.package_name, now_ms, to_dna_signature(fg.engine_class));
             live_status.app_dna_learned = app_dna.learned_count();
             const bool cam_launch = live_status.ctx.camera_boost_active && config.enable_camera_boost;
             decision_journal.record(
@@ -1710,7 +1739,7 @@ int main(int argc, char* argv[]) {
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, live_status.thermal_guard,
                 config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand(), fg.helper_tids);
+                build_thread_demand(now_ms), fg.helper_tids);
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, fg);
             storage_memory.apply(
                 topo, sysfs_ctx, live_status.ctx.effective_profile,
@@ -1727,7 +1756,8 @@ int main(int argc, char* argv[]) {
                 config.enable_thermal_pacing || config.enable_storage_burst,
                 last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
                 live_status.mem_psi.value_or(0.0), now_ms,
-                is_passive_media_only(live_status.ctx));
+                is_passive_media_only(live_status.ctx),
+                build_symbiotic_hints());
             if (config.bypass_on_gaming) {
                 (void)longevity.apply_power_control(
                     config.bypass_charging,
@@ -1744,7 +1774,7 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + Dual-Timescale Equilibrium + All 4 Pillars + Status JSON
+    // Main control path (default 1000 ms): Thermal + PSI + Online RLS/MLP + Rust PID + Dual-Timescale Equilibrium + Orthogonal Symbiotic Orchestrator
     const auto interval = std::chrono::milliseconds(std::clamp(config.temp_monitor_interval_ms, 1000u, 60000u));
     thermal_timer_fd = reactor.create_timerfd(interval, [&](uint32_t) {
         if (safety_halt_requested()) {
@@ -1806,6 +1836,40 @@ int main(int argc, char* argv[]) {
         const auto mem_psi = probe.read_psi_avg10("memory");
         const auto io_psi = probe.read_psi_avg10("io");
         last_mem_snap = probe.read_memory_snapshot();
+
+        // Feed-Forward Pre-Emptive Cancel detector:
+        // Arm a 700ms UClamp-trim freeze when d(GPU)/dt >= 25%/s or sudden Linux PSI stall spike occurs.
+        if (!screen_off) {
+            bool transient_spike = false;
+            if (gpu_busy.has_value() && std::isfinite(*gpu_busy)) {
+                if (prev_gpu_busy_ff >= 0.0) {
+                    const double d_gpu_dt = (*gpu_busy - prev_gpu_busy_ff) / elapsed;
+                    if (d_gpu_dt >= 25.0 || (*gpu_busy - prev_gpu_busy_ff) >= 18.0) {
+                        transient_spike = true;
+                    }
+                }
+                prev_gpu_busy_ff = *gpu_busy;
+            }
+            if (cpu_psi.has_value() && std::isfinite(*cpu_psi)) {
+                if (prev_cpu_psi_ff >= 0.0 && (*cpu_psi - prev_cpu_psi_ff) >= 6.0) {
+                    transient_spike = true;
+                }
+                prev_cpu_psi_ff = *cpu_psi;
+            }
+            if (io_psi.has_value() && std::isfinite(*io_psi)) {
+                if (prev_io_psi_ff >= 0.0 && (*io_psi - prev_io_psi_ff) >= 8.0) {
+                    transient_spike = true;
+                }
+                prev_io_psi_ff = *io_psi;
+            }
+            if (transient_spike) {
+                feedforward_freeze_until_ms = std::max<uint64_t>(feedforward_freeze_until_ms, now_ms + uint64_t{700});
+            }
+        } else {
+            prev_gpu_busy_ff = -1.0;
+            prev_cpu_psi_ff = -1.0;
+            prev_io_psi_ff = -1.0;
+        }
 
         live_status.soc_temp = soc_temp;
         live_status.battery_temp = batt_temp;
@@ -2010,6 +2074,53 @@ int main(int argc, char* argv[]) {
             live_status.render_pressure = render_sampler.sample(0, {}, elapsed);
         }
 
+        // Orthogonal Symbiotic Orchestrator: cross-cluster saturation & CPU-GPU-Memory Little's Law co-pacing
+        if (!screen_off) {
+            double little_r = 0.0, mid_r = 0.0, big_r = 0.0;
+            for (size_t i = 0; i < topo.cpu_clusters.size() && i < live_status.cluster_cur_khz.size(); ++i) {
+                const auto& c = topo.cpu_clusters[i];
+                const uint64_t max_khz = c.opps_khz.empty() ? 0U : c.opps_khz.back();
+                if (max_khz == 0U) continue;
+                const double ratio = std::clamp(
+                    static_cast<double>(live_status.cluster_cur_khz[i]) / static_cast<double>(max_khz),
+                    0.0, 1.0);
+                if (c.role == ClusterRole::Little) little_r = std::max(little_r, ratio);
+                else if (c.role == ClusterRole::Mid) mid_r = std::max(mid_r, ratio);
+                else if (c.role == ClusterRole::Big) big_r = std::max(big_r, ratio);
+            }
+            symbiotic_plan = engine::compute_symbiotic_plan({
+                little_r, mid_r, big_r,
+                cpu_util,
+                live_status.render_pressure,
+                gpu_busy.value_or(0.0),
+                cpu_psi.value_or(0.0),
+                mem_psi.value_or(0.0),
+                io_psi.value_or(0.0),
+                last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
+                live_status.capacity_scale,
+                effective_thermal_guard});
+            if (symbiotic_plan.regime != 0U && symbiotic_plan.regime != prev_symbiotic_regime &&
+                (last_symbiotic_episode_ms == 0U || now_ms >= last_symbiotic_episode_ms + 30'000ULL)) {
+                last_symbiotic_episode_ms = now_ms;
+                const std::string desc = symbiotic_plan.regime == 4U
+                    ? ("Spread single-cluster hotspot (" +
+                       std::to_string(static_cast<unsigned>(std::round(symbiotic_plan.cluster_imbalance * 100.0))) +
+                       "% skew) across companion clusters")
+                    : symbiotic_plan.regime == 1U
+                        ? "GPU-bound co-pacing: shifted headroom & bus supply to GPU"
+                        : symbiotic_plan.regime == 2U
+                            ? "CPU draw-call bound: lifted parallel worker headroom"
+                            : "I/O supply co-pacing: boosted asset read-ahead";
+                decision_journal.record(
+                    epoch_now_ms(), "uclamp", "SymbioticBalance", desc,
+                    "verified", live_status.soc_temp, live_status.render_pressure, live_status.capacity_scale);
+            }
+            prev_symbiotic_regime = symbiotic_plan.regime;
+        } else {
+            symbiotic_plan = {0, 0.0, 1.0, 0.65, false, false, false};
+            prev_symbiotic_regime = 0U;
+        }
+
         ContextSignalInput sig{};
         sig.now_ms = now_ms;
         sig.screen_off = screen_off;
@@ -2029,7 +2140,7 @@ int main(int argc, char* argv[]) {
             if (config.enable_predictive_preload) {
                 record_preloader_launch(last_fg.package_name);
             }
-            app_dna.record_launch(last_fg.package_name, now_ms);
+            app_dna.record_launch(last_fg.package_name, now_ms, to_dna_signature(last_fg.engine_class));
         }
 
         // Closed-loop Display Frame Pacing Sensor + Per-App Behavioral DNA learning
@@ -2046,7 +2157,8 @@ int main(int argc, char* argv[]) {
             if (!last_fg.package_name.empty()) {
                 if (active_workload) {
                     app_dna.observe(last_fg.package_name, live_status.jank_ratio,
-                                    live_status.thermal_velocity_cpm, now_ms);
+                                    live_status.thermal_velocity_cpm, now_ms,
+                                    to_dna_signature(last_fg.engine_class));
                 }
                 live_status.active_app_bias = app_dna.uclamp_bias_for(last_fg.package_name);
                 live_status.app_dna_learned = app_dna.learned_count();
@@ -2087,7 +2199,7 @@ int main(int argc, char* argv[]) {
                 live_status.ctx.mode, live_status.ctx.effective_profile,
                 live_status.capacity_scale, effective_thermal_guard,
                 config.enable_frame_smoothness, sf_tids, chain_tids,
-                build_thread_demand(), helper_tids);
+                build_thread_demand(now_ms), helper_tids);
             const auto sysfs_ctx = build_sysfs_ctx(live_status.ctx, now_ms, last_fg);
             const auto storage_tel = build_storage_telemetry(last_mem_snap);
             storage_memory.apply(
@@ -2143,7 +2255,8 @@ int main(int argc, char* argv[]) {
                 config.enable_thermal_pacing || config.enable_storage_burst,
                 last_mem_snap.valid ? last_mem_snap.available_ratio() : 0.45,
                 storage_tel.mem_psi, now_ms,
-                is_passive_media_only(live_status.ctx));
+                is_passive_media_only(live_status.ctx),
+                build_symbiotic_hints());
             longevity.monitor_battery_thermals(soc_temp);
             (void)longevity.apply_power_control(
                 config.bypass_charging,

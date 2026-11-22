@@ -59,6 +59,11 @@ struct SemanticKnobStats {
     uint32_t memory_knobs{0};
 };
 
+struct SymbioticHints {
+    bool boost_gpu_memory_supply{false};
+    bool encourage_cluster_spread{false};
+};
+
 class SemanticKnobEngine {
 public:
     SemanticKnobEngine(BaselineStore& baseline,
@@ -82,7 +87,8 @@ public:
                double avail_ram_ratio,
                double mem_psi,
                uint64_t now_ms,
-               bool passive_media_only = false) noexcept;
+               bool passive_media_only = false,
+               const SymbioticHints& hints = {}) noexcept;
 
     void rollback_all() noexcept;
 

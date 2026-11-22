@@ -24,6 +24,10 @@ assert "DecisionJournal" in source
 assert "FramePacingSensor" in source
 assert "AppDnaStore" in source
 assert "compute_thermal_equilibrium" in source
+assert "compute_symbiotic_plan" in source
+assert "feedforward_freeze_until_ms" in source
+assert "vblank_irq_token" in source
+assert "to_dna_signature" in source
 assert "O_EXCL" in source and "renameat" in source
 assert "baseline.recover_pending()" in source
 assert "baseline.rollback_all()" in source

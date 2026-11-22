@@ -203,6 +203,15 @@ int main() {
     assert(read_file(gpu_adrenoboost) == "0");
     assert(read_file(walt_pl) == "0");
 
+    // Symbiotic Hints during Interactive: cluster spread lowers WALT upmigrate further and GPU-bound lifts bus_split
+    SymbioticHints hints{};
+    hints.boost_gpu_memory_supply = true;
+    hints.encourage_cluster_spread = true;
+    engine.apply(ContextMode::Interactive, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 2700, false, hints);
+    assert(read_file(gpu_bus_split) == "0");
+    assert(read_file(gpu_adrenoboost) == "2");
+    assert(read_file(proc_walt_upmig) == "77 86"); // -10% (-6 gaming -4 spread): stricter spread than 78 87 & 85 95
+
     // Re-activate then test Release-on-Calm (Efficiency) -> ALL semantic knobs cleanly restored to OEM baselines!
     engine.apply(ContextMode::LaunchBurst, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 2800);
     engine.apply(ContextMode::Efficiency, PerformanceProfile::Balanced, 1.0, false, true, 0.50, 0.5, 3000);

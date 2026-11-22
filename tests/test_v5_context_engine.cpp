@@ -249,6 +249,20 @@ int main() {
     gprof.now_ms = 65000;
     assert(engine.evaluate(gprof).mode == ContextMode::Gaming);     // streak 2 -> latched cleanly
 
+    // 14. Bayesian Engine Signature Detection: UnityMain thread and /proc/<pid>/maps libUE4.so -> HeavyGame3D vs StandardUi
+    assert(fg.engine_class == AppEngineClass::HeavyGame3D);
+    assert(hyperos_fg.engine_class == AppEngineClass::StandardUi);
+    write_file(root / "ue4_top_app", "44500\n");
+    write_file(proc / "44500/cmdline", std::string("com.tencent.ig\0", 15));
+    write_file(proc / "44500/oom_score_adj", "0\n");
+    write_file(proc / "44500/task/44500/comm", "com.tencent.ig\n");
+    write_file(proc / "44500/task/44501/comm", "RenderThread\n");
+    write_file(proc / "44500/maps",
+               "70000000-70010000 r-xp 00000000 fd:00 1234 /data/app/com.tencent.ig/lib/arm64/libUE4.so\n");
+    const auto ue4_fg = engine.resolve_foreground_app((root / "ue4_top_app").string());
+    assert(ue4_fg.pid == 44500);
+    assert(ue4_fg.engine_class == AppEngineClass::HeavyGame3D);
+
     fs::remove_all(root);
     std::cout << "v5 ContextEngine tests passed\n";
     return 0;

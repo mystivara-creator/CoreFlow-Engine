@@ -102,7 +102,10 @@ void AppDnaStore::evict_lru_if_needed() noexcept {
     }
 }
 
-void AppDnaStore::record_launch(const std::string& package_name, uint64_t now_ms) noexcept {
+void AppDnaStore::record_launch(
+    const std::string& package_name,
+    uint64_t now_ms,
+    EngineSignature signature) noexcept {
     if (!is_valid_pkg_token(package_name)) return;
     auto it = entries_.find(package_name);
     if (it == entries_.end()) {
@@ -111,10 +114,18 @@ void AppDnaStore::record_launch(const std::string& package_name, uint64_t now_ms
         e.package_name = package_name;
         e.launch_count = 1U;
         e.last_seen_ms = now_ms;
+        if (signature == EngineSignature::HeavyGame3D) {
+            e.uclamp_bias = kBayesianHeavyGamePrior;
+            e.sample_count = kBayesianPriorSamples;
+        }
         entries_.emplace(package_name, std::move(e));
     } else {
         it->second.launch_count = std::min<uint32_t>(it->second.launch_count + 1U, 100000U);
         it->second.last_seen_ms = now_ms;
+        if (signature == EngineSignature::HeavyGame3D && it->second.sample_count < kBayesianPriorSamples) {
+            it->second.uclamp_bias = kBayesianHeavyGamePrior;
+            it->second.sample_count = kBayesianPriorSamples;
+        }
     }
     dirty_ = true;
 }
@@ -123,7 +134,8 @@ void AppDnaStore::observe(
     const std::string& package_name,
     double jank_ratio,
     double thermal_velocity_cpm,
-    uint64_t now_ms) noexcept {
+    uint64_t now_ms,
+    EngineSignature signature) noexcept {
     if (!is_valid_pkg_token(package_name)) return;
     auto it = entries_.find(package_name);
     if (it == entries_.end()) {
@@ -131,7 +143,14 @@ void AppDnaStore::observe(
         AppDnaEntry e{};
         e.package_name = package_name;
         e.last_seen_ms = now_ms;
+        if (signature == EngineSignature::HeavyGame3D) {
+            e.uclamp_bias = kBayesianHeavyGamePrior;
+            e.sample_count = kBayesianPriorSamples;
+        }
         it = entries_.emplace(package_name, std::move(e)).first;
+    } else if (signature == EngineSignature::HeavyGame3D && it->second.sample_count < kBayesianPriorSamples) {
+        it->second.uclamp_bias = kBayesianHeavyGamePrior;
+        it->second.sample_count = kBayesianPriorSamples;
     }
 
     AppDnaEntry& e = it->second;
@@ -170,7 +189,7 @@ void AppDnaStore::observe(
 
 double AppDnaStore::uclamp_bias_for(const std::string& package_name) const noexcept {
     const auto it = entries_.find(package_name);
-    if (it == entries_.end() || it->second.sample_count < 3U) {
+    if (it == entries_.end() || it->second.sample_count < kBayesianPriorSamples) {
         return 1.0;
     }
     return std::clamp(it->second.uclamp_bias, 0.78, 1.18);

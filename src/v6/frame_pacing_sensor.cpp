@@ -6,10 +6,12 @@
 #include "coreflow/v6/frame_pacing_sensor.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string_view>
 
 namespace fs = std::filesystem;
@@ -18,6 +20,14 @@ namespace coreflow::v6 {
 
 namespace {
 
+std::string to_lower_copy(std::string_view text) {
+    std::string out(text);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
+
 std::string read_small_text(const std::string& path) noexcept {
     std::ifstream in(path);
     if (!in.is_open()) return {};
@@ -25,6 +35,86 @@ std::string read_small_text(const std::string& path) noexcept {
     in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
     buf.resize(static_cast<size_t>(in.gcount()));
     return buf;
+}
+
+bool parse_u64_exact(std::string_view token, uint64_t& out) noexcept {
+    if (token.empty() || token.size() > 20U) return false;
+    const auto r = std::from_chars(token.data(), token.data() + token.size(), out);
+    return r.ec == std::errc{} && r.ptr == token.data() + token.size();
+}
+
+std::string find_vblank_irq_token_once(const std::string& interrupts_path) noexcept {
+    std::ifstream in(interrupts_path);
+    if (!in.is_open()) return {};
+    std::string line;
+    uint64_t best_score = 0U;
+    std::string best_token;
+    size_t lines_read = 0U;
+    while (lines_read++ < 1024U && std::getline(in, line)) {
+        const std::string low = to_lower_copy(line);
+        uint64_t weight = 0U;
+        if (low.find("vblank") != std::string::npos || low.find("te_irq") != std::string::npos) {
+            weight = 4U;
+        } else if (low.find("mdss") != std::string::npos || low.find("sde") != std::string::npos ||
+                   low.find("dpu") != std::string::npos || low.find("exynos-drm") != std::string::npos ||
+                   low.find("decon") != std::string::npos || low.find("mtk_disp") != std::string::npos) {
+            weight = 3U;
+        } else if (low.find("dsi") != std::string::npos || low.find("disp") != std::string::npos ||
+                   low.find("ovl") != std::string::npos) {
+            weight = 2U;
+        }
+        if (weight == 0U) continue;
+        std::istringstream ls(line);
+        std::string tok;
+        if (!(ls >> tok) || tok.empty() || tok.back() != ':') continue;
+        uint64_t sum = 0U;
+        std::string col;
+        while (ls >> col) {
+            uint64_t n = 0U;
+            if (!parse_u64_exact(col, n)) break;
+            sum += n;
+        }
+        const uint64_t score = weight * 1'000'000'000ULL + std::min<uint64_t>(sum, 999'999'999ULL);
+        if (score > best_score) {
+            best_score = score;
+            best_token = tok;
+        }
+    }
+    return best_token;
+}
+
+bool read_vblank_irq_total(const std::string& interrupts_path,
+                           const std::string& irq_token,
+                           uint64_t& out_total) noexcept {
+    if (interrupts_path.empty() || irq_token.empty()) return false;
+    std::ifstream in(interrupts_path);
+    if (!in.is_open()) return false;
+    std::string line;
+    size_t lines_read = 0U;
+    while (lines_read++ < 1024U && std::getline(in, line)) {
+        size_t pos = 0U;
+        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+        if (line.compare(pos, irq_token.size(), irq_token) != 0) continue;
+        const size_t after = pos + irq_token.size();
+        if (after < line.size() && line[after] != ' ' && line[after] != '\t') continue;
+
+        std::istringstream ls(line.substr(after));
+        uint64_t sum = 0U;
+        bool found_any = false;
+        std::string col;
+        while (ls >> col) {
+            uint64_t n = 0U;
+            if (!parse_u64_exact(col, n)) break;
+            sum += n;
+            found_any = true;
+        }
+        if (found_any) {
+            out_total = sum;
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 double parse_fps_token(std::string_view text) noexcept {
@@ -71,8 +161,11 @@ bool is_readable_file(const fs::path& p) noexcept {
 
 void FramePacingSensor::discover(
     const std::string& sysfs_root,
-    const std::string& procfs_root) noexcept {
+    const std::string& procfs_root,
+    const std::string& cached_vblank_irq_token) noexcept {
     fps_paths_.clear();
+    proc_interrupts_path_.clear();
+    vblank_irq_token_.clear();
     active_source_.clear();
     reset();
 
@@ -127,11 +220,31 @@ void FramePacingSensor::discover(
     add_if_readable(fs::path(sysfs_root) / "class/panel/panel/fps");
     add_if_readable(fs::path(sysfs_root) / "kernel/fpsgo/fstb/fpsgo_status");
     add_if_readable(fs::path(procfs_root) / "mtk_fpsgo/fps");
+
+    // 4. Universal Hardware Fallback: cached /proc/interrupts DSI/DRM VBlank IRQ counter
+    //    (used when vendor FPS sysfs nodes are absent on custom kernels)
+    if (fps_paths_.empty()) {
+        const fs::path irq_path = fs::path(procfs_root) / "interrupts";
+        if (is_readable_file(irq_path)) {
+            const std::string token = cached_vblank_irq_token.empty()
+                ? find_vblank_irq_token_once(irq_path.string())
+                : cached_vblank_irq_token;
+            if (!token.empty()) {
+                proc_interrupts_path_ = irq_path.string();
+                vblank_irq_token_ = token;
+            }
+        }
+    }
 }
 
 void FramePacingSensor::reset() noexcept {
     ewma_jank_ = -1.0;
-    last_sample_ms_ = 0;
+    prev_measured_fps_ = -1.0;
+    ewma_jitter_ = 0.0;
+    prev_vblank_count_ = 0U;
+    prev_vblank_ms_ = 0U;
+    has_vblank_baseline_ = false;
+    last_sample_ms_ = 0U;
     last_sample_ = {};
 }
 
@@ -144,27 +257,57 @@ FramePacingSample FramePacingSensor::sample(
     FramePacingSample out{};
     out.target_fps = target_hz;
 
-    if (!active_workload || fps_paths_.empty()) {
+    if (!active_workload || !supported()) {
         ewma_jank_ = -1.0;
+        prev_measured_fps_ = -1.0;
+        ewma_jitter_ = 0.0;
+        has_vblank_baseline_ = false;
         last_sample_ = out;
         return out;
     }
 
-    // Rate-limit sysfs reads to at most once every 800 ms.
+    // Rate-limit reads to at most once every 800 ms.
     if (last_sample_ms_ > 0U && now_ms >= last_sample_ms_ && (now_ms - last_sample_ms_) < 800ULL) {
         return last_sample_;
     }
     last_sample_ms_ = now_ms;
 
     double measured = -1.0;
-    for (const auto& path : fps_paths_) {
-        const std::string raw = read_small_text(path);
-        if (raw.empty()) continue;
-        const double parsed = parse_fps_token(raw);
-        if (parsed >= 0.0) {
-            measured = parsed;
-            active_source_ = path;
-            break;
+    if (!fps_paths_.empty()) {
+        for (const auto& path : fps_paths_) {
+            const std::string raw = read_small_text(path);
+            if (raw.empty()) continue;
+            const double parsed = parse_fps_token(raw);
+            if (parsed >= 0.0) {
+                measured = parsed;
+                active_source_ = path;
+                break;
+            }
+        }
+    } else if (!vblank_irq_token_.empty()) {
+        uint64_t cur_irqs = 0U;
+        if (read_vblank_irq_total(proc_interrupts_path_, vblank_irq_token_, cur_irqs)) {
+            if (!has_vblank_baseline_ || now_ms <= prev_vblank_ms_ || cur_irqs < prev_vblank_count_) {
+                prev_vblank_count_ = cur_irqs;
+                prev_vblank_ms_ = now_ms;
+                has_vblank_baseline_ = true;
+                active_source_ = "vblank_irq:" + vblank_irq_token_;
+                out.available = true;
+                out.jank_ratio = -1.0;
+                last_sample_ = out;
+                return out;
+            }
+            const double dt_sec = static_cast<double>(now_ms - prev_vblank_ms_) / 1000.0;
+            const uint64_t delta_irqs = cur_irqs - prev_vblank_count_;
+            prev_vblank_count_ = cur_irqs;
+            prev_vblank_ms_ = now_ms;
+            if (dt_sec >= 0.25 && dt_sec <= 10.0) {
+                const double rate = static_cast<double>(delta_irqs) / dt_sec;
+                if (std::isfinite(rate) && rate >= 0.0 && rate <= 360.0) {
+                    measured = rate;
+                    active_source_ = "vblank_irq:" + vblank_irq_token_;
+                }
+            }
         }
     }
 
@@ -180,12 +323,14 @@ FramePacingSample FramePacingSensor::sample(
     // NOT a janking animation — keep jank_ratio neutral (-1.0) to avoid false boosts.
     if (measured < 12.0) {
         ewma_jank_ = -1.0;
+        prev_measured_fps_ = -1.0;
+        ewma_jitter_ = 0.0;
         out.jank_ratio = -1.0;
         last_sample_ = out;
         return out;
     }
 
-    // Infer the workload's natural cadence anchor (30, 45, 60, 90, 120, 144 Hz <= target_hz)
+    // Infer the workload's natural cadence anchor (30, 60, 90, 120, 144 Hz <= target_hz)
     // so a rock-solid 60 FPS game on a 120 Hz panel is evaluated against 60 FPS, NOT penalized as 50% jank!
     double cadence_target = target_hz;
     if (target_hz >= 115.0 && measured >= 54.0 && measured <= 63.0) {
@@ -200,8 +345,20 @@ FramePacingSample FramePacingSensor::sample(
     out.target_fps = cadence_target;
 
     const double deficit = std::max(0.0, cadence_target - measured) / std::max(cadence_target, 1.0);
+    // Cadence jitter variance against prior sample detects micro-stutter oscillation even when mean FPS looks high.
+    double jitter_penalty = 0.0;
+    if (prev_measured_fps_ >= 12.0 && std::abs(prev_measured_fps_ - cadence_target) <= cadence_target * 0.45) {
+        const double delta_norm = std::abs(measured - prev_measured_fps_) / std::max(cadence_target, 1.0);
+        ewma_jitter_ = ewma_jitter_ * 0.65 + delta_norm * 0.35;
+        if (ewma_jitter_ > 0.06) {
+            jitter_penalty = std::clamp((ewma_jitter_ - 0.06) * 0.70, 0.0, 0.25);
+        }
+    }
+    prev_measured_fps_ = measured;
+
     // Tolerance band: <= 3% jitter around vsync (e.g. 58.2 fps on 60 Hz) counts as 0% jank.
-    const double instant_jank = deficit <= 0.03 ? 0.0 : std::clamp((deficit - 0.03) / 0.45, 0.0, 1.0);
+    const double base_jank = deficit <= 0.03 ? 0.0 : std::clamp((deficit - 0.03) / 0.45, 0.0, 1.0);
+    const double instant_jank = std::clamp(base_jank + jitter_penalty, 0.0, 1.0);
     ewma_jank_ = (ewma_jank_ < 0.0) ? instant_jank : (ewma_jank_ * 0.65 + instant_jank * 0.35);
     out.jank_ratio = ewma_jank_;
     last_sample_ = out;

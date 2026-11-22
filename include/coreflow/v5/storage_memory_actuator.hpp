@@ -22,6 +22,7 @@ struct StorageMemoryTelemetry {
     double mem_psi{0.0};
     double cpu_psi{0.0};
     MemorySnapshot memory{};
+    bool io_supply_boost{false};
 };
 
 struct StorageMemoryStats {

@@ -91,12 +91,20 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         }
     };
 
-    // Closed-loop frame pacing feedback (ADPF-class):
-    // - Verified zero/near-zero jank (< 1.5% missed frames) -> gently trim floor to save power & heat.
+    // Closed-loop frame pacing feedback (ADPF-class) + Feed-Forward Pre-Emptive Cancel:
+    // - Verified zero/near-zero jank (< 1.5% missed frames) -> gently trim floor to save power & heat,
+    //   UNLESS feedforward_freeze is active (sudden GPU/PSI derivative spike or active touch window),
+    //   which freezes trimming pre-emptively before frames can miss T_budget = 1000 / Hz ms.
     // - Measured jank (>= 5% missed frames) -> inject proportional rescue headroom.
     let jank_factor = if input.jank_ratio.is_finite() && input.jank_ratio >= 0.0 {
         if input.jank_ratio < 0.015 && input.mode != MODE_LAUNCH_BURST {
-            if input.mode == MODE_GAMING { 0.88 } else { 0.84 }
+            if input.feedforward_freeze {
+                1.0
+            } else if input.mode == MODE_GAMING {
+                0.88
+            } else {
+                0.84
+            }
         } else if input.jank_ratio >= 0.05 {
             let sev = ((input.jank_ratio - 0.05) / 0.25).clamp(0.0, 1.0);
             1.0 + sev * 0.18
@@ -114,6 +122,14 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
         1.0
     };
 
+    // Orthogonal Symbiotic Orchestrator cooperative CPU scale (defaults cleanly to 1.0).
+    let symbiotic_scale = if input.symbiotic_cpu_scale.is_finite() && input.symbiotic_cpu_scale > 0.0
+    {
+        input.symbiotic_cpu_scale.clamp(0.88, 1.10)
+    } else {
+        1.0
+    };
+
     // Thermal-velocity pre-damping: gently ease floor (up to 12%) when heating rapidly (>= +1.8 C/min)
     // so sustained workloads stay smooth instead of slamming into OEM cliff-throttling.
     let velocity_damping = if input.thermal_velocity_cpm.is_finite() && input.thermal_velocity_cpm > 1.8
@@ -126,8 +142,13 @@ pub fn compute_uclamp_target(input: UclampInput) -> UclampTarget {
 
     let mut target_max = (big_cap * bounded_scale).round().clamp(0.0, 1024.0) as u32;
     let max_safe_floor = big_cap * 0.75;
-    let base_min = (anchor_floor * profile_bias * jank_factor * app_bias * bounded_scale.clamp(0.50, 1.0))
-        .min(max_safe_floor);
+    let base_min = (anchor_floor
+        * profile_bias
+        * jank_factor
+        * app_bias
+        * symbiotic_scale
+        * bounded_scale.clamp(0.50, 1.0))
+    .min(max_safe_floor);
     let mut raw_min = base_min * velocity_damping;
 
     if input.thermal_guard {
@@ -163,6 +184,8 @@ mod tests {
             thermal_velocity_cpm: 0.0,
             jank_ratio: -1.0,
             app_uclamp_bias: 1.0,
+            feedforward_freeze: false,
+            symbiotic_cpu_scale: 1.0,
         }
     }
 
@@ -206,6 +229,22 @@ mod tests {
     }
 
     #[test]
+    fn feedforward_freeze_cancels_jank_trim_preemptively_then_resumes() {
+        let neutral = compute_uclamp_target(base_input(MODE_INTERACTIVE));
+        let mut frozen = base_input(MODE_INTERACTIVE);
+        frozen.jank_ratio = 0.002;
+        frozen.feedforward_freeze = true;
+        let held = compute_uclamp_target(frozen);
+        assert_eq!(held.util_min, neutral.util_min);
+
+        let mut steady = base_input(MODE_INTERACTIVE);
+        steady.jank_ratio = 0.002;
+        steady.feedforward_freeze = false;
+        let resumed_trim = compute_uclamp_target(steady);
+        assert!(resumed_trim.util_min < held.util_min);
+    }
+
+    #[test]
     fn thermal_velocity_predamps_and_guard_clamps_safely() {
         let steady = compute_uclamp_target(base_input(MODE_GAMING));
         let mut heating = base_input(MODE_GAMING);
@@ -230,6 +269,7 @@ mod tests {
         bad.thermal_velocity_cpm = f64::NAN;
         bad.jank_ratio = f64::NAN;
         bad.app_uclamp_bias = f64::INFINITY;
+        bad.symbiotic_cpu_scale = f64::NAN;
         let out = compute_uclamp_target(bad);
         assert!(out.util_min <= out.util_max && out.util_max <= 1024);
     }

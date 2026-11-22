@@ -505,7 +505,8 @@ void SemanticKnobEngine::apply(
     double avail_ram_ratio,
     double mem_psi,
     uint64_t now_ms,
-    bool passive_media_only) noexcept {
+    bool passive_media_only,
+    const SymbioticHints& hints) noexcept {
     const double scale = std::isfinite(capacity_scale) ? std::clamp(capacity_scale, 0.25, 1.0) : 1.0;
 
     // Release-on-Calm & Thermal Safety & Passive Video Playback:
@@ -539,6 +540,17 @@ void SemanticKnobEngine::apply(
             (is_gaming && knob.apply_in_gaming) ||
             (is_interactive && knob.apply_in_interactive);
 
+        // Symbiotic GPU/Memory co-pacing: allow GPU latency & bus supply knobs during GPU-bound Interactive
+        if (!should_apply && is_interactive && hints.boost_gpu_memory_supply &&
+            knob.family == KnobFamily::GpuLatency && knob.apply_in_gaming) {
+            should_apply = true;
+        }
+        // Symbiotic Cluster Spread: allow WALT migration pair knobs to spread single-core saturation
+        if (!should_apply && is_interactive && hints.encourage_cluster_spread &&
+            knob.kind == KnobValueKind::MigratePair && knob.apply_in_gaming) {
+            should_apply = true;
+        }
+
         if (battery_profile && !is_burst &&
             (knob.family == KnobFamily::CpuBoost || knob.family == KnobFamily::GpuLatency)) {
             should_apply = false;
@@ -561,22 +573,27 @@ void SemanticKnobEngine::apply(
         std::string target;
         switch (knob.kind) {
             case KnobValueKind::BoolToggle: {
+                const bool gpu_mem_boost = hints.boost_gpu_memory_supply &&
+                    (knob.family == KnobFamily::GpuLatency || knob.family == KnobFamily::MemoryCache);
                 const int64_t v = is_burst ? knob.active_burst_value :
-                                  is_gaming ? knob.active_gaming_value :
+                                  (is_gaming || gpu_mem_boost) ? knob.active_gaming_value :
                                               knob.active_interactive_value;
                 target = format_bool_token(v != 0, knob.uses_yn_bool, knob.baseline_value);
                 break;
             }
             case KnobValueKind::IntLevel:
             case KnobValueKind::RelativeInt: {
+                const bool gpu_mem_boost = hints.boost_gpu_memory_supply &&
+                    (knob.family == KnobFamily::GpuLatency || knob.family == KnobFamily::MemoryCache);
                 const int64_t v = is_burst ? knob.active_burst_value :
-                                  is_gaming ? knob.active_gaming_value :
+                                  (is_gaming || gpu_mem_boost) ? knob.active_gaming_value :
                                               knob.active_interactive_value;
                 target = std::to_string(v);
                 break;
             }
             case KnobValueKind::MigratePair: {
-                const int64_t delta = is_burst ? knob.active_burst_value : knob.active_gaming_value;
+                const int64_t base_delta = is_burst ? knob.active_burst_value : knob.active_gaming_value;
+                const int64_t delta = hints.encourage_cluster_spread ? (base_delta - 4) : base_delta;
                 target = scale_migrate_values(knob.baseline_value, delta, 55, 98);
                 break;
             }

@@ -150,8 +150,10 @@ if(CORE_FLOW_BUILD_TESTS)
 
     add_executable(test_v6_closed_loop_intelligence
         tests/test_v6_closed_loop_intelligence.cpp
+        src/v5/hardware_probe.cpp
         src/v6/frame_pacing_sensor.cpp
         src/v6/app_dna_store.cpp
+        src/kernel/mount_topology.cpp
         src/kernel/frame_bridge.cpp
     )
     if(NOT ANDROID)

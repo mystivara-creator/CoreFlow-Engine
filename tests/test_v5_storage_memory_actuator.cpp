@@ -215,7 +215,23 @@ int main() {
     assert(predicted_bytes == 4096U);
     assert(act.stats().predictive_preloads_total == 1U);
 
-    assert(baseline.rollback_all() > 0U);
+    // 10. Symbiotic io_supply_boost lifts read_ahead_kb during Interactive asset/GPU supply, then releases on Efficiency
+    ContextDecision sym_inter_ctx{};
+    sym_inter_ctx.mode = ContextMode::Interactive;
+    StorageMemoryTelemetry supply_tel = calm_tel;
+    supply_tel.io_supply_boost = true;
+    act.apply(topo, sym_inter_ctx, PerformanceProfile::Balanced, true, true, 950000, calm_tel);
+    const uint64_t ra_calm_inter = std::stoull(read_file(ra_path));
+    act.apply(topo, sym_inter_ctx, PerformanceProfile::Balanced, true, true, 960000, supply_tel);
+    const uint64_t ra_boost_inter = std::stoull(read_file(ra_path));
+    assert(ra_boost_inter > ra_calm_inter);
+    ContextDecision sym_eff_ctx{};
+    sym_eff_ctx.mode = ContextMode::Efficiency;
+    act.apply(topo, sym_eff_ctx, PerformanceProfile::Balanced, true, true, 970000, supply_tel);
+    assert(read_file(ra_path) == "128");
+
+    (void)baseline.rollback_all();
+    assert(!baseline.has_active_mutations());
     assert(read_file(mglru_en) == "0x0007");
     assert(read_file(mglru) == "250");
     assert(read_file(ra_path) == "128");

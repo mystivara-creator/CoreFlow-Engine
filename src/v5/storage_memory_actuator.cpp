@@ -311,7 +311,14 @@ void StorageMemoryActuator::apply(
     bool enable_memory_guard,
     uint64_t now_ms,
     const StorageMemoryTelemetry& telemetry) noexcept {
-    const double io_psi = std::isfinite(telemetry.io_psi) ? std::clamp(telemetry.io_psi, 0.0, 100.0) : 0.0;
+    const double raw_io_psi = std::isfinite(telemetry.io_psi) ? std::clamp(telemetry.io_psi, 0.0, 100.0) : 0.0;
+    const bool active_supply_mode =
+        ctx.mode == ContextMode::LaunchBurst ||
+        ctx.mode == ContextMode::Gaming ||
+        ctx.mode == ContextMode::Interactive;
+    const double io_psi = (telemetry.io_supply_boost && active_supply_mode)
+        ? std::max(raw_io_psi, 18.0)
+        : raw_io_psi;
     const double mem_psi = std::isfinite(telemetry.mem_psi) ? std::clamp(telemetry.mem_psi, 0.0, 100.0) : 0.0;
     const double cpu_psi = std::isfinite(telemetry.cpu_psi) ? std::clamp(telemetry.cpu_psi, 0.0, 100.0) : 0.0;
     const bool calm_mode = (ctx.mode == ContextMode::Efficiency || ctx.mode == ContextMode::ScreenOff);
