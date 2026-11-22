@@ -2,6 +2,13 @@
 
 # CFAE System Framework Release History
 
+## v6.0.0-R — Sovereign Rebuild (CFAE System Framework)
+- **Sovereign Tamper Guard:** 0444 lock on leased root nodes, Reclaim-First with 3x/5s circuit breaker, OEM daemon escalation, `CoreFlowTamperReceiver` (RESYNC/ENFORCE/REPORT/WHY), pre-install hard-block of competing tuners.
+- **Coupled Multi-Domain Orchestration:** Rust `SymbioticPlan` coupling, safe devfreq discovery, OPP/max_freq-capped memory bus.
+- **Zero-Wear Context Learning:** `CFDNA2` store with cost-to-gain metrics, flushed only on long SCREEN_OFF or clean shutdown; `CFDNA1` backward compatible.
+- **Sovereign Dialogue Console:** deterministic ID/EN `CoreFlowDialogueEngine`, `CFAE TELEMETRY LINK` in app and WebUI.
+- **Hardening:** crash-safe 0444 recovery via CFJ4, `O_NOFOLLOW` on App DNA temp writes, scoped `setattr` sepolicy.
+
 ## v6.2.0 — Closed-Loop Intelligence & Cross-SoC Architecture
 
 > **Closed-Loop Milestone (`v6.2.0`, `versionCode=62000`)**: Evolves CoreFlow from open-loop heuristics into a true closed-loop, self-calibrating Android system engine — trimming power automatically when frames are locked, rescuing micro-stutters on demand, remembering per-app behavioral DNA & Markov launch patterns across reboots, balancing fast die bursts against slow chassis/charging heat, and adding a 1-tap **Device Health Self-Audit**.

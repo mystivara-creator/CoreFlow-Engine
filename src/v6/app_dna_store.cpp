@@ -31,7 +31,7 @@ bool is_valid_pkg_token(const std::string& pkg) noexcept {
 
 bool write_file_atomic(const std::string& target, const std::string& payload) noexcept {
     const std::string tmp = target + ".tmp";
-    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return false;
     size_t written = 0;
     while (written < payload.size()) {
