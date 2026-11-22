@@ -689,6 +689,10 @@ struct RuntimeStatusData {
     double scheduler_responsiveness_scale{1.0};
     double thermal_stepdown_lead{0.0};
     uint8_t coupling_mask{0};
+    // Hybrid CFW2 + ONNX Neural Engine telemetry
+    double ai_jank_risk{0.0};
+    std::string ai_workload_class{"balanced"};
+    std::string ai_backend{"embedded-rls-mlp"};
     std::vector<HistoryPoint> history{};
 };
 
@@ -878,6 +882,9 @@ std::string build_status_json(const RuntimeStatusData& s) {
         << ",\"ioPsi\":" << (s.io_psi ? std::to_string(safe_num(*s.io_psi)) : "null")
         << ",\"aiPredicted10s\":" << safe_num(s.ai_predicted_10s)
         << ",\"aiConfidence\":" << safe_num(s.ai_confidence)
+        << ",\"aiJankRisk\":" << safe_num(s.ai_jank_risk)
+        << ",\"aiWorkloadClass\":" << json_str(s.ai_workload_class)
+        << ",\"aiBackend\":" << json_str(s.ai_backend)
         << ",\"baselineNodesSnapshotted\":" << s.baseline_nodes
         << ",\"recoveryPending\":" << (s.recovery_pending ? "true" : "false")
         << ",\"features\":{"
@@ -2343,7 +2350,10 @@ int main(int argc, char* argv[]) {
         live_status.session.prev_thermal_guard = thermal_guard;
         live_status.thermal_guard = thermal_guard;
 
-        // 10s Online RLS + Micro-MLP thermal lookahead + Rust PID + Dual-Timescale Equilibrium
+        // 10s Hybrid CFW2/ONNX + Online RLS thermal & jank-risk lookahead
+        const double charging_mw = live_status.battery.charging
+            ? std::clamp(live_status.battery.power_mw, 0.0, 25000.0)
+            : 0.0;
         const auto ai = neural.infer_and_learn({
             .thermal_pressure = std::clamp(thermal.pressure, 0.0, 130.0),
             .cpu_psi = std::clamp(cpu_psi.value_or(0.0), 0.0, 100.0),
@@ -2354,9 +2364,16 @@ int main(int argc, char* argv[]) {
             .io_psi_valid = io_psi.has_value(),
             .current_scale = live_status.capacity_scale,
             .elapsed_seconds = elapsed,
+            .gpu_busy_pct = std::clamp(gpu_busy.value_or(0.0), 0.0, 100.0),
+            .render_pressure = std::clamp(live_status.render_pressure, 0.0, 1.0),
+            .jank_ratio = live_status.jank_ratio >= 0.0 ? std::clamp(live_status.jank_ratio, 0.0, 1.0) : 0.0,
+            .charging_power_mw = charging_mw,
         });
         live_status.ai_predicted_10s = ai.valid ? ai.predicted_pressure_10s : 0.0;
         live_status.ai_confidence = ai.valid ? ai.confidence : 0.0;
+        live_status.ai_jank_risk = ai.valid ? ai.jank_risk : 0.0;
+        live_status.ai_workload_class = ai.valid ? std::string(ai.workload_class) : "balanced";
+        live_status.ai_backend = ai.valid ? std::string(ai.backend) : "embedded-rls-mlp";
 
         double eff_pressure = std::clamp(thermal.pressure, 0.0, 130.0);
         if (ai.valid && ai.confidence >= 0.55 && ai.predicted_pressure_10s > eff_pressure) {
