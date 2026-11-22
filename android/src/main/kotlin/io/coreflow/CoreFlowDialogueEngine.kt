@@ -69,7 +69,7 @@ object CoreFlowDialogueEngine {
             return resolveIntent(DialogueIntent.REJECT_MANUAL_TWEAK, status, isIndonesian, journalEntryCount)
         }
 
-        // 2. Fast deterministic intent matching (exact commands & quick-prompt shortcuts)
+        // 2. Fast deterministic intent matching (word-boundary safe for short tokens)
         val deterministicIntent: DialogueIntent? = when {
             containsAny(q, "resync", "enforce", "kunci ulang", "sinkron ulang", "reclaim") ->
                 DialogueIntent.TAMPER_RESYNC
@@ -81,13 +81,16 @@ object CoreFlowDialogueEngine {
                 DialogueIntent.CONTEXT_SHIFT_SMOOTHNESS
             containsAny(q, "otomatis", "seimbang", "balanced", "balik normal", "mode normal", "auto mode", "default mode") ->
                 DialogueIntent.CONTEXT_SHIFT_BALANCED
-            containsAny(q, "patah", "lag", "stutter", "frame drop", "fps", "jank", "lemot", "drop frame", "ngelag") ->
+            containsAny(q, "patah", "stutter", "frame drop", "jank", "lemot", "drop frame", "ngelag", "nge-lag", "lagging") ||
+                containsWord(q, "lag") || containsWord(q, "fps") ->
                 DialogueIntent.DIAGNOSE_STUTTER
-            containsAny(q, "konflik", "modul", "tamper", "intervensi", "fkm", "forensik", "report", "why", "bentrok", "conflict") ->
+            containsAny(q, "konflik", "modul", "tamper", "intervensi", "fkm", "forensik", "bentrok", "conflict") ->
                 DialogueIntent.DIAGNOSE_CONFLICT_TAMPER
-            containsAny(q, "pelajari", "belajar", "dna", "flash", "zero-wear", "learned", "adaptasi", "memori belajar") ->
+            containsAny(q, "pelajari", "belajar", "zero-wear", "learned", "adaptasi", "memori belajar", "cfdna2") ||
+                containsWord(q, "dna") || containsWord(q, "flash") ->
                 DialogueIntent.DIAGNOSE_LEARNING_DNA
-            containsAny(q, "suhu", "panas", "beban", "temp", "thermal", "load", "headroom", "bus", "cpu", "gpu", "status") ->
+            containsAny(q, "suhu", "panas", "beban", "temp", "thermal", "headroom", "memory bus", "bus memori") ||
+                containsWord(q, "load") || containsWord(q, "cpu") || containsWord(q, "gpu") || containsWord(q, "bus") ->
                 DialogueIntent.DIAGNOSE_THERMAL_LOAD
             else -> null
         }
@@ -441,6 +444,9 @@ object CoreFlowDialogueEngine {
 
     private fun containsAny(text: String, vararg needles: String): Boolean =
         needles.any { text.contains(it) }
+
+    private fun containsWord(text: String, word: String): Boolean =
+        Regex("(?<![a-z0-9])${Regex.escape(word)}(?![a-z0-9])").containsMatchIn(text)
 
     private fun formatTemp(c: Float): String =
         if (c > 0f && c.isFinite()) String.format(Locale.US, "%.1f°C", c) else "--"
